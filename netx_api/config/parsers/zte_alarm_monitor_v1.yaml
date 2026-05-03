@@ -1,0 +1,95 @@
+parser_version: zte_alarm_monitor_v1
+dict_version: v1
+
+aliases:
+  alarm_time:
+    - Occurrence Time
+    - Alarm Time
+    - Occur Time
+    - Event Time
+    - 告警时间
+    - 发生时间
+  clear_time:
+    - Clear Time
+    - Restore Time
+    - 恢复时间
+    - 清除时间
+  severity_raw:
+    - Alarm Severity
+    - Severity
+    - Level
+    - 告警级别
+    - 级别
+  alarm_code:
+    - Alarm Code
+    - Alarm ID
+    - Alarm Code Name
+    - 告警码
+    - 告警ID
+  ne_name:
+    - ME
+    - NE Name
+    - Node Name
+    - 网元名称
+    - 设备名称
+  ne_id:
+    - Aid
+    - NE ID
+    - 网元ID
+    - 设备ID
+  site_name:
+    - Site
+    - Site Name
+    - 站点
+  description:
+    - Position
+    - Description
+    - Additional Info
+    - 告警描述
+    - 详细信息
+  relevancy:
+    - Relevancy
+    - 相关性
+  l3vpn_peer_ne:
+    - L3VPN Peer NE
+    - 对端网元
+  service:
+    - Service
+    - 业务
+  affected_client_service_number:
+    - Affected Client Service Number
+    - 影响用户数
+  intermittence_count:
+    - Intermittence Count
+    - 间歇次数
+  me_level:
+    - ME Level
+    - 网元级别
+  ack_state:
+    - Ack State
+    - Ack
+    - 确认状态
+  clear_state:
+    - Clear Type
+    - Alarm State
+    - 告警状态
+    - 清除状态
+
+severity_map:
+  critical: critical
+  major: major
+  minor: minor
+  warning: warning
+  info: info
+  紧急: critical
+  危急: critical
+  一级: critical
+  重要: major
+  严重: major
+  二级: major
+  次要: minor
+  三级: minor
+  警告: warning
+  四级: warning
+  信息: info
+  通知: info

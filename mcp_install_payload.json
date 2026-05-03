@@ -1,0 +1,15 @@
+{
+  "source_type": "local",
+  "source_ref": "netx-local-mcp",
+  "server_id": "netx-local",
+  "version": "0.1.0",
+  "entry_command": "python",
+  "entry_args": [
+    "D:/project/chatgpt/netx/netx_api/mcp_server.py"
+  ],
+  "env_schema": {},
+  "required_permissions": [],
+  "risk_level": "medium",
+  "enabled": true,
+  "timeout_s": 30
+}
