@@ -25,7 +25,14 @@ $webLogFile = Join-Path $runDir "web.out.log"
 $webErrFile = Join-Path $runDir "web.err.log"
 
 $venvPython = Join-Path $projectRoot ".venv\\Scripts\\python.exe"
-$pythonExe = if (Test-Path $venvPython) { $venvPython } else { "python" }
+if (-not (Test-Path $venvPython)) {
+    Write-Host "==> .venv not found, creating virtual environment"
+    python -m venv (Join-Path $projectRoot ".venv")
+}
+if (-not (Test-Path $venvPython)) {
+    throw "failed_to_create_venv"
+}
+$pythonExe = $venvPython
 
 Write-Host "==> Project root: $projectRoot"
 Write-Host "==> Using python: $pythonExe"
