@@ -4,9 +4,18 @@
 
 ## 流程摘要
 
-1. Fork 本仓库，克隆你的 Fork。
-2. 基于当前默认分支（一般为 `main`）创建主题分支，例如 `fix/...` 或 `feat/...`。
-3. 提交并推送到你的 Fork，在 GitHub 上向本仓库发起 PR，说明变更内容与测试方式。
+1. **Fork** 本仓库，克隆你的 Fork。
+2. （推荐）添加上游便于同步：
+
+   ```text
+   git remote add upstream https://github.com/hansjone/netx.git
+   git fetch upstream
+   git checkout -b feat/your-topic upstream/main
+   ```
+
+3. 若未添加上游，则基于当前默认分支（一般为 `main`）创建主题分支，例如 `fix/...` 或 `feat/...`。
+4. 提交并推送到你的 Fork：`git push -u origin feat/your-topic`
+5. 在 GitHub 上向 `hansjone/netx` 发起 **Pull Request**，说明变更内容与测试方式。
 
 ## 合并前注意
 

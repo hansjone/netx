@@ -2,6 +2,8 @@
 
 Independent operations tool (web + MCP) for alarm-centric workflows.
 
+Licensed under the [MIT License](LICENSE). Security reports: [SECURITY.md](SECURITY.md).
+
 ## Phase 1 scope
 
 - Import ZTE Alarm Monitor Excel
@@ -142,9 +144,7 @@ Optional: configure oclaw health check endpoint (defaults shown in `.env.example
 
 ## Key sample file
 
-Phase 1 parser is tuned for:
-
-`D:/project/chatgpt/fm-active-Alarm Monitor-CHEN-20260423100105/fm-active-Alarm Monitor-CHEN-20260423100105.xlsx`
+Phase 1 parser (`netx_api/config/parsers/zte_alarm_monitor_v1.yaml`) is tuned for **ZTE Alarm Monitor** style exports. Use any local path: place your `.xlsx` on disk and import it from the web UI or API (`POST /v1/alarms/import`). A typical filename pattern is `fm-active-Alarm Monitor-*-YYYYMMDDhhmmss.xlsx` (columns are resolved via YAML aliases, not by absolute path).
 
 ## Contributing
 
