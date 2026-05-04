@@ -145,3 +145,7 @@ Optional: configure oclaw health check endpoint (defaults shown in `.env.example
 Phase 1 parser is tuned for:
 
 `D:/project/chatgpt/fm-active-Alarm Monitor-CHEN-20260423100105/fm-active-Alarm Monitor-CHEN-20260423100105.xlsx`
+
+## Contributing
+
+Fork / PR 流程与注意事项见仓库根目录 `CONTRIBUTING.md`。
