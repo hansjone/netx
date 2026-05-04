@@ -41,7 +41,7 @@ if (-not $SkipInstall) {
     Write-Host "==> Installing dependencies"
     & $pythonExe -m pip install -r (Join-Path $projectRoot "requirements.txt")
 } else {
-    Write-Host "==> Skip dependency install"
+    Write-Host "==> Skip dependency install (if API fails with ModuleNotFoundError, run once without -SkipInstall)"
 }
 
 $env:NETX_HOST = $BindHost
