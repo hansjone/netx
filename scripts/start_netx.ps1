@@ -44,6 +44,24 @@ if (-not $SkipInstall) {
     Write-Host "==> Skip dependency install (if API fails with ModuleNotFoundError, run once without -SkipInstall)"
 }
 
+if ($WithWeb) {
+    $webRoot = Join-Path $projectRoot "web"
+    $webNodeModules = Join-Path $webRoot "node_modules"
+    if (-not (Get-Command "npm.cmd" -ErrorAction SilentlyContinue)) {
+        throw "npm_not_found: install Node.js (includes npm) and reopen terminal"
+    }
+    $needWebInstall = (-not (Test-Path $webNodeModules)) -or (-not $SkipInstall)
+    if ($needWebInstall) {
+        Write-Host "==> Installing web dependencies (npm install)"
+        & npm.cmd install --prefix $webRoot
+        if ($LASTEXITCODE -ne 0) {
+            throw "npm_install_failed"
+        }
+    } else {
+        Write-Host "==> Skip web dependency install (node_modules exists)"
+    }
+}
+
 $env:NETX_HOST = $BindHost
 $env:NETX_PORT = "$Port"
 $baseUrl = "http://$BindHost`:$Port"
