@@ -90,4 +90,4 @@ if (-not $SkipConnectionTest) {
 Write-Host ""
 Write-Host "Done."
 Write-Host "Use this DATABASE URL in netx:"
-Write-Host "postgresql+psycopg://$NetxUser:$NetxPassword@$PgHost`:$PgPort/$NetxDatabase"
+Write-Host "postgresql+psycopg://${NetxUser}:${NetxPassword}@${PgHost}:$PgPort/$NetxDatabase"
