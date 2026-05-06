@@ -37,7 +37,29 @@ If Node/npm is missing (Windows example):
 winget install OpenJS.NodeJS.LTS
 ```
 
-### 1) Python virtual environment and backend deps
+### 1) Initialize PostgreSQL role/database (Windows, recommended)
+
+For first-time setup on a new machine, run:
+
+```powershell
+cd netx
+powershell -ExecutionPolicy Bypass -File .\scripts\init_pg.ps1
+```
+
+The script is idempotent: it creates/repairs role `netx`, database `netx`, grants privileges, and verifies connection.
+
+Common options:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\init_pg.ps1 `
+  -SuperUser postgres `
+  -SuperPassword "your-postgres-password" `
+  -NetxUser netx `
+  -NetxPassword "your-netx-password" `
+  -NetxDatabase netx
+```
+
+### 2) Python virtual environment and backend deps
 
 ```powershell
 cd netx
@@ -46,7 +68,7 @@ python -m venv .venv
 .\.venv\Scripts\python -m pip install -r requirements.txt
 ```
 
-### 2) Frontend deps (npm)
+### 3) Frontend deps (npm)
 
 ```powershell
 cd .\web
@@ -54,7 +76,7 @@ npm install
 cd ..
 ```
 
-### 3) Configure environment variables
+### 4) Configure environment variables
 
 Option A: temporary env vars in current shell
 
@@ -72,7 +94,7 @@ NETX_OCLAW_ANALYZE_TOKEN=admin123
 NETX_OCLAW_HEALTH_URL=http://127.0.0.1:8787/admin/api/ops-ai/health
 ```
 
-### 4) Start services
+### 5) Start services
 
 Direct backend start:
 
@@ -103,7 +125,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\stop_netx.ps1 -Force
 Primary web UI (Vite): `http://127.0.0.1:5173/`  
 API base: `http://127.0.0.1:8890/`
 
-### 5) Optional: MCP server (for oclaw integration)
+### 6) Optional: MCP server (for oclaw integration)
 
 ```powershell
 .\.venv\Scripts\python -m netx_api.mcp_server
