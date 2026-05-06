@@ -10,6 +10,34 @@ $runDir = Join-Path $PSScriptRoot ".run"
 $pidFile = Join-Path $runDir "netx.pid"
 $webPidFile = Join-Path $runDir "web.pid"
 
+function Get-ListenPids {
+    param([int]$LocalPort)
+    $ids = [System.Collections.Generic.HashSet[int]]::new()
+    $job = $null
+    try {
+        $job = Start-Job -ScriptBlock {
+            param($pt)
+            Get-NetTCPConnection -LocalPort $pt -State Listen -ErrorAction SilentlyContinue |
+                Select-Object -ExpandProperty OwningProcess -Unique
+        } -ArgumentList $LocalPort
+        $null = Wait-Job $job -Timeout 5
+        foreach ($x in @(Receive-Job $job -ErrorAction SilentlyContinue)) {
+            try {
+                $n = [int]$x
+                if ($n -gt 4) { [void]$ids.Add($n) }
+            } catch {}
+        }
+    } catch {
+        Write-Host "[WARN] port query failed for $LocalPort : $($_.Exception.Message)"
+    } finally {
+        if ($job) {
+            Stop-Job $job -Force -ErrorAction SilentlyContinue
+            Remove-Job $job -Force -ErrorAction SilentlyContinue
+        }
+    }
+    @($ids)
+}
+
 Write-Host "==> Stopping netx"
 
 if (Test-Path $pidFile) {
@@ -44,33 +72,35 @@ if (Test-Path $webPidFile) {
     Remove-Item -Path $webPidFile -Force -ErrorAction SilentlyContinue
 }
 
-$listeners = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
-if ($listeners) {
-    $owning = $listeners | Select-Object -ExpandProperty OwningProcess -Unique
-    foreach ($p in $owning) {
+$owningApi = @(Get-ListenPids -LocalPort $Port)
+if ($owningApi.Count -gt 0) {
+    foreach ($procId in $owningApi) {
+        if ($procId -eq $PID) { continue }
         try {
-            Stop-Process -Id $p -Force:$Force -ErrorAction Stop
-            Write-Host "Stopped by port PID=$p"
+            Stop-Process -Id $procId -Force:$Force -ErrorAction Stop
+            Write-Host "Stopped by port PID=$procId"
         } catch {
-            Write-Host "[WARN] Failed to stop PID=$p by port"
+            Write-Host "[WARN] Failed to stop PID=$procId by port"
         }
     }
 } else {
     Write-Host "[INFO] No listener found on port $Port"
 }
 
-$webListeners = Get-NetTCPConnection -LocalPort $WebPort -State Listen -ErrorAction SilentlyContinue
-if ($webListeners) {
-    $webOwning = $webListeners | Select-Object -ExpandProperty OwningProcess -Unique
-    foreach ($p in $webOwning) {
+$owningWeb = @(Get-ListenPids -LocalPort $WebPort)
+if ($owningWeb.Count -gt 0) {
+    foreach ($procId in $owningWeb) {
+        if ($procId -eq $PID) { continue }
         try {
-            Stop-Process -Id $p -Force:$Force -ErrorAction Stop
-            Write-Host "Stopped web by port PID=$p"
+            Stop-Process -Id $procId -Force:$Force -ErrorAction Stop
+            Write-Host "Stopped web by port PID=$procId"
         } catch {
-            Write-Host "[WARN] Failed to stop web PID=$p by port"
+            Write-Host "[WARN] Failed to stop web PID=$procId by port"
         }
     }
 } else {
     Write-Host "[INFO] No listener found on web port $WebPort"
 }
 
+Write-Host "==> netx stop finished" -ForegroundColor Green
+exit 0

@@ -91,6 +91,8 @@ if ($Background) {
         Write-Host "Log = $webLogFile"
         Write-Host "Err = $webErrFile"
     }
+    Write-Host ""
+    Write-Host "==> Background services started; this script exits (API/web keep running)." -ForegroundColor Cyan
     exit 0
 }
 
