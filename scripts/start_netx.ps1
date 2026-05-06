@@ -96,6 +96,23 @@ if ($Background) {
     exit 0
 }
 
+if ($WithWeb) {
+    Write-Host "==> Starting Vite dev server in background (foreground API mode)"
+    $webRoot = Join-Path $projectRoot "web"
+    $webProc = Start-Process -FilePath "npm.cmd" `
+        -ArgumentList @("run", "dev", "--", "--host", $BindHost, "--port", "$WebPort") `
+        -WorkingDirectory $webRoot `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput $webLogFile `
+        -RedirectStandardError $webErrFile `
+        -PassThru
+    Set-Content -Path $webPidFile -Value "$($webProc.Id)"
+    Write-Host "web.pid = $webPidFile"
+    Write-Host "PID = $($webProc.Id)"
+    Write-Host "Log = $webLogFile"
+    Write-Host "Err = $webErrFile"
+}
+
 Write-Host "==> Starting netx in foreground"
 & $pythonExe -m netx_api.main
 
