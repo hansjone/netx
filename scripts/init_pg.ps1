@@ -45,7 +45,7 @@ $env:PGPASSWORD = $SuperPassword
 try {
     Write-Host "==> Ensuring role '$NetxUser'"
     $roleSql = @"
-DO $$
+DO `$\$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '$NetxUser') THEN
         CREATE ROLE $NetxUser LOGIN PASSWORD '$NetxPassword';
@@ -53,7 +53,7 @@ BEGIN
         ALTER ROLE $NetxUser WITH LOGIN PASSWORD '$NetxPassword';
     END IF;
 END
-$$;
+`$\$;
 "@
     Invoke-Psql -Database "postgres" -Sql $roleSql
 
