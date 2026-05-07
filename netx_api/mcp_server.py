@@ -4,9 +4,28 @@ import json
 import sys
 from typing import Any
 
-from .db import SessionLocal
+from .db import Base, SessionLocal, engine
 from .importer import aggregate_alarms, query_alarms
-from .models import AlarmBatch
+from .models import AlarmBatch, UmeAlarmCurrent, UmeAlarmHistory, UmeInventoryNE
+from .ume_client import UMEClient
+from .ume_sync_service import sync_alarms_current, sync_alarms_history_full, sync_inventory_full
+from .ume_token_store import (
+    clear_shared_token,
+    load_shared_token,
+    release_refresh_lock,
+    save_shared_token,
+    try_acquire_refresh_lock,
+    wait_for_token_update,
+)
+
+_UME_CLIENT_SINGLETON = UMEClient(
+    token_loader=lambda: load_shared_token(),
+    token_saver=lambda token, exp: save_shared_token(token, exp),
+    token_clearer=lambda: clear_shared_token(),
+    lock_acquirer=lambda: try_acquire_refresh_lock(),
+    lock_releaser=lambda: release_refresh_lock(),
+    token_waiter=lambda min_exp: wait_for_token_update(min_expires_at_epoch_s=float(min_exp)),
+)
 
 
 def _ok(rid: Any, result: dict[str, Any]) -> None:
@@ -73,6 +92,75 @@ def _tool_list() -> list[dict[str, Any]]:
                 "type": "object",
                 "properties": {"batch_id": {"type": "string"}},
                 "required": ["batch_id"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "umeSync",
+            "description": "Trigger UME sync for inventory/current/history domains.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "domains": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": ["inventory", "alarms_current", "alarms_history"]},
+                    },
+                    "trigger_mode": {"type": "string", "enum": ["manual", "schedule"]},
+                },
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "umeListNE",
+            "description": "List UME network elements from inventory table.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "keyword": {"type": "string"},
+                    "page": {"type": "integer", "minimum": 1},
+                    "page_size": {"type": "integer", "minimum": 1, "maximum": 500},
+                },
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "umeGetNE",
+            "description": "Get UME network element by ne_id.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"ne_id": {"type": "string"}},
+                "required": ["ne_id"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "umeListCurrentAlarms",
+            "description": "List current UME alarms from current table.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "severity": {"type": "string"},
+                    "is_cleared": {"type": "string"},
+                    "ne_id": {"type": "string"},
+                    "keyword": {"type": "string"},
+                    "page": {"type": "integer", "minimum": 1},
+                    "page_size": {"type": "integer", "minimum": 1, "maximum": 500},
+                },
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "umeListHistoryAlarms",
+            "description": "List historical UME alarms from history table.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "severity": {"type": "string"},
+                    "ne_id": {"type": "string"},
+                    "keyword": {"type": "string"},
+                    "page": {"type": "integer", "minimum": 1},
+                    "page_size": {"type": "integer", "minimum": 1, "maximum": 500},
+                },
                 "additionalProperties": False,
             },
         },
@@ -161,10 +249,191 @@ def _call_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
                 "actions": actions,
             }
             return {"content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}]}
+        if name == "umeSync":
+            domains_raw = args.get("domains")
+            domains = []
+            if isinstance(domains_raw, list):
+                domains = [str(x).strip() for x in domains_raw if str(x).strip()]
+            if not domains:
+                domains = ["inventory", "alarms_current", "alarms_history"]
+            trigger_mode = str(args.get("trigger_mode") or "manual").strip().lower()
+            if trigger_mode not in {"manual", "schedule"}:
+                trigger_mode = "manual"
+            client = _UME_CLIENT_SINGLETON
+            results: list[dict[str, Any]] = []
+            if "inventory" in domains:
+                j = sync_inventory_full(db, client, trigger_mode=trigger_mode)
+                results.append(
+                    {
+                        "domain": "inventory",
+                        "status": j.status,
+                        "pulled_count": int(j.pulled_count or 0),
+                        "inserted_count": int(j.inserted_count or 0),
+                        "updated_count": int(j.updated_count or 0),
+                        "error_message": str(j.error_message or ""),
+                    }
+                )
+            if "alarms_current" in domains:
+                j, b = sync_alarms_current(db, client, trigger_mode=trigger_mode)
+                results.append(
+                    {
+                        "domain": "alarms_current",
+                        "status": j.status,
+                        "batch_id": str(b.batch_id),
+                        "pulled_count": int(j.pulled_count or 0),
+                        "inserted_count": int(j.inserted_count or 0),
+                        "updated_count": int(j.updated_count or 0),
+                        "error_message": str(j.error_message or ""),
+                    }
+                )
+            if "alarms_history" in domains:
+                j, b = sync_alarms_history_full(db, client, trigger_mode=trigger_mode)
+                results.append(
+                    {
+                        "domain": "alarms_history",
+                        "status": j.status,
+                        "batch_id": str(b.batch_id),
+                        "pulled_count": int(j.pulled_count or 0),
+                        "inserted_count": int(j.inserted_count or 0),
+                        "updated_count": int(j.updated_count or 0),
+                        "error_message": str(j.error_message or ""),
+                    }
+                )
+            return {"content": [{"type": "text", "text": json.dumps({"ok": True, "jobs": results}, ensure_ascii=False)}]}
+        if name == "umeListNE":
+            stmt = db.query(UmeInventoryNE)
+            keyword = str(args.get("keyword") or "").strip()
+            if keyword:
+                stmt = stmt.filter(
+                    UmeInventoryNE.ne_id.contains(keyword)
+                    | UmeInventoryNE.ne_name.contains(keyword)
+                    | UmeInventoryNE.user_label.contains(keyword)
+                    | UmeInventoryNE.ip_address.contains(keyword)
+                )
+            page = max(1, int(args.get("page") or 1))
+            page_size = min(500, max(1, int(args.get("page_size") or 50)))
+            total = int(stmt.count())
+            rows = stmt.order_by(UmeInventoryNE.ne_id.asc()).offset((page - 1) * page_size).limit(page_size).all()
+            payload = {
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+                "items": [
+                    {
+                        "ne_id": str(x.ne_id or ""),
+                        "ne_name": str(x.ne_name or ""),
+                        "user_label": str(x.user_label or ""),
+                        "ip_address": str(x.ip_address or ""),
+                        "ne_type": str(x.ne_type or ""),
+                    }
+                    for x in rows
+                ],
+            }
+            return {"content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}]}
+        if name == "umeGetNE":
+            ne_id = str(args.get("ne_id") or "").strip()
+            row = db.get(UmeInventoryNE, ne_id)
+            if not row:
+                return {"content": [{"type": "text", "text": json.dumps({"error": "ume_ne_not_found"})}], "isError": True}
+            payload = {
+                "ne_id": str(row.ne_id or ""),
+                "ne_name": str(row.ne_name or ""),
+                "user_label": str(row.user_label or ""),
+                "ip_address": str(row.ip_address or ""),
+                "ne_type": str(row.ne_type or ""),
+                "vendor": str(row.vendor or ""),
+                "raw_json": str(row.raw_json or "{}"),
+            }
+            return {"content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}]}
+        if name == "umeListCurrentAlarms":
+            stmt = db.query(UmeAlarmCurrent)
+            severity = str(args.get("severity") or "").strip()
+            is_cleared = str(args.get("is_cleared") or "").strip()
+            ne_id = str(args.get("ne_id") or "").strip()
+            keyword = str(args.get("keyword") or "").strip()
+            if severity:
+                stmt = stmt.filter(UmeAlarmCurrent.perceived_severity == severity)
+            if is_cleared:
+                stmt = stmt.filter(UmeAlarmCurrent.is_cleared == is_cleared)
+            if ne_id:
+                stmt = stmt.filter(UmeAlarmCurrent.ne_id == ne_id)
+            if keyword:
+                stmt = stmt.filter(
+                    UmeAlarmCurrent.alarm_key.contains(keyword)
+                    | UmeAlarmCurrent.object_name.contains(keyword)
+                    | UmeAlarmCurrent.ne_name.contains(keyword)
+                    | UmeAlarmCurrent.user_label.contains(keyword)
+                )
+            page = max(1, int(args.get("page") or 1))
+            page_size = min(500, max(1, int(args.get("page_size") or 50)))
+            total = int(stmt.count())
+            rows = stmt.order_by(UmeAlarmCurrent.last_seen_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+            payload = {
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+                "items": [
+                    {
+                        "alarm_key": str(x.alarm_key or ""),
+                        "ne_id": str(x.ne_id or ""),
+                        "ne_name": str(x.ne_name or ""),
+                        "user_label": str(x.user_label or ""),
+                        "object_name": str(x.object_name or ""),
+                        "perceived_severity": str(x.perceived_severity or ""),
+                        "is_cleared": str(x.is_cleared or ""),
+                        "time_created": str(x.time_created or ""),
+                    }
+                    for x in rows
+                ],
+            }
+            return {"content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}]}
+        if name == "umeListHistoryAlarms":
+            stmt = db.query(UmeAlarmHistory)
+            severity = str(args.get("severity") or "").strip()
+            ne_id = str(args.get("ne_id") or "").strip()
+            keyword = str(args.get("keyword") or "").strip()
+            if severity:
+                stmt = stmt.filter(UmeAlarmHistory.perceived_severity == severity)
+            if ne_id:
+                stmt = stmt.filter(UmeAlarmHistory.ne_id == ne_id)
+            if keyword:
+                stmt = stmt.filter(
+                    UmeAlarmHistory.alarm_key.contains(keyword)
+                    | UmeAlarmHistory.object_name.contains(keyword)
+                    | UmeAlarmHistory.ne_name.contains(keyword)
+                    | UmeAlarmHistory.user_label.contains(keyword)
+                )
+            page = max(1, int(args.get("page") or 1))
+            page_size = min(500, max(1, int(args.get("page_size") or 50)))
+            total = int(stmt.count())
+            rows = stmt.order_by(UmeAlarmHistory.last_seen_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+            payload = {
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+                "items": [
+                    {
+                        "alarm_key": str(x.alarm_key or ""),
+                        "ne_id": str(x.ne_id or ""),
+                        "ne_name": str(x.ne_name or ""),
+                        "user_label": str(x.user_label or ""),
+                        "object_name": str(x.object_name or ""),
+                        "perceived_severity": str(x.perceived_severity or ""),
+                        "is_cleared": str(x.is_cleared or ""),
+                        "time_created": str(x.time_created or ""),
+                    }
+                    for x in rows
+                ],
+            }
+            return {"content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}]}
     raise ValueError(f"unknown tool: {name}")
 
 
 def main() -> None:
+    try:
+        Base.metadata.create_all(bind=engine)
+    except Exception:
+        pass
     for line in sys.stdin:
         raw = line.strip()
         if not raw:

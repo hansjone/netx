@@ -1,4 +1,15 @@
-import type { AiAnalyzeHistoryResponse, AlarmQueryResponse, Batch, Diagnostics, ImportHistoryItem, IntegrationStatus } from "../types";
+import type {
+  AiAnalyzeHistoryResponse,
+  AlarmQueryResponse,
+  Batch,
+  Diagnostics,
+  ImportHistoryItem,
+  IntegrationStatus,
+  UmeAlarmItem,
+  UmeNeItem,
+  UmeSyncStatusResponse,
+  UmeTokenStatus,
+} from "../types";
 
 export const apiGet = async <T,>(path: string): Promise<T> => {
   const res = await fetch(path, { headers: { accept: "application/json" } });
@@ -87,5 +98,63 @@ export const fetchAlarms = (params: {
   p.set("page", String(Math.max(1, Number(params.page || 1))));
   p.set("page_size", String(Math.max(1, Math.min(200, Number(params.pageSize || 80)))));
   return apiGet<AlarmQueryResponse>(`/v1/alarms?${p.toString()}`);
+};
+
+export const fetchUmeSyncStatus = (params: { page: number; pageSize: number }) => {
+  const p = new URLSearchParams();
+  p.set("page", String(Math.max(1, Number(params.page || 1))));
+  p.set("page_size", String(Math.max(1, Math.min(200, Number(params.pageSize || 20)))));
+  return apiGet<UmeSyncStatusResponse>(`/v1/ume/sync/status?${p.toString()}`);
+};
+export const fetchUmeTokenStatus = () => apiGet<UmeTokenStatus>("/v1/ume/token/status");
+export const refreshUmeToken = () => apiPost<UmeTokenStatus>("/v1/ume/token/refresh", {});
+export const disconnectUmeToken = () => apiPost<UmeTokenStatus>("/v1/ume/token/disconnect", {});
+
+export const fetchUmeNe = (params: { keyword: string; page: number; pageSize: number }) => {
+  const p = new URLSearchParams();
+  if (params.keyword) p.set("keyword", params.keyword);
+  p.set("page", String(Math.max(1, Number(params.page || 1))));
+  p.set("page_size", String(Math.max(1, Math.min(500, Number(params.pageSize || 50)))));
+  return apiGet<{ total: number; page: number; page_size: number; items: UmeNeItem[] }>(`/v1/ume/inventory/ne?${p.toString()}`);
+};
+
+export const fetchUmeCurrentAlarms = (params: {
+  severity: string;
+  isCleared: string;
+  neId: string;
+  keyword: string;
+  page: number;
+  pageSize: number;
+}) => {
+  const p = new URLSearchParams();
+  if (params.severity) p.set("severity", params.severity);
+  if (params.isCleared) p.set("is_cleared", params.isCleared);
+  if (params.neId) p.set("ne_id", params.neId);
+  if (params.keyword) p.set("keyword", params.keyword);
+  p.set("page", String(Math.max(1, Number(params.page || 1))));
+  p.set("page_size", String(Math.max(1, Math.min(500, Number(params.pageSize || 50)))));
+  return apiGet<{ total: number; page: number; page_size: number; items: UmeAlarmItem[] }>(`/v1/ume/alarms?${p.toString()}`);
+};
+
+export const fetchUmeHistoryAlarms = (params: {
+  severity: string;
+  neId: string;
+  keyword: string;
+  timeFrom: string;
+  timeTo: string;
+  page: number;
+  pageSize: number;
+}) => {
+  const p = new URLSearchParams();
+  if (params.severity) p.set("severity", params.severity);
+  if (params.neId) p.set("ne_id", params.neId);
+  if (params.keyword) p.set("keyword", params.keyword);
+  if (params.timeFrom) p.set("time_from", params.timeFrom);
+  if (params.timeTo) p.set("time_to", params.timeTo);
+  p.set("page", String(Math.max(1, Number(params.page || 1))));
+  p.set("page_size", String(Math.max(1, Math.min(500, Number(params.pageSize || 50)))));
+  return apiGet<{ total: number; page: number; page_size: number; items: UmeAlarmItem[] }>(
+    `/v1/ume/alarms/history?${p.toString()}`,
+  );
 };
 

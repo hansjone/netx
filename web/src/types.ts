@@ -73,3 +73,58 @@ export type AiAnalyzeHistoryResponse = {
   page_size: number;
   items: AiAnalyzeHistoryItem[];
 };
+
+export type UmeSyncJobItem = {
+  id: number;
+  domain: string;
+  status: string;
+  trigger_mode: string;
+  pulled_count: number;
+  inserted_count: number;
+  updated_count: number;
+  error_message?: string;
+  started_at: string;
+  ended_at?: string | null;
+};
+
+export type UmeSyncStatusResponse = {
+  total?: number;
+  page?: number;
+  page_size?: number;
+  items: UmeSyncJobItem[];
+  latest_by_domain?: Record<string, UmeSyncJobItem>;
+};
+
+export type UmeNeItem = {
+  ne_id: string;
+  ne_name: string;
+  user_label: string;
+  ip_address: string;
+  ne_type: string;
+  last_seen_at?: string;
+};
+
+export type UmeAlarmItem = {
+  alarm_key: string;
+  ne_id: string;
+  ne_name: string;
+  user_label: string;
+  object_name: string;
+  event_type: string;
+  native_probable_cause: string;
+  perceived_severity: string;
+  is_cleared: string;
+  time_created: string;
+  last_seen_at?: string;
+};
+
+export type UmeTokenStatus = {
+  ok: boolean;
+  has_token: boolean;
+  expires_in_s: number;
+  expires_at_epoch_s: number;
+  auth_header: string;
+  token_preview?: string;
+  error_kind?: string;
+  error?: string;
+};

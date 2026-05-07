@@ -5,8 +5,8 @@ import { AppLayout } from "./layout/AppLayout";
 import { AlarmsPage } from "./pages/AlarmsPage";
 import { DiagnosticsPage } from "./pages/DiagnosticsPage";
 import { AiAnalysisPage } from "./pages/AiAnalysisPage";
-import { JobsPage } from "./pages/JobsPage";
 import { IngestPage } from "./pages/IngestPage";
+import { UmePage } from "./pages/UmePage";
 import type { Alarm, Batch, Diagnostics, ImportHistoryItem } from "./types";
 import { apiDelete, apiPost, apiPostForm, fetchAlarms, fetchBatches, fetchDiagnostics, fetchIntegrationStatus } from "./services/api";
 import { fetchJobs } from "./services/api";
@@ -17,7 +17,6 @@ function App() {
     alarms: (import.meta.env.VITE_FEATURE_ALARMS ?? "1") !== "0",
     diagnostics: (import.meta.env.VITE_FEATURE_DIAGNOSTICS ?? "1") !== "0",
     aiAnalysis: (import.meta.env.VITE_FEATURE_AI_ANALYSIS ?? "1") !== "0",
-    jobs: (import.meta.env.VITE_FEATURE_JOBS ?? "0") === "1",
   };
 
   const [searchParams, setSearchParams] = useSearchParams();
@@ -336,7 +335,7 @@ function App() {
               />
             }
           />
-          <Route path="/jobs" element={<JobsPage />} />
+          <Route path="/ume" element={<UmePage />} />
         </Routes>
         {toast && <div className={`toast toast--${toast.type}`}>{toast.text}</div>}
     </AppLayout>

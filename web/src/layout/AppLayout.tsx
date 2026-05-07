@@ -16,7 +16,6 @@ type Props = {
     alarms: boolean;
     diagnostics: boolean;
     aiAnalysis: boolean;
-    jobs: boolean;
   };
   children: ReactNode;
 };
@@ -52,11 +51,8 @@ export function AppLayout({ status, connections, onRefreshBatches, onRefreshAlar
         >
           AI 分析
         </NavLink>
-        <NavLink
-          to="/jobs"
-          className={({ isActive }) => `nav-item${isActive ? " active" : ""}${!capabilities.jobs ? " disabled" : ""}`}
-        >
-          作业中心
+        <NavLink to="/ume" className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}>
+          UME 对接
         </NavLink>
       </aside>
 

@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from io import StringIO
 import time
 import re
+import threading
 from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from sqlalchemy import text as sql_text
@@ -17,9 +18,28 @@ from .ap_client import analyze_with_oclaw, health_with_oclaw
 from .config import settings
 from .db import Base, SessionLocal, engine
 from .importer import aggregate_alarms, import_alarm_excel, query_alarms
-from .models import AiAnalyzeHistory, AlarmBatch, AlarmNorm, ImportErrorRow
+from .models import (
+    AiAnalyzeHistory,
+    AlarmBatch,
+    AlarmNorm,
+    ImportErrorRow,
+    UmeAlarmCurrent,
+    UmeAlarmHistory,
+    UmeInventoryNE,
+    UmeSyncJob,
+)
 from .models import ImportJob
 from .parser_config import load_parser_config
+from .ume_client import UMEClient
+from .ume_sync_service import sync_alarms_current, sync_alarms_history_full, sync_inventory_full
+from .ume_token_store import (
+    clear_shared_token,
+    load_shared_token,
+    release_refresh_lock,
+    save_shared_token,
+    try_acquire_refresh_lock,
+    wait_for_token_update,
+)
 from .schemas import (
     AlarmAggregateBucket,
     AlarmAggregateResponse,
@@ -34,6 +54,14 @@ from .schemas import (
 
 app = FastAPI(title="netx ops tool", version="0.1.0")
 parser_cfg = load_parser_config()
+_UME_CLIENT_SINGLETON = UMEClient(
+    token_loader=lambda: load_shared_token(),
+    token_saver=lambda token, exp: save_shared_token(token, exp),
+    token_clearer=lambda: clear_shared_token(),
+    lock_acquirer=lambda: try_acquire_refresh_lock(),
+    lock_releaser=lambda: release_refresh_lock(),
+    token_waiter=lambda min_exp: wait_for_token_update(min_expires_at_epoch_s=float(min_exp)),
+)
 
 _SQL_FORBIDDEN_RE = re.compile(
     r"\b(insert|update|delete|drop|alter|create|truncate|grant|revoke|call|copy|vacuum|analyze)\b",
@@ -59,6 +87,47 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+def _parse_time(text: str | None) -> datetime | None:
+    s = str(text or "").strip()
+    if not s:
+        return None
+    s2 = s.replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(s2)
+        return _ensure_utc(dt)
+    except Exception:
+        return None
+
+
+def _aggregate_rows(items: list[Any], key_fn) -> list[dict[str, Any]]:
+    bucket: dict[str, int] = {}
+    for item in items:
+        key = str(key_fn(item) or "").strip()
+        if not key:
+            key = "unknown"
+        bucket[key] = int(bucket.get(key, 0)) + 1
+    return [{"key": k, "count": v} for k, v in sorted(bucket.items(), key=lambda kv: kv[1], reverse=True)]
+
+
+def _ume_client() -> UMEClient:
+    return _UME_CLIENT_SINGLETON
+
+
+def _ume_error_kind(err: str) -> str:
+    low = str(err or "").lower()
+    if "401" in low or "403" in low or "password" in low or "auth" in low:
+        return "auth_failed"
+    if "timeout" in low:
+        return "timeout"
+    if "tls" in low or "certificate" in low or "ssl" in low:
+        return "tls_failed"
+    if "connect" in low or "name or service not known" in low:
+        return "connect_failed"
+    if "handshake" in low:
+        return "handshake_failed"
+    return "other"
 
 
 @app.post("/v1/sql/query")
@@ -124,6 +193,32 @@ def on_startup() -> None:
             )
             conn.exec_driver_sql("ALTER TABLE alarms_norm ADD COLUMN IF NOT EXISTS intermittence_count INTEGER DEFAULT 0")
             conn.exec_driver_sql("ALTER TABLE alarms_norm ADD COLUMN IF NOT EXISTS me_level VARCHAR(128) DEFAULT ''")
+            conn.exec_driver_sql("ALTER TABLE ume_token_cache ADD COLUMN IF NOT EXISTS lock_owner VARCHAR(128) DEFAULT ''")
+            conn.exec_driver_sql("ALTER TABLE ume_token_cache ADD COLUMN IF NOT EXISTS lock_expires_at_epoch_s INTEGER DEFAULT 0")
+    except Exception:
+        pass
+    try:
+        if bool(getattr(settings, "ume_keepalive_enabled", True)):
+            interval_s = int(getattr(settings, "ume_keepalive_interval_s", 600) or 600)
+            interval_s = max(30, min(interval_s, 3600))
+            renew_before_s = int(getattr(settings, "ume_keepalive_renew_before_s", 900) or 900)
+            renew_before_s = max(30, min(renew_before_s, 86400))
+
+            def _keepalive_loop() -> None:
+                # Best-effort keepalive: if token exists, periodically handshake to extend TTL.
+                while True:
+                    try:
+                        client = _ume_client()
+                        st = client.token_status()
+                        expires_in = int(st.get("expires_in_s") or 0)
+                        if bool(st.get("has_token")) and expires_in > 0 and expires_in < renew_before_s:
+                            client.renew_token()
+                    except Exception:
+                        pass
+                    time.sleep(interval_s)
+
+            t = threading.Thread(target=_keepalive_loop, name="ume-token-keepalive", daemon=True)
+            t.start()
     except Exception:
         pass
 
@@ -131,6 +226,299 @@ def on_startup() -> None:
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/v1/ume/token/status")
+def ume_token_status() -> dict[str, Any]:
+    client = _ume_client()
+    st = client.token_status()
+    return {"ok": True, **st}
+
+
+@app.post("/v1/ume/token/refresh")
+def ume_token_refresh() -> dict[str, Any]:
+    client = _ume_client()
+    try:
+        before = client.token_status()
+        token = client.refresh_if_needed()
+        after = client.token_status()
+        return {
+            "ok": True,
+            "token": token,
+            "changed": bool(before.get("token_preview") != after.get("token_preview")),
+            **after,
+        }
+    except Exception as exc:
+        msg = str(exc)[:240]
+        return {"ok": False, "error_kind": _ume_error_kind(msg), "error": msg}
+
+
+@app.post("/v1/ume/token/disconnect")
+def ume_token_disconnect() -> dict[str, Any]:
+    client = _ume_client()
+    ok = bool(client.logout_token())
+    st = client.token_status()
+    return {"ok": ok, **st}
+
+
+@app.post("/v1/ume/sync")
+def ume_sync(payload: dict[str, Any] | None = None, db: Session = Depends(get_db)) -> dict[str, Any]:
+    body = payload or {}
+    domains = body.get("domains")
+    if not isinstance(domains, list) or not domains:
+        domains = ["inventory", "alarms_current", "alarms_history"]
+    domain_set = {str(x).strip().lower() for x in domains if str(x).strip()}
+    trigger_mode = str(body.get("trigger_mode") or "manual").strip().lower()
+    if trigger_mode not in {"manual", "schedule"}:
+        trigger_mode = "manual"
+
+    client = _ume_client()
+    out: dict[str, Any] = {"ok": True, "jobs": []}
+    try:
+        if "inventory" in domain_set:
+            job = sync_inventory_full(db, client, trigger_mode=trigger_mode)
+            out["jobs"].append(
+                {
+                    "domain": "inventory",
+                    "status": job.status,
+                    "pulled_count": int(job.pulled_count or 0),
+                    "inserted_count": int(job.inserted_count or 0),
+                    "updated_count": int(job.updated_count or 0),
+                    "error_message": str(job.error_message or ""),
+                }
+            )
+        if "alarms" in domain_set or "alarms_current" in domain_set:
+            job, batch = sync_alarms_current(db, client, trigger_mode=trigger_mode)
+            out["jobs"].append(
+                {
+                    "domain": "alarms_current",
+                    "status": job.status,
+                    "batch_id": str(batch.batch_id),
+                    "pulled_count": int(job.pulled_count or 0),
+                    "inserted_count": int(job.inserted_count or 0),
+                    "updated_count": int(job.updated_count or 0),
+                    "error_message": str(job.error_message or ""),
+                }
+            )
+        if "alarms_history" in domain_set:
+            job, batch = sync_alarms_history_full(db, client, trigger_mode=trigger_mode)
+            out["jobs"].append(
+                {
+                    "domain": "alarms_history",
+                    "status": job.status,
+                    "batch_id": str(batch.batch_id),
+                    "pulled_count": int(job.pulled_count or 0),
+                    "inserted_count": int(job.inserted_count or 0),
+                    "updated_count": int(job.updated_count or 0),
+                    "error_message": str(job.error_message or ""),
+                }
+            )
+    except Exception as exc:
+        out["ok"] = False
+        out["error"] = str(exc)[:240]
+    return out
+
+
+@app.get("/v1/ume/sync/status")
+def ume_sync_status(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=200),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    q = db.query(UmeSyncJob)
+    total = int(q.count())
+    rows = (
+        q.order_by(UmeSyncJob.id.desc())
+        .offset((int(page) - 1) * int(page_size))
+        .limit(int(page_size))
+        .all()
+    )
+    items = []
+    latest_by_domain: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        item = {
+            "id": int(r.id),
+            "domain": str(r.domain or ""),
+            "status": str(r.status or ""),
+            "trigger_mode": str(r.trigger_mode or ""),
+            "pulled_count": int(r.pulled_count or 0),
+            "inserted_count": int(r.inserted_count or 0),
+            "updated_count": int(r.updated_count or 0),
+            "error_message": str(r.error_message or ""),
+            "started_at": (_ensure_utc(r.started_at) or datetime.now(timezone.utc)).isoformat(),
+            "ended_at": (_ensure_utc(r.ended_at).isoformat() if r.ended_at else None),
+        }
+        items.append(item)
+        if item["domain"] and item["domain"] not in latest_by_domain:
+            latest_by_domain[item["domain"]] = item
+    return {"total": total, "page": page, "page_size": page_size, "items": items, "latest_by_domain": latest_by_domain}
+
+
+@app.get("/v1/ume/inventory/ne")
+def ume_list_ne(
+    keyword: str | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=500),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    stmt = db.query(UmeInventoryNE)
+    kw = str(keyword or "").strip()
+    if kw:
+        stmt = stmt.filter(
+            UmeInventoryNE.ne_id.contains(kw)
+            | UmeInventoryNE.ne_name.contains(kw)
+            | UmeInventoryNE.user_label.contains(kw)
+            | UmeInventoryNE.ip_address.contains(kw)
+        )
+    total = int(stmt.count())
+    rows = stmt.order_by(UmeInventoryNE.ne_id.asc()).offset((page - 1) * page_size).limit(page_size).all()
+    items = [
+        {
+            "ne_id": str(x.ne_id or ""),
+            "ne_name": str(x.ne_name or ""),
+            "user_label": str(x.user_label or ""),
+            "ip_address": str(x.ip_address or ""),
+            "ne_type": str(x.ne_type or ""),
+            "last_seen_at": (_ensure_utc(x.last_seen_at) or datetime.now(timezone.utc)).isoformat(),
+        }
+        for x in rows
+    ]
+    return {"total": total, "page": page, "page_size": page_size, "items": items}
+
+
+@app.get("/v1/ume/inventory/ne/{ne_id}")
+def ume_get_ne(ne_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    row = db.get(UmeInventoryNE, ne_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="ume_ne_not_found")
+    return {
+        "ne_id": str(row.ne_id or ""),
+        "ne_name": str(row.ne_name or ""),
+        "user_label": str(row.user_label or ""),
+        "ip_address": str(row.ip_address or ""),
+        "ne_type": str(row.ne_type or ""),
+        "vendor": str(row.vendor or ""),
+        "source_type": str(row.source_type or ""),
+        "first_seen_at": (_ensure_utc(row.first_seen_at) or datetime.now(timezone.utc)).isoformat(),
+        "last_seen_at": (_ensure_utc(row.last_seen_at) or datetime.now(timezone.utc)).isoformat(),
+        "raw_json": str(row.raw_json or "{}"),
+    }
+
+
+@app.get("/v1/ume/alarms")
+def ume_list_alarms(
+    severity: str | None = Query(default=None),
+    is_cleared: str | None = Query(default=None),
+    ne_id: str | None = Query(default=None),
+    keyword: str | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=500),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    stmt = db.query(UmeAlarmCurrent)
+    if severity and str(severity).strip():
+        stmt = stmt.filter(UmeAlarmCurrent.perceived_severity == str(severity).strip())
+    if is_cleared and str(is_cleared).strip():
+        stmt = stmt.filter(UmeAlarmCurrent.is_cleared == str(is_cleared).strip())
+    if ne_id and str(ne_id).strip():
+        stmt = stmt.filter(UmeAlarmCurrent.ne_id == str(ne_id).strip())
+    kw = str(keyword or "").strip()
+    if kw:
+        stmt = stmt.filter(
+            UmeAlarmCurrent.alarm_key.contains(kw)
+            | UmeAlarmCurrent.object_name.contains(kw)
+            | UmeAlarmCurrent.ne_name.contains(kw)
+            | UmeAlarmCurrent.user_label.contains(kw)
+            | UmeAlarmCurrent.native_probable_cause.contains(kw)
+        )
+    total = int(stmt.count())
+    rows = stmt.order_by(UmeAlarmCurrent.last_seen_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    items = [
+        {
+            "alarm_key": str(x.alarm_key or ""),
+            "ne_id": str(x.ne_id or ""),
+            "ne_name": str(x.ne_name or ""),
+            "user_label": str(x.user_label or ""),
+            "object_name": str(x.object_name or ""),
+            "event_type": str(x.event_type or ""),
+            "native_probable_cause": str(x.native_probable_cause or ""),
+            "perceived_severity": str(x.perceived_severity or ""),
+            "is_cleared": str(x.is_cleared or ""),
+            "time_created": str(x.time_created or ""),
+            "last_seen_at": (_ensure_utc(x.last_seen_at) or datetime.now(timezone.utc)).isoformat(),
+        }
+        for x in rows
+    ]
+    return {"total": total, "page": page, "page_size": page_size, "items": items}
+
+
+@app.get("/v1/ume/alarms/aggregate")
+def ume_alarms_aggregate(db: Session = Depends(get_db)) -> dict[str, Any]:
+    rows = db.query(UmeAlarmCurrent).all()
+    by_severity = _aggregate_rows(rows, lambda x: x.perceived_severity)
+    by_ne = _aggregate_rows(rows, lambda x: x.user_label or x.ne_name or x.ne_id)
+    return {"total": len(rows), "by_severity": by_severity, "by_ne": by_ne}
+
+
+@app.get("/v1/ume/alarms/history")
+def ume_list_alarms_history(
+    severity: str | None = Query(default=None),
+    ne_id: str | None = Query(default=None),
+    keyword: str | None = Query(default=None),
+    time_from: str | None = Query(default=None),
+    time_to: str | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=500),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    stmt = db.query(UmeAlarmHistory)
+    if severity and str(severity).strip():
+        stmt = stmt.filter(UmeAlarmHistory.perceived_severity == str(severity).strip())
+    if ne_id and str(ne_id).strip():
+        stmt = stmt.filter(UmeAlarmHistory.ne_id == str(ne_id).strip())
+    kw = str(keyword or "").strip()
+    if kw:
+        stmt = stmt.filter(
+            UmeAlarmHistory.alarm_key.contains(kw)
+            | UmeAlarmHistory.object_name.contains(kw)
+            | UmeAlarmHistory.ne_name.contains(kw)
+            | UmeAlarmHistory.user_label.contains(kw)
+            | UmeAlarmHistory.native_probable_cause.contains(kw)
+        )
+    dt_from = _parse_time(time_from)
+    dt_to = _parse_time(time_to)
+    if dt_from:
+        stmt = stmt.filter(UmeAlarmHistory.last_seen_at >= dt_from.replace(tzinfo=None))
+    if dt_to:
+        stmt = stmt.filter(UmeAlarmHistory.last_seen_at <= dt_to.replace(tzinfo=None))
+    total = int(stmt.count())
+    rows = stmt.order_by(UmeAlarmHistory.last_seen_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    items = [
+        {
+            "alarm_key": str(x.alarm_key or ""),
+            "ne_id": str(x.ne_id or ""),
+            "ne_name": str(x.ne_name or ""),
+            "user_label": str(x.user_label or ""),
+            "object_name": str(x.object_name or ""),
+            "event_type": str(x.event_type or ""),
+            "native_probable_cause": str(x.native_probable_cause or ""),
+            "perceived_severity": str(x.perceived_severity or ""),
+            "is_cleared": str(x.is_cleared or ""),
+            "time_created": str(x.time_created or ""),
+            "last_seen_at": (_ensure_utc(x.last_seen_at) or datetime.now(timezone.utc)).isoformat(),
+        }
+        for x in rows
+    ]
+    return {"total": total, "page": page, "page_size": page_size, "items": items}
+
+
+@app.get("/v1/ume/alarms/history/aggregate")
+def ume_alarms_history_aggregate(db: Session = Depends(get_db)) -> dict[str, Any]:
+    rows = db.query(UmeAlarmHistory).all()
+    by_severity = _aggregate_rows(rows, lambda x: x.perceived_severity)
+    by_ne = _aggregate_rows(rows, lambda x: x.user_label or x.ne_name or x.ne_id)
+    by_date = _aggregate_rows(rows, lambda x: str(x.time_created or "")[:10])
+    return {"total": len(rows), "by_severity": by_severity, "by_ne": by_ne, "by_date": by_date}
 
 
 @app.get("/v1/integrations/status")

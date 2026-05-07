@@ -31,8 +31,9 @@ function Get-ListenPids {
         Write-Host "[WARN] port query failed for $LocalPort : $($_.Exception.Message)"
     } finally {
         if ($job) {
-            Stop-Job $job -Force -ErrorAction SilentlyContinue
-            Remove-Job $job -Force -ErrorAction SilentlyContinue
+            # Windows PowerShell 5.1 does not support -Force on Stop-Job/Remove-Job.
+            Stop-Job $job -ErrorAction SilentlyContinue
+            Remove-Job $job -ErrorAction SilentlyContinue
         }
     }
     @($ids)
