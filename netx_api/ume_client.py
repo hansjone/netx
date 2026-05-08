@@ -164,7 +164,6 @@ class UMEClient:
 
     def _headers(self, *, include_token: bool = True) -> dict[str, str]:
         headers = {
-            "accept": "application/yang-data+json",
             "content-type": self.content_type,
         }
         if include_token:
@@ -172,6 +171,12 @@ class UMEClient:
             if token:
                 headers[self.auth_header] = token
         return headers
+
+    def _client(self) -> httpx.Client:
+        # Force HTTP/1.1 (disable HTTP/2) due to UME server compatibility issues.
+        # httpx defaults to HTTP/1.1 unless http2=True, but some environments still
+        # negotiate/behave unexpectedly; be explicit here.
+        return httpx.Client(verify=self.verify_tls, timeout=self.timeout_s, http2=False)
 
     def _extract_token_and_ttl(self, payload: dict[str, Any]) -> tuple[str, int | None]:
         token = ""
@@ -229,7 +234,7 @@ class UMEClient:
             url = self._build_url(self.token_path)
             payload = {"login-info": {"user-name": self.username, "value": self.password}}
             try:
-                with httpx.Client(verify=self.verify_tls, timeout=self.timeout_s) as client:
+                with self._client() as client:
                     resp = client.post(url, json=payload, headers=self._headers(include_token=False))
                 if not resp.is_success:
                     raise RuntimeError(f"ume_login_failed:{resp.status_code}:{resp.text[:240]}")
@@ -273,7 +278,7 @@ class UMEClient:
                 return self.login(force=True)
             url = self._build_url(self.token_handshake_path)
             try:
-                with httpx.Client(verify=self.verify_tls, timeout=self.timeout_s) as client:
+                with self._client() as client:
                     resp = client.post(url, headers=self._headers(include_token=True))
                 if not resp.is_success:
                     # handshake may fail if token expired; fallback to full login
@@ -307,7 +312,7 @@ class UMEClient:
             return True
         url = self._build_url(self.token_logout_path)
         try:
-            with httpx.Client(verify=self.verify_tls, timeout=self.timeout_s) as client:
+            with self._client() as client:
                 resp = client.delete(url, headers=self._headers(include_token=True))
             if resp.status_code in (401, 403):
                 # Token already invalid/expired on server side can be treated as logged out.
@@ -349,12 +354,12 @@ class UMEClient:
         retry_count = 0
         t0 = time()
         try:
-            with httpx.Client(verify=self.verify_tls, timeout=self.timeout_s) as client:
+            with self._client() as client:
                 resp = client.request(m, url, params=params, json=body, headers=self._headers(include_token=True))
             if resp.status_code in (401, 403):
                 retry_count = 1
                 self.login(force=True)
-                with httpx.Client(verify=self.verify_tls, timeout=self.timeout_s) as client:
+                with self._client() as client:
                     resp = client.request(m, url, params=params, json=body, headers=self._headers(include_token=True))
             if not resp.is_success:
                 diag = RequestDiagnostics(
