@@ -13,11 +13,12 @@ from netx_api.ume_sync_service import _derive_ne_id_from_alarm, sync_alarms_curr
 
 
 class _FakeResponse:
-    def __init__(self, status_code: int, payload: dict):
+    def __init__(self, status_code: int, payload: dict, headers: dict | None = None):
         self.status_code = int(status_code)
         self._payload = payload
         self.text = str(payload)
         self.is_success = 200 <= self.status_code < 300
+        self.headers = headers or {}
 
     def json(self):
         return self._payload
@@ -170,7 +171,7 @@ class UmeSyncServiceTests(unittest.TestCase):
 
     def test_sync_current_alarms_upsert(self):
         class _C:
-            def get_alarms(self, *, is_uncleared: bool, limit=None, offset=None):
+            def get_alarms(self, *, is_uncleared: bool, limit=None, marker=None):
                 rows = [
                     {
                         "alarmKey": "AK-1",
@@ -185,7 +186,11 @@ class UmeSyncServiceTests(unittest.TestCase):
                         "timeCreated": "2026-01-01T00:00:00Z",
                     }
                 ]
-                return rows, None
+                class _D:
+                    marker = ""
+                    is_end_of_reply = True
+
+                return rows, _D()
 
         job1, _ = sync_alarms_current(self.db, _C(), trigger_mode="manual")
         self.assertEqual(job1.status, "done")
@@ -199,27 +204,30 @@ class UmeSyncServiceTests(unittest.TestCase):
         self.assertIsNotNone(row)
         self.assertEqual(row.perceived_severity, "critical")
 
-    def test_sync_current_alarms_pagination(self):
+    def test_sync_current_alarms_marker_pagination(self):
         class _C:
-            def get_alarms(self, *, is_uncleared: bool, limit=None, offset=None):
-                # Return 2 pages with page_size=2 then stop.
-                off = int(offset or 0)
-                if off == 0:
+            def get_alarms(self, *, is_uncleared: bool, limit=None, marker=None):
+                class _D:
+                    def __init__(self, mk: str, end: bool):
+                        self.marker = mk
+                        self.is_end_of_reply = end
+
+                if not marker:
                     return (
                         [
                             {"alarmKey": "AK-1", "ne-id": "NE-1", "perceivedSeverity": "major", "isCleared": "false"},
                             {"alarmKey": "AK-2", "ne-id": "NE-2", "perceivedSeverity": "major", "isCleared": "false"},
                         ],
-                        None,
+                        _D("M2", False),
                     )
-                if off == 2:
+                if marker == "M2":
                     return (
                         [
                             {"alarmKey": "AK-3", "ne-id": "NE-3", "perceivedSeverity": "minor", "isCleared": "false"},
                         ],
-                        None,
+                        _D("M3", True),
                     )
-                return ([], None)
+                return ([], _D("", True))
 
         from netx_api import ume_sync_service as svc
         old_page_size = svc.settings.ume_page_size
@@ -235,29 +243,39 @@ class UmeSyncServiceTests(unittest.TestCase):
         self.assertEqual(job.pulled_count, 3)
         self.assertIsNotNone(self.db.get(UmeAlarmCurrent, "AK-3"))
 
-    def test_sync_current_alarms_offset_unsupported_fallback(self):
+    def test_sync_current_alarms_iterator_500_as_end(self):
         class _C:
-            def get_alarms(self, *, is_uncleared: bool, limit=None, offset=None):
-                if offset is not None:
-                    raise RuntimeError("ume_request_failed:400:unknown_param_offset")
-                return (
-                    [
-                        {"alarmKey": "AK-1", "ne-id": "NE-1", "perceivedSeverity": "major", "isCleared": "false"},
-                    ],
-                    None,
+            def get_alarms(self, *, is_uncleared: bool, limit=None, marker=None):
+                class _D:
+                    def __init__(self, mk: str, end: bool):
+                        self.marker = mk
+                        self.is_end_of_reply = end
+
+                if not marker:
+                    return (
+                        [
+                            {"alarmKey": "AK-1", "ne-id": "NE-1", "perceivedSeverity": "major", "isCleared": "false"},
+                        ],
+                        _D("M2", False),
+                    )
+                raise RuntimeError(
+                    "ume_request_failed:500:{\"error\":{\"errorCode\":\"500\",\"errorInfo\":\"iterator is null\"}}"
                 )
 
         from netx_api import ume_sync_service as svc
 
-        old_page_size = svc.settings.ume_page_size
-        old_max_pages = svc.settings.ume_max_pages
-        svc.settings.ume_page_size = 1000
-        svc.settings.ume_max_pages = 10
+        old_page_size = svc.settings.ume_marker_page_limit
+        old_max_pages = svc.settings.ume_marker_max_pages
+        old_500_as_end = svc.settings.ume_iterator_500_as_end
+        svc.settings.ume_marker_page_limit = 1000
+        svc.settings.ume_marker_max_pages = 10
+        svc.settings.ume_iterator_500_as_end = True
         try:
             job, _ = sync_alarms_current(self.db, _C(), trigger_mode="manual")
         finally:
-            svc.settings.ume_page_size = old_page_size
-            svc.settings.ume_max_pages = old_max_pages
+            svc.settings.ume_marker_page_limit = old_page_size
+            svc.settings.ume_marker_max_pages = old_max_pages
+            svc.settings.ume_iterator_500_as_end = old_500_as_end
 
         self.assertEqual(job.status, "done")
         self.assertEqual(job.pulled_count, 1)

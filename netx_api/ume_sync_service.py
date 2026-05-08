@@ -196,17 +196,21 @@ def _sync_alarms_common(
     db.flush()
     now = _utc_now_naive()
     pulled = inserted = updated = 0
-    paging_mode = "offset"
+    paging_mode = "marker"
     paging_note = ""
     try:
         limit_max = int(getattr(settings, "ume_limit_max", 5000) or 5000)
         limit_max = max(1, limit_max)
-        page_size = int(getattr(settings, "ume_page_size", 1000) or 1000)
+        page_size = int(getattr(settings, "ume_marker_page_limit", getattr(settings, "ume_page_size", 1000)) or 1000)
         page_size = max(1, min(page_size, limit_max))
-        max_pages = int(getattr(settings, "ume_max_pages", 2000) or 2000)
+        max_pages = int(getattr(settings, "ume_marker_max_pages", getattr(settings, "ume_max_pages", 2000)) or 2000)
         max_pages = max(1, min(max_pages, 20000))
-        offset = 0
         page_no = 0
+        next_marker = ""
+        last_page_signature = ""
+        is_end_of_reply = False
+        graceful_end_by_iterator_error = False
+        warnings: list[str] = []
 
         def upsert_alarm(alarm: dict[str, Any]) -> None:
             nonlocal inserted, updated
@@ -228,8 +232,6 @@ def _sync_alarms_common(
                 else:
                     updated += 1
             existing.ne_id = _derive_ne_id_from_alarm(alarm)
-            existing.ne_name = _s(_pick(alarm, "ne-name", "neName", "ne_name"))
-            existing.user_label = _s(_pick(alarm, "user-label", "userLabel", "user_label"))
             existing.object_name = _s(_pick(alarm, "objectName", "object-name"))
             existing.event_type = _s(_pick(alarm, "eventType", "event-type"))
             existing.native_probable_cause = _s(_pick(alarm, "nativeProbableCause", "native-probable-cause"))
@@ -242,40 +244,47 @@ def _sync_alarms_common(
             existing.last_seen_at = now
             existing.raw_json = json.dumps(alarm, ensure_ascii=False, default=str)
 
-        def is_offset_unsupported_error(exc: Exception) -> bool:
-            msg = str(exc or "")
-            if "ume_request_failed:400" not in msg:
-                return False
-            low = msg.lower()
-            return ("offset" in low) or ("unknown" in low and "param" in low) or ("illegal" in low and "param" in low)
+        iterator_500_as_end = bool(getattr(settings, "ume_iterator_500_as_end", True))
 
-        # Try offset pagination first (best-effort). If server rejects offset, fall back to single-page.
-        try:
-            while True:
-                page_no += 1
-                if page_no > max_pages:
-                    raise RuntimeError(f"ume_alarms_pagination_exceeded:max_pages={max_pages}")
-                rows, _ = client.get_alarms(is_uncleared=is_uncleared, limit=page_size, offset=offset)
-                pulled += len(rows)
-                for alarm in rows:
-                    upsert_alarm(alarm)
-                if len(rows) < page_size:
+        while True:
+            page_no += 1
+            if page_no > max_pages:
+                raise RuntimeError(f"ume_alarms_pagination_exceeded:max_pages={max_pages}")
+
+            try:
+                rows, diag = client.get_alarms(
+                    is_uncleared=is_uncleared,
+                    limit=page_size,
+                    marker=(next_marker or None),
+                )
+            except Exception as exc:
+                msg = str(exc or "")
+                low = msg.lower()
+                if iterator_500_as_end and pulled > 0 and "ume_request_failed:500" in low and "iterator" in low and "null" in low:
+                    graceful_end_by_iterator_error = True
+                    paging_note = msg[:240]
                     break
-                offset += page_size
-        except Exception as exc:
-            if is_offset_unsupported_error(exc):
-                paging_mode = "limit_only"
-                paging_note = str(exc)[:200]
-                limit_only_size = int(getattr(settings, "ume_limit_only_page_size", limit_max) or limit_max)
-                limit_only_size = max(1, min(limit_only_size, limit_max))
-                # Re-run as single page without offset param.
-                pulled = inserted = updated = 0
-                rows, _ = client.get_alarms(is_uncleared=is_uncleared, limit=limit_only_size, offset=None)
-                pulled = len(rows)
-                for alarm in rows:
-                    upsert_alarm(alarm)
-            else:
                 raise
+
+            pulled += len(rows)
+            for alarm in rows:
+                upsert_alarm(alarm)
+
+            # Protection: if server keeps returning same page, stop to avoid infinite loop.
+            cur_sig = "|".join(sorted(_alarm_key(x) for x in rows if isinstance(x, dict)))
+            if cur_sig and cur_sig == last_page_signature:
+                warnings.append("duplicate_page_detected")
+                paging_note = "duplicate_page_detected"
+                break
+            last_page_signature = cur_sig
+
+            is_end_of_reply = bool(diag.is_end_of_reply) if diag.is_end_of_reply is not None else False
+            next_marker = str(diag.marker or "").strip()
+            if is_end_of_reply:
+                break
+            # marker paging: no marker and empty data means no next page.
+            if not next_marker and not rows:
+                break
 
         if not is_uncleared:
             expiry = now - timedelta(hours=48)
@@ -291,7 +300,17 @@ def _sync_alarms_common(
         batch.status = "done"
         batch.ended_at = _utc_now_naive()
         batch.raw_json = json.dumps(
-            {"pulled": pulled, "inserted": inserted, "updated": updated, "paging_mode": paging_mode},
+            {
+                "pulled": pulled,
+                "inserted": inserted,
+                "updated": updated,
+                "paging_mode": paging_mode,
+                "page_count": page_no,
+                "last_marker": next_marker,
+                "is_end_of_reply": is_end_of_reply,
+                "graceful_end_by_iterator_error": graceful_end_by_iterator_error,
+                "warnings": warnings,
+            },
             ensure_ascii=False,
         )
 
@@ -315,6 +334,11 @@ def _sync_alarms_common(
                 "status": batch.status,
                 "paging_mode": paging_mode,
                 "paging_note": paging_note,
+                "page_count": page_no,
+                "last_marker": next_marker,
+                "is_end_of_reply": is_end_of_reply,
+                "graceful_end_by_iterator_error": graceful_end_by_iterator_error,
+                "warnings": warnings,
             },
             ensure_ascii=False,
         )

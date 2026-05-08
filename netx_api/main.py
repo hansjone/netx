@@ -220,6 +220,11 @@ def on_startup() -> None:
             conn.exec_driver_sql("ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS net_mask VARCHAR(128) DEFAULT ''")
             conn.exec_driver_sql("ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS create_time VARCHAR(64) DEFAULT ''")
             conn.exec_driver_sql("ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS creator VARCHAR(128) DEFAULT ''")
+            # Simplify alarm tables: display fields come from runtime join with inventory table.
+            conn.exec_driver_sql("ALTER TABLE ume_alarms_current DROP COLUMN IF EXISTS ne_name")
+            conn.exec_driver_sql("ALTER TABLE ume_alarms_current DROP COLUMN IF EXISTS user_label")
+            conn.exec_driver_sql("ALTER TABLE ume_alarms_history DROP COLUMN IF EXISTS ne_name")
+            conn.exec_driver_sql("ALTER TABLE ume_alarms_history DROP COLUMN IF EXISTS user_label")
     except Exception:
         pass
     try:
@@ -484,8 +489,6 @@ def ume_list_alarms(
         stmt = stmt.filter(
             UmeAlarmCurrent.alarm_key.contains(kw)
             | UmeAlarmCurrent.object_name.contains(kw)
-            | UmeAlarmCurrent.ne_name.contains(kw)
-            | UmeAlarmCurrent.user_label.contains(kw)
             | UmeAlarmCurrent.native_probable_cause.contains(kw)
             | UmeInventoryNE.ne_name.contains(kw)
             | UmeInventoryNE.user_label.contains(kw)
@@ -497,8 +500,8 @@ def ume_list_alarms(
         {
             "alarm_key": str(alarm.alarm_key or ""),
             "ne_id": str(alarm.ne_id or ""),
-            "ne_name": str(alarm.ne_name or (ne.ne_name if ne else "") or ""),
-            "user_label": str(alarm.user_label or (ne.user_label if ne else "") or ""),
+            "ne_name": str((ne.ne_name if ne else "") or ""),
+            "user_label": str((ne.user_label if ne else "") or ""),
             "object_name": str(alarm.object_name or ""),
             "event_type": str(alarm.event_type or ""),
             "native_probable_cause": str(alarm.native_probable_cause or ""),
@@ -514,9 +517,11 @@ def ume_list_alarms(
 
 @app.get("/v1/ume/alarms/aggregate")
 def ume_alarms_aggregate(db: Session = Depends(get_db)) -> dict[str, Any]:
-    rows = db.query(UmeAlarmCurrent).all()
-    by_severity = _aggregate_rows(rows, lambda x: x.perceived_severity)
-    by_ne = _aggregate_rows(rows, lambda x: x.user_label or x.ne_name or x.ne_id)
+    rows = db.query(UmeAlarmCurrent, UmeInventoryNE).outerjoin(
+        UmeInventoryNE, UmeAlarmCurrent.ne_id == UmeInventoryNE.ne_id
+    ).all()
+    by_severity = _aggregate_rows(rows, lambda x: x[0].perceived_severity)
+    by_ne = _aggregate_rows(rows, lambda x: (x[1].user_label if x[1] else "") or (x[1].ne_name if x[1] else "") or x[0].ne_id)
     return {"total": len(rows), "by_severity": by_severity, "by_ne": by_ne}
 
 
@@ -543,8 +548,6 @@ def ume_list_alarms_history(
         stmt = stmt.filter(
             UmeAlarmHistory.alarm_key.contains(kw)
             | UmeAlarmHistory.object_name.contains(kw)
-            | UmeAlarmHistory.ne_name.contains(kw)
-            | UmeAlarmHistory.user_label.contains(kw)
             | UmeAlarmHistory.native_probable_cause.contains(kw)
             | UmeInventoryNE.ne_name.contains(kw)
             | UmeInventoryNE.user_label.contains(kw)
@@ -562,8 +565,8 @@ def ume_list_alarms_history(
         {
             "alarm_key": str(alarm.alarm_key or ""),
             "ne_id": str(alarm.ne_id or ""),
-            "ne_name": str(alarm.ne_name or (ne.ne_name if ne else "") or ""),
-            "user_label": str(alarm.user_label or (ne.user_label if ne else "") or ""),
+            "ne_name": str((ne.ne_name if ne else "") or ""),
+            "user_label": str((ne.user_label if ne else "") or ""),
             "object_name": str(alarm.object_name or ""),
             "event_type": str(alarm.event_type or ""),
             "native_probable_cause": str(alarm.native_probable_cause or ""),
@@ -579,10 +582,12 @@ def ume_list_alarms_history(
 
 @app.get("/v1/ume/alarms/history/aggregate")
 def ume_alarms_history_aggregate(db: Session = Depends(get_db)) -> dict[str, Any]:
-    rows = db.query(UmeAlarmHistory).all()
-    by_severity = _aggregate_rows(rows, lambda x: x.perceived_severity)
-    by_ne = _aggregate_rows(rows, lambda x: x.user_label or x.ne_name or x.ne_id)
-    by_date = _aggregate_rows(rows, lambda x: str(x.time_created or "")[:10])
+    rows = db.query(UmeAlarmHistory, UmeInventoryNE).outerjoin(
+        UmeInventoryNE, UmeAlarmHistory.ne_id == UmeInventoryNE.ne_id
+    ).all()
+    by_severity = _aggregate_rows(rows, lambda x: x[0].perceived_severity)
+    by_ne = _aggregate_rows(rows, lambda x: (x[1].user_label if x[1] else "") or (x[1].ne_name if x[1] else "") or x[0].ne_id)
+    by_date = _aggregate_rows(rows, lambda x: str(x[0].time_created or "")[:10])
     return {"total": len(rows), "by_severity": by_severity, "by_ne": by_ne, "by_date": by_date}
 
 

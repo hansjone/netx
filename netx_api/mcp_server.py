@@ -346,7 +346,9 @@ def _call_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
             }
             return {"content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}]}
         if name == "umeListCurrentAlarms":
-            stmt = db.query(UmeAlarmCurrent)
+            stmt = db.query(UmeAlarmCurrent, UmeInventoryNE).outerjoin(
+                UmeInventoryNE, UmeAlarmCurrent.ne_id == UmeInventoryNE.ne_id
+            )
             severity = str(args.get("severity") or "").strip()
             is_cleared = str(args.get("is_cleared") or "").strip()
             ne_id = str(args.get("ne_id") or "").strip()
@@ -361,8 +363,9 @@ def _call_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
                 stmt = stmt.filter(
                     UmeAlarmCurrent.alarm_key.contains(keyword)
                     | UmeAlarmCurrent.object_name.contains(keyword)
-                    | UmeAlarmCurrent.ne_name.contains(keyword)
-                    | UmeAlarmCurrent.user_label.contains(keyword)
+                    | UmeInventoryNE.ne_name.contains(keyword)
+                    | UmeInventoryNE.user_label.contains(keyword)
+                    | UmeInventoryNE.ip_address.contains(keyword)
                 )
             page = max(1, int(args.get("page") or 1))
             page_size = min(500, max(1, int(args.get("page_size") or 50)))
@@ -374,21 +377,23 @@ def _call_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
                 "page_size": page_size,
                 "items": [
                     {
-                        "alarm_key": str(x.alarm_key or ""),
-                        "ne_id": str(x.ne_id or ""),
-                        "ne_name": str(x.ne_name or ""),
-                        "user_label": str(x.user_label or ""),
-                        "object_name": str(x.object_name or ""),
-                        "perceived_severity": str(x.perceived_severity or ""),
-                        "is_cleared": str(x.is_cleared or ""),
-                        "time_created": str(x.time_created or ""),
+                        "alarm_key": str(alarm.alarm_key or ""),
+                        "ne_id": str(alarm.ne_id or ""),
+                        "ne_name": str((ne.ne_name if ne else "") or ""),
+                        "user_label": str((ne.user_label if ne else "") or ""),
+                        "object_name": str(alarm.object_name or ""),
+                        "perceived_severity": str(alarm.perceived_severity or ""),
+                        "is_cleared": str(alarm.is_cleared or ""),
+                        "time_created": str(alarm.time_created or ""),
                     }
-                    for x in rows
+                    for alarm, ne in rows
                 ],
             }
             return {"content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}]}
         if name == "umeListHistoryAlarms":
-            stmt = db.query(UmeAlarmHistory)
+            stmt = db.query(UmeAlarmHistory, UmeInventoryNE).outerjoin(
+                UmeInventoryNE, UmeAlarmHistory.ne_id == UmeInventoryNE.ne_id
+            )
             severity = str(args.get("severity") or "").strip()
             ne_id = str(args.get("ne_id") or "").strip()
             keyword = str(args.get("keyword") or "").strip()
@@ -400,8 +405,9 @@ def _call_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
                 stmt = stmt.filter(
                     UmeAlarmHistory.alarm_key.contains(keyword)
                     | UmeAlarmHistory.object_name.contains(keyword)
-                    | UmeAlarmHistory.ne_name.contains(keyword)
-                    | UmeAlarmHistory.user_label.contains(keyword)
+                    | UmeInventoryNE.ne_name.contains(keyword)
+                    | UmeInventoryNE.user_label.contains(keyword)
+                    | UmeInventoryNE.ip_address.contains(keyword)
                 )
             page = max(1, int(args.get("page") or 1))
             page_size = min(500, max(1, int(args.get("page_size") or 50)))
@@ -413,16 +419,16 @@ def _call_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
                 "page_size": page_size,
                 "items": [
                     {
-                        "alarm_key": str(x.alarm_key or ""),
-                        "ne_id": str(x.ne_id or ""),
-                        "ne_name": str(x.ne_name or ""),
-                        "user_label": str(x.user_label or ""),
-                        "object_name": str(x.object_name or ""),
-                        "perceived_severity": str(x.perceived_severity or ""),
-                        "is_cleared": str(x.is_cleared or ""),
-                        "time_created": str(x.time_created or ""),
+                        "alarm_key": str(alarm.alarm_key or ""),
+                        "ne_id": str(alarm.ne_id or ""),
+                        "ne_name": str((ne.ne_name if ne else "") or ""),
+                        "user_label": str((ne.user_label if ne else "") or ""),
+                        "object_name": str(alarm.object_name or ""),
+                        "perceived_severity": str(alarm.perceived_severity or ""),
+                        "is_cleared": str(alarm.is_cleared or ""),
+                        "time_created": str(alarm.time_created or ""),
                     }
-                    for x in rows
+                    for alarm, ne in rows
                 ],
             }
             return {"content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}]}
@@ -458,6 +464,10 @@ def main() -> None:
             conn.exec_driver_sql("ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS net_mask VARCHAR(128) DEFAULT ''")
             conn.exec_driver_sql("ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS create_time VARCHAR(64) DEFAULT ''")
             conn.exec_driver_sql("ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS creator VARCHAR(128) DEFAULT ''")
+            conn.exec_driver_sql("ALTER TABLE ume_alarms_current DROP COLUMN IF EXISTS ne_name")
+            conn.exec_driver_sql("ALTER TABLE ume_alarms_current DROP COLUMN IF EXISTS user_label")
+            conn.exec_driver_sql("ALTER TABLE ume_alarms_history DROP COLUMN IF EXISTS ne_name")
+            conn.exec_driver_sql("ALTER TABLE ume_alarms_history DROP COLUMN IF EXISTS user_label")
     except Exception:
         pass
     for line in sys.stdin:

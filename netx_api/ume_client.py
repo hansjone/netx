@@ -31,6 +31,8 @@ class RequestDiagnostics:
     latency_ms: int
     retry_count: int = 0
     error_code: str = ""
+    marker: str = ""
+    is_end_of_reply: bool | None = None
 
 
 class UMEClient:
@@ -361,6 +363,12 @@ class UMEClient:
                 self.login(force=True)
                 with self._client() as client:
                     resp = client.request(m, url, params=params, json=body, headers=self._headers(include_token=True))
+            marker = str(resp.headers.get("marker") or "").strip()
+            is_end_raw = str(resp.headers.get("is-end-of-reply") or "").strip().lower()
+            is_end_of_reply: bool | None = None
+            if is_end_raw in {"true", "false"}:
+                is_end_of_reply = is_end_raw == "true"
+
             if not resp.is_success:
                 diag = RequestDiagnostics(
                     method=m,
@@ -369,6 +377,8 @@ class UMEClient:
                     latency_ms=int((time() - t0) * 1000),
                     retry_count=retry_count,
                     error_code=f"http_{int(resp.status_code)}",
+                    marker=marker,
+                    is_end_of_reply=is_end_of_reply,
                 )
                 raise RuntimeError(f"ume_request_failed:{resp.status_code}:{resp.text[:240]}")
             data = _coerce_dict(resp.json())
@@ -378,6 +388,8 @@ class UMEClient:
                 status_code=int(resp.status_code),
                 latency_ms=int((time() - t0) * 1000),
                 retry_count=retry_count,
+                marker=marker,
+                is_end_of_reply=is_end_of_reply,
             )
             return data, diag
         except Exception as exc:
@@ -446,7 +458,7 @@ class UMEClient:
         *,
         is_uncleared: bool,
         limit: int | None = None,
-        offset: int | None = None,
+        marker: str | None = None,
     ) -> tuple[list[dict[str, Any]], RequestDiagnostics]:
         limit_max = int(getattr(settings, "ume_limit_max", 5000) or 5000)
         limit_max = max(1, limit_max)
@@ -456,8 +468,9 @@ class UMEClient:
             "is-uncleared": "true" if is_uncleared else "false",
             "limit": page_size,
         }
-        if offset is not None and int(offset) >= 0:
-            params["offset"] = int(offset)
+        marker_value = str(marker or "").strip()
+        if marker_value:
+            params["marker"] = marker_value
         data, diag = self.request_json("GET", self.alarms_path, params=params)
         rows = self._extract_named_list(data, ["alarm-list", "alarm"])
         return rows, diag

@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     ume_max_pages: int = 2000
     ume_limit_max: int = 5000
     ume_limit_only_page_size: int = 5000
+    ume_marker_page_limit: int = 1000
+    ume_marker_max_pages: int = 2000
+    ume_iterator_500_as_end: bool = True
     ume_auth_header: str = "accessToken"
     ume_content_type: str = "application/yang-data+json;charset=UTF-8"
     ume_token_ttl_s: int = 1800

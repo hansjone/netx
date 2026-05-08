@@ -180,8 +180,6 @@ class UmeAlarmCurrent(Base):
 
     alarm_key: Mapped[str] = mapped_column(String(256), primary_key=True)
     ne_id: Mapped[str] = mapped_column(String(128), default="", index=True)
-    ne_name: Mapped[str] = mapped_column(String(256), default="", index=True)
-    user_label: Mapped[str] = mapped_column(String(256), default="", index=True)
     object_name: Mapped[str] = mapped_column(String(512), default="", index=True)
     event_type: Mapped[str] = mapped_column(String(128), default="")
     native_probable_cause: Mapped[str] = mapped_column(String(256), default="")
@@ -199,8 +197,6 @@ class UmeAlarmHistory(Base):
 
     alarm_key: Mapped[str] = mapped_column(String(256), primary_key=True)
     ne_id: Mapped[str] = mapped_column(String(128), default="", index=True)
-    ne_name: Mapped[str] = mapped_column(String(256), default="", index=True)
-    user_label: Mapped[str] = mapped_column(String(256), default="", index=True)
     object_name: Mapped[str] = mapped_column(String(512), default="", index=True)
     event_type: Mapped[str] = mapped_column(String(128), default="")
     native_probable_cause: Mapped[str] = mapped_column(String(256), default="")
