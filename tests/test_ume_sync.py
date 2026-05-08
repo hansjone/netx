@@ -281,6 +281,32 @@ class UmeSyncServiceTests(unittest.TestCase):
         self.assertEqual(job.pulled_count, 1)
         self.assertIsNotNone(self.db.get(UmeAlarmCurrent, "AK-1"))
 
+    def test_sync_current_alarms_stop_when_marker_missing(self):
+        class _C:
+            def __init__(self):
+                self.calls = 0
+
+            def get_alarms(self, *, is_uncleared: bool, limit=None, marker=None):
+                self.calls += 1
+
+                class _D:
+                    marker = ""
+                    is_end_of_reply = None
+
+                return (
+                    [
+                        {"alarmKey": "AK-1", "ne-id": "NE-1", "perceivedSeverity": "major", "isCleared": "false"},
+                    ],
+                    _D(),
+                )
+
+        c = _C()
+        job, _ = sync_alarms_current(self.db, c, trigger_mode="manual")
+        self.assertEqual(job.status, "done")
+        self.assertEqual(job.pulled_count, 1)
+        self.assertEqual(c.calls, 1)
+        self.assertIsNotNone(self.db.get(UmeAlarmCurrent, "AK-1"))
+
     def test_derive_ne_id_from_alarmkey_formats(self):
         alarm_hash = {"alarmkey": "00ceb960-1b62-478e-8303-0935ffea1d28#99010"}
         alarm_csv = {"alarmkey": "00ceb960-1b62-478e-8303-0935ffea1d28, 4237, 79"}

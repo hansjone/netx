@@ -282,8 +282,12 @@ def _sync_alarms_common(
             next_marker = str(diag.marker or "").strip()
             if is_end_of_reply:
                 break
-            # marker paging: no marker and empty data means no next page.
-            if not next_marker and not rows:
+            # marker paging: if response header has no marker, treat as end of iteration.
+            # Some UME deployments omit marker when the first page already contains all rows.
+            if not next_marker:
+                if rows:
+                    warnings.append("marker_missing_stop")
+                    paging_note = "marker_missing_stop"
                 break
 
         if not is_uncleared:

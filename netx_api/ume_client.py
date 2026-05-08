@@ -177,8 +177,9 @@ class UMEClient:
     def _client(self) -> httpx.Client:
         # Use explicit HTTPTransport to keep behavior consistent with onsite validation.
         # In this mode, requests run over HTTP/1.1 and avoid HTTP/2 negotiation issues.
-        transport = httpx.HTTPTransport()
-        return httpx.Client(verify=self.verify_tls, timeout=self.timeout_s, transport=transport)
+        transport = httpx.HTTPTransport(verify=self.verify_tls, http2=False)
+        return httpx.Client(transport=transport, timeout=self.timeout_s)
+        
 
     def _extract_token_and_ttl(self, payload: dict[str, Any]) -> tuple[str, int | None]:
         token = ""
