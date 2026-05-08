@@ -18,6 +18,7 @@ function toIsoNoMs(d: Date): string {
 
 export function UmePage() {
   const queryClient = useQueryClient();
+  const [tokenOpError, setTokenOpError] = useState("");
   const [syncPage, setSyncPage] = useState(1);
   const [syncPageSize, setSyncPageSize] = useState(20);
   const [neKeyword, setNeKeyword] = useState("");
@@ -71,14 +72,30 @@ export function UmePage() {
   });
   const tokenRefreshMutation = useMutation({
     mutationFn: refreshUmeToken,
-    onSuccess: async () => {
+    onSuccess: async (res) => {
+      if (!res?.ok) {
+        setTokenOpError(String(res.error || res.error_kind || "token_refresh_failed"));
+      } else {
+        setTokenOpError("");
+      }
       await queryClient.invalidateQueries({ queryKey: ["umeTokenStatus"] });
+    },
+    onError: (err) => {
+      setTokenOpError(String(err));
     },
   });
   const tokenDisconnectMutation = useMutation({
     mutationFn: disconnectUmeToken,
-    onSuccess: async () => {
+    onSuccess: async (res) => {
+      if (!res?.ok) {
+        setTokenOpError(String(res.error || res.error_kind || "token_disconnect_failed"));
+      } else {
+        setTokenOpError("");
+      }
       await queryClient.invalidateQueries({ queryKey: ["umeTokenStatus"] });
+    },
+    onError: (err) => {
+      setTokenOpError(String(err));
     },
   });
 
@@ -151,9 +168,9 @@ export function UmePage() {
               断开 token
             </button>
           </div>
-          {(tokenRefreshMutation.error || tokenDisconnectMutation.error) && (
+          {(tokenOpError || tokenRefreshMutation.error || tokenDisconnectMutation.error) && (
             <div className="pill pill--high">
-              操作失败: {String(tokenRefreshMutation.error || tokenDisconnectMutation.error)}
+              操作失败: {tokenOpError || String(tokenRefreshMutation.error || tokenDisconnectMutation.error)}
             </div>
           )}
         </article>

@@ -175,10 +175,10 @@ class UMEClient:
         return headers
 
     def _client(self) -> httpx.Client:
-        # Force HTTP/1.1 (disable HTTP/2) due to UME server compatibility issues.
-        # httpx defaults to HTTP/1.1 unless http2=True, but some environments still
-        # negotiate/behave unexpectedly; be explicit here.
-        return httpx.Client(verify=self.verify_tls, timeout=self.timeout_s, http2=False)
+        # Use explicit HTTPTransport to keep behavior consistent with onsite validation.
+        # In this mode, requests run over HTTP/1.1 and avoid HTTP/2 negotiation issues.
+        transport = httpx.HTTPTransport()
+        return httpx.Client(verify=self.verify_tls, timeout=self.timeout_s, transport=transport)
 
     def _extract_token_and_ttl(self, payload: dict[str, Any]) -> tuple[str, int | None]:
         token = ""
