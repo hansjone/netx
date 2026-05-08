@@ -67,6 +67,37 @@ _SQL_FORBIDDEN_RE = re.compile(
     r"\b(insert|update|delete|drop|alter|create|truncate|grant|revoke|call|copy|vacuum|analyze)\b",
     flags=re.IGNORECASE,
 )
+_UME_RUNTIME_TASKS: dict[str, dict[str, Any]] = {
+    "token_keepalive": {"task": "token_keepalive", "status": "init", "last_run_at": None, "last_error": ""},
+    "alarms_current_auto_sync": {"task": "alarms_current_auto_sync", "status": "init", "last_run_at": None, "last_error": ""},
+}
+_UME_RUNTIME_LOCK = threading.Lock()
+
+
+def _set_runtime_task(task: str, *, status: str, last_run_at: datetime | None = None, last_error: str = "") -> None:
+    with _UME_RUNTIME_LOCK:
+        item = _UME_RUNTIME_TASKS.get(task, {"task": task, "status": "init", "last_run_at": None, "last_error": ""})
+        item["status"] = str(status or "unknown")
+        if last_run_at is not None:
+            item["last_run_at"] = last_run_at
+        item["last_error"] = str(last_error or "")
+        _UME_RUNTIME_TASKS[task] = item
+
+
+def _list_runtime_tasks() -> list[dict[str, Any]]:
+    with _UME_RUNTIME_LOCK:
+        out: list[dict[str, Any]] = []
+        for v in _UME_RUNTIME_TASKS.values():
+            ts = _ensure_utc(v.get("last_run_at")) if isinstance(v.get("last_run_at"), datetime) else None
+            out.append(
+                {
+                    "task": str(v.get("task") or ""),
+                    "status": str(v.get("status") or "unknown"),
+                    "last_run_at": ts.isoformat() if ts else None,
+                    "last_error": str(v.get("last_error") or ""),
+                }
+            )
+        return out
 
 
 def _ensure_utc(dt: datetime | None) -> datetime | None:
@@ -264,12 +295,46 @@ def on_startup() -> None:
                         expires_in = int(st.get("expires_in_s") or 0)
                         if bool(st.get("has_token")) and expires_in > 0 and expires_in < renew_before_s:
                             client.renew_token()
+                        _set_runtime_task("token_keepalive", status="running", last_run_at=datetime.now(timezone.utc), last_error="")
                     except Exception:
-                        pass
+                        _set_runtime_task("token_keepalive", status="error", last_run_at=datetime.now(timezone.utc), last_error="keepalive_failed")
                     time.sleep(interval_s)
 
             t = threading.Thread(target=_keepalive_loop, name="ume-token-keepalive", daemon=True)
             t.start()
+    except Exception:
+        pass
+    try:
+        if bool(getattr(settings, "ume_sync_alarms_current_enabled", True)):
+            interval_s = int(getattr(settings, "ume_sync_alarms_current_interval_s", 300) or 300)
+            interval_s = max(30, min(interval_s, 86400))
+
+            def _alarms_current_sync_loop() -> None:
+                while True:
+                    try:
+                        db = SessionLocal()
+                        try:
+                            client = _ume_client()
+                            sync_alarms_current(db, client, trigger_mode="schedule")
+                            _set_runtime_task(
+                                "alarms_current_auto_sync",
+                                status="running",
+                                last_run_at=datetime.now(timezone.utc),
+                                last_error="",
+                            )
+                        finally:
+                            db.close()
+                    except Exception as exc:
+                        _set_runtime_task(
+                            "alarms_current_auto_sync",
+                            status="error",
+                            last_run_at=datetime.now(timezone.utc),
+                            last_error=str(exc)[:240],
+                        )
+                    time.sleep(interval_s)
+
+            t2 = threading.Thread(target=_alarms_current_sync_loop, name="ume-alarms-current-sync", daemon=True)
+            t2.start()
     except Exception:
         pass
 
@@ -402,7 +467,14 @@ def ume_sync_status(
         items.append(item)
         if item["domain"] and item["domain"] not in latest_by_domain:
             latest_by_domain[item["domain"]] = item
-    return {"total": total, "page": page, "page_size": page_size, "items": items, "latest_by_domain": latest_by_domain}
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "items": items,
+        "latest_by_domain": latest_by_domain,
+        "runtime_tasks": _list_runtime_tasks(),
+    }
 
 
 @app.get("/v1/ume/inventory/ne")

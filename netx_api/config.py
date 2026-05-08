@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     ume_keepalive_enabled: bool = True
     ume_keepalive_interval_s: int = 600
     ume_keepalive_renew_before_s: int = 900
+    ume_sync_alarms_current_enabled: bool = True
+    ume_sync_alarms_current_interval_s: int = 300
     ume_token_path: str = "/restconf/operations/zte-security:oauth_token"
     ume_token_handshake_path: str = "/restconf/operations/zte-security:oauth_handshake"
     ume_token_logout_path: str = "/restconf/operations/zte-security:oauth_token"

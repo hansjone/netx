@@ -93,6 +93,12 @@ export type UmeSyncStatusResponse = {
   page_size?: number;
   items: UmeSyncJobItem[];
   latest_by_domain?: Record<string, UmeSyncJobItem>;
+  runtime_tasks?: Array<{
+    task: string;
+    status: string;
+    last_run_at?: string | null;
+    last_error?: string;
+  }>;
 };
 
 export type UmeNeItem = {
