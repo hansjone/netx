@@ -187,6 +187,7 @@ def sync_inventory_full(db: Session, client: UMEClient, *, trigger_mode: str = "
             existing.ne_name = _s(_pick(row, "name", "ne-name"))
             existing.user_label = _s(_pick(row, "user-label", "user_label"))
             existing.ip_address = _s(_pick(row, "ip-Address", "ip-address", "ip"))
+            existing.ipv6_address = _s(_pick(row, "ipv6-address", "ipv6_address"))
             existing.ne_type = _s(_pick(row, "type", "ne-type"))
             existing.device_level = _s(_pick(row, "device-level"))
             existing.host_name = _s(_pick(row, "host-name"))

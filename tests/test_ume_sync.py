@@ -149,6 +149,7 @@ class UmeSyncServiceTests(unittest.TestCase):
                         "name": "ne1",
                         "user-label": "网元1",
                         "ip-Address": "10.0.0.1",
+                        "ipv6-address": "2001:db8::1",
                         "type": "A",
                         "device-level": "Access",
                         "host-name": "host-1",
@@ -172,6 +173,7 @@ class UmeSyncServiceTests(unittest.TestCase):
         self.assertEqual(ne.device_level, "Access")
         self.assertEqual(ne.host_name, "host-1")
         self.assertEqual(ne.hardware_version, "V1")
+        self.assertEqual(ne.ipv6_address, "2001:db8::1")
 
     def test_sync_inventory_marker_pagination(self):
         class _C:

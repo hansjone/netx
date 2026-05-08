@@ -100,6 +100,7 @@ export type UmeNeItem = {
   ne_name: string;
   user_label: string;
   ip_address: string;
+  ipv6_address?: string;
   ne_type: string;
   device_level?: string;
   host_name?: string;
