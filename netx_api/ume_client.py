@@ -442,8 +442,23 @@ class UMEClient:
         walk(payload)
         return found
 
-    def get_network_elements(self) -> tuple[list[dict[str, Any]], RequestDiagnostics]:
-        data, diag = self.request_json("GET", self.ne_path)
+    def get_network_elements(
+        self,
+        *,
+        limit: int | None = None,
+        marker: str | None = None,
+    ) -> tuple[list[dict[str, Any]], RequestDiagnostics]:
+        limit_max = int(getattr(settings, "ume_limit_max", 5000) or 5000)
+        limit_max = max(1, limit_max)
+        page_size = int(limit or settings.ume_page_size or 1000)
+        page_size = max(1, min(page_size, limit_max))
+        params: dict[str, Any] = {
+            "limit": page_size,
+        }
+        marker_value = str(marker or "").strip()
+        if marker_value:
+            params["marker"] = marker_value
+        data, diag = self.request_json("GET", self.ne_path, params=params)
         rows = self._extract_named_list(data, ["network-elements", "network-element", "ne", "network_elements"])
         if rows:
             return rows, diag

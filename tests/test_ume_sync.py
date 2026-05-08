@@ -138,7 +138,11 @@ class UmeSyncServiceTests(unittest.TestCase):
 
     def test_sync_inventory_upsert(self):
         class _C:
-            def get_network_elements(self):
+            def get_network_elements(self, *, limit=None, marker=None):
+                class _D:
+                    marker = ""
+                    is_end_of_reply = True
+
                 rows = [
                     {
                         "ne-id": "NE-1",
@@ -152,7 +156,7 @@ class UmeSyncServiceTests(unittest.TestCase):
                         "vendor-name": "ZTE",
                     },
                 ]
-                return rows, None
+                return rows, _D()
 
         job1 = sync_inventory_full(self.db, _C(), trigger_mode="manual")
         self.assertEqual(job1.status, "done")
@@ -168,6 +172,36 @@ class UmeSyncServiceTests(unittest.TestCase):
         self.assertEqual(ne.device_level, "Access")
         self.assertEqual(ne.host_name, "host-1")
         self.assertEqual(ne.hardware_version, "V1")
+
+    def test_sync_inventory_marker_pagination(self):
+        class _C:
+            def get_network_elements(self, *, limit=None, marker=None):
+                class _D:
+                    def __init__(self, mk: str, end: bool):
+                        self.marker = mk
+                        self.is_end_of_reply = end
+
+                if not marker:
+                    return (
+                        [
+                            {"ne-id": "NE-1", "name": "ne1"},
+                        ],
+                        _D("NM2", False),
+                    )
+                if marker == "NM2":
+                    return (
+                        [
+                            {"ne-id": "NE-2", "name": "ne2"},
+                        ],
+                        _D("NM3", True),
+                    )
+                return ([], _D("", True))
+
+        job = sync_inventory_full(self.db, _C(), trigger_mode="manual")
+        self.assertEqual(job.status, "done")
+        self.assertEqual(job.pulled_count, 2)
+        self.assertIsNotNone(self.db.get(UmeInventoryNE, "NE-1"))
+        self.assertIsNotNone(self.db.get(UmeInventoryNE, "NE-2"))
 
     def test_sync_current_alarms_upsert(self):
         class _C:
@@ -306,6 +340,32 @@ class UmeSyncServiceTests(unittest.TestCase):
         self.assertEqual(job.pulled_count, 1)
         self.assertEqual(c.calls, 1)
         self.assertIsNotNone(self.db.get(UmeAlarmCurrent, "AK-1"))
+
+    def test_sync_current_alarms_stop_when_not_end_but_marker_missing(self):
+        class _C:
+            def __init__(self):
+                self.calls = 0
+
+            def get_alarms(self, *, is_uncleared: bool, limit=None, marker=None):
+                self.calls += 1
+
+                class _D:
+                    marker = ""
+                    is_end_of_reply = False
+
+                return (
+                    [
+                        {"alarmKey": "AK-9", "ne-id": "NE-9", "perceivedSeverity": "major", "isCleared": "false"},
+                    ],
+                    _D(),
+                )
+
+        c = _C()
+        job, _ = sync_alarms_current(self.db, c, trigger_mode="manual")
+        self.assertEqual(job.status, "done")
+        self.assertEqual(job.pulled_count, 1)
+        self.assertEqual(c.calls, 1)
+        self.assertIsNotNone(self.db.get(UmeAlarmCurrent, "AK-9"))
 
     def test_derive_ne_id_from_alarmkey_formats(self):
         alarm_hash = {"alarmkey": "00ceb960-1b62-478e-8303-0935ffea1d28#99010"}

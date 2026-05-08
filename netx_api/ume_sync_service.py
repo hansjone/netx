@@ -80,13 +80,94 @@ def _build_sync_job(domain: str, trigger_mode: str) -> UmeSyncJob:
     )
 
 
+def _collect_marker_pages(
+    fetch_page: Any,
+    *,
+    max_pages: int,
+    iterator_500_as_end: bool = False,
+) -> tuple[list[list[dict[str, Any]]], dict[str, Any]]:
+    page_no = 0
+    next_marker = ""
+    is_end_of_reply = False
+    graceful_end_by_iterator_error = False
+    paging_note = ""
+    warnings: list[str] = []
+    last_page_signature = ""
+    pages: list[list[dict[str, Any]]] = []
+
+    while True:
+        page_no += 1
+        if page_no > max_pages:
+            raise RuntimeError(f"ume_alarms_pagination_exceeded:max_pages={max_pages}")
+
+        try:
+            rows, diag = fetch_page(next_marker or None)
+        except Exception as exc:
+            msg = str(exc or "")
+            low = msg.lower()
+            if iterator_500_as_end and pages and "ume_request_failed:500" in low and "iterator" in low and "null" in low:
+                graceful_end_by_iterator_error = True
+                paging_note = msg[:240]
+                break
+            raise
+
+        rows = [x for x in rows if isinstance(x, dict)]
+        pages.append(rows)
+
+        # Protection against repeated pages causing infinite loops.
+        cur_sig = "|".join(sorted(_alarm_key(x) for x in rows))
+        if cur_sig and cur_sig == last_page_signature:
+            warnings.append("duplicate_page_detected")
+            paging_note = "duplicate_page_detected"
+            break
+        last_page_signature = cur_sig
+
+        has_is_end = diag.is_end_of_reply is not None
+        is_end_of_reply = bool(diag.is_end_of_reply) if has_is_end else False
+        next_marker = str(diag.marker or "").strip()
+
+        if has_is_end and is_end_of_reply:
+            break
+        if has_is_end and (not is_end_of_reply) and (not next_marker):
+            warnings.append("marker_missing_when_not_end")
+            paging_note = "marker_missing_when_not_end"
+            break
+        if (not has_is_end) and (not next_marker):
+            if rows:
+                warnings.append("marker_missing_stop")
+                paging_note = "marker_missing_stop"
+            break
+
+    meta = {
+        "page_count": page_no,
+        "last_marker": next_marker,
+        "is_end_of_reply": is_end_of_reply,
+        "graceful_end_by_iterator_error": graceful_end_by_iterator_error,
+        "paging_note": paging_note,
+        "warnings": warnings,
+    }
+    return pages, meta
+
+
 def sync_inventory_full(db: Session, client: UMEClient, *, trigger_mode: str = "manual") -> UmeSyncJob:
     job = _build_sync_job("inventory", trigger_mode)
     db.add(job)
     db.flush()
     pulled = inserted = updated = 0
     try:
-        ne_rows, _ = client.get_network_elements()
+        limit_max = int(getattr(settings, "ume_limit_max", 5000) or 5000)
+        limit_max = max(1, limit_max)
+        page_size = int(getattr(settings, "ume_marker_page_limit", getattr(settings, "ume_page_size", 1000)) or 1000)
+        page_size = max(1, min(page_size, limit_max))
+        max_pages = int(getattr(settings, "ume_marker_max_pages", getattr(settings, "ume_max_pages", 2000)) or 2000)
+        max_pages = max(1, min(max_pages, 20000))
+
+        pages, _ = _collect_marker_pages(
+            lambda marker: client.get_network_elements(limit=page_size, marker=marker),
+            max_pages=max_pages,
+            iterator_500_as_end=False,
+        )
+        ne_rows = [row for page in pages for row in page]
         now = _utc_now_naive()
         pulled = len(ne_rows)
         for row in ne_rows:
@@ -198,6 +279,11 @@ def _sync_alarms_common(
     pulled = inserted = updated = 0
     paging_mode = "marker"
     paging_note = ""
+    page_no = 0
+    next_marker = ""
+    is_end_of_reply = False
+    graceful_end_by_iterator_error = False
+    warnings: list[str] = []
     try:
         limit_max = int(getattr(settings, "ume_limit_max", 5000) or 5000)
         limit_max = max(1, limit_max)
@@ -205,13 +291,6 @@ def _sync_alarms_common(
         page_size = max(1, min(page_size, limit_max))
         max_pages = int(getattr(settings, "ume_marker_max_pages", getattr(settings, "ume_max_pages", 2000)) or 2000)
         max_pages = max(1, min(max_pages, 20000))
-        page_no = 0
-        next_marker = ""
-        last_page_signature = ""
-        is_end_of_reply = False
-        graceful_end_by_iterator_error = False
-        warnings: list[str] = []
-
         def upsert_alarm(alarm: dict[str, Any]) -> None:
             nonlocal inserted, updated
             key = _alarm_key(alarm)
@@ -245,50 +324,21 @@ def _sync_alarms_common(
             existing.raw_json = json.dumps(alarm, ensure_ascii=False, default=str)
 
         iterator_500_as_end = bool(getattr(settings, "ume_iterator_500_as_end", True))
-
-        while True:
-            page_no += 1
-            if page_no > max_pages:
-                raise RuntimeError(f"ume_alarms_pagination_exceeded:max_pages={max_pages}")
-
-            try:
-                rows, diag = client.get_alarms(
-                    is_uncleared=is_uncleared,
-                    limit=page_size,
-                    marker=(next_marker or None),
-                )
-            except Exception as exc:
-                msg = str(exc or "")
-                low = msg.lower()
-                if iterator_500_as_end and pulled > 0 and "ume_request_failed:500" in low and "iterator" in low and "null" in low:
-                    graceful_end_by_iterator_error = True
-                    paging_note = msg[:240]
-                    break
-                raise
-
+        pages, meta = _collect_marker_pages(
+            lambda marker: client.get_alarms(is_uncleared=is_uncleared, limit=page_size, marker=marker),
+            max_pages=max_pages,
+            iterator_500_as_end=iterator_500_as_end,
+        )
+        for rows in pages:
             pulled += len(rows)
             for alarm in rows:
                 upsert_alarm(alarm)
-
-            # Protection: if server keeps returning same page, stop to avoid infinite loop.
-            cur_sig = "|".join(sorted(_alarm_key(x) for x in rows if isinstance(x, dict)))
-            if cur_sig and cur_sig == last_page_signature:
-                warnings.append("duplicate_page_detected")
-                paging_note = "duplicate_page_detected"
-                break
-            last_page_signature = cur_sig
-
-            is_end_of_reply = bool(diag.is_end_of_reply) if diag.is_end_of_reply is not None else False
-            next_marker = str(diag.marker or "").strip()
-            if is_end_of_reply:
-                break
-            # marker paging: if response header has no marker, treat as end of iteration.
-            # Some UME deployments omit marker when the first page already contains all rows.
-            if not next_marker:
-                if rows:
-                    warnings.append("marker_missing_stop")
-                    paging_note = "marker_missing_stop"
-                break
+        page_no = int(meta.get("page_count") or 0)
+        next_marker = str(meta.get("last_marker") or "")
+        is_end_of_reply = bool(meta.get("is_end_of_reply"))
+        graceful_end_by_iterator_error = bool(meta.get("graceful_end_by_iterator_error"))
+        paging_note = str(meta.get("paging_note") or "")
+        warnings = [str(x) for x in (meta.get("warnings") or []) if str(x)]
 
         if not is_uncleared:
             expiry = now - timedelta(hours=48)
