@@ -137,13 +137,16 @@ Or install via payload:
 
 ## Useful API endpoints
 
-- `POST /v1/alarms/import`
+- `POST /v1/alarms/import` (legacy import path, kept for compatibility)
 - `GET /v1/batches`
 - `GET /v1/batches/{batch_id}`
 - `GET /v1/batches/{batch_id}/errors.csv`
 - `GET /v1/alarms`
 - `GET /v1/alarms/aggregate`
 - `GET /v1/diagnostics?batch_id=...`
+- `GET /v1/ume/alarms`
+- `GET /v1/ume/alarms/aggregate`
+- `GET /v1/ume/diagnostics`
 - `GET /v1/integrations/status`
 - `POST /v1/ap/analyze`
 
@@ -166,7 +169,7 @@ Optional: configure oclaw health check endpoint (defaults shown in `.env.example
 
 ## Key sample file
 
-Phase 1 parser (`netx_api/config/parsers/zte_alarm_monitor_v1.yaml`) is tuned for **ZTE Alarm Monitor** style exports. Use any local path: place your `.xlsx` on disk and import it from the web UI or API (`POST /v1/alarms/import`). A typical filename pattern is `fm-active-Alarm Monitor-*-YYYYMMDDhhmmss.xlsx` (columns are resolved via YAML aliases, not by absolute path).
+Phase 1 parser (`netx_api/config/parsers/zte_alarm_monitor_v1.yaml`) remains available for historical compatibility. The recommended data source is UME sync (`ume_alarms_current`), while legacy import (`POST /v1/alarms/import`) is still kept available as a fallback path.
 
 ## Contributing
 

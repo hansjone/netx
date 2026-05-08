@@ -7,9 +7,11 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from netx_api.db import Base
+from netx_api.main import _extract_ume_raw_group_field, _serialize_ume_alarm_raw_row, sql_ume_query, ume_alarms_fields
 from netx_api.models import UmeAlarmCurrent, UmeInventoryNE
 from netx_api.ume_client import UMEClient
 from netx_api.ume_sync_service import _derive_ne_id_from_alarm, sync_alarms_current, sync_inventory_full
+from fastapi import HTTPException
 
 
 class _FakeResponse:
@@ -381,6 +383,45 @@ class UmeSyncServiceTests(unittest.TestCase):
             _derive_ne_id_from_alarm(alarm_csv),
             "00ceb960-1b62-478e-8303-0935ffea1d28",
         )
+
+    def test_serialize_ume_alarm_raw_row_select_fields(self):
+        alarm = UmeAlarmCurrent(
+            alarm_key="AK-1",
+            ne_id="NE-1",
+            perceived_severity="critical",
+            event_type="communications-alarm",
+            is_cleared="false",
+        )
+        ne = UmeInventoryNE(ne_id="NE-1", ne_name="ne1", user_label="site-1", ip_address="10.0.0.1")
+        selected = {"alarm_alarm_key", "alarm_perceived_severity", "ne_user_label", "ne_exists"}
+        row = _serialize_ume_alarm_raw_row(alarm, ne, selected)
+        self.assertEqual(set(row.keys()), selected)
+        self.assertEqual(row["alarm_alarm_key"], "AK-1")
+        self.assertEqual(row["alarm_perceived_severity"], "critical")
+        self.assertEqual(row["ne_user_label"], "site-1")
+        self.assertTrue(row["ne_exists"])
+
+    def test_sql_ume_query_rejects_non_ume_tables(self):
+        with self.assertRaises(HTTPException) as ctx:
+            sql_ume_query(payload={"sql": "select * from alarms_norm", "limit": 10}, db=None)  # type: ignore[arg-type]
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("ume_table_not_allowed", str(ctx.exception.detail))
+
+    def test_ume_alarms_fields_contains_selectable_fields(self):
+        data = ume_alarms_fields()
+        self.assertIn("alarm_fields", data)
+        self.assertIn("ne_fields", data)
+        self.assertIn("selectable_fields", data)
+        self.assertIn("alarm_alarm_key", set(data["selectable_fields"]))
+        self.assertIn("ne_user_label", set(data["selectable_fields"]))
+        self.assertIn("ne_exists", set(data["selectable_fields"]))
+
+    def test_extract_ume_raw_group_field(self):
+        alarm = UmeAlarmCurrent(alarm_key="AK-X", perceived_severity="major")
+        ne = UmeInventoryNE(ne_id="NE-X", user_label="site-x")
+        self.assertEqual(_extract_ume_raw_group_field(alarm, ne, "alarm_perceived_severity"), "major")
+        self.assertEqual(_extract_ume_raw_group_field(alarm, ne, "ne_user_label"), "site-x")
+        self.assertEqual(_extract_ume_raw_group_field(alarm, None, "ne_exists"), "0")
 
 
 if __name__ == "__main__":

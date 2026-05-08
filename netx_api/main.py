@@ -209,6 +209,67 @@ def sql_query(payload: dict[str, Any] | None = None, db: Session = Depends(get_d
         raise HTTPException(status_code=400, detail=f"sql_failed:{str(exc)[:240]}") from exc
 
 
+@app.post("/v1/sql/ume_query")
+def sql_ume_query(payload: dict[str, Any] | None = None, db: Session = Depends(get_db)) -> dict:
+    """
+    Read-only SQL query endpoint for UME current alarms/inventory.
+
+    Safety constraints:
+    - SELECT only, single statement (no ';')
+    - forbid DDL/DML keywords
+    - enforce max rows (server-side LIMIT wrapper)
+    - only allow FROM/JOIN on ume_alarms_current and ume_inventory_ne
+    """
+    payload = payload or {}
+    sql = str(payload.get("sql") or "").strip()
+    limit = int(payload.get("limit") or 200)
+    limit = max(1, min(limit, 2000))
+    statement_timeout_ms = int(payload.get("statement_timeout_ms") or 0)
+    statement_timeout_ms = max(0, min(statement_timeout_ms, 30000))
+    if not sql:
+        raise HTTPException(status_code=400, detail="sql_required")
+    if ";" in sql:
+        raise HTTPException(status_code=400, detail="single_statement_only")
+    low = sql.lower().lstrip()
+    if not low.startswith("select"):
+        raise HTTPException(status_code=400, detail="select_only")
+    if _SQL_FORBIDDEN_RE.search(sql):
+        raise HTTPException(status_code=400, detail="forbidden_keyword")
+
+    allowed_tables = {"ume_alarms_current", "ume_inventory_ne"}
+    refs = re.findall(r"\b(?:from|join)\s+([a-zA-Z0-9_\"\.]+)", sql, flags=re.IGNORECASE)
+    for ref in refs:
+        normalized = str(ref).strip().strip('"')
+        if "." in normalized:
+            normalized = normalized.split(".")[-1]
+        if normalized.lower() not in allowed_tables:
+            raise HTTPException(status_code=400, detail=f"ume_table_not_allowed:{normalized}")
+
+    wrapped = f"select * from ({sql}) as q limit {limit}"
+    try:
+        if statement_timeout_ms > 0:
+            try:
+                if str(getattr(getattr(db, "bind", None), "dialect", None).name).lower().startswith("postgres"):
+                    db.execute(sql_text("SET LOCAL statement_timeout = :ms"), {"ms": int(statement_timeout_ms)})
+            except Exception:
+                pass
+        res = db.execute(sql_text(wrapped))
+        cols = list(res.keys())
+        raw_rows = res.fetchall()
+        rows: list[list[Any]] = []
+        for r in raw_rows:
+            out_row: list[Any] = []
+            for v in list(r):
+                if isinstance(v, datetime):
+                    out_row.append(((_ensure_utc(v) or v).isoformat().replace("+00:00", "Z")))
+                else:
+                    out_row.append(v)
+            rows.append(out_row)
+        return {"ok": True, "columns": cols, "rows": rows, "limit": limit}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"sql_failed:{str(exc)[:240]}") from exc
+
+
 @app.on_event("startup")
 def on_startup() -> None:
     Base.metadata.create_all(bind=engine)
@@ -610,6 +671,255 @@ def ume_list_alarms(
     return {"total": total, "page": page, "page_size": page_size, "items": items}
 
 
+@app.get("/v1/ume/alarms/fields")
+def ume_alarms_fields() -> dict[str, Any]:
+    """List all queryable field names for UME raw alarm query."""
+    alarm_cols = [str(c.name) for c in UmeAlarmCurrent.__table__.columns]  # type: ignore[attr-defined]
+    ne_cols = [str(c.name) for c in UmeInventoryNE.__table__.columns]  # type: ignore[attr-defined]
+    selectable_fields = [f"alarm_{x}" for x in alarm_cols] + [f"ne_{x}" for x in ne_cols] + ["ne_exists"]
+    order_by_allowed = ["last_seen_at", "time_created", "perceived_severity", "event_type", "ne_id"]
+    return {
+        "alarm_fields": alarm_cols,
+        "ne_fields": ne_cols,
+        "selectable_fields": selectable_fields,
+        "order_by_allowed": order_by_allowed,
+    }
+
+
+def _serialize_ume_alarm_raw_row(
+    alarm: UmeAlarmCurrent, ne: UmeInventoryNE | None, selected_fields: set[str] | None = None
+) -> dict[str, Any]:
+    selected = selected_fields or set()
+    use_all = len(selected) == 0
+    out: dict[str, Any] = {}
+    for c in UmeAlarmCurrent.__table__.columns:  # type: ignore[attr-defined]
+        name = str(c.name)
+        v = getattr(alarm, name, None)
+        key = f"alarm_{name}"
+        if not use_all and key not in selected:
+            continue
+        if hasattr(v, "isoformat"):
+            try:
+                if isinstance(v, datetime):
+                    out[key] = (_ensure_utc(v) or v).isoformat()
+                else:
+                    out[key] = v.isoformat()
+                continue
+            except Exception:
+                pass
+        out[key] = v
+    if ne is None:
+        if use_all or "ne_exists" in selected:
+            out["ne_exists"] = False
+        return out
+    if use_all or "ne_exists" in selected:
+        out["ne_exists"] = True
+    for c in UmeInventoryNE.__table__.columns:  # type: ignore[attr-defined]
+        name = str(c.name)
+        v = getattr(ne, name, None)
+        key = f"ne_{name}"
+        if not use_all and key not in selected:
+            continue
+        if hasattr(v, "isoformat"):
+            try:
+                if isinstance(v, datetime):
+                    out[key] = (_ensure_utc(v) or v).isoformat()
+                else:
+                    out[key] = v.isoformat()
+                continue
+            except Exception:
+                pass
+        out[key] = v
+    return out
+
+
+def _extract_ume_raw_group_field(alarm: UmeAlarmCurrent, ne: UmeInventoryNE | None, field: str) -> str:
+    key = str(field or "").strip()
+    if not key:
+        return ""
+    if key.startswith("alarm_"):
+        attr = key[len("alarm_") :]
+        return str(getattr(alarm, attr, "") or "")
+    if key.startswith("ne_"):
+        attr = key[len("ne_") :]
+        if key == "ne_exists":
+            return "1" if ne is not None else "0"
+        if ne is None:
+            return ""
+        return str(getattr(ne, attr, "") or "")
+    return ""
+
+
+@app.get("/v1/ume/alarms/raw")
+def ume_alarms_raw(
+    severity: str | None = Query(default=None),
+    is_cleared: str | None = Query(default=None),
+    ne_id: str | None = Query(default=None),
+    event_type: str | None = Query(default=None),
+    keyword: str | None = Query(default=None),
+    time_from: str | None = Query(default=None),
+    time_to: str | None = Query(default=None),
+    order_by: str = Query(default="last_seen_at"),
+    order: str = Query(default="desc"),
+    select_fields: str | None = Query(default=None, description="comma-separated alarm_*/ne_* fields"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=500),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    stmt = db.query(UmeAlarmCurrent, UmeInventoryNE).outerjoin(
+        UmeInventoryNE, UmeAlarmCurrent.ne_id == UmeInventoryNE.ne_id
+    )
+    if severity and str(severity).strip():
+        stmt = stmt.filter(UmeAlarmCurrent.perceived_severity == str(severity).strip())
+    if is_cleared and str(is_cleared).strip():
+        stmt = stmt.filter(UmeAlarmCurrent.is_cleared == str(is_cleared).strip())
+    if ne_id and str(ne_id).strip():
+        stmt = stmt.filter(UmeAlarmCurrent.ne_id == str(ne_id).strip())
+    if event_type and str(event_type).strip():
+        stmt = stmt.filter(UmeAlarmCurrent.event_type.contains(str(event_type).strip()))
+    kw = str(keyword or "").strip()
+    if kw:
+        stmt = stmt.filter(
+            UmeAlarmCurrent.alarm_key.contains(kw)
+            | UmeAlarmCurrent.object_name.contains(kw)
+            | UmeAlarmCurrent.native_probable_cause.contains(kw)
+            | UmeAlarmCurrent.event_type.contains(kw)
+            | UmeInventoryNE.ne_name.contains(kw)
+            | UmeInventoryNE.user_label.contains(kw)
+            | UmeInventoryNE.ip_address.contains(kw)
+        )
+    dt_from = _parse_time(time_from)
+    dt_to = _parse_time(time_to)
+    if dt_from:
+        stmt = stmt.filter(UmeAlarmCurrent.last_seen_at >= dt_from.replace(tzinfo=None))
+    if dt_to:
+        stmt = stmt.filter(UmeAlarmCurrent.last_seen_at <= dt_to.replace(tzinfo=None))
+
+    allowed_order_by = {
+        "last_seen_at": UmeAlarmCurrent.last_seen_at,
+        "time_created": UmeAlarmCurrent.time_created,
+        "perceived_severity": UmeAlarmCurrent.perceived_severity,
+        "event_type": UmeAlarmCurrent.event_type,
+        "ne_id": UmeAlarmCurrent.ne_id,
+    }
+    col = allowed_order_by.get(str(order_by or "").strip(), UmeAlarmCurrent.last_seen_at)
+    if str(order or "").strip().lower() == "asc":
+        stmt = stmt.order_by(col.asc())
+    else:
+        stmt = stmt.order_by(col.desc())
+
+    selected_fields: set[str] = set()
+    fields_meta = ume_alarms_fields()
+    selectable_fields = set(str(x) for x in (fields_meta.get("selectable_fields") or []))
+    order_by_allowed = [str(x) for x in (fields_meta.get("order_by_allowed") or [])]
+    if select_fields and str(select_fields).strip():
+        selected_fields = {x.strip() for x in str(select_fields).split(",") if x.strip()}
+        invalid = [x for x in selected_fields if x not in selectable_fields]
+        if invalid:
+            raise HTTPException(status_code=400, detail=f"invalid_select_fields:{','.join(sorted(invalid)[:20])}")
+
+    total = int(stmt.count())
+    rows = stmt.offset((int(page) - 1) * int(page_size)).limit(int(page_size)).all()
+    return {
+        "total": total,
+        "page": int(page),
+        "page_size": int(page_size),
+        "select_fields": sorted(selected_fields) if selected_fields else [],
+        "meta": {
+            "available_fields": sorted(selectable_fields),
+            "order_by_allowed": order_by_allowed,
+            "time_filter_field": "last_seen_at",
+        },
+        "items": [_serialize_ume_alarm_raw_row(alarm, ne, selected_fields) for alarm, ne in rows],
+    }
+
+
+@app.get("/v1/ume/alarms/aggregate/raw")
+def ume_alarms_aggregate_raw(
+    group_by: str = Query(default="alarm_perceived_severity"),
+    group_by2: str | None = Query(default=None),
+    severity: str | None = Query(default=None),
+    is_cleared: str | None = Query(default=None),
+    ne_id: str | None = Query(default=None),
+    event_type: str | None = Query(default=None),
+    keyword: str | None = Query(default=None),
+    time_from: str | None = Query(default=None),
+    time_to: str | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=2000),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    fields_meta = ume_alarms_fields()
+    selectable_fields = set(str(x) for x in (fields_meta.get("selectable_fields") or []))
+    g1 = str(group_by or "").strip()
+    g2 = str(group_by2 or "").strip()
+    if g1 not in selectable_fields:
+        raise HTTPException(status_code=400, detail=f"invalid_group_by:{g1}")
+    if g2 and g2 not in selectable_fields:
+        raise HTTPException(status_code=400, detail=f"invalid_group_by2:{g2}")
+
+    stmt = db.query(UmeAlarmCurrent, UmeInventoryNE).outerjoin(
+        UmeInventoryNE, UmeAlarmCurrent.ne_id == UmeInventoryNE.ne_id
+    )
+    if severity and str(severity).strip():
+        stmt = stmt.filter(UmeAlarmCurrent.perceived_severity == str(severity).strip())
+    if is_cleared and str(is_cleared).strip():
+        stmt = stmt.filter(UmeAlarmCurrent.is_cleared == str(is_cleared).strip())
+    if ne_id and str(ne_id).strip():
+        stmt = stmt.filter(UmeAlarmCurrent.ne_id == str(ne_id).strip())
+    if event_type and str(event_type).strip():
+        stmt = stmt.filter(UmeAlarmCurrent.event_type.contains(str(event_type).strip()))
+    kw = str(keyword or "").strip()
+    if kw:
+        stmt = stmt.filter(
+            UmeAlarmCurrent.alarm_key.contains(kw)
+            | UmeAlarmCurrent.object_name.contains(kw)
+            | UmeAlarmCurrent.native_probable_cause.contains(kw)
+            | UmeAlarmCurrent.event_type.contains(kw)
+            | UmeInventoryNE.ne_name.contains(kw)
+            | UmeInventoryNE.user_label.contains(kw)
+            | UmeInventoryNE.ip_address.contains(kw)
+        )
+    dt_from = _parse_time(time_from)
+    dt_to = _parse_time(time_to)
+    if dt_from:
+        stmt = stmt.filter(UmeAlarmCurrent.last_seen_at >= dt_from.replace(tzinfo=None))
+    if dt_to:
+        stmt = stmt.filter(UmeAlarmCurrent.last_seen_at <= dt_to.replace(tzinfo=None))
+
+    rows = stmt.order_by(UmeAlarmCurrent.last_seen_at.desc()).all()
+    counts: dict[tuple[str, str], int] = {}
+    for alarm, ne in rows:
+        k1 = _extract_ume_raw_group_field(alarm, ne, g1)
+        k2 = _extract_ume_raw_group_field(alarm, ne, g2) if g2 else ""
+        kk = (k1, k2)
+        counts[kk] = int(counts.get(kk, 0)) + 1
+    buckets = sorted(counts.items(), key=lambda x: x[1], reverse=True)[: int(limit)]
+    return {
+        "total": len(rows),
+        "group_by": g1,
+        "group_by2": g2 or None,
+        "meta": {
+            "available_fields": sorted(selectable_fields),
+            "group_by_allowed": sorted(selectable_fields),
+            "applied_filters": {
+                "severity": str(severity or "").strip() or None,
+                "is_cleared": str(is_cleared or "").strip() or None,
+                "ne_id": str(ne_id or "").strip() or None,
+                "event_type": str(event_type or "").strip() or None,
+                "keyword": str(keyword or "").strip() or None,
+                "time_from": str(time_from or "").strip() or None,
+                "time_to": str(time_to or "").strip() or None,
+            },
+            "time_filter_field": "last_seen_at",
+            "limit": int(limit),
+        },
+        "buckets": [
+            {"key": k1, "key2": (k2 if g2 else None), "count": int(v)}
+            for (k1, k2), v in buckets
+        ],
+    }
+
+
 @app.get("/v1/ume/alarms/aggregate")
 def ume_alarms_aggregate(db: Session = Depends(get_db)) -> dict[str, Any]:
     rows = db.query(UmeAlarmCurrent, UmeInventoryNE).outerjoin(
@@ -618,6 +928,55 @@ def ume_alarms_aggregate(db: Session = Depends(get_db)) -> dict[str, Any]:
     by_severity = _aggregate_rows(rows, lambda x: x[0].perceived_severity)
     by_ne = _aggregate_rows(rows, lambda x: (x[1].user_label if x[1] else "") or (x[1].ne_name if x[1] else "") or x[0].ne_id)
     return {"total": len(rows), "by_severity": by_severity, "by_ne": by_ne}
+
+
+@app.get("/v1/ume/diagnostics")
+def ume_diagnostics(db: Session = Depends(get_db)) -> dict[str, Any]:
+    rows = db.query(UmeAlarmCurrent, UmeInventoryNE).outerjoin(
+        UmeInventoryNE, UmeAlarmCurrent.ne_id == UmeInventoryNE.ne_id
+    ).all()
+    by_severity = _aggregate_rows(rows, lambda x: x[0].perceived_severity)
+    by_alarm_code = _aggregate_rows(rows, lambda x: x[0].event_type)[:10]
+    by_ne = _aggregate_rows(rows, lambda x: (x[1].user_label if x[1] else "") or (x[1].ne_name if x[1] else "") or x[0].ne_id)[:10]
+
+    def _protocol_bucket(text: str) -> str:
+        t = (text or "").upper()
+        if any(x in t for x in ("BGP", "OSPF", "ISIS", "LDP", "MPLS", "L3VPN", "VPN")):
+            return "IP/MPLS"
+        if any(x in t for x in ("ETH", "GE", "10GE", "25GE", "40GE", "100GE", "XGE")):
+            return "ETH"
+        if any(x in t for x in ("OTN", "ODU", "OCH", "OMS", "OSC", "DWDM", "WDM", "ROADM")):
+            return "OTN/光"
+        if any(x in t for x in ("CLOCK", "SYNC", "PTP", "1588", "BITS", "TOD")):
+            return "时钟"
+        if any(x in t for x in ("PWR", "POWER", "PSU", "BAT", "BATT")):
+            return "电源"
+        return "其他"
+
+    proto_counts: dict[str, int] = {}
+    for alarm, ne in rows:
+        blob = " | ".join(
+            [
+                str(alarm.event_type or ""),
+                str(alarm.native_probable_cause or ""),
+                str(alarm.object_name or ""),
+                str(ne.ne_name if ne else ""),
+                str(ne.user_label if ne else ""),
+                str(ne.ip_address if ne else ""),
+            ]
+        )
+        bucket = _protocol_bucket(blob)
+        proto_counts[bucket] = int(proto_counts.get(bucket, 0)) + 1
+    protocol_summary = sorted(proto_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+
+    return {
+        "source": "ume_alarms_current",
+        "total_alarms": len(rows),
+        "severity_summary": [{"key": k, "count": v} for k, v in by_severity],
+        "top_alarm_codes": [{"key": k, "count": v} for k, v in by_alarm_code],
+        "top_ne": [{"key": k, "count": v} for k, v in by_ne],
+        "protocol_summary": [{"key": k, "count": v} for k, v in protocol_summary],
+    }
 
 
 @app.get("/v1/ume/alarms/history")
