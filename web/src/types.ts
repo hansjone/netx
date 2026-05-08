@@ -101,6 +101,21 @@ export type UmeNeItem = {
   user_label: string;
   ip_address: string;
   ne_type: string;
+  device_level?: string;
+  host_name?: string;
+  location?: string;
+  hardware_version?: string;
+  loopback?: string;
+  consistent_state?: string;
+  interface_version?: string;
+  mac?: string;
+  admin_status?: string;
+  address_type?: string;
+  connection_status?: string;
+  maintain_status?: string;
+  net_mask?: string;
+  create_time?: string;
+  creator?: string;
   last_seen_at?: string;
 };
 

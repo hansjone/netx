@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   apiPost,
@@ -23,6 +23,7 @@ export function UmePage() {
   const [neKeyword, setNeKeyword] = useState("");
   const [nePage, setNePage] = useState(1);
   const [nePageSize, setNePageSize] = useState(50);
+  const [expandedNeId, setExpandedNeId] = useState("");
 
   const [curSeverity, setCurSeverity] = useState("");
   const [curCleared, setCurCleared] = useState("");
@@ -265,19 +266,55 @@ export function UmePage() {
               <th>ne_name</th>
               <th>ip</th>
               <th>type</th>
+              <th>device_level</th>
+              <th>host_name</th>
+              <th>hw_ver</th>
               <th>last_seen</th>
             </tr>
           </thead>
           <tbody>
             {(neQuery.data?.items || []).map((x) => (
-              <tr key={x.ne_id}>
-                <td>{x.ne_id}</td>
-                <td>{x.user_label}</td>
-                <td>{x.ne_name}</td>
-                <td>{x.ip_address}</td>
-                <td>{x.ne_type}</td>
-                <td>{x.last_seen_at ? formatSystemTime(x.last_seen_at) : "-"}</td>
-              </tr>
+              <Fragment key={x.ne_id}>
+                <tr>
+                  <td>
+                    <button
+                      className="link-btn"
+                      onClick={() => setExpandedNeId(expandedNeId === x.ne_id ? "" : x.ne_id)}
+                      title={expandedNeId === x.ne_id ? "收起详情" : "展开详情"}
+                    >
+                      {x.ne_id}
+                    </button>
+                  </td>
+                  <td>{x.user_label}</td>
+                  <td>{x.ne_name}</td>
+                  <td>{x.ip_address}</td>
+                  <td>{x.ne_type}</td>
+                  <td>{x.device_level || "-"}</td>
+                  <td>{x.host_name || "-"}</td>
+                  <td>{x.hardware_version || "-"}</td>
+                  <td>{x.last_seen_at ? formatSystemTime(x.last_seen_at) : "-"}</td>
+                </tr>
+                {expandedNeId === x.ne_id ? (
+                  <tr>
+                    <td colSpan={9}>
+                      <div style={{ fontSize: 12, display: "grid", gridTemplateColumns: "repeat(3, minmax(180px, 1fr))", gap: 8 }}>
+                        <div>consistent_state: {x.consistent_state || "-"}</div>
+                        <div>admin_status: {x.admin_status || "-"}</div>
+                        <div>connection_status: {x.connection_status || "-"}</div>
+                        <div>maintain_status: {x.maintain_status || "-"}</div>
+                        <div>address_type: {x.address_type || "-"}</div>
+                        <div>location: {x.location || "-"}</div>
+                        <div>loopback: {x.loopback || "-"}</div>
+                        <div>net_mask: {x.net_mask || "-"}</div>
+                        <div>mac: {x.mac || "-"}</div>
+                        <div>interface_version: {x.interface_version || "-"}</div>
+                        <div>create_time: {x.create_time || "-"}</div>
+                        <div>creator: {x.creator || "-"}</div>
+                      </div>
+                    </td>
+                  </tr>
+                ) : null}
+              </Fragment>
             ))}
           </tbody>
         </table>
@@ -368,12 +405,19 @@ export function UmePage() {
           </tbody>
         </table>
         <div className="pager">
-          <div className="pager__meta">共 {currentQuery.data?.total || 0} 条 · 第 {curPage} 页</div>
+          <div className="pager__meta">
+            共 {currentQuery.data?.total || 0} 条 · 第 {curPage}/
+            {Math.max(1, Math.ceil(Math.max(0, Number(currentQuery.data?.total || 0)) / Math.max(1, curPageSize)))} 页
+          </div>
           <div className="pager__controls">
             <button className="pager__btn" onClick={() => setCurPage(Math.max(1, curPage - 1))} disabled={curPage <= 1}>
               上一页
             </button>
-            <button className="pager__btn" onClick={() => setCurPage(curPage + 1)} disabled={(currentQuery.data?.items || []).length < curPageSize}>
+            <button
+              className="pager__btn"
+              onClick={() => setCurPage(curPage + 1)}
+              disabled={curPage >= Math.max(1, Math.ceil(Math.max(0, Number(currentQuery.data?.total || 0)) / Math.max(1, curPageSize)))}
+            >
               下一页
             </button>
             <select
@@ -457,12 +501,19 @@ export function UmePage() {
           </tbody>
         </table>
         <div className="pager">
-          <div className="pager__meta">共 {historyQuery.data?.total || 0} 条 · 第 {hisPage} 页</div>
+          <div className="pager__meta">
+            共 {historyQuery.data?.total || 0} 条 · 第 {hisPage}/
+            {Math.max(1, Math.ceil(Math.max(0, Number(historyQuery.data?.total || 0)) / Math.max(1, hisPageSize)))} 页
+          </div>
           <div className="pager__controls">
             <button className="pager__btn" onClick={() => setHisPage(Math.max(1, hisPage - 1))} disabled={hisPage <= 1}>
               上一页
             </button>
-            <button className="pager__btn" onClick={() => setHisPage(hisPage + 1)} disabled={(historyQuery.data?.items || []).length < hisPageSize}>
+            <button
+              className="pager__btn"
+              onClick={() => setHisPage(hisPage + 1)}
+              disabled={hisPage >= Math.max(1, Math.ceil(Math.max(0, Number(historyQuery.data?.total || 0)) / Math.max(1, hisPageSize)))}
+            >
               下一页
             </button>
             <select

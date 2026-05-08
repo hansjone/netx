@@ -195,6 +195,31 @@ def on_startup() -> None:
             conn.exec_driver_sql("ALTER TABLE alarms_norm ADD COLUMN IF NOT EXISTS me_level VARCHAR(128) DEFAULT ''")
             conn.exec_driver_sql("ALTER TABLE ume_token_cache ADD COLUMN IF NOT EXISTS lock_owner VARCHAR(128) DEFAULT ''")
             conn.exec_driver_sql("ALTER TABLE ume_token_cache ADD COLUMN IF NOT EXISTS lock_expires_at_epoch_s INTEGER DEFAULT 0")
+            conn.exec_driver_sql("ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS device_level VARCHAR(64) DEFAULT ''")
+            conn.exec_driver_sql("ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS host_name VARCHAR(256) DEFAULT ''")
+            conn.exec_driver_sql("ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS location VARCHAR(512) DEFAULT ''")
+            conn.exec_driver_sql(
+                "ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS hardware_version VARCHAR(128) DEFAULT ''"
+            )
+            conn.exec_driver_sql("ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS loopback VARCHAR(128) DEFAULT ''")
+            conn.exec_driver_sql(
+                "ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS consistent_state VARCHAR(64) DEFAULT ''"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS interface_version VARCHAR(128) DEFAULT ''"
+            )
+            conn.exec_driver_sql("ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS mac VARCHAR(128) DEFAULT ''")
+            conn.exec_driver_sql("ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS admin_status VARCHAR(64) DEFAULT ''")
+            conn.exec_driver_sql("ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS address_type VARCHAR(64) DEFAULT ''")
+            conn.exec_driver_sql(
+                "ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS connection_status VARCHAR(64) DEFAULT ''"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS maintain_status VARCHAR(64) DEFAULT ''"
+            )
+            conn.exec_driver_sql("ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS net_mask VARCHAR(128) DEFAULT ''")
+            conn.exec_driver_sql("ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS create_time VARCHAR(64) DEFAULT ''")
+            conn.exec_driver_sql("ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS creator VARCHAR(128) DEFAULT ''")
     except Exception:
         pass
     try:
@@ -379,6 +404,21 @@ def ume_list_ne(
             "user_label": str(x.user_label or ""),
             "ip_address": str(x.ip_address or ""),
             "ne_type": str(x.ne_type or ""),
+            "device_level": str(x.device_level or ""),
+            "host_name": str(x.host_name or ""),
+            "location": str(x.location or ""),
+            "hardware_version": str(x.hardware_version or ""),
+            "loopback": str(x.loopback or ""),
+            "consistent_state": str(x.consistent_state or ""),
+            "interface_version": str(x.interface_version or ""),
+            "mac": str(x.mac or ""),
+            "admin_status": str(x.admin_status or ""),
+            "address_type": str(x.address_type or ""),
+            "connection_status": str(x.connection_status or ""),
+            "maintain_status": str(x.maintain_status or ""),
+            "net_mask": str(x.net_mask or ""),
+            "create_time": str(x.create_time or ""),
+            "creator": str(x.creator or ""),
             "last_seen_at": (_ensure_utc(x.last_seen_at) or datetime.now(timezone.utc)).isoformat(),
         }
         for x in rows
@@ -397,6 +437,21 @@ def ume_get_ne(ne_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
         "user_label": str(row.user_label or ""),
         "ip_address": str(row.ip_address or ""),
         "ne_type": str(row.ne_type or ""),
+        "device_level": str(row.device_level or ""),
+        "host_name": str(row.host_name or ""),
+        "location": str(row.location or ""),
+        "hardware_version": str(row.hardware_version or ""),
+        "loopback": str(row.loopback or ""),
+        "consistent_state": str(row.consistent_state or ""),
+        "interface_version": str(row.interface_version or ""),
+        "mac": str(row.mac or ""),
+        "admin_status": str(row.admin_status or ""),
+        "address_type": str(row.address_type or ""),
+        "connection_status": str(row.connection_status or ""),
+        "maintain_status": str(row.maintain_status or ""),
+        "net_mask": str(row.net_mask or ""),
+        "create_time": str(row.create_time or ""),
+        "creator": str(row.creator or ""),
         "vendor": str(row.vendor or ""),
         "source_type": str(row.source_type or ""),
         "first_seen_at": (_ensure_utc(row.first_seen_at) or datetime.now(timezone.utc)).isoformat(),
@@ -415,7 +470,9 @@ def ume_list_alarms(
     page_size: int = Query(default=50, ge=1, le=500),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    stmt = db.query(UmeAlarmCurrent)
+    stmt = db.query(UmeAlarmCurrent, UmeInventoryNE).outerjoin(
+        UmeInventoryNE, UmeAlarmCurrent.ne_id == UmeInventoryNE.ne_id
+    )
     if severity and str(severity).strip():
         stmt = stmt.filter(UmeAlarmCurrent.perceived_severity == str(severity).strip())
     if is_cleared and str(is_cleared).strip():
@@ -430,24 +487,27 @@ def ume_list_alarms(
             | UmeAlarmCurrent.ne_name.contains(kw)
             | UmeAlarmCurrent.user_label.contains(kw)
             | UmeAlarmCurrent.native_probable_cause.contains(kw)
+            | UmeInventoryNE.ne_name.contains(kw)
+            | UmeInventoryNE.user_label.contains(kw)
+            | UmeInventoryNE.ip_address.contains(kw)
         )
     total = int(stmt.count())
     rows = stmt.order_by(UmeAlarmCurrent.last_seen_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
     items = [
         {
-            "alarm_key": str(x.alarm_key or ""),
-            "ne_id": str(x.ne_id or ""),
-            "ne_name": str(x.ne_name or ""),
-            "user_label": str(x.user_label or ""),
-            "object_name": str(x.object_name or ""),
-            "event_type": str(x.event_type or ""),
-            "native_probable_cause": str(x.native_probable_cause or ""),
-            "perceived_severity": str(x.perceived_severity or ""),
-            "is_cleared": str(x.is_cleared or ""),
-            "time_created": str(x.time_created or ""),
-            "last_seen_at": (_ensure_utc(x.last_seen_at) or datetime.now(timezone.utc)).isoformat(),
+            "alarm_key": str(alarm.alarm_key or ""),
+            "ne_id": str(alarm.ne_id or ""),
+            "ne_name": str(alarm.ne_name or (ne.ne_name if ne else "") or ""),
+            "user_label": str(alarm.user_label or (ne.user_label if ne else "") or ""),
+            "object_name": str(alarm.object_name or ""),
+            "event_type": str(alarm.event_type or ""),
+            "native_probable_cause": str(alarm.native_probable_cause or ""),
+            "perceived_severity": str(alarm.perceived_severity or ""),
+            "is_cleared": str(alarm.is_cleared or ""),
+            "time_created": str(alarm.time_created or ""),
+            "last_seen_at": (_ensure_utc(alarm.last_seen_at) or datetime.now(timezone.utc)).isoformat(),
         }
-        for x in rows
+        for alarm, ne in rows
     ]
     return {"total": total, "page": page, "page_size": page_size, "items": items}
 
@@ -471,7 +531,9 @@ def ume_list_alarms_history(
     page_size: int = Query(default=50, ge=1, le=500),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    stmt = db.query(UmeAlarmHistory)
+    stmt = db.query(UmeAlarmHistory, UmeInventoryNE).outerjoin(
+        UmeInventoryNE, UmeAlarmHistory.ne_id == UmeInventoryNE.ne_id
+    )
     if severity and str(severity).strip():
         stmt = stmt.filter(UmeAlarmHistory.perceived_severity == str(severity).strip())
     if ne_id and str(ne_id).strip():
@@ -484,6 +546,9 @@ def ume_list_alarms_history(
             | UmeAlarmHistory.ne_name.contains(kw)
             | UmeAlarmHistory.user_label.contains(kw)
             | UmeAlarmHistory.native_probable_cause.contains(kw)
+            | UmeInventoryNE.ne_name.contains(kw)
+            | UmeInventoryNE.user_label.contains(kw)
+            | UmeInventoryNE.ip_address.contains(kw)
         )
     dt_from = _parse_time(time_from)
     dt_to = _parse_time(time_to)
@@ -495,19 +560,19 @@ def ume_list_alarms_history(
     rows = stmt.order_by(UmeAlarmHistory.last_seen_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
     items = [
         {
-            "alarm_key": str(x.alarm_key or ""),
-            "ne_id": str(x.ne_id or ""),
-            "ne_name": str(x.ne_name or ""),
-            "user_label": str(x.user_label or ""),
-            "object_name": str(x.object_name or ""),
-            "event_type": str(x.event_type or ""),
-            "native_probable_cause": str(x.native_probable_cause or ""),
-            "perceived_severity": str(x.perceived_severity or ""),
-            "is_cleared": str(x.is_cleared or ""),
-            "time_created": str(x.time_created or ""),
-            "last_seen_at": (_ensure_utc(x.last_seen_at) or datetime.now(timezone.utc)).isoformat(),
+            "alarm_key": str(alarm.alarm_key or ""),
+            "ne_id": str(alarm.ne_id or ""),
+            "ne_name": str(alarm.ne_name or (ne.ne_name if ne else "") or ""),
+            "user_label": str(alarm.user_label or (ne.user_label if ne else "") or ""),
+            "object_name": str(alarm.object_name or ""),
+            "event_type": str(alarm.event_type or ""),
+            "native_probable_cause": str(alarm.native_probable_cause or ""),
+            "perceived_severity": str(alarm.perceived_severity or ""),
+            "is_cleared": str(alarm.is_cleared or ""),
+            "time_created": str(alarm.time_created or ""),
+            "last_seen_at": (_ensure_utc(alarm.last_seen_at) or datetime.now(timezone.utc)).isoformat(),
         }
-        for x in rows
+        for alarm, ne in rows
     ]
     return {"total": total, "page": page, "page_size": page_size, "items": items}
 

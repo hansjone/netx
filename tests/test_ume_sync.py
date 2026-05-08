@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from netx_api.db import Base
 from netx_api.models import UmeAlarmCurrent, UmeInventoryNE
 from netx_api.ume_client import UMEClient
-from netx_api.ume_sync_service import sync_alarms_current, sync_inventory_full
+from netx_api.ume_sync_service import _derive_ne_id_from_alarm, sync_alarms_current, sync_inventory_full
 
 
 class _FakeResponse:
@@ -139,7 +139,17 @@ class UmeSyncServiceTests(unittest.TestCase):
         class _C:
             def get_network_elements(self):
                 rows = [
-                    {"ne-id": "NE-1", "name": "ne1", "user-label": "网元1", "ip-Address": "10.0.0.1", "type": "A"},
+                    {
+                        "ne-id": "NE-1",
+                        "name": "ne1",
+                        "user-label": "网元1",
+                        "ip-Address": "10.0.0.1",
+                        "type": "A",
+                        "device-level": "Access",
+                        "host-name": "host-1",
+                        "hardware-version": "V1",
+                        "vendor-name": "ZTE",
+                    },
                 ]
                 return rows, None
 
@@ -154,6 +164,9 @@ class UmeSyncServiceTests(unittest.TestCase):
         ne = self.db.get(UmeInventoryNE, "NE-1")
         self.assertIsNotNone(ne)
         self.assertEqual(ne.user_label, "网元1")
+        self.assertEqual(ne.device_level, "Access")
+        self.assertEqual(ne.host_name, "host-1")
+        self.assertEqual(ne.hardware_version, "V1")
 
     def test_sync_current_alarms_upsert(self):
         class _C:
@@ -249,6 +262,19 @@ class UmeSyncServiceTests(unittest.TestCase):
         self.assertEqual(job.status, "done")
         self.assertEqual(job.pulled_count, 1)
         self.assertIsNotNone(self.db.get(UmeAlarmCurrent, "AK-1"))
+
+    def test_derive_ne_id_from_alarmkey_formats(self):
+        alarm_hash = {"alarmkey": "00ceb960-1b62-478e-8303-0935ffea1d28#99010"}
+        alarm_csv = {"alarmkey": "00ceb960-1b62-478e-8303-0935ffea1d28, 4237, 79"}
+
+        self.assertEqual(
+            _derive_ne_id_from_alarm(alarm_hash),
+            "00ceb960-1b62-478e-8303-0935ffea1d28",
+        )
+        self.assertEqual(
+            _derive_ne_id_from_alarm(alarm_csv),
+            "00ceb960-1b62-478e-8303-0935ffea1d28",
+        )
 
 
 if __name__ == "__main__":

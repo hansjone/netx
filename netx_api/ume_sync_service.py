@@ -39,7 +39,7 @@ def _pick(d: dict[str, Any], *keys: str) -> Any:
 
 
 def _alarm_key(alarm: dict[str, Any]) -> str:
-    key = _s(_pick(alarm, "alarmKey", "alarm-key", "id"))
+    key = _s(_pick(alarm, "alarmKey", "alarm-key","alarmkey","id"))
     if key:
         return key
     parts = [
@@ -50,6 +50,25 @@ def _alarm_key(alarm: dict[str, Any]) -> str:
     ]
     merged = "|".join(x for x in parts if x)
     return merged or f"fallback-{datetime.utcnow().timestamp()}"
+
+
+def _derive_ne_id_from_alarm(alarm: dict[str, Any]) -> str:
+    ne_id = _s(_pick(alarm, "ne-id", "neId", "ne_id"))
+    if ne_id:
+        return ne_id
+
+    alarm_key = _s(_pick(alarm, "alarmKey", "alarm-key", "alarmkey"))
+    if not alarm_key:
+        return ""
+
+    # Common UME formats observed:
+    # 1) "<net_id>#<suffix>"
+    # 2) "<net_id>, <x>, <y>"
+    if "#" in alarm_key:
+        return _s(alarm_key.split("#", 1)[0])
+    if "," in alarm_key:
+        return _s(alarm_key.split(",", 1)[0])
+    return ""
 
 
 def _build_sync_job(domain: str, trigger_mode: str) -> UmeSyncJob:
@@ -88,6 +107,22 @@ def sync_inventory_full(db: Session, client: UMEClient, *, trigger_mode: str = "
             existing.user_label = _s(_pick(row, "user-label", "user_label"))
             existing.ip_address = _s(_pick(row, "ip-Address", "ip-address", "ip"))
             existing.ne_type = _s(_pick(row, "type", "ne-type"))
+            existing.device_level = _s(_pick(row, "device-level"))
+            existing.host_name = _s(_pick(row, "host-name"))
+            existing.location = _s(_pick(row, "location"))
+            existing.hardware_version = _s(_pick(row, "hardware-version"))
+            existing.loopback = _s(_pick(row, "loopback"))
+            existing.consistent_state = _s(_pick(row, "consistent-state"))
+            existing.interface_version = _s(_pick(row, "interface-version"))
+            existing.mac = _s(_pick(row, "mac"))
+            existing.admin_status = _s(_pick(row, "admin-status"))
+            existing.address_type = _s(_pick(row, "address-type"))
+            existing.connection_status = _s(_pick(row, "connection-status"))
+            existing.maintain_status = _s(_pick(row, "maintain-status"))
+            existing.net_mask = _s(_pick(row, "net-mask"))
+            existing.create_time = _s(_pick(row, "create-time"))
+            existing.creator = _s(_pick(row, "creator"))
+            existing.vendor = _s(_pick(row, "vendor-name")) or "ZTE"
             existing.last_seen_at = now
             existing.raw_json = json.dumps(row, ensure_ascii=False, default=str)
 
@@ -192,7 +227,7 @@ def _sync_alarms_common(
                     inserted += 1
                 else:
                     updated += 1
-            existing.ne_id = _s(_pick(alarm, "ne-id", "neId", "ne_id"))
+            existing.ne_id = _derive_ne_id_from_alarm(alarm)
             existing.ne_name = _s(_pick(alarm, "ne-name", "neName", "ne_name"))
             existing.user_label = _s(_pick(alarm, "user-label", "userLabel", "user_label"))
             existing.object_name = _s(_pick(alarm, "objectName", "object-name"))
