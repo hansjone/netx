@@ -23,7 +23,8 @@ def analyze_with_oclaw(payload: dict[str, Any]) -> dict[str, Any]:
     token = str(settings.oclaw_analyze_token or "").strip()
     if token:
         headers["authorization"] = f"Bearer {token}"
-    with httpx.Client(timeout=_analyze_httpx_timeout()) as client:
+    # Avoid inheriting system proxy settings for local oclaw bridge calls.
+    with httpx.Client(timeout=_analyze_httpx_timeout(), trust_env=False) as client:
         resp = client.post(settings.oclaw_analyze_url, json=payload, headers=headers)
         text = resp.text
         if not resp.is_success:
@@ -39,7 +40,8 @@ def health_with_oclaw() -> dict[str, Any]:
     if token:
         headers["authorization"] = f"Bearer {token}"
     health_s = max(3.0, float(settings.oclaw_health_timeout_sec))
-    with httpx.Client(timeout=health_s) as client:
+    # Avoid inheriting system proxy settings for local oclaw bridge calls.
+    with httpx.Client(timeout=health_s, trust_env=False) as client:
         resp = client.get(settings.oclaw_health_url, headers=headers)
         status = int(resp.status_code)
         text = resp.text
