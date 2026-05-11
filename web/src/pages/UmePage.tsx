@@ -14,6 +14,7 @@ import { formatSystemTime } from "../utils/time";
 export function UmePage() {
   const queryClient = useQueryClient();
   const [tokenOpError, setTokenOpError] = useState("");
+  const [runtimeTaskError, setRuntimeTaskError] = useState("");
   const [syncPage, setSyncPage] = useState(1);
   const [syncPageSize, setSyncPageSize] = useState(20);
   const [neKeyword, setNeKeyword] = useState("");
@@ -113,8 +114,14 @@ export function UmePage() {
         `/v1/ume/runtime/tasks/${encodeURIComponent(vars.task)}/${vars.action}`,
         {},
       ),
+    onMutate: () => {
+      setRuntimeTaskError("");
+    },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["umeSyncStatus"] });
+    },
+    onError: (err) => {
+      setRuntimeTaskError(String(err));
     },
   });
 
@@ -209,6 +216,11 @@ export function UmePage() {
           </tbody>
         </table>
         <h3 style={{ marginTop: 12 }}>后台任务</h3>
+        {runtimeTaskError ? (
+          <div className="pill pill--high" style={{ marginBottom: 8 }}>
+            后台任务操作失败: {runtimeTaskError}
+          </div>
+        ) : null}
         <table>
           <thead>
             <tr>
