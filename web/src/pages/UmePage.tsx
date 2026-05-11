@@ -306,7 +306,18 @@ export function UmePage() {
         <h2>网元清单</h2>
         <div className="filter-inline">
           <input value={neKeyword} placeholder="keyword(ne_id/ne_name/user_label/ip/host_name)" onChange={(e) => setNeKeyword(e.target.value)} />
-          <button onClick={() => queryClient.invalidateQueries({ queryKey: ["umeNE"] })}>查询</button>
+          <button type="button" onClick={() => queryClient.invalidateQueries({ queryKey: ["umeNE"] })}>查询</button>
+          <button
+            type="button"
+            title="清空 keyword，回到第 1 页"
+            onClick={() => {
+              setNeKeyword("");
+              setNePage(1);
+            }}
+            disabled={!neKeyword.trim()}
+          >
+            清除筛选
+          </button>
         </div>
         <table>
           <thead>
@@ -424,6 +435,20 @@ export function UmePage() {
             <option value="true">true</option>
             <option value="false">false</option>
           </select>
+          <button
+            type="button"
+            title="清空 keyword、ne_id、级别、is_cleared，回到第 1 页"
+            onClick={() => {
+              setCurKeyword("");
+              setCurNeId("");
+              setCurSeverity("");
+              setCurCleared("");
+              setCurPage(1);
+            }}
+            disabled={!curKeyword.trim() && !curNeId.trim() && !curSeverity && !curCleared}
+          >
+            清除筛选
+          </button>
         </div>
         <table>
           <thead>
