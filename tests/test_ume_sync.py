@@ -207,6 +207,118 @@ class UmeSyncServiceTests(unittest.TestCase):
         self.assertIsNotNone(self.db.get(UmeInventoryNE, "NE-1"))
         self.assertIsNotNone(self.db.get(UmeInventoryNE, "NE-2"))
 
+    def test_sync_inventory_reconcile_removes_ne_not_in_snapshot(self):
+        class _CWide:
+            def get_network_elements(self, *, limit=None, marker=None):
+                class _D:
+                    marker = ""
+                    is_end_of_reply = True
+
+                return (
+                    [
+                        {"ne-id": "NE-1", "name": "ne1"},
+                        {"ne-id": "NE-2", "name": "ne2"},
+                    ],
+                    _D(),
+                )
+
+        class _CNarrow:
+            def get_network_elements(self, *, limit=None, marker=None):
+                class _D:
+                    marker = ""
+                    is_end_of_reply = True
+
+                return ([{"ne-id": "NE-1", "name": "ne1"}], _D())
+
+        sync_inventory_full(self.db, _CWide(), trigger_mode="manual")
+        self.assertIsNotNone(self.db.get(UmeInventoryNE, "NE-2"))
+
+        sync_inventory_full(self.db, _CNarrow(), trigger_mode="manual")
+        self.assertIsNotNone(self.db.get(UmeInventoryNE, "NE-1"))
+        self.assertIsNone(self.db.get(UmeInventoryNE, "NE-2"))
+
+    def test_sync_inventory_partial_pull_does_not_delete(self):
+        class _CPartial:
+            def get_network_elements(self, *, limit=None, marker=None):
+                class _D:
+                    marker = ""
+                    is_end_of_reply = False
+
+                return ([{"ne-id": "NE-9", "name": "ne9"}], _D())
+
+        self.db.add(UmeInventoryNE(ne_id="NE-OLD", ne_name="old"))
+        self.db.commit()
+
+        sync_inventory_full(self.db, _CPartial(), trigger_mode="manual")
+        self.assertIsNotNone(self.db.get(UmeInventoryNE, "NE-9"))
+        self.assertIsNotNone(self.db.get(UmeInventoryNE, "NE-OLD"))
+
+    def test_sync_current_alarms_reconcile_drops_missing_keys(self):
+        class _COne:
+            def get_alarms(self, *, is_uncleared: bool, limit=None, marker=None):
+                class _D:
+                    marker = ""
+                    is_end_of_reply = True
+
+                return (
+                    [
+                        {
+                            "alarmKey": "AK-KEEP",
+                            "ne-id": "NE-1",
+                            "perceivedSeverity": "major",
+                            "isCleared": "false",
+                        },
+                    ],
+                    _D(),
+                )
+
+        self.db.add(
+            UmeAlarmCurrent(
+                alarm_key="AK-GONE",
+                ne_id="NE-X",
+                perceived_severity="minor",
+                is_cleared="false",
+            )
+        )
+        self.db.commit()
+
+        sync_alarms_current(self.db, _COne(), trigger_mode="manual")
+        self.assertIsNotNone(self.db.get(UmeAlarmCurrent, "AK-KEEP"))
+        self.assertIsNone(self.db.get(UmeAlarmCurrent, "AK-GONE"))
+
+    def test_sync_current_alarms_partial_pull_keeps_stale_rows(self):
+        class _CPartial:
+            def get_alarms(self, *, is_uncleared: bool, limit=None, marker=None):
+                class _D:
+                    marker = ""
+                    is_end_of_reply = False
+
+                return (
+                    [
+                        {
+                            "alarmKey": "AK-NEW",
+                            "ne-id": "NE-1",
+                            "perceivedSeverity": "major",
+                            "isCleared": "false",
+                        },
+                    ],
+                    _D(),
+                )
+
+        self.db.add(
+            UmeAlarmCurrent(
+                alarm_key="AK-STALE",
+                ne_id="NE-X",
+                perceived_severity="minor",
+                is_cleared="false",
+            )
+        )
+        self.db.commit()
+
+        sync_alarms_current(self.db, _CPartial(), trigger_mode="manual")
+        self.assertIsNotNone(self.db.get(UmeAlarmCurrent, "AK-NEW"))
+        self.assertIsNotNone(self.db.get(UmeAlarmCurrent, "AK-STALE"))
+
     def test_sync_current_alarms_upsert(self):
         class _C:
             def get_alarms(self, *, is_uncleared: bool, limit=None, marker=None):

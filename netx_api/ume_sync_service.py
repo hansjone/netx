@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -78,6 +78,22 @@ def _build_sync_job(domain: str, trigger_mode: str) -> UmeSyncJob:
         trigger_mode=trigger_mode,
         started_at=_utc_now_naive(),
     )
+
+
+def _snapshot_reconcile_ok(meta: dict[str, Any]) -> bool:
+    """True when paging finished normally (full snapshot); avoid deleting local rows on partial pulls."""
+    if not bool(meta.get("is_end_of_reply")):
+        return False
+    if bool(meta.get("graceful_end_by_iterator_error")):
+        return False
+    warnings = meta.get("warnings") or []
+    if not isinstance(warnings, list):
+        return False
+    if "duplicate_page_detected" in [str(w) for w in warnings]:
+        return False
+    if str(meta.get("paging_note") or "").strip() == "duplicate_page_detected":
+        return False
+    return True
 
 
 def _collect_marker_pages(
@@ -162,7 +178,7 @@ def sync_inventory_full(db: Session, client: UMEClient, *, trigger_mode: str = "
         max_pages = int(getattr(settings, "ume_marker_max_pages", getattr(settings, "ume_max_pages", 2000)) or 2000)
         max_pages = max(1, min(max_pages, 20000))
 
-        pages, _ = _collect_marker_pages(
+        pages, inv_meta = _collect_marker_pages(
             lambda marker: client.get_network_elements(limit=page_size, marker=marker),
             max_pages=max_pages,
             iterator_500_as_end=False,
@@ -170,10 +186,12 @@ def sync_inventory_full(db: Session, client: UMEClient, *, trigger_mode: str = "
         ne_rows = [row for page in pages for row in page]
         now = _utc_now_naive()
         pulled = len(ne_rows)
+        seen_ne_ids: set[str] = set()
         for row in ne_rows:
             ne_id = _s(_pick(row, "ne-id", "ne_id", "id"))
             if not ne_id:
                 continue
+            seen_ne_ids.add(ne_id)
             existing = db.get(UmeInventoryNE, ne_id)
             if existing is None:
                 existing = UmeInventoryNE(
@@ -245,6 +263,37 @@ def sync_inventory_full(db: Session, client: UMEClient, *, trigger_mode: str = "
             existing_holder.last_seen_at = now
             existing_holder.raw_json = json.dumps(h, ensure_ascii=False, default=str)
 
+        db.flush()
+        deleted_holders = deleted_ne = 0
+        if _snapshot_reconcile_ok(inv_meta):
+            if seen_ne_ids:
+                deleted_holders = int(
+                    db.query(UmeInventoryEquipmentHolder)
+                    .filter(~UmeInventoryEquipmentHolder.ne_id.in_(list(seen_ne_ids)))
+                    .delete(synchronize_session=False)
+                )
+                deleted_ne = int(
+                    db.query(UmeInventoryNE)
+                    .filter(~UmeInventoryNE.ne_id.in_(list(seen_ne_ids)))
+                    .delete(synchronize_session=False)
+                )
+            else:
+                deleted_holders = int(db.query(UmeInventoryEquipmentHolder).delete(synchronize_session=False))
+                deleted_ne = int(db.query(UmeInventoryNE).delete(synchronize_session=False))
+
+        job.details_json = json.dumps(
+            {
+                "inventory_reconcile": _snapshot_reconcile_ok(inv_meta),
+                "deleted_inventory_holders": deleted_holders,
+                "deleted_inventory_ne": deleted_ne,
+                "paging": {
+                    "is_end_of_reply": bool(inv_meta.get("is_end_of_reply")),
+                    "warnings": list(inv_meta.get("warnings") or []),
+                },
+            },
+            ensure_ascii=False,
+        )
+
         job.status = "done"
     except Exception as exc:
         job.status = "failed"
@@ -276,8 +325,8 @@ def _sync_alarms_common(
     )
     db.add(batch)
     db.flush()
-    now = _utc_now_naive()
     pulled = inserted = updated = 0
+    deleted_stale_current = 0
     paging_mode = "marker"
     paging_note = ""
     page_no = 0
@@ -285,6 +334,7 @@ def _sync_alarms_common(
     is_end_of_reply = False
     graceful_end_by_iterator_error = False
     warnings: list[str] = []
+    meta: dict[str, Any] = {}
     try:
         limit_max = int(getattr(settings, "ume_limit_max", 5000) or 5000)
         limit_max = max(1, limit_max)
@@ -292,13 +342,14 @@ def _sync_alarms_common(
         page_size = max(1, min(page_size, limit_max))
         max_pages = int(getattr(settings, "ume_marker_max_pages", getattr(settings, "ume_max_pages", 2000)) or 2000)
         max_pages = max(1, min(max_pages, 20000))
-        def upsert_alarm(alarm: dict[str, Any]) -> None:
+
+        def upsert_alarm(alarm: dict[str, Any], *, touch_ts: datetime) -> None:
             nonlocal inserted, updated
             key = _alarm_key(alarm)
             if is_uncleared:
                 existing = db.get(UmeAlarmHistory, key)
                 if existing is None:
-                    existing = UmeAlarmHistory(alarm_key=key, first_seen_at=now)
+                    existing = UmeAlarmHistory(alarm_key=key, first_seen_at=touch_ts)
                     db.add(existing)
                     inserted += 1
                 else:
@@ -306,7 +357,7 @@ def _sync_alarms_common(
             else:
                 existing = db.get(UmeAlarmCurrent, key)
                 if existing is None:
-                    existing = UmeAlarmCurrent(alarm_key=key, first_seen_at=now)
+                    existing = UmeAlarmCurrent(alarm_key=key, first_seen_at=touch_ts)
                     db.add(existing)
                     inserted += 1
                 else:
@@ -321,7 +372,7 @@ def _sync_alarms_common(
             existing.root_cause_alarm_indication = _s(
                 _pick(alarm, "rootCauseAlarmIndication", "root-cause-alarm-indication")
             )
-            existing.last_seen_at = now
+            existing.last_seen_at = touch_ts
             existing.raw_json = json.dumps(alarm, ensure_ascii=False, default=str)
 
         iterator_500_as_end = bool(getattr(settings, "ume_iterator_500_as_end", True))
@@ -330,10 +381,12 @@ def _sync_alarms_common(
             max_pages=max_pages,
             iterator_500_as_end=iterator_500_as_end,
         )
+        sync_batch_ts = _utc_now_naive()
         for rows in pages:
             pulled += len(rows)
             for alarm in rows:
-                upsert_alarm(alarm)
+                upsert_alarm(alarm, touch_ts=sync_batch_ts)
+        db.flush()
         page_no = int(meta.get("page_count") or 0)
         next_marker = str(meta.get("last_marker") or "")
         is_end_of_reply = bool(meta.get("is_end_of_reply"))
@@ -341,11 +394,10 @@ def _sync_alarms_common(
         paging_note = str(meta.get("paging_note") or "")
         warnings = [str(x) for x in (meta.get("warnings") or []) if str(x)]
 
-        if not is_uncleared:
-            expiry = now - timedelta(hours=48)
-            (
+        if not is_uncleared and _snapshot_reconcile_ok(meta):
+            deleted_stale_current = int(
                 db.query(UmeAlarmCurrent)
-                .filter(UmeAlarmCurrent.last_seen_at < expiry)
+                .filter(UmeAlarmCurrent.last_seen_at < sync_batch_ts)
                 .delete(synchronize_session=False)
             )
 
@@ -365,6 +417,8 @@ def _sync_alarms_common(
                 "is_end_of_reply": is_end_of_reply,
                 "graceful_end_by_iterator_error": graceful_end_by_iterator_error,
                 "warnings": warnings,
+                "deleted_stale_current_alarms": int(deleted_stale_current),
+                "current_snapshot_reconcile": (not is_uncleared) and _snapshot_reconcile_ok(meta),
             },
             ensure_ascii=False,
         )
@@ -394,6 +448,8 @@ def _sync_alarms_common(
                 "is_end_of_reply": is_end_of_reply,
                 "graceful_end_by_iterator_error": graceful_end_by_iterator_error,
                 "warnings": warnings,
+                "deleted_stale_current_alarms": int(deleted_stale_current),
+                "current_snapshot_reconcile": (not is_uncleared) and _snapshot_reconcile_ok(meta),
             },
             ensure_ascii=False,
         )
