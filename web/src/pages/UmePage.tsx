@@ -242,7 +242,6 @@ export function UmePage() {
               <th>inserted</th>
               <th>updated</th>
               <th title="对账删除的网元行（仅 inventory 全量成功时）">删网元</th>
-              <th title="对账删除的机框行">删机框</th>
               <th title="对账删除的当前告警行（仅 alarms_current 全量成功时）">删当前告警</th>
               <th>started_at</th>
               <th>ended_at</th>
@@ -259,7 +258,6 @@ export function UmePage() {
                 <td>{x.inserted_count}</td>
                 <td>{x.updated_count}</td>
                 <td>{Number(x.deleted_inventory_ne ?? 0)}</td>
-                <td>{Number(x.deleted_inventory_holders ?? 0)}</td>
                 <td>{Number(x.deleted_current_alarms ?? 0)}</td>
                 <td>{formatSystemTime(x.started_at)}</td>
                 <td>{x.ended_at ? formatSystemTime(x.ended_at) : "-"}</td>
@@ -268,7 +266,7 @@ export function UmePage() {
             ))}
             {!syncStatusQuery.isLoading && (syncStatusQuery.data?.items || []).length === 0 && (
               <tr>
-                <td colSpan={12}>暂无同步记录</td>
+                <td colSpan={11}>暂无同步记录</td>
               </tr>
             )}
           </tbody>

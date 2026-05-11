@@ -84,7 +84,6 @@ export type UmeSyncJobItem = {
   updated_count: number;
   /** Reconcile deletes after full inventory snapshot (netx ume_sync_service). */
   deleted_inventory_ne?: number;
-  deleted_inventory_holders?: number;
   /** Reconcile deletes for current alarms after full snapshot. */
   deleted_current_alarms?: number;
   error_message?: string;

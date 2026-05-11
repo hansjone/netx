@@ -277,6 +277,8 @@ def on_startup() -> None:
     # Safe for Postgres (IF NOT EXISTS); ignored on failure.
     try:
         with engine.begin() as conn:
+            # Removed from ORM: drop legacy holder table if present (was optional nested UME data).
+            conn.exec_driver_sql("DROP TABLE IF EXISTS ume_inventory_equipment_holder")
             conn.exec_driver_sql("ALTER TABLE alarms_norm ADD COLUMN IF NOT EXISTS relevancy VARCHAR(128) DEFAULT ''")
             conn.exec_driver_sql("ALTER TABLE alarms_norm ADD COLUMN IF NOT EXISTS l3vpn_peer_ne VARCHAR(256) DEFAULT ''")
             conn.exec_driver_sql("ALTER TABLE alarms_norm ADD COLUMN IF NOT EXISTS service VARCHAR(256) DEFAULT ''")
@@ -498,7 +500,7 @@ def ume_sync(payload: dict[str, Any] | None = None, db: Session = Depends(get_db
 
 def _ume_sync_job_details_counts(row: UmeSyncJob) -> dict[str, int]:
     """Parse ``details_json`` from sync jobs (inventory / alarms) for delete-reconcile stats."""
-    out = {"deleted_inventory_ne": 0, "deleted_inventory_holders": 0, "deleted_current_alarms": 0}
+    out = {"deleted_inventory_ne": 0, "deleted_current_alarms": 0}
     raw = str(getattr(row, "details_json", "") or "").strip()
     if not raw:
         return out
@@ -510,10 +512,6 @@ def _ume_sync_job_details_counts(row: UmeSyncJob) -> dict[str, int]:
         return out
     try:
         out["deleted_inventory_ne"] = max(0, int(obj.get("deleted_inventory_ne") or 0))
-    except Exception:
-        pass
-    try:
-        out["deleted_inventory_holders"] = max(0, int(obj.get("deleted_inventory_holders") or 0))
     except Exception:
         pass
     try:
@@ -550,7 +548,6 @@ def ume_sync_status(
             "inserted_count": int(r.inserted_count or 0),
             "updated_count": int(r.updated_count or 0),
             "deleted_inventory_ne": int(del_counts["deleted_inventory_ne"]),
-            "deleted_inventory_holders": int(del_counts["deleted_inventory_holders"]),
             "deleted_current_alarms": int(del_counts["deleted_current_alarms"]),
             "error_message": str(r.error_message or ""),
             "started_at": (_ensure_utc(r.started_at) or datetime.now(timezone.utc)).isoformat(),

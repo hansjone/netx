@@ -11,7 +11,6 @@ from .models import (
     UmeAlarmBatch,
     UmeAlarmCurrent,
     UmeAlarmHistory,
-    UmeInventoryEquipmentHolder,
     UmeInventoryNE,
     UmeSyncJob,
 )
@@ -226,65 +225,21 @@ def sync_inventory_full(db: Session, client: UMEClient, *, trigger_mode: str = "
             existing.last_seen_at = now
             existing.raw_json = json.dumps(row, ensure_ascii=False, default=str)
 
-        # Optional: holders may not exist in current UME deployment; keep best-effort.
-        # This pass keeps schema warm for later detailed holder endpoint integration.
-        holder_payload: list[dict[str, Any]] = []
-        for ne in ne_rows:
-            holders = _pick(ne, "equipment-holder", "equipment-holders")
-            if isinstance(holders, list):
-                for h in holders:
-                    if isinstance(h, dict):
-                        h2 = dict(h)
-                        if "ne-id" not in h2:
-                            h2["ne-id"] = _pick(ne, "ne-id", "ne_id", "id")
-                        holder_payload.append(h2)
-        for h in holder_payload:
-            ne_id = _s(_pick(h, "ne-id", "ne_id"))
-            holder_name = _s(_pick(h, "name", "holder-name"))
-            if not ne_id or not holder_name:
-                continue
-            existing_holder = (
-                db.query(UmeInventoryEquipmentHolder)
-                .filter(
-                    UmeInventoryEquipmentHolder.ne_id == ne_id,
-                    UmeInventoryEquipmentHolder.holder_name == holder_name,
-                )
-                .one_or_none()
-            )
-            if existing_holder is None:
-                existing_holder = UmeInventoryEquipmentHolder(
-                    ne_id=ne_id,
-                    holder_name=holder_name,
-                    first_seen_at=now,
-                )
-                db.add(existing_holder)
-            existing_holder.holder_type = _s(_pick(h, "type", "holder-type"))
-            existing_holder.holder_state = _s(_pick(h, "state", "holder-state"))
-            existing_holder.last_seen_at = now
-            existing_holder.raw_json = json.dumps(h, ensure_ascii=False, default=str)
-
         db.flush()
-        deleted_holders = deleted_ne = 0
+        deleted_ne = 0
         if _snapshot_reconcile_ok(inv_meta):
             if seen_ne_ids:
-                deleted_holders = int(
-                    db.query(UmeInventoryEquipmentHolder)
-                    .filter(~UmeInventoryEquipmentHolder.ne_id.in_(list(seen_ne_ids)))
-                    .delete(synchronize_session=False)
-                )
                 deleted_ne = int(
                     db.query(UmeInventoryNE)
                     .filter(~UmeInventoryNE.ne_id.in_(list(seen_ne_ids)))
                     .delete(synchronize_session=False)
                 )
             else:
-                deleted_holders = int(db.query(UmeInventoryEquipmentHolder).delete(synchronize_session=False))
                 deleted_ne = int(db.query(UmeInventoryNE).delete(synchronize_session=False))
 
         job.details_json = json.dumps(
             {
                 "inventory_reconcile": _snapshot_reconcile_ok(inv_meta),
-                "deleted_inventory_holders": deleted_holders,
                 "deleted_inventory_ne": deleted_ne,
                 "paging": {
                     "is_end_of_reply": bool(inv_meta.get("is_end_of_reply")),

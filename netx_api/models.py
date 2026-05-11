@@ -163,19 +163,6 @@ class UmeInventoryNE(Base):
     raw_json: Mapped[str] = mapped_column(Text, default="{}")
 
 
-class UmeInventoryEquipmentHolder(Base):
-    __tablename__ = "ume_inventory_equipment_holder"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    ne_id: Mapped[str] = mapped_column(ForeignKey("ume_inventory_ne.ne_id"), index=True)
-    holder_name: Mapped[str] = mapped_column(String(256), index=True, default="")
-    holder_type: Mapped[str] = mapped_column(String(128), default="")
-    holder_state: Mapped[str] = mapped_column(String(128), default="")
-    first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
-    raw_json: Mapped[str] = mapped_column(Text, default="{}")
-
-
 class UmeAlarmCurrent(Base):
     __tablename__ = "ume_alarms_current"
 
