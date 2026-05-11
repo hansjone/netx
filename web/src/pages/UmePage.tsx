@@ -303,7 +303,7 @@ export function UmePage() {
       <section className="panel">
         <h2>网元清单</h2>
         <div className="filter-inline">
-          <input value={neKeyword} placeholder="keyword(ne_id/ne_name/user_label/ip)" onChange={(e) => setNeKeyword(e.target.value)} />
+          <input value={neKeyword} placeholder="keyword(ne_id/ne_name/user_label/ip/host_name)" onChange={(e) => setNeKeyword(e.target.value)} />
           <button onClick={() => queryClient.invalidateQueries({ queryKey: ["umeNE"] })}>查询</button>
         </div>
         <table>

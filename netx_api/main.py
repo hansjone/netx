@@ -553,6 +553,7 @@ def ume_list_ne(
             | UmeInventoryNE.ne_name.contains(kw)
             | UmeInventoryNE.user_label.contains(kw)
             | UmeInventoryNE.ip_address.contains(kw)
+            | UmeInventoryNE.host_name.contains(kw)
         )
     total = int(stmt.count())
     rows = stmt.order_by(UmeInventoryNE.ne_id.asc()).offset((page - 1) * page_size).limit(page_size).all()
