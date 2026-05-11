@@ -225,6 +225,7 @@ export function UmePage() {
           <thead>
             <tr>
               <th>task</th>
+              <th title="相邻两次循环 sleep 的配置间隔（与服务启动时 clamp 一致）">间隔</th>
               <th>status</th>
               <th>last_run_at</th>
               <th>last_error</th>
@@ -235,6 +236,9 @@ export function UmePage() {
             {runtimeTasks.map((x) => (
               <tr key={`runtime-${x.task}`}>
                 <td>{x.task}</td>
+                <td title={typeof x.interval_s === "number" ? `${x.interval_s}s` : undefined}>
+                  {x.interval_label ?? "—"}
+                </td>
                 <td>{x.status}</td>
                 <td>{x.last_run_at ? formatSystemTime(x.last_run_at) : "-"}</td>
                 <td>{x.last_error || "-"}</td>
@@ -263,7 +267,7 @@ export function UmePage() {
             ))}
             {!syncStatusQuery.isLoading && runtimeTasks.length === 0 && (
               <tr>
-                <td colSpan={5}>暂无后台任务状态</td>
+                <td colSpan={6}>暂无后台任务状态</td>
               </tr>
             )}
           </tbody>

@@ -106,6 +106,41 @@ def _runtime_resume_task(task: str) -> None:
         _UME_RUNTIME_PAUSED[tid] = False
 
 
+def _format_runtime_interval_label(seconds: int) -> str:
+    s = max(1, int(seconds))
+    if s >= 3600 and s % 3600 == 0:
+        h = s // 3600
+        return f"{h} h"
+    if s >= 60 and s % 60 == 0:
+        m = s // 60
+        return f"{m} min"
+    return f"{s}s"
+
+
+def _runtime_task_interval_fields(task_id: str) -> tuple[int | None, str]:
+    """Effective loop interval as configured at process start (matches startup clamps)."""
+    if task_id == "token_keepalive":
+        if not bool(getattr(settings, "ume_keepalive_enabled", True)):
+            return None, "未启用"
+        interval_s = int(getattr(settings, "ume_keepalive_interval_s", 600) or 600)
+        eff = max(30, min(interval_s, 3600))
+        return eff, _format_runtime_interval_label(eff)
+    if task_id == "alarms_current_auto_sync":
+        if not bool(getattr(settings, "ume_sync_alarms_current_enabled", True)):
+            return None, "未启用"
+        interval_s = int(getattr(settings, "ume_sync_alarms_current_interval_s", 300) or 300)
+        eff = max(30, min(interval_s, 86400))
+        return eff, _format_runtime_interval_label(eff)
+    if task_id == "inventory_auto_sync":
+        if not bool(getattr(settings, "ume_sync_inventory_auto_enabled", True)):
+            return None, "未启用"
+        hours = int(getattr(settings, "ume_sync_inventory_every_hours", 48) or 48)
+        hours = max(1, min(hours, 168))
+        eff = int(hours * 3600)
+        return eff, _format_runtime_interval_label(eff)
+    return None, "—"
+
+
 def _list_runtime_tasks() -> list[dict[str, Any]]:
     with _UME_RUNTIME_LOCK:
         out: list[dict[str, Any]] = []
@@ -114,6 +149,7 @@ def _list_runtime_tasks() -> list[dict[str, Any]]:
             paused = bool(_UME_RUNTIME_PAUSED.get(task_id))
             eff_status = "paused" if paused else str(v.get("status") or "unknown")
             ts = _ensure_utc(v.get("last_run_at")) if isinstance(v.get("last_run_at"), datetime) else None
+            interval_s, interval_label = _runtime_task_interval_fields(task_id)
             out.append(
                 {
                     "task": task_id,
@@ -121,6 +157,8 @@ def _list_runtime_tasks() -> list[dict[str, Any]]:
                     "paused": paused,
                     "last_run_at": ts.isoformat() if ts else None,
                     "last_error": str(v.get("last_error") or ""),
+                    "interval_s": interval_s,
+                    "interval_label": interval_label,
                 }
             )
         return out

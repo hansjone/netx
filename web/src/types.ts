@@ -101,6 +101,8 @@ export type UmeSyncStatusResponse = {
     paused?: boolean;
     last_run_at?: string | null;
     last_error?: string;
+    interval_s?: number | null;
+    interval_label?: string;
   }>;
 };
 
