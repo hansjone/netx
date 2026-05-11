@@ -498,27 +498,27 @@ def ume_sync(payload: dict[str, Any] | None = None, db: Session = Depends(get_db
     return out
 
 
-def _ume_sync_job_details_counts(row: UmeSyncJob) -> dict[str, int]:
-    """Parse ``details_json`` from sync jobs (inventory / alarms) for delete-reconcile stats."""
-    out = {"deleted_inventory_ne": 0, "deleted_current_alarms": 0}
+def _ume_sync_job_deleted_count(row: UmeSyncJob) -> int:
+    """Single reconcile delete count: inventory uses deleted_inventory_ne; current alarms uses deleted_stale_current_alarms."""
     raw = str(getattr(row, "details_json", "") or "").strip()
     if not raw:
-        return out
+        return 0
     try:
         obj = json.loads(raw)
     except Exception:
-        return out
+        return 0
     if not isinstance(obj, dict):
-        return out
+        return 0
+    inv = cur = 0
     try:
-        out["deleted_inventory_ne"] = max(0, int(obj.get("deleted_inventory_ne") or 0))
+        inv = max(0, int(obj.get("deleted_inventory_ne") or 0))
     except Exception:
         pass
     try:
-        out["deleted_current_alarms"] = max(0, int(obj.get("deleted_stale_current_alarms") or 0))
+        cur = max(0, int(obj.get("deleted_stale_current_alarms") or 0))
     except Exception:
         pass
-    return out
+    return int(inv + cur)
 
 
 @app.get("/v1/ume/sync/status")
@@ -538,7 +538,6 @@ def ume_sync_status(
     items = []
     latest_by_domain: dict[str, dict[str, Any]] = {}
     for r in rows:
-        del_counts = _ume_sync_job_details_counts(r)
         item = {
             "id": int(r.id),
             "domain": str(r.domain or ""),
@@ -547,8 +546,7 @@ def ume_sync_status(
             "pulled_count": int(r.pulled_count or 0),
             "inserted_count": int(r.inserted_count or 0),
             "updated_count": int(r.updated_count or 0),
-            "deleted_inventory_ne": int(del_counts["deleted_inventory_ne"]),
-            "deleted_current_alarms": int(del_counts["deleted_current_alarms"]),
+            "deleted": int(_ume_sync_job_deleted_count(r)),
             "error_message": str(r.error_message or ""),
             "started_at": (_ensure_utc(r.started_at) or datetime.now(timezone.utc)).isoformat(),
             "ended_at": (_ensure_utc(r.ended_at).isoformat() if r.ended_at else None),
