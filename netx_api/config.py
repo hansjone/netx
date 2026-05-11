@@ -42,12 +42,13 @@ class Settings(BaseSettings):
     ume_keepalive_renew_before_s: int = 900
     ume_sync_alarms_current_enabled: bool = True
     ume_sync_alarms_current_interval_s: int = 300
+    ume_sync_inventory_auto_enabled: bool = True
+    ume_sync_inventory_every_hours: int = 48
     ume_token_path: str = "/restconf/operations/zte-security:oauth_token"
     ume_token_handshake_path: str = "/restconf/operations/zte-security:oauth_handshake"
     ume_token_logout_path: str = "/restconf/operations/zte-security:oauth_token"
     ume_ne_path: str = "/restconf/data/zte-resources-module:network-elements"
     ume_alarms_path: str = "/restconf/data/zte-alarms:alarms/alarm-list"
-    ume_sync_inventory_every_hours: int = 24
     ume_sync_alarms_history_every_hours: int = 24
 
 

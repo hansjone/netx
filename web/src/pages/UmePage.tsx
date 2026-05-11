@@ -107,6 +107,17 @@ export function UmePage() {
   const runningTasks = (syncStatusQuery.data?.items || []).filter((x) => String(x.status || "").toLowerCase() === "running");
   const runtimeTasks = syncStatusQuery.data?.runtime_tasks || [];
 
+  const runtimeTaskMutation = useMutation({
+    mutationFn: async (vars: { task: string; action: "pause" | "resume" }) =>
+      apiPost<{ ok: boolean }>(
+        `/v1/ume/runtime/tasks/${encodeURIComponent(vars.task)}/${vars.action}`,
+        {},
+      ),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["umeSyncStatus"] });
+    },
+  });
+
   return (
     <>
       <section className="cards">
@@ -205,6 +216,7 @@ export function UmePage() {
               <th>status</th>
               <th>last_run_at</th>
               <th>last_error</th>
+              <th>操作</th>
             </tr>
           </thead>
           <tbody>
@@ -214,11 +226,32 @@ export function UmePage() {
                 <td>{x.status}</td>
                 <td>{x.last_run_at ? formatSystemTime(x.last_run_at) : "-"}</td>
                 <td>{x.last_error || "-"}</td>
+                <td>
+                  {Boolean(x.paused) ? (
+                    <button
+                      type="button"
+                      className="link-btn"
+                      disabled={runtimeTaskMutation.isPending}
+                      onClick={() => runtimeTaskMutation.mutate({ task: x.task, action: "resume" })}
+                    >
+                      开始
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="link-btn"
+                      disabled={runtimeTaskMutation.isPending}
+                      onClick={() => runtimeTaskMutation.mutate({ task: x.task, action: "pause" })}
+                    >
+                      暂停
+                    </button>
+                  )}
+                </td>
               </tr>
             ))}
             {!syncStatusQuery.isLoading && runtimeTasks.length === 0 && (
               <tr>
-                <td colSpan={4}>暂无后台任务状态</td>
+                <td colSpan={5}>暂无后台任务状态</td>
               </tr>
             )}
           </tbody>
@@ -462,7 +495,7 @@ export function UmePage() {
           <tbody>
             {(currentQuery.data?.items || []).map((x) => (
               <tr key={x.alarm_key}>
-                <td>{x.time_created}</td>
+                <td>{formatSystemTime(x.time_created)}</td>
                 <td>{x.perceived_severity}</td>
                 <td>{x.ne_id}</td>
                 <td>

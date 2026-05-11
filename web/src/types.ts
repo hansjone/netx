@@ -98,6 +98,7 @@ export type UmeSyncStatusResponse = {
   runtime_tasks?: Array<{
     task: string;
     status: string;
+    paused?: boolean;
     last_run_at?: string | null;
     last_error?: string;
   }>;

@@ -70,7 +70,10 @@ _SQL_FORBIDDEN_RE = re.compile(
 _UME_RUNTIME_TASKS: dict[str, dict[str, Any]] = {
     "token_keepalive": {"task": "token_keepalive", "status": "init", "last_run_at": None, "last_error": ""},
     "alarms_current_auto_sync": {"task": "alarms_current_auto_sync", "status": "init", "last_run_at": None, "last_error": ""},
+    "inventory_auto_sync": {"task": "inventory_auto_sync", "status": "init", "last_run_at": None, "last_error": ""},
 }
+_UME_RUNTIME_PAUSED: dict[str, bool] = {}
+UME_KNOWN_RUNTIME_TASKS: tuple[str, ...] = tuple(_UME_RUNTIME_TASKS.keys())
 _UME_RUNTIME_LOCK = threading.Lock()
 
 
@@ -84,15 +87,38 @@ def _set_runtime_task(task: str, *, status: str, last_run_at: datetime | None = 
         _UME_RUNTIME_TASKS[task] = item
 
 
+def _runtime_is_paused(task: str) -> bool:
+    with _UME_RUNTIME_LOCK:
+        return bool(_UME_RUNTIME_PAUSED.get(str(task or "").strip()))
+
+
+def _runtime_pause_task(task: str) -> None:
+    tid = str(task or "").strip()
+    with _UME_RUNTIME_LOCK:
+        if tid not in _UME_RUNTIME_TASKS:
+            raise KeyError(tid)
+        _UME_RUNTIME_PAUSED[tid] = True
+
+
+def _runtime_resume_task(task: str) -> None:
+    tid = str(task or "").strip()
+    with _UME_RUNTIME_LOCK:
+        _UME_RUNTIME_PAUSED[tid] = False
+
+
 def _list_runtime_tasks() -> list[dict[str, Any]]:
     with _UME_RUNTIME_LOCK:
         out: list[dict[str, Any]] = []
         for v in _UME_RUNTIME_TASKS.values():
+            task_id = str(v.get("task") or "")
+            paused = bool(_UME_RUNTIME_PAUSED.get(task_id))
+            eff_status = "paused" if paused else str(v.get("status") or "unknown")
             ts = _ensure_utc(v.get("last_run_at")) if isinstance(v.get("last_run_at"), datetime) else None
             out.append(
                 {
-                    "task": str(v.get("task") or ""),
-                    "status": str(v.get("status") or "unknown"),
+                    "task": task_id,
+                    "status": eff_status,
+                    "paused": paused,
                     "last_run_at": ts.isoformat() if ts else None,
                     "last_error": str(v.get("last_error") or ""),
                 }
@@ -353,6 +379,9 @@ def on_startup() -> None:
                 # Best-effort keepalive: if token exists, periodically handshake to extend TTL.
                 while True:
                     try:
+                        if _runtime_is_paused("token_keepalive"):
+                            time.sleep(1)
+                            continue
                         client = _ume_client()
                         st = client.token_status()
                         expires_in = int(st.get("expires_in_s") or 0)
@@ -375,6 +404,9 @@ def on_startup() -> None:
             def _alarms_current_sync_loop() -> None:
                 while True:
                     try:
+                        if _runtime_is_paused("alarms_current_auto_sync"):
+                            time.sleep(1)
+                            continue
                         db = SessionLocal()
                         try:
                             client = _ume_client()
@@ -398,6 +430,43 @@ def on_startup() -> None:
 
             t2 = threading.Thread(target=_alarms_current_sync_loop, name="ume-alarms-current-sync", daemon=True)
             t2.start()
+    except Exception:
+        pass
+    try:
+        if bool(getattr(settings, "ume_sync_inventory_auto_enabled", True)):
+            hours = int(getattr(settings, "ume_sync_inventory_every_hours", 48) or 48)
+            hours = max(1, min(hours, 168))
+            interval_s = int(hours * 3600)
+
+            def _inventory_auto_sync_loop() -> None:
+                while True:
+                    try:
+                        if _runtime_is_paused("inventory_auto_sync"):
+                            time.sleep(1)
+                            continue
+                        db = SessionLocal()
+                        try:
+                            client = _ume_client()
+                            sync_inventory_full(db, client, trigger_mode="schedule")
+                            _set_runtime_task(
+                                "inventory_auto_sync",
+                                status="running",
+                                last_run_at=datetime.now(timezone.utc),
+                                last_error="",
+                            )
+                        finally:
+                            db.close()
+                    except Exception as exc:
+                        _set_runtime_task(
+                            "inventory_auto_sync",
+                            status="error",
+                            last_run_at=datetime.now(timezone.utc),
+                            last_error=str(exc)[:240],
+                        )
+                    time.sleep(interval_s)
+
+            t3 = threading.Thread(target=_inventory_auto_sync_loop, name="ume-inventory-auto-sync", daemon=True)
+            t3.start()
     except Exception:
         pass
 
@@ -562,6 +631,26 @@ def ume_sync_status(
         "latest_by_domain": latest_by_domain,
         "runtime_tasks": _list_runtime_tasks(),
     }
+
+
+@app.post("/v1/ume/runtime/tasks/{task}/pause")
+def ume_runtime_task_pause(task: str) -> dict[str, Any]:
+    tid = str(task or "").strip()
+    if tid not in UME_KNOWN_RUNTIME_TASKS:
+        raise HTTPException(status_code=404, detail="unknown_runtime_task")
+    _runtime_pause_task(tid)
+    _set_runtime_task(tid, status="paused", last_error="")
+    return {"ok": True, "task": tid, "runtime_tasks": _list_runtime_tasks()}
+
+
+@app.post("/v1/ume/runtime/tasks/{task}/resume")
+def ume_runtime_task_resume(task: str) -> dict[str, Any]:
+    tid = str(task or "").strip()
+    if tid not in UME_KNOWN_RUNTIME_TASKS:
+        raise HTTPException(status_code=404, detail="unknown_runtime_task")
+    _runtime_resume_task(tid)
+    _set_runtime_task(tid, status="running", last_error="")
+    return {"ok": True, "task": tid, "runtime_tasks": _list_runtime_tasks()}
 
 
 @app.get("/v1/ume/inventory/ne")
