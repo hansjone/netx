@@ -121,7 +121,7 @@ export const fetchUmeNe = (params: { keyword: string; page: number; pageSize: nu
 export const fetchUmeCurrentAlarms = (params: {
   severity: string;
   isCleared: string;
-  neId: string;
+  hostName: string;
   keyword: string;
   page: number;
   pageSize: number;
@@ -129,7 +129,7 @@ export const fetchUmeCurrentAlarms = (params: {
   const p = new URLSearchParams();
   if (params.severity) p.set("severity", params.severity);
   if (params.isCleared) p.set("is_cleared", params.isCleared);
-  if (params.neId) p.set("ne_id", params.neId);
+  if (params.hostName) p.set("host_name", params.hostName);
   if (params.keyword) p.set("keyword", params.keyword);
   p.set("page", String(Math.max(1, Number(params.page || 1))));
   p.set("page_size", String(Math.max(1, Math.min(500, Number(params.pageSize || 50)))));

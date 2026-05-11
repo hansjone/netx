@@ -653,6 +653,7 @@ def ume_list_alarms(
     severity: str | None = Query(default=None),
     is_cleared: str | None = Query(default=None),
     ne_id: str | None = Query(default=None),
+    host_name: str | None = Query(default=None),
     keyword: str | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=500),
@@ -667,6 +668,9 @@ def ume_list_alarms(
         stmt = stmt.filter(UmeAlarmCurrent.is_cleared == str(is_cleared).strip())
     if ne_id and str(ne_id).strip():
         stmt = stmt.filter(UmeAlarmCurrent.ne_id == str(ne_id).strip())
+    hn = str(host_name or "").strip()
+    if hn:
+        stmt = stmt.filter(UmeInventoryNE.host_name.contains(hn))
     kw = str(keyword or "").strip()
     if kw:
         stmt = stmt.filter(

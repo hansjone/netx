@@ -23,7 +23,7 @@ export function UmePage() {
 
   const [curSeverity, setCurSeverity] = useState("");
   const [curCleared, setCurCleared] = useState("");
-  const [curNeId, setCurNeId] = useState("");
+  const [curHostName, setCurHostName] = useState("");
   const [curKeyword, setCurKeyword] = useState("");
   const [curPage, setCurPage] = useState(1);
   const [curPageSize, setCurPageSize] = useState(50);
@@ -92,12 +92,12 @@ export function UmePage() {
     staleTime: 5000,
   });
   const currentQuery = useQuery({
-    queryKey: ["umeCurrentAlarms", curSeverity, curCleared, curNeId, curKeyword, curPage, curPageSize],
+    queryKey: ["umeCurrentAlarms", curSeverity, curCleared, curHostName, curKeyword, curPage, curPageSize],
     queryFn: () =>
       fetchUmeCurrentAlarms({
         severity: curSeverity,
         isCleared: curCleared,
-        neId: curNeId,
+        hostName: curHostName,
         keyword: curKeyword,
         page: curPage,
         pageSize: curPageSize,
@@ -419,7 +419,7 @@ export function UmePage() {
             placeholder="keyword(告警键/原因/ne_name/host_name/ip 等)"
             onChange={(e) => setCurKeyword(e.target.value)}
           />
-          <input value={curNeId} placeholder="ne_id" onChange={(e) => setCurNeId(e.target.value)} />
+          <input value={curHostName} placeholder="host_name（含匹配）" onChange={(e) => setCurHostName(e.target.value)} />
           <select value={curSeverity} onChange={(e) => setCurSeverity(e.target.value)}>
             <option value="">全部级别</option>
             <option value="critical">critical</option>
@@ -435,15 +435,15 @@ export function UmePage() {
           </select>
           <button
             type="button"
-            title="清空 keyword、ne_id、级别、is_cleared，回到第 1 页"
+            title="清空 keyword、host_name、级别、is_cleared，回到第 1 页"
             onClick={() => {
               setCurKeyword("");
-              setCurNeId("");
+              setCurHostName("");
               setCurSeverity("");
               setCurCleared("");
               setCurPage(1);
             }}
-            disabled={!curKeyword.trim() && !curNeId.trim() && !curSeverity && !curCleared}
+            disabled={!curKeyword.trim() && !curHostName.trim() && !curSeverity && !curCleared}
           >
             清除筛选
           </button>
@@ -464,19 +464,27 @@ export function UmePage() {
               <tr key={x.alarm_key}>
                 <td>{x.time_created}</td>
                 <td>{x.perceived_severity}</td>
+                <td>{x.ne_id}</td>
                 <td>
-                  <button
-                    className="link-btn"
-                    onClick={() => {
-                      setCurNeId(x.ne_id || "");
-                      setCurKeyword(x.ne_name || x.host_name || x.native_probable_cause || "");
-                      setCurPage(1);
-                    }}
-                  >
-                    {x.ne_id}
-                  </button>
+                  {(x.host_name || "").trim() ? (
+                    <button
+                      className="link-btn"
+                      type="button"
+                      onClick={() => {
+                        setCurHostName(x.host_name || "");
+                        setCurKeyword("");
+                        setCurPage(1);
+                      }}
+                      title="按该主机名筛选"
+                    >
+                      {x.host_name}
+                    </button>
+                  ) : (
+                    <span className="muted" title="无 host_name（需先同步网元）">
+                      -
+                    </span>
+                  )}
                 </td>
-                <td>{x.host_name ?? ""}</td>
                 <td>{x.ne_type ?? ""}</td>
                 <td>{x.native_probable_cause}</td>
               </tr>
