@@ -324,7 +324,6 @@ export function UmePage() {
             <tr>
               <th>ne_id</th>
               <th>user_label</th>
-              <th>ne_name</th>
               <th>ip</th>
               <th>type</th>
               <th>device_level</th>
@@ -347,7 +346,6 @@ export function UmePage() {
                     </button>
                   </td>
                   <td>{x.user_label}</td>
-                  <td>{x.ne_name}</td>
                   <td>{x.ip_address}</td>
                   <td>{x.ne_type}</td>
                   <td>{x.device_level || "-"}</td>
@@ -357,7 +355,7 @@ export function UmePage() {
                 </tr>
                 {expandedNeId === x.ne_id ? (
                   <tr>
-                    <td colSpan={9}>
+                    <td colSpan={8}>
                       <div style={{ fontSize: 12, display: "grid", gridTemplateColumns: "repeat(3, minmax(180px, 1fr))", gap: 8 }}>
                         <div>consistent_state: {x.consistent_state || "-"}</div>
                         <div>admin_status: {x.admin_status || "-"}</div>
