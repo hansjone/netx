@@ -405,7 +405,11 @@ export function UmePage() {
       <section className="panel">
         <h2>当前告警</h2>
         <div className="filter-inline">
-          <input value={curKeyword} placeholder="keyword" onChange={(e) => setCurKeyword(e.target.value)} />
+          <input
+            value={curKeyword}
+            placeholder="keyword(告警键/原因/ne_name/host_name/ip 等)"
+            onChange={(e) => setCurKeyword(e.target.value)}
+          />
           <input value={curNeId} placeholder="ne_id" onChange={(e) => setCurNeId(e.target.value)} />
           <select value={curSeverity} onChange={(e) => setCurSeverity(e.target.value)}>
             <option value="">全部级别</option>
@@ -426,8 +430,9 @@ export function UmePage() {
             <tr>
               <th>time_created</th>
               <th>severity</th>
-              <th>user_label</th>
-              <th>object_name</th>
+              <th>ne_id</th>
+              <th>host_name</th>
+              <th>ne_type</th>
               <th>cause</th>
             </tr>
           </thead>
@@ -441,14 +446,15 @@ export function UmePage() {
                     className="link-btn"
                     onClick={() => {
                       setCurNeId(x.ne_id || "");
-                      setCurKeyword(x.user_label || x.ne_name || x.ne_id || "");
+                      setCurKeyword(x.ne_name || x.host_name || x.native_probable_cause || "");
                       setCurPage(1);
                     }}
                   >
-                    {x.user_label || x.ne_name || x.ne_id}
+                    {x.ne_id}
                   </button>
                 </td>
-                <td>{x.object_name}</td>
+                <td>{x.host_name ?? ""}</td>
+                <td>{x.ne_type ?? ""}</td>
                 <td>{x.native_probable_cause}</td>
               </tr>
             ))}

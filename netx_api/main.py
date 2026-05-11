@@ -676,6 +676,7 @@ def ume_list_alarms(
             | UmeInventoryNE.ne_name.contains(kw)
             | UmeInventoryNE.user_label.contains(kw)
             | UmeInventoryNE.ip_address.contains(kw)
+            | UmeInventoryNE.host_name.contains(kw)
         )
     total = int(stmt.count())
     rows = stmt.order_by(UmeAlarmCurrent.last_seen_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
@@ -685,6 +686,8 @@ def ume_list_alarms(
             "ne_id": str(alarm.ne_id or ""),
             "ne_name": str((ne.ne_name if ne else "") or ""),
             "user_label": str((ne.user_label if ne else "") or ""),
+            "host_name": str((ne.host_name if ne else "") or ""),
+            "ne_type": str((ne.ne_type if ne else "") or ""),
             "object_name": str(alarm.object_name or ""),
             "event_type": str(alarm.event_type or ""),
             "native_probable_cause": str(alarm.native_probable_cause or ""),

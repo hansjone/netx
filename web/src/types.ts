@@ -133,6 +133,8 @@ export type UmeAlarmItem = {
   ne_id: string;
   ne_name: string;
   user_label: string;
+  host_name?: string;
+  ne_type?: string;
   object_name: string;
   event_type: string;
   native_probable_cause: string;
