@@ -298,42 +298,46 @@ class UMEClient:
 
     def renew_token(self) -> str:
         self._assert_ready()
-        token = self._token_value.strip()
-        if not token:
+        if not self._token_value.strip():
             return self.login(force=True)
+
+        do_login = False
+        renewed_value = ""
         with self._token_lock:
             token = self._token_value.strip()
             if not token:
-                return self.login(force=True)
-            url = self._build_url(self.token_handshake_path)
-            try:
-                with self._client() as client:
-                    resp = client.post(url, headers=self._headers(include_token=True))
-                if not resp.is_success:
-                    # handshake may fail if token expired; fallback to full login
-                    return self.login(force=True)
-                # Per UME guide, oauth_handshake may return no body; treat HTTP 2xx as success.
-                next_token = ""
-                ttl: int | None = None
+                do_login = True
+            else:
+                url = self._build_url(self.token_handshake_path)
                 try:
-                    text = (resp.text or "").strip()
-                    if text:
-                        data = _coerce_dict(resp.json())
-                        next_token, ttl = self._extract_token_and_ttl(data)
+                    with self._client() as client:
+                        resp = client.post(url, headers=self._headers(include_token=True))
+                    if not resp.is_success:
+                        do_login = True
+                    else:
+                        next_token = ""
+                        ttl: int | None = None
+                        try:
+                            text = (resp.text or "").strip()
+                            if text:
+                                data = _coerce_dict(resp.json())
+                                next_token, ttl = self._extract_token_and_ttl(data)
+                        except Exception:
+                            next_token = ""
+                            ttl = None
+                        if next_token:
+                            self._token_value = next_token
+                        use_ttl = max(60, int(ttl)) if ttl is not None else self.token_ttl_s
+                        self._token_expires_at = time() + use_ttl
+                        self._last_token_source = "memory"
+                        self._persist_token_to_store()
+                        renewed_value = self._token_value
                 except Exception:
-                    # ignore json parse errors, success is based on status code
-                    next_token = ""
-                    ttl = None
-                if next_token:
-                    self._token_value = next_token
-                # If handshake doesn't provide ttl, fall back to configured ttl.
-                use_ttl = max(60, int(ttl)) if ttl is not None else self.token_ttl_s
-                self._token_expires_at = time() + use_ttl
-                self._last_token_source = "memory"
-                self._persist_token_to_store()
-                return self._token_value
-            except Exception:
-                return self.login(force=True)
+                    do_login = True
+
+        if do_login:
+            return self.login(force=True)
+        return renewed_value
 
     def logout_token(self) -> bool:
         token = self._token_value.strip()
