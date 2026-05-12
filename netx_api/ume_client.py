@@ -100,16 +100,42 @@ class UMEClient:
         except Exception:
             return
         if not loaded:
+            if self._token_value.strip():
+                self._token_value = ""
+                self._token_expires_at = 0.0
+                self._last_token_source = "memory"
+                self._last_store_sync_changed = True
             return
         token, exp = loaded
         token = str(token or "").strip()
         if not token:
+            if self._token_value.strip():
+                self._token_value = ""
+                self._token_expires_at = 0.0
+                self._last_token_source = "memory"
+                self._last_store_sync_changed = True
             return
-        if exp > float(self._token_expires_at):
+        exp_f = float(exp)
+        mem_exp = float(self._token_expires_at)
+        mem_tok = self._token_value.strip()
+        # Adopt DB when we have no local token, DB has newer expiry, or token string changed.
+        # If DB expiry is missing (0) but we already have the same token with a positive local expiry,
+        # keep local expiry (avoids token_status showing disconnected after restart when DB row is incomplete).
+        adopt = False
+        if not mem_tok:
+            adopt = True
+        elif token != mem_tok:
+            adopt = True
+        elif exp_f > mem_exp:
+            adopt = True
+        elif exp_f <= 0 and not (token == mem_tok and mem_exp > 0):
+            adopt = True
+        if adopt:
+            if token != mem_tok or exp_f != mem_exp:
+                self._last_store_sync_changed = True
             self._token_value = token
-            self._token_expires_at = float(exp)
+            self._token_expires_at = exp_f
             self._last_token_source = "db"
-            self._last_store_sync_changed = True
 
     def _persist_token_to_store(self) -> None:
         if self._token_saver is None:
