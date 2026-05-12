@@ -325,12 +325,8 @@ def _maybe_wait_for_sync_interval(
         return
     wait_s = float(interval_s) - elapsed
     _schedule_log.info("%s: last finished %.0fs ago, wait %.0fs before sync", label, elapsed, wait_s)
-    _set_runtime_task(
-        task_id,
-        status="running",
-        last_run_at=datetime.now(timezone.utc),
-        last_error=f"距上次同步结束未满周期，等待约 {int(wait_s)}s …",
-    )
+    # Do not write debounce/wait text to last_error — it is not an error and would
+    # overwrite the cleared state right after a successful sync on the next loop tick.
     _sleep_or_until_paused(task_id, wait_s)
 
 
