@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Any
+
+_sync_log = logging.getLogger("netx.ume.sync")
 
 from sqlalchemy.orm import Session
 
@@ -168,6 +171,8 @@ def sync_inventory_full(db: Session, client: UMEClient, *, trigger_mode: str = "
     job = _build_sync_job("inventory", trigger_mode)
     db.add(job)
     db.flush()
+    db.commit()
+    _sync_log.info("inventory sync job %s committed as running (trigger=%s)", getattr(job, "id", "?"), trigger_mode)
     pulled = inserted = updated = 0
     try:
         limit_max = int(getattr(settings, "ume_limit_max", 5000) or 5000)
@@ -280,6 +285,13 @@ def _sync_alarms_common(
     )
     db.add(batch)
     db.flush()
+    db.commit()
+    _sync_log.info(
+        "alarms sync job domain=%s id=%s committed as running (trigger=%s)",
+        domain,
+        getattr(job, "id", "?"),
+        trigger_mode,
+    )
     pulled = inserted = updated = 0
     deleted_stale_current = 0
     paging_mode = "marker"

@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 from datetime import datetime, timezone
 from io import StringIO
 import time
 import re
 import threading
+
+_schedule_log = logging.getLogger("netx.ume.schedule")
 from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from sqlalchemy import text as sql_text
@@ -446,6 +449,10 @@ def on_startup() -> None:
                         if _runtime_is_paused("alarms_current_auto_sync"):
                             time.sleep(1)
                             continue
+                        _schedule_log.info(
+                            "alarms_current_auto_sync: iteration start (sleep_after=%ss)",
+                            interval_s,
+                        )
                         _set_runtime_task(
                             "alarms_current_auto_sync",
                             status="running",
@@ -456,6 +463,7 @@ def on_startup() -> None:
                         try:
                             client = _ume_client()
                             sync_alarms_current(db, client, trigger_mode="schedule")
+                            _schedule_log.info("alarms_current_auto_sync: sync finished ok")
                             _set_runtime_task(
                                 "alarms_current_auto_sync",
                                 status="running",
@@ -465,12 +473,14 @@ def on_startup() -> None:
                         finally:
                             db.close()
                     except Exception as exc:
+                        _schedule_log.exception("alarms_current_auto_sync: sync failed: %s", exc)
                         _set_runtime_task(
                             "alarms_current_auto_sync",
                             status="error",
                             last_run_at=datetime.now(timezone.utc),
                             last_error=str(exc)[:240],
                         )
+                    _schedule_log.info("alarms_current_auto_sync: sleeping %ss", interval_s)
                     time.sleep(interval_s)
 
             t2 = threading.Thread(target=_alarms_current_sync_loop, name="ume-alarms-current-sync", daemon=True)
@@ -489,6 +499,10 @@ def on_startup() -> None:
                         if _runtime_is_paused("inventory_auto_sync"):
                             time.sleep(1)
                             continue
+                        _schedule_log.info(
+                            "inventory_auto_sync: iteration start (sleep_after=%ss)",
+                            interval_s,
+                        )
                         _set_runtime_task(
                             "inventory_auto_sync",
                             status="running",
@@ -499,6 +513,7 @@ def on_startup() -> None:
                         try:
                             client = _ume_client()
                             sync_inventory_full(db, client, trigger_mode="schedule")
+                            _schedule_log.info("inventory_auto_sync: sync finished ok")
                             _set_runtime_task(
                                 "inventory_auto_sync",
                                 status="running",
@@ -508,12 +523,14 @@ def on_startup() -> None:
                         finally:
                             db.close()
                     except Exception as exc:
+                        _schedule_log.exception("inventory_auto_sync: sync failed: %s", exc)
                         _set_runtime_task(
                             "inventory_auto_sync",
                             status="error",
                             last_run_at=datetime.now(timezone.utc),
                             last_error=str(exc)[:240],
                         )
+                    _schedule_log.info("inventory_auto_sync: sleeping %ss", interval_s)
                     time.sleep(interval_s)
 
             t3 = threading.Thread(target=_inventory_auto_sync_loop, name="ume-inventory-auto-sync", daemon=True)
