@@ -179,6 +179,74 @@ def _ensure_utc(dt: datetime | None) -> datetime | None:
         return dt
 
 
+def _reset_runtime_pause_flags() -> None:
+    """Ensure no task is stuck paused in memory after process boot (pause is not persisted)."""
+    with _UME_RUNTIME_LOCK:
+        for tid in UME_KNOWN_RUNTIME_TASKS:
+            _UME_RUNTIME_PAUSED[tid] = False
+
+
+def _sleep_or_until_paused(task_id: str, total_s: float) -> None:
+    """Sleep up to total_s wall seconds, but wake every ~2s to honor pause."""
+    deadline = time.time() + max(0.0, float(total_s))
+    while time.time() < deadline:
+        if _runtime_is_paused(task_id):
+            time.sleep(1)
+            continue
+        time.sleep(min(2.0, max(0.0, deadline - time.time())))
+
+
+def _seconds_since_last_done_sync(db: Session, domain: str) -> float | None:
+    """Seconds since latest completed job (status=done, ended_at set) for domain. None if none."""
+    row = (
+        db.query(UmeSyncJob)
+        .filter(
+            UmeSyncJob.domain == domain,
+            UmeSyncJob.status == "done",
+            UmeSyncJob.ended_at.isnot(None),
+        )
+        .order_by(UmeSyncJob.ended_at.desc())
+        .limit(1)
+        .first()
+    )
+    if not row or row.ended_at is None:
+        return None
+    end = _ensure_utc(row.ended_at)
+    if end is None:
+        return None
+    return max(0.0, (datetime.now(timezone.utc) - end).total_seconds())
+
+
+def _maybe_wait_for_sync_interval(
+    *,
+    task_id: str,
+    domain: str,
+    interval_s: int,
+    label: str,
+) -> None:
+    """If a recent successful sync exists in DB, sleep until interval elapsed since its ended_at."""
+    db = SessionLocal()
+    try:
+        elapsed = _seconds_since_last_done_sync(db, domain)
+    finally:
+        db.close()
+    if elapsed is None:
+        _schedule_log.info("%s: no prior done job for %s, sync now", label, domain)
+        return
+    if elapsed >= float(interval_s):
+        _schedule_log.info("%s: last done %.0fs ago (>= %ss), sync now", label, elapsed, interval_s)
+        return
+    wait_s = float(interval_s) - elapsed
+    _schedule_log.info("%s: last done %.0fs ago, wait %.0fs before sync", label, elapsed, wait_s)
+    _set_runtime_task(
+        task_id,
+        status="running",
+        last_run_at=datetime.now(timezone.utc),
+        last_error=f"距上次成功同步未满周期，等待约 {int(wait_s)}s …",
+    )
+    _sleep_or_until_paused(task_id, wait_s)
+
+
 def get_db():
     db = SessionLocal()
     try:
@@ -340,6 +408,7 @@ def sql_ume_query(payload: dict[str, Any] | None = None, db: Session = Depends(g
 @app.on_event("startup")
 def on_startup() -> None:
     Base.metadata.create_all(bind=engine)
+    _reset_runtime_pause_flags()
     # Best-effort schema evolution for new columns (no migrations framework).
     # Safe for Postgres (IF NOT EXISTS); ignored on failure.
     try:
@@ -449,6 +518,12 @@ def on_startup() -> None:
                         if _runtime_is_paused("alarms_current_auto_sync"):
                             time.sleep(1)
                             continue
+                        _maybe_wait_for_sync_interval(
+                            task_id="alarms_current_auto_sync",
+                            domain="alarms_current",
+                            interval_s=interval_s,
+                            label="alarms_current_auto_sync",
+                        )
                         _schedule_log.info(
                             "alarms_current_auto_sync: iteration start (sleep_after=%ss)",
                             interval_s,
@@ -499,6 +574,12 @@ def on_startup() -> None:
                         if _runtime_is_paused("inventory_auto_sync"):
                             time.sleep(1)
                             continue
+                        _maybe_wait_for_sync_interval(
+                            task_id="inventory_auto_sync",
+                            domain="inventory",
+                            interval_s=interval_s,
+                            label="inventory_auto_sync",
+                        )
                         _schedule_log.info(
                             "inventory_auto_sync: iteration start (sleep_after=%ss)",
                             interval_s,
