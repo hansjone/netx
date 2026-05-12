@@ -132,6 +132,15 @@ def _collect_marker_pages(
         rows = [x for x in rows if isinstance(x, dict)]
         pages.append(rows)
 
+        if page_no == 1 or page_no % 25 == 0:
+            _sync_log.info(
+                "ume marker page=%s rows=%s is_end=%s marker_len=%s",
+                page_no,
+                len(rows),
+                getattr(diag, "is_end_of_reply", None),
+                len(str(getattr(diag, "marker", "") or "")),
+            )
+
         # Protection against repeated pages causing infinite loops.
         cur_sig = "|".join(sorted(_alarm_key(x) for x in rows))
         if cur_sig and cur_sig == last_page_signature:
