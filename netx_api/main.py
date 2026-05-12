@@ -492,8 +492,23 @@ def sql_ume_query(payload: dict[str, Any] | None = None, db: Session = Depends(g
         raise HTTPException(status_code=400, detail=f"sql_failed:{str(exc)[:240]}") from exc
 
 
+def _configure_ume_diag_logging() -> None:
+    """Emit netx.ume.* INFO to stderr so background scripts/.run/*.log and consoles show scheduler lines."""
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    for name in ("netx.ume.schedule", "netx.ume.sync"):
+        lg = logging.getLogger(name)
+        if lg.handlers:
+            continue
+        h = logging.StreamHandler()
+        h.setFormatter(fmt)
+        lg.addHandler(h)
+        lg.setLevel(logging.INFO)
+        lg.propagate = False
+
+
 @app.on_event("startup")
 def on_startup() -> None:
+    _configure_ume_diag_logging()
     Base.metadata.create_all(bind=engine)
     _reset_runtime_pause_flags()
     _fail_stale_running_sync_jobs_on_startup()
