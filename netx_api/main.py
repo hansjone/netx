@@ -78,6 +78,49 @@ _UME_RUNTIME_TASKS: dict[str, dict[str, Any]] = {
 _UME_RUNTIME_PAUSED: dict[str, bool] = {}
 UME_KNOWN_RUNTIME_TASKS: tuple[str, ...] = tuple(_UME_RUNTIME_TASKS.keys())
 _UME_RUNTIME_LOCK = threading.Lock()
+# Debounce skip / wake for scheduled sync threads (resume should not wait full interval).
+_UME_DEBOUNCE_MUTEX = threading.Lock()
+_UME_SYNC_SKIP_DEBOUNCE: set[str] = set()
+_UME_DEBOUNCE_WAKE: dict[str, threading.Event] = {}
+
+
+def _debounce_wake_event(task_id: str) -> threading.Event:
+    with _UME_DEBOUNCE_MUTEX:
+        ev = _UME_DEBOUNCE_WAKE.get(task_id)
+        if ev is None:
+            ev = threading.Event()
+            _UME_DEBOUNCE_WAKE[task_id] = ev
+        return ev
+
+
+def _request_force_sync_after_resume(task_id: str) -> None:
+    """Skip next debounce wait and interrupt an in-progress debounce sleep (UI 开始)."""
+    with _UME_DEBOUNCE_MUTEX:
+        _UME_SYNC_SKIP_DEBOUNCE.add(task_id)
+    try:
+        _debounce_wake_event(task_id).set()
+    except Exception:
+        pass
+
+
+def _clear_force_resume_hints(task_id: str) -> None:
+    """Pause: drop pending skip/wake so state is predictable."""
+    with _UME_DEBOUNCE_MUTEX:
+        _UME_SYNC_SKIP_DEBOUNCE.discard(task_id)
+    try:
+        _debounce_wake_event(task_id).clear()
+    except Exception:
+        pass
+
+
+def _reset_debounce_wakeup() -> None:
+    with _UME_DEBOUNCE_MUTEX:
+        _UME_SYNC_SKIP_DEBOUNCE.clear()
+        for ev in _UME_DEBOUNCE_WAKE.values():
+            try:
+                ev.clear()
+            except Exception:
+                pass
 
 
 def _set_runtime_task(task: str, *, status: str, last_run_at: datetime | None = None, last_error: str = "") -> None:
@@ -184,6 +227,7 @@ def _reset_runtime_pause_flags() -> None:
     with _UME_RUNTIME_LOCK:
         for tid in UME_KNOWN_RUNTIME_TASKS:
             _UME_RUNTIME_PAUSED[tid] = False
+    _reset_debounce_wakeup()
 
 
 def _fail_stale_running_sync_jobs_on_startup() -> None:
@@ -213,13 +257,26 @@ def _fail_stale_running_sync_jobs_on_startup() -> None:
 
 
 def _sleep_or_until_paused(task_id: str, total_s: float) -> None:
-    """Sleep up to total_s wall seconds, but wake every ~2s to honor pause."""
+    """Sleep up to total_s wall seconds; honor pause; wake early on resume (debounce interrupt)."""
     deadline = time.time() + max(0.0, float(total_s))
+    ev = _debounce_wake_event(task_id)
+    ev.clear()
     while time.time() < deadline:
         if _runtime_is_paused(task_id):
             time.sleep(1)
             continue
-        time.sleep(min(2.0, max(0.0, deadline - time.time())))
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        timeout = min(2.0, remaining)
+        if ev.wait(timeout=timeout):
+            ev.clear()
+            _schedule_log.info("%s: debounce wait interrupted (resume)", task_id)
+            with _UME_DEBOUNCE_MUTEX:
+                _UME_SYNC_SKIP_DEBOUNCE.discard(task_id)
+            return
+    if ev.is_set():
+        ev.clear()
 
 
 def _seconds_since_last_finished_job(db: Session, domain: str) -> float | None:
@@ -250,6 +307,11 @@ def _maybe_wait_for_sync_interval(
     label: str,
 ) -> None:
     """Sleep until interval elapsed since last finished job (ended_at), if any."""
+    with _UME_DEBOUNCE_MUTEX:
+        if task_id in _UME_SYNC_SKIP_DEBOUNCE:
+            _UME_SYNC_SKIP_DEBOUNCE.discard(task_id)
+            _schedule_log.info("%s: debounce skipped (resume/kick)", label)
+            return
     db = SessionLocal()
     try:
         elapsed = _seconds_since_last_finished_job(db, domain)
@@ -541,6 +603,10 @@ def on_startup() -> None:
             def _alarms_current_sync_loop() -> None:
                 while True:
                     try:
+                        _schedule_log.info(
+                            "alarms_current_auto_sync: loop tick paused=%s",
+                            _runtime_is_paused("alarms_current_auto_sync"),
+                        )
                         if _runtime_is_paused("alarms_current_auto_sync"):
                             time.sleep(1)
                             continue
@@ -584,7 +650,9 @@ def on_startup() -> None:
 
             t2 = threading.Thread(target=_alarms_current_sync_loop, name="ume-alarms-current-sync", daemon=True)
             t2.start()
-            _schedule_log.info("started thread %s", t2.name)
+            _schedule_log.info("started thread %s alive=%s", t2.name, t2.is_alive())
+            if not t2.is_alive():
+                _schedule_log.error("ume-alarms-current-sync thread exited immediately (check uncaught errors above)")
     except Exception:
         pass
     try:
@@ -596,6 +664,10 @@ def on_startup() -> None:
             def _inventory_auto_sync_loop() -> None:
                 while True:
                     try:
+                        _schedule_log.info(
+                            "inventory_auto_sync: loop tick paused=%s",
+                            _runtime_is_paused("inventory_auto_sync"),
+                        )
                         if _runtime_is_paused("inventory_auto_sync"):
                             time.sleep(1)
                             continue
@@ -639,7 +711,9 @@ def on_startup() -> None:
 
             t3 = threading.Thread(target=_inventory_auto_sync_loop, name="ume-inventory-auto-sync", daemon=True)
             t3.start()
-            _schedule_log.info("started thread %s", t3.name)
+            _schedule_log.info("started thread %s alive=%s", t3.name, t3.is_alive())
+            if not t3.is_alive():
+                _schedule_log.error("ume-inventory-auto-sync thread exited immediately (check uncaught errors above)")
     except Exception:
         pass
 
@@ -812,6 +886,8 @@ def ume_runtime_task_pause(task: str) -> dict[str, Any]:
     if tid not in UME_KNOWN_RUNTIME_TASKS:
         raise HTTPException(status_code=404, detail="unknown_runtime_task")
     _runtime_pause_task(tid)
+    if tid in ("alarms_current_auto_sync", "inventory_auto_sync"):
+        _clear_force_resume_hints(tid)
     _set_runtime_task(tid, status="paused", last_error="")
     return {"ok": True, "task": tid, "runtime_tasks": _list_runtime_tasks()}
 
@@ -822,7 +898,9 @@ def ume_runtime_task_resume(task: str) -> dict[str, Any]:
     if tid not in UME_KNOWN_RUNTIME_TASKS:
         raise HTTPException(status_code=404, detail="unknown_runtime_task")
     _runtime_resume_task(tid)
-    _set_runtime_task(tid, status="running", last_error="")
+    if tid in ("alarms_current_auto_sync", "inventory_auto_sync"):
+        _request_force_sync_after_resume(tid)
+    _set_runtime_task(tid, status="running", last_error="已恢复：将跳过本轮周期等待并尽快同步")
     return {"ok": True, "task": tid, "runtime_tasks": _list_runtime_tasks()}
 
 
