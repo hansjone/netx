@@ -449,6 +449,7 @@ def on_startup() -> None:
                         _set_runtime_task(
                             "alarms_current_auto_sync",
                             status="running",
+                            last_run_at=datetime.now(timezone.utc),
                             last_error="正在拉取 UME 当前告警…",
                         )
                         db = SessionLocal()
@@ -491,6 +492,7 @@ def on_startup() -> None:
                         _set_runtime_task(
                             "inventory_auto_sync",
                             status="running",
+                            last_run_at=datetime.now(timezone.utc),
                             last_error="正在拉取 UME 网元清单…",
                         )
                         db = SessionLocal()

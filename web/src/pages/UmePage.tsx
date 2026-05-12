@@ -296,7 +296,9 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
               <th>task</th>
               <th title="相邻两次循环 sleep 的配置间隔（与服务启动时 clamp 一致）">间隔</th>
               <th>status</th>
-              <th>last_run_at</th>
+              <th title="每次周期开始时刷新；若单次同步耗时很长，间隔列仍为周期 sleep，实际两轮完成间隔 ≈ 同步耗时 + 间隔">
+                last_run_at
+              </th>
               <th>last_error</th>
               <th>操作</th>
             </tr>
