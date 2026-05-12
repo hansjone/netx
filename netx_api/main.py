@@ -583,8 +583,8 @@ def on_startup() -> None:
         pass
     try:
         if bool(getattr(settings, "ume_keepalive_enabled", True)):
-            interval_s = int(getattr(settings, "ume_keepalive_interval_s", 600) or 600)
-            interval_s = max(30, min(interval_s, 3600))
+            interval_keepalive_s = int(getattr(settings, "ume_keepalive_interval_s", 600) or 600)
+            interval_keepalive_s = max(30, min(interval_keepalive_s, 3600))
             renew_before_s = int(getattr(settings, "ume_keepalive_renew_before_s", 900) or 900)
             renew_before_s = max(30, min(renew_before_s, 86400))
 
@@ -604,7 +604,7 @@ def on_startup() -> None:
                         _set_runtime_task("token_keepalive", status="running", last_run_at=datetime.now(timezone.utc), last_error="")
                     except Exception:
                         _set_runtime_task("token_keepalive", status="error", last_run_at=datetime.now(timezone.utc), last_error="keepalive_failed")
-                    time.sleep(interval_s)
+                    time.sleep(interval_keepalive_s)
 
             t = threading.Thread(target=_keepalive_loop, name="ume-token-keepalive", daemon=True)
             t.start()
@@ -612,8 +612,8 @@ def on_startup() -> None:
         pass
     try:
         if bool(getattr(settings, "ume_sync_alarms_current_enabled", True)):
-            interval_s = int(getattr(settings, "ume_sync_alarms_current_interval_s", 300) or 300)
-            interval_s = max(30, min(interval_s, 86400))
+            alarms_interval_s = int(getattr(settings, "ume_sync_alarms_current_interval_s", 300) or 300)
+            alarms_interval_s = max(30, min(alarms_interval_s, 86400))
 
             def _alarms_current_sync_loop() -> None:
                 while True:
@@ -628,12 +628,12 @@ def on_startup() -> None:
                         _maybe_wait_for_sync_interval(
                             task_id="alarms_current_auto_sync",
                             domain="alarms_current",
-                            interval_s=interval_s,
+                            interval_s=alarms_interval_s,
                             label="alarms_current_auto_sync",
                         )
                         _schedule_log.info(
-                            "alarms_current_auto_sync: iteration start (sleep_after=%ss)",
-                            interval_s,
+                            "alarms_current_auto_sync: iteration start (interval=%ss)",
+                            alarms_interval_s,
                         )
                         _set_runtime_task(
                             "alarms_current_auto_sync",
@@ -674,7 +674,7 @@ def on_startup() -> None:
         if bool(getattr(settings, "ume_sync_inventory_auto_enabled", True)):
             hours = int(getattr(settings, "ume_sync_inventory_every_hours", 48) or 48)
             hours = max(1, min(hours, 168))
-            interval_s = int(hours * 3600)
+            inventory_interval_s = int(hours * 3600)
 
             def _inventory_auto_sync_loop() -> None:
                 while True:
@@ -689,12 +689,12 @@ def on_startup() -> None:
                         _maybe_wait_for_sync_interval(
                             task_id="inventory_auto_sync",
                             domain="inventory",
-                            interval_s=interval_s,
+                            interval_s=inventory_interval_s,
                             label="inventory_auto_sync",
                         )
                         _schedule_log.info(
-                            "inventory_auto_sync: iteration start (sleep_after=%ss)",
-                            interval_s,
+                            "inventory_auto_sync: iteration start (interval=%ss)",
+                            inventory_interval_s,
                         )
                         _set_runtime_task(
                             "inventory_auto_sync",
