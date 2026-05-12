@@ -11,7 +11,13 @@ import {
 } from "../services/api";
 import { formatSystemTime } from "../utils/time";
 
-export function UmePage() {
+export type UmePageProps = {
+  /** Optional toasts from App shell (fixed bottom-right). */
+  toastOk?: (message: string) => void;
+  toastError?: (message: string) => void;
+};
+
+export function UmePage({ toastOk, toastError }: UmePageProps) {
   const queryClient = useQueryClient();
   const [tokenOpError, setTokenOpError] = useState("");
   const [runtimeTaskError, setRuntimeTaskError] = useState("");
@@ -52,41 +58,63 @@ export function UmePage() {
   });
   const tokenRefreshMutation = useMutation({
     mutationFn: refreshUmeToken,
+    onMutate: () => {
+      setTokenOpError("");
+    },
     onSuccess: async (res) => {
       if (!res?.ok) {
-        setTokenOpError(String(res.error || res.error_kind || "token_refresh_failed"));
+        const msg = String(res.error || res.error_kind || "token_refresh_failed");
+        setTokenOpError(msg);
+        toastError?.(msg);
       } else {
         setTokenOpError("");
+        toastOk?.(res.changed ? "续期成功，token 已更新" : "续期完成（与此前一致）");
       }
       await queryClient.invalidateQueries({ queryKey: ["umeTokenStatus"] });
+      await queryClient.invalidateQueries({ queryKey: ["umeSyncStatus"] });
     },
     onError: (err) => {
-      setTokenOpError(String(err));
+      const msg = String(err);
+      setTokenOpError(msg);
+      toastError?.(msg);
     },
   });
   const tokenDisconnectMutation = useMutation({
     mutationFn: disconnectUmeToken,
+    onMutate: () => {
+      setTokenOpError("");
+    },
     onSuccess: async (res) => {
       if (!res?.ok) {
-        setTokenOpError(String(res.error || res.error_kind || "token_disconnect_failed"));
+        const msg = String(res.error || res.error_kind || "token_disconnect_failed");
+        setTokenOpError(msg);
+        toastError?.(msg);
       } else {
         setTokenOpError("");
+        toastOk?.("已断开 UME token");
       }
       await queryClient.invalidateQueries({ queryKey: ["umeTokenStatus"] });
+      await queryClient.invalidateQueries({ queryKey: ["umeSyncStatus"] });
     },
     onError: (err) => {
-      setTokenOpError(String(err));
+      const msg = String(err);
+      setTokenOpError(msg);
+      toastError?.(msg);
     },
   });
 
   const tokenExpiresIn = Number(tokenStatusQuery.data?.expires_in_s || 0);
-  const tokenLevel = !tokenStatusQuery.data?.has_token
+  const hasToken = Boolean(tokenStatusQuery.data?.has_token);
+  const tokenNeedsRenewal = hasToken && tokenExpiresIn <= 0;
+  const tokenLevel = !hasToken
     ? "down"
-    : tokenExpiresIn < 15
-      ? "down"
-      : tokenExpiresIn < 60
-        ? "unknown"
-        : "up";
+    : tokenNeedsRenewal
+      ? "warn"
+      : tokenExpiresIn < 15
+        ? "down"
+        : tokenExpiresIn < 60
+          ? "unknown"
+          : "up";
   const neQuery = useQuery({
     queryKey: ["umeNE", neKeyword, nePage, nePageSize],
     queryFn: () => fetchUmeNe({ keyword: neKeyword, page: nePage, pageSize: nePageSize }),
@@ -131,11 +159,23 @@ export function UmePage() {
         <article className="card card--full">
           <h3>UME Token 状态</h3>
           <div className="actions-row actions-row--inline">
-            <span className={`conn-pill conn-pill--${tokenStatusQuery.data?.has_token ? "up" : "down"}`}>
-              token: {tokenStatusQuery.data?.has_token ? "connected" : "disconnected"}
+            <span
+              className={`conn-pill conn-pill--${!hasToken ? "down" : tokenNeedsRenewal ? "warn" : "up"}`}
+              title={
+                tokenNeedsRenewal
+                  ? "库中 token 缺少有效过期时间或已过期，请点「手动续期/登录」或等待后台自动续期"
+                  : undefined
+              }
+            >
+              token: {!hasToken ? "disconnected" : tokenNeedsRenewal ? "connected (需续期)" : "connected"}
             </span>
             <span className={`conn-pill conn-pill--${tokenLevel}`}>
-              expires_in: {typeof tokenStatusQuery.data?.expires_in_s === "number" ? `${tokenStatusQuery.data.expires_in_s}s` : "-"}
+              expires_in:{" "}
+              {typeof tokenStatusQuery.data?.expires_in_s === "number"
+                ? tokenNeedsRenewal
+                  ? "需续期 / 0s"
+                  : `${tokenStatusQuery.data.expires_in_s}s`
+                : "-"}
             </span>
             {tokenStatusQuery.data?.token_preview ? <span className="conn-pill">preview: {tokenStatusQuery.data.token_preview}</span> : null}
           </div>
@@ -144,13 +184,42 @@ export function UmePage() {
               onClick={() => queryClient.invalidateQueries({ queryKey: ["umeTokenStatus"] })}
               disabled={tokenStatusQuery.isFetching}
             >
-              刷新状态
+              {tokenStatusQuery.isFetching ? (
+                <>
+                  <span className="inline-spinner" aria-hidden />
+                  刷新中…
+                </>
+              ) : (
+                "刷新状态"
+              )}
             </button>
-            <button onClick={() => tokenRefreshMutation.mutate()} disabled={tokenRefreshMutation.isPending}>
-              手动续期/登录
+            <button
+              type="button"
+              onClick={() => tokenRefreshMutation.mutate()}
+              disabled={tokenRefreshMutation.isPending || tokenDisconnectMutation.isPending}
+            >
+              {tokenRefreshMutation.isPending ? (
+                <>
+                  <span className="inline-spinner" aria-hidden />
+                  续期中…
+                </>
+              ) : (
+                "手动续期/登录"
+              )}
             </button>
-            <button onClick={() => tokenDisconnectMutation.mutate()} disabled={tokenDisconnectMutation.isPending}>
-              断开 token
+            <button
+              type="button"
+              onClick={() => tokenDisconnectMutation.mutate()}
+              disabled={tokenRefreshMutation.isPending || tokenDisconnectMutation.isPending}
+            >
+              {tokenDisconnectMutation.isPending ? (
+                <>
+                  <span className="inline-spinner" aria-hidden />
+                  断开中…
+                </>
+              ) : (
+                "断开 token"
+              )}
             </button>
           </div>
           {(tokenOpError || tokenRefreshMutation.error || tokenDisconnectMutation.error) && (

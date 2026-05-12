@@ -335,7 +335,7 @@ function App() {
               />
             }
           />
-          <Route path="/ume" element={<UmePage />} />
+          <Route path="/ume" element={<UmePage toastOk={showOk} toastError={showError} />} />
         </Routes>
         {toast && <div className={`toast toast--${toast.type}`}>{toast.text}</div>}
     </AppLayout>

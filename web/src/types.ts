@@ -148,12 +148,13 @@ export type UmeAlarmItem = {
 };
 
 export type UmeTokenStatus = {
-  ok: boolean;
+  ok?: boolean;
   has_token: boolean;
   expires_in_s: number;
   expires_at_epoch_s: number;
   auth_header: string;
   token_preview?: string;
+  changed?: boolean;
   error_kind?: string;
   error?: string;
 };

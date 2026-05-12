@@ -423,7 +423,8 @@ def on_startup() -> None:
                         client = _ume_client()
                         st = client.token_status()
                         expires_in = int(st.get("expires_in_s") or 0)
-                        if bool(st.get("has_token")) and expires_in > 0 and expires_in < renew_before_s:
+                        # Renew when missing/invalid TTL (0) or nearing expiry — previously 0 skipped renew forever.
+                        if bool(st.get("has_token")) and (expires_in <= 0 or expires_in < renew_before_s):
                             client.renew_token()
                         _set_runtime_task("token_keepalive", status="running", last_run_at=datetime.now(timezone.utc), last_error="")
                     except Exception:
@@ -445,6 +446,11 @@ def on_startup() -> None:
                         if _runtime_is_paused("alarms_current_auto_sync"):
                             time.sleep(1)
                             continue
+                        _set_runtime_task(
+                            "alarms_current_auto_sync",
+                            status="running",
+                            last_error="正在拉取 UME 当前告警…",
+                        )
                         db = SessionLocal()
                         try:
                             client = _ume_client()
@@ -482,6 +488,11 @@ def on_startup() -> None:
                         if _runtime_is_paused("inventory_auto_sync"):
                             time.sleep(1)
                             continue
+                        _set_runtime_task(
+                            "inventory_auto_sync",
+                            status="running",
+                            last_error="正在拉取 UME 网元清单…",
+                        )
                         db = SessionLocal()
                         try:
                             client = _ume_client()
