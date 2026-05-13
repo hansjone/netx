@@ -73,10 +73,14 @@ def _derive_ne_id_from_alarm(alarm: dict[str, Any]) -> str:
     # Common UME formats observed:
     # 1) "<net_id>#<suffix>"
     # 2) "<net_id>, <x>, <y>"
+    # 3) "<net_id> <x> <y>"
     if "#" in alarm_key:
         return _s(alarm_key.split("#", 1)[0])
     if "," in alarm_key:
         return _s(alarm_key.split(",", 1)[0])
+    parts = [p for p in alarm_key.split() if p]
+    if len(parts) >= 2:
+        return _s(parts[0])
     return ""
 
 

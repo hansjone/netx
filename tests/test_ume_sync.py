@@ -486,6 +486,7 @@ class UmeSyncServiceTests(unittest.TestCase):
     def test_derive_ne_id_from_alarmkey_formats(self):
         alarm_hash = {"alarmkey": "00ceb960-1b62-478e-8303-0935ffea1d28#99010"}
         alarm_csv = {"alarmkey": "00ceb960-1b62-478e-8303-0935ffea1d28, 4237, 79"}
+        alarm_space = {"alarmkey": "00ceb960-1b62-478e-8303-0935ffea1d28 4205 3588"}
 
         self.assertEqual(
             _derive_ne_id_from_alarm(alarm_hash),
@@ -493,6 +494,10 @@ class UmeSyncServiceTests(unittest.TestCase):
         )
         self.assertEqual(
             _derive_ne_id_from_alarm(alarm_csv),
+            "00ceb960-1b62-478e-8303-0935ffea1d28",
+        )
+        self.assertEqual(
+            _derive_ne_id_from_alarm(alarm_space),
             "00ceb960-1b62-478e-8303-0935ffea1d28",
         )
 
