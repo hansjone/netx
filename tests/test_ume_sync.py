@@ -487,6 +487,7 @@ class UmeSyncServiceTests(unittest.TestCase):
         alarm_hash = {"alarmkey": "00ceb960-1b62-478e-8303-0935ffea1d28#99010"}
         alarm_csv = {"alarmkey": "00ceb960-1b62-478e-8303-0935ffea1d28, 4237, 79"}
         alarm_space = {"alarmkey": "00ceb960-1b62-478e-8303-0935ffea1d28 4205 3588"}
+        alarm_object_name_me = {"alarmkey": "no-net-id-here", "objectName": "OLT/ME{00ceb960-1b62-478e-8303-0935ffea1d28}/PON-1"}
 
         self.assertEqual(
             _derive_ne_id_from_alarm(alarm_hash),
@@ -498,6 +499,10 @@ class UmeSyncServiceTests(unittest.TestCase):
         )
         self.assertEqual(
             _derive_ne_id_from_alarm(alarm_space),
+            "00ceb960-1b62-478e-8303-0935ffea1d28",
+        )
+        self.assertEqual(
+            _derive_ne_id_from_alarm(alarm_object_name_me),
             "00ceb960-1b62-478e-8303-0935ffea1d28",
         )
 

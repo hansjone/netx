@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import hashlib
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -81,6 +82,13 @@ def _derive_ne_id_from_alarm(alarm: dict[str, Any]) -> str:
     parts = [p for p in alarm_key.split() if p]
     if len(parts) >= 2:
         return _s(parts[0])
+
+    # Fallback: some alarms encode net_id as ME{<net_id>} in objectName.
+    object_name = _s(_pick(alarm, "objectName", "object-name"))
+    if object_name:
+        m = re.search(r"ME\{([^}]+)\}", object_name, flags=re.IGNORECASE)
+        if m:
+            return _s(m.group(1))
     return ""
 
 
