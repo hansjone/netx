@@ -370,7 +370,16 @@ def _call_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
             page = max(1, int(args.get("page") or 1))
             page_size = min(500, max(1, int(args.get("page_size") or 50)))
             total = int(stmt.count())
-            rows = stmt.order_by(UmeAlarmCurrent.last_seen_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+            rows = (
+                stmt.order_by(
+                    UmeAlarmCurrent.time_created.desc(),
+                    UmeAlarmCurrent.last_seen_at.desc(),
+                    UmeAlarmCurrent.alarm_key.desc(),
+                )
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+                .all()
+            )
             payload = {
                 "total": total,
                 "page": page,

@@ -1069,7 +1069,16 @@ def ume_list_alarms(
             | UmeInventoryNE.host_name.contains(kw)
         )
     total = int(stmt.count())
-    rows = stmt.order_by(UmeAlarmCurrent.last_seen_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    rows = (
+        stmt.order_by(
+            UmeAlarmCurrent.time_created.desc(),
+            UmeAlarmCurrent.last_seen_at.desc(),
+            UmeAlarmCurrent.alarm_key.desc(),
+        )
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
     items = [
         {
             "alarm_key": str(alarm.alarm_key or ""),
