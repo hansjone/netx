@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import hashlib
 from datetime import datetime, timezone
 from typing import Any
 
@@ -43,6 +44,9 @@ def _pick(d: dict[str, Any], *keys: str) -> Any:
 def _alarm_key(alarm: dict[str, Any]) -> str:
     key = _s(_pick(alarm, "alarmKey", "alarm-key","alarmkey","id"))
     if key:
+        # Keep full upstream key; use a stable digest only for pathological ultra-long keys.
+        if len(key) > 512:
+            return "sha256:" + hashlib.sha256(key.encode("utf-8", errors="ignore")).hexdigest()
         return key
     parts = [
         _s(_pick(alarm, "objectName", "object-name")),
@@ -51,7 +55,10 @@ def _alarm_key(alarm: dict[str, Any]) -> str:
         _s(_pick(alarm, "nativeProbableCause", "native-probable-cause")),
     ]
     merged = "|".join(x for x in parts if x)
-    return merged or f"fallback-{datetime.utcnow().timestamp()}"
+    raw = merged or f"fallback-{datetime.utcnow().timestamp()}"
+    if len(raw) > 512:
+        return "sha256:" + hashlib.sha256(raw.encode("utf-8", errors="ignore")).hexdigest()
+    return raw
 
 
 def _derive_ne_id_from_alarm(alarm: dict[str, Any]) -> str:
@@ -338,7 +345,7 @@ def _sync_alarms_common(
                     inserted += 1
                 else:
                     updated += 1
-            existing.ne_id = _derive_ne_id_from_alarm(alarm)
+            existing.ne_id = _s(_derive_ne_id_from_alarm(alarm))
             existing.object_name = _s(_pick(alarm, "objectName", "object-name"))
             existing.event_type = _s(_pick(alarm, "eventType", "event-type"))
             existing.native_probable_cause = _s(_pick(alarm, "nativeProbableCause", "native-probable-cause"))
