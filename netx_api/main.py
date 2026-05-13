@@ -621,8 +621,14 @@ def on_startup() -> None:
 
             t = threading.Thread(target=_keepalive_loop, name="ume-token-keepalive", daemon=True)
             t.start()
-    except Exception:
-        pass
+    except Exception as exc:
+        _schedule_log.exception("startup: token_keepalive thread init failed: %s", exc)
+        _set_runtime_task(
+            "token_keepalive",
+            status="error",
+            last_run_at=datetime.now(timezone.utc),
+            last_error=f"startup_thread_init_failed: {str(exc)[:180]}",
+        )
     try:
         if bool(getattr(settings, "ume_sync_alarms_current_enabled", True)):
             alarms_interval_s = int(getattr(settings, "ume_sync_alarms_current_interval_s", 300) or 300)
@@ -681,8 +687,14 @@ def on_startup() -> None:
             _schedule_log.info("started thread %s alive=%s", t2.name, t2.is_alive())
             if not t2.is_alive():
                 _schedule_log.error("ume-alarms-current-sync thread exited immediately (check uncaught errors above)")
-    except Exception:
-        pass
+    except Exception as exc:
+        _schedule_log.exception("startup: alarms_current_auto_sync thread init failed: %s", exc)
+        _set_runtime_task(
+            "alarms_current_auto_sync",
+            status="error",
+            last_run_at=datetime.now(timezone.utc),
+            last_error=f"startup_thread_init_failed: {str(exc)[:180]}",
+        )
     try:
         if bool(getattr(settings, "ume_sync_inventory_auto_enabled", True)):
             hours = int(getattr(settings, "ume_sync_inventory_every_hours", 48) or 48)
@@ -742,8 +754,14 @@ def on_startup() -> None:
             _schedule_log.info("started thread %s alive=%s", t3.name, t3.is_alive())
             if not t3.is_alive():
                 _schedule_log.error("ume-inventory-auto-sync thread exited immediately (check uncaught errors above)")
-    except Exception:
-        pass
+    except Exception as exc:
+        _schedule_log.exception("startup: inventory_auto_sync thread init failed: %s", exc)
+        _set_runtime_task(
+            "inventory_auto_sync",
+            status="error",
+            last_run_at=datetime.now(timezone.utc),
+            last_error=f"startup_thread_init_failed: {str(exc)[:180]}",
+        )
 
 
 @app.get("/health")
