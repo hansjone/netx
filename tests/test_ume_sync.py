@@ -488,6 +488,10 @@ class UmeSyncServiceTests(unittest.TestCase):
         alarm_csv = {"alarmkey": "00ceb960-1b62-478e-8303-0935ffea1d28, 4237, 79"}
         alarm_space = {"alarmkey": "00ceb960-1b62-478e-8303-0935ffea1d28 4205 3588"}
         alarm_object_name_me = {"alarmkey": "no-net-id-here", "objectName": "OLT/ME{00ceb960-1b62-478e-8303-0935ffea1d28}/PON-1"}
+        alarm_key_me_wrapped = {
+            "alarmkey": "BN:ME{353319917}:35 1778634688",
+            "objectName": "ME{33a3e8f4-a76e-40fd-a0ba-045371a5f234},PWR={/module=3}",
+        }
 
         self.assertEqual(
             _derive_ne_id_from_alarm(alarm_hash),
@@ -504,6 +508,10 @@ class UmeSyncServiceTests(unittest.TestCase):
         self.assertEqual(
             _derive_ne_id_from_alarm(alarm_object_name_me),
             "00ceb960-1b62-478e-8303-0935ffea1d28",
+        )
+        self.assertEqual(
+            _derive_ne_id_from_alarm(alarm_key_me_wrapped),
+            "33a3e8f4-a76e-40fd-a0ba-045371a5f234",
         )
 
     def test_serialize_ume_alarm_raw_row_select_fields(self):

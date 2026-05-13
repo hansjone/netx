@@ -67,28 +67,48 @@ def _derive_ne_id_from_alarm(alarm: dict[str, Any]) -> str:
     if ne_id:
         return ne_id
 
+    def _uuid_like(s: str) -> bool:
+        return bool(
+            re.fullmatch(
+                r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+                str(s or "").strip(),
+            )
+        )
+
+    # Prefer UUID net_id in objectName, e.g. "... ME{33a3e8f4-a76e-40fd-a0ba-045371a5f234} ..."
+    object_name = _s(_pick(alarm, "objectName", "object-name"))
+    if object_name:
+        m_obj = re.search(r"ME\{([^}]+)\}", object_name, flags=re.IGNORECASE)
+        if m_obj:
+            candidate = _s(m_obj.group(1))
+            if _uuid_like(candidate):
+                return candidate
+
     alarm_key = _s(_pick(alarm, "alarmKey", "alarm-key", "alarmkey"))
     if not alarm_key:
         return ""
+
+    # If alarmkey contains ME{...}, only accept it when it looks like a UUID.
+    m0 = re.search(r"ME\{([^}]+)\}", alarm_key, flags=re.IGNORECASE)
+    if m0:
+        candidate = _s(m0.group(1))
+        if _uuid_like(candidate):
+            return candidate
 
     # Common UME formats observed:
     # 1) "<net_id>#<suffix>"
     # 2) "<net_id>, <x>, <y>"
     # 3) "<net_id> <x> <y>"
     if "#" in alarm_key:
-        return _s(alarm_key.split("#", 1)[0])
+        candidate = _s(alarm_key.split("#", 1)[0])
+        return candidate if _uuid_like(candidate) else ""
     if "," in alarm_key:
-        return _s(alarm_key.split(",", 1)[0])
+        candidate = _s(alarm_key.split(",", 1)[0])
+        return candidate if _uuid_like(candidate) else ""
     parts = [p for p in alarm_key.split() if p]
-    if len(parts) >= 2:
-        return _s(parts[0])
-
-    # Fallback: some alarms encode net_id as ME{<net_id>} in objectName.
-    object_name = _s(_pick(alarm, "objectName", "object-name"))
-    if object_name:
-        m = re.search(r"ME\{([^}]+)\}", object_name, flags=re.IGNORECASE)
-        if m:
-            return _s(m.group(1))
+    if len(parts) >= 2 and ":" not in parts[0]:
+        candidate = _s(parts[0])
+        return candidate if _uuid_like(candidate) else ""
     return ""
 
 
