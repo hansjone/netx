@@ -168,6 +168,7 @@ class UmeAlarmCurrent(Base):
 
     alarm_key: Mapped[str] = mapped_column(Text, primary_key=True)
     ne_id: Mapped[str] = mapped_column(String(128), default="", index=True)
+    host_name: Mapped[str] = mapped_column(String(256), default="", index=True, comment="网元主机名(同步时从inventory联表写入)")
     object_name: Mapped[str] = mapped_column(Text, default="", index=True)
     event_type: Mapped[str] = mapped_column(Text, default="")
     native_probable_cause: Mapped[str] = mapped_column(Text, default="")
@@ -185,6 +186,7 @@ class UmeAlarmHistory(Base):
 
     alarm_key: Mapped[str] = mapped_column(Text, primary_key=True)
     ne_id: Mapped[str] = mapped_column(String(128), default="", index=True)
+    host_name: Mapped[str] = mapped_column(String(256), default="", index=True, comment="网元主机名(同步时从inventory联表写入)")
     object_name: Mapped[str] = mapped_column(Text, default="", index=True)
     event_type: Mapped[str] = mapped_column(Text, default="")
     native_probable_cause: Mapped[str] = mapped_column(Text, default="")

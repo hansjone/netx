@@ -342,6 +342,16 @@ class UmeSyncServiceTests(unittest.TestCase):
 
                 return rows, _D()
 
+        self.db.add(
+            UmeInventoryNE(
+                ne_id="NE-1",
+                ne_name="ne1",
+                user_label="网元1",
+                host_name="host-ne-1",
+            )
+        )
+        self.db.commit()
+
         job1, _ = sync_alarms_current(self.db, _C(), trigger_mode="manual")
         self.assertEqual(job1.status, "done")
         self.assertEqual(job1.inserted_count, 1)
@@ -353,6 +363,7 @@ class UmeSyncServiceTests(unittest.TestCase):
         row = self.db.get(UmeAlarmCurrent, "AK-1")
         self.assertIsNotNone(row)
         self.assertEqual(row.perceived_severity, "critical")
+        self.assertEqual(row.host_name, "host-ne-1")
 
     def test_sync_current_alarms_marker_pagination(self):
         class _C:
@@ -547,11 +558,16 @@ class UmeSyncServiceTests(unittest.TestCase):
         self.assertIn("ne_exists", set(data["selectable_fields"]))
 
     def test_extract_ume_raw_group_field(self):
-        alarm = UmeAlarmCurrent(alarm_key="AK-X", perceived_severity="major")
-        ne = UmeInventoryNE(ne_id="NE-X", user_label="site-x")
+        alarm = UmeAlarmCurrent(alarm_key="AK-X", perceived_severity="major", host_name="host-x")
+        ne = UmeInventoryNE(ne_id="NE-X", user_label="site-x", host_name="inv-host")
         self.assertEqual(_extract_ume_raw_group_field(alarm, ne, "alarm_perceived_severity"), "major")
         self.assertEqual(_extract_ume_raw_group_field(alarm, ne, "ne_user_label"), "site-x")
+        self.assertEqual(_extract_ume_raw_group_field(alarm, ne, "ne_host_name"), "host-x")
         self.assertEqual(_extract_ume_raw_group_field(alarm, None, "ne_exists"), "0")
+
+    def test_ume_alarms_fields_includes_alarm_host_name(self):
+        data = ume_alarms_fields()
+        self.assertIn("alarm_host_name", set(data["selectable_fields"]))
 
 
 if __name__ == "__main__":

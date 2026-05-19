@@ -360,6 +360,31 @@ def _aggregate_rows(items: list[Any], key_fn) -> list[dict[str, Any]]:
     return [{"key": k, "count": v} for k, v in sorted(bucket.items(), key=lambda kv: kv[1], reverse=True)]
 
 
+def _ume_alarm_host_name(
+    alarm: UmeAlarmCurrent | UmeAlarmHistory,
+    ne: UmeInventoryNE | None = None,
+) -> str:
+    hn = str(getattr(alarm, "host_name", "") or "").strip()
+    if hn:
+        return hn
+    if ne is not None:
+        return str(getattr(ne, "host_name", "") or "").strip()
+    return ""
+
+
+def _ume_alarm_ne_group_key(
+    alarm: UmeAlarmCurrent | UmeAlarmHistory,
+    ne: UmeInventoryNE | None,
+) -> str:
+    return (
+        _ume_alarm_host_name(alarm, ne)
+        or (str(ne.user_label if ne else "") or "").strip()
+        or (str(ne.ne_name if ne else "") or "").strip()
+        or str(alarm.ne_id or "").strip()
+        or "unknown"
+    )
+
+
 _PROTOCOL_BUCKET_ZH: dict[str, str] = {
     "IP/MPLS": "IP/MPLS",
     "ETH": "ETH",
@@ -596,6 +621,14 @@ def on_startup() -> None:
             conn.exec_driver_sql("ALTER TABLE ume_alarms_current ALTER COLUMN is_cleared TYPE TEXT")
             conn.exec_driver_sql("ALTER TABLE ume_alarms_current ALTER COLUMN time_created TYPE TEXT")
             conn.exec_driver_sql("ALTER TABLE ume_alarms_current ALTER COLUMN root_cause_alarm_indication TYPE TEXT")
+            conn.exec_driver_sql("ALTER TABLE ume_alarms_current ADD COLUMN IF NOT EXISTS host_name VARCHAR(256) DEFAULT ''")
+            conn.exec_driver_sql("ALTER TABLE ume_alarms_history ADD COLUMN IF NOT EXISTS host_name VARCHAR(256) DEFAULT ''")
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_ume_alarms_current_host_name ON ume_alarms_current (host_name)"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_ume_alarms_history_host_name ON ume_alarms_history (host_name)"
+            )
             conn.exec_driver_sql("ALTER TABLE ume_alarms_history ALTER COLUMN alarm_key TYPE TEXT")
             conn.exec_driver_sql("ALTER TABLE ume_alarms_history ALTER COLUMN object_name TYPE TEXT")
             conn.exec_driver_sql("ALTER TABLE ume_alarms_history ALTER COLUMN event_type TYPE TEXT")
@@ -1093,13 +1126,16 @@ def ume_list_alarms(
         stmt = stmt.filter(UmeAlarmCurrent.ne_id == str(ne_id).strip())
     hn = str(host_name or "").strip()
     if hn:
-        stmt = stmt.filter(UmeInventoryNE.host_name.contains(hn))
+        stmt = stmt.filter(
+            UmeAlarmCurrent.host_name.contains(hn) | UmeInventoryNE.host_name.contains(hn)
+        )
     kw = str(keyword or "").strip()
     if kw:
         stmt = stmt.filter(
             UmeAlarmCurrent.alarm_key.contains(kw)
             | UmeAlarmCurrent.object_name.contains(kw)
             | UmeAlarmCurrent.native_probable_cause.contains(kw)
+            | UmeAlarmCurrent.host_name.contains(kw)
             | UmeInventoryNE.ne_name.contains(kw)
             | UmeInventoryNE.user_label.contains(kw)
             | UmeInventoryNE.ip_address.contains(kw)
@@ -1122,7 +1158,7 @@ def ume_list_alarms(
             "ne_id": str(alarm.ne_id or ""),
             "ne_name": str((ne.ne_name if ne else "") or ""),
             "user_label": str((ne.user_label if ne else "") or ""),
-            "host_name": str((ne.host_name if ne else "") or ""),
+            "host_name": _ume_alarm_host_name(alarm, ne),
             "ne_type": str((ne.ne_type if ne else "") or ""),
             "object_name": str(alarm.object_name or ""),
             "event_type": str(alarm.event_type or ""),
@@ -1210,6 +1246,10 @@ def _extract_ume_raw_group_field(alarm: UmeAlarmCurrent, ne: UmeInventoryNE | No
         attr = key[len("ne_") :]
         if key == "ne_exists":
             return "1" if ne is not None else "0"
+        if key == "ne_host_name":
+            hn = str(getattr(alarm, "host_name", "") or "").strip()
+            if hn:
+                return hn
         if ne is None:
             return ""
         return str(getattr(ne, attr, "") or "")
@@ -1392,7 +1432,7 @@ def ume_alarms_aggregate(db: Session = Depends(get_db)) -> dict[str, Any]:
         UmeInventoryNE, UmeAlarmCurrent.ne_id == UmeInventoryNE.ne_id
     ).all()
     by_severity = _aggregate_rows(rows, lambda x: x[0].perceived_severity)
-    by_ne = _aggregate_rows(rows, lambda x: (x[1].user_label if x[1] else "") or (x[1].ne_name if x[1] else "") or x[0].ne_id)
+    by_ne = _aggregate_rows(rows, lambda x: _ume_alarm_ne_group_key(x[0], x[1]))
     return {"total": len(rows), "by_severity": by_severity, "by_ne": by_ne}
 
 
@@ -1406,7 +1446,7 @@ def ume_diagnostics(
     ).all()
     by_severity = _aggregate_rows(rows, lambda x: x[0].perceived_severity)
     by_alarm_code = _aggregate_rows(rows, lambda x: x[0].event_type)[:10]
-    by_ne = _aggregate_rows(rows, lambda x: (x[1].user_label if x[1] else "") or (x[1].ne_name if x[1] else "") or x[0].ne_id)[:10]
+    by_ne = _aggregate_rows(rows, lambda x: _ume_alarm_ne_group_key(x[0], x[1]))[:10]
 
     lang_norm = _normalize_netx_lang(lang)
     proto_counts: dict[str, int] = {}

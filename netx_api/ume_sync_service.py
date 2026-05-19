@@ -9,6 +9,7 @@ from typing import Any
 
 _sync_log = logging.getLogger("netx.ume.sync")
 
+from sqlalchemy import text as sql_text
 from sqlalchemy.orm import Session
 
 from .config import settings
@@ -40,6 +41,59 @@ def _pick(d: dict[str, Any], *keys: str) -> Any:
         if key in d:
             return d.get(key)
     return None
+
+
+def _lookup_host_name(db: Session, ne_id: str) -> str:
+    nid = _s(ne_id)
+    if not nid:
+        return ""
+    row = db.get(UmeInventoryNE, nid)
+    if row is None:
+        return ""
+    return _s(row.host_name)
+
+
+def _propagate_host_name_to_alarms(db: Session, ne_id: str, host_name: str) -> None:
+    nid = _s(ne_id)
+    if not nid:
+        return
+    hn = _s(host_name)
+    db.query(UmeAlarmCurrent).filter(UmeAlarmCurrent.ne_id == nid).update(
+        {UmeAlarmCurrent.host_name: hn},
+        synchronize_session=False,
+    )
+    db.query(UmeAlarmHistory).filter(UmeAlarmHistory.ne_id == nid).update(
+        {UmeAlarmHistory.host_name: hn},
+        synchronize_session=False,
+    )
+
+
+def _backfill_alarm_host_names(db: Session, model: type[UmeAlarmCurrent] | type[UmeAlarmHistory]) -> int:
+    """Set alarm.host_name from ume_inventory_ne for all rows with matching ne_id."""
+    table = str(getattr(model, "__tablename__", "") or "")
+    if not table:
+        return 0
+    bind = db.get_bind()
+    if bind is not None and str(bind.dialect.name).lower() == "postgresql":
+        res = db.execute(
+            sql_text(
+                f"""
+                UPDATE {table} AS a
+                SET host_name = COALESCE(NULLIF(TRIM(ne.host_name), ''), '')
+                FROM ume_inventory_ne AS ne
+                WHERE a.ne_id <> '' AND a.ne_id = ne.ne_id
+                """
+            )
+        )
+        return int(res.rowcount or 0)
+    ne_map = {str(r.ne_id or ""): _s(r.host_name) for r in db.query(UmeInventoryNE).all() if str(r.ne_id or "")}
+    updated = 0
+    for alarm in db.query(model).filter(model.ne_id != "").all():  # type: ignore[arg-type]
+        hn = ne_map.get(str(alarm.ne_id or ""), "")
+        if str(alarm.host_name or "") != hn:
+            alarm.host_name = hn
+            updated += 1
+    return updated
 
 
 def _alarm_key(alarm: dict[str, Any]) -> str:
@@ -277,6 +331,7 @@ def sync_inventory_full(db: Session, client: UMEClient, *, trigger_mode: str = "
             existing.vendor = _s(_pick(row, "vendor-name")) or "ZTE"
             existing.last_seen_at = now
             existing.raw_json = json.dumps(row, ensure_ascii=False, default=str)
+            _propagate_host_name_to_alarms(db, ne_id, existing.host_name)
 
         db.flush()
         deleted_ne = 0
@@ -342,6 +397,7 @@ def _sync_alarms_common(
     )
     pulled = inserted = updated = 0
     deleted_stale_current = 0
+    host_names_backfilled = 0
     paging_mode = "marker"
     paging_note = ""
     page_no = 0
@@ -378,6 +434,7 @@ def _sync_alarms_common(
                 else:
                     updated += 1
             existing.ne_id = _s(_derive_ne_id_from_alarm(alarm))
+            existing.host_name = _lookup_host_name(db, existing.ne_id)
             existing.object_name = _s(_pick(alarm, "objectName", "object-name"))
             existing.event_type = _s(_pick(alarm, "eventType", "event-type"))
             existing.native_probable_cause = _s(_pick(alarm, "nativeProbableCause", "native-probable-cause"))
@@ -416,6 +473,9 @@ def _sync_alarms_common(
                 .delete(synchronize_session=False)
             )
 
+        alarm_model = UmeAlarmHistory if is_uncleared else UmeAlarmCurrent
+        host_names_backfilled = _backfill_alarm_host_names(db, alarm_model)
+
         batch.total_rows = int(pulled)
         batch.success_rows = int(inserted + updated)
         batch.failed_rows = max(0, int(pulled) - int(inserted + updated))
@@ -433,6 +493,7 @@ def _sync_alarms_common(
                 "graceful_end_by_iterator_error": graceful_end_by_iterator_error,
                 "warnings": warnings,
                 "deleted_stale_current_alarms": int(deleted_stale_current),
+                "host_names_backfilled": int(host_names_backfilled),
                 "current_snapshot_reconcile": (not is_uncleared) and _snapshot_reconcile_ok(meta),
             },
             ensure_ascii=False,
@@ -464,6 +525,7 @@ def _sync_alarms_common(
                 "graceful_end_by_iterator_error": graceful_end_by_iterator_error,
                 "warnings": warnings,
                 "deleted_stale_current_alarms": int(deleted_stale_current),
+                "host_names_backfilled": int(host_names_backfilled),
                 "current_snapshot_reconcile": (not is_uncleared) and _snapshot_reconcile_ok(meta),
             },
             ensure_ascii=False,

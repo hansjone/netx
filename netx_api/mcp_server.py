@@ -363,9 +363,11 @@ def _call_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
                 stmt = stmt.filter(
                     UmeAlarmCurrent.alarm_key.contains(keyword)
                     | UmeAlarmCurrent.object_name.contains(keyword)
+                    | UmeAlarmCurrent.host_name.contains(keyword)
                     | UmeInventoryNE.ne_name.contains(keyword)
                     | UmeInventoryNE.user_label.contains(keyword)
                     | UmeInventoryNE.ip_address.contains(keyword)
+                    | UmeInventoryNE.host_name.contains(keyword)
                 )
             page = max(1, int(args.get("page") or 1))
             page_size = min(500, max(1, int(args.get("page_size") or 50)))
@@ -388,9 +390,12 @@ def _call_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
                     {
                         "alarm_key": str(alarm.alarm_key or ""),
                         "ne_id": str(alarm.ne_id or ""),
+                        "host_name": str(alarm.host_name or (ne.host_name if ne else "") or ""),
                         "ne_name": str((ne.ne_name if ne else "") or ""),
                         "user_label": str((ne.user_label if ne else "") or ""),
                         "object_name": str(alarm.object_name or ""),
+                        "event_type": str(alarm.event_type or ""),
+                        "native_probable_cause": str(alarm.native_probable_cause or ""),
                         "perceived_severity": str(alarm.perceived_severity or ""),
                         "is_cleared": str(alarm.is_cleared or ""),
                         "time_created": str(alarm.time_created or ""),
@@ -414,9 +419,11 @@ def _call_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
                 stmt = stmt.filter(
                     UmeAlarmHistory.alarm_key.contains(keyword)
                     | UmeAlarmHistory.object_name.contains(keyword)
+                    | UmeAlarmHistory.host_name.contains(keyword)
                     | UmeInventoryNE.ne_name.contains(keyword)
                     | UmeInventoryNE.user_label.contains(keyword)
                     | UmeInventoryNE.ip_address.contains(keyword)
+                    | UmeInventoryNE.host_name.contains(keyword)
                 )
             page = max(1, int(args.get("page") or 1))
             page_size = min(500, max(1, int(args.get("page_size") or 50)))
@@ -430,9 +437,12 @@ def _call_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
                     {
                         "alarm_key": str(alarm.alarm_key or ""),
                         "ne_id": str(alarm.ne_id or ""),
+                        "host_name": str(alarm.host_name or (ne.host_name if ne else "") or ""),
                         "ne_name": str((ne.ne_name if ne else "") or ""),
                         "user_label": str((ne.user_label if ne else "") or ""),
                         "object_name": str(alarm.object_name or ""),
+                        "event_type": str(alarm.event_type or ""),
+                        "native_probable_cause": str(alarm.native_probable_cause or ""),
                         "perceived_severity": str(alarm.perceived_severity or ""),
                         "is_cleared": str(alarm.is_cleared or ""),
                         "time_created": str(alarm.time_created or ""),
