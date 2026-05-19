@@ -360,6 +360,43 @@ def _aggregate_rows(items: list[Any], key_fn) -> list[dict[str, Any]]:
     return [{"key": k, "count": v} for k, v in sorted(bucket.items(), key=lambda kv: kv[1], reverse=True)]
 
 
+_PROTOCOL_BUCKET_ZH: dict[str, str] = {
+    "IP/MPLS": "IP/MPLS",
+    "ETH": "ETH",
+    "OTN/Optical": "OTN/光",
+    "Clock": "时钟",
+    "Power": "电源",
+    "Other": "其他",
+}
+
+
+def _classify_protocol_bucket(text: str) -> str:
+    """Canonical English protocol/technology bucket id."""
+    t = (text or "").upper()
+    if any(x in t for x in ("BGP", "OSPF", "ISIS", "LDP", "MPLS", "L3VPN", "VPN")):
+        return "IP/MPLS"
+    if any(x in t for x in ("ETH", "GE", "10GE", "25GE", "40GE", "100GE", "XGE")):
+        return "ETH"
+    if any(x in t for x in ("OTN", "ODU", "OCH", "OMS", "OSC", "DWDM", "WDM", "ROADM")):
+        return "OTN/Optical"
+    if any(x in t for x in ("CLOCK", "SYNC", "PTP", "1588", "BITS", "TOD")):
+        return "Clock"
+    if any(x in t for x in ("PWR", "POWER", "PSU", "BAT", "BATT")):
+        return "Power"
+    return "Other"
+
+
+def _protocol_bucket_label(text: str, *, lang: str = "zh") -> str:
+    key = _classify_protocol_bucket(text)
+    if str(lang or "").strip().lower().startswith("en"):
+        return key
+    return _PROTOCOL_BUCKET_ZH.get(key, key)
+
+
+def _normalize_netx_lang(lang: str | None) -> str:
+    return "en" if str(lang or "").strip().lower().startswith("en") else "zh"
+
+
 def _ume_client() -> UMEClient:
     return _UME_CLIENT_SINGLETON
 
@@ -1360,7 +1397,10 @@ def ume_alarms_aggregate(db: Session = Depends(get_db)) -> dict[str, Any]:
 
 
 @app.get("/v1/ume/diagnostics")
-def ume_diagnostics(db: Session = Depends(get_db)) -> dict[str, Any]:
+def ume_diagnostics(
+    lang: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
     rows = db.query(UmeAlarmCurrent, UmeInventoryNE).outerjoin(
         UmeInventoryNE, UmeAlarmCurrent.ne_id == UmeInventoryNE.ne_id
     ).all()
@@ -1368,20 +1408,7 @@ def ume_diagnostics(db: Session = Depends(get_db)) -> dict[str, Any]:
     by_alarm_code = _aggregate_rows(rows, lambda x: x[0].event_type)[:10]
     by_ne = _aggregate_rows(rows, lambda x: (x[1].user_label if x[1] else "") or (x[1].ne_name if x[1] else "") or x[0].ne_id)[:10]
 
-    def _protocol_bucket(text: str) -> str:
-        t = (text or "").upper()
-        if any(x in t for x in ("BGP", "OSPF", "ISIS", "LDP", "MPLS", "L3VPN", "VPN")):
-            return "IP/MPLS"
-        if any(x in t for x in ("ETH", "GE", "10GE", "25GE", "40GE", "100GE", "XGE")):
-            return "ETH"
-        if any(x in t for x in ("OTN", "ODU", "OCH", "OMS", "OSC", "DWDM", "WDM", "ROADM")):
-            return "OTN/光"
-        if any(x in t for x in ("CLOCK", "SYNC", "PTP", "1588", "BITS", "TOD")):
-            return "时钟"
-        if any(x in t for x in ("PWR", "POWER", "PSU", "BAT", "BATT")):
-            return "电源"
-        return "其他"
-
+    lang_norm = _normalize_netx_lang(lang)
     proto_counts: dict[str, int] = {}
     for alarm, ne in rows:
         blob = " | ".join(
@@ -1394,7 +1421,7 @@ def ume_diagnostics(db: Session = Depends(get_db)) -> dict[str, Any]:
                 str(ne.ip_address if ne else ""),
             ]
         )
-        bucket = _protocol_bucket(blob)
+        bucket = _protocol_bucket_label(blob, lang=lang_norm)
         proto_counts[bucket] = int(proto_counts.get(bucket, 0)) + 1
     protocol_summary = sorted(proto_counts.items(), key=lambda x: x[1], reverse=True)[:10]
 
@@ -1687,6 +1714,7 @@ def delete_all_batches(db: Session = Depends(get_db)) -> dict:
 @app.get("/v1/diagnostics")
 def diagnostics(
     batch_id: str = Query(...),
+    lang: str | None = Query(default=None),
     db: Session = Depends(get_db),
 ) -> dict:
     sev_rows = aggregate_alarms(db, group_by="severity_norm", batch_id=batch_id)
@@ -1694,25 +1722,7 @@ def diagnostics(
     ne_rows = aggregate_alarms(db, group_by="ne_name", batch_id=batch_id)[:10]
     total = sum(count for _, count in sev_rows)
 
-    def _protocol_bucket(text: str) -> str:
-        t = (text or "").upper()
-        # IP/MPLS control plane
-        if any(x in t for x in ("BGP", "OSPF", "ISIS", "LDP", "MPLS", "L3VPN", "VPN")):
-            return "IP/MPLS"
-        # Ethernet / packet
-        if any(x in t for x in ("ETH", "GE", "10GE", "25GE", "40GE", "100GE", "XGE")):
-            return "ETH"
-        # OTN / optical
-        if any(x in t for x in ("OTN", "ODU", "OCH", "OMS", "OSC", "DWDM", "WDM", "ROADM")):
-            return "OTN/光"
-        # Timing / clock
-        if any(x in t for x in ("CLOCK", "SYNC", "PTP", "1588", "BITS", "TOD")):
-            return "时钟"
-        # Power
-        if any(x in t for x in ("PWR", "POWER", "PSU", "BAT", "BATT")):
-            return "电源"
-        return "其他"
-
+    lang_norm = _normalize_netx_lang(lang)
     proto_counts: dict[str, int] = {}
     for name, desc, code, raw in (
         db.query(AlarmNorm.alarm_name, AlarmNorm.description, AlarmNorm.alarm_code, AlarmNorm.raw_json)
@@ -1720,7 +1730,7 @@ def diagnostics(
         .all()
     ):
         blob = " | ".join([str(code or ""), str(name or ""), str(desc or ""), str(raw or "")])
-        k = _protocol_bucket(blob)
+        k = _protocol_bucket_label(blob, lang=lang_norm)
         proto_counts[k] = int(proto_counts.get(k, 0)) + 1
     protocol_summary = sorted(proto_counts.items(), key=lambda x: x[1], reverse=True)[:10]
 
