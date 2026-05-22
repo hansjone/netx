@@ -34,6 +34,14 @@ from .models import (
 from .models import ImportJob
 from .parser_config import load_parser_config
 from .ume_client import UMEClient
+from .ume_alarm_ws import (
+    cancel_alarm_subscription_manual,
+    establish_alarm_subscription_manual,
+    get_subscription_status,
+    load_persisted_subscription,
+    shutdown_ws_consumer,
+    start_ume_alarm_ws_consumer,
+)
 from .ume_sync_service import sync_alarms_current, sync_alarms_history_full, sync_inventory_full
 from .ume_token_store import (
     clear_shared_token,
@@ -73,8 +81,10 @@ _SQL_FORBIDDEN_RE = re.compile(
 _UME_RUNTIME_TASKS: dict[str, dict[str, Any]] = {
     "token_keepalive": {"task": "token_keepalive", "status": "init", "last_run_at": None, "last_error": ""},
     "alarms_current_auto_sync": {"task": "alarms_current_auto_sync", "status": "init", "last_run_at": None, "last_error": ""},
+    "alarms_current_ws_consumer": {"task": "alarms_current_ws_consumer", "status": "init", "last_run_at": None, "last_error": ""},
     "inventory_auto_sync": {"task": "inventory_auto_sync", "status": "init", "last_run_at": None, "last_error": ""},
 }
+_UME_WS_STOP_EVENT: threading.Event | None = None
 _UME_RUNTIME_PAUSED: dict[str, bool] = {}
 UME_KNOWN_RUNTIME_TASKS: tuple[str, ...] = tuple(_UME_RUNTIME_TASKS.keys())
 _UME_RUNTIME_LOCK = threading.Lock()
@@ -174,9 +184,13 @@ def _runtime_task_interval_fields(task_id: str) -> tuple[int | None, str]:
     if task_id == "alarms_current_auto_sync":
         if not bool(getattr(settings, "ume_sync_alarms_current_enabled", True)):
             return None, "未启用"
-        interval_s = int(getattr(settings, "ume_sync_alarms_current_interval_s", 300) or 300)
+        interval_s = int(getattr(settings, "ume_sync_alarms_current_interval_s", 18000) or 18000)
         eff = max(30, min(interval_s, 86400))
         return eff, _format_runtime_interval_label(eff)
+    if task_id == "alarms_current_ws_consumer":
+        if not bool(getattr(settings, "ume_alarm_ws_enabled", True)):
+            return None, "未启用"
+        return None, "实时"
     if task_id == "inventory_auto_sync":
         if not bool(getattr(settings, "ume_sync_inventory_auto_enabled", True)):
             return None, "未启用"
@@ -701,7 +715,7 @@ def on_startup() -> None:
         )
     try:
         if bool(getattr(settings, "ume_sync_alarms_current_enabled", True)):
-            alarms_interval_s = int(getattr(settings, "ume_sync_alarms_current_interval_s", 300) or 300)
+            alarms_interval_s = int(getattr(settings, "ume_sync_alarms_current_interval_s", 18000) or 18000)
             alarms_interval_s = max(30, min(alarms_interval_s, 86400))
 
             def _alarms_current_sync_loop() -> None:
@@ -832,6 +846,46 @@ def on_startup() -> None:
             last_run_at=datetime.now(timezone.utc),
             last_error=f"startup_thread_init_failed: {str(exc)[:180]}",
         )
+    global _UME_WS_STOP_EVENT
+    try:
+        if bool(getattr(settings, "ume_alarm_ws_enabled", True)) and str(getattr(settings, "ume_base_url", "") or "").strip():
+            if load_persisted_subscription():
+                _schedule_log.info("startup: loaded persisted UME alarm subscription")
+            _UME_WS_STOP_EVENT = threading.Event()
+
+            def _ws_on_status(msg: str) -> None:
+                _set_runtime_task(
+                    "alarms_current_ws_consumer",
+                    status="running",
+                    last_run_at=datetime.now(timezone.utc),
+                    last_error=str(msg or "")[:240],
+                )
+
+            t_ws = start_ume_alarm_ws_consumer(
+                _ume_client(),
+                on_status=_ws_on_status,
+                stop_event=_UME_WS_STOP_EVENT,
+                is_paused=lambda: _runtime_is_paused("alarms_current_ws_consumer"),
+            )
+            _schedule_log.info("started thread %s alive=%s", t_ws.name, t_ws.is_alive())
+        else:
+            _set_runtime_task("alarms_current_ws_consumer", status="paused", last_error="未启用或未配置 UME_BASE_URL")
+    except Exception as exc:
+        _schedule_log.exception("startup: alarms_current_ws_consumer thread init failed: %s", exc)
+        _set_runtime_task(
+            "alarms_current_ws_consumer",
+            status="error",
+            last_run_at=datetime.now(timezone.utc),
+            last_error=f"startup_thread_init_failed: {str(exc)[:180]}",
+        )
+
+
+@app.on_event("shutdown")
+def on_shutdown() -> None:
+    global _UME_WS_STOP_EVENT
+    if _UME_WS_STOP_EVENT is not None:
+        _UME_WS_STOP_EVENT.set()
+    shutdown_ws_consumer()
 
 
 @app.get("/health")
@@ -870,6 +924,41 @@ def ume_token_disconnect() -> dict[str, Any]:
     ok = bool(client.logout_token())
     st = client.token_status()
     return {"ok": ok, **st}
+
+
+@app.get("/v1/ume/alarm-subscription/status")
+def ume_alarm_subscription_status() -> dict[str, Any]:
+    st = get_subscription_status()
+    ws_task = _UME_RUNTIME_TASKS.get("alarms_current_ws_consumer") or {}
+    return {
+        "ok": True,
+        **st,
+        "ws_consumer_status": str(ws_task.get("status") or ""),
+        "ws_consumer_last_error": str(ws_task.get("last_error") or ""),
+        "ws_consumer_last_run_at": ws_task.get("last_run_at"),
+    }
+
+
+@app.post("/v1/ume/alarm-subscription/establish")
+def ume_alarm_subscription_establish(db: Session = Depends(get_db)) -> dict[str, Any]:
+    client = _ume_client()
+    try:
+        st = establish_alarm_subscription_manual(client, db)
+        return {"ok": True, "created": not bool(st.get("already_exists")), **st}
+    except Exception as exc:
+        msg = str(exc)[:240]
+        raise HTTPException(status_code=502, detail=msg) from exc
+
+
+@app.post("/v1/ume/alarm-subscription/cancel")
+def ume_alarm_subscription_cancel(db: Session = Depends(get_db)) -> dict[str, Any]:
+    client = _ume_client()
+    try:
+        st = cancel_alarm_subscription_manual(client, db)
+        return {"ok": True, **st}
+    except Exception as exc:
+        msg = str(exc)[:240]
+        raise HTTPException(status_code=502, detail=msg) from exc
 
 
 @app.post("/v1/ume/sync")
@@ -993,6 +1082,7 @@ def ume_sync_status(
         "items": items,
         "latest_by_domain": latest_by_domain,
         "runtime_tasks": _list_runtime_tasks(),
+        "alarm_subscription": get_subscription_status(),
     }
 
 

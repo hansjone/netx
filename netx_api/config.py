@@ -41,7 +41,11 @@ class Settings(BaseSettings):
     ume_keepalive_interval_s: int = 600
     ume_keepalive_renew_before_s: int = 900
     ume_sync_alarms_current_enabled: bool = True
-    ume_sync_alarms_current_interval_s: int = 300
+    ume_sync_alarms_current_interval_s: int = 18000
+    ume_alarm_ws_enabled: bool = True
+    ume_notification_establish_path: str = "/restconf/operations/zte-notifications:establish-subscription"
+    ume_notification_delete_path: str = "/restconf/operations/zte-notifications:delete-subscription"
+    ume_notification_topic: str = "ALARM"
     ume_sync_inventory_auto_enabled: bool = True
     ume_sync_inventory_every_hours: int = 48
     ume_token_path: str = "/restconf/operations/zte-security:oauth_token"

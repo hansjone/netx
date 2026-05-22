@@ -6,6 +6,7 @@ import type {
   ImportHistoryItem,
   IntegrationStatus,
   UmeAlarmItem,
+  UmeAlarmSubscriptionStatus,
   UmeNeItem,
   UmeSyncStatusResponse,
   UmeTokenStatus,
@@ -99,6 +100,15 @@ export const fetchAlarms = (params: {
   p.set("page_size", String(Math.max(1, Math.min(200, Number(params.pageSize || 80)))));
   return apiGet<AlarmQueryResponse>(`/v1/alarms?${p.toString()}`);
 };
+
+export const fetchUmeAlarmSubscriptionStatus = () =>
+  apiGet<UmeAlarmSubscriptionStatus>("/v1/ume/alarm-subscription/status");
+
+export const establishUmeAlarmSubscription = () =>
+  apiPost<UmeAlarmSubscriptionStatus>("/v1/ume/alarm-subscription/establish", {});
+
+export const cancelUmeAlarmSubscription = () =>
+  apiPost<UmeAlarmSubscriptionStatus>("/v1/ume/alarm-subscription/cancel", {});
 
 export const fetchUmeSyncStatus = (params: { page: number; pageSize: number }) => {
   const p = new URLSearchParams();

@@ -5,6 +5,9 @@ import {
   disconnectUmeToken,
   fetchUmeCurrentAlarms,
   fetchUmeNe,
+  cancelUmeAlarmSubscription,
+  establishUmeAlarmSubscription,
+  fetchUmeAlarmSubscriptionStatus,
   fetchUmeSyncStatus,
   fetchUmeTokenStatus,
   refreshUmeToken,
@@ -21,6 +24,7 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
   const queryClient = useQueryClient();
   const [tokenOpError, setTokenOpError] = useState("");
   const [runtimeTaskError, setRuntimeTaskError] = useState("");
+  const [subscriptionOpError, setSubscriptionOpError] = useState("");
   const [syncPage, setSyncPage] = useState(1);
   const [syncPageSize, setSyncPageSize] = useState(20);
   const [neKeyword, setNeKeyword] = useState("");
@@ -79,6 +83,53 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
       toastError?.(msg);
     },
   });
+  const subscriptionStatusQuery = useQuery({
+    queryKey: ["umeAlarmSubscription"],
+    queryFn: fetchUmeAlarmSubscriptionStatus,
+    staleTime: 3000,
+    refetchInterval: 5000,
+  });
+  const subscriptionEstablishMutation = useMutation({
+    mutationFn: establishUmeAlarmSubscription,
+    onMutate: () => setSubscriptionOpError(""),
+    onSuccess: async (res) => {
+      if (!res?.active) {
+        const msg = "建立订阅未返回有效 id/uri";
+        setSubscriptionOpError(msg);
+        toastError?.(msg);
+      } else {
+        setSubscriptionOpError("");
+        toastOk?.(
+          res.already_exists
+            ? "订阅已存在，未重复建立（WSS 将保持/恢复连接）"
+            : "告警订阅已建立，WSS 将自动连接",
+        );
+      }
+      await queryClient.invalidateQueries({ queryKey: ["umeAlarmSubscription"] });
+      await queryClient.invalidateQueries({ queryKey: ["umeSyncStatus"] });
+    },
+    onError: (err) => {
+      const msg = String(err);
+      setSubscriptionOpError(msg);
+      toastError?.(msg);
+    },
+  });
+  const subscriptionCancelMutation = useMutation({
+    mutationFn: cancelUmeAlarmSubscription,
+    onMutate: () => setSubscriptionOpError(""),
+    onSuccess: async () => {
+      setSubscriptionOpError("");
+      toastOk?.("告警订阅已取消");
+      await queryClient.invalidateQueries({ queryKey: ["umeAlarmSubscription"] });
+      await queryClient.invalidateQueries({ queryKey: ["umeSyncStatus"] });
+    },
+    onError: (err) => {
+      const msg = String(err);
+      setSubscriptionOpError(msg);
+      toastError?.(msg);
+    },
+  });
+
   const tokenDisconnectMutation = useMutation({
     mutationFn: disconnectUmeToken,
     onMutate: () => {
@@ -135,6 +186,14 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
   });
   const runningTasks = (syncStatusQuery.data?.items || []).filter((x) => String(x.status || "").toLowerCase() === "running");
   const runtimeTasks = syncStatusQuery.data?.runtime_tasks || [];
+  const alarmSub =
+    subscriptionStatusQuery.data ??
+    syncStatusQuery.data?.alarm_subscription ??
+    ({ active: false } as const);
+  const wsConsumer = runtimeTasks.find((t) => t.task === "alarms_current_ws_consumer");
+  const subscriptionActive = Boolean(alarmSub.active);
+  const subPending =
+    subscriptionEstablishMutation.isPending || subscriptionCancelMutation.isPending;
 
   const runtimeTaskMutation = useMutation({
     mutationFn: async (vars: { task: string; action: "pause" | "resume" }) =>
@@ -227,6 +286,78 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
               操作失败: {tokenOpError || String(tokenRefreshMutation.error || tokenDisconnectMutation.error)}
             </div>
           )}
+        </article>
+        <article className="card card--full">
+          <h3>UME 告警订阅（WebSocket）</h3>
+          <p className="muted" style={{ marginTop: 0 }}>
+            订阅需手动建立/取消；建立后（或重启后若库中仍有有效订阅）后台会自动连接 WSS 接收实时告警。
+          </p>
+          <div className="actions-row actions-row--inline">
+            <span className={`conn-pill conn-pill--${subscriptionActive ? "up" : "down"}`}>
+              订阅: {subscriptionActive ? "已建立" : "未建立"}
+            </span>
+            {subscriptionActive && alarmSub.subscription_id ? (
+              <span className="conn-pill" title={alarmSub.wss_uri || ""}>
+                id: {String(alarmSub.subscription_id).slice(0, 12)}…
+              </span>
+            ) : null}
+            {wsConsumer ? (
+              <span
+                className={`conn-pill conn-pill--${
+                  String(wsConsumer.last_error || "").includes("connected") ||
+                  wsConsumer.status === "running"
+                    ? "up"
+                    : String(wsConsumer.last_error || "").includes("no_subscription")
+                      ? "down"
+                      : "unknown"
+                }`}
+                title={wsConsumer.last_error || ""}
+              >
+                WSS: {wsConsumer.last_error || wsConsumer.status || "-"}
+              </span>
+            ) : null}
+          </div>
+          <div className="actions-row actions-row--inline">
+            <button
+              type="button"
+              onClick={() => subscriptionEstablishMutation.mutate()}
+              disabled={subPending || subscriptionActive || !hasToken}
+              title={!hasToken ? "请先登录 UME token" : undefined}
+            >
+              {subscriptionEstablishMutation.isPending ? (
+                <>
+                  <span className="inline-spinner" aria-hidden />
+                  建立订阅…
+                </>
+              ) : (
+                "建立告警订阅"
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={() => subscriptionCancelMutation.mutate()}
+              disabled={subPending || !subscriptionActive}
+            >
+              {subscriptionCancelMutation.isPending ? (
+                <>
+                  <span className="inline-spinner" aria-hidden />
+                  取消订阅…
+                </>
+              ) : (
+                "取消告警订阅"
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={() => queryClient.invalidateQueries({ queryKey: ["umeAlarmSubscription"] })}
+              disabled={subscriptionStatusQuery.isFetching}
+            >
+              刷新订阅状态
+            </button>
+          </div>
+          {subscriptionOpError ? (
+            <div className="pill pill--high">订阅操作失败: {subscriptionOpError}</div>
+          ) : null}
         </article>
         <article className="card card--full">
           <h3>UME 同步</h3>

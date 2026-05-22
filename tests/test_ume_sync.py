@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from typing import Any
 from unittest.mock import patch
 
 from sqlalchemy import create_engine
@@ -10,7 +11,24 @@ from netx_api.db import Base
 from netx_api.main import _extract_ume_raw_group_field, _serialize_ume_alarm_raw_row, sql_ume_query, ume_alarms_fields
 from netx_api.models import UmeAlarmCurrent, UmeInventoryNE
 from netx_api.ume_client import UMEClient
-from netx_api.ume_sync_service import _derive_ne_id_from_alarm, sync_alarms_current, sync_inventory_full
+from netx_api import ume_alarm_ws
+from netx_api.models import UmeAlarmSubscription
+from netx_api.ume_alarm_subscription_store import clear_subscription, load_subscription, save_subscription
+from netx_api.ume_alarm_ws import (
+    cancel_alarm_subscription_manual,
+    establish_alarm_subscription_manual,
+    get_subscription_status,
+    load_persisted_subscription,
+    process_alarm_notification,
+)
+from netx_api.ume_sync_service import (
+    _derive_ne_id_from_alarm,
+    apply_alarm_to_current,
+    extract_alarm_from_notification,
+    normalize_yang_alarm,
+    sync_alarms_current,
+    sync_inventory_full,
+)
 from fastapi import HTTPException
 
 
@@ -126,6 +144,53 @@ class UMEClientTests(unittest.TestCase):
         rows, _ = client.get_alarms(is_uncleared=False)
         self.assertEqual(len(rows), 2)
         self.assertEqual(rows[1].get("alarmKey"), "AK-2")
+
+    def test_establish_alarm_subscription(self):
+        from time import time as _time
+
+        client = UMEClient(base_url="https://ume.local:18014", username="u", password="p", verify_tls=False)
+        client._token_value = "token-1"
+        client._token_expires_at = _time() + 3600
+        seen: dict[str, Any] = {}
+
+        def _fake_request(method: str, path: str, *, params=None, body=None):
+            seen["method"] = method
+            seen["path"] = path
+            seen["body"] = body
+            return (
+                {
+                    "output": {
+                        "id": "3282ac78-b38a-4242-81d2-cc5b77c28ef8",
+                        "uri": "wss://ume.local:18014/restconf/stream/3282ac78-b38a-4242-81d2-cc5b77c28ef8",
+                    }
+                },
+                None,
+            )
+
+        client._request_json_with_current_token = _fake_request  # type: ignore[method-assign]
+        sub_id, uri = client.establish_alarm_subscription()
+        self.assertEqual(seen["method"], "POST")
+        self.assertEqual(seen["body"], {"input": {"topic": "ALARM"}})
+        self.assertEqual(sub_id, "3282ac78-b38a-4242-81d2-cc5b77c28ef8")
+        self.assertIn("wss://", uri)
+
+    def test_delete_alarm_subscription(self):
+        from time import time as _time
+
+        client = UMEClient(base_url="https://ume.local:18014", username="u", password="p", verify_tls=False)
+        client._token_value = "token-1"
+        client._token_expires_at = _time() + 3600
+        seen: dict[str, Any] = {}
+
+        def _fake_request(method: str, path: str, *, params=None, body=None):
+            seen["method"] = method
+            seen["body"] = body
+            return ({}, None)
+
+        client._request_json_with_current_token = _fake_request  # type: ignore[method-assign]
+        client.delete_alarm_subscription("sub-to-delete")
+        self.assertEqual(seen["method"], "POST")
+        self.assertEqual(seen["body"], {"input": {"id": "sub-to-delete"}})
 
 
 class UmeSyncServiceTests(unittest.TestCase):
@@ -568,6 +633,130 @@ class UmeSyncServiceTests(unittest.TestCase):
     def test_ume_alarms_fields_includes_alarm_host_name(self):
         data = ume_alarms_fields()
         self.assertIn("alarm_host_name", set(data["selectable_fields"]))
+
+
+class UmeAlarmNotificationTests(unittest.TestCase):
+    def setUp(self):
+        engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+        TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+        Base.metadata.create_all(bind=engine)
+        self.db = TestingSessionLocal()
+
+    def tearDown(self):
+        self.db.close()
+
+    def test_normalize_yang_alarm_strips_prefix(self):
+        raw = {
+            "zte-alarms:alarmkey": "AK-WS-1",
+            "zte-alarms:is-cleared": False,
+            "zte-alarms:perceivedSeverity": "critical",
+        }
+        norm = normalize_yang_alarm(raw)
+        self.assertEqual(norm.get("alarmkey"), "AK-WS-1")
+        self.assertEqual(norm.get("is-cleared"), False)
+        self.assertEqual(norm.get("perceivedSeverity"), "critical")
+
+    def test_apply_alarm_to_current_insert_from_notification(self):
+        payload = {
+            "alarm-notification": {
+                "zte-alarms:alarmkey": "AK-WS-2",
+                "zte-alarms:is-cleared": False,
+                "zte-alarms:perceivedSeverity": "major",
+                "zte-alarms:objectName": "ME{00ceb960-1b62-478e-8303-0935ffea1d28}",
+                "zte-alarms:time-created": "2025-01-03T07:55:00.823+08:00",
+            }
+        }
+        alarm = extract_alarm_from_notification(payload)
+        self.assertIsNotNone(alarm)
+        from datetime import datetime
+
+        action, changed = apply_alarm_to_current(self.db, alarm or {}, touch_ts=datetime.utcnow())
+        self.db.commit()
+        self.assertEqual(action, "inserted")
+        self.assertTrue(changed)
+        row = self.db.get(UmeAlarmCurrent, "AK-WS-2")
+        self.assertIsNotNone(row)
+        self.assertEqual(row.perceived_severity, "major")
+
+    def test_apply_alarm_cleared_deletes_current_only(self):
+        from datetime import datetime
+
+        touch = datetime.utcnow()
+        self.db.add(
+            UmeAlarmCurrent(
+                alarm_key="AK-CLEARED-1",
+                first_seen_at=touch,
+                last_seen_at=touch,
+                is_cleared="false",
+            )
+        )
+        self.db.commit()
+        alarm = {
+            "alarmkey": "AK-CLEARED-1",
+            "is-cleared": True,
+        }
+        action, changed = apply_alarm_to_current(self.db, alarm, touch_ts=touch)
+        self.db.commit()
+        self.assertEqual(action, "deleted")
+        self.assertTrue(changed)
+        self.assertIsNone(self.db.get(UmeAlarmCurrent, "AK-CLEARED-1"))
+
+    def test_subscription_store_and_manual_establish(self):
+        from time import time as _time
+
+        ume_alarm_ws._clear_active_subscription()
+        engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+        TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+        Base.metadata.create_all(bind=engine)
+        db = TestingSessionLocal()
+
+        client = UMEClient(base_url="https://ume.local:18014", username="u", password="p", verify_tls=False)
+        client._token_value = "token-1"
+        client._token_expires_at = _time() + 3600
+
+        calls = {"n": 0}
+
+        def _fake_establish(*, topic=None):
+            calls["n"] += 1
+            return ("sub-1", "wss://ume.local:18014/restconf/stream/sub-1")
+
+        client.establish_alarm_subscription = _fake_establish  # type: ignore[method-assign]
+        client.delete_alarm_subscription = lambda _id: None  # type: ignore[method-assign]
+
+        st = establish_alarm_subscription_manual(client, db)
+        self.assertTrue(st["active"])
+        self.assertEqual(st["subscription_id"], "sub-1")
+        self.assertFalse(st.get("already_exists"))
+        self.assertEqual(calls["n"], 1)
+        st2 = establish_alarm_subscription_manual(client, db)
+        self.assertTrue(st2.get("already_exists"))
+        self.assertEqual(st2["subscription_id"], "sub-1")
+        self.assertEqual(calls["n"], 1)
+        loaded = load_subscription(db)
+        self.assertIsNotNone(loaded)
+        self.assertEqual(loaded[0], "sub-1")
+        self.assertTrue(get_subscription_status()["active"])
+
+        cancel_alarm_subscription_manual(client, db)
+        self.assertFalse(get_subscription_status()["active"])
+        self.assertIsNone(load_subscription(db))
+        db.close()
+
+    def test_process_alarm_notification_via_ws_helper(self):
+        from datetime import datetime
+
+        payload = {
+            "alarm-notification": {
+                "zte-alarms:alarmkey": "AK-WS-3",
+                "zte-alarms:is-cleared": False,
+                "zte-alarms:perceivedSeverity": "warning",
+            }
+        }
+        action, changed = process_alarm_notification(self.db, payload)
+        self.db.commit()
+        self.assertEqual(action, "inserted")
+        self.assertTrue(changed)
+        self.assertIsNotNone(self.db.get(UmeAlarmCurrent, "AK-WS-3"))
 
 
 if __name__ == "__main__":

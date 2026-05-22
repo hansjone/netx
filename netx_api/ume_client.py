@@ -53,6 +53,9 @@ class UMEClient:
         token_logout_path: str | None = None,
         ne_path: str | None = None,
         alarms_path: str | None = None,
+        notification_establish_path: str | None = None,
+        notification_delete_path: str | None = None,
+        notification_topic: str | None = None,
         token_loader: Callable[[], tuple[str, float] | None] | None = None,
         token_saver: Callable[[str, float], None] | None = None,
         token_clearer: Callable[[], None] | None = None,
@@ -78,6 +81,19 @@ class UMEClient:
         self.token_logout_path = str(token_logout_path if token_logout_path is not None else settings.ume_token_logout_path).strip()
         self.ne_path = str(ne_path if ne_path is not None else settings.ume_ne_path).strip()
         self.alarms_path = str(alarms_path if alarms_path is not None else settings.ume_alarms_path).strip()
+        self.notification_establish_path = str(
+            notification_establish_path
+            if notification_establish_path is not None
+            else settings.ume_notification_establish_path
+        ).strip()
+        self.notification_delete_path = str(
+            notification_delete_path
+            if notification_delete_path is not None
+            else settings.ume_notification_delete_path
+        ).strip()
+        self.notification_topic = str(
+            notification_topic if notification_topic is not None else settings.ume_notification_topic
+        ).strip() or "ALARM"
         self._token_loader = token_loader
         self._token_saver = token_saver
         self._token_clearer = token_clearer
@@ -373,6 +389,56 @@ class UMEClient:
             return self.renew_token()
         return self.login(force=False)
 
+    def _request_json_with_current_token(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        body: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any], RequestDiagnostics]:
+        """REST call with Content-Type + accessToken from memory/store only (no login/renew)."""
+        if not self.has_valid_token():
+            raise RuntimeError("ume_no_valid_token")
+        url = self._build_url(path)
+        m = str(method or "GET").upper()
+        t0 = time()
+        try:
+            with self._client() as client:
+                resp = client.request(m, url, params=params, json=body, headers=self._headers(include_token=True))
+            marker = str(resp.headers.get("marker") or "").strip()
+            is_end_raw = str(resp.headers.get("is-end-of-reply") or "").strip().lower()
+            is_end_of_reply: bool | None = None
+            if is_end_raw in {"true", "false"}:
+                is_end_of_reply = is_end_raw == "true"
+            if not resp.is_success:
+                diag = RequestDiagnostics(
+                    method=m,
+                    path=path,
+                    status_code=int(resp.status_code),
+                    latency_ms=int((time() - t0) * 1000),
+                    retry_count=0,
+                    error_code=f"http_{int(resp.status_code)}",
+                    marker=marker,
+                    is_end_of_reply=is_end_of_reply,
+                )
+                raise RuntimeError(f"ume_request_failed:{resp.status_code}:{resp.text[:240]}")
+            data = _coerce_dict(resp.json())
+            diag = RequestDiagnostics(
+                method=m,
+                path=path,
+                status_code=int(resp.status_code),
+                latency_ms=int((time() - t0) * 1000),
+                retry_count=0,
+                marker=marker,
+                is_end_of_reply=is_end_of_reply,
+            )
+            return data, diag
+        except Exception as exc:
+            if isinstance(exc, RuntimeError):
+                raise
+            raise RuntimeError(f"ume_request_failed:{str(exc)[:240]}") from exc
+
     def request_json(
         self,
         method: str,
@@ -520,3 +586,68 @@ class UMEClient:
         data, diag = self.request_json("GET", self.alarms_path, params=params)
         rows = self._extract_named_list(data, ["alarm-list", "alarm"])
         return rows, diag
+
+    def _extract_subscription_output(self, payload: dict[str, Any]) -> tuple[str, str]:
+        sub_id = ""
+        uri = ""
+
+        def walk(node: Any) -> None:
+            nonlocal sub_id, uri
+            if isinstance(node, dict):
+                for k, v in node.items():
+                    key = str(k).lower()
+                    if not sub_id and key == "id" and isinstance(v, str):
+                        sub_id = v.strip()
+                    if not uri and key == "uri" and isinstance(v, str):
+                        uri = v.strip()
+                    walk(v)
+            elif isinstance(node, list):
+                for item in node:
+                    walk(item)
+
+        walk(payload)
+        return sub_id, uri
+
+    def establish_alarm_subscription(self, *, topic: str | None = None) -> tuple[str, str]:
+        """POST establish-subscription using token from shared store (no login/renew in this path)."""
+        self._sync_token_from_store()
+        if not self.has_valid_token():
+            raise RuntimeError("ume_establish_subscription_no_valid_token")
+        topic_val = str(topic if topic is not None else self.notification_topic).strip() or "ALARM"
+        body = {"input": {"topic": topic_val}}
+        data, _diag = self._request_json_with_current_token("POST", self.notification_establish_path, body=body)
+        sub_id, uri = self._extract_subscription_output(data)
+        if not sub_id or not uri:
+            raise RuntimeError("ume_establish_subscription_failed:missing_id_or_uri")
+        return sub_id, uri
+
+    def delete_alarm_subscription(self, subscription_id: str) -> None:
+        sub_id = str(subscription_id or "").strip()
+        if not sub_id:
+            return
+        self._sync_token_from_store()
+        if not self.has_valid_token():
+            return
+        body = {"input": {"id": sub_id}}
+        try:
+            self._request_json_with_current_token("POST", self.notification_delete_path, body=body)
+        except Exception:
+            return
+
+    def has_valid_token(self) -> bool:
+        """True when a non-expired token is present in memory (call _sync_token_from_store first)."""
+        token = self._token_value.strip()
+        if not token:
+            return False
+        now = time()
+        return now < (self._token_expires_at - self.token_refresh_skew_s)
+
+    def ws_auth_headers(self) -> dict[str, str]:
+        """
+        Headers for WSS handshake — same fields as REST (_headers).
+        Does not login/renew; relies on shared token store (token_keepalive / other sync paths).
+        """
+        self._sync_token_from_store()
+        if not self.has_valid_token():
+            raise RuntimeError("ume_ws_no_valid_token")
+        return self._headers(include_token=True)

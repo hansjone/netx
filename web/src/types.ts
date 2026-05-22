@@ -89,12 +89,26 @@ export type UmeSyncJobItem = {
   ended_at?: string | null;
 };
 
+export type UmeAlarmSubscriptionStatus = {
+  ok?: boolean;
+  created?: boolean;
+  already_exists?: boolean;
+  active: boolean;
+  subscription_id?: string;
+  wss_uri?: string;
+  topic?: string;
+  ws_consumer_status?: string;
+  ws_consumer_last_error?: string;
+  ws_consumer_last_run_at?: string | null;
+};
+
 export type UmeSyncStatusResponse = {
   total?: number;
   page?: number;
   page_size?: number;
   items: UmeSyncJobItem[];
   latest_by_domain?: Record<string, UmeSyncJobItem>;
+  alarm_subscription?: UmeAlarmSubscriptionStatus;
   runtime_tasks?: Array<{
     task: string;
     status: string;

@@ -199,6 +199,19 @@ class UmeAlarmHistory(Base):
     raw_json: Mapped[str] = mapped_column(Text, default="{}")
 
 
+class UmeAlarmSubscription(Base):
+    """Persisted UME ALARM notification subscription (manual establish/cancel)."""
+
+    __tablename__ = "ume_alarm_subscription"
+
+    cache_key: Mapped[str] = mapped_column(String(64), primary_key=True, default="default")
+    subscription_id: Mapped[str] = mapped_column(String(128), default="", index=True)
+    wss_uri: Mapped[str] = mapped_column(Text, default="")
+    topic: Mapped[str] = mapped_column(String(64), default="ALARM")
+    established_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
 class UmeTokenCache(Base):
     __tablename__ = "ume_token_cache"
 

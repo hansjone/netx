@@ -166,6 +166,106 @@ def _derive_ne_id_from_alarm(alarm: dict[str, Any]) -> str:
     return ""
 
 
+def _normalize_yang_key(key: str) -> str:
+    raw = str(key or "").strip()
+    if not raw:
+        return ""
+    if ":" in raw:
+        return raw.rsplit(":", 1)[-1]
+    return raw
+
+
+def normalize_yang_alarm(raw: dict[str, Any]) -> dict[str, Any]:
+    """Flatten YANG namespace-prefixed keys (e.g. zte-alarms:alarmkey) for _pick()."""
+    out: dict[str, Any] = {}
+    for k, v in raw.items():
+        nk = _normalize_yang_key(str(k))
+        if not nk:
+            continue
+        if nk in out and out[nk] not in (None, ""):
+            continue
+        out[nk] = v
+    return out
+
+
+def _is_alarm_cleared(alarm: dict[str, Any]) -> bool:
+    val = _pick(alarm, "isCleared", "is-cleared")
+    if isinstance(val, bool):
+        return val
+    text = _s(val).lower()
+    return text in {"true", "1", "yes"}
+
+
+def extract_alarm_from_notification(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Parse alarm-notification from a WS/REST notification envelope."""
+    if not isinstance(payload, dict):
+        return None
+
+    def _find_alarm_notification(node: Any) -> dict[str, Any] | None:
+        if isinstance(node, dict):
+            for k, v in node.items():
+                key = str(k).lower()
+                if key in {"alarm-notification", "alarm_notification"} and isinstance(v, dict):
+                    return normalize_yang_alarm(v)
+                found = _find_alarm_notification(v)
+                if found is not None:
+                    return found
+        elif isinstance(node, list):
+            for item in node:
+                found = _find_alarm_notification(item)
+                if found is not None:
+                    return found
+        return None
+
+    direct = _find_alarm_notification(payload)
+    if direct is not None:
+        return direct
+    return normalize_yang_alarm(payload) if payload else None
+
+
+def apply_alarm_to_current(db: Session, alarm: dict[str, Any], *, touch_ts: datetime) -> tuple[str, bool]:
+    """
+    Apply one alarm to ume_alarms_current.
+    Returns (action, changed) where action is inserted|updated|deleted|skipped.
+    """
+    norm = normalize_yang_alarm(alarm) if alarm else {}
+    if not norm:
+        return "skipped", False
+
+    if _is_alarm_cleared(norm):
+        key = _alarm_key(norm)
+        if not key:
+            return "skipped", False
+        existing = db.get(UmeAlarmCurrent, key)
+        if existing is None:
+            return "deleted", False
+        db.delete(existing)
+        return "deleted", True
+
+    key = _alarm_key(norm)
+    existing = db.get(UmeAlarmCurrent, key)
+    if existing is None:
+        existing = UmeAlarmCurrent(alarm_key=key, first_seen_at=touch_ts)
+        db.add(existing)
+        action = "inserted"
+    else:
+        action = "updated"
+    existing.ne_id = _s(_derive_ne_id_from_alarm(norm))
+    existing.host_name = _lookup_host_name(db, existing.ne_id)
+    existing.object_name = _s(_pick(norm, "objectName", "object-name"))
+    existing.event_type = _s(_pick(norm, "eventType", "event-type"))
+    existing.native_probable_cause = _s(_pick(norm, "nativeProbableCause", "native-probable-cause"))
+    existing.perceived_severity = _s(_pick(norm, "perceivedSeverity", "perceived-severity"))
+    existing.is_cleared = _s(_pick(norm, "isCleared", "is-cleared"))
+    existing.time_created = _s(_pick(norm, "timeCreated", "time-created"))
+    existing.root_cause_alarm_indication = _s(
+        _pick(norm, "rootCauseAlarmIndication", "root-cause-alarm-indication")
+    )
+    existing.last_seen_at = touch_ts
+    existing.raw_json = json.dumps(norm, ensure_ascii=False, default=str)
+    return action, True
+
+
 def _build_sync_job(domain: str, trigger_mode: str) -> UmeSyncJob:
     return UmeSyncJob(
         domain=domain,
@@ -414,25 +514,16 @@ def _sync_alarms_common(
         max_pages = int(getattr(settings, "ume_marker_max_pages", getattr(settings, "ume_max_pages", 2000)) or 2000)
         max_pages = max(1, min(max_pages, 20000))
 
-        def upsert_alarm(alarm: dict[str, Any], *, touch_ts: datetime) -> None:
+        def upsert_alarm_history(alarm: dict[str, Any], *, touch_ts: datetime) -> None:
             nonlocal inserted, updated
             key = _alarm_key(alarm)
-            if is_uncleared:
-                existing = db.get(UmeAlarmHistory, key)
-                if existing is None:
-                    existing = UmeAlarmHistory(alarm_key=key, first_seen_at=touch_ts)
-                    db.add(existing)
-                    inserted += 1
-                else:
-                    updated += 1
+            existing = db.get(UmeAlarmHistory, key)
+            if existing is None:
+                existing = UmeAlarmHistory(alarm_key=key, first_seen_at=touch_ts)
+                db.add(existing)
+                inserted += 1
             else:
-                existing = db.get(UmeAlarmCurrent, key)
-                if existing is None:
-                    existing = UmeAlarmCurrent(alarm_key=key, first_seen_at=touch_ts)
-                    db.add(existing)
-                    inserted += 1
-                else:
-                    updated += 1
+                updated += 1
             existing.ne_id = _s(_derive_ne_id_from_alarm(alarm))
             existing.host_name = _lookup_host_name(db, existing.ne_id)
             existing.object_name = _s(_pick(alarm, "objectName", "object-name"))
@@ -457,7 +548,14 @@ def _sync_alarms_common(
         for rows in pages:
             pulled += len(rows)
             for alarm in rows:
-                upsert_alarm(alarm, touch_ts=sync_batch_ts)
+                if is_uncleared:
+                    upsert_alarm_history(alarm, touch_ts=sync_batch_ts)
+                else:
+                    action, _changed = apply_alarm_to_current(db, alarm, touch_ts=sync_batch_ts)
+                    if action == "inserted":
+                        inserted += 1
+                    elif action == "updated":
+                        updated += 1
         db.flush()
         page_no = int(meta.get("page_count") or 0)
         next_marker = str(meta.get("last_marker") or "")
