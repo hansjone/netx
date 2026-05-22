@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import ssl
 import threading
 import time
@@ -21,6 +22,14 @@ from .ume_client import UMEClient
 from .ume_sync_service import apply_alarm_to_current, extract_alarm_from_notification, _utc_now_naive
 
 _ws_log = logging.getLogger("netx.ume.alarm_ws")
+
+_ORPHAN_SUB_ID_RE = re.compile(r"id:([0-9a-fA-F-]{8}-[0-9a-fA-F-]{4}-[0-9a-fA-F-]{4}-[0-9a-fA-F-]{4}-[0-9a-fA-F-]{12})")
+
+
+def parse_subscription_id_from_already_exists_error(message: str) -> str:
+    """Extract subscription id from UME 400 'topic subscription already exist, id:...'."""
+    m = _ORPHAN_SUB_ID_RE.search(str(message or ""))
+    return m.group(1).strip() if m else ""
 
 _shutdown_lock = threading.Lock()
 _subscription_lock = threading.Lock()
@@ -146,7 +155,15 @@ def establish_alarm_subscription_manual(client: UMEClient, db: Session) -> dict[
         raise RuntimeError("ume_ws_no_valid_token")
 
     topic = str(getattr(settings, "ume_notification_topic", "ALARM") or "ALARM").strip() or "ALARM"
-    sub_id, uri = client.establish_alarm_subscription(topic=topic)
+    try:
+        sub_id, uri = client.establish_alarm_subscription(topic=topic)
+    except RuntimeError as exc:
+        orphan_id = parse_subscription_id_from_already_exists_error(str(exc))
+        if not orphan_id:
+            raise
+        _ws_log.warning("establish: UME reports existing subscription id=%s, deleting then retry", orphan_id)
+        _delete_subscription_on_ume(client, orphan_id)
+        sub_id, uri = client.establish_alarm_subscription(topic=topic)
     save_subscription(db, subscription_id=sub_id, wss_uri=uri, topic=topic)
     db.commit()
 
@@ -166,12 +183,8 @@ def cancel_alarm_subscription_manual(client: UMEClient, db: Session) -> dict[str
     if not sub_id and loaded is not None:
         sub_id = str(loaded[0] or "")
     if sub_id:
-        try:
-            client._sync_token_from_store()
-            if client.has_valid_token():
-                _delete_subscription_on_ume(client, sub_id)
-        except Exception as exc:
-            _ws_log.warning("cancel subscription on UME failed: %s", exc)
+        client.refresh_if_needed()
+        _delete_subscription_on_ume(client, sub_id)
 
     clear_subscription(db, cache_key=DEFAULT_SUBSCRIPTION_KEY)
     db.commit()

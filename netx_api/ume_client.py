@@ -622,17 +622,12 @@ class UMEClient:
         return sub_id, uri
 
     def delete_alarm_subscription(self, subscription_id: str) -> None:
+        """DELETE delete-subscription with body {\"input\": {\"id\": ...}} (same headers as alarm REST)."""
         sub_id = str(subscription_id or "").strip()
         if not sub_id:
             return
-        self._sync_token_from_store()
-        if not self.has_valid_token():
-            return
         body = {"input": {"id": sub_id}}
-        try:
-            self._request_json_with_current_token("POST", self.notification_delete_path, body=body)
-        except Exception:
-            return
+        self.request_json("DELETE", self.notification_delete_path, body=body)
 
     def has_valid_token(self) -> bool:
         """True when a non-expired token is present in memory (call _sync_token_from_store first)."""

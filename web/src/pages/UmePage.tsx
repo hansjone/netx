@@ -117,9 +117,15 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
   const subscriptionCancelMutation = useMutation({
     mutationFn: cancelUmeAlarmSubscription,
     onMutate: () => setSubscriptionOpError(""),
-    onSuccess: async () => {
-      setSubscriptionOpError("");
-      toastOk?.("告警订阅已取消");
+    onSuccess: async (res) => {
+      if (res?.active) {
+        const msg = "取消订阅失败：UME 侧订阅可能仍存在，请查看错误详情后重试";
+        setSubscriptionOpError(msg);
+        toastError?.(msg);
+      } else {
+        setSubscriptionOpError("");
+        toastOk?.("告警订阅已取消");
+      }
       await queryClient.invalidateQueries({ queryKey: ["umeAlarmSubscription"] });
       await queryClient.invalidateQueries({ queryKey: ["umeSyncStatus"] });
     },

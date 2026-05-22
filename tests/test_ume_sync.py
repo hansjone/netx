@@ -19,6 +19,7 @@ from netx_api.ume_alarm_ws import (
     establish_alarm_subscription_manual,
     get_subscription_status,
     load_persisted_subscription,
+    parse_subscription_id_from_already_exists_error,
     process_alarm_notification,
 )
 from netx_api.ume_sync_service import (
@@ -187,9 +188,9 @@ class UMEClientTests(unittest.TestCase):
             seen["body"] = body
             return ({}, None)
 
-        client._request_json_with_current_token = _fake_request  # type: ignore[method-assign]
+        client.request_json = _fake_request  # type: ignore[method-assign]
         client.delete_alarm_subscription("sub-to-delete")
-        self.assertEqual(seen["method"], "POST")
+        self.assertEqual(seen["method"], "DELETE")
         self.assertEqual(seen["body"], {"input": {"id": "sub-to-delete"}})
 
 
@@ -700,6 +701,82 @@ class UmeAlarmNotificationTests(unittest.TestCase):
         self.assertEqual(action, "deleted")
         self.assertTrue(changed)
         self.assertIsNone(self.db.get(UmeAlarmCurrent, "AK-CLEARED-1"))
+
+    def test_parse_subscription_id_from_already_exists_error(self):
+        msg = (
+            'ume_request_failed:400:{"error":{"errorInfo":"topic subscription already exist, '
+            'id:087f3544-0171-49c9-9aea-2ac535b3deaa, uri:wss://10.0.0.1:18014/restconf/stream/087f3544"}}'
+        )
+        self.assertEqual(
+            parse_subscription_id_from_already_exists_error(msg),
+            "087f3544-0171-49c9-9aea-2ac535b3deaa",
+        )
+
+    def test_cancel_subscription_fails_without_clearing_db(self):
+        from time import time as _time
+
+        ume_alarm_ws._clear_active_subscription()
+        engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+        TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+        Base.metadata.create_all(bind=engine)
+        db = TestingSessionLocal()
+
+        client = UMEClient(base_url="https://ume.local:18014", username="u", password="p", verify_tls=False)
+        client._token_value = "token-1"
+        client._token_expires_at = _time() + 3600
+        save_subscription(db, subscription_id="sub-keep", wss_uri="wss://ume.local/stream/sub-keep", topic="ALARM")
+        db.commit()
+        ume_alarm_ws._set_active_subscription("sub-keep", "wss://ume.local/stream/sub-keep")
+
+        def _fail_delete(_id: str) -> None:
+            raise RuntimeError("ume_request_failed:500:delete failed")
+
+        client.delete_alarm_subscription = _fail_delete  # type: ignore[method-assign]
+        client.refresh_if_needed = lambda: "token-1"  # type: ignore[method-assign]
+
+        with self.assertRaises(RuntimeError):
+            cancel_alarm_subscription_manual(client, db)
+        loaded = load_subscription(db)
+        self.assertIsNotNone(loaded)
+        self.assertEqual(loaded[0], "sub-keep")
+        self.assertTrue(get_subscription_status()["active"])
+        db.close()
+
+    def test_establish_recovers_when_ume_reports_already_exists(self):
+        from time import time as _time
+
+        ume_alarm_ws._clear_active_subscription()
+        engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+        TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+        Base.metadata.create_all(bind=engine)
+        db = TestingSessionLocal()
+
+        client = UMEClient(base_url="https://ume.local:18014", username="u", password="p", verify_tls=False)
+        client._token_value = "token-1"
+        client._token_expires_at = _time() + 3600
+        deleted: list[str] = []
+        calls = {"n": 0}
+
+        def _fake_establish(*, topic=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError(
+                    "ume_request_failed:400:{\"error\":{\"errorInfo\":\"topic subscription already exist, "
+                    "id:087f3544-0171-49c9-9aea-2ac535b3deaa\"}}"
+                )
+            return ("sub-new", "wss://ume.local/stream/sub-new")
+
+        def _fake_delete(sub_id: str) -> None:
+            deleted.append(sub_id)
+
+        client.establish_alarm_subscription = _fake_establish  # type: ignore[method-assign]
+        client.delete_alarm_subscription = _fake_delete  # type: ignore[method-assign]
+
+        st = establish_alarm_subscription_manual(client, db)
+        self.assertEqual(deleted, ["087f3544-0171-49c9-9aea-2ac535b3deaa"])
+        self.assertEqual(st["subscription_id"], "sub-new")
+        self.assertTrue(st["active"])
+        db.close()
 
     def test_subscription_store_and_manual_establish(self):
         from time import time as _time
