@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import deque
+from datetime import datetime, timezone
 import json
 import logging
 import re
@@ -19,11 +21,65 @@ from .ume_alarm_subscription_store import (
     save_subscription,
 )
 from .ume_client import UMEClient
-from .ume_sync_service import apply_alarm_to_current, extract_alarm_from_notification, _utc_now_naive
+from .ume_sync_service import (
+    _alarm_key,
+    apply_alarm_to_current,
+    extract_alarm_from_notification,
+    normalize_yang_alarm,
+    _utc_now_naive,
+)
+
+_WS_ALARM_ACTION_LABEL: dict[str, str] = {
+    "inserted": "上报(新增)",
+    "updated": "上报(更新)",
+    "deleted": "清除",
+    "skipped": "忽略",
+}
 
 _ws_log = logging.getLogger("netx.ume.alarm_ws")
 
+_WS_LOG_LOCK = threading.Lock()
+_WS_LOG_ENTRIES: deque[dict[str, Any]] = deque(maxlen=200)
+_WS_LOG_MAX_RETURN = 100
+
 _ORPHAN_SUB_ID_RE = re.compile(r"id:([0-9a-fA-F-]{8}-[0-9a-fA-F-]{4}-[0-9a-fA-F-]{4}-[0-9a-fA-F-]{4}-[0-9a-fA-F-]{12})")
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def append_ws_log(
+    message: str,
+    *,
+    level: str = "info",
+    subscription_id: str = "",
+) -> None:
+    """Ring buffer of recent WSS events for UI (newest last)."""
+    entry = {
+        "ts": _utc_now_iso(),
+        "level": str(level or "info").strip().lower() or "info",
+        "message": str(message or "").strip()[:500],
+        "subscription_id": str(subscription_id or "").strip(),
+    }
+    with _WS_LOG_LOCK:
+        _WS_LOG_ENTRIES.append(entry)
+    log_fn = _ws_log.info
+    if entry["level"] == "warning":
+        log_fn = _ws_log.warning
+    elif entry["level"] == "error":
+        log_fn = _ws_log.error
+    log_fn("%s%s", entry["message"], f" sub={entry['subscription_id']}" if entry["subscription_id"] else "")
+
+
+def get_ws_logs(*, limit: int | None = None) -> list[dict[str, Any]]:
+    cap = int(limit if limit is not None else _WS_LOG_MAX_RETURN)
+    cap = max(1, min(cap, _WS_LOG_MAX_RETURN))
+    with _WS_LOG_LOCK:
+        items = list(_WS_LOG_ENTRIES)
+    if len(items) <= cap:
+        return items
+    return items[-cap:]
 
 
 def parse_subscription_id_from_already_exists_error(message: str) -> str:
@@ -107,7 +163,7 @@ def load_persisted_subscription() -> bool:
             return False
         sub_id, uri, topic = loaded
         _set_active_subscription(sub_id, uri, topic=topic)
-        _ws_log.info("loaded persisted alarm subscription id=%s", sub_id)
+        append_ws_log(f"loaded persisted subscription id={sub_id}", subscription_id=sub_id)
         return True
     finally:
         db.close()
@@ -137,14 +193,14 @@ def establish_alarm_subscription_manual(client: UMEClient, db: Session) -> dict[
         sub_id, uri, topic = existing
         _set_active_subscription(sub_id, uri, topic=topic)
         request_ws_reconnect()
-        _ws_log.info("establish skipped: subscription already exists id=%s", sub_id)
+        append_ws_log(f"establish skipped: already in DB id={sub_id}", subscription_id=sub_id)
         st = get_subscription_status()
         return {**st, "already_exists": True}
 
     mem_id, mem_uri = get_active_subscription()
     if mem_id and mem_uri:
         request_ws_reconnect()
-        _ws_log.info("establish skipped: in-memory subscription id=%s", mem_id)
+        append_ws_log(f"establish skipped: in-memory id={mem_id}", subscription_id=mem_id)
         st = get_subscription_status()
         return {**st, "already_exists": True}
 
@@ -161,7 +217,11 @@ def establish_alarm_subscription_manual(client: UMEClient, db: Session) -> dict[
         orphan_id = parse_subscription_id_from_already_exists_error(str(exc))
         if not orphan_id:
             raise
-        _ws_log.warning("establish: UME reports existing subscription id=%s, deleting then retry", orphan_id)
+        append_ws_log(
+            f"establish: orphan on UME id={orphan_id}, deleting then retry",
+            level="warning",
+            subscription_id=orphan_id,
+        )
         try:
             _delete_subscription_on_ume(client, orphan_id)
         except RuntimeError as del_exc:
@@ -177,7 +237,7 @@ def establish_alarm_subscription_manual(client: UMEClient, db: Session) -> dict[
         _active_client = client
     _set_active_subscription(sub_id, uri, topic=topic)
     request_ws_reconnect()
-    _ws_log.info("manual establish alarm subscription id=%s", sub_id)
+    append_ws_log(f"manual establish subscription id={sub_id}", subscription_id=sub_id)
     return {**get_subscription_status(), "already_exists": False}
 
 
@@ -195,7 +255,7 @@ def cancel_alarm_subscription_manual(client: UMEClient, db: Session) -> dict[str
     db.commit()
     _clear_active_subscription()
     request_ws_reconnect()
-    _ws_log.info("manual cancel alarm subscription id=%s", sub_id)
+    append_ws_log(f"manual cancel subscription id={sub_id or '(none)'}", subscription_id=sub_id)
     return get_subscription_status()
 
 
@@ -224,35 +284,48 @@ def _run_ws_session(
     def _on_message(_ws: Any, message: str) -> None:
         payload = _parse_ws_message(message)
         if payload is None:
+            append_ws_log("message ignored: invalid JSON", level="warning", subscription_id=subscription_id)
             return
         db = SessionLocal()
         try:
-            action, changed = process_alarm_notification(db, payload)
+            alarm = extract_alarm_from_notification(payload)
+            if alarm is None:
+                append_ws_log("收包忽略: 非告警通知", level="warning", subscription_id=subscription_id)
+                return
+            norm = normalize_yang_alarm(alarm) or {}
+            alarm_key = _alarm_key(norm) or "?"
+            action, changed = apply_alarm_to_current(db, alarm, touch_ts=_utc_now_naive())
             if changed:
                 db.commit()
             else:
                 db.rollback()
+            label = _WS_ALARM_ACTION_LABEL.get(action, action)
+            status_msg = f"{label} key={alarm_key}" + ("" if changed else " (无变更)")
+            append_ws_log(status_msg, subscription_id=subscription_id)
             if on_status is not None:
                 on_status(f"last={action}")
         except Exception as exc:
             db.rollback()
-            _ws_log.exception("ws alarm apply failed: %s", exc)
+            append_ws_log(f"alarm apply failed: {str(exc)[:200]}", level="error", subscription_id=subscription_id)
             if on_status is not None:
                 on_status(f"apply_error:{str(exc)[:120]}")
         finally:
             db.close()
 
     def _on_error(_ws: Any, error: Any) -> None:
-        _ws_log.warning("ws error subscription=%s: %s", subscription_id, error)
+        append_ws_log(f"ws error: {str(error)[:200]}", level="error", subscription_id=subscription_id)
         if on_status is not None:
             on_status(f"ws_error:{str(error)[:120]}")
 
     def _on_close(_ws: Any, close_status_code: Any, close_msg: Any) -> None:
-        _ws_log.info("ws closed subscription=%s code=%s msg=%s", subscription_id, close_status_code, close_msg)
+        append_ws_log(
+            f"ws closed code={close_status_code} msg={str(close_msg or '')[:120]}",
+            subscription_id=subscription_id,
+        )
         closed.set()
 
     def _on_open(_ws: Any) -> None:
-        _ws_log.info("ws connected subscription=%s", subscription_id)
+        append_ws_log(f"ws connected uri={wss_uri[:120]}", subscription_id=subscription_id)
         if on_status is not None:
             on_status("connected")
 
@@ -317,28 +390,31 @@ def run_alarm_ws_consumer_loop(
     backoff_s = 2.0
     max_backoff_s = 120.0
 
+    def _status(msg: str, *, level: str = "info", sub_id: str = "") -> None:
+        append_ws_log(msg, level=level, subscription_id=sub_id)
+        if on_status is not None:
+            on_status(msg)
+
     while stop_event is None or not stop_event.is_set():
         if is_paused is not None and is_paused():
-            if on_status is not None:
-                on_status("paused")
+            _status("paused", level="warning")
             time.sleep(1.0)
             continue
 
         subscription_id, wss_uri = get_active_subscription()
         if not subscription_id or not wss_uri:
-            if on_status is not None:
-                on_status("no_subscription")
+            _status("no_subscription")
             _ws_wake_event.wait(timeout=2.0)
             _ws_wake_event.clear()
             continue
 
         try:
             if not _wait_for_shared_token(client, timeout_s=120.0):
-                if on_status is not None:
-                    on_status("waiting_token")
+                _status("waiting_token", level="warning", sub_id=subscription_id)
                 time.sleep(2.0)
                 continue
 
+            append_ws_log(f"connecting {wss_uri[:160]}", subscription_id=subscription_id)
             _run_ws_session(
                 client,
                 wss_uri=wss_uri,
@@ -349,28 +425,21 @@ def run_alarm_ws_consumer_loop(
             backoff_s = 2.0
         except RuntimeError as exc:
             if "ume_ws_no_valid_token" in str(exc):
-                if on_status is not None:
-                    on_status("waiting_token")
+                _status("waiting_token", level="warning", sub_id=subscription_id)
                 time.sleep(2.0)
                 continue
-            _ws_log.exception("alarm ws session failed: %s", exc)
-            if on_status is not None:
-                on_status(f"error:{str(exc)[:120]}")
+            _status(f"session error: {str(exc)[:200]}", level="error", sub_id=subscription_id)
         except Exception as exc:
-            _ws_log.exception("alarm ws session failed: %s", exc)
-            if on_status is not None:
-                on_status(f"error:{str(exc)[:120]}")
+            _status(f"session error: {str(exc)[:200]}", level="error", sub_id=subscription_id)
 
         sub_id_after, uri_after = get_active_subscription()
         if stop_event is not None and stop_event.is_set():
             break
         if not sub_id_after or not uri_after:
-            if on_status is not None:
-                on_status("no_subscription")
+            _status("no_subscription")
             continue
 
-        if on_status is not None:
-            on_status(f"reconnect_ws_in_{int(backoff_s)}s")
+        _status(f"reconnect in {int(backoff_s)}s", sub_id=sub_id_after)
         slept = 0.0
         while slept < backoff_s:
             if stop_event is not None and stop_event.is_set():
@@ -402,9 +471,11 @@ def start_ume_alarm_ws_consumer(
         if not bool(getattr(settings, "ume_alarm_ws_enabled", True)):
             return
         if not str(client.base_url or "").strip():
+            append_ws_log("consumer disabled: no UME base URL", level="warning")
             if on_status is not None:
                 on_status("disabled:no_base_url")
             return
+        append_ws_log("ws consumer thread started")
         global _active_client
         with _shutdown_lock:
             _active_client = client

@@ -38,6 +38,7 @@ from .ume_alarm_ws import (
     cancel_alarm_subscription_manual,
     establish_alarm_subscription_manual,
     get_subscription_status,
+    get_ws_logs,
     load_persisted_subscription,
     shutdown_ws_consumer,
     start_ume_alarm_ws_consumer,
@@ -927,15 +928,17 @@ def ume_token_disconnect() -> dict[str, Any]:
 
 
 @app.get("/v1/ume/alarm-subscription/status")
-def ume_alarm_subscription_status() -> dict[str, Any]:
+def ume_alarm_subscription_status(limit: int = 80) -> dict[str, Any]:
     st = get_subscription_status()
     ws_task = _UME_RUNTIME_TASKS.get("alarms_current_ws_consumer") or {}
+    log_limit = max(10, min(int(limit or 80), 100))
     return {
         "ok": True,
         **st,
         "ws_consumer_status": str(ws_task.get("status") or ""),
         "ws_consumer_last_error": str(ws_task.get("last_error") or ""),
         "ws_consumer_last_run_at": ws_task.get("last_run_at"),
+        "ws_logs": get_ws_logs(limit=log_limit),
     }
 
 

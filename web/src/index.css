@@ -189,6 +189,46 @@ pre {
   padding: 10px;
 }
 
+.ws-log-panel {
+  margin-top: 12px;
+  max-height: 240px;
+  overflow-y: auto;
+  background: #091425;
+  border: 1px solid #223651;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.ws-log-line {
+  padding: 3px 0;
+  border-bottom: 1px solid #152238;
+  word-break: break-word;
+}
+
+.ws-log-line:last-child {
+  border-bottom: none;
+}
+
+.ws-log-line--error {
+  color: #ff8a9a;
+}
+
+.ws-log-line--warning {
+  color: #f0c060;
+}
+
+.ws-log-line--info {
+  color: #b8c9e0;
+}
+
+.ws-log-ts {
+  color: #6b8299;
+  margin-right: 8px;
+}
+
 .pill {
   margin-top: 8px;
   padding: 4px 8px;

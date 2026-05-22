@@ -89,6 +89,13 @@ export type UmeSyncJobItem = {
   ended_at?: string | null;
 };
 
+export type UmeWsLogEntry = {
+  ts: string;
+  level: string;
+  message: string;
+  subscription_id?: string;
+};
+
 export type UmeAlarmSubscriptionStatus = {
   ok?: boolean;
   created?: boolean;
@@ -100,6 +107,7 @@ export type UmeAlarmSubscriptionStatus = {
   ws_consumer_status?: string;
   ws_consumer_last_error?: string;
   ws_consumer_last_run_at?: string | null;
+  ws_logs?: UmeWsLogEntry[];
 };
 
 export type UmeSyncStatusResponse = {

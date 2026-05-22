@@ -197,6 +197,7 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
     syncStatusQuery.data?.alarm_subscription ??
     ({ active: false } as const);
   const wsConsumer = runtimeTasks.find((t) => t.task === "alarms_current_ws_consumer");
+  const wsLogs = [...(subscriptionStatusQuery.data?.ws_logs ?? alarmSub.ws_logs ?? [])].reverse();
   const subscriptionActive = Boolean(alarmSub.active);
   const subPending =
     subscriptionEstablishMutation.isPending || subscriptionCancelMutation.isPending;
@@ -364,6 +365,37 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
           {subscriptionOpError ? (
             <div className="pill pill--high">订阅操作失败: {subscriptionOpError}</div>
           ) : null}
+          <div style={{ marginTop: 12 }}>
+            <div className="actions-row actions-row--inline" style={{ marginTop: 0 }}>
+              <strong style={{ fontSize: 13 }}>WSS 运行日志</strong>
+              <span className="muted" style={{ fontSize: 12 }}>
+                {wsConsumer?.last_run_at
+                  ? `最近活动 ${formatSystemTime(String(wsConsumer.last_run_at))}`
+                  : "自动刷新"}
+              </span>
+            </div>
+            <div className="ws-log-panel" role="log" aria-live="polite">
+              {wsLogs.length === 0 ? (
+                <div className="ws-log-line ws-log-line--info">暂无日志（建立订阅并连接 WSS 后会出现连接、收包、重连等记录）</div>
+              ) : (
+                wsLogs.map((line, idx) => {
+                  const lvl = String(line.level || "info").toLowerCase();
+                  const cls =
+                    lvl === "error" ? "ws-log-line--error" : lvl === "warning" ? "ws-log-line--warning" : "ws-log-line--info";
+                  return (
+                    <div key={`${line.ts}-${idx}`} className={`ws-log-line ${cls}`}>
+                      <span className="ws-log-ts">{formatSystemTime(line.ts)}</span>
+                      <span>[{lvl}] </span>
+                      <span>{line.message}</span>
+                      {line.subscription_id ? (
+                        <span className="muted"> · {String(line.subscription_id).slice(0, 8)}…</span>
+                      ) : null}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
         </article>
         <article className="card card--full">
           <h3>UME 同步</h3>

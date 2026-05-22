@@ -16,9 +16,11 @@ from netx_api import ume_alarm_ws
 from netx_api.models import UmeAlarmSubscription
 from netx_api.ume_alarm_subscription_store import clear_subscription, load_subscription, save_subscription
 from netx_api.ume_alarm_ws import (
+    append_ws_log,
     cancel_alarm_subscription_manual,
     establish_alarm_subscription_manual,
     get_subscription_status,
+    get_ws_logs,
     load_persisted_subscription,
     parse_subscription_id_from_already_exists_error,
     process_alarm_notification,
@@ -735,6 +737,22 @@ class UmeAlarmNotificationTests(unittest.TestCase):
         self.assertEqual(action, "deleted")
         self.assertTrue(changed)
         self.assertIsNone(self.db.get(UmeAlarmCurrent, "AK-CLEARED-1"))
+
+    def test_ws_log_ring_buffer(self):
+        from netx_api import ume_alarm_ws as ws_mod
+
+        with ws_mod._WS_LOG_LOCK:
+            ws_mod._WS_LOG_ENTRIES.clear()
+        try:
+            for i in range(5):
+                append_ws_log(f"line-{i}")
+            logs = get_ws_logs(limit=3)
+            self.assertEqual(len(logs), 3)
+            self.assertEqual(logs[-1]["message"], "line-4")
+            self.assertIn("ts", logs[0])
+        finally:
+            with ws_mod._WS_LOG_LOCK:
+                ws_mod._WS_LOG_ENTRIES.clear()
 
     def test_parse_subscription_id_from_already_exists_error(self):
         msg = (
