@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from typing import Any
 from unittest.mock import patch
@@ -10,7 +11,7 @@ from sqlalchemy.orm import sessionmaker
 from netx_api.db import Base
 from netx_api.main import _extract_ume_raw_group_field, _serialize_ume_alarm_raw_row, sql_ume_query, ume_alarms_fields
 from netx_api.models import UmeAlarmCurrent, UmeInventoryNE
-from netx_api.ume_client import UMEClient
+from netx_api.ume_client import UMEClient, _parse_json_response
 from netx_api import ume_alarm_ws
 from netx_api.models import UmeAlarmSubscription
 from netx_api.ume_alarm_subscription_store import clear_subscription, load_subscription, save_subscription
@@ -174,6 +175,39 @@ class UMEClientTests(unittest.TestCase):
         self.assertEqual(seen["body"], {"input": {"topic": "ALARM"}})
         self.assertEqual(sub_id, "3282ac78-b38a-4242-81d2-cc5b77c28ef8")
         self.assertIn("wss://", uri)
+
+    def test_parse_json_response_accepts_empty_success_body(self):
+        class _Resp:
+            is_success = True
+            status_code = 204
+            text = ""
+
+            def json(self):
+                raise json.JSONDecodeError("Expecting value", "", 0)
+
+        self.assertEqual(_parse_json_response(_Resp()), {})  # type: ignore[arg-type]
+
+    def test_delete_alarm_subscription_empty_response(self):
+        from time import time as _time
+
+        client = UMEClient(base_url="https://ume.local:18014", username="u", password="p", verify_tls=False)
+        client._token_value = "token-1"
+        client._token_expires_at = _time() + 3600
+
+        class _Resp:
+            is_success = True
+            status_code = 204
+            text = ""
+            headers: dict[str, str] = {}
+
+            def json(self):
+                raise json.JSONDecodeError("Expecting value", "", 0)
+
+        def _fake_request(method: str, path: str, *, params=None, body=None):
+            return _parse_json_response(_Resp()), None  # type: ignore[arg-type]
+
+        client.request_json = _fake_request  # type: ignore[method-assign]
+        client.delete_alarm_subscription("sub-to-delete")
 
     def test_delete_alarm_subscription(self):
         from time import time as _time

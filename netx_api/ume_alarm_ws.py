@@ -162,7 +162,12 @@ def establish_alarm_subscription_manual(client: UMEClient, db: Session) -> dict[
         if not orphan_id:
             raise
         _ws_log.warning("establish: UME reports existing subscription id=%s, deleting then retry", orphan_id)
-        _delete_subscription_on_ume(client, orphan_id)
+        try:
+            _delete_subscription_on_ume(client, orphan_id)
+        except RuntimeError as del_exc:
+            raise RuntimeError(
+                f"ume_orphan_subscription_delete_failed:id={orphan_id}:{str(del_exc)[:180]}"
+            ) from del_exc
         sub_id, uri = client.establish_alarm_subscription(topic=topic)
     save_subscription(db, subscription_id=sub_id, wss_uri=uri, topic=topic)
     db.commit()

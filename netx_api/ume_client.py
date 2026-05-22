@@ -23,6 +23,21 @@ def _coerce_list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
+def _parse_json_response(resp: httpx.Response) -> dict[str, Any]:
+    """Parse JSON body; UME often returns 204/empty body on successful DELETE operations."""
+    raw = str(resp.text or "").strip()
+    if not raw:
+        return {}
+    try:
+        return _coerce_dict(resp.json())
+    except json.JSONDecodeError as exc:
+        if resp.is_success:
+            return {}
+        raise RuntimeError(
+            f"ume_request_failed:{int(resp.status_code)}:non_json_body:{raw[:200]}"
+        ) from exc
+
+
 @dataclass
 class RequestDiagnostics:
     method: str
@@ -422,8 +437,9 @@ class UMEClient:
                     marker=marker,
                     is_end_of_reply=is_end_of_reply,
                 )
-                raise RuntimeError(f"ume_request_failed:{resp.status_code}:{resp.text[:240]}")
-            data = _coerce_dict(resp.json())
+                body_snip = raw[:240] if (raw := str(resp.text or "").strip()) else "(empty body)"
+                raise RuntimeError(f"ume_request_failed:{m} {path} {resp.status_code}:{body_snip}")
+            data = _parse_json_response(resp)
             diag = RequestDiagnostics(
                 method=m,
                 path=path,
@@ -437,7 +453,7 @@ class UMEClient:
         except Exception as exc:
             if isinstance(exc, RuntimeError):
                 raise
-            raise RuntimeError(f"ume_request_failed:{str(exc)[:240]}") from exc
+            raise RuntimeError(f"ume_request_failed:{m} {path}:{str(exc)[:200]}") from exc
 
     def request_json(
         self,
@@ -477,8 +493,9 @@ class UMEClient:
                     marker=marker,
                     is_end_of_reply=is_end_of_reply,
                 )
-                raise RuntimeError(f"ume_request_failed:{resp.status_code}:{resp.text[:240]}")
-            data = _coerce_dict(resp.json())
+                body_snip = raw[:240] if (raw := str(resp.text or "").strip()) else "(empty body)"
+                raise RuntimeError(f"ume_request_failed:{m} {path} {resp.status_code}:{body_snip}")
+            data = _parse_json_response(resp)
             diag = RequestDiagnostics(
                 method=m,
                 path=path,
@@ -492,7 +509,7 @@ class UMEClient:
         except Exception as exc:
             if isinstance(exc, RuntimeError):
                 raise
-            raise RuntimeError(f"ume_request_failed:{str(exc)[:240]}") from exc
+            raise RuntimeError(f"ume_request_failed:{m} {path}:{str(exc)[:200]}") from exc
 
     def _extract_named_list(self, payload: dict[str, Any], keys: list[str]) -> list[dict[str, Any]]:
         target_keys = {str(k).lower() for k in keys}
