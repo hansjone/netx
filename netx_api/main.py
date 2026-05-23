@@ -38,8 +38,10 @@ from .ume_alarm_ws import (
     cancel_alarm_subscription_manual,
     establish_alarm_subscription_manual,
     get_subscription_status,
+    get_ws_connection_status,
     get_ws_logs,
     load_persisted_subscription,
+    request_ws_reconnect,
     shutdown_ws_consumer,
     start_ume_alarm_ws_consumer,
 )
@@ -935,6 +937,7 @@ def ume_alarm_subscription_status(limit: int = 80) -> dict[str, Any]:
     return {
         "ok": True,
         **st,
+        "ws_connection": get_ws_connection_status(),
         "ws_consumer_status": str(ws_task.get("status") or ""),
         "ws_consumer_last_error": str(ws_task.get("last_error") or ""),
         "ws_consumer_last_run_at": ws_task.get("last_run_at"),
@@ -1097,6 +1100,8 @@ def ume_runtime_task_pause(task: str) -> dict[str, Any]:
     _runtime_pause_task(tid)
     if tid in ("alarms_current_auto_sync", "inventory_auto_sync"):
         _clear_force_resume_hints(tid)
+    if tid == "alarms_current_ws_consumer":
+        request_ws_reconnect()
     _set_runtime_task(tid, status="paused", last_error="")
     return {"ok": True, "task": tid, "runtime_tasks": _list_runtime_tasks()}
 
@@ -1109,7 +1114,13 @@ def ume_runtime_task_resume(task: str) -> dict[str, Any]:
     _runtime_resume_task(tid)
     if tid in ("alarms_current_auto_sync", "inventory_auto_sync"):
         _request_force_sync_after_resume(tid)
-    _set_runtime_task(tid, status="running", last_error="已恢复：将跳过本轮周期等待并尽快同步")
+        resume_hint = "已恢复：将跳过本轮周期等待并尽快同步"
+    elif tid == "alarms_current_ws_consumer":
+        request_ws_reconnect()
+        resume_hint = "已恢复：将尽快重连 WSS"
+    else:
+        resume_hint = "已恢复"
+    _set_runtime_task(tid, status="running", last_error=resume_hint)
     return {"ok": True, "task": tid, "runtime_tasks": _list_runtime_tasks()}
 
 

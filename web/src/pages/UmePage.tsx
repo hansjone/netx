@@ -197,6 +197,24 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
     syncStatusQuery.data?.alarm_subscription ??
     ({ active: false } as const);
   const wsConsumer = runtimeTasks.find((t) => t.task === "alarms_current_ws_consumer");
+  const wsConn = subscriptionStatusQuery.data?.ws_connection;
+  const wsState = String(wsConn?.state || "");
+  const wsPaused = Boolean(wsConsumer?.paused);
+  const wsLabel =
+    wsConn?.label ||
+    (wsPaused ? "已暂停" : wsConsumer?.last_error || wsConsumer?.status || "-");
+  const wsPillLevel =
+    wsPaused || wsState === "paused"
+      ? "warn"
+      : wsState === "connected"
+        ? "up"
+        : wsState === "connecting" || wsState === "reconnecting" || wsState === "waiting_token"
+          ? "warn"
+          : wsState === "no_subscription" || wsState === "disconnected" || wsState === "error" || wsState === "init"
+            ? "down"
+            : String(wsConsumer?.last_error || "").includes("connected")
+              ? "up"
+              : "unknown";
   const wsLogs = [...(subscriptionStatusQuery.data?.ws_logs ?? alarmSub.ws_logs ?? [])].reverse();
   const subscriptionActive = Boolean(alarmSub.active);
   const subPending =
@@ -298,6 +316,7 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
           <h3>UME 告警订阅（WebSocket）</h3>
           <p className="muted" style={{ marginTop: 0 }}>
             订阅需手动建立/取消；建立后（或重启后若库中仍有有效订阅）后台会自动连接 WSS 接收实时告警。
+            后台任务 <code>alarms_current_ws_consumer</code> 的「暂停/开始」会停止或恢复 WSS 连接（不会取消 UME 订阅）。
           </p>
           <div className="actions-row actions-row--inline">
             <span className={`conn-pill conn-pill--${subscriptionActive ? "up" : "down"}`}>
@@ -308,19 +327,12 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
                 id: {String(alarmSub.subscription_id).slice(0, 12)}…
               </span>
             ) : null}
-            {wsConsumer ? (
+            {subscriptionActive || wsConsumer ? (
               <span
-                className={`conn-pill conn-pill--${
-                  String(wsConsumer.last_error || "").includes("connected") ||
-                  wsConsumer.status === "running"
-                    ? "up"
-                    : String(wsConsumer.last_error || "").includes("no_subscription")
-                      ? "down"
-                      : "unknown"
-                }`}
-                title={wsConsumer.last_error || ""}
+                className={`conn-pill conn-pill--${wsPillLevel}`}
+                title={wsConn?.detail || wsConsumer?.last_error || alarmSub.wss_uri || ""}
               >
-                WSS: {wsConsumer.last_error || wsConsumer.status || "-"}
+                WSS: {wsLabel}
               </span>
             ) : null}
           </div>

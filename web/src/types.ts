@@ -96,6 +96,12 @@ export type UmeWsLogEntry = {
   subscription_id?: string;
 };
 
+export type UmeWsConnectionStatus = {
+  state: string;
+  label: string;
+  detail?: string;
+};
+
 export type UmeAlarmSubscriptionStatus = {
   ok?: boolean;
   created?: boolean;
@@ -104,6 +110,7 @@ export type UmeAlarmSubscriptionStatus = {
   subscription_id?: string;
   wss_uri?: string;
   topic?: string;
+  ws_connection?: UmeWsConnectionStatus;
   ws_consumer_status?: string;
   ws_consumer_last_error?: string;
   ws_consumer_last_run_at?: string | null;

@@ -20,6 +20,7 @@ from netx_api.ume_alarm_ws import (
     cancel_alarm_subscription_manual,
     establish_alarm_subscription_manual,
     get_subscription_status,
+    get_ws_connection_status,
     get_ws_logs,
     load_persisted_subscription,
     parse_subscription_id_from_already_exists_error,
@@ -737,6 +738,18 @@ class UmeAlarmNotificationTests(unittest.TestCase):
         self.assertEqual(action, "deleted")
         self.assertTrue(changed)
         self.assertIsNone(self.db.get(UmeAlarmCurrent, "AK-CLEARED-1"))
+
+    def test_ws_connection_status_not_alarm_action(self):
+        from netx_api import ume_alarm_ws as ws_mod
+
+        with ws_mod._ws_connection_lock:
+            ws_mod._ws_connection_state = "init"
+            ws_mod._ws_connection_detail = ""
+        ws_mod._set_ws_connection_state("connected", detail="ws connected")
+        st = get_ws_connection_status()
+        self.assertEqual(st["state"], "connected")
+        self.assertEqual(st["label"], "已连接")
+        self.assertEqual(st["detail"], "ws connected")
 
     def test_ws_log_ring_buffer(self):
         from netx_api import ume_alarm_ws as ws_mod

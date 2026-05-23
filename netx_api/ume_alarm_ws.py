@@ -90,11 +90,59 @@ def parse_subscription_id_from_already_exists_error(message: str) -> str:
 _shutdown_lock = threading.Lock()
 _subscription_lock = threading.Lock()
 _ws_wake_event = threading.Event()
+_ws_connection_lock = threading.Lock()
 
 _subscription_id: str = ""
 _subscription_uri: str = ""
 _subscription_topic: str = "ALARM"
 _active_client: UMEClient | None = None
+_ws_connection_state: str = "init"
+_ws_connection_detail: str = ""
+
+_WS_CONNECTION_LABELS: dict[str, str] = {
+    "init": "初始化",
+    "connected": "已连接",
+    "connecting": "连接中",
+    "disconnected": "已断开",
+    "no_subscription": "无订阅",
+    "waiting_token": "等待 token",
+    "paused": "已暂停",
+    "error": "连接异常",
+    "reconnecting": "重连等待",
+}
+
+
+def _set_ws_connection_state(state: str, *, detail: str = "") -> None:
+    global _ws_connection_state, _ws_connection_detail
+    with _ws_connection_lock:
+        _ws_connection_state = str(state or "").strip() or "unknown"
+        _ws_connection_detail = str(detail or "").strip()[:240]
+
+
+def get_ws_connection_status() -> dict[str, Any]:
+    with _ws_connection_lock:
+        state = str(_ws_connection_state or "init")
+        detail = str(_ws_connection_detail or "")
+    return {
+        "state": state,
+        "label": _WS_CONNECTION_LABELS.get(state, state),
+        "detail": detail,
+    }
+
+
+def _notify_ws_connection(
+    state: str,
+    *,
+    detail: str = "",
+    subscription_id: str = "",
+    on_status: Callable[[str], None] | None = None,
+    log_level: str = "info",
+) -> None:
+    _set_ws_connection_state(state, detail=detail)
+    label = _WS_CONNECTION_LABELS.get(state, state)
+    append_ws_log(detail or label, level=log_level, subscription_id=subscription_id)
+    if on_status is not None:
+        on_status(label)
 
 
 def _parse_ws_message(raw: str) -> dict[str, Any] | None:
@@ -302,32 +350,34 @@ def _run_ws_session(
             label = _WS_ALARM_ACTION_LABEL.get(action, action)
             status_msg = f"{label} key={alarm_key}" + ("" if changed else " (无变更)")
             append_ws_log(status_msg, subscription_id=subscription_id)
-            if on_status is not None:
-                on_status(f"last={action}")
         except Exception as exc:
             db.rollback()
             append_ws_log(f"alarm apply failed: {str(exc)[:200]}", level="error", subscription_id=subscription_id)
-            if on_status is not None:
-                on_status(f"apply_error:{str(exc)[:120]}")
         finally:
             db.close()
 
     def _on_error(_ws: Any, error: Any) -> None:
-        append_ws_log(f"ws error: {str(error)[:200]}", level="error", subscription_id=subscription_id)
-        if on_status is not None:
-            on_status(f"ws_error:{str(error)[:120]}")
+        detail = f"ws error: {str(error)[:200]}"
+        _notify_ws_connection(
+            "error",
+            detail=detail,
+            subscription_id=subscription_id,
+            on_status=on_status,
+            log_level="error",
+        )
 
     def _on_close(_ws: Any, close_status_code: Any, close_msg: Any) -> None:
-        append_ws_log(
-            f"ws closed code={close_status_code} msg={str(close_msg or '')[:120]}",
-            subscription_id=subscription_id,
-        )
+        detail = f"ws closed code={close_status_code} msg={str(close_msg or '')[:120]}"
+        _notify_ws_connection("disconnected", detail=detail, subscription_id=subscription_id, on_status=on_status)
         closed.set()
 
     def _on_open(_ws: Any) -> None:
-        append_ws_log(f"ws connected uri={wss_uri[:120]}", subscription_id=subscription_id)
-        if on_status is not None:
-            on_status("connected")
+        _notify_ws_connection(
+            "connected",
+            detail=f"ws connected uri={wss_uri[:120]}",
+            subscription_id=subscription_id,
+            on_status=on_status,
+        )
 
     ws_app = websocket.WebSocketApp(
         wss_uri,
@@ -390,31 +440,41 @@ def run_alarm_ws_consumer_loop(
     backoff_s = 2.0
     max_backoff_s = 120.0
 
-    def _status(msg: str, *, level: str = "info", sub_id: str = "") -> None:
-        append_ws_log(msg, level=level, subscription_id=sub_id)
-        if on_status is not None:
-            on_status(msg)
+    def _loop_status(
+        state: str,
+        *,
+        detail: str = "",
+        subscription_id: str = "",
+        log_level: str = "info",
+    ) -> None:
+        _notify_ws_connection(
+            state,
+            detail=detail,
+            subscription_id=subscription_id,
+            on_status=on_status,
+            log_level=log_level,
+        )
 
     while stop_event is None or not stop_event.is_set():
         if is_paused is not None and is_paused():
-            _status("paused", level="warning")
+            _loop_status("paused", log_level="warning")
             time.sleep(1.0)
             continue
 
         subscription_id, wss_uri = get_active_subscription()
         if not subscription_id or not wss_uri:
-            _status("no_subscription")
+            _loop_status("no_subscription")
             _ws_wake_event.wait(timeout=2.0)
             _ws_wake_event.clear()
             continue
 
         try:
             if not _wait_for_shared_token(client, timeout_s=120.0):
-                _status("waiting_token", level="warning", sub_id=subscription_id)
+                _loop_status("waiting_token", log_level="warning", subscription_id=subscription_id)
                 time.sleep(2.0)
                 continue
 
-            append_ws_log(f"connecting {wss_uri[:160]}", subscription_id=subscription_id)
+            _loop_status("connecting", detail=f"connecting {wss_uri[:160]}", subscription_id=subscription_id)
             _run_ws_session(
                 client,
                 wss_uri=wss_uri,
@@ -425,21 +485,21 @@ def run_alarm_ws_consumer_loop(
             backoff_s = 2.0
         except RuntimeError as exc:
             if "ume_ws_no_valid_token" in str(exc):
-                _status("waiting_token", level="warning", sub_id=subscription_id)
+                _loop_status("waiting_token", log_level="warning", subscription_id=subscription_id)
                 time.sleep(2.0)
                 continue
-            _status(f"session error: {str(exc)[:200]}", level="error", sub_id=subscription_id)
+            _loop_status("error", detail=f"session error: {str(exc)[:200]}", subscription_id=subscription_id, log_level="error")
         except Exception as exc:
-            _status(f"session error: {str(exc)[:200]}", level="error", sub_id=subscription_id)
+            _loop_status("error", detail=f"session error: {str(exc)[:200]}", subscription_id=subscription_id, log_level="error")
 
         sub_id_after, uri_after = get_active_subscription()
         if stop_event is not None and stop_event.is_set():
             break
         if not sub_id_after or not uri_after:
-            _status("no_subscription")
+            _loop_status("no_subscription")
             continue
 
-        _status(f"reconnect in {int(backoff_s)}s", sub_id=sub_id_after)
+        _loop_status("reconnecting", detail=f"reconnect in {int(backoff_s)}s", subscription_id=sub_id_after)
         slept = 0.0
         while slept < backoff_s:
             if stop_event is not None and stop_event.is_set():
