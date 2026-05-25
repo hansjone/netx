@@ -239,6 +239,15 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
   const wsLabel =
     wsConn?.label ||
     (wsPaused ? "已暂停" : wsConsumer?.last_error || wsConsumer?.status || "-");
+  const subscriptionActive = Boolean(alarmSub.active);
+  const serverSubLost = Boolean(
+    subscriptionStatusQuery.data?.server_subscription_lost ?? alarmSub.server_subscription_lost,
+  );
+  const serverSubLostReason = String(
+    subscriptionStatusQuery.data?.server_subscription_lost_reason ??
+      alarmSub.server_subscription_lost_reason ??
+      "",
+  );
   const wsPillLevel =
     serverSubLost || wsState === "subscription_lost"
       ? "warn"
@@ -254,15 +263,6 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
                 ? "up"
                 : "unknown";
   const wsLogs = [...(subscriptionStatusQuery.data?.ws_logs ?? alarmSub.ws_logs ?? [])].reverse();
-  const subscriptionActive = Boolean(alarmSub.active);
-  const serverSubLost = Boolean(
-    subscriptionStatusQuery.data?.server_subscription_lost ?? alarmSub.server_subscription_lost,
-  );
-  const serverSubLostReason = String(
-    subscriptionStatusQuery.data?.server_subscription_lost_reason ??
-      alarmSub.server_subscription_lost_reason ??
-      "",
-  );
   const subPending =
     subscriptionEstablishMutation.isPending ||
     subscriptionCancelMutation.isPending ||
