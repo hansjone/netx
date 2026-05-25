@@ -36,6 +36,7 @@ from .parser_config import load_parser_config
 from .ume_client import UMEClient
 from .ume_alarm_ws import (
     cancel_alarm_subscription_manual,
+    clear_local_alarm_subscription_manual,
     establish_alarm_subscription_manual,
     get_subscription_status,
     get_ws_connection_status,
@@ -946,10 +947,15 @@ def ume_alarm_subscription_status(limit: int = 80) -> dict[str, Any]:
 
 
 @app.post("/v1/ume/alarm-subscription/establish")
-def ume_alarm_subscription_establish(db: Session = Depends(get_db)) -> dict[str, Any]:
+def ume_alarm_subscription_establish(
+    payload: dict[str, Any] | None = None,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
     client = _ume_client()
+    body = payload or {}
+    force_reestablish = bool(body.get("force_reestablish"))
     try:
-        st = establish_alarm_subscription_manual(client, db)
+        st = establish_alarm_subscription_manual(client, db, force_reestablish=force_reestablish)
         return {"ok": True, "created": not bool(st.get("already_exists")), **st}
     except Exception as exc:
         msg = str(exc)[:240]
@@ -957,11 +963,28 @@ def ume_alarm_subscription_establish(db: Session = Depends(get_db)) -> dict[str,
 
 
 @app.post("/v1/ume/alarm-subscription/cancel")
-def ume_alarm_subscription_cancel(db: Session = Depends(get_db)) -> dict[str, Any]:
+def ume_alarm_subscription_cancel(
+    payload: dict[str, Any] | None = None,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
     client = _ume_client()
+    body = payload or {}
+    force_clear_local = bool(body.get("force_clear_local"))
     try:
-        st = cancel_alarm_subscription_manual(client, db)
+        st = cancel_alarm_subscription_manual(client, db, force_clear_local=force_clear_local)
+        if st.get("needs_local_cleanup"):
+            return st
         return {"ok": True, **st}
+    except Exception as exc:
+        msg = str(exc)[:240]
+        raise HTTPException(status_code=502, detail=msg) from exc
+
+
+@app.post("/v1/ume/alarm-subscription/clear-local")
+def ume_alarm_subscription_clear_local(db: Session = Depends(get_db)) -> dict[str, Any]:
+    try:
+        st = clear_local_alarm_subscription_manual(db)
+        return {"ok": True, "cleared_local": True, **st}
     except Exception as exc:
         msg = str(exc)[:240]
         raise HTTPException(status_code=502, detail=msg) from exc

@@ -104,11 +104,18 @@ export const fetchAlarms = (params: {
 export const fetchUmeAlarmSubscriptionStatus = () =>
   apiGet<UmeAlarmSubscriptionStatus>("/v1/ume/alarm-subscription/status");
 
-export const establishUmeAlarmSubscription = () =>
-  apiPost<UmeAlarmSubscriptionStatus>("/v1/ume/alarm-subscription/establish", {});
+export const establishUmeAlarmSubscription = (opts?: { forceReestablish?: boolean }) =>
+  apiPost<UmeAlarmSubscriptionStatus>("/v1/ume/alarm-subscription/establish", {
+    force_reestablish: Boolean(opts?.forceReestablish),
+  });
 
-export const cancelUmeAlarmSubscription = () =>
-  apiPost<UmeAlarmSubscriptionStatus>("/v1/ume/alarm-subscription/cancel", {});
+export const cancelUmeAlarmSubscription = (opts?: { forceClearLocal?: boolean }) =>
+  apiPost<UmeAlarmSubscriptionStatus>("/v1/ume/alarm-subscription/cancel", {
+    force_clear_local: Boolean(opts?.forceClearLocal),
+  });
+
+export const clearLocalUmeAlarmSubscription = () =>
+  apiPost<UmeAlarmSubscriptionStatus>("/v1/ume/alarm-subscription/clear-local", {});
 
 export const fetchUmeSyncStatus = (params: { page: number; pageSize: number }) => {
   const p = new URLSearchParams();

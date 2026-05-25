@@ -110,6 +110,12 @@ export type UmeAlarmSubscriptionStatus = {
   subscription_id?: string;
   wss_uri?: string;
   topic?: string;
+  server_subscription_lost?: boolean;
+  server_subscription_lost_reason?: string;
+  needs_local_cleanup?: boolean;
+  ume_already_missing?: boolean;
+  cleared_local?: boolean;
+  message?: string;
   ws_connection?: UmeWsConnectionStatus;
   ws_consumer_status?: string;
   ws_consumer_last_error?: string;

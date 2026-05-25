@@ -44,6 +44,22 @@ _WS_LOG_MAX_RETURN = 100
 
 _ORPHAN_SUB_ID_RE = re.compile(r"id:([0-9a-fA-F-]{8}-[0-9a-fA-F-]{4}-[0-9a-fA-F-]{4}-[0-9a-fA-F-]{4}-[0-9a-fA-F-]{12})")
 
+_SUBSCRIPTION_MISSING_MARKERS: tuple[str, ...] = (
+    "subscription not exist",
+    "subscription not found",
+    "not found or overtime",
+    "please establish again",
+    "status-code: 404",
+    "status-reason: subscription not found",
+    "non-101 status: 503",
+)
+
+
+def is_ume_subscription_missing_error(message: str) -> bool:
+    """True when UME reports the notification subscription is gone or expired."""
+    low = str(message or "").lower()
+    return any(marker in low for marker in _SUBSCRIPTION_MISSING_MARKERS)
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -98,6 +114,9 @@ _subscription_topic: str = "ALARM"
 _active_client: UMEClient | None = None
 _ws_connection_state: str = "init"
 _ws_connection_detail: str = ""
+_ume_lost_lock = threading.Lock()
+_ume_subscription_lost = False
+_ume_subscription_lost_reason: str = ""
 
 _WS_CONNECTION_LABELS: dict[str, str] = {
     "init": "初始化",
@@ -109,7 +128,40 @@ _WS_CONNECTION_LABELS: dict[str, str] = {
     "paused": "已暂停",
     "error": "连接异常",
     "reconnecting": "重连等待",
+    "subscription_lost": "UME订阅已丢失",
 }
+
+
+def mark_ume_subscription_lost(reason: str) -> None:
+    global _ume_subscription_lost, _ume_subscription_lost_reason
+    detail = str(reason or "").strip()[:500]
+    with _ume_lost_lock:
+        _ume_subscription_lost = True
+        _ume_subscription_lost_reason = detail
+    append_ws_log(f"UME 侧订阅已丢失: {detail[:200]}", level="warning")
+    request_ws_reconnect()
+
+
+def clear_ume_subscription_lost_flag() -> None:
+    global _ume_subscription_lost, _ume_subscription_lost_reason
+    with _ume_lost_lock:
+        _ume_subscription_lost = False
+        _ume_subscription_lost_reason = ""
+
+
+def is_ume_subscription_lost() -> bool:
+    with _ume_lost_lock:
+        return bool(_ume_subscription_lost)
+
+
+def _server_subscription_lost_fields() -> dict[str, Any]:
+    with _ume_lost_lock:
+        lost = bool(_ume_subscription_lost)
+        reason = str(_ume_subscription_lost_reason or "")
+    return {
+        "server_subscription_lost": lost,
+        "server_subscription_lost_reason": reason,
+    }
 
 
 def _set_ws_connection_state(state: str, *, detail: str = "") -> None:
@@ -227,15 +279,35 @@ def get_subscription_status() -> dict[str, Any]:
         "subscription_id": sub_id,
         "wss_uri": uri,
         "topic": topic,
+        **_server_subscription_lost_fields(),
     }
+
+
+def clear_local_alarm_subscription_manual(db: Session) -> dict[str, Any]:
+    """Drop persisted/in-memory subscription without calling UME delete."""
+    clear_subscription(db, cache_key=DEFAULT_SUBSCRIPTION_KEY)
+    db.commit()
+    _clear_active_subscription()
+    clear_ume_subscription_lost_flag()
+    request_ws_reconnect()
+    append_ws_log("cleared local subscription record (UME delete skipped)")
+    return get_subscription_status()
 
 
 def request_ws_reconnect() -> None:
     _ws_wake_event.set()
 
 
-def establish_alarm_subscription_manual(client: UMEClient, db: Session) -> dict[str, Any]:
+def establish_alarm_subscription_manual(
+    client: UMEClient,
+    db: Session,
+    *,
+    force_reestablish: bool = False,
+) -> dict[str, Any]:
     """Manually establish ALARM subscription (UME API + persist). Does not open WSS."""
+    if force_reestablish or is_ume_subscription_lost():
+        clear_local_alarm_subscription_manual(db)
+
     existing = load_subscription(db)
     if existing is not None:
         sub_id, uri, topic = existing
@@ -284,27 +356,62 @@ def establish_alarm_subscription_manual(client: UMEClient, db: Session) -> dict[
     with _shutdown_lock:
         _active_client = client
     _set_active_subscription(sub_id, uri, topic=topic)
+    clear_ume_subscription_lost_flag()
     request_ws_reconnect()
     append_ws_log(f"manual establish subscription id={sub_id}", subscription_id=sub_id)
     return {**get_subscription_status(), "already_exists": False}
 
 
-def cancel_alarm_subscription_manual(client: UMEClient, db: Session) -> dict[str, Any]:
+def cancel_alarm_subscription_manual(
+    client: UMEClient,
+    db: Session,
+    *,
+    force_clear_local: bool = False,
+) -> dict[str, Any]:
     """Manually cancel subscription (UME delete + clear DB + drop WSS)."""
     loaded = load_subscription(db)
     sub_id, _uri = get_active_subscription()
     if not sub_id and loaded is not None:
         sub_id = str(loaded[0] or "")
+    ume_already_missing = False
     if sub_id:
         client.refresh_if_needed()
-        _delete_subscription_on_ume(client, sub_id)
+        try:
+            _delete_subscription_on_ume(client, sub_id)
+        except RuntimeError as exc:
+            if is_ume_subscription_missing_error(str(exc)):
+                ume_already_missing = True
+                mark_ume_subscription_lost(str(exc))
+                if not force_clear_local:
+                    return {
+                        **get_subscription_status(),
+                        "ok": False,
+                        "ume_already_missing": True,
+                        "needs_local_cleanup": True,
+                        "message": (
+                            "UME 侧告警订阅已不存在或已过期（服务器订阅已丢失）。"
+                            "请确认是否清除本地订阅记录，然后重新建立订阅。"
+                        ),
+                    }
+            else:
+                raise
 
     clear_subscription(db, cache_key=DEFAULT_SUBSCRIPTION_KEY)
     db.commit()
     _clear_active_subscription()
+    clear_ume_subscription_lost_flag()
     request_ws_reconnect()
-    append_ws_log(f"manual cancel subscription id={sub_id or '(none)'}", subscription_id=sub_id)
-    return get_subscription_status()
+    append_ws_log(
+        f"manual cancel subscription id={sub_id or '(none)'}",
+        subscription_id=sub_id,
+    )
+    st = get_subscription_status()
+    return {
+        **st,
+        "ok": True,
+        "cleared_local": True,
+        "ume_already_missing": ume_already_missing,
+    }
 
 
 def _run_ws_session(
@@ -357,14 +464,25 @@ def _run_ws_session(
             db.close()
 
     def _on_error(_ws: Any, error: Any) -> None:
-        detail = f"ws error: {str(error)[:200]}"
-        _notify_ws_connection(
-            "error",
-            detail=detail,
-            subscription_id=subscription_id,
-            on_status=on_status,
-            log_level="error",
-        )
+        err_text = str(error)
+        detail = f"ws error: {err_text[:200]}"
+        if is_ume_subscription_missing_error(err_text):
+            mark_ume_subscription_lost(err_text)
+            _notify_ws_connection(
+                "subscription_lost",
+                detail=detail,
+                subscription_id=subscription_id,
+                on_status=on_status,
+                log_level="warning",
+            )
+        else:
+            _notify_ws_connection(
+                "error",
+                detail=detail,
+                subscription_id=subscription_id,
+                on_status=on_status,
+                log_level="error",
+            )
 
     def _on_close(_ws: Any, close_status_code: Any, close_msg: Any) -> None:
         detail = f"ws closed code={close_status_code} msg={str(close_msg or '')[:120]}"
@@ -459,6 +577,18 @@ def run_alarm_ws_consumer_loop(
         if is_paused is not None and is_paused():
             _loop_status("paused", log_level="warning")
             time.sleep(1.0)
+            continue
+
+        if is_ume_subscription_lost():
+            with _ume_lost_lock:
+                lost_detail = str(_ume_subscription_lost_reason or "")
+            _loop_status(
+                "subscription_lost",
+                detail=lost_detail or "UME subscription missing on server",
+                log_level="warning",
+            )
+            _ws_wake_event.wait(timeout=5.0)
+            _ws_wake_event.clear()
             continue
 
         subscription_id, wss_uri = get_active_subscription()

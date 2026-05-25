@@ -18,11 +18,14 @@ from netx_api.ume_alarm_subscription_store import clear_subscription, load_subsc
 from netx_api.ume_alarm_ws import (
     append_ws_log,
     cancel_alarm_subscription_manual,
+    clear_local_alarm_subscription_manual,
     establish_alarm_subscription_manual,
     get_subscription_status,
     get_ws_connection_status,
     get_ws_logs,
+    is_ume_subscription_missing_error,
     load_persisted_subscription,
+    mark_ume_subscription_lost,
     parse_subscription_id_from_already_exists_error,
     process_alarm_notification,
 )
@@ -738,6 +741,53 @@ class UmeAlarmNotificationTests(unittest.TestCase):
         self.assertEqual(action, "deleted")
         self.assertTrue(changed)
         self.assertIsNone(self.db.get(UmeAlarmCurrent, "AK-CLEARED-1"))
+
+    def test_is_ume_subscription_missing_error(self):
+        err = (
+            "ConnectFailed: Server responded with a non-101 status: 503 "
+            "status-reason: Subscription not found or overtime! Please establish again"
+        )
+        self.assertTrue(is_ume_subscription_missing_error(err))
+        self.assertTrue(
+            is_ume_subscription_missing_error(
+                'ume_request_failed:DELETE ... 400:{"errorInfo":"subscription not exist!"}'
+            )
+        )
+
+    def test_cancel_returns_needs_cleanup_when_ume_missing(self):
+        from time import time as _time
+
+        ume_alarm_ws._clear_active_subscription()
+        ume_alarm_ws.clear_ume_subscription_lost_flag()
+        engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+        TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+        Base.metadata.create_all(bind=engine)
+        db = TestingSessionLocal()
+
+        client = UMEClient(base_url="https://ume.local:18014", username="u", password="p", verify_tls=False)
+        client._token_value = "token-1"
+        client._token_expires_at = _time() + 3600
+        save_subscription(db, subscription_id="sub-gone", wss_uri="wss://ume.local/stream/sub-gone", topic="ALARM")
+        db.commit()
+        ume_alarm_ws._set_active_subscription("sub-gone", "wss://ume.local/stream/sub-gone")
+
+        def _fail_delete(_id: str) -> None:
+            raise RuntimeError('ume_request_failed:DELETE ... 400:{"errorInfo":"subscription not exist!"}')
+
+        client.delete_alarm_subscription = _fail_delete  # type: ignore[method-assign]
+        client.refresh_if_needed = lambda: "token-1"  # type: ignore[method-assign]
+
+        st = cancel_alarm_subscription_manual(client, db)
+        self.assertFalse(st.get("ok", True))
+        self.assertTrue(st.get("needs_local_cleanup"))
+        self.assertTrue(st.get("active"))
+        self.assertTrue(ume_alarm_ws.is_ume_subscription_lost())
+
+        st2 = cancel_alarm_subscription_manual(client, db, force_clear_local=True)
+        self.assertTrue(st2.get("ok"))
+        self.assertFalse(st2.get("active"))
+        self.assertFalse(ume_alarm_ws.is_ume_subscription_lost())
+        db.close()
 
     def test_ws_connection_status_not_alarm_action(self):
         from netx_api import ume_alarm_ws as ws_mod

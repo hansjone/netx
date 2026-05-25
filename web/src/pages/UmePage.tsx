@@ -6,6 +6,7 @@ import {
   fetchUmeCurrentAlarms,
   fetchUmeNe,
   cancelUmeAlarmSubscription,
+  clearLocalUmeAlarmSubscription,
   establishUmeAlarmSubscription,
   fetchUmeAlarmSubscriptionStatus,
   fetchUmeSyncStatus,
@@ -89,8 +90,13 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
     staleTime: 3000,
     refetchInterval: 5000,
   });
+  const confirmClearLocalSubscription = (hint?: string) =>
+    window.confirm(
+      `${hint || "UME 侧告警订阅已不存在或已过期（服务器订阅已丢失）。"}\n\n是否清除本地订阅记录？清除后可点击「建立告警订阅」重新订阅。`,
+    );
+
   const subscriptionEstablishMutation = useMutation({
-    mutationFn: establishUmeAlarmSubscription,
+    mutationFn: (opts?: { forceReestablish?: boolean }) => establishUmeAlarmSubscription(opts),
     onMutate: () => setSubscriptionOpError(""),
     onSuccess: async (res) => {
       if (!res?.active) {
@@ -114,17 +120,47 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
       toastError?.(msg);
     },
   });
+  const subscriptionClearLocalMutation = useMutation({
+    mutationFn: clearLocalUmeAlarmSubscription,
+    onMutate: () => setSubscriptionOpError(""),
+    onSuccess: async () => {
+      setSubscriptionOpError("");
+      toastOk?.("已清除本地订阅记录，可重新建立订阅");
+      await queryClient.invalidateQueries({ queryKey: ["umeAlarmSubscription"] });
+      await queryClient.invalidateQueries({ queryKey: ["umeSyncStatus"] });
+    },
+    onError: (err) => {
+      const msg = String(err);
+      setSubscriptionOpError(msg);
+      toastError?.(msg);
+    },
+  });
+
   const subscriptionCancelMutation = useMutation({
-    mutationFn: cancelUmeAlarmSubscription,
+    mutationFn: (opts?: { forceClearLocal?: boolean }) => cancelUmeAlarmSubscription(opts),
     onMutate: () => setSubscriptionOpError(""),
     onSuccess: async (res) => {
+      if (res?.needs_local_cleanup) {
+        const msg =
+          res.message ||
+          "UME 侧告警订阅已丢失。请确认是否清除本地订阅记录后重新订阅。";
+        if (confirmClearLocalSubscription(msg)) {
+          subscriptionCancelMutation.mutate({ forceClearLocal: true });
+          return;
+        }
+        setSubscriptionOpError(msg);
+        toastError?.(msg);
+        await queryClient.invalidateQueries({ queryKey: ["umeAlarmSubscription"] });
+        await queryClient.invalidateQueries({ queryKey: ["umeSyncStatus"] });
+        return;
+      }
       if (res?.active) {
         const msg = "取消订阅失败：UME 侧订阅可能仍存在，请查看错误详情后重试";
         setSubscriptionOpError(msg);
         toastError?.(msg);
       } else {
         setSubscriptionOpError("");
-        toastOk?.("告警订阅已取消");
+        toastOk?.(res?.ume_already_missing ? "本地已清除（UME 侧订阅此前已不存在）" : "告警订阅已取消");
       }
       await queryClient.invalidateQueries({ queryKey: ["umeAlarmSubscription"] });
       await queryClient.invalidateQueries({ queryKey: ["umeSyncStatus"] });
@@ -204,21 +240,33 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
     wsConn?.label ||
     (wsPaused ? "已暂停" : wsConsumer?.last_error || wsConsumer?.status || "-");
   const wsPillLevel =
-    wsPaused || wsState === "paused"
+    serverSubLost || wsState === "subscription_lost"
       ? "warn"
-      : wsState === "connected"
-        ? "up"
-        : wsState === "connecting" || wsState === "reconnecting" || wsState === "waiting_token"
-          ? "warn"
-          : wsState === "no_subscription" || wsState === "disconnected" || wsState === "error" || wsState === "init"
-            ? "down"
-            : String(wsConsumer?.last_error || "").includes("connected")
-              ? "up"
-              : "unknown";
+      : wsPaused || wsState === "paused"
+        ? "warn"
+        : wsState === "connected"
+          ? "up"
+          : wsState === "connecting" || wsState === "reconnecting" || wsState === "waiting_token"
+            ? "warn"
+            : wsState === "no_subscription" || wsState === "disconnected" || wsState === "error" || wsState === "init"
+              ? "down"
+              : String(wsConsumer?.last_error || "").includes("connected")
+                ? "up"
+                : "unknown";
   const wsLogs = [...(subscriptionStatusQuery.data?.ws_logs ?? alarmSub.ws_logs ?? [])].reverse();
   const subscriptionActive = Boolean(alarmSub.active);
+  const serverSubLost = Boolean(
+    subscriptionStatusQuery.data?.server_subscription_lost ?? alarmSub.server_subscription_lost,
+  );
+  const serverSubLostReason = String(
+    subscriptionStatusQuery.data?.server_subscription_lost_reason ??
+      alarmSub.server_subscription_lost_reason ??
+      "",
+  );
   const subPending =
-    subscriptionEstablishMutation.isPending || subscriptionCancelMutation.isPending;
+    subscriptionEstablishMutation.isPending ||
+    subscriptionCancelMutation.isPending ||
+    subscriptionClearLocalMutation.isPending;
 
   const runtimeTaskMutation = useMutation({
     mutationFn: async (vars: { task: string; action: "pause" | "resume" }) =>
@@ -336,22 +384,72 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
               </span>
             ) : null}
           </div>
+          {serverSubLost ? (
+            <div className="pill pill--medium" style={{ marginTop: 8 }}>
+              UME 服务器侧告警订阅已丢失或已过期，本地记录可能仍显示「已建立」。请确认清除本地记录后重新订阅。
+              {serverSubLostReason ? (
+                <div className="muted" style={{ marginTop: 6, fontSize: 12, wordBreak: "break-word" }}>
+                  {serverSubLostReason.slice(0, 280)}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           <div className="actions-row actions-row--inline">
             <button
               type="button"
-              onClick={() => subscriptionEstablishMutation.mutate()}
-              disabled={subPending || subscriptionActive || !hasToken}
-              title={!hasToken ? "请先登录 UME token" : undefined}
+              onClick={() => {
+                if (serverSubLost && subscriptionActive) {
+                  if (
+                    window.confirm(
+                      "将清除本地订阅记录并在 UME 上重新建立告警订阅，是否继续？",
+                    )
+                  ) {
+                    subscriptionEstablishMutation.mutate({ forceReestablish: true });
+                  }
+                  return;
+                }
+                subscriptionEstablishMutation.mutate();
+              }}
+              disabled={subPending || (!serverSubLost && subscriptionActive) || !hasToken}
+              title={
+                !hasToken
+                  ? "请先登录 UME token"
+                  : serverSubLost
+                    ? "清除本地失效记录并重新向 UME 建立订阅"
+                    : undefined
+              }
             >
               {subscriptionEstablishMutation.isPending ? (
                 <>
                   <span className="inline-spinner" aria-hidden />
-                  建立订阅…
+                  {serverSubLost ? "重新订阅…" : "建立订阅…"}
                 </>
+              ) : serverSubLost ? (
+                "清除本地并重新订阅"
               ) : (
                 "建立告警订阅"
               )}
             </button>
+            {serverSubLost && subscriptionActive ? (
+              <button
+                type="button"
+                onClick={() => {
+                  if (confirmClearLocalSubscription()) {
+                    subscriptionClearLocalMutation.mutate();
+                  }
+                }}
+                disabled={subPending}
+              >
+                {subscriptionClearLocalMutation.isPending ? (
+                  <>
+                    <span className="inline-spinner" aria-hidden />
+                    清除中…
+                  </>
+                ) : (
+                  "仅清除本地记录"
+                )}
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={() => subscriptionCancelMutation.mutate()}
