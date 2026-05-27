@@ -388,7 +388,7 @@ class UmeSyncServiceTests(unittest.TestCase):
         )
         self.db.commit()
 
-        sync_alarms_current(self.db, _COne(), trigger_mode="manual")
+        sync_alarms_current(self.db, _COne(), trigger_mode="manual", wss_active=False)
         self.assertIsNotNone(self.db.get(UmeAlarmCurrent, "AK-KEEP"))
         self.assertIsNone(self.db.get(UmeAlarmCurrent, "AK-GONE"))
 
@@ -421,7 +421,7 @@ class UmeSyncServiceTests(unittest.TestCase):
         )
         self.db.commit()
 
-        sync_alarms_current(self.db, _CPartial(), trigger_mode="manual")
+        sync_alarms_current(self.db, _CPartial(), trigger_mode="manual", wss_active=False)
         self.assertIsNotNone(self.db.get(UmeAlarmCurrent, "AK-NEW"))
         self.assertIsNotNone(self.db.get(UmeAlarmCurrent, "AK-STALE"))
 
@@ -458,11 +458,11 @@ class UmeSyncServiceTests(unittest.TestCase):
         )
         self.db.commit()
 
-        job1, _ = sync_alarms_current(self.db, _C(), trigger_mode="manual")
+        job1, _ = sync_alarms_current(self.db, _C(), trigger_mode="manual", wss_active=False)
         self.assertEqual(job1.status, "done")
         self.assertEqual(job1.inserted_count, 1)
 
-        job2, _ = sync_alarms_current(self.db, _C(), trigger_mode="manual")
+        job2, _ = sync_alarms_current(self.db, _C(), trigger_mode="manual", wss_active=False)
         self.assertEqual(job2.status, "done")
         self.assertEqual(job2.updated_count, 1)
 
@@ -502,7 +502,7 @@ class UmeSyncServiceTests(unittest.TestCase):
         svc.settings.ume_page_size = 2
         svc.settings.ume_max_pages = 10
         try:
-            job, _ = sync_alarms_current(self.db, _C(), trigger_mode="manual")
+            job, _ = sync_alarms_current(self.db, _C(), trigger_mode="manual", wss_active=False)
         finally:
             svc.settings.ume_page_size = old_page_size
             svc.settings.ume_max_pages = old_max_pages
@@ -538,7 +538,7 @@ class UmeSyncServiceTests(unittest.TestCase):
         svc.settings.ume_marker_max_pages = 10
         svc.settings.ume_iterator_500_as_end = True
         try:
-            job, _ = sync_alarms_current(self.db, _C(), trigger_mode="manual")
+            job, _ = sync_alarms_current(self.db, _C(), trigger_mode="manual", wss_active=False)
         finally:
             svc.settings.ume_marker_page_limit = old_page_size
             svc.settings.ume_marker_max_pages = old_max_pages
@@ -568,7 +568,7 @@ class UmeSyncServiceTests(unittest.TestCase):
                 )
 
         c = _C()
-        job, _ = sync_alarms_current(self.db, c, trigger_mode="manual")
+        job, _ = sync_alarms_current(self.db, c, trigger_mode="manual", wss_active=False)
         self.assertEqual(job.status, "done")
         self.assertEqual(job.pulled_count, 1)
         self.assertEqual(c.calls, 1)
@@ -594,7 +594,7 @@ class UmeSyncServiceTests(unittest.TestCase):
                 )
 
         c = _C()
-        job, _ = sync_alarms_current(self.db, c, trigger_mode="manual")
+        job, _ = sync_alarms_current(self.db, c, trigger_mode="manual", wss_active=False)
         self.assertEqual(job.status, "done")
         self.assertEqual(job.pulled_count, 1)
         self.assertEqual(c.calls, 1)
@@ -933,6 +933,119 @@ class UmeAlarmNotificationTests(unittest.TestCase):
         self.assertFalse(get_subscription_status()["active"])
         self.assertIsNone(load_subscription(db))
         db.close()
+
+    def test_sync_current_alarms_wss_active_skips_stale_delete(self):
+        from datetime import datetime, timedelta
+
+        class _COne:
+            def get_alarms(self, *, is_uncleared: bool, limit=None, marker=None):
+                class _D:
+                    marker = ""
+                    is_end_of_reply = True
+
+                return (
+                    [
+                        {
+                            "alarmKey": "AK-REST",
+                            "ne-id": "NE-1",
+                            "perceivedSeverity": "major",
+                            "isCleared": "false",
+                        },
+                    ],
+                    _D(),
+                )
+
+        ws_touch = datetime.utcnow()
+        self.db.add(
+            UmeAlarmCurrent(
+                alarm_key="AK-WS-ONLY",
+                ne_id="NE-2",
+                perceived_severity="minor",
+                is_cleared="false",
+                last_seen_at=ws_touch,
+            )
+        )
+        self.db.add(
+            UmeAlarmCurrent(
+                alarm_key="AK-STALE",
+                ne_id="NE-X",
+                perceived_severity="minor",
+                is_cleared="false",
+                last_seen_at=ws_touch - timedelta(hours=1),
+            )
+        )
+        self.db.commit()
+
+        job, batch = sync_alarms_current(self.db, _COne(), trigger_mode="manual", wss_active=True)
+        self.assertIsNotNone(self.db.get(UmeAlarmCurrent, "AK-REST"))
+        self.assertIsNotNone(self.db.get(UmeAlarmCurrent, "AK-WS-ONLY"))
+        self.assertIsNotNone(self.db.get(UmeAlarmCurrent, "AK-STALE"))
+        details = json.loads(batch.raw_json or "{}")
+        self.assertEqual(int(details.get("deleted_stale_current_alarms") or 0), 0)
+        self.assertEqual(str(details.get("reconcile_mode") or ""), "upsert_only")
+        self.assertEqual(job.status, "done")
+
+    def test_apply_alarm_rest_skips_tombstone_after_wss_clear(self):
+        from datetime import datetime
+
+        touch = datetime.utcnow()
+        self.db.add(
+            UmeAlarmCurrent(
+                alarm_key="AK-CLEARED-2",
+                ne_id="NE-1",
+                is_cleared="false",
+            )
+        )
+        self.db.commit()
+        action, changed = apply_alarm_to_current(
+            self.db,
+            {"alarmKey": "AK-CLEARED-2", "isCleared": True},
+            touch_ts=touch,
+        )
+        self.db.commit()
+        self.assertEqual(action, "deleted")
+        self.assertTrue(changed)
+        action2, changed2 = apply_alarm_to_current(
+            self.db,
+            {"alarmKey": "AK-CLEARED-2", "isCleared": False, "perceivedSeverity": "major"},
+            touch_ts=touch,
+            source="rest",
+        )
+        self.assertEqual(action2, "skipped")
+        self.assertFalse(changed2)
+        self.assertIsNone(self.db.get(UmeAlarmCurrent, "AK-CLEARED-2"))
+
+    def test_apply_alarm_concurrent_upsert_no_integrity_error(self):
+        from datetime import datetime
+
+        touch = datetime.utcnow()
+        alarm = {
+            "alarmKey": "AK-DUP",
+            "ne-id": "NE-1",
+            "perceivedSeverity": "major",
+            "isCleared": "false",
+        }
+        a1, _ = apply_alarm_to_current(self.db, alarm, touch_ts=touch)
+        self.db.commit()
+        a2, _ = apply_alarm_to_current(self.db, alarm, touch_ts=touch, source="rest")
+        self.db.commit()
+        self.assertEqual(a1, "inserted")
+        self.assertIn(a2, ("updated", "inserted"))
+        self.assertIsNotNone(self.db.get(UmeAlarmCurrent, "AK-DUP"))
+
+    def test_is_wss_active_for_current_alarms(self):
+        from netx_api.ume_alarm_ws import (
+            _clear_active_subscription,
+            _set_active_subscription,
+            clear_ume_subscription_lost_flag,
+            is_wss_active_for_current_alarms,
+        )
+
+        _clear_active_subscription()
+        clear_ume_subscription_lost_flag()
+        self.assertFalse(is_wss_active_for_current_alarms())
+        _set_active_subscription("sub-x", "wss://ume.local/stream/sub-x")
+        self.assertTrue(is_wss_active_for_current_alarms())
 
     def test_process_alarm_notification_via_ws_helper(self):
         from datetime import datetime

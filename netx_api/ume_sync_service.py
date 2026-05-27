@@ -4,12 +4,17 @@ import json
 import logging
 import hashlib
 import re
+import threading
+import time
 from datetime import datetime, timezone
 from typing import Any
 
 _sync_log = logging.getLogger("netx.ume.sync")
 
+from sqlalchemy import func
 from sqlalchemy import text as sql_text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .config import settings
@@ -196,6 +201,127 @@ def _is_alarm_cleared(alarm: dict[str, Any]) -> bool:
     return text in {"true", "1", "yes"}
 
 
+_cleared_tombstone_lock = threading.Lock()
+_cleared_tombstones: dict[str, float] = {}
+
+
+def _mark_alarm_cleared_tombstone(alarm_key: str) -> None:
+    key = str(alarm_key or "").strip()
+    if not key:
+        return
+    ttl_s = max(60, int(getattr(settings, "ume_alarm_cleared_tombstone_s", 300) or 300))
+    expires = time.time() + ttl_s
+    with _cleared_tombstone_lock:
+        _cleared_tombstones[key] = expires
+        if len(_cleared_tombstones) > 50000:
+            now = time.time()
+            stale = [k for k, exp in _cleared_tombstones.items() if exp <= now]
+            for k in stale[:10000]:
+                _cleared_tombstones.pop(k, None)
+
+
+def _is_alarm_cleared_tombstone(alarm_key: str) -> bool:
+    key = str(alarm_key or "").strip()
+    if not key:
+        return False
+    now = time.time()
+    with _cleared_tombstone_lock:
+        exp = _cleared_tombstones.get(key)
+        if exp is None:
+            return False
+        if exp <= now:
+            _cleared_tombstones.pop(key, None)
+            return False
+        return True
+
+
+def _alarm_row_from_norm(key: str, norm: dict[str, Any], *, touch_ts: datetime, first_seen_at: datetime) -> dict[str, Any]:
+    return {
+        "alarm_key": key,
+        "ne_id": _s(_derive_ne_id_from_alarm(norm)),
+        "host_name": "",
+        "object_name": _s(_pick(norm, "objectName", "object-name")),
+        "event_type": _s(_pick(norm, "eventType", "event-type")),
+        "native_probable_cause": _s(_pick(norm, "nativeProbableCause", "native-probable-cause")),
+        "perceived_severity": _s(_pick(norm, "perceivedSeverity", "perceived-severity")),
+        "is_cleared": _s(_pick(norm, "isCleared", "is-cleared")),
+        "time_created": _s(_pick(norm, "timeCreated", "time-created")),
+        "root_cause_alarm_indication": _s(
+            _pick(norm, "rootCauseAlarmIndication", "root-cause-alarm-indication")
+        ),
+        "first_seen_at": first_seen_at,
+        "last_seen_at": touch_ts,
+        "raw_json": json.dumps(norm, ensure_ascii=False, default=str),
+    }
+
+
+def _apply_row_to_model(db: Session, existing: UmeAlarmCurrent, norm: dict[str, Any], *, touch_ts: datetime) -> None:
+    existing.ne_id = _s(_derive_ne_id_from_alarm(norm))
+    existing.object_name = _s(_pick(norm, "objectName", "object-name"))
+    existing.event_type = _s(_pick(norm, "eventType", "event-type"))
+    existing.native_probable_cause = _s(_pick(norm, "nativeProbableCause", "native-probable-cause"))
+    existing.perceived_severity = _s(_pick(norm, "perceivedSeverity", "perceived-severity"))
+    existing.is_cleared = _s(_pick(norm, "isCleared", "is-cleared"))
+    existing.time_created = _s(_pick(norm, "timeCreated", "time-created"))
+    existing.root_cause_alarm_indication = _s(
+        _pick(norm, "rootCauseAlarmIndication", "root-cause-alarm-indication")
+    )
+    prev_seen = existing.last_seen_at
+    if prev_seen is None or touch_ts >= prev_seen:
+        existing.last_seen_at = touch_ts
+    existing.raw_json = json.dumps(norm, ensure_ascii=False, default=str)
+
+
+def _upsert_alarm_current(db: Session, key: str, norm: dict[str, Any], *, touch_ts: datetime) -> tuple[str, bool]:
+    bind = db.get_bind()
+    dialect = str(getattr(getattr(bind, "dialect", None), "name", "") or "").lower()
+    existing = db.get(UmeAlarmCurrent, key)
+    if existing is not None:
+        _apply_row_to_model(db, existing, norm, touch_ts=touch_ts)
+        existing.host_name = _lookup_host_name(db, existing.ne_id)
+        return "updated", True
+
+    if dialect == "postgresql":
+        row = _alarm_row_from_norm(key, norm, touch_ts=touch_ts, first_seen_at=touch_ts)
+        row["host_name"] = _lookup_host_name(db, row["ne_id"])
+        ins = pg_insert(UmeAlarmCurrent).values(**row)
+        excluded = ins.excluded
+        stmt = ins.on_conflict_do_update(
+            index_elements=[UmeAlarmCurrent.alarm_key],
+            set_={
+                "ne_id": excluded.ne_id,
+                "host_name": excluded.host_name,
+                "object_name": excluded.object_name,
+                "event_type": excluded.event_type,
+                "native_probable_cause": excluded.native_probable_cause,
+                "perceived_severity": excluded.perceived_severity,
+                "is_cleared": excluded.is_cleared,
+                "time_created": excluded.time_created,
+                "root_cause_alarm_indication": excluded.root_cause_alarm_indication,
+                "last_seen_at": func.greatest(UmeAlarmCurrent.last_seen_at, excluded.last_seen_at),
+                "raw_json": excluded.raw_json,
+            },
+        )
+        db.execute(stmt)
+        return "inserted", True
+
+    try:
+        with db.begin_nested():
+            model = UmeAlarmCurrent(alarm_key=key, first_seen_at=touch_ts)
+            db.add(model)
+            db.flush()
+        _apply_row_to_model(db, model, norm, touch_ts=touch_ts)
+        model.host_name = _lookup_host_name(db, model.ne_id)
+        return "inserted", True
+    except IntegrityError:
+        existing = db.get(UmeAlarmCurrent, key)
+        if existing is None:
+            return "skipped", False
+        _apply_row_to_model(db, existing, norm, touch_ts=touch_ts)
+        existing.host_name = _lookup_host_name(db, existing.ne_id)
+        return "updated", True
+
+
 def extract_alarm_from_notification(payload: dict[str, Any]) -> dict[str, Any] | None:
     """Parse alarm-notification from a WS/REST notification envelope."""
     if not isinstance(payload, dict):
@@ -223,7 +349,13 @@ def extract_alarm_from_notification(payload: dict[str, Any]) -> dict[str, Any] |
     return normalize_yang_alarm(payload) if payload else None
 
 
-def apply_alarm_to_current(db: Session, alarm: dict[str, Any], *, touch_ts: datetime) -> tuple[str, bool]:
+def apply_alarm_to_current(
+    db: Session,
+    alarm: dict[str, Any],
+    *,
+    touch_ts: datetime,
+    source: str = "",
+) -> tuple[str, bool]:
     """
     Apply one alarm to ume_alarms_current.
     Returns (action, changed) where action is inserted|updated|deleted|skipped.
@@ -238,32 +370,19 @@ def apply_alarm_to_current(db: Session, alarm: dict[str, Any], *, touch_ts: date
             return "skipped", False
         existing = db.get(UmeAlarmCurrent, key)
         if existing is None:
+            _mark_alarm_cleared_tombstone(key)
             return "deleted", False
         db.delete(existing)
+        _mark_alarm_cleared_tombstone(key)
         return "deleted", True
 
     key = _alarm_key(norm)
-    existing = db.get(UmeAlarmCurrent, key)
-    if existing is None:
-        existing = UmeAlarmCurrent(alarm_key=key, first_seen_at=touch_ts)
-        db.add(existing)
-        action = "inserted"
-    else:
-        action = "updated"
-    existing.ne_id = _s(_derive_ne_id_from_alarm(norm))
-    existing.host_name = _lookup_host_name(db, existing.ne_id)
-    existing.object_name = _s(_pick(norm, "objectName", "object-name"))
-    existing.event_type = _s(_pick(norm, "eventType", "event-type"))
-    existing.native_probable_cause = _s(_pick(norm, "nativeProbableCause", "native-probable-cause"))
-    existing.perceived_severity = _s(_pick(norm, "perceivedSeverity", "perceived-severity"))
-    existing.is_cleared = _s(_pick(norm, "isCleared", "is-cleared"))
-    existing.time_created = _s(_pick(norm, "timeCreated", "time-created"))
-    existing.root_cause_alarm_indication = _s(
-        _pick(norm, "rootCauseAlarmIndication", "root-cause-alarm-indication")
-    )
-    existing.last_seen_at = touch_ts
-    existing.raw_json = json.dumps(norm, ensure_ascii=False, default=str)
-    return action, True
+    if not key:
+        return "skipped", False
+    if str(source or "").strip().lower() == "rest" and _is_alarm_cleared_tombstone(key):
+        return "skipped", False
+
+    return _upsert_alarm_current(db, key, norm, touch_ts=touch_ts)
 
 
 def _build_sync_job(domain: str, trigger_mode: str) -> UmeSyncJob:
@@ -471,12 +590,34 @@ def sync_inventory_full(db: Session, client: UMEClient, *, trigger_mode: str = "
     return job
 
 
+def _reconcile_stale_current_alarms(
+    db: Session,
+    *,
+    sync_batch_ts: datetime,
+    seen_keys: set[str],
+    wss_active: bool,
+) -> int:
+    """Remove local current alarms missing from REST snapshot.
+
+    When WSS is active, skip deletes (WSS may have keys not yet in REST); manual sync only upserts.
+    """
+    del seen_keys
+    if wss_active:
+        return 0
+    return int(
+        db.query(UmeAlarmCurrent)
+        .filter(UmeAlarmCurrent.last_seen_at < sync_batch_ts)
+        .delete(synchronize_session=False)
+    )
+
+
 def _sync_alarms_common(
     db: Session,
     client: UMEClient,
     *,
     is_uncleared: bool,
     trigger_mode: str,
+    wss_active: bool = False,
 ) -> tuple[UmeSyncJob, UmeAlarmBatch]:
     domain = "alarms_history" if is_uncleared else "alarms_current"
     job = _build_sync_job(domain, trigger_mode)
@@ -498,6 +639,8 @@ def _sync_alarms_common(
     pulled = inserted = updated = 0
     deleted_stale_current = 0
     host_names_backfilled = 0
+    reconcile_mode = ""
+    seen_keys: set[str] = set()
     paging_mode = "marker"
     paging_note = ""
     page_no = 0
@@ -506,6 +649,7 @@ def _sync_alarms_common(
     graceful_end_by_iterator_error = False
     warnings: list[str] = []
     meta: dict[str, Any] = {}
+    sync_batch_ts = _utc_now_naive()
     try:
         limit_max = int(getattr(settings, "ume_limit_max", 5000) or 5000)
         limit_max = max(1, limit_max)
@@ -545,13 +689,22 @@ def _sync_alarms_common(
             iterator_500_as_end=iterator_500_as_end,
         )
         sync_batch_ts = _utc_now_naive()
+        seen_keys = set()
         for rows in pages:
             pulled += len(rows)
             for alarm in rows:
                 if is_uncleared:
                     upsert_alarm_history(alarm, touch_ts=sync_batch_ts)
                 else:
-                    action, _changed = apply_alarm_to_current(db, alarm, touch_ts=sync_batch_ts)
+                    key = _alarm_key(alarm)
+                    if key:
+                        seen_keys.add(key)
+                    action, _changed = apply_alarm_to_current(
+                        db,
+                        alarm,
+                        touch_ts=sync_batch_ts,
+                        source="rest",
+                    )
                     if action == "inserted":
                         inserted += 1
                     elif action == "updated":
@@ -564,11 +717,15 @@ def _sync_alarms_common(
         paging_note = str(meta.get("paging_note") or "")
         warnings = [str(x) for x in (meta.get("warnings") or []) if str(x)]
 
+        reconcile_mode = "full"
         if not is_uncleared and _snapshot_reconcile_ok(meta):
-            deleted_stale_current = int(
-                db.query(UmeAlarmCurrent)
-                .filter(UmeAlarmCurrent.last_seen_at < sync_batch_ts)
-                .delete(synchronize_session=False)
+            if wss_active:
+                reconcile_mode = "upsert_only"
+            deleted_stale_current = _reconcile_stale_current_alarms(
+                db,
+                sync_batch_ts=sync_batch_ts,
+                seen_keys=seen_keys,
+                wss_active=wss_active,
             )
 
         alarm_model = UmeAlarmHistory if is_uncleared else UmeAlarmCurrent
@@ -593,6 +750,9 @@ def _sync_alarms_common(
                 "deleted_stale_current_alarms": int(deleted_stale_current),
                 "host_names_backfilled": int(host_names_backfilled),
                 "current_snapshot_reconcile": (not is_uncleared) and _snapshot_reconcile_ok(meta),
+                "reconcile_mode": reconcile_mode if not is_uncleared else "",
+                "wss_active_during_sync": bool(wss_active) if not is_uncleared else False,
+                "seen_keys_count": len(seen_keys) if not is_uncleared else 0,
             },
             ensure_ascii=False,
         )
@@ -600,6 +760,7 @@ def _sync_alarms_common(
         job.status = "done"
     except Exception as exc:
         msg = str(exc)[:1024]
+        reconcile_mode = "failed"
         batch.status = "failed"
         batch.error_message = msg
         batch.ended_at = _utc_now_naive()
@@ -625,6 +786,9 @@ def _sync_alarms_common(
                 "deleted_stale_current_alarms": int(deleted_stale_current),
                 "host_names_backfilled": int(host_names_backfilled),
                 "current_snapshot_reconcile": (not is_uncleared) and _snapshot_reconcile_ok(meta),
+                "reconcile_mode": reconcile_mode if not is_uncleared else "",
+                "wss_active_during_sync": bool(wss_active) if not is_uncleared else False,
+                "seen_keys_count": len(seen_keys) if not is_uncleared else 0,
             },
             ensure_ascii=False,
         )
@@ -634,8 +798,24 @@ def _sync_alarms_common(
     return job, batch
 
 
-def sync_alarms_current(db: Session, client: UMEClient, *, trigger_mode: str = "manual") -> tuple[UmeSyncJob, UmeAlarmBatch]:
-    return _sync_alarms_common(db, client, is_uncleared=False, trigger_mode=trigger_mode)
+def sync_alarms_current(
+    db: Session,
+    client: UMEClient,
+    *,
+    trigger_mode: str = "manual",
+    wss_active: bool | None = None,
+) -> tuple[UmeSyncJob, UmeAlarmBatch]:
+    if wss_active is None:
+        from .ume_alarm_ws import is_wss_active_for_current_alarms
+
+        wss_active = is_wss_active_for_current_alarms()
+    return _sync_alarms_common(
+        db,
+        client,
+        is_uncleared=False,
+        trigger_mode=trigger_mode,
+        wss_active=bool(wss_active),
+    )
 
 
 def sync_alarms_history_full(

@@ -248,6 +248,11 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
       alarmSub.server_subscription_lost_reason ??
       "",
   );
+  const currentAlarmsMode =
+    subscriptionStatusQuery.data?.current_alarms_mode ?? alarmSub.current_alarms_mode ?? "rest";
+  const scheduledSyncSkipped = Boolean(
+    subscriptionStatusQuery.data?.scheduled_sync_skipped ?? alarmSub.scheduled_sync_skipped,
+  );
   const wsPillLevel =
     serverSubLost || wsState === "subscription_lost"
       ? "warn"
@@ -384,6 +389,11 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
               </span>
             ) : null}
           </div>
+          {scheduledSyncSkipped && !serverSubLost ? (
+            <div className="pill pill--low" style={{ marginTop: 8 }}>
+              当前告警由 WSS 实时维护（模式: {currentAlarmsMode}），定时 REST 全量同步已暂停。需要全量对账时请使用下方「同步当前告警」。
+            </div>
+          ) : null}
           {serverSubLost ? (
             <div className="pill pill--medium" style={{ marginTop: 8 }}>
               UME 服务器侧告警订阅已丢失或已过期，本地记录可能仍显示「已建立」。请确认清除本地记录后重新订阅。

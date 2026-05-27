@@ -112,6 +112,9 @@ export type UmeAlarmSubscriptionStatus = {
   topic?: string;
   server_subscription_lost?: boolean;
   server_subscription_lost_reason?: string;
+  current_alarms_mode?: "wss" | "rest";
+  wss_active_for_current_alarms?: boolean;
+  scheduled_sync_skipped?: boolean;
   needs_local_cleanup?: boolean;
   ume_already_missing?: boolean;
   cleared_local?: boolean;

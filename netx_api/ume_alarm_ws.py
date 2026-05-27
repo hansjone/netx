@@ -42,6 +42,22 @@ _WS_LOG_LOCK = threading.Lock()
 _WS_LOG_ENTRIES: deque[dict[str, Any]] = deque(maxlen=200)
 _WS_LOG_MAX_RETURN = 100
 
+# Blocks WSS connect until startup REST sync of current alarms completes (see main.on_startup).
+_STARTUP_ALARM_SYNC_GATE = threading.Event()
+_STARTUP_ALARM_SYNC_GATE.set()
+
+
+def begin_startup_alarm_sync_gate() -> None:
+    _STARTUP_ALARM_SYNC_GATE.clear()
+
+
+def complete_startup_alarm_sync_gate() -> None:
+    _STARTUP_ALARM_SYNC_GATE.set()
+
+
+def is_startup_alarm_sync_pending() -> bool:
+    return not _STARTUP_ALARM_SYNC_GATE.is_set()
+
 _ORPHAN_SUB_ID_RE = re.compile(r"id:([0-9a-fA-F-]{8}-[0-9a-fA-F-]{4}-[0-9a-fA-F-]{4}-[0-9a-fA-F-]{4}-[0-9a-fA-F-]{12})")
 
 _SUBSCRIPTION_MISSING_MARKERS: tuple[str, ...] = (
@@ -280,6 +296,29 @@ def get_subscription_status() -> dict[str, Any]:
         "wss_uri": uri,
         "topic": topic,
         **_server_subscription_lost_fields(),
+    }
+
+
+def is_wss_active_for_current_alarms() -> bool:
+    """True when WSS subscription is active and should own ume_alarms_current updates."""
+    if not bool(getattr(settings, "ume_alarm_ws_enabled", True)):
+        return False
+    if is_ume_subscription_lost():
+        return False
+    return bool(get_subscription_status().get("active"))
+
+
+def get_current_alarms_mode() -> str:
+    return "wss" if is_wss_active_for_current_alarms() else "rest"
+
+
+def get_alarms_coordination_status() -> dict[str, Any]:
+    wss_active = is_wss_active_for_current_alarms()
+    skip_when_ws = bool(getattr(settings, "ume_sync_alarms_current_skip_when_ws", True))
+    return {
+        "current_alarms_mode": get_current_alarms_mode(),
+        "wss_active_for_current_alarms": wss_active,
+        "scheduled_sync_skipped": bool(wss_active and skip_when_ws),
     }
 
 
@@ -577,6 +616,11 @@ def run_alarm_ws_consumer_loop(
         if is_paused is not None and is_paused():
             _loop_status("paused", log_level="warning")
             time.sleep(1.0)
+            continue
+
+        if not _STARTUP_ALARM_SYNC_GATE.is_set():
+            _loop_status("waiting_startup_alarm_sync", log_level="info")
+            _STARTUP_ALARM_SYNC_GATE.wait(timeout=1.0)
             continue
 
         if is_ume_subscription_lost():

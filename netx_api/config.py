@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     ume_keepalive_renew_before_s: int = 900
     ume_sync_alarms_current_enabled: bool = True
     ume_sync_alarms_current_interval_s: int = 18000
+    ume_sync_alarms_current_skip_when_ws: bool = True
+    ume_startup_sync_alarms_before_ws: bool = True
+    ume_alarm_cleared_tombstone_s: int = 300
     ume_alarm_ws_enabled: bool = True
     ume_notification_establish_path: str = "/restconf/operations/zte-notifications:establish-subscription"
     ume_notification_delete_path: str = "/restconf/operations/zte-notifications:delete-subscription"

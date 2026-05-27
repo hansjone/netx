@@ -35,12 +35,16 @@ from .models import ImportJob
 from .parser_config import load_parser_config
 from .ume_client import UMEClient
 from .ume_alarm_ws import (
+    begin_startup_alarm_sync_gate,
     cancel_alarm_subscription_manual,
     clear_local_alarm_subscription_manual,
+    complete_startup_alarm_sync_gate,
     establish_alarm_subscription_manual,
+    get_alarms_coordination_status,
     get_subscription_status,
     get_ws_connection_status,
     get_ws_logs,
+    is_wss_active_for_current_alarms,
     load_persisted_subscription,
     request_ws_reconnect,
     shutdown_ws_consumer,
@@ -272,6 +276,51 @@ def _fail_stale_running_sync_jobs_on_startup() -> None:
         _schedule_log.exception("startup: stale sync job cleanup failed")
     finally:
         db.close()
+
+
+def _run_startup_alarm_sync_before_ws() -> None:
+    """REST-sync current alarms once on boot before WSS connects (avoids stale/reconcile races)."""
+    ume_url = str(getattr(settings, "ume_base_url", "") or "").strip()
+    alarms_enabled = bool(getattr(settings, "ume_sync_alarms_current_enabled", True))
+    ws_enabled = bool(getattr(settings, "ume_alarm_ws_enabled", True))
+    before_ws = bool(getattr(settings, "ume_startup_sync_alarms_before_ws", True))
+
+    if not (before_ws and ws_enabled and alarms_enabled and ume_url):
+        complete_startup_alarm_sync_gate()
+        return
+
+    begin_startup_alarm_sync_gate()
+    try:
+        _schedule_log.info("startup: syncing current alarms before WSS")
+        _set_runtime_task(
+            "alarms_current_auto_sync",
+            status="running",
+            last_run_at=datetime.now(timezone.utc),
+            last_error="启动：正在同步当前告警（完成后连接 WSS）…",
+        )
+        db = SessionLocal()
+        try:
+            client = _ume_client()
+            sync_alarms_current(db, client, trigger_mode="schedule", wss_active=False)
+            _schedule_log.info("startup: current alarms sync completed, WSS may connect")
+            _set_runtime_task(
+                "alarms_current_auto_sync",
+                status="running",
+                last_run_at=datetime.now(timezone.utc),
+                last_error="",
+            )
+        finally:
+            db.close()
+    except Exception as exc:
+        _schedule_log.exception("startup: current alarms sync before WSS failed: %s", exc)
+        _set_runtime_task(
+            "alarms_current_auto_sync",
+            status="error",
+            last_run_at=datetime.now(timezone.utc),
+            last_error=str(exc)[:240],
+        )
+    finally:
+        complete_startup_alarm_sync_gate()
 
 
 def _sleep_or_until_paused(task_id: str, total_s: float) -> None:
@@ -718,6 +767,11 @@ def on_startup() -> None:
             last_error=f"startup_thread_init_failed: {str(exc)[:180]}",
         )
     try:
+        _run_startup_alarm_sync_before_ws()
+    except Exception as exc:
+        _schedule_log.exception("startup: alarm sync before WSS failed: %s", exc)
+        complete_startup_alarm_sync_gate()
+    try:
         if bool(getattr(settings, "ume_sync_alarms_current_enabled", True)):
             alarms_interval_s = int(getattr(settings, "ume_sync_alarms_current_interval_s", 18000) or 18000)
             alarms_interval_s = max(30, min(alarms_interval_s, 86400))
@@ -731,6 +785,18 @@ def on_startup() -> None:
                         )
                         if _runtime_is_paused("alarms_current_auto_sync"):
                             time.sleep(1)
+                            continue
+                        if (
+                            bool(getattr(settings, "ume_sync_alarms_current_skip_when_ws", True))
+                            and is_wss_active_for_current_alarms()
+                        ):
+                            _set_runtime_task(
+                                "alarms_current_auto_sync",
+                                status="running",
+                                last_run_at=datetime.now(timezone.utc),
+                                last_error="WSS 实时接收中，已跳过 REST 同步",
+                            )
+                            time.sleep(max(30, min(alarms_interval_s, 300)))
                             continue
                         _maybe_wait_for_sync_interval(
                             task_id="alarms_current_auto_sync",
@@ -938,6 +1004,7 @@ def ume_alarm_subscription_status(limit: int = 80) -> dict[str, Any]:
     return {
         "ok": True,
         **st,
+        **get_alarms_coordination_status(),
         "ws_connection": get_ws_connection_status(),
         "ws_consumer_status": str(ws_task.get("status") or ""),
         "ws_consumer_last_error": str(ws_task.get("last_error") or ""),
@@ -1017,7 +1084,22 @@ def ume_sync(payload: dict[str, Any] | None = None, db: Session = Depends(get_db
                 }
             )
         if "alarms" in domain_set or "alarms_current" in domain_set:
-            job, batch = sync_alarms_current(db, client, trigger_mode=trigger_mode)
+            paused_ws_for_sync = False
+            if is_wss_active_for_current_alarms() and trigger_mode == "manual":
+                _runtime_pause_task("alarms_current_ws_consumer")
+                request_ws_reconnect()
+                paused_ws_for_sync = True
+            try:
+                job, batch = sync_alarms_current(
+                    db,
+                    client,
+                    trigger_mode=trigger_mode,
+                    wss_active=is_wss_active_for_current_alarms(),
+                )
+            finally:
+                if paused_ws_for_sync:
+                    _runtime_resume_task("alarms_current_ws_consumer")
+                    request_ws_reconnect()
             out["jobs"].append(
                 {
                     "domain": "alarms_current",
