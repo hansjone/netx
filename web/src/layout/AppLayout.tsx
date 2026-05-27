@@ -1,26 +1,31 @@
-import { NavLink } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import type { ReactNode } from "react";
+import { AppsGridIcon } from "../components/AppsGridIcon";
+import { HeaderMenu } from "../components/HeaderMenu";
+import { getPageTitleKey, isWorkbenchPath } from "../config/modules";
+import { useAppWindowRegistration } from "../hooks/useAppWindowRegistration";
+import { useI18n } from "../i18n";
+import { returnToWorkbench } from "../utils/workbench";
+
+type ConnLevel = "up" | "down" | "unknown";
 
 type Props = {
-  status: string;
   connections: {
-    netxApi: "up" | "down" | "unknown";
-    oclawBridge: "up" | "down" | "unknown";
+    netxApi: ConnLevel;
     netxApiLatencyMs?: number;
+    oclawBridge: ConnLevel;
     oclawBridgeLatencyMs?: number;
     oclawBridgeErrorKind?: string;
-  };
-  onRefreshBatches: () => void;
-  onRefreshAlarms: () => void;
-  capabilities: {
-    alarms: boolean;
-    diagnostics: boolean;
-    aiAnalysis: boolean;
+    oclawBridgeError?: string;
   };
   children: ReactNode;
 };
 
-export function AppLayout({ status, connections, onRefreshBatches, onRefreshAlarms, capabilities, children }: Props) {
+export function AppLayout({ connections, children }: Props) {
+  const { t } = useI18n();
+  const { pathname } = useLocation();
+  const onWorkbench = isWorkbenchPath(pathname);
+  const pageTitle = t(getPageTitleKey(pathname));
   const netxSuffix =
     typeof connections.netxApiLatencyMs === "number" ? ` (${connections.netxApiLatencyMs}ms)` : "";
   const oclawSuffix =
@@ -29,49 +34,57 @@ export function AppLayout({ status, connections, onRefreshBatches, onRefreshAlar
       : connections.oclawBridgeErrorKind
         ? ` (${connections.oclawBridgeErrorKind})`
         : "";
+  const oclawTitle =
+    connections.oclawBridge === "down" && connections.oclawBridgeError
+      ? connections.oclawBridgeError
+      : undefined;
+
+  useAppWindowRegistration(pathname);
+
   return (
-    <div className="app">
-      <aside className="sidebar">
-        <div className="logo">netx</div>
-        <NavLink
-          to="/diagnostics"
-          className={({ isActive }) => `nav-item${isActive ? " active" : ""}${!capabilities.diagnostics ? " disabled" : ""}`}
-        >
-          诊断中心
-        </NavLink>
-        <NavLink to="/ingest" className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}>
-          数据接入
-        </NavLink>
-        <NavLink to="/alarms" className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}>
-          告警中心
-        </NavLink>
-        <NavLink
-          to="/ai-analysis"
-          className={({ isActive }) => `nav-item${isActive ? " active" : ""}${!capabilities.aiAnalysis ? " disabled" : ""}`}
-        >
-          AI 分析
-        </NavLink>
-        <NavLink to="/ume" className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}>
-          UME 对接
-        </NavLink>
-      </aside>
+    <div className="app app--shell">
+      <header className="app-brand">
+        <div className="app-brand__start">
+          {onWorkbench ? (
+            <Link to="/" className="app-brand__logo">
+              NetX
+            </Link>
+          ) : (
+            <span className="app-brand__logo app-brand__logo--static">NetX</span>
+          )}
+          {!onWorkbench ? (
+            <>
+              <span className="app-brand__sep" aria-hidden />
+              <button
+                type="button"
+                className="app-brand__apps"
+                onClick={returnToWorkbench}
+                title={t("workbench.backToWorkbench")}
+                aria-label={t("workbench.backToWorkbench")}
+              >
+                <AppsGridIcon />
+              </button>
+              <span className="app-brand__module-title">{pageTitle}</span>
+            </>
+          ) : null}
+        </div>
+        <div className="app-brand__actions">
+          <span className={`conn-pill conn-pill--on-brand conn-pill--${connections.netxApi}`}>
+            {t("layout.netxApi")}: {connections.netxApi}
+            {netxSuffix}
+          </span>
+          <span
+            className={`conn-pill conn-pill--on-brand conn-pill--${connections.oclawBridge}`}
+            title={oclawTitle}
+          >
+            {t("layout.oclawBridge")}: {connections.oclawBridge}
+            {oclawSuffix}
+          </span>
+          <HeaderMenu />
+        </div>
+      </header>
 
-      <main className="main">
-        <header className="topbar">
-          <div>
-            <h1>运维中心</h1>
-          </div>
-          <div className="top-actions">
-            <span className={`conn-pill conn-pill--${connections.netxApi}`}>netx api: {connections.netxApi}{netxSuffix}</span>
-            <span className={`conn-pill conn-pill--${connections.oclawBridge}`}>oclaw bridge: {connections.oclawBridge}{oclawSuffix}</span>
-            <button onClick={onRefreshBatches} disabled={!capabilities.alarms}>刷新批次</button>
-            <button onClick={onRefreshAlarms} disabled={!capabilities.alarms}>刷新告警</button>
-          </div>
-        </header>
-
-        {children}
-        <footer className="status">status: {status}</footer>
-      </main>
+      <main className="app-main">{children}</main>
     </div>
   );
 }

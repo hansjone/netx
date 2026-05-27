@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   apiPost,
@@ -13,69 +13,17 @@ import {
   fetchUmeTokenStatus,
   refreshUmeToken,
 } from "../services/api";
+import { HelpHint } from "../components/HelpHint";
+import { queryKeys } from "../constants/queryKeys";
+import { useI18n } from "../i18n";
+import { useToast } from "../hooks/useToast";
+import type { UmeAlarmSubscriptionStatus } from "../types";
+import { pageCount, runtimeIntervalLabel } from "../utils/display";
 import { formatSystemTime } from "../utils/time";
 
-export type UmePageProps = {
-  /** Optional toasts from App shell (fixed bottom-right). */
-  toastOk?: (message: string) => void;
-  toastError?: (message: string) => void;
-};
-
-const UME_ALARM_SUBSCRIPTION_HELP =
-  "订阅需手动建立/取消；建立后（或重启后若库中仍有有效订阅）后台会自动连接 WSS 接收实时告警。后台任务 alarms_current_ws_consumer 的 pause/resume 会停止或恢复 WSS 连接（不会取消 UME 订阅）。";
-
-const RUNTIME_INTERVAL_LABEL_EN: Record<string, string> = {
-  未启用: "disabled",
-  实时: "realtime",
-};
-
-function runtimeIntervalLabel(label?: string | null): string {
-  const raw = String(label ?? "").trim();
-  if (!raw) return "—";
-  return RUNTIME_INTERVAL_LABEL_EN[raw] ?? raw;
-}
-
-function HelpHint({ text }: { text: string }) {
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLSpanElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDocClick = (ev: MouseEvent) => {
-      if (!rootRef.current?.contains(ev.target as Node)) setOpen(false);
-    };
-    const onKey = (ev: KeyboardEvent) => {
-      if (ev.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onDocClick);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDocClick);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  return (
-    <span className="help-hint" ref={rootRef}>
-      <button
-        type="button"
-        className="help-hint__trigger"
-        aria-label="帮助说明"
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-      >
-        ?
-      </button>
-      {open ? (
-        <div className="help-hint__popover" role="tooltip">
-          {text}
-        </div>
-      ) : null}
-    </span>
-  );
-}
-
-export function UmePage({ toastOk, toastError }: UmePageProps) {
+export function UmePage() {
+  const { t } = useI18n();
+  const { showOk, showError } = useToast();
   const queryClient = useQueryClient();
   const [tokenOpError, setTokenOpError] = useState("");
   const [runtimeTaskError, setRuntimeTaskError] = useState("");
@@ -86,7 +34,6 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
   const [nePage, setNePage] = useState(1);
   const [nePageSize, setNePageSize] = useState(50);
   const [expandedNeId, setExpandedNeId] = useState("");
-
   const [curSeverity, setCurSeverity] = useState("");
   const [curCleared, setCurCleared] = useState("");
   const [curHostName, setCurHostName] = useState("");
@@ -97,81 +44,74 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
   const syncMutation = useMutation({
     mutationFn: async (domains: string[]) => apiPost<{ ok: boolean; jobs: unknown[] }>("/v1/ume/sync", { domains }),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["umeSyncStatus"] });
-      await queryClient.invalidateQueries({ queryKey: ["umeNE"] });
-      await queryClient.invalidateQueries({ queryKey: ["umeCurrentAlarms"] });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.umeSyncStatusAll });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.umeNEAll });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.umeCurrentAlarmsAll });
     },
   });
 
   const syncStatusQuery = useQuery({
-    queryKey: ["umeSyncStatus", syncPage, syncPageSize],
+    queryKey: queryKeys.umeSyncStatus(syncPage, syncPageSize),
     queryFn: () => fetchUmeSyncStatus({ page: syncPage, pageSize: syncPageSize }),
     staleTime: 5000,
     refetchInterval: 5000,
   });
   const tokenStatusQuery = useQuery({
-    queryKey: ["umeTokenStatus"],
+    queryKey: queryKeys.umeTokenStatus,
     queryFn: fetchUmeTokenStatus,
     staleTime: 3000,
     refetchInterval: 5000,
   });
   const tokenRefreshMutation = useMutation({
     mutationFn: refreshUmeToken,
-    onMutate: () => {
-      setTokenOpError("");
-    },
+    onMutate: () => setTokenOpError(""),
     onSuccess: async (res) => {
       if (!res?.ok) {
         const msg = String(res.error || res.error_kind || "token_refresh_failed");
         setTokenOpError(msg);
-        toastError?.(msg);
+        showError(msg);
       } else {
         setTokenOpError("");
-        toastOk?.(res.changed ? "续期成功，token 已更新" : "续期完成（与此前一致）");
+        showOk(res.changed ? t("ume.token.renewOkChanged") : t("ume.token.renewOkSame"));
       }
-      await queryClient.invalidateQueries({ queryKey: ["umeTokenStatus"] });
-      await queryClient.invalidateQueries({ queryKey: ["umeSyncStatus"] });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.umeTokenStatus });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.umeSyncStatusAll });
     },
     onError: (err) => {
       const msg = String(err);
       setTokenOpError(msg);
-      toastError?.(msg);
+      showError(msg);
     },
   });
   const subscriptionStatusQuery = useQuery({
-    queryKey: ["umeAlarmSubscription"],
+    queryKey: queryKeys.umeAlarmSubscription,
     queryFn: fetchUmeAlarmSubscriptionStatus,
     staleTime: 3000,
     refetchInterval: 5000,
   });
+
   const confirmClearLocalSubscription = (hint?: string) =>
-    window.confirm(
-      `${hint || "UME 侧告警订阅已不存在或已过期（服务器订阅已丢失）。"}\n\n是否清除本地订阅记录？清除后可点击「建立告警订阅」重新订阅。`,
-    );
+    window.confirm(hint || t("ume.subscription.confirmClearDefault"));
 
   const subscriptionEstablishMutation = useMutation({
     mutationFn: (opts?: { forceReestablish?: boolean }) => establishUmeAlarmSubscription(opts),
     onMutate: () => setSubscriptionOpError(""),
     onSuccess: async (res) => {
       if (!res?.active) {
-        const msg = "建立订阅未返回有效 id/uri";
+        const msg = t("ume.subscription.establishInvalid");
         setSubscriptionOpError(msg);
-        toastError?.(msg);
+        showError(msg);
       } else {
         setSubscriptionOpError("");
-        toastOk?.(
-          res.already_exists
-            ? "订阅已存在，未重复建立（WSS 将保持/恢复连接）"
-            : "告警订阅已建立，WSS 将自动连接",
-        );
+        showOk(res.already_exists ? t("ume.subscription.establishExists") : t("ume.subscription.establishOk"));
       }
-      await queryClient.invalidateQueries({ queryKey: ["umeAlarmSubscription"] });
-      await queryClient.invalidateQueries({ queryKey: ["umeSyncStatus"] });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.umeAlarmSubscription });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.umeSyncStatusAll });
     },
     onError: (err) => {
       const msg = String(err);
       setSubscriptionOpError(msg);
-      toastError?.(msg);
+      showError(msg);
     },
   });
   const subscriptionClearLocalMutation = useMutation({
@@ -179,74 +119,68 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
     onMutate: () => setSubscriptionOpError(""),
     onSuccess: async () => {
       setSubscriptionOpError("");
-      toastOk?.("已清除本地订阅记录，可重新建立订阅");
-      await queryClient.invalidateQueries({ queryKey: ["umeAlarmSubscription"] });
-      await queryClient.invalidateQueries({ queryKey: ["umeSyncStatus"] });
+      showOk(t("ume.subscription.clearLocalOk"));
+      await queryClient.invalidateQueries({ queryKey: queryKeys.umeAlarmSubscription });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.umeSyncStatusAll });
     },
     onError: (err) => {
       const msg = String(err);
       setSubscriptionOpError(msg);
-      toastError?.(msg);
+      showError(msg);
     },
   });
-
   const subscriptionCancelMutation = useMutation({
     mutationFn: (opts?: { forceClearLocal?: boolean }) => cancelUmeAlarmSubscription(opts),
     onMutate: () => setSubscriptionOpError(""),
     onSuccess: async (res) => {
       if (res?.needs_local_cleanup) {
-        const msg =
-          res.message ||
-          "UME 侧告警订阅已丢失。请确认是否清除本地订阅记录后重新订阅。";
+        const msg = res.message || t("ume.subscription.serverLostMsg");
         if (confirmClearLocalSubscription(msg)) {
           subscriptionCancelMutation.mutate({ forceClearLocal: true });
           return;
         }
         setSubscriptionOpError(msg);
-        toastError?.(msg);
-        await queryClient.invalidateQueries({ queryKey: ["umeAlarmSubscription"] });
-        await queryClient.invalidateQueries({ queryKey: ["umeSyncStatus"] });
+        showError(msg);
+        await queryClient.invalidateQueries({ queryKey: queryKeys.umeAlarmSubscription });
+        await queryClient.invalidateQueries({ queryKey: queryKeys.umeSyncStatusAll });
         return;
       }
       if (res?.active) {
-        const msg = "取消订阅失败：UME 侧订阅可能仍存在，请查看错误详情后重试";
+        const msg = t("ume.subscription.cancelFailed");
         setSubscriptionOpError(msg);
-        toastError?.(msg);
+        showError(msg);
       } else {
         setSubscriptionOpError("");
-        toastOk?.(res?.ume_already_missing ? "本地已清除（UME 侧订阅此前已不存在）" : "告警订阅已取消");
+        showOk(res?.ume_already_missing ? t("ume.subscription.cancelOkMissing") : t("ume.subscription.cancelOk"));
       }
-      await queryClient.invalidateQueries({ queryKey: ["umeAlarmSubscription"] });
-      await queryClient.invalidateQueries({ queryKey: ["umeSyncStatus"] });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.umeAlarmSubscription });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.umeSyncStatusAll });
     },
     onError: (err) => {
       const msg = String(err);
       setSubscriptionOpError(msg);
-      toastError?.(msg);
+      showError(msg);
     },
   });
-
   const tokenDisconnectMutation = useMutation({
     mutationFn: disconnectUmeToken,
-    onMutate: () => {
-      setTokenOpError("");
-    },
+    onMutate: () => setTokenOpError(""),
     onSuccess: async (res) => {
       if (!res?.ok) {
         const msg = String(res.error || res.error_kind || "token_disconnect_failed");
         setTokenOpError(msg);
-        toastError?.(msg);
+        showError(msg);
       } else {
         setTokenOpError("");
-        toastOk?.("已断开 UME token");
+        showOk(t("ume.token.disconnectOk"));
       }
-      await queryClient.invalidateQueries({ queryKey: ["umeTokenStatus"] });
-      await queryClient.invalidateQueries({ queryKey: ["umeSyncStatus"] });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.umeTokenStatus });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.umeSyncStatusAll });
     },
     onError: (err) => {
       const msg = String(err);
       setTokenOpError(msg);
-      toastError?.(msg);
+      showError(msg);
     },
   });
 
@@ -262,13 +196,14 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
         : tokenExpiresIn < 60
           ? "unknown"
           : "up";
+
   const neQuery = useQuery({
-    queryKey: ["umeNE", neKeyword, nePage, nePageSize],
+    queryKey: queryKeys.umeNE(neKeyword, nePage, nePageSize),
     queryFn: () => fetchUmeNe({ keyword: neKeyword, page: nePage, pageSize: nePageSize }),
     staleTime: 5000,
   });
   const currentQuery = useQuery({
-    queryKey: ["umeCurrentAlarms", curSeverity, curCleared, curHostName, curKeyword, curPage, curPageSize],
+    queryKey: queryKeys.umeCurrentAlarms(curSeverity, curCleared, curHostName, curKeyword, curPage, curPageSize),
     queryFn: () =>
       fetchUmeCurrentAlarms({
         severity: curSeverity,
@@ -280,27 +215,26 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
       }),
     staleTime: 5000,
   });
+
   const runningTasks = (syncStatusQuery.data?.items || []).filter((x) => String(x.status || "").toLowerCase() === "running");
   const runtimeTasks = syncStatusQuery.data?.runtime_tasks || [];
-  const alarmSub =
+  const alarmSub: UmeAlarmSubscriptionStatus =
     subscriptionStatusQuery.data ??
     syncStatusQuery.data?.alarm_subscription ??
-    ({ active: false } as const);
-  const wsConsumer = runtimeTasks.find((t) => t.task === "alarms_current_ws_consumer");
+    { active: false };
+  const wsConsumer = runtimeTasks.find((x) => x.task === "alarms_current_ws_consumer");
   const wsConn = subscriptionStatusQuery.data?.ws_connection;
   const wsState = String(wsConn?.state || "");
   const wsPaused = Boolean(wsConsumer?.paused);
   const wsLabel =
     wsConn?.label ||
-    (wsPaused ? "已暂停" : wsConsumer?.last_error || wsConsumer?.status || "-");
+    (wsPaused ? t("ume.subscription.wssPaused") : wsConsumer?.last_error || wsConsumer?.status || t("common.empty"));
   const subscriptionActive = Boolean(alarmSub.active);
   const serverSubLost = Boolean(
     subscriptionStatusQuery.data?.server_subscription_lost ?? alarmSub.server_subscription_lost,
   );
   const serverSubLostReason = String(
-    subscriptionStatusQuery.data?.server_subscription_lost_reason ??
-      alarmSub.server_subscription_lost_reason ??
-      "",
+    subscriptionStatusQuery.data?.server_subscription_lost_reason ?? alarmSub.server_subscription_lost_reason ?? "",
   );
   const currentAlarmsMode =
     subscriptionStatusQuery.data?.current_alarms_mode ?? alarmSub.current_alarms_mode ?? "rest";
@@ -329,59 +263,66 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
 
   const runtimeTaskMutation = useMutation({
     mutationFn: async (vars: { task: string; action: "pause" | "resume" }) =>
-      apiPost<{ ok: boolean }>(
-        `/v1/ume/runtime/tasks/${encodeURIComponent(vars.task)}/${vars.action}`,
-        {},
-      ),
-    onMutate: () => {
-      setRuntimeTaskError("");
-    },
+      apiPost<{ ok: boolean }>(`/v1/ume/runtime/tasks/${encodeURIComponent(vars.task)}/${vars.action}`, {}),
+    onMutate: () => setRuntimeTaskError(""),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["umeSyncStatus"] });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.umeSyncStatusAll });
     },
-    onError: (err) => {
-      setRuntimeTaskError(String(err));
-    },
+    onError: (err) => setRuntimeTaskError(String(err)),
   });
+
+  const syncTotal = Number(syncStatusQuery.data?.total || 0);
+  const syncPages = pageCount(syncTotal, syncPageSize);
+  const neTotal = Number(neQuery.data?.total || 0);
+  const nePages = pageCount(neTotal, nePageSize);
+  const curTotal = Number(currentQuery.data?.total || 0);
+  const curPages = pageCount(curTotal, curPageSize);
+
+  const perPage = (n: number) => t("common.perPage", { n: String(n) });
 
   return (
     <>
       <section className="cards">
         <article className="card card--full">
-          <h3>UME Token 状态</h3>
+          <h3>{t("ume.token.title")}</h3>
           <div className="actions-row actions-row--inline">
             <span
               className={`conn-pill conn-pill--${!hasToken ? "down" : tokenNeedsRenewal ? "warn" : "up"}`}
-              title={
-                tokenNeedsRenewal
-                  ? "库中 token 缺少有效过期时间或已过期，请点「手动续期/登录」或等待后台自动续期"
-                  : undefined
-              }
+              title={tokenNeedsRenewal ? t("ume.token.renewHint") : undefined}
             >
-              token: {!hasToken ? "disconnected" : tokenNeedsRenewal ? "connected (需续期)" : "connected"}
+              token:{" "}
+              {!hasToken
+                ? t("ume.token.disconnected")
+                : tokenNeedsRenewal
+                  ? t("ume.token.connectedRenew")
+                  : t("ume.token.connected")}
             </span>
             <span className={`conn-pill conn-pill--${tokenLevel}`}>
-              expires_in:{" "}
+              {t("ume.token.expiresIn")}:{" "}
               {typeof tokenStatusQuery.data?.expires_in_s === "number"
                 ? tokenNeedsRenewal
-                  ? "需续期 / 0s"
+                  ? t("ume.token.needsRenew")
                   : `${tokenStatusQuery.data.expires_in_s}s`
-                : "-"}
+                : t("common.empty")}
             </span>
-            {tokenStatusQuery.data?.token_preview ? <span className="conn-pill">preview: {tokenStatusQuery.data.token_preview}</span> : null}
+            {tokenStatusQuery.data?.token_preview ? (
+              <span className="conn-pill">
+                {t("ume.token.preview")}: {tokenStatusQuery.data.token_preview}
+              </span>
+            ) : null}
           </div>
           <div className="actions-row actions-row--inline">
             <button
-              onClick={() => queryClient.invalidateQueries({ queryKey: ["umeTokenStatus"] })}
+              onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeTokenStatus })}
               disabled={tokenStatusQuery.isFetching}
             >
               {tokenStatusQuery.isFetching ? (
                 <>
                   <span className="inline-spinner" aria-hidden />
-                  刷新中…
+                  {t("common.refreshing")}
                 </>
               ) : (
-                "刷新状态"
+                t("ume.token.refreshStatus")
               )}
             </button>
             <button
@@ -392,10 +333,10 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
               {tokenRefreshMutation.isPending ? (
                 <>
                   <span className="inline-spinner" aria-hidden />
-                  续期中…
+                  {t("ume.token.renewing")}
                 </>
               ) : (
-                "手动续期/登录"
+                t("ume.token.renewLogin")
               )}
             </button>
             <button
@@ -406,27 +347,28 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
               {tokenDisconnectMutation.isPending ? (
                 <>
                   <span className="inline-spinner" aria-hidden />
-                  断开中…
+                  {t("ume.token.disconnecting")}
                 </>
               ) : (
-                "断开 token"
+                t("ume.token.disconnect")
               )}
             </button>
           </div>
           {(tokenOpError || tokenRefreshMutation.error || tokenDisconnectMutation.error) && (
             <div className="pill pill--high">
-              操作失败: {tokenOpError || String(tokenRefreshMutation.error || tokenDisconnectMutation.error)}
+              {t("common.opFailed")}: {tokenOpError || String(tokenRefreshMutation.error || tokenDisconnectMutation.error)}
             </div>
           )}
         </article>
+
         <article className="card card--full">
           <h3 className="card-title-with-hint">
-            UME 告警订阅（WebSocket）
-            <HelpHint text={UME_ALARM_SUBSCRIPTION_HELP} />
+            {t("ume.subscription.title")}
+            <HelpHint text={t("ume.subscription.help")} ariaLabel={t("common.help")} />
           </h3>
           <div className="actions-row actions-row--inline">
             <span className={`conn-pill conn-pill--${subscriptionActive ? "up" : "down"}`}>
-              订阅: {subscriptionActive ? "已建立" : "未建立"}
+              {t("ume.subscription.sub")}: {subscriptionActive ? t("ume.subscription.subActive") : t("ume.subscription.subInactive")}
             </span>
             {subscriptionActive && alarmSub.subscription_id ? (
               <span className="conn-pill" title={alarmSub.wss_uri || ""}>
@@ -444,12 +386,12 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
           </div>
           {scheduledSyncSkipped && !serverSubLost ? (
             <div className="pill pill--low" style={{ marginTop: 8 }}>
-              当前告警由 WSS 实时维护（模式: {currentAlarmsMode}），定时 REST 全量同步已暂停。需要全量对账时请使用下方「同步当前告警」。
+              {t("ume.subscription.wssModeBanner", { mode: currentAlarmsMode })}
             </div>
           ) : null}
           {serverSubLost ? (
             <div className="pill pill--medium" style={{ marginTop: 8 }}>
-              UME 服务器侧告警订阅已丢失或已过期，本地记录可能仍显示「已建立」。请确认清除本地记录后重新订阅。
+              {t("ume.subscription.serverLostBanner")}
               {serverSubLostReason ? (
                 <div className="muted" style={{ marginTop: 6, fontSize: 12, wordBreak: "break-word" }}>
                   {serverSubLostReason.slice(0, 280)}
@@ -462,94 +404,90 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
               type="button"
               onClick={() => {
                 if (serverSubLost && subscriptionActive) {
-                  if (
-                    window.confirm(
-                      "将清除本地订阅记录并在 UME 上重新建立告警订阅，是否继续？",
-                    )
-                  ) {
+                  if (window.confirm(t("ume.subscription.confirmReestablish"))) {
                     subscriptionEstablishMutation.mutate({ forceReestablish: true });
                   }
                   return;
                 }
-                subscriptionEstablishMutation.mutate();
+                subscriptionEstablishMutation.mutate(undefined);
               }}
               disabled={subPending || (!serverSubLost && subscriptionActive) || !hasToken}
               title={
                 !hasToken
-                  ? "请先登录 UME token"
+                  ? t("ume.subscription.titleLoginFirst")
                   : serverSubLost
-                    ? "清除本地失效记录并重新向 UME 建立订阅"
+                    ? t("ume.subscription.titleReestablish")
                     : undefined
               }
             >
               {subscriptionEstablishMutation.isPending ? (
                 <>
                   <span className="inline-spinner" aria-hidden />
-                  {serverSubLost ? "重新订阅…" : "建立订阅…"}
+                  {serverSubLost ? t("ume.subscription.reestablishing") : t("ume.subscription.establishing")}
                 </>
               ) : serverSubLost ? (
-                "清除本地并重新订阅"
+                t("ume.subscription.reestablish")
               ) : (
-                "建立告警订阅"
+                t("ume.subscription.establish")
               )}
             </button>
             {serverSubLost && subscriptionActive ? (
               <button
                 type="button"
                 onClick={() => {
-                  if (confirmClearLocalSubscription()) {
-                    subscriptionClearLocalMutation.mutate();
-                  }
+                  if (confirmClearLocalSubscription()) subscriptionClearLocalMutation.mutate();
                 }}
                 disabled={subPending}
               >
                 {subscriptionClearLocalMutation.isPending ? (
                   <>
                     <span className="inline-spinner" aria-hidden />
-                    清除中…
+                    {t("ume.subscription.clearing")}
                   </>
                 ) : (
-                  "仅清除本地记录"
+                  t("ume.subscription.clearLocalOnly")
                 )}
               </button>
             ) : null}
             <button
               type="button"
-              onClick={() => subscriptionCancelMutation.mutate()}
+              onClick={() => subscriptionCancelMutation.mutate(undefined)}
               disabled={subPending || !subscriptionActive}
             >
               {subscriptionCancelMutation.isPending ? (
                 <>
                   <span className="inline-spinner" aria-hidden />
-                  取消订阅…
+                  {t("ume.subscription.cancelling")}
                 </>
               ) : (
-                "取消告警订阅"
+                t("ume.subscription.cancel")
               )}
             </button>
             <button
               type="button"
-              onClick={() => queryClient.invalidateQueries({ queryKey: ["umeAlarmSubscription"] })}
+              onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeAlarmSubscription })}
               disabled={subscriptionStatusQuery.isFetching}
             >
-              刷新订阅状态
+              {t("ume.subscription.refreshStatus")}
             </button>
           </div>
           {subscriptionOpError ? (
-            <div className="pill pill--high">订阅操作失败: {subscriptionOpError}</div>
+            <div className="pill pill--high">
+              {t("ume.subscription.opFailed")}: {subscriptionOpError}
+            </div>
           ) : null}
           <div style={{ marginTop: 12 }}>
             <div className="actions-row actions-row--inline" style={{ marginTop: 0 }}>
-              <strong style={{ fontSize: 13 }}>WSS 运行日志</strong>
+              <strong style={{ fontSize: 13 }}>{t("ume.subscription.wsLogs")}</strong>
               <span className="muted" style={{ fontSize: 12 }}>
                 {wsConsumer?.last_run_at
-                  ? `最近活动 ${formatSystemTime(String(wsConsumer.last_run_at))}`
-                  : "自动刷新"}
+                  ? t("ume.subscription.wsActivity", { time: formatSystemTime(String(wsConsumer.last_run_at)) })
+                  : t("ume.subscription.wsAutoRefresh")}
               </span>
             </div>
             <div className="ws-log-panel" role="log" aria-live="polite">
               {wsLogs.length === 0 ? (
-                <div className="ws-log-line ws-log-line--info">暂无日志（建立订阅并连接 WSS 后会出现连接、收包、重连等记录）</div>
+                <div className="ws-log-line ws-log-line--info">{t("ume.subscription.wsLogsEmpty")}</div>
               ) : (
                 wsLogs.map((line, idx) => {
                   const lvl = String(line.level || "info").toLowerCase();
@@ -570,31 +508,36 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
             </div>
           </div>
         </article>
+
         <article className="card card--full">
-          <h3>UME 同步</h3>
+          <h3>{t("ume.sync.title")}</h3>
           <div className="actions-row actions-row--inline">
             <button onClick={() => syncMutation.mutate(["inventory"])} disabled={syncMutation.isPending}>
-              同步 Inventory
+              {t("ume.sync.inventory")}
             </button>
             <button onClick={() => syncMutation.mutate(["alarms_current"])} disabled={syncMutation.isPending}>
-              同步当前告警
+              {t("ume.sync.alarmsCurrent")}
             </button>
             <button onClick={() => syncMutation.mutate(["inventory", "alarms_current"])} disabled={syncMutation.isPending}>
-              全量同步
+              {t("ume.sync.full")}
             </button>
           </div>
-          {syncMutation.error && <div className="pill pill--high">同步失败: {String(syncMutation.error)}</div>}
+          {syncMutation.error && (
+            <div className="pill pill--high">
+              {t("ume.sync.failed")}: {String(syncMutation.error)}
+            </div>
+          )}
         </article>
       </section>
 
       <section className="panel">
-        <h2>当前任务</h2>
+        <h2>{t("ume.tasks.currentTitle")}</h2>
         <div className="actions-row actions-row--inline">
           <span className={`conn-pill conn-pill--${runningTasks.length > 0 ? "unknown" : "up"}`}>
-            running: {runningTasks.length}
+            {t("ume.tasks.running")}: {runningTasks.length}
           </span>
-          <button onClick={() => queryClient.invalidateQueries({ queryKey: ["umeSyncStatus"] })} disabled={syncStatusQuery.isFetching}>
-            刷新
+          <button onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeSyncStatusAll })} disabled={syncStatusQuery.isFetching}>
+            {t("common.refresh")}
           </button>
         </div>
         <table>
@@ -616,31 +559,30 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
                 <td>{x.trigger_mode}</td>
                 <td>{x.status}</td>
                 <td>{formatSystemTime(x.started_at)}</td>
-                <td>{x.error_message || "-"}</td>
+                <td>{x.error_message || t("common.empty")}</td>
               </tr>
             ))}
             {!syncStatusQuery.isLoading && runningTasks.length === 0 && (
               <tr>
-                <td colSpan={6}>当前无运行中的任务</td>
+                <td colSpan={6}>{t("ume.tasks.noRunning")}</td>
               </tr>
             )}
           </tbody>
         </table>
-        <h3 style={{ marginTop: 12 }}>后台任务</h3>
+
+        <h3 style={{ marginTop: 12 }}>{t("ume.tasks.runtimeTitle")}</h3>
         {runtimeTaskError ? (
           <div className="pill pill--high" style={{ marginBottom: 8 }}>
-            后台任务操作失败: {runtimeTaskError}
+            {t("ume.tasks.runtimeOpFailed")}: {runtimeTaskError}
           </div>
         ) : null}
         <table>
           <thead>
             <tr>
               <th>task</th>
-              <th title="Configured sleep between loop iterations (clamped at process start)">interval</th>
+              <th title={t("ume.tasks.intervalTitle")}>interval</th>
               <th>status</th>
-              <th title="Last finished sync for scheduled tasks; refreshed at each loop tick">
-                last_run_at
-              </th>
+              <th title={t("ume.tasks.lastRunTitle")}>last_run_at</th>
               <th>last_error</th>
               <th>actions</th>
             </tr>
@@ -653,8 +595,8 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
                   {runtimeIntervalLabel(x.interval_label)}
                 </td>
                 <td>{x.status}</td>
-                <td>{x.last_run_at ? formatSystemTime(x.last_run_at) : "-"}</td>
-                <td>{x.last_error || "-"}</td>
+                <td>{x.last_run_at ? formatSystemTime(x.last_run_at) : t("common.empty")}</td>
+                <td>{x.last_error || t("common.empty")}</td>
                 <td>
                   {Boolean(x.paused) ? (
                     <button
@@ -680,7 +622,7 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
             ))}
             {!syncStatusQuery.isLoading && runtimeTasks.length === 0 && (
               <tr>
-                <td colSpan={6}>暂无后台任务状态</td>
+                <td colSpan={6}>{t("ume.tasks.noRuntime")}</td>
               </tr>
             )}
           </tbody>
@@ -688,10 +630,10 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
       </section>
 
       <section className="panel">
-        <h2>同步状态</h2>
+        <h2>{t("ume.syncStatus.title")}</h2>
         <div className="actions-row actions-row--inline">
-          <button onClick={() => queryClient.invalidateQueries({ queryKey: ["umeSyncStatus"] })} disabled={syncStatusQuery.isFetching}>
-            刷新
+          <button onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeSyncStatusAll })} disabled={syncStatusQuery.isFetching}>
+            {t("common.refresh")}
           </button>
         </div>
         <table>
@@ -703,7 +645,7 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
               <th>pulled</th>
               <th>inserted</th>
               <th>updated</th>
-              <th title="全量对账删除条数：inventory 为网元行，alarms_current 为当前告警行，其余域多为 0">deleted</th>
+              <th title={t("ume.tasks.deletedTitle")}>deleted</th>
               <th>started_at</th>
               <th>ended_at</th>
               <th>error</th>
@@ -720,32 +662,25 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
                 <td>{x.updated_count}</td>
                 <td>{Number(x.deleted ?? 0)}</td>
                 <td>{formatSystemTime(x.started_at)}</td>
-                <td>{x.ended_at ? formatSystemTime(x.ended_at) : "-"}</td>
-                <td>{x.error_message || "-"}</td>
+                <td>{x.ended_at ? formatSystemTime(x.ended_at) : t("common.empty")}</td>
+                <td>{x.error_message || t("common.empty")}</td>
               </tr>
             ))}
             {!syncStatusQuery.isLoading && (syncStatusQuery.data?.items || []).length === 0 && (
               <tr>
-                <td colSpan={10}>暂无同步记录</td>
+                <td colSpan={10}>{t("ume.syncStatus.empty")}</td>
               </tr>
             )}
           </tbody>
         </table>
         <div className="pager">
-          <div className="pager__meta">
-            共 {syncStatusQuery.data?.total || 0} 条 · 第 {syncPage}/
-            {Math.max(1, Math.ceil(Math.max(0, Number(syncStatusQuery.data?.total || 0)) / Math.max(1, syncPageSize)))} 页
-          </div>
+          <div className="pager__meta">{t("common.pagerMeta", { total: syncTotal, page: syncPage, pages: syncPages })}</div>
           <div className="pager__controls">
             <button className="pager__btn" onClick={() => setSyncPage(Math.max(1, syncPage - 1))} disabled={syncPage <= 1}>
-              上一页
+              {t("common.prevPage")}
             </button>
-            <button
-              className="pager__btn"
-              onClick={() => setSyncPage(syncPage + 1)}
-              disabled={syncPage >= Math.max(1, Math.ceil(Math.max(0, Number(syncStatusQuery.data?.total || 0)) / Math.max(1, syncPageSize)))}
-            >
-              下一页
+            <button className="pager__btn" onClick={() => setSyncPage(syncPage + 1)} disabled={syncPage >= syncPages}>
+              {t("common.nextPage")}
             </button>
             <select
               className="pager__size"
@@ -755,30 +690,32 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
                 setSyncPage(1);
               }}
             >
-              <option value="20">20/页</option>
-              <option value="50">50/页</option>
-              <option value="100">100/页</option>
-              <option value="200">200/页</option>
+              <option value="20">{perPage(20)}</option>
+              <option value="50">{perPage(50)}</option>
+              <option value="100">{perPage(100)}</option>
+              <option value="200">{perPage(200)}</option>
             </select>
           </div>
         </div>
       </section>
 
       <section className="panel">
-        <h2>网元清单</h2>
+        <h2>{t("ume.ne.title")}</h2>
         <div className="filter-inline">
-          <input value={neKeyword} placeholder="keyword(ne_id/ne_name/user_label/ip/host_name)" onChange={(e) => setNeKeyword(e.target.value)} />
-          <button type="button" onClick={() => queryClient.invalidateQueries({ queryKey: ["umeNE"] })}>查询</button>
+          <input value={neKeyword} placeholder={t("ume.ne.keywordPh")} onChange={(e) => setNeKeyword(e.target.value)} />
+          <button type="button" onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeNEAll })}>
+            {t("common.query")}
+          </button>
           <button
             type="button"
-            title="清空 keyword，回到第 1 页"
+            title={t("ume.ne.clearTitle")}
             onClick={() => {
               setNeKeyword("");
               setNePage(1);
             }}
             disabled={!neKeyword.trim()}
           >
-            清除筛选
+            {t("common.clearFilters")}
           </button>
         </div>
         <table>
@@ -802,7 +739,7 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
                     <button
                       className="link-btn"
                       onClick={() => setExpandedNeId(expandedNeId === x.ne_id ? "" : x.ne_id)}
-                      title={expandedNeId === x.ne_id ? "收起详情" : "展开详情"}
+                      title={expandedNeId === x.ne_id ? t("ume.ne.collapse") : t("ume.ne.expand")}
                     >
                       {x.ne_id}
                     </button>
@@ -810,27 +747,27 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
                   <td>{x.user_label}</td>
                   <td>{x.ip_address}</td>
                   <td>{x.ne_type}</td>
-                  <td>{x.device_level || "-"}</td>
-                  <td>{x.host_name || "-"}</td>
-                  <td>{x.hardware_version || "-"}</td>
-                  <td>{x.last_seen_at ? formatSystemTime(x.last_seen_at) : "-"}</td>
+                  <td>{x.device_level || t("common.empty")}</td>
+                  <td>{x.host_name || t("common.empty")}</td>
+                  <td>{x.hardware_version || t("common.empty")}</td>
+                  <td>{x.last_seen_at ? formatSystemTime(x.last_seen_at) : t("common.empty")}</td>
                 </tr>
                 {expandedNeId === x.ne_id ? (
                   <tr>
                     <td colSpan={8}>
                       <div style={{ fontSize: 12, display: "grid", gridTemplateColumns: "repeat(3, minmax(180px, 1fr))", gap: 8 }}>
-                        <div>consistent_state: {x.consistent_state || "-"}</div>
-                        <div>admin_status: {x.admin_status || "-"}</div>
-                        <div>connection_status: {x.connection_status || "-"}</div>
-                        <div>maintain_status: {x.maintain_status || "-"}</div>
-                        <div>address_type: {x.address_type || "-"}</div>
-                        <div>location: {x.location || "-"}</div>
-                        <div>loopback: {x.loopback || "-"}</div>
-                        <div>net_mask: {x.net_mask || "-"}</div>
-                        <div>mac: {x.mac || "-"}</div>
-                        <div>interface_version: {x.interface_version || "-"}</div>
-                        <div>create_time: {x.create_time || "-"}</div>
-                        <div>creator: {x.creator || "-"}</div>
+                        <div>consistent_state: {x.consistent_state || t("common.empty")}</div>
+                        <div>admin_status: {x.admin_status || t("common.empty")}</div>
+                        <div>connection_status: {x.connection_status || t("common.empty")}</div>
+                        <div>maintain_status: {x.maintain_status || t("common.empty")}</div>
+                        <div>address_type: {x.address_type || t("common.empty")}</div>
+                        <div>location: {x.location || t("common.empty")}</div>
+                        <div>loopback: {x.loopback || t("common.empty")}</div>
+                        <div>net_mask: {x.net_mask || t("common.empty")}</div>
+                        <div>mac: {x.mac || t("common.empty")}</div>
+                        <div>interface_version: {x.interface_version || t("common.empty")}</div>
+                        <div>create_time: {x.create_time || t("common.empty")}</div>
+                        <div>creator: {x.creator || t("common.empty")}</div>
                       </div>
                     </td>
                   </tr>
@@ -840,20 +777,13 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
           </tbody>
         </table>
         <div className="pager">
-          <div className="pager__meta">
-            共 {neQuery.data?.total || 0} 条 · 第 {nePage}/
-            {Math.max(1, Math.ceil(Math.max(0, Number(neQuery.data?.total || 0)) / Math.max(1, nePageSize)))} 页
-          </div>
+          <div className="pager__meta">{t("common.pagerMeta", { total: neTotal, page: nePage, pages: nePages })}</div>
           <div className="pager__controls">
             <button className="pager__btn" onClick={() => setNePage(Math.max(1, nePage - 1))} disabled={nePage <= 1}>
-              上一页
+              {t("common.prevPage")}
             </button>
-            <button
-              className="pager__btn"
-              onClick={() => setNePage(nePage + 1)}
-              disabled={nePage >= Math.max(1, Math.ceil(Math.max(0, Number(neQuery.data?.total || 0)) / Math.max(1, nePageSize)))}
-            >
-              下一页
+            <button className="pager__btn" onClick={() => setNePage(nePage + 1)} disabled={nePage >= nePages}>
+              {t("common.nextPage")}
             </button>
             <select
               className="pager__size"
@@ -863,27 +793,23 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
                 setNePage(1);
               }}
             >
-              <option value="20">20/页</option>
-              <option value="50">50/页</option>
-              <option value="100">100/页</option>
-              <option value="200">200/页</option>
-              <option value="500">500/页</option>
+              <option value="20">{perPage(20)}</option>
+              <option value="50">{perPage(50)}</option>
+              <option value="100">{perPage(100)}</option>
+              <option value="200">{perPage(200)}</option>
+              <option value="500">{perPage(500)}</option>
             </select>
           </div>
         </div>
       </section>
 
       <section className="panel">
-        <h2>当前告警</h2>
+        <h2>{t("ume.alarms.title")}</h2>
         <div className="filter-inline">
-          <input
-            value={curKeyword}
-            placeholder="keyword(告警键/原因/ne_name/host_name/ip 等)"
-            onChange={(e) => setCurKeyword(e.target.value)}
-          />
-          <input value={curHostName} placeholder="host_name（含匹配）" onChange={(e) => setCurHostName(e.target.value)} />
+          <input value={curKeyword} placeholder={t("ume.alarms.keywordPh")} onChange={(e) => setCurKeyword(e.target.value)} />
+          <input value={curHostName} placeholder={t("ume.alarms.hostNamePh")} onChange={(e) => setCurHostName(e.target.value)} />
           <select value={curSeverity} onChange={(e) => setCurSeverity(e.target.value)}>
-            <option value="">全部级别</option>
+            <option value="">{t("ume.alarms.allSeverity")}</option>
             <option value="critical">critical</option>
             <option value="major">major</option>
             <option value="minor">minor</option>
@@ -891,13 +817,13 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
             <option value="info">info</option>
           </select>
           <select value={curCleared} onChange={(e) => setCurCleared(e.target.value)}>
-            <option value="">is_cleared: all</option>
+            <option value="">{t("ume.alarms.clearedAll")}</option>
             <option value="true">true</option>
             <option value="false">false</option>
           </select>
           <button
             type="button"
-            title="清空 keyword、host_name、级别、is_cleared，回到第 1 页"
+            title={t("ume.alarms.clearTitle")}
             onClick={() => {
               setCurKeyword("");
               setCurHostName("");
@@ -907,7 +833,7 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
             }}
             disabled={!curKeyword.trim() && !curHostName.trim() && !curSeverity && !curCleared}
           >
-            清除筛选
+            {t("common.clearFilters")}
           </button>
         </div>
         <table>
@@ -937,13 +863,13 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
                         setCurKeyword("");
                         setCurPage(1);
                       }}
-                      title="按该主机名筛选"
+                      title={t("ume.alarms.filterByHost")}
                     >
                       {x.host_name}
                     </button>
                   ) : (
-                    <span className="muted" title="无 host_name（需先同步网元）">
-                      -
+                    <span className="muted" title={t("ume.alarms.noHostName")}>
+                      {t("common.empty")}
                     </span>
                   )}
                 </td>
@@ -954,20 +880,13 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
           </tbody>
         </table>
         <div className="pager">
-          <div className="pager__meta">
-            共 {currentQuery.data?.total || 0} 条 · 第 {curPage}/
-            {Math.max(1, Math.ceil(Math.max(0, Number(currentQuery.data?.total || 0)) / Math.max(1, curPageSize)))} 页
-          </div>
+          <div className="pager__meta">{t("common.pagerMeta", { total: curTotal, page: curPage, pages: curPages })}</div>
           <div className="pager__controls">
             <button className="pager__btn" onClick={() => setCurPage(Math.max(1, curPage - 1))} disabled={curPage <= 1}>
-              上一页
+              {t("common.prevPage")}
             </button>
-            <button
-              className="pager__btn"
-              onClick={() => setCurPage(curPage + 1)}
-              disabled={curPage >= Math.max(1, Math.ceil(Math.max(0, Number(currentQuery.data?.total || 0)) / Math.max(1, curPageSize)))}
-            >
-              下一页
+            <button className="pager__btn" onClick={() => setCurPage(curPage + 1)} disabled={curPage >= curPages}>
+              {t("common.nextPage")}
             </button>
             <select
               className="pager__size"
@@ -977,10 +896,10 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
                 setCurPage(1);
               }}
             >
-              <option value="50">50/页</option>
-              <option value="100">100/页</option>
-              <option value="200">200/页</option>
-              <option value="500">500/页</option>
+              <option value="50">{perPage(50)}</option>
+              <option value="100">{perPage(100)}</option>
+              <option value="200">{perPage(200)}</option>
+              <option value="500">{perPage(500)}</option>
             </select>
           </div>
         </div>
