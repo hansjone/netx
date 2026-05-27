@@ -3,6 +3,8 @@ import { useQuery } from "@tanstack/react-query";
 import { AppLayout } from "./layout/AppLayout";
 import { queryKeys } from "./constants/queryKeys";
 import { WorkbenchPage } from "./pages/WorkbenchPage";
+import { CollectPage } from "./pages/CollectPage";
+import { NePage } from "./pages/NePage";
 import { UmePage } from "./pages/UmePage";
 import { fetchIntegrationStatus } from "./services/api";
 
@@ -40,6 +42,8 @@ function App() {
         <Route path="/" element={<WorkbenchPage />} />
         <Route path="/workbench" element={<Navigate to="/" replace />} />
         <Route path="/ume" element={<UmePage />} />
+        <Route path="/ne" element={<NePage />} />
+        <Route path="/collect" element={<CollectPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </AppLayout>

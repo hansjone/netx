@@ -221,3 +221,64 @@ class UmeTokenCache(Base):
     lock_owner: Mapped[str] = mapped_column(String(128), default="", index=True)
     lock_expires_at_epoch_s: Mapped[int] = mapped_column(Integer, default=0, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class ManagedNE(Base):
+    """Locally managed network element (SSH/Telnet), independent of UME inventory."""
+
+    __tablename__ = "managed_ne"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
+    name: Mapped[str] = mapped_column(String(256), default="", index=True)
+    vendor: Mapped[str] = mapped_column(String(64), default="Other", index=True)
+    device_type: Mapped[str] = mapped_column(String(128), default="")
+    ip_address: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    port: Mapped[int] = mapped_column(Integer, default=22)
+    protocol: Mapped[str] = mapped_column(String(16), default="ssh")
+    username: Mapped[str] = mapped_column(String(128), default="")
+    password_enc: Mapped[str] = mapped_column(Text, default="")
+    enable_secret_enc: Mapped[str] = mapped_column(Text, default="")
+    connect_status: Mapped[str] = mapped_column(String(32), default="unknown", index=True)
+    connect_message: Mapped[str] = mapped_column(String(512), default="")
+    connect_tested_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    site: Mapped[str] = mapped_column(String(256), default="")
+    tags: Mapped[str] = mapped_column(String(512), default="")
+    remark: Mapped[str] = mapped_column(String(1024), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class NeCollectionJob(Base):
+    """Batch CLI collection job over managed NEs."""
+
+    __tablename__ = "ne_collection_job"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
+    title: Mapped[str] = mapped_column(String(256), default="")
+    commands: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    ne_count: Mapped[int] = mapped_column(Integer, default=0)
+    success_count: Mapped[int] = mapped_column(Integer, default=0)
+    fail_count: Mapped[int] = mapped_column(Integer, default=0)
+    error_message: Mapped[str] = mapped_column(String(1024), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+
+
+class NeCollectionRun(Base):
+    """Per-NE execution within a collection job."""
+
+    __tablename__ = "ne_collection_run"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
+    job_id: Mapped[str] = mapped_column(String(64), index=True)
+    ne_id: Mapped[str] = mapped_column(String(64), index=True)
+    ne_name: Mapped[str] = mapped_column(String(256), default="")
+    ne_ip: Mapped[str] = mapped_column(String(128), default="")
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    message: Mapped[str] = mapped_column(String(1024), default="")
+    output_rel_path: Mapped[str] = mapped_column(String(1024), default="")
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

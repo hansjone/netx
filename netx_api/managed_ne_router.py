@@ -1,0 +1,92 @@
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from sqlalchemy.orm import Session
+
+from .db import get_db
+from .device_types import SUPPORTED_DEVICE_TYPES, SUPPORTED_VENDORS
+from .ne_connect import schedule_connect_tests
+from .ne_crypto import credentials_configured
+from .ne_schemas import ConnectTestRequest, ManagedNeCreate, ManagedNeUpdate
+from .ne_service import (
+    create_managed_ne,
+    delete_managed_ne,
+    get_managed_ne,
+    import_managed_ne,
+    list_managed_ne,
+    update_managed_ne,
+)
+from .models import ManagedNE
+
+router = APIRouter(prefix="/v1/managed-ne", tags=["managed-ne"])
+
+
+@router.get("")
+def api_list_managed_ne(
+    keyword: str | None = Query(default=None),
+    vendor: str | None = Query(default=None),
+    connect_status: str | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=500),
+    db: Session = Depends(get_db),
+):
+    return list_managed_ne(
+        db,
+        keyword=keyword,
+        vendor=vendor,
+        connect_status=connect_status,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@router.get("/meta/device-types")
+def api_device_types():
+    return {"device_types": list(SUPPORTED_DEVICE_TYPES), "vendors": list(SUPPORTED_VENDORS)}
+
+
+@router.get("/meta/credentials-configured")
+def api_credentials_configured():
+    return {"configured": credentials_configured()}
+
+
+@router.post("")
+def api_create_managed_ne(body: ManagedNeCreate, db: Session = Depends(get_db)):
+    return create_managed_ne(db, body).model_dump()
+
+
+@router.get("/{ne_id}")
+def api_get_managed_ne(ne_id: str, db: Session = Depends(get_db)):
+    return get_managed_ne(db, ne_id).model_dump()
+
+
+@router.patch("/{ne_id}")
+def api_update_managed_ne(ne_id: str, body: ManagedNeUpdate, db: Session = Depends(get_db)):
+    return update_managed_ne(db, ne_id, body).model_dump()
+
+
+@router.delete("/{ne_id}")
+def api_delete_managed_ne(ne_id: str, db: Session = Depends(get_db)):
+    return delete_managed_ne(db, ne_id)
+
+
+@router.post("/import")
+async def api_import_managed_ne(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="empty_file")
+    return import_managed_ne(db, content, file.filename or "import.xlsx").model_dump()
+
+
+@router.post("/connect-test")
+def api_connect_test(body: ConnectTestRequest, db: Session = Depends(get_db)):
+    ids = [str(x).strip() for x in body.ids if str(x).strip()]
+    if not ids:
+        raise HTTPException(status_code=400, detail="ids_required")
+    rows = db.query(ManagedNE).filter(ManagedNE.id.in_(ids)).all()
+    found_ids = {str(r.id) for r in rows}
+    missing = [x for x in ids if x not in found_ids]
+    if missing:
+        raise HTTPException(status_code=404, detail=f"managed_ne_not_found: {','.join(missing[:5])}")
+    submitted = schedule_connect_tests(ids)
+    return {"ok": True, "submitted": submitted}

@@ -19,13 +19,18 @@ import uvicorn
 
 from .ap_client import analyze_with_oclaw, health_with_oclaw
 from .config import settings
-from .db import Base, SessionLocal, engine
+from .db import Base, SessionLocal, engine, get_db
+from .collection_router import router as collection_router
+from .managed_ne_router import router as managed_ne_router
 from .importer import aggregate_alarms, import_alarm_excel, query_alarms
 from .models import (
     AiAnalyzeHistory,
     AlarmBatch,
     AlarmNorm,
     ImportErrorRow,
+    ManagedNE,
+    NeCollectionJob,
+    NeCollectionRun,
     UmeAlarmCurrent,
     UmeAlarmHistory,
     UmeInventoryNE,
@@ -72,6 +77,8 @@ from .schemas import (
 )
 
 app = FastAPI(title="netx ops tool", version="0.1.0")
+app.include_router(managed_ne_router)
+app.include_router(collection_router)
 parser_cfg = load_parser_config()
 _UME_CLIENT_SINGLETON = UMEClient(
     token_loader=lambda: load_shared_token(),
@@ -418,14 +425,6 @@ def _maybe_wait_for_sync_interval(
     _sleep_or_until_paused(task_id, wait_s)
 
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
 def _parse_time(text: str | None) -> datetime | None:
     s = str(text or "").strip()
     if not s:
@@ -658,6 +657,17 @@ def on_startup() -> None:
     Base.metadata.create_all(bind=engine)
     _reset_runtime_pause_flags()
     _fail_stale_running_sync_jobs_on_startup()
+    db = SessionLocal()
+    try:
+        from .collection_recovery import recover_collection_jobs_on_startup
+
+        resumed = recover_collection_jobs_on_startup(db)
+        if resumed:
+            _schedule_log.info("startup: resumed %s pending ne collection runs", resumed)
+    except Exception:
+        _schedule_log.exception("startup: ne collection job recovery failed")
+    finally:
+        db.close()
     # Best-effort schema evolution for new columns (no migrations framework).
     # Safe for Postgres (IF NOT EXISTS); ignored on failure.
     try:
@@ -730,6 +740,13 @@ def on_startup() -> None:
             conn.exec_driver_sql("ALTER TABLE ume_alarms_current DROP COLUMN IF EXISTS user_label")
             conn.exec_driver_sql("ALTER TABLE ume_alarms_history DROP COLUMN IF EXISTS ne_name")
             conn.exec_driver_sql("ALTER TABLE ume_alarms_history DROP COLUMN IF EXISTS user_label")
+            conn.exec_driver_sql(
+                "ALTER TABLE ne_collection_job ADD COLUMN IF NOT EXISTS last_run_at TIMESTAMP"
+            )
+            conn.exec_driver_sql(
+                "UPDATE ne_collection_job SET last_run_at = COALESCE(ended_at, started_at, created_at) "
+                "WHERE last_run_at IS NULL"
+            )
             conn.exec_driver_sql("COMMENT ON TABLE ume_inventory_ne IS '网元对象详细信息'")
             conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.ne_id IS '网元uuid'")
             conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.ne_name IS '资源名称'")

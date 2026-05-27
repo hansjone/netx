@@ -57,6 +57,16 @@ class Settings(BaseSettings):
     ume_ne_path: str = "/restconf/data/zte-resources-module:network-elements"
     ume_alarms_path: str = "/restconf/data/zte-alarms:alarms/alarm-list"
     ume_sync_alarms_history_every_hours: int = 24
+    # Managed NE credentials (Fernet key; generate with cryptography.fernet.Fernet.generate_key())
+    credential_secret_key: str = ""
+    ne_connect_max_workers: int = 5
+    ne_connect_timeout_sec: int = 30
+    ne_collect_max_workers: int = 5
+    ne_collect_read_timeout_sec: int = 120
+    ne_collect_stale_run_sec: int = 900
+    ne_collect_pending_stale_sec: int = 180
+    ne_collect_run_timeout_cap_sec: int = 600
+    ne_collection_data_dir: str = "data/ne_collections"
 
 
 settings = Settings()

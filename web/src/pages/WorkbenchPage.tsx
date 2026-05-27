@@ -3,7 +3,7 @@ import { WorkbenchCardIcon } from "../components/WorkbenchCardIcon";
 import { modulesInSection, type WorkbenchSection } from "../config/modules";
 import { openOrFocusModule } from "../utils/moduleWindows";
 
-const SECTIONS: WorkbenchSection[] = ["monitoring"];
+const SECTIONS: WorkbenchSection[] = ["monitoring", "operations"];
 
 export function WorkbenchPage() {
   const { t } = useI18n();

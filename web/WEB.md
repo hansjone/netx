@@ -33,6 +33,8 @@ src/
 |------|------|----------|
 | `/` | 工作台 | — |
 | `/ume` | UME 同步 | `ume` |
+| `/ne` | 网元管理 | `managed-ne` |
+| `/collect` | 批量采集 | `collect` |
 
 **新增模块只需改 `config/modules.ts`：**
 
@@ -59,6 +61,19 @@ src/
 - Query key 集中在 `constants/queryKeys.ts`
 - 失效缓存用 prefix key（如 `queryKeys.umeSyncStatusAll`）
 - 顶栏连接状态：`App` 轮询 `GET /v1/integrations/status`（5s），展示 **netx api** 与 **oclaw bridge**（含延迟 / 错误类型）
+
+## 网元管理（独立于 UME）
+
+- API：`/v1/managed-ne/*`（CRUD、导入、连通性测试）
+- 环境变量：`NETX_CREDENTIAL_SECRET_KEY`（Fernet，用于加密存储 SSH 密码）
+- 导入列：`device_type,ip,username,password,port,protocol,name,vendor`
+- 连通性测试成功后会**始终**用探测到的设备名覆盖「名称」
+
+## 批量采集
+
+- API：`/v1/ne-collections/*`（仅 `connect_status=pass` 的网元可参与）
+- 采集日志目录：`NETX_NE_COLLECTION_DATA_DIR`（默认 `data/ne_collections`）
+- 命令每行一条，`#` 为注释；输出格式与旧版 NetX 采集 `.txt` 一致
 
 ## Toast
 

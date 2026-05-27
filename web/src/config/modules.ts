@@ -3,7 +3,7 @@
  */
 
 export type ModuleIconTone = "blue" | "green" | "amber";
-export type WorkbenchSection = "monitoring";
+export type WorkbenchSection = "monitoring" | "operations";
 
 export type ModuleDefinition = {
   moduleId: string;
@@ -24,6 +24,24 @@ export const MODULES: readonly ModuleDefinition[] = [
     descKey: "workbench.cards.umeSyncDesc",
     iconTone: "blue",
     titleKey: "layout.titleUme",
+  },
+  {
+    moduleId: "managed-ne",
+    path: "/ne",
+    section: "operations",
+    labelKey: "workbench.cards.managedNe",
+    descKey: "workbench.cards.managedNeDesc",
+    iconTone: "green",
+    titleKey: "layout.titleManagedNe",
+  },
+  {
+    moduleId: "collect",
+    path: "/collect",
+    section: "operations",
+    labelKey: "workbench.cards.collect",
+    descKey: "workbench.cards.collectDesc",
+    iconTone: "amber",
+    titleKey: "layout.titleCollect",
   },
 ] as const;
 

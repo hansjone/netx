@@ -119,6 +119,95 @@ export type UmeAlarmItem = {
   last_seen_at?: string;
 };
 
+export type ConnectStatus = "unknown" | "testing" | "pass" | "fail";
+
+export type ManagedNeItem = {
+  id: string;
+  name: string;
+  vendor: string;
+  device_type: string;
+  ip_address: string;
+  port: number;
+  protocol: string;
+  username: string;
+  connect_status: ConnectStatus;
+  connect_message: string;
+  connect_tested_at: string | null;
+  tags: string;
+  remark: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ManagedNeListResponse = {
+  total: number;
+  page: number;
+  page_size: number;
+  items: ManagedNeItem[];
+};
+
+export type ManagedNeMeta = {
+  device_types: string[];
+  vendors: string[];
+};
+
+export type ManagedNeImportResult = {
+  inserted: number;
+  updated: number;
+  failed: Array<{ row: number; reason: string }>;
+};
+
+export type EligibleNeItem = {
+  id: string;
+  name: string;
+  vendor: string;
+  device_type: string;
+  ip_address: string;
+  connect_status: string;
+  connect_tested_at: string | null;
+};
+
+export type CollectionJobItem = {
+  id: string;
+  title: string;
+  commands: string;
+  status: string;
+  ne_count: number;
+  success_count: number;
+  fail_count: number;
+  output_count: number;
+  error_message: string;
+  created_at: string;
+  started_at: string | null;
+  ended_at: string | null;
+  last_run_at: string | null;
+};
+
+export type CollectionRunItem = {
+  id: string;
+  job_id: string;
+  ne_id: string;
+  ne_name: string;
+  ne_ip: string;
+  status: string;
+  message: string;
+  output_rel_path: string;
+  has_output: boolean;
+  started_at: string | null;
+  ended_at: string | null;
+};
+
+export type CollectionJobDetail = {
+  job: CollectionJobItem;
+};
+
+export type CollectionRunList = {
+  total: number;
+  page: number;
+  page_size: number;
+  items: CollectionRunItem[];
+};
+
 export type UmeTokenStatus = {
   ok?: boolean;
   has_token: boolean;

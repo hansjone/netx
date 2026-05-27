@@ -7,3 +7,4 @@ build/
 dist/
 scripts/.run/
 ume/
+data/ne_collections/
