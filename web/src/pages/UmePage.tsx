@@ -1,4 +1,4 @@
-import { Fragment, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   apiPost,
@@ -20,6 +20,60 @@ export type UmePageProps = {
   toastOk?: (message: string) => void;
   toastError?: (message: string) => void;
 };
+
+const UME_ALARM_SUBSCRIPTION_HELP =
+  "订阅需手动建立/取消；建立后（或重启后若库中仍有有效订阅）后台会自动连接 WSS 接收实时告警。后台任务 alarms_current_ws_consumer 的 pause/resume 会停止或恢复 WSS 连接（不会取消 UME 订阅）。";
+
+const RUNTIME_INTERVAL_LABEL_EN: Record<string, string> = {
+  未启用: "disabled",
+  实时: "realtime",
+};
+
+function runtimeIntervalLabel(label?: string | null): string {
+  const raw = String(label ?? "").trim();
+  if (!raw) return "—";
+  return RUNTIME_INTERVAL_LABEL_EN[raw] ?? raw;
+}
+
+function HelpHint({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDocClick = (ev: MouseEvent) => {
+      if (!rootRef.current?.contains(ev.target as Node)) setOpen(false);
+    };
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDocClick);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDocClick);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <span className="help-hint" ref={rootRef}>
+      <button
+        type="button"
+        className="help-hint__trigger"
+        aria-label="帮助说明"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        ?
+      </button>
+      {open ? (
+        <div className="help-hint__popover" role="tooltip">
+          {text}
+        </div>
+      ) : null}
+    </span>
+  );
+}
 
 export function UmePage({ toastOk, toastError }: UmePageProps) {
   const queryClient = useQueryClient();
@@ -366,11 +420,10 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
           )}
         </article>
         <article className="card card--full">
-          <h3>UME 告警订阅（WebSocket）</h3>
-          <p className="muted" style={{ marginTop: 0 }}>
-            订阅需手动建立/取消；建立后（或重启后若库中仍有有效订阅）后台会自动连接 WSS 接收实时告警。
-            后台任务 <code>alarms_current_ws_consumer</code> 的「暂停/开始」会停止或恢复 WSS 连接（不会取消 UME 订阅）。
-          </p>
+          <h3 className="card-title-with-hint">
+            UME 告警订阅（WebSocket）
+            <HelpHint text={UME_ALARM_SUBSCRIPTION_HELP} />
+          </h3>
           <div className="actions-row actions-row--inline">
             <span className={`conn-pill conn-pill--${subscriptionActive ? "up" : "down"}`}>
               订阅: {subscriptionActive ? "已建立" : "未建立"}
@@ -583,13 +636,13 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
           <thead>
             <tr>
               <th>task</th>
-              <th title="相邻两次循环 sleep 的配置间隔（与服务启动时 clamp 一致）">间隔</th>
+              <th title="Configured sleep between loop iterations (clamped at process start)">interval</th>
               <th>status</th>
-              <th title="每次周期开始时刷新；若单次同步耗时很长，间隔列仍为周期 sleep，实际两轮完成间隔 ≈ 同步耗时 + 间隔">
+              <th title="Last finished sync for scheduled tasks; refreshed at each loop tick">
                 last_run_at
               </th>
               <th>last_error</th>
-              <th>操作</th>
+              <th>actions</th>
             </tr>
           </thead>
           <tbody>
@@ -597,7 +650,7 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
               <tr key={`runtime-${x.task}`}>
                 <td>{x.task}</td>
                 <td title={typeof x.interval_s === "number" ? `${x.interval_s}s` : undefined}>
-                  {x.interval_label ?? "—"}
+                  {runtimeIntervalLabel(x.interval_label)}
                 </td>
                 <td>{x.status}</td>
                 <td>{x.last_run_at ? formatSystemTime(x.last_run_at) : "-"}</td>
@@ -610,7 +663,7 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
                       disabled={runtimeTaskMutation.isPending}
                       onClick={() => runtimeTaskMutation.mutate({ task: x.task, action: "resume" })}
                     >
-                      开始
+                      resume
                     </button>
                   ) : (
                     <button
@@ -619,7 +672,7 @@ export function UmePage({ toastOk, toastError }: UmePageProps) {
                       disabled={runtimeTaskMutation.isPending}
                       onClick={() => runtimeTaskMutation.mutate({ task: x.task, action: "pause" })}
                     >
-                      暂停
+                      pause
                     </button>
                   )}
                 </td>

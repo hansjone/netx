@@ -185,23 +185,23 @@ def _runtime_task_interval_fields(task_id: str) -> tuple[int | None, str]:
     """Effective loop interval as configured at process start (matches startup clamps)."""
     if task_id == "token_keepalive":
         if not bool(getattr(settings, "ume_keepalive_enabled", True)):
-            return None, "未启用"
+            return None, "disabled"
         interval_s = int(getattr(settings, "ume_keepalive_interval_s", 600) or 600)
         eff = max(30, min(interval_s, 3600))
         return eff, _format_runtime_interval_label(eff)
     if task_id == "alarms_current_auto_sync":
         if not bool(getattr(settings, "ume_sync_alarms_current_enabled", True)):
-            return None, "未启用"
+            return None, "disabled"
         interval_s = int(getattr(settings, "ume_sync_alarms_current_interval_s", 18000) or 18000)
         eff = max(30, min(interval_s, 86400))
         return eff, _format_runtime_interval_label(eff)
     if task_id == "alarms_current_ws_consumer":
         if not bool(getattr(settings, "ume_alarm_ws_enabled", True)):
-            return None, "未启用"
-        return None, "实时"
+            return None, "disabled"
+        return None, "realtime"
     if task_id == "inventory_auto_sync":
         if not bool(getattr(settings, "ume_sync_inventory_auto_enabled", True)):
-            return None, "未启用"
+            return None, "disabled"
         hours = int(getattr(settings, "ume_sync_inventory_every_hours", 48) or 48)
         hours = max(1, min(hours, 168))
         eff = int(hours * 3600)
@@ -346,8 +346,8 @@ def _sleep_or_until_paused(task_id: str, total_s: float) -> None:
         ev.clear()
 
 
-def _seconds_since_last_finished_job(db: Session, domain: str) -> float | None:
-    """Seconds since latest job with ended_at for domain (done or failed). None if none."""
+def _last_finished_job_ended_at(db: Session, domain: str) -> datetime | None:
+    """Latest finished sync job end time for domain (success or failed)."""
     row = (
         db.query(UmeSyncJob)
         .filter(
@@ -360,10 +360,32 @@ def _seconds_since_last_finished_job(db: Session, domain: str) -> float | None:
     )
     if not row or row.ended_at is None:
         return None
-    end = _ensure_utc(row.ended_at)
+    return _ensure_utc(row.ended_at)
+
+
+def _seconds_since_last_finished_job(db: Session, domain: str) -> float | None:
+    """Seconds since latest job with ended_at for domain (done or failed). None if none."""
+    end = _last_finished_job_ended_at(db, domain)
     if end is None:
         return None
     return max(0.0, (datetime.now(timezone.utc) - end).total_seconds())
+
+
+def _refresh_runtime_task_idle(task_id: str, domain: str, *, last_error: str | None = None) -> None:
+    """Mark scheduled sync task running; last_run_at = last finished job time (idle / debounce)."""
+    with _UME_RUNTIME_LOCK:
+        prev_error = str((_UME_RUNTIME_TASKS.get(task_id) or {}).get("last_error") or "")
+    db = SessionLocal()
+    try:
+        ended = _last_finished_job_ended_at(db, domain)
+    finally:
+        db.close()
+    _set_runtime_task(
+        task_id,
+        status="running",
+        last_run_at=ended,
+        last_error=prev_error if last_error is None else last_error,
+    )
 
 
 def _maybe_wait_for_sync_interval(
@@ -384,6 +406,7 @@ def _maybe_wait_for_sync_interval(
         elapsed = _seconds_since_last_finished_job(db, domain)
     finally:
         db.close()
+    _refresh_runtime_task_idle(task_id, domain)
     if elapsed is None:
         _schedule_log.info("%s: no prior finished job for %s, sync now", label, domain)
         return
@@ -392,8 +415,6 @@ def _maybe_wait_for_sync_interval(
         return
     wait_s = float(interval_s) - elapsed
     _schedule_log.info("%s: last finished %.0fs ago, wait %.0fs before sync", label, elapsed, wait_s)
-    # Do not write debounce/wait text to last_error — it is not an error and would
-    # overwrite the cleared state right after a successful sync on the next loop tick.
     _sleep_or_until_paused(task_id, wait_s)
 
 
@@ -777,6 +798,7 @@ def on_startup() -> None:
             alarms_interval_s = max(30, min(alarms_interval_s, 86400))
 
             def _alarms_current_sync_loop() -> None:
+                _refresh_runtime_task_idle("alarms_current_auto_sync", "alarms_current")
                 while True:
                     try:
                         _schedule_log.info(
@@ -790,10 +812,9 @@ def on_startup() -> None:
                             bool(getattr(settings, "ume_sync_alarms_current_skip_when_ws", True))
                             and is_wss_active_for_current_alarms()
                         ):
-                            _set_runtime_task(
+                            _refresh_runtime_task_idle(
                                 "alarms_current_auto_sync",
-                                status="running",
-                                last_run_at=datetime.now(timezone.utc),
+                                "alarms_current",
                                 last_error="WSS 实时接收中，已跳过 REST 同步",
                             )
                             time.sleep(max(30, min(alarms_interval_s, 300)))
@@ -854,8 +875,10 @@ def on_startup() -> None:
             hours = int(getattr(settings, "ume_sync_inventory_every_hours", 48) or 48)
             hours = max(1, min(hours, 168))
             inventory_interval_s = int(hours * 3600)
+            _refresh_runtime_task_idle("inventory_auto_sync", "inventory")
 
             def _inventory_auto_sync_loop() -> None:
+                _refresh_runtime_task_idle("inventory_auto_sync", "inventory")
                 while True:
                     try:
                         _schedule_log.info(

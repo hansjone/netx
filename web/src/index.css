@@ -358,6 +358,57 @@ pre {
   color: #a8bad5;
 }
 
+.card-title-with-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+
+.help-hint {
+  position: relative;
+  display: inline-flex;
+  vertical-align: middle;
+}
+
+.help-hint__trigger {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid #4a5e7e;
+  border-radius: 50%;
+  background: #14253e;
+  color: #a8bad5;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.help-hint__trigger:hover,
+.help-hint__trigger:focus-visible {
+  border-color: #3d82f7;
+  color: #dce8ff;
+  outline: none;
+}
+
+.help-hint__popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  width: min(360px, 80vw);
+  padding: 10px 12px;
+  border: 1px solid #2c405f;
+  border-radius: 8px;
+  background: #0f1e34;
+  color: #c1cde0;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.45;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
 .mini-chart__bar-wrap {
   height: 10px;
   border-radius: 999px;
