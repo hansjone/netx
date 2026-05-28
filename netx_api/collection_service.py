@@ -111,8 +111,25 @@ def run_to_out(row: NeCollectionRun) -> CollectionRunOut:
     )
 
 
-def list_eligible_ne(db: Session, *, page: int = 1, page_size: int = 200) -> dict[str, Any]:
+def list_eligible_ne(
+    db: Session,
+    *,
+    page: int = 1,
+    page_size: int = 200,
+    keyword: str = "",
+) -> dict[str, Any]:
     stmt = db.query(ManagedNE).filter(ManagedNE.connect_status == "pass")
+    kw = str(keyword or "").strip()
+    if kw:
+        like = f"%{kw}%"
+        stmt = stmt.filter(
+            or_(
+                ManagedNE.name.ilike(like),
+                ManagedNE.ip_address.ilike(like),
+                ManagedNE.vendor.ilike(like),
+                ManagedNE.device_type.ilike(like),
+            )
+        )
     total = int(stmt.count())
     rows = (
         stmt.order_by(ManagedNE.name.asc())
@@ -135,9 +152,7 @@ def list_eligible_ne(db: Session, *, page: int = 1, page_size: int = 200) -> dic
     return {"total": total, "page": page, "page_size": page_size, "items": items}
 
 
-def create_and_start_collection(
-    db: Session, body: CollectionJobCreate
-) -> tuple[CollectionJobOut, CollectionSchedulePayload]:
+def create_collection(db: Session, body: CollectionJobCreate) -> CollectionJobOut:
     commands = _parse_commands(body.commands)
     if not commands:
         raise HTTPException(status_code=400, detail="commands_empty")
@@ -168,16 +183,15 @@ def create_and_start_collection(
     job = NeCollectionJob(
         title=str(body.title or "").strip() or f"collect-{now.strftime('%Y%m%d-%H%M%S')}",
         commands="\n".join(commands),
-        status="running",
+        status="pending",
         ne_count=len(ne_rows),
         created_at=now,
-        started_at=now,
-        last_run_at=now,
+        started_at=None,
+        last_run_at=None,
     )
     db.add(job)
     db.flush()
 
-    run_ids: list[str] = []
     for ne in ne_rows:
         run = NeCollectionRun(
             job_id=str(job.id),
@@ -187,16 +201,9 @@ def create_and_start_collection(
             status="pending",
         )
         db.add(run)
-        run_ids.append(str(run.id))
     db.commit()
     db.refresh(job)
-
-    payload: CollectionSchedulePayload = {
-        "job_id": str(job.id),
-        "run_ids": run_ids,
-        "commands": commands,
-    }
-    return job_to_out(job, output_count=0), payload
+    return job_to_out(job, output_count=0)
 
 
 def list_collection_jobs(db: Session, *, page: int = 1, page_size: int = 20) -> dict[str, Any]:
@@ -355,7 +362,8 @@ def _start_job_retry(
     return job_to_out(job, output_count=_output_count_for_job(db, job_id)), payload
 
 
-def restart_collection_job(db: Session, job_id: str) -> tuple[CollectionJobOut, CollectionSchedulePayload]:
+def start_collection_job(db: Session, job_id: str) -> tuple[CollectionJobOut, CollectionSchedulePayload]:
+    """Start a draft job or re-run all NEs after pause/completion."""
     job = db.get(NeCollectionJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="collection_job_not_found")
@@ -367,6 +375,13 @@ def restart_collection_job(db: Session, job_id: str) -> tuple[CollectionJobOut, 
     commands = _parse_commands(str(job.commands or ""))
     if not commands:
         raise HTTPException(status_code=400, detail="commands_empty")
+
+    if str(job.status or "") == "pending":
+        run_ids = [str(r.id) for r in runs if str(r.status or "") == "pending"]
+        if not run_ids:
+            raise HTTPException(status_code=400, detail="collection_nothing_to_start")
+        return _start_job_retry(db, job, job_id, run_ids, commands, reset_all_counts=False)
+
     retry_ids = _reset_runs_for_retry(
         db,
         job_id,
@@ -374,6 +389,10 @@ def restart_collection_job(db: Session, job_id: str) -> tuple[CollectionJobOut, 
         only_statuses=frozenset({"success", "fail", "cancelled"}),
     )
     return _start_job_retry(db, job, job_id, retry_ids, commands, reset_all_counts=True)
+
+
+def restart_collection_job(db: Session, job_id: str) -> tuple[CollectionJobOut, CollectionSchedulePayload]:
+    return start_collection_job(db, job_id)
 
 
 def retry_failed_collection_job(

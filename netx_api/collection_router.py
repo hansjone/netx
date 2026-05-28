@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from .collection_service import (
     build_collection_job_zip,
-    create_and_start_collection,
+    create_collection,
     delete_collection_job,
     get_collection_job,
     list_collection_jobs,
@@ -15,6 +15,7 @@ from .collection_service import (
     pause_collection_job,
     resolve_run_output_path,
     restart_collection_job,
+    start_collection_job,
     retry_failed_collection_job,
 )
 from .collection_schemas import CollectionJobCreate
@@ -29,25 +30,15 @@ router = APIRouter(prefix="/v1/ne-collections", tags=["ne-collections"])
 def api_eligible_ne(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=200, ge=1, le=500),
+    keyword: str = Query(default=""),
     db: Session = Depends(get_db),
 ):
-    return list_eligible_ne(db, page=page, page_size=page_size)
+    return list_eligible_ne(db, page=page, page_size=page_size, keyword=keyword)
 
 
 @router.post("")
-def api_create_collection(
-    body: CollectionJobCreate,
-    background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
-):
-    out, payload = create_and_start_collection(db, body)
-    background_tasks.add_task(
-        dispatch_collection_runs,
-        payload["job_id"],
-        payload["run_ids"],
-        payload["commands"],
-    )
-    return out.model_dump()
+def api_create_collection(body: CollectionJobCreate, db: Session = Depends(get_db)):
+    return create_collection(db, body).model_dump()
 
 
 @router.get("")
@@ -103,12 +94,29 @@ def api_pause_collection(job_id: str, db: Session = Depends(get_db)):
     return pause_collection_job(db, job_id).model_dump()
 
 
+@router.post("/{job_id}/start")
+def api_start_collection(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    out, payload = start_collection_job(db, job_id)
+    background_tasks.add_task(
+        dispatch_collection_runs,
+        payload["job_id"],
+        payload["run_ids"],
+        payload["commands"],
+    )
+    return out.model_dump()
+
+
 @router.post("/{job_id}/restart")
 def api_restart_collection(
     job_id: str,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
+    """Alias of /start for backward compatibility."""
     out, payload = restart_collection_job(db, job_id)
     background_tasks.add_task(
         dispatch_collection_runs,

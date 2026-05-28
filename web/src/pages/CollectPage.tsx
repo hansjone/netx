@@ -8,7 +8,7 @@ import {
   fetchEligibleNe,
   fetchNeCollections,
   pauseCollectionJob,
-  restartCollectionJob,
+  startCollectionJob,
   retryFailedCollectionJob,
   collectionJobDownloadUrl,
   collectionRunDownloadUrl,
@@ -20,6 +20,9 @@ import type { CollectionJobDetail, CollectionJobItem, EligibleNeItem } from "../
 import { pageCount } from "../utils/display";
 import { formatSystemTime } from "../utils/time";
 
+const POLL_MS = 2000;
+const ELIGIBLE_PAGE_SIZE = 20;
+
 export function CollectPage() {
   const { t } = useI18n();
   const { showOk, showError } = useToast();
@@ -27,17 +30,19 @@ export function CollectPage() {
 
   const [commands, setCommands] = useState("");
   const [title, setTitle] = useState("");
-  const [selected, setSelected] = useState<string[]>([]);
+  const [selectedMap, setSelectedMap] = useState<Record<string, EligibleNeItem>>({});
+  const [neKeyword, setNeKeyword] = useState("");
   const [nePage, setNePage] = useState(1);
   const [jobPage, setJobPage] = useState(1);
   const [expandedJobId, setExpandedJobId] = useState("");
 
-  const POLL_MS = 2000;
-  const ELIGIBLE_PAGE_SIZE = 20;
+  const selectedIds = useMemo(() => Object.keys(selectedMap), [selectedMap]);
+  const selectedList = useMemo(() => Object.values(selectedMap), [selectedMap]);
 
   const eligibleQuery = useQuery({
-    queryKey: queryKeys.collectionEligibleNe(nePage),
-    queryFn: () => fetchEligibleNe({ page: nePage, pageSize: ELIGIBLE_PAGE_SIZE }),
+    queryKey: queryKeys.collectionEligibleNe(nePage, neKeyword),
+    queryFn: () =>
+      fetchEligibleNe({ page: nePage, pageSize: ELIGIBLE_PAGE_SIZE, keyword: neKeyword }),
     staleTime: 5000,
   });
 
@@ -95,10 +100,10 @@ export function CollectPage() {
     onError: (err) => showError(String(err)),
   });
 
-  const restartMutation = useMutation({
-    mutationFn: restartCollectionJob,
+  const startJobMutation = useMutation({
+    mutationFn: startCollectionJob,
     onSuccess: async (job) => {
-      showOk(t("collect.restarted"));
+      showOk(t("collect.started", { id: job.id }));
       setExpandedJobId(job.id);
       await invalidateJobs(job.id);
     },
@@ -125,15 +130,15 @@ export function CollectPage() {
     onError: (err) => showError(String(err)),
   });
 
-  const startMutation = useMutation({
+  const createMutation = useMutation({
     mutationFn: () =>
       createNeCollection({
         title: title.trim(),
         commands,
-        ne_ids: selected,
+        ne_ids: selectedIds,
       }),
     onSuccess: async (job) => {
-      showOk(t("collect.started", { id: job.id }));
+      showOk(t("collect.created", { id: job.id }));
       setExpandedJobId(job.id);
       await queryClient.invalidateQueries({ queryKey: queryKeys.neCollectionsAll });
       await queryClient.invalidateQueries({ queryKey: queryKeys.neCollectionDetail(job.id) });
@@ -141,18 +146,21 @@ export function CollectPage() {
     onError: (err) => showError(String(err)),
   });
 
-  const items = eligibleQuery.data?.items ?? [];
-  const allSelected = items.length > 0 && items.every((x) => selected.includes(x.id));
-
-  const toggleAll = () => {
-    if (allSelected) {
-      const ids = new Set(items.map((x) => x.id));
-      setSelected((prev) => prev.filter((id) => !ids.has(id)));
-    } else {
-      setSelected((prev) => [...new Set([...prev, ...items.map((x) => x.id)])]);
-    }
+  const addNe = (row: EligibleNeItem) => {
+    setSelectedMap((prev) => (prev[row.id] ? prev : { ...prev, [row.id]: row }));
   };
 
+  const removeNe = (id: string) => {
+    setSelectedMap((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  };
+
+  const clearSelected = () => setSelectedMap({});
+
+  const eligibleItems = eligibleQuery.data?.items ?? [];
   const neTotal = eligibleQuery.data?.total ?? 0;
   const nePages = pageCount(neTotal, ELIGIBLE_PAGE_SIZE);
 
@@ -168,77 +176,20 @@ export function CollectPage() {
     [commands],
   );
 
+  const actionPending =
+    pauseMutation.isPending ||
+    startJobMutation.isPending ||
+    retryFailedMutation.isPending ||
+    deleteMutation.isPending;
+
   return (
     <div className="page-stack">
-      <section className="panel">
-        <div className="panel__toolbar">
-          <div>
-            <h2>{t("collect.eligible.title")}</h2>
-            <p className="panel__hint">{t("collect.eligible.hint")}</p>
-          </div>
-          <button type="button" onClick={() => eligibleQuery.refetch()} disabled={eligibleQuery.isFetching}>
-            {eligibleQuery.isFetching ? t("common.refreshing") : t("common.refresh")}
-          </button>
+      <section className="panel collect-create-panel">
+        <div>
+          <h2>{t("collect.create.title")}</h2>
+          <p className="panel__hint">{t("collect.create.hint")}</p>
         </div>
-        {eligibleQuery.isLoading ? <p>{t("common.refreshing")}</p> : null}
-        {!eligibleQuery.isLoading && items.length === 0 ? (
-          <p>{t("collect.eligible.empty")}</p>
-        ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>
-                  <input type="checkbox" checked={allSelected} onChange={toggleAll} aria-label="select all" />
-                </th>
-                <th>{t("managedNe.col.name")}</th>
-                <th>{t("managedNe.col.vendor")}</th>
-                <th>{t("managedNe.col.ip")}</th>
-                <th>{t("managedNe.col.connect")}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((row: EligibleNeItem) => (
-                <tr key={row.id}>
-                  <td>
-                    <input
-                      type="checkbox"
-                      checked={selected.includes(row.id)}
-                      onChange={() =>
-                        setSelected((prev) =>
-                          prev.includes(row.id) ? prev.filter((x) => x !== row.id) : [...prev, row.id],
-                        )
-                      }
-                    />
-                  </td>
-                  <td>{row.name || row.ip_address}</td>
-                  <td>{row.vendor}</td>
-                  <td>{row.ip_address}</td>
-                  <td>
-                    <span className="conn-pill conn-pill--up">{row.connect_status}</span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-        {neTotal > 0 ? (
-          <div className="pager">
-            <div className="pager__meta">{t("common.pagerMeta", { total: neTotal, page: nePage, pages: nePages })}</div>
-            <div className="pager__controls">
-              <button className="pager__btn" disabled={nePage <= 1} onClick={() => setNePage(nePage - 1)}>
-                {t("common.prevPage")}
-              </button>
-              <button className="pager__btn" disabled={nePage >= nePages} onClick={() => setNePage(nePage + 1)}>
-                {t("common.nextPage")}
-              </button>
-            </div>
-          </div>
-        ) : null}
-      </section>
 
-      <section className="panel">
-        <h2>{t("collect.form.title")}</h2>
-        <p className="panel__hint">{t("collect.form.commandsHint")}</p>
         <div className="form-grid form-grid--single">
           <label className="form-grid__full">
             {t("collect.form.jobTitle")}
@@ -248,23 +199,137 @@ export function CollectPage() {
             {t("collect.form.commands")}
             <textarea
               className="collect-commands"
-              rows={10}
+              rows={8}
               value={commands}
               onChange={(e) => setCommands(e.target.value)}
               placeholder={t("collect.form.commandsPh")}
             />
           </label>
         </div>
+        <p className="panel__hint">{t("collect.form.commandsHint")}</p>
+
+        <div className="collect-selected-block">
+          <div className="collect-selected-block__head">
+            <h3>{t("collect.create.selectedTitle")}</h3>
+            <span className="collect-meta">{t("collect.create.selectedCount", { count: selectedList.length })}</span>
+            {selectedList.length > 0 ? (
+              <button type="button" className="link-btn" onClick={clearSelected}>
+                {t("collect.create.clearSelected")}
+              </button>
+            ) : null}
+          </div>
+          {selectedList.length === 0 ? (
+            <p className="panel__hint">{t("collect.create.selectedEmpty")}</p>
+          ) : (
+            <div className="collect-selected-list">
+              {selectedList.map((row) => (
+                <div key={row.id} className="collect-selected-chip">
+                  <span className="collect-selected-chip__main">
+                    <strong>{row.name || row.ip_address}</strong>
+                    <span className="collect-selected-chip__meta">
+                      {row.ip_address}
+                      {row.vendor ? ` · ${row.vendor}` : ""}
+                    </span>
+                  </span>
+                  <button type="button" className="link-btn" onClick={() => removeNe(row.id)}>
+                    {t("collect.create.remove")}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="collect-pick-block">
+          <div className="panel__toolbar">
+            <div>
+              <h3>{t("collect.create.pickTitle")}</h3>
+              <p className="panel__hint">{t("collect.create.pickHint")}</p>
+            </div>
+            <button type="button" onClick={() => eligibleQuery.refetch()} disabled={eligibleQuery.isFetching}>
+              {eligibleQuery.isFetching ? t("common.refreshing") : t("common.refresh")}
+            </button>
+          </div>
+          <div className="collect-pick-filters">
+            <label className="collect-runs-filter">
+              {t("collect.create.filterKeyword")}
+              <input
+                type="search"
+                value={neKeyword}
+                placeholder={t("collect.create.filterKeywordPh")}
+                onChange={(e) => {
+                  setNeKeyword(e.target.value);
+                  setNePage(1);
+                }}
+              />
+            </label>
+          </div>
+          {eligibleQuery.isLoading ? <p>{t("common.refreshing")}</p> : null}
+          {!eligibleQuery.isLoading && eligibleItems.length === 0 ? (
+            <p>{t("collect.create.pickEmpty")}</p>
+          ) : (
+            <table>
+              <thead>
+                <tr>
+                  <th>{t("managedNe.col.name")}</th>
+                  <th>{t("managedNe.col.vendor")}</th>
+                  <th>{t("managedNe.col.ip")}</th>
+                  <th>{t("managedNe.col.connect")}</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {eligibleItems.map((row) => {
+                  const picked = Boolean(selectedMap[row.id]);
+                  return (
+                    <tr key={row.id}>
+                      <td>{row.name || row.ip_address}</td>
+                      <td>{row.vendor}</td>
+                      <td>{row.ip_address}</td>
+                      <td>
+                        <span className="conn-pill conn-pill--up">{row.connect_status}</span>
+                      </td>
+                      <td className="table-actions">
+                        <button
+                          type="button"
+                          className="link-btn"
+                          disabled={picked}
+                          onClick={() => addNe(row)}
+                        >
+                          {picked ? t("collect.create.added") : t("collect.create.add")}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+          {neTotal > 0 ? (
+            <div className="pager">
+              <div className="pager__meta">
+                {t("common.pagerMeta", { total: neTotal, page: nePage, pages: nePages })}
+              </div>
+              <div className="pager__controls">
+                <button className="pager__btn" disabled={nePage <= 1} onClick={() => setNePage(nePage - 1)}>
+                  {t("common.prevPage")}
+                </button>
+                <button className="pager__btn" disabled={nePage >= nePages} onClick={() => setNePage(nePage + 1)}>
+                  {t("common.nextPage")}
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </div>
+
         <div className="panel__actions">
-          <span className="collect-meta">
-            {t("collect.form.meta", { ne: selected.length, cmd: commandLines })}
-          </span>
+          <span className="collect-meta">{t("collect.create.meta", { ne: selectedIds.length, cmd: commandLines })}</span>
           <button
             type="button"
-            disabled={selected.length === 0 || commandLines === 0 || startMutation.isPending}
-            onClick={() => startMutation.mutate()}
+            disabled={selectedIds.length === 0 || commandLines === 0 || createMutation.isPending}
+            onClick={() => createMutation.mutate()}
           >
-            {startMutation.isPending ? t("collect.form.starting") : t("collect.form.start")}
+            {createMutation.isPending ? t("collect.create.creating") : t("collect.create.create")}
           </button>
         </div>
       </section>
@@ -304,17 +369,13 @@ export function CollectPage() {
                 detail={expandedJobId === job.id ? detailQuery.data : undefined}
                 onToggle={() => setExpandedJobId(expandedJobId === job.id ? "" : job.id)}
                 onPause={() => pauseMutation.mutate(job.id)}
-                onRestart={() => restartMutation.mutate(job.id)}
+                onStart={() => startJobMutation.mutate(job.id)}
                 onRetryFailed={() => retryFailedMutation.mutate(job.id)}
                 onDelete={() => {
                   if (window.confirm(t("collect.confirmDelete"))) deleteMutation.mutate(job.id);
                 }}
-                actionPending={
-                  pauseMutation.isPending ||
-                  restartMutation.isPending ||
-                  retryFailedMutation.isPending ||
-                  deleteMutation.isPending
-                }
+                actionPending={actionPending}
+                startPending={startJobMutation.isPending}
               />
             ))}
           </tbody>
@@ -341,24 +402,26 @@ function JobRow({
   detail,
   onToggle,
   onPause,
-  onRestart,
+  onStart,
   onRetryFailed,
   onDelete,
   actionPending,
+  startPending,
 }: {
   job: CollectionJobItem;
   expanded: boolean;
   detail?: CollectionJobDetail;
   onToggle: () => void;
   onPause: () => void;
-  onRestart: () => void;
+  onStart: () => void;
   onRetryFailed: () => void;
   onDelete: () => void;
   actionPending: boolean;
+  startPending: boolean;
 }) {
   const { t } = useI18n();
   const canPause = job.status === "running";
-  const canRestart = job.status !== "running";
+  const canStart = job.status !== "running";
   const canRetryFailed = job.status !== "running" && job.fail_count > 0;
   const canDelete = job.status !== "running";
   const hasResults = (job.output_count ?? 0) > 0;
@@ -385,9 +448,9 @@ function JobRow({
               {t("collect.jobs.pause")}
             </button>
           ) : null}
-          {canRestart ? (
-            <button type="button" className="link-btn" disabled={actionPending} onClick={onRestart}>
-              {t("collect.jobs.restart")}
+          {canStart ? (
+            <button type="button" className="link-btn" disabled={actionPending} onClick={onStart}>
+              {startPending ? t("collect.jobs.starting") : t("collect.jobs.start")}
             </button>
           ) : null}
           {canRetryFailed ? (

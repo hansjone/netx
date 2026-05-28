@@ -67,8 +67,8 @@ def reconcile_stale_collection_job(db: Session, job_id: str) -> bool:
         if st in _TERMINAL:
             continue
         if st == "pending":
-            # Pending while job is running means queued in the worker pool, not stuck.
-            if str(job.status or "") == "running":
+            # Pending while job is running/queued, or draft job not started yet.
+            if str(job.status or "") in ("running", "pending"):
                 continue
             anchor = job.started_at or job.created_at
             limit = pending_stale_sec

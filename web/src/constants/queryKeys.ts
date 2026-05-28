@@ -15,7 +15,7 @@ export const queryKeys = {
   managedNe: (keyword: string, vendor: string, connectStatus: string, page: number, pageSize: number) =>
     ["managedNe", keyword, vendor, connectStatus, page, pageSize] as const,
   collectionEligibleNeAll: ["collectionEligibleNe"] as const,
-  collectionEligibleNe: (page: number) => ["collectionEligibleNe", page] as const,
+  collectionEligibleNe: (page: number, keyword: string) => ["collectionEligibleNe", page, keyword] as const,
   neCollectionsAll: ["neCollections"] as const,
   neCollections: (page: number) => ["neCollections", page] as const,
   neCollectionDetail: (jobId: string) => ["neCollection", jobId] as const,

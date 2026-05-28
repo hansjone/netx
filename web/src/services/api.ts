@@ -142,10 +142,11 @@ export const importManagedNe = async (file: File): Promise<ManagedNeImportResult
   return data as ManagedNeImportResult;
 };
 
-export const fetchEligibleNe = (params: { page: number; pageSize: number }) => {
+export const fetchEligibleNe = (params: { page: number; pageSize: number; keyword?: string }) => {
   const p = new URLSearchParams();
   p.set("page", String(Math.max(1, params.page)));
   p.set("page_size", String(Math.max(1, Math.min(500, params.pageSize))));
+  if (params.keyword?.trim()) p.set("keyword", params.keyword.trim());
   return apiGet<{ total: number; page: number; page_size: number; items: EligibleNeItem[] }>(
     `/v1/ne-collections/eligible-ne?${p.toString()}`,
   );
@@ -182,6 +183,9 @@ export const fetchCollectionRuns = (params: {
 
 export const pauseCollectionJob = (jobId: string) =>
   apiPost<CollectionJobItem>(`/v1/ne-collections/${jobId}/pause`, {});
+
+export const startCollectionJob = (jobId: string) =>
+  apiPost<CollectionJobItem>(`/v1/ne-collections/${jobId}/start`, {});
 
 export const restartCollectionJob = (jobId: string) =>
   apiPost<CollectionJobItem>(`/v1/ne-collections/${jobId}/restart`, {});

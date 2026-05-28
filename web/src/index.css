@@ -909,6 +909,64 @@ pre {
   margin-right: auto;
 }
 
+.collect-create-panel h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: #334155;
+}
+
+.collect-selected-block,
+.collect-pick-block {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.collect-selected-block__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+  margin-bottom: 10px;
+}
+
+.collect-selected-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 220px;
+  overflow: auto;
+  padding: 4px 0;
+}
+
+.collect-selected-chip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+}
+
+.collect-selected-chip__main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.collect-selected-chip__meta {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.collect-pick-filters {
+  margin-bottom: 12px;
+}
+
 .collect-cmd-preview {
   font-size: 12px;
   background: #f8fafc;
