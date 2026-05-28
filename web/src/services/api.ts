@@ -186,6 +186,9 @@ export const pauseCollectionJob = (jobId: string) =>
 export const restartCollectionJob = (jobId: string) =>
   apiPost<CollectionJobItem>(`/v1/ne-collections/${jobId}/restart`, {});
 
+export const retryFailedCollectionJob = (jobId: string) =>
+  apiPost<CollectionJobItem>(`/v1/ne-collections/${jobId}/retry-failed`, {});
+
 export const deleteCollectionJob = (jobId: string) =>
   apiDelete<{ ok: boolean }>(`/v1/ne-collections/${jobId}`);
 

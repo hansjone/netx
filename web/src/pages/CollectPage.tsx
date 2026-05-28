@@ -9,6 +9,7 @@ import {
   fetchNeCollections,
   pauseCollectionJob,
   restartCollectionJob,
+  retryFailedCollectionJob,
   collectionJobDownloadUrl,
   collectionRunDownloadUrl,
 } from "../services/api";
@@ -98,6 +99,16 @@ export function CollectPage() {
     mutationFn: restartCollectionJob,
     onSuccess: async (job) => {
       showOk(t("collect.restarted"));
+      setExpandedJobId(job.id);
+      await invalidateJobs(job.id);
+    },
+    onError: (err) => showError(String(err)),
+  });
+
+  const retryFailedMutation = useMutation({
+    mutationFn: retryFailedCollectionJob,
+    onSuccess: async (job) => {
+      showOk(t("collect.retryFailedDone"));
       setExpandedJobId(job.id);
       await invalidateJobs(job.id);
     },
@@ -294,10 +305,16 @@ export function CollectPage() {
                 onToggle={() => setExpandedJobId(expandedJobId === job.id ? "" : job.id)}
                 onPause={() => pauseMutation.mutate(job.id)}
                 onRestart={() => restartMutation.mutate(job.id)}
+                onRetryFailed={() => retryFailedMutation.mutate(job.id)}
                 onDelete={() => {
                   if (window.confirm(t("collect.confirmDelete"))) deleteMutation.mutate(job.id);
                 }}
-                actionPending={pauseMutation.isPending || restartMutation.isPending || deleteMutation.isPending}
+                actionPending={
+                  pauseMutation.isPending ||
+                  restartMutation.isPending ||
+                  retryFailedMutation.isPending ||
+                  deleteMutation.isPending
+                }
               />
             ))}
           </tbody>
@@ -325,6 +342,7 @@ function JobRow({
   onToggle,
   onPause,
   onRestart,
+  onRetryFailed,
   onDelete,
   actionPending,
 }: {
@@ -334,12 +352,14 @@ function JobRow({
   onToggle: () => void;
   onPause: () => void;
   onRestart: () => void;
+  onRetryFailed: () => void;
   onDelete: () => void;
   actionPending: boolean;
 }) {
   const { t } = useI18n();
   const canPause = job.status === "running";
   const canRestart = job.status !== "running";
+  const canRetryFailed = job.status !== "running" && job.fail_count > 0;
   const canDelete = job.status !== "running";
   const hasResults = (job.output_count ?? 0) > 0;
 
@@ -370,6 +390,11 @@ function JobRow({
               {t("collect.jobs.restart")}
             </button>
           ) : null}
+          {canRetryFailed ? (
+            <button type="button" className="link-btn" disabled={actionPending} onClick={onRetryFailed}>
+              {t("collect.jobs.retryFailed")}
+            </button>
+          ) : null}
           <button
             type="button"
             className="link-btn"
@@ -388,7 +413,14 @@ function JobRow({
       {expanded ? (
         <tr>
           <td colSpan={6}>
-            <JobRunsPanel jobId={job.id} jobStatus={job.status} commands={detail?.job.commands ?? ""} />
+            <JobRunsPanel
+              jobId={job.id}
+              jobStatus={job.status}
+              failCount={job.fail_count}
+              commands={detail?.job.commands ?? ""}
+              onRetryFailed={onRetryFailed}
+              retryPending={actionPending}
+            />
           </td>
         </tr>
       ) : null}
@@ -402,11 +434,17 @@ const RUN_STATUS_OPTIONS = ["pending", "running", "success", "fail", "cancelled"
 function JobRunsPanel({
   jobId,
   jobStatus,
+  failCount,
   commands,
+  onRetryFailed,
+  retryPending,
 }: {
   jobId: string;
   jobStatus: string;
+  failCount: number;
   commands: string;
+  onRetryFailed: () => void;
+  retryPending: boolean;
 }) {
   const { t } = useI18n();
   const [runPage, setRunPage] = useState(1);
@@ -478,6 +516,11 @@ function JobRunsPanel({
             {t("common.clearFilters")}
           </button>
         ) : null}
+        {jobStatus !== "running" && failCount > 0 ? (
+          <button type="button" className="link-btn" disabled={retryPending} onClick={onRetryFailed}>
+            {t("collect.jobs.retryFailed")}
+          </button>
+        ) : null}
       </div>
       {runsQuery.isLoading ? <p>{t("common.refreshing")}</p> : null}
       {!runsQuery.isLoading && runs.length === 0 ? <p>{t("common.empty")}</p> : null}
@@ -498,7 +541,15 @@ function JobRunsPanel({
                 <td>{run.ne_name}</td>
                 <td>{run.ne_ip}</td>
                 <td>{run.status}</td>
-                <td title={run.message}>{run.message || t("common.empty")}</td>
+                <td>
+                  {run.message ? (
+                    <div className="collect-run-message" title={run.message}>
+                      {run.message}
+                    </div>
+                  ) : (
+                    t("common.empty")
+                  )}
+                </td>
                 <td>
                   {run.has_output ? (
                     <a className="link-btn" href={collectionRunDownloadUrl(run.id)} target="_blank" rel="noreferrer">

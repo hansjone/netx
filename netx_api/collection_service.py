@@ -14,7 +14,12 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from .models import ManagedNE, NeCollectionJob, NeCollectionRun
-from .collection_job_state import finalize_collection_job, reconcile_stale_collection_job, _sync_job_counts
+from .collection_job_state import (
+    finalize_collection_job,
+    reconcile_stale_collection_job,
+    sync_job_progress,
+    _sync_job_counts,
+)
 from .collection_schemas import CollectionJobCreate, CollectionJobOut, CollectionRunOut
 from .ne_collect_runner import schedule_collection_runs
 from .ne_collection_paths import clear_run_output_files, collection_data_root
@@ -23,7 +28,7 @@ _log = logging.getLogger("netx.collection")
 
 
 def _now() -> datetime:
-    return datetime.utcnow()
+    return datetime.now()
 
 
 def _parse_commands(text: str) -> list[str]:
@@ -93,7 +98,7 @@ def run_to_out(row: NeCollectionRun) -> CollectionRunOut:
         ne_name=str(row.ne_name or ""),
         ne_ip=str(row.ne_ip or ""),
         status=str(row.status or "pending"),
-        message=str(row.message or "")[:1000],
+        message=str(row.message or ""),
         output_rel_path=rel,
         has_output=bool(rel),
         started_at=row.started_at,
@@ -188,9 +193,13 @@ def list_collection_jobs(db: Session, *, page: int = 1, page_size: int = 20) -> 
     total = int(stmt.count())
     rows = stmt.order_by(NeCollectionJob.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
     for row in rows:
-        if str(row.status or "") not in ("done", "failed"):
-            reconcile_stale_collection_job(db, str(row.id))
+        job_id = str(row.id)
+        if str(row.status or "") not in ("done", "failed", "paused"):
+            reconcile_stale_collection_job(db, job_id)
             db.refresh(row)
+            if str(row.status or "") == "running":
+                sync_job_progress(db, job_id)
+                db.refresh(row)
     job_ids = [str(x.id) for x in rows]
     output_counts = _output_counts_for_jobs(db, job_ids)
     return {
@@ -205,9 +214,12 @@ def get_collection_job(db: Session, job_id: str) -> dict[str, Any]:
     job = db.get(NeCollectionJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="collection_job_not_found")
-    if str(job.status or "") not in ("done", "failed"):
+    if str(job.status or "") not in ("done", "failed", "paused"):
         reconcile_stale_collection_job(db, job_id)
         db.refresh(job)
+        if str(job.status or "") == "running":
+            sync_job_progress(db, job_id)
+            db.refresh(job)
     return {
         "job": job_to_out(job, output_count=_output_count_for_job(db, job_id)).model_dump(),
     }
@@ -277,6 +289,57 @@ def pause_collection_job(db: Session, job_id: str) -> CollectionJobOut:
     return job_to_out(job, output_count=_output_count_for_job(db, job_id))
 
 
+def _reset_runs_for_retry(
+    db: Session,
+    job_id: str,
+    runs: list[NeCollectionRun],
+    *,
+    only_statuses: frozenset[str],
+) -> list[str]:
+    retry_ids: list[str] = []
+    for run in runs:
+        st = str(run.status or "")
+        if st in ("pending", "running") or st not in only_statuses:
+            continue
+        clear_run_output_files(job_id, str(run.id))
+        run.status = "pending"
+        run.message = ""
+        run.output_rel_path = ""
+        run.started_at = None
+        run.ended_at = None
+        retry_ids.append(str(run.id))
+    return retry_ids
+
+
+def _start_job_retry(
+    db: Session,
+    job: NeCollectionJob,
+    job_id: str,
+    retry_ids: list[str],
+    commands: list[str],
+    *,
+    reset_all_counts: bool,
+) -> CollectionJobOut:
+    if not retry_ids:
+        raise HTTPException(status_code=400, detail="collection_nothing_to_retry")
+    now = _now()
+    job.status = "running"
+    job.ended_at = None
+    job.error_message = ""
+    if reset_all_counts:
+        job.success_count = 0
+        job.fail_count = 0
+    else:
+        runs = db.query(NeCollectionRun).filter(NeCollectionRun.job_id == job_id).all()
+        _sync_job_counts(job, runs)
+    job.started_at = now
+    job.last_run_at = now
+    db.commit()
+    db.refresh(job)
+    schedule_collection_runs(job_id, retry_ids, commands)
+    return job_to_out(job, output_count=_output_count_for_job(db, job_id))
+
+
 def restart_collection_job(db: Session, job_id: str) -> CollectionJobOut:
     job = db.get(NeCollectionJob, job_id)
     if not job:
@@ -289,32 +352,29 @@ def restart_collection_job(db: Session, job_id: str) -> CollectionJobOut:
     commands = _parse_commands(str(job.commands or ""))
     if not commands:
         raise HTTPException(status_code=400, detail="commands_empty")
-    retry_ids: list[str] = []
-    for run in runs:
-        st = str(run.status or "")
-        if st in ("pending", "running"):
-            continue
-        clear_run_output_files(job_id, str(run.id))
-        run.status = "pending"
-        run.message = ""
-        run.output_rel_path = ""
-        run.started_at = None
-        run.ended_at = None
-        retry_ids.append(str(run.id))
-    if not retry_ids:
-        raise HTTPException(status_code=400, detail="collection_nothing_to_retry")
-    now = _now()
-    job.status = "running"
-    job.ended_at = None
-    job.error_message = ""
-    job.success_count = 0
-    job.fail_count = 0
-    job.started_at = now
-    job.last_run_at = now
-    db.commit()
-    db.refresh(job)
-    schedule_collection_runs(job_id, retry_ids, commands)
-    return job_to_out(job, output_count=0)
+    retry_ids = _reset_runs_for_retry(
+        db,
+        job_id,
+        runs,
+        only_statuses=frozenset({"success", "fail", "cancelled"}),
+    )
+    return _start_job_retry(db, job, job_id, retry_ids, commands, reset_all_counts=True)
+
+
+def retry_failed_collection_job(db: Session, job_id: str) -> CollectionJobOut:
+    job = db.get(NeCollectionJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="collection_job_not_found")
+    runs = db.query(NeCollectionRun).filter(NeCollectionRun.job_id == job_id).all()
+    if not runs:
+        raise HTTPException(status_code=400, detail="collection_no_runs")
+    if str(job.status or "") == "running" or _active_runs(runs):
+        raise HTTPException(status_code=400, detail="collection_job_running")
+    commands = _parse_commands(str(job.commands or ""))
+    if not commands:
+        raise HTTPException(status_code=400, detail="commands_empty")
+    retry_ids = _reset_runs_for_retry(db, job_id, runs, only_statuses=frozenset({"fail"}))
+    return _start_job_retry(db, job, job_id, retry_ids, commands, reset_all_counts=False)
 
 
 def delete_collection_job(db: Session, job_id: str) -> dict[str, bool]:

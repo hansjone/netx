@@ -26,7 +26,7 @@ class CollectionJobFinalizeTests(unittest.TestCase):
 
         self.assertEqual(job.status, "paused")
         self.assertEqual(job.success_count, 1)
-        self.assertEqual(job.fail_count, 1)
+        self.assertEqual(job.fail_count, 0)
         self.assertIsNotNone(job.ended_at)
         db.commit.assert_called_once()
 

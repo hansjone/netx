@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import traceback
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from datetime import datetime
 from pathlib import Path
@@ -9,7 +10,7 @@ from typing import Any
 
 from netmiko import ConnectHandler
 
-from .collection_job_state import finalize_collection_job
+from .collection_job_state import finalize_collection_job, sync_job_progress
 from .config import settings
 from .db import SessionLocal
 from .models import ManagedNE, NeCollectionJob, NeCollectionRun
@@ -28,6 +29,13 @@ def _executor_pool() -> ThreadPoolExecutor:
         workers = max(1, int(settings.ne_collect_max_workers or 5))
         _executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ne-collect")
     return _executor
+
+
+def _format_run_error(exc: BaseException) -> str:
+    head = f"{type(exc).__name__}: {exc}"
+    tb = traceback.format_exc().strip()
+    text = f"{head}\n{tb}" if tb else head
+    return text[:1020]
 
 
 def _safe_filename_part(text: str) -> str:
@@ -152,14 +160,15 @@ def _run_single(job_id: str, run_id: str, commands: list[str]) -> None:
                 ended_at=finished_at,
             )
         except CredentialCryptoError as exc:
-            _update_run(run_id, status="fail", message=str(exc)[:1000], ended_at=datetime.now())
+            _update_run(run_id, status="fail", message=str(exc)[:1020], ended_at=datetime.now())
         except Exception as exc:
             _log.exception("collection failed run=%s", run_id)
-            _update_run(run_id, status="fail", message=str(exc).split("\n")[0][:1000], ended_at=datetime.now())
+            _update_run(run_id, status="fail", message=_format_run_error(exc), ended_at=datetime.now())
     finally:
         db.close()
         db2 = SessionLocal()
         try:
+            sync_job_progress(db2, job_id)
             finalize_collection_job(db2, job_id)
         finally:
             db2.close()

@@ -15,6 +15,7 @@ from .collection_service import (
     pause_collection_job,
     resolve_run_output_path,
     restart_collection_job,
+    retry_failed_collection_job,
 )
 from .collection_schemas import CollectionJobCreate
 from .db import get_db
@@ -93,6 +94,11 @@ def api_pause_collection(job_id: str, db: Session = Depends(get_db)):
 @router.post("/{job_id}/restart")
 def api_restart_collection(job_id: str, db: Session = Depends(get_db)):
     return restart_collection_job(db, job_id).model_dump()
+
+
+@router.post("/{job_id}/retry-failed")
+def api_retry_failed_collection(job_id: str, db: Session = Depends(get_db)):
+    return retry_failed_collection_job(db, job_id).model_dump()
 
 
 @router.delete("/{job_id}")

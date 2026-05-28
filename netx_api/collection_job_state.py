@@ -12,7 +12,18 @@ _TERMINAL = frozenset({"success", "fail", "cancelled"})
 
 def _sync_job_counts(job: NeCollectionJob, runs: list[NeCollectionRun]) -> None:
     job.success_count = sum(1 for r in runs if str(r.status) == "success")
-    job.fail_count = sum(1 for r in runs if str(r.status) in ("fail", "cancelled"))
+    job.fail_count = sum(1 for r in runs if str(r.status) == "fail")
+    # cancelled rows are tracked separately via ne_count - success - fail - active
+
+
+def sync_job_progress(db: Session, job_id: str) -> None:
+    """Refresh success/fail counters while a job is still running."""
+    job = db.get(NeCollectionJob, job_id)
+    if not job or str(job.status or "") != "running":
+        return
+    runs = db.query(NeCollectionRun).filter(NeCollectionRun.job_id == job_id).all()
+    _sync_job_counts(job, runs)
+    db.commit()
 
 
 def finalize_collection_job(db: Session, job_id: str) -> None:
@@ -56,6 +67,9 @@ def reconcile_stale_collection_job(db: Session, job_id: str) -> bool:
         if st in _TERMINAL:
             continue
         if st == "pending":
+            # Pending while job is running means queued in the worker pool, not stuck.
+            if str(job.status or "") == "running":
+                continue
             anchor = job.started_at or job.created_at
             limit = pending_stale_sec
             reason = "collection_pending_stale"

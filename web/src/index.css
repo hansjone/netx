@@ -957,6 +957,21 @@ pre {
   background: #fff;
 }
 
+.collect-run-message {
+  max-width: 420px;
+  max-height: 160px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #334155;
+  padding: 6px 8px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+}
+
 @media (max-width: 1200px) {
   .cards {
     grid-template-columns: 1fr;
