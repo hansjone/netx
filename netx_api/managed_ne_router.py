@@ -8,7 +8,8 @@ from .db import get_db
 from .device_types import SUPPORTED_DEVICE_TYPES, SUPPORTED_VENDORS
 from .ne_connect import schedule_connect_tests
 from .ne_crypto import credentials_configured
-from .ne_schemas import BatchHopApplyRequest, ConnectTestRequest, ManagedNeCreate, ManagedNeUpdate
+from .ne_exec import execute_managed_ne_commands
+from .ne_schemas import BatchHopApplyRequest, ConnectTestRequest, ManagedNeCreate, ManagedNeExecRequest, ManagedNeUpdate
 from .ne_service import (
     batch_apply_hop_proxy,
     build_managed_ne_import_template,
@@ -100,6 +101,17 @@ def api_batch_apply_hop(body: BatchHopApplyRequest, db: Session = Depends(get_db
 @router.post("/batch-delete")
 def api_batch_delete_managed_ne(body: ConnectTestRequest, db: Session = Depends(get_db)):
     return batch_delete_managed_ne(db, body.ids)
+
+
+@router.post("/exec")
+def api_exec_managed_ne(body: ManagedNeExecRequest, db: Session = Depends(get_db)):
+    """Login to a managed NE and run read-only CLI (show/display/ping). For oclaw ops tools."""
+    return execute_managed_ne_commands(
+        db,
+        body.ne_id,
+        body.commands,
+        read_timeout_sec=body.read_timeout_sec,
+    )
 
 
 @router.post("/connect-test")

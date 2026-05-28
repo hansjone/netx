@@ -109,6 +109,14 @@ class ConnectTestRequest(BaseModel):
     ids: list[str] = Field(min_length=1)
 
 
+class ManagedNeExecRequest(BaseModel):
+    """Run read-only show/display CLI on a managed NE (oclaw ops integration)."""
+
+    ne_id: str
+    commands: list[str] = Field(min_length=1, max_length=5)
+    read_timeout_sec: int | None = Field(default=None, ge=10, le=120)
+
+
 class HopProxyConfig(BaseModel):
     """Shared jump-host (proxy) settings applied to one or many NEs."""
 
