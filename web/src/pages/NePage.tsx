@@ -7,6 +7,7 @@ import {
   fetchManagedNe,
   fetchManagedNeMeta,
   importManagedNe,
+  managedNeImportTemplateUrl,
   updateManagedNe,
 } from "../services/api";
 import { queryKeys } from "../constants/queryKeys";
@@ -232,6 +233,12 @@ export function NePage() {
           <div className="panel__actions">
             <button type="button" onClick={openCreate} disabled={!credsOk}>
               {t("managedNe.add")}
+            </button>
+            <button
+              type="button"
+              onClick={() => window.location.assign(managedNeImportTemplateUrl("xlsx"))}
+            >
+              {t("managedNe.downloadTemplate")}
             </button>
             <button
               type="button"

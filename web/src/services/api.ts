@@ -129,6 +129,9 @@ export const deleteManagedNe = (id: string) => apiDelete<{ ok: boolean }>(`/v1/m
 export const connectTestManagedNe = (ids: string[]) =>
   apiPost<{ ok: boolean; submitted: number }>("/v1/managed-ne/connect-test", { ids });
 
+export const managedNeImportTemplateUrl = (format: "xlsx" | "csv" = "xlsx") =>
+  `/v1/managed-ne/import/template?format=${format}`;
+
 export const importManagedNe = async (file: File): Promise<ManagedNeImportResult> => {
   const form = new FormData();
   form.append("file", file);

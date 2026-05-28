@@ -101,6 +101,7 @@ const zh = {
     credsNotConfigured: "未配置 NETX_CREDENTIAL_SECRET_KEY，无法保存密码。请在 .env 中设置 Fernet 密钥后重启 API。",
     add: "新增网元",
     importBtn: "批量导入",
+    downloadTemplate: "下载导入模板",
     importing: "导入中…",
     edit: "编辑",
     delete: "删除",

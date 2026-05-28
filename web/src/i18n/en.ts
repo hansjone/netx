@@ -102,6 +102,7 @@ const en = {
       "NETX_CREDENTIAL_SECRET_KEY is not set. Configure a Fernet key in .env and restart the API to store passwords.",
     add: "Add NE",
     importBtn: "Import",
+    downloadTemplate: "Download template",
     importing: "Importing…",
     edit: "Edit",
     delete: "Delete",

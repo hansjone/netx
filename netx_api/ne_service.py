@@ -195,6 +195,51 @@ def delete_managed_ne(db: Session, ne_id: str) -> dict[str, bool]:
     return {"ok": True}
 
 
+def build_managed_ne_import_template(fmt: str = "xlsx") -> tuple[str, bytes, str]:
+    """Return (filename, content, media_type) for bulk-import template."""
+    rows = [
+        {
+            "device_type": "cisco_ios",
+            "ip": "192.168.0.1",
+            "username": "admin",
+            "password": "your_password",
+            "port": 22,
+            "protocol": "ssh",
+            "name": "Core-SW1",
+            "vendor": "Cisco",
+        },
+        {
+            "device_type": "huawei",
+            "ip": "192.168.0.2",
+            "username": "admin",
+            "password": "your_password",
+            "port": 22,
+            "protocol": "ssh",
+            "name": "AGG-01",
+            "vendor": "Huawei",
+        },
+    ]
+    df = pd.DataFrame(rows, columns=list(IMPORT_COLUMNS))
+    buf = BytesIO()
+    kind = str(fmt or "xlsx").strip().lower()
+    if kind == "csv":
+        df.to_csv(buf, index=False, encoding="utf-8-sig")
+        return (
+            "managed_ne_import_template.csv",
+            buf.getvalue(),
+            "text/csv; charset=utf-8",
+        )
+    device_types_df = pd.DataFrame({"device_type": list(SUPPORTED_DEVICE_TYPES)})
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name="import", index=False)
+        device_types_df.to_excel(writer, sheet_name="device_type", index=False)
+    return (
+        "managed_ne_import_template.xlsx",
+        buf.getvalue(),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
 def import_managed_ne(db: Session, content: bytes, filename: str) -> ImportResult:
     _require_crypto()
     name = str(filename or "").lower()

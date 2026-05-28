@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from .db import get_db
@@ -9,6 +10,7 @@ from .ne_connect import schedule_connect_tests
 from .ne_crypto import credentials_configured
 from .ne_schemas import ConnectTestRequest, ManagedNeCreate, ManagedNeUpdate
 from .ne_service import (
+    build_managed_ne_import_template,
     create_managed_ne,
     delete_managed_ne,
     get_managed_ne,
@@ -68,6 +70,16 @@ def api_update_managed_ne(ne_id: str, body: ManagedNeUpdate, db: Session = Depen
 @router.delete("/{ne_id}")
 def api_delete_managed_ne(ne_id: str, db: Session = Depends(get_db)):
     return delete_managed_ne(db, ne_id)
+
+
+@router.get("/import/template")
+def api_managed_ne_import_template(format: str = Query(default="xlsx")):
+    filename, payload, media_type = build_managed_ne_import_template(format)
+    return Response(
+        content=payload,
+        media_type=media_type,
+        headers={"content-disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.post("/import")
