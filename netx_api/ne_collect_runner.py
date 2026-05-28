@@ -16,7 +16,7 @@ from .models import ManagedNE, NeCollectionJob, NeCollectionRun
 from .ne_collection_paths import clear_run_output_files, run_output_dir
 from .ne_crypto import CredentialCryptoError
 from .ne_service import get_device_credentials
-from .ne_session_factory import open_netmiko_connection
+from .ne_session_factory import close_netmiko_connection, open_netmiko_connection
 
 _log = logging.getLogger("netx.ne.collect")
 _executor: ThreadPoolExecutor | None = None
@@ -57,10 +57,7 @@ def _collect_on_device(creds: dict[str, Any], commands: list[str]) -> str:
             chunks.append("\n")
         return "".join(chunks)
     finally:
-        try:
-            conn.disconnect()
-        except Exception:
-            pass
+        close_netmiko_connection(conn)
 
 
 def _collect_with_timeout(creds: dict[str, Any], commands: list[str]) -> str:

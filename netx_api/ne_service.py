@@ -53,7 +53,7 @@ def _normalize_protocol(protocol: str) -> str:
 
 def _normalize_hop_vendor(vendor: str) -> str:
     v = str(vendor or "zte").strip().lower()
-    return v if v in ("zte",) else "zte"
+    return v if v in ("zte", "linux") else "zte"
 
 
 def _validate_hop_on_create(body: ManagedNeCreate) -> None:
@@ -287,8 +287,9 @@ def batch_apply_hop_proxy(db: Session, ids: list[str], hop: HopProxyConfig) -> d
     if not hop_pass:
         raise HTTPException(status_code=400, detail="hop_password_required")
 
+    hop_vendor = _normalize_hop_vendor(hop.hop_vendor)
     template = str(hop.hop_command_template or "").strip()
-    if not template:
+    if hop_vendor == "zte" and not template:
         template = default_zte_hop_template(hop.hop_protocol, hop.hop_vrf)
 
     ne_ids = [str(x).strip() for x in ids if str(x).strip()]
@@ -305,7 +306,7 @@ def batch_apply_hop_proxy(db: Session, ids: list[str], hop: HopProxyConfig) -> d
     now = _now()
     for row in rows:
         row.hop_enabled = True
-        row.hop_vendor = _normalize_hop_vendor(hop.hop_vendor)
+        row.hop_vendor = hop_vendor
         row.hop_host = hop_host
         row.hop_port = int(hop.hop_port or 22)
         row.hop_protocol = _normalize_protocol(hop.hop_protocol)

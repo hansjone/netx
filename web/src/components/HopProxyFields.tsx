@@ -1,8 +1,16 @@
 import type { ReactNode } from "react";
 import { useI18n } from "../i18n";
-import { isAutoHopTemplate, zteHopTemplate } from "../utils/zteHop";
+import {
+  HOP_VENDORS,
+  isAutoHopTemplate,
+  isLinuxHopVendor,
+  patchHopVendorChange,
+  zteHopTemplate,
+  type HopVendor,
+} from "../utils/hopProxy";
 
 export type HopProxyFieldsState = {
+  hop_vendor: HopVendor;
   hop_host: string;
   hop_port: number;
   hop_protocol: string;
@@ -13,6 +21,7 @@ export type HopProxyFieldsState = {
 };
 
 export const emptyHopProxyFields = (): HopProxyFieldsState => ({
+  hop_vendor: "zte",
   hop_host: "",
   hop_port: 22,
   hop_protocol: "ssh",
@@ -62,11 +71,31 @@ export function HopProxyFields({
   hopPasswordOptional = false,
 }: Props) {
   const { t } = useI18n();
+  const linux = isLinuxHopVendor(value.hop_vendor);
 
   const set = (patch: Partial<HopProxyFieldsState>) => onChange(patch);
 
   return (
     <div className="form-grid">
+      <label className="form-grid__full">
+        <FormLabel required>{t("managedNe.hop.type")}</FormLabel>
+        <select
+          value={value.hop_vendor}
+          onChange={(e) => {
+            const hop_vendor = e.target.value as HopVendor;
+            set(patchHopVendorChange(hop_vendor, value));
+          }}
+        >
+          {HOP_VENDORS.map((v) => (
+            <option key={v} value={v}>
+              {t(`managedNe.hop.vendor.${v}`)}
+            </option>
+          ))}
+        </select>
+        <span className="form-field-hint">
+          {linux ? t("managedNe.hop.linuxHint") : t("managedNe.hop.zteHint")}
+        </span>
+      </label>
       <label>
         <FormLabel required>{t("managedNe.hop.host")}</FormLabel>
         <input required value={value.hop_host} onChange={(e) => set({ hop_host: e.target.value })} />
@@ -79,19 +108,21 @@ export function HopProxyFields({
           onChange={(e) => set({ hop_port: Number(e.target.value) || 22 })}
         />
       </label>
-      <label>
-        <FormLabel>{t("managedNe.hop.protocol")}</FormLabel>
-        <select
-          value={value.hop_protocol}
-          onChange={(e) => {
-            const hop_protocol = e.target.value;
-            set({ hop_protocol, ...applyHopTemplate(value, hop_protocol, value.hop_vrf) });
-          }}
-        >
-          <option value="ssh">ssh</option>
-          <option value="telnet">telnet</option>
-        </select>
-      </label>
+      {!linux ? (
+        <label>
+          <FormLabel>{t("managedNe.hop.protocol")}</FormLabel>
+          <select
+            value={value.hop_protocol}
+            onChange={(e) => {
+              const hop_protocol = e.target.value;
+              set({ hop_protocol, ...applyHopTemplate(value, hop_protocol, value.hop_vrf) });
+            }}
+          >
+            <option value="ssh">ssh</option>
+            <option value="telnet">telnet</option>
+          </select>
+        </label>
+      ) : null}
       <label>
         <FormLabel required>{t("managedNe.hop.username")}</FormLabel>
         <input required value={value.hop_username} onChange={(e) => set({ hop_username: e.target.value })} />
@@ -110,25 +141,29 @@ export function HopProxyFields({
           onChange={(e) => set({ hop_password: e.target.value })}
         />
       </label>
-      <label>
-        <FormLabel>{t("managedNe.hop.vrf")}</FormLabel>
-        <input
-          value={value.hop_vrf}
-          onChange={(e) => {
-            const hop_vrf = e.target.value;
-            set({ hop_vrf, ...applyHopTemplate(value, value.hop_protocol, hop_vrf) });
-          }}
-        />
-      </label>
-      <label className="form-grid__full">
-        <FormLabel>{t("managedNe.hop.commandTemplate")}</FormLabel>
-        <input
-          value={value.hop_command_template}
-          onChange={(e) => set({ hop_command_template: e.target.value })}
-          placeholder={zteHopTemplate(value.hop_protocol, value.hop_vrf)}
-        />
-        <span className="form-field-hint">{t("managedNe.hop.templateHint")}</span>
-      </label>
+      {!linux ? (
+        <>
+          <label>
+            <FormLabel>{t("managedNe.hop.vrf")}</FormLabel>
+            <input
+              value={value.hop_vrf}
+              onChange={(e) => {
+                const hop_vrf = e.target.value;
+                set({ hop_vrf, ...applyHopTemplate(value, value.hop_protocol, hop_vrf) });
+              }}
+            />
+          </label>
+          <label className="form-grid__full">
+            <FormLabel>{t("managedNe.hop.commandTemplate")}</FormLabel>
+            <input
+              value={value.hop_command_template}
+              onChange={(e) => set({ hop_command_template: e.target.value })}
+              placeholder={zteHopTemplate(value.hop_protocol, value.hop_vrf)}
+            />
+            <span className="form-field-hint">{t("managedNe.hop.templateHint")}</span>
+          </label>
+        </>
+      ) : null}
     </div>
   );
 }

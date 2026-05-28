@@ -176,8 +176,15 @@ const zh = {
       passwordOptional: "留空则不修改",
     },
     hop: {
-      sectionTitle: "ZTE 跳板机",
+      sectionTitle: "跳板 / 代理",
+      type: "跳板类型",
       enable: "经跳板登录目标网元",
+      vendor: {
+        zte: "ZTE 设备（CLI 跳登）",
+        linux: "Linux 服务器（SSH 隧道）",
+      },
+      zteHint: "在 ZTE 设备上执行 ssh/telnet 命令跳转到目标，目标账号由二次认证输入。",
+      linuxHint: "先 SSH 登录 Linux 跳板，经 direct-tcpip 隧道连接目标 IP:端口（等同 ProxyJump）。",
       host: "跳板地址",
       port: "跳板端口",
       protocol: "跳板协议",
@@ -187,7 +194,10 @@ const zh = {
       commandTemplate: "跳登命令模板",
       templateHint:
         "ZTE 常用：telnet {target_ip}、telnet {target_ip} vrf {vrf}、ssh {target_ip}、ssh {target_ip} vrf {vrf}。按跳板协议与 VRF 自动推荐；留空时后端同样规则。目标账号密码由二次认证提示输入。",
-      badge: "跳板",
+      badge: {
+        zte: "ZTE跳板",
+        linux: "Linux跳板",
+      },
       hostRequired: "请填写跳板地址",
       userRequired: "请填写跳板用户名",
       passwordRequired: "请填写跳板密码",

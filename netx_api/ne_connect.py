@@ -11,7 +11,7 @@ from .db import SessionLocal
 from .models import ManagedNE
 from .ne_crypto import CredentialCryptoError
 from .ne_service import get_device_credentials
-from .ne_session_factory import open_netmiko_connection
+from .ne_session_factory import close_netmiko_connection, open_netmiko_connection
 
 _log = logging.getLogger("netx.ne.connect")
 _executor: ThreadPoolExecutor | None = None
@@ -104,6 +104,7 @@ def _classify_connect_error(creds: dict[str, Any], exc: BaseException) -> str:
     raw = str(exc).lower()
     detail = str(exc).split("\n")[0][:480]
     if creds.get("hop_enabled"):
+        hop_v = str(creds.get("hop_vendor") or "zte").lower()
         if "hop_credentials_incomplete" in raw or "hop_command_template_invalid" in raw:
             return detail
         if "target_auth_timeout" in raw:
@@ -112,7 +113,9 @@ def _classify_connect_error(creds: dict[str, Any], exc: BaseException) -> str:
             if "hop_host" in raw or str(creds.get("hop_host") or "") in raw:
                 return "hop_auth_failed: " + detail
             return "target_auth_failed: " + detail
-        if "timed out" in raw or "timeout" in raw:
+        if "timed out" in raw or "timeout" in raw or "hop_connect_failed" in raw:
+            return "hop_connect_failed: " + detail
+        if hop_v == "linux":
             return "hop_connect_failed: " + detail
         return "hop_command_failed: " + detail
     return detail
@@ -142,11 +145,7 @@ def _probe_device(creds: dict[str, Any]) -> tuple[str, str, str | None]:
     except Exception as exc:
         return "fail", _classify_connect_error(creds, exc), None
     finally:
-        if conn is not None:
-            try:
-                conn.disconnect()
-            except Exception:
-                pass
+        close_netmiko_connection(conn)
 
 
 def _update_row(ne_id: str, status: str, message: str, discovered_name: str | None = None) -> None:

@@ -18,7 +18,8 @@ import { useToast } from "../hooks/useToast";
 import type { ManagedNeItem } from "../types";
 import { pageCount } from "../utils/display";
 import { formatSystemTime } from "../utils/time";
-import { isAutoHopTemplate, zteHopTemplate } from "../utils/zteHop";
+import { isAutoHopTemplate, patchHopVendorChange, zteHopTemplate } from "../utils/hopProxy";
+import type { HopVendor } from "../utils/hopProxy";
 
 type FormState = {
   name: string;
@@ -32,6 +33,7 @@ type FormState = {
   tags: string;
   remark: string;
   hop_enabled: boolean;
+  hop_vendor: HopVendor;
   hop_host: string;
   hop_port: number;
   hop_protocol: string;
@@ -53,6 +55,7 @@ const emptyForm = (): FormState => ({
   tags: "",
   remark: "",
   hop_enabled: false,
+  hop_vendor: "zte",
   hop_host: "",
   hop_port: 22,
   hop_protocol: "ssh",
@@ -149,7 +152,7 @@ export function NePage() {
         tags: form.tags,
         remark: form.remark,
         hop_enabled: form.hop_enabled,
-        hop_vendor: "zte",
+        hop_vendor: form.hop_vendor,
         hop_host: form.hop_host,
         hop_port: form.hop_port,
         hop_protocol: form.hop_protocol,
@@ -203,7 +206,7 @@ export function NePage() {
   const batchHopMutation = useMutation({
     mutationFn: () =>
       batchApplyHopManagedNe(selected, {
-        hop_vendor: "zte",
+        hop_vendor: batchHop.hop_vendor,
         hop_host: batchHop.hop_host.trim(),
         hop_port: batchHop.hop_port,
         hop_protocol: batchHop.hop_protocol,
@@ -265,6 +268,7 @@ export function NePage() {
       tags: row.tags,
       remark: row.remark,
       hop_enabled: row.hop_enabled,
+      hop_vendor: (row.hop_vendor === "linux" ? "linux" : "zte") as HopVendor,
       hop_host: row.hop_host,
       hop_port: row.hop_port,
       hop_protocol: row.hop_protocol,
@@ -432,8 +436,11 @@ export function NePage() {
                 <td>
                   {row.ip_address}:{row.port}/{row.protocol}
                   {row.hop_enabled ? (
-                    <span className="table-tag" title={`${row.hop_host}:${row.hop_port}`}>
-                      {t("managedNe.hop.badge")}
+                    <span
+                      className="table-tag"
+                      title={`${row.hop_host}:${row.hop_port} (${row.hop_vendor})`}
+                    >
+                      {t(`managedNe.hop.badge.${row.hop_vendor === "linux" ? "linux" : "zte"}`)}
                     </span>
                   ) : null}
                 </td>
@@ -597,7 +604,12 @@ export function NePage() {
                     setForm((prev) => ({
                       ...prev,
                       hop_enabled,
-                      ...(hop_enabled ? applyHopTemplate(prev, prev.hop_protocol, prev.hop_vrf, true) : {}),
+                      ...(hop_enabled
+                        ? {
+                            ...patchHopVendorChange(prev.hop_vendor, prev),
+                            ...applyHopTemplate(prev, prev.hop_protocol, prev.hop_vrf, true),
+                          }
+                        : {}),
                     }));
                   }}
                 />
@@ -606,6 +618,7 @@ export function NePage() {
               {form.hop_enabled ? (
                 <HopProxyFields
                   value={{
+                    hop_vendor: form.hop_vendor,
                     hop_host: form.hop_host,
                     hop_port: form.hop_port,
                     hop_protocol: form.hop_protocol,

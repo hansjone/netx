@@ -1,4 +1,4 @@
-"""Netmiko session factory: direct connect or via ZTE jump host."""
+"""Netmiko session factory: direct connect, ZTE CLI hop, or Linux SSH bastion."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import re
 import time
 from typing import Any
 
+import paramiko
 from netmiko import ConnectHandler
 
 from .config import settings
@@ -182,8 +183,89 @@ def _connect_via_zte_hop(creds: dict[str, Any], *, session_timeout: int | None =
         raise
 
 
+def _hop_vendor(creds: dict[str, Any]) -> str:
+    return str(creds.get("hop_vendor") or "zte").strip().lower()
+
+
+def _connect_via_linux_hop(creds: dict[str, Any], *, session_timeout: int | None = None) -> ConnectHandler:
+    """SSH to Linux bastion, then direct-tcpip tunnel to target (classic ProxyJump-style)."""
+    hop_host = str(creds.get("hop_host") or "").strip()
+    hop_user = str(creds.get("hop_username") or "").strip()
+    hop_pass = str(creds.get("hop_password") or "")
+    if not hop_host or not hop_user or not hop_pass:
+        raise ValueError("hop_credentials_incomplete")
+
+    timeout = int(settings.ne_connect_timeout_sec or 30)
+    hop_port = int(creds.get("hop_port") or 22)
+    target_ip = str(creds["ip_address"])
+    target_port = int(creds.get("port") or 22)
+
+    jump = paramiko.SSHClient()
+    jump.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    try:
+        jump.connect(
+            hop_host,
+            port=hop_port,
+            username=hop_user,
+            password=hop_pass,
+            timeout=timeout,
+            banner_timeout=timeout,
+            auth_timeout=timeout,
+            look_for_keys=False,
+            allow_agent=False,
+        )
+        transport = jump.get_transport()
+        if transport is None or not transport.is_active():
+            raise ConnectionError("hop_connect_failed: jump transport inactive")
+        channel = transport.open_channel(
+            "direct-tcpip",
+            (target_ip, target_port),
+            ("127.0.0.1", 0),
+            timeout=timeout,
+        )
+    except Exception:
+        try:
+            jump.close()
+        except Exception:
+            pass
+        raise
+
+    device_type = normalize_netmiko_device_type(creds["device_type"], creds["protocol"])
+    dev = _base_connect_kwargs(
+        device_type=device_type,
+        host=target_ip,
+        port=target_port,
+        username=str(creds["username"]),
+        password=str(creds["password"]),
+        enable_secret=str(creds.get("enable_secret") or ""),
+        session_timeout=session_timeout,
+    )
+    dev["sock"] = channel
+    conn = ConnectHandler(**dev)
+    conn._netx_jump_client = jump  # type: ignore[attr-defined]
+    return conn
+
+
+def close_netmiko_connection(conn: ConnectHandler | None) -> None:
+    """Disconnect target session and any Linux bastion SSH client."""
+    if conn is None:
+        return
+    jump = getattr(conn, "_netx_jump_client", None)
+    try:
+        conn.disconnect()
+    except Exception:
+        pass
+    if jump is not None:
+        try:
+            jump.close()
+        except Exception:
+            pass
+
+
 def open_netmiko_connection(creds: dict[str, Any], *, session_timeout: int | None = None) -> ConnectHandler:
     """Open a Netmiko connection to the target NE (direct or via configured hop)."""
     if creds.get("hop_enabled"):
+        if _hop_vendor(creds) == "linux":
+            return _connect_via_linux_hop(creds, session_timeout=session_timeout)
         return _connect_via_zte_hop(creds, session_timeout=session_timeout)
     return _connect_direct(creds, session_timeout=session_timeout)

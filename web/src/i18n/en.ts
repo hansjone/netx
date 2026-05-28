@@ -177,8 +177,15 @@ const en = {
       passwordOptional: "leave blank to keep unchanged",
     },
     hop: {
-      sectionTitle: "ZTE jump host",
+      sectionTitle: "Jump host / proxy",
+      type: "Jump type",
       enable: "Connect to target via jump host",
+      vendor: {
+        zte: "ZTE device (CLI jump)",
+        linux: "Linux server (SSH tunnel)",
+      },
+      zteHint: "Run ssh/telnet on the ZTE device to reach the target; target credentials use secondary auth.",
+      linuxHint: "SSH to the Linux bastion, then direct-tcpip tunnel to target IP:port (ProxyJump-style).",
       host: "Jump host",
       port: "Jump port",
       protocol: "Jump protocol",
@@ -188,7 +195,10 @@ const en = {
       commandTemplate: "Jump command template",
       templateHint:
         "ZTE CLI: telnet {target_ip}, telnet {target_ip} vrf {vrf}, ssh {target_ip}, ssh {target_ip} vrf {vrf}. Auto-suggested from jump protocol/VRF; same when left blank. Target credentials via secondary auth prompts.",
-      badge: "hop",
+      badge: {
+        zte: "ZTE hop",
+        linux: "Linux hop",
+      },
       hostRequired: "Jump host is required",
       userRequired: "Jump username is required",
       passwordRequired: "Jump password is required",
