@@ -56,6 +56,7 @@ const en = {
       filterKeyword: "Filter",
       filterKeywordPh: "Name / IP / vendor / device type",
       add: "Add",
+      addBatch: "Add selected ({{count}})",
       added: "Added",
       create: "Create job",
       creating: "Creating…",

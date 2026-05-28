@@ -56,6 +56,7 @@ const zh = {
       filterKeyword: "筛选",
       filterKeywordPh: "名称 / IP / 厂商 / 设备类型",
       add: "添加",
+      addBatch: "批量添加（{{count}}）",
       added: "已添加",
       create: "创建任务",
       creating: "创建中…",

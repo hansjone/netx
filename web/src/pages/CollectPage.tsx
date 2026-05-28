@@ -31,6 +31,7 @@ export function CollectPage() {
   const [commands, setCommands] = useState("");
   const [title, setTitle] = useState("");
   const [selectedMap, setSelectedMap] = useState<Record<string, EligibleNeItem>>({});
+  const [pickSelectedIds, setPickSelectedIds] = useState<string[]>([]);
   const [neKeyword, setNeKeyword] = useState("");
   const [nePage, setNePage] = useState(1);
   const [jobPage, setJobPage] = useState(1);
@@ -150,6 +151,17 @@ export function CollectPage() {
     setSelectedMap((prev) => (prev[row.id] ? prev : { ...prev, [row.id]: row }));
   };
 
+  const addBatchNe = (rows: EligibleNeItem[]) => {
+    if (rows.length === 0) return;
+    setSelectedMap((prev) => {
+      const next = { ...prev };
+      for (const row of rows) {
+        if (!next[row.id]) next[row.id] = row;
+      }
+      return next;
+    });
+  };
+
   const removeNe = (id: string) => {
     setSelectedMap((prev) => {
       const next = { ...prev };
@@ -161,6 +173,9 @@ export function CollectPage() {
   const clearSelected = () => setSelectedMap({});
 
   const eligibleItems = eligibleQuery.data?.items ?? [];
+  const selectablePickItems = eligibleItems.filter((row) => !selectedMap[row.id]);
+  const allPickSelected = selectablePickItems.length > 0 && selectablePickItems.every((row) => pickSelectedIds.includes(row.id));
+  const batchPickCount = pickSelectedIds.length;
   const neTotal = eligibleQuery.data?.total ?? 0;
   const nePages = pageCount(neTotal, ELIGIBLE_PAGE_SIZE);
 
@@ -246,9 +261,23 @@ export function CollectPage() {
               <h3>{t("collect.create.pickTitle")}</h3>
               <p className="panel__hint">{t("collect.create.pickHint")}</p>
             </div>
-            <button type="button" onClick={() => eligibleQuery.refetch()} disabled={eligibleQuery.isFetching}>
-              {eligibleQuery.isFetching ? t("common.refreshing") : t("common.refresh")}
-            </button>
+            <div className="table-actions">
+              <button
+                type="button"
+                className="link-btn"
+                disabled={batchPickCount === 0}
+                onClick={() => {
+                  const rows = eligibleItems.filter((x) => pickSelectedIds.includes(x.id) && !selectedMap[x.id]);
+                  addBatchNe(rows);
+                  setPickSelectedIds([]);
+                }}
+              >
+                {t("collect.create.addBatch", { count: batchPickCount })}
+              </button>
+              <button type="button" onClick={() => eligibleQuery.refetch()} disabled={eligibleQuery.isFetching}>
+                {eligibleQuery.isFetching ? t("common.refreshing") : t("common.refresh")}
+              </button>
+            </div>
           </div>
           <div className="collect-pick-filters">
             <label className="collect-runs-filter">
@@ -260,6 +289,7 @@ export function CollectPage() {
                 onChange={(e) => {
                   setNeKeyword(e.target.value);
                   setNePage(1);
+                  setPickSelectedIds([]);
                 }}
               />
             </label>
@@ -271,6 +301,20 @@ export function CollectPage() {
             <table>
               <thead>
                 <tr>
+                  <th>
+                    <input
+                      type="checkbox"
+                      checked={allPickSelected}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setPickSelectedIds(selectablePickItems.map((row) => row.id));
+                          return;
+                        }
+                        setPickSelectedIds([]);
+                      }}
+                      aria-label="pick all"
+                    />
+                  </th>
                   <th>{t("managedNe.col.name")}</th>
                   <th>{t("managedNe.col.vendor")}</th>
                   <th>{t("managedNe.col.ip")}</th>
@@ -283,6 +327,19 @@ export function CollectPage() {
                   const picked = Boolean(selectedMap[row.id]);
                   return (
                     <tr key={row.id}>
+                      <td>
+                        <input
+                          type="checkbox"
+                          checked={pickSelectedIds.includes(row.id)}
+                          disabled={picked}
+                          onChange={(e) => {
+                            if (picked) return;
+                            setPickSelectedIds((prev) =>
+                              e.target.checked ? [...new Set([...prev, row.id])] : prev.filter((id) => id !== row.id),
+                            );
+                          }}
+                        />
+                      </td>
                       <td>{row.name || row.ip_address}</td>
                       <td>{row.vendor}</td>
                       <td>{row.ip_address}</td>
@@ -294,7 +351,10 @@ export function CollectPage() {
                           type="button"
                           className="link-btn"
                           disabled={picked}
-                          onClick={() => addNe(row)}
+                          onClick={() => {
+                            addNe(row);
+                            setPickSelectedIds((prev) => prev.filter((id) => id !== row.id));
+                          }}
                         >
                           {picked ? t("collect.create.added") : t("collect.create.add")}
                         </button>
@@ -311,10 +371,24 @@ export function CollectPage() {
                 {t("common.pagerMeta", { total: neTotal, page: nePage, pages: nePages })}
               </div>
               <div className="pager__controls">
-                <button className="pager__btn" disabled={nePage <= 1} onClick={() => setNePage(nePage - 1)}>
+                <button
+                  className="pager__btn"
+                  disabled={nePage <= 1}
+                  onClick={() => {
+                    setNePage(nePage - 1);
+                    setPickSelectedIds([]);
+                  }}
+                >
                   {t("common.prevPage")}
                 </button>
-                <button className="pager__btn" disabled={nePage >= nePages} onClick={() => setNePage(nePage + 1)}>
+                <button
+                  className="pager__btn"
+                  disabled={nePage >= nePages}
+                  onClick={() => {
+                    setNePage(nePage + 1);
+                    setPickSelectedIds([]);
+                  }}
+                >
                   {t("common.nextPage")}
                 </button>
               </div>
