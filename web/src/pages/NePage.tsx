@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   batchApplyHopManagedNe,
@@ -19,8 +19,12 @@ import { useToast } from "../hooks/useToast";
 import type { ManagedNeItem } from "../types";
 import { pageCount } from "../utils/display";
 import { formatSystemTime } from "../utils/time";
-import { isAutoHopTemplate, patchHopVendorChange, zteHopTemplate } from "../utils/hopProxy";
-import type { HopVendor } from "../utils/hopProxy";
+import {
+  defaultHopTemplate,
+  isAutoHopTemplate,
+  patchHopVendorChange,
+  type HopVendor,
+} from "../utils/hopProxy";
 
 type FormState = {
   name: string;
@@ -62,15 +66,15 @@ const emptyForm = (): FormState => ({
   hop_protocol: "ssh",
   hop_username: "",
   hop_password: "",
-  hop_command_template: zteHopTemplate("ssh", ""),
+  hop_command_template: defaultHopTemplate("zte", "ssh", ""),
   hop_vrf: "",
 });
 
 function applyHopTemplate(prev: FormState, protocol: string, vrf: string, force = false): Partial<FormState> {
-  if (!force && !isAutoHopTemplate(prev.hop_command_template, prev.hop_protocol, prev.hop_vrf)) {
+  if (!force && !isAutoHopTemplate(prev.hop_command_template, prev.hop_vendor, prev.hop_protocol, prev.hop_vrf)) {
     return {};
   }
-  return { hop_command_template: zteHopTemplate(protocol, vrf) };
+  return { hop_command_template: defaultHopTemplate(prev.hop_vendor, protocol, vrf) };
 }
 
 function FormLabel({ children, required }: { children: ReactNode; required?: boolean }) {
@@ -111,6 +115,7 @@ export function NePage() {
   const [editing, setEditing] = useState<ManagedNeItem | null>(null);
   const [form, setForm] = useState<FormState>(emptyForm);
   const [batchHop, setBatchHop] = useState<HopProxyFieldsState>(emptyHopProxyFields);
+  const [connectDetailRow, setConnectDetailRow] = useState<ManagedNeItem | null>(null);
 
   const metaQuery = useQuery({
     queryKey: queryKeys.managedNeMeta,
@@ -133,6 +138,20 @@ export function NePage() {
       return items.some((x) => x.connect_status === "testing") ? 2000 : false;
     },
   });
+
+  useEffect(() => {
+    if (!connectDetailRow) return;
+    const updated = listQuery.data?.items?.find((x) => x.id === connectDetailRow.id);
+    if (!updated) return;
+    if (
+      updated.connect_status !== connectDetailRow.connect_status ||
+      updated.connect_message !== connectDetailRow.connect_message ||
+      updated.connect_detail !== connectDetailRow.connect_detail ||
+      updated.connect_tested_at !== connectDetailRow.connect_tested_at
+    ) {
+      setConnectDetailRow(updated);
+    }
+  }, [listQuery.data, connectDetailRow]);
 
   const total = listQuery.data?.total ?? 0;
   const pages = pageCount(total, pageSize);
@@ -279,7 +298,9 @@ export function NePage() {
       tags: row.tags,
       remark: row.remark,
       hop_enabled: row.hop_enabled,
-      hop_vendor: (row.hop_vendor === "linux" ? "linux" : "zte") as HopVendor,
+      hop_vendor: (["linux", "huawei", "cisco", "zte"].includes(row.hop_vendor)
+        ? row.hop_vendor
+        : "zte") as HopVendor,
       hop_host: row.hop_host,
       hop_port: row.hop_port,
       hop_protocol: row.hop_protocol,
@@ -287,11 +308,12 @@ export function NePage() {
       hop_password: "",
       hop_command_template: isAutoHopTemplate(
         row.hop_command_template,
+        row.hop_vendor,
         row.hop_protocol,
         row.hop_vrf,
       )
-        ? zteHopTemplate(row.hop_protocol, row.hop_vrf)
-        : row.hop_command_template || zteHopTemplate(row.hop_protocol, row.hop_vrf),
+        ? defaultHopTemplate(row.hop_vendor, row.hop_protocol, row.hop_vrf)
+        : row.hop_command_template || defaultHopTemplate(row.hop_vendor, row.hop_protocol, row.hop_vrf),
       hop_vrf: row.hop_vrf,
     });
     setModalOpen(true);
@@ -466,7 +488,9 @@ export function NePage() {
                       className="table-tag"
                       title={`${row.hop_host}:${row.hop_port} (${row.hop_vendor})`}
                     >
-                      {t(`managedNe.hop.badge.${row.hop_vendor === "linux" ? "linux" : "zte"}`)}
+                      {t(
+                        `managedNe.hop.badge.${["linux", "huawei", "cisco", "zte"].includes(row.hop_vendor) ? row.hop_vendor : "zte"}`,
+                      )}
                     </span>
                   ) : null}
                 </td>
@@ -485,12 +509,20 @@ export function NePage() {
                     : t("common.empty")}
                 </td>
                 <td className="table-actions">
+                  <button
+                    type="button"
+                    className="link-btn"
+                    onClick={() => setConnectDetailRow(row)}
+                    disabled={!row.connect_tested_at && !row.connect_message && !row.connect_detail}
+                  >
+                    {t("managedNe.connectDetail")}
+                  </button>
                   <button type="button" className="link-btn" onClick={() => openEdit(row)}>
                     {t("managedNe.edit")}
                   </button>
                   <button
                     type="button"
-                    className="link-btn"
+                    className="link-btn link-btn--danger"
                     onClick={() => {
                       if (window.confirm(t("managedNe.confirmDelete"))) deleteMutation.mutate(row.id);
                     }}
@@ -701,6 +733,48 @@ export function NePage() {
                 }}
               >
                 {batchHopMutation.isPending ? t("managedNe.hop.applying") : t("managedNe.hop.apply")}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {connectDetailRow ? (
+        <div className="modal-backdrop" role="presentation" onClick={() => setConnectDetailRow(null)}>
+          <div className="modal modal--wide" role="dialog" onClick={(e) => e.stopPropagation()}>
+            <h3>{t("managedNe.connectDetailTitle")}</h3>
+            <p className="form-hint">
+              {connectDetailRow.name || connectDetailRow.ip_address} · {connectDetailRow.ip_address}:
+              {connectDetailRow.port}/{connectDetailRow.protocol}
+              {connectDetailRow.connect_tested_at
+                ? ` · ${formatSystemTime(connectDetailRow.connect_tested_at, { assumeUtcNaive: true })}`
+                : ""}
+            </p>
+            <p>
+              <span className={`conn-pill conn-pill--${connectPillLevel(connectDetailRow.connect_status)}`}>
+                {connectDetailRow.connect_status}
+              </span>
+              {connectDetailRow.connect_message ? (
+                <span className="connect-detail-summary"> — {connectDetailRow.connect_message}</span>
+              ) : null}
+            </p>
+            <pre className="connect-log">
+              {connectDetailRow.connect_detail?.trim() ||
+                connectDetailRow.connect_message?.trim() ||
+                t("managedNe.connectDetailEmpty")}
+            </pre>
+            <div className="modal__actions">
+              <button
+                type="button"
+                disabled={connectMutation.isPending}
+                onClick={() => {
+                  connectMutation.mutate([connectDetailRow.id]);
+                }}
+              >
+                {connectMutation.isPending ? t("managedNe.connect.running") : t("managedNe.connect.retest")}
+              </button>
+              <button type="button" onClick={() => setConnectDetailRow(null)}>
+                {t("managedNe.form.cancel")}
               </button>
             </div>
           </div>

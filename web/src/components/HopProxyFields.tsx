@@ -2,10 +2,10 @@ import type { ReactNode } from "react";
 import { useI18n } from "../i18n";
 import {
   HOP_VENDORS,
+  defaultHopTemplate,
   isAutoHopTemplate,
   isLinuxHopVendor,
   patchHopVendorChange,
-  zteHopTemplate,
   type HopVendor,
 } from "../utils/hopProxy";
 
@@ -27,7 +27,7 @@ export const emptyHopProxyFields = (): HopProxyFieldsState => ({
   hop_protocol: "ssh",
   hop_username: "",
   hop_password: "",
-  hop_command_template: zteHopTemplate("ssh", ""),
+  hop_command_template: defaultHopTemplate("zte", "ssh", ""),
   hop_vrf: "",
 });
 
@@ -51,10 +51,32 @@ function applyHopTemplate(
   vrf: string,
   force = false,
 ): Partial<HopProxyFieldsState> {
-  if (!force && !isAutoHopTemplate(prev.hop_command_template, prev.hop_protocol, prev.hop_vrf)) {
+  if (!force && !isAutoHopTemplate(prev.hop_command_template, prev.hop_vendor, prev.hop_protocol, prev.hop_vrf)) {
     return {};
   }
-  return { hop_command_template: zteHopTemplate(protocol, vrf) };
+  return { hop_command_template: defaultHopTemplate(prev.hop_vendor, protocol, vrf) };
+}
+
+function hopHintKey(vendor: string): string {
+  const v = String(vendor || "").toLowerCase();
+  if (v === "linux") return "managedNe.hop.linuxHint";
+  if (v === "huawei") return "managedNe.hop.huaweiHint";
+  if (v === "cisco") return "managedNe.hop.ciscoHint";
+  return "managedNe.hop.zteHint";
+}
+
+function templateHintKey(vendor: string): string {
+  const v = String(vendor || "").toLowerCase();
+  if (v === "huawei") return "managedNe.hop.templateHintHuawei";
+  if (v === "cisco") return "managedNe.hop.templateHintCisco";
+  return "managedNe.hop.templateHint";
+}
+
+function vrfLabelKey(vendor: string): string {
+  const v = String(vendor || "").toLowerCase();
+  if (v === "huawei") return "managedNe.hop.vpnInstance";
+  if (v === "cisco") return "managedNe.hop.vrfCisco";
+  return "managedNe.hop.vrf";
 }
 
 type Props = {
@@ -72,6 +94,7 @@ export function HopProxyFields({
 }: Props) {
   const { t } = useI18n();
   const linux = isLinuxHopVendor(value.hop_vendor);
+  const huawei = value.hop_vendor === "huawei";
 
   const set = (patch: Partial<HopProxyFieldsState>) => onChange(patch);
 
@@ -92,9 +115,7 @@ export function HopProxyFields({
             </option>
           ))}
         </select>
-        <span className="form-field-hint">
-          {linux ? t("managedNe.hop.linuxHint") : t("managedNe.hop.zteHint")}
-        </span>
+        <span className="form-field-hint">{t(hopHintKey(value.hop_vendor))}</span>
       </label>
       <label>
         <FormLabel required>{t("managedNe.hop.host")}</FormLabel>
@@ -118,7 +139,7 @@ export function HopProxyFields({
               set({ hop_protocol, ...applyHopTemplate(value, hop_protocol, value.hop_vrf) });
             }}
           >
-            <option value="ssh">ssh</option>
+            <option value="ssh">{huawei ? t("managedNe.hop.protocolSshStelnet") : "ssh"}</option>
             <option value="telnet">telnet</option>
           </select>
         </label>
@@ -144,7 +165,7 @@ export function HopProxyFields({
       {!linux ? (
         <>
           <label>
-            <FormLabel>{t("managedNe.hop.vrf")}</FormLabel>
+            <FormLabel>{t(vrfLabelKey(value.hop_vendor))}</FormLabel>
             <input
               value={value.hop_vrf}
               onChange={(e) => {
@@ -158,9 +179,9 @@ export function HopProxyFields({
             <input
               value={value.hop_command_template}
               onChange={(e) => set({ hop_command_template: e.target.value })}
-              placeholder={zteHopTemplate(value.hop_protocol, value.hop_vrf)}
+              placeholder={defaultHopTemplate(value.hop_vendor, value.hop_protocol, value.hop_vrf)}
             />
-            <span className="form-field-hint">{t("managedNe.hop.templateHint")}</span>
+            <span className="form-field-hint">{t(templateHintKey(value.hop_vendor))}</span>
           </label>
         </>
       ) : null}

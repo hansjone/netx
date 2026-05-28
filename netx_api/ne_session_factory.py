@@ -1,4 +1,4 @@
-"""Netmiko session factory: direct connect, ZTE CLI hop, or Linux SSH bastion."""
+"""Netmiko session factory: direct connect, vendor CLI hop (ZTE/Huawei/Cisco), or Linux SSH bastion."""
 
 from __future__ import annotations
 
@@ -29,11 +29,49 @@ def default_zte_hop_template(protocol: str, vrf: str = "") -> str:
     return f"{cmd} {{target_ip}}"
 
 
+def default_cisco_hop_template(protocol: str, vrf: str = "") -> str:
+    """Cisco CLI jump: ssh -vrf VRF IP; telnet IP [/vrf VRF]."""
+    v = str(vrf or "").strip()
+    if str(protocol or "ssh").strip().lower() == "telnet":
+        if v:
+            return "telnet {target_ip} /vrf {vrf}"
+        return "telnet {target_ip}"
+    if v:
+        return "ssh -vrf {vrf} {target_ip}"
+    return "ssh {target_ip}"
+
+
+def default_huawei_hop_template(protocol: str, vrf: str = "") -> str:
+    """Huawei CLI jump: telnet [vpn-instance VRF] IP; stelnet = SSH."""
+    v = str(vrf or "").strip()
+    if str(protocol or "ssh").strip().lower() == "telnet":
+        if v:
+            return "telnet vpn-instance {vrf} {target_ip}"
+        return "telnet {target_ip}"
+    if v:
+        return "stelnet {target_ip} -vpn-instance {vrf}"
+    return "stelnet {target_ip}"
+
+
+def default_hop_command_template(vendor: str, protocol: str, vrf: str = "") -> str:
+    v = str(vendor or "zte").strip().lower()
+    if v == "huawei":
+        return default_huawei_hop_template(protocol, vrf)
+    if v == "cisco":
+        return default_cisco_hop_template(protocol, vrf)
+    return default_zte_hop_template(protocol, vrf)
+
+
+def _hop_vendor(creds: dict[str, Any]) -> str:
+    return str(creds.get("hop_vendor") or "zte").strip().lower()
+
+
 def render_hop_command(template: str, creds: dict[str, Any]) -> str:
     """Render hop command from template using whitelisted placeholders only."""
     tpl = str(template or "").strip()
     if not tpl or tpl in _LEGACY_HOP_TEMPLATES:
-        tpl = default_zte_hop_template(
+        tpl = default_hop_command_template(
+            _hop_vendor(creds),
             str(creds.get("hop_protocol") or "ssh"),
             str(creds.get("hop_vrf") or ""),
         )
@@ -150,7 +188,19 @@ def _interactive_target_auth(conn: ConnectHandler, username: str, password: str)
         raise TimeoutError("target_auth_timeout")
 
 
-def _connect_via_zte_hop(creds: dict[str, Any], *, session_timeout: int | None = None) -> ConnectHandler:
+def _hop_netmiko_device_type(vendor: str, hop_protocol: str) -> str:
+    v = str(vendor or "zte").strip().lower()
+    if v == "huawei":
+        base = "huawei"
+    elif v == "cisco":
+        base = "cisco_ios"
+    else:
+        base = "zte_zxros"
+    return normalize_netmiko_device_type(base, hop_protocol)
+
+
+def _connect_via_cli_hop(creds: dict[str, Any], *, session_timeout: int | None = None) -> ConnectHandler:
+    """Login to ZTE/Huawei/Cisco hop NE, run CLI jump command, then target secondary auth."""
     hop_host = str(creds.get("hop_host") or "").strip()
     hop_user = str(creds.get("hop_username") or "").strip()
     hop_pass = str(creds.get("hop_password") or "")
@@ -158,7 +208,7 @@ def _connect_via_zte_hop(creds: dict[str, Any], *, session_timeout: int | None =
         raise ValueError("hop_credentials_incomplete")
 
     hop_protocol = str(creds.get("hop_protocol") or "ssh")
-    hop_device_type = normalize_netmiko_device_type("zte_zxros", hop_protocol)
+    hop_device_type = _hop_netmiko_device_type(_hop_vendor(creds), hop_protocol)
     hop_dev = _base_connect_kwargs(
         device_type=hop_device_type,
         host=hop_host,
@@ -181,10 +231,6 @@ def _connect_via_zte_hop(creds: dict[str, Any], *, session_timeout: int | None =
         except Exception:
             pass
         raise
-
-
-def _hop_vendor(creds: dict[str, Any]) -> str:
-    return str(creds.get("hop_vendor") or "zte").strip().lower()
 
 
 def _connect_via_linux_hop(creds: dict[str, Any], *, session_timeout: int | None = None) -> ConnectHandler:
@@ -267,5 +313,5 @@ def open_netmiko_connection(creds: dict[str, Any], *, session_timeout: int | Non
     if creds.get("hop_enabled"):
         if _hop_vendor(creds) == "linux":
             return _connect_via_linux_hop(creds, session_timeout=session_timeout)
-        return _connect_via_zte_hop(creds, session_timeout=session_timeout)
+        return _connect_via_cli_hop(creds, session_timeout=session_timeout)
     return _connect_direct(creds, session_timeout=session_timeout)

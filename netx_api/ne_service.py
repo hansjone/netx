@@ -19,7 +19,7 @@ from .ne_schemas import (
     ManagedNeOut,
     ManagedNeUpdate,
 )
-from .ne_session_factory import default_zte_hop_template
+from .ne_session_factory import default_hop_command_template
 
 IMPORT_COLUMNS = (
     "device_type",
@@ -53,7 +53,7 @@ def _normalize_protocol(protocol: str) -> str:
 
 def _normalize_hop_vendor(vendor: str) -> str:
     v = str(vendor or "zte").strip().lower()
-    return v if v in ("zte", "linux") else "zte"
+    return v if v in ("zte", "linux", "huawei", "cisco") else "zte"
 
 
 def _validate_hop_on_create(body: ManagedNeCreate) -> None:
@@ -123,6 +123,7 @@ def row_to_out(row: ManagedNE) -> ManagedNeOut:
         username=str(row.username or ""),
         connect_status=status,  # type: ignore[arg-type]
         connect_message=str(row.connect_message or "")[:500],
+        connect_detail=str(row.connect_detail or "")[:8000],
         connect_tested_at=row.connect_tested_at,
         tags=str(row.tags or ""),
         remark=str(row.remark or ""),
@@ -289,8 +290,8 @@ def batch_apply_hop_proxy(db: Session, ids: list[str], hop: HopProxyConfig) -> d
 
     hop_vendor = _normalize_hop_vendor(hop.hop_vendor)
     template = str(hop.hop_command_template or "").strip()
-    if hop_vendor == "zte" and not template:
-        template = default_zte_hop_template(hop.hop_protocol, hop.hop_vrf)
+    if hop_vendor != "linux" and not template:
+        template = default_hop_command_template(hop_vendor, hop.hop_protocol, hop.hop_vrf)
 
     ne_ids = [str(x).strip() for x in ids if str(x).strip()]
     if not ne_ids:

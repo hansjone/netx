@@ -132,6 +132,7 @@ export type ManagedNeItem = {
   username: string;
   connect_status: ConnectStatus;
   connect_message: string;
+  connect_detail: string;
   connect_tested_at: string | null;
   tags: string;
   remark: string;

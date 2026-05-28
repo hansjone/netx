@@ -835,6 +835,31 @@ pre {
   box-shadow: 0 16px 48px rgba(15, 23, 42, 0.2);
 }
 
+.modal--wide {
+  width: min(920px, 100%);
+}
+
+.connect-detail-summary {
+  margin-left: 8px;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.connect-log {
+  margin: 12px 0 0;
+  padding: 12px;
+  max-height: min(52vh, 480px);
+  overflow: auto;
+  background: #0f172a;
+  color: #e2e8f0;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
 .modal h3 {
   margin: 0 0 16px;
 }

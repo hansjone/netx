@@ -32,9 +32,17 @@ class ManagedNeHostnameParseTests(unittest.TestCase):
         out = "line1\nZXR10-PE1#"
         self.assertEqual(parse_hostname_from_output("zte_zxros", "ZTE", out), "ZXR10-PE1#")
 
+    def test_cisco_hostname(self):
+        out = "hostname R2\nR2#"
+        self.assertEqual(parse_hostname_from_output("cisco_ios", "Cisco", out), "R2")
+
     def test_probe_commands(self):
         self.assertIn("sysname", hostname_probe_command("huawei", "Huawei") or "")
         self.assertEqual(hostname_probe_command("zte_zxros", "ZTE"), None)
+        self.assertEqual(
+            hostname_probe_command("cisco_ios", "Cisco"),
+            "show configuration | include hostname",
+        )
 
 
 class ManagedNeCryptoTests(unittest.TestCase):

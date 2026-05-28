@@ -163,7 +163,12 @@ const en = {
       run: "Connectivity test",
       running: "Testing…",
       submitted: "Submitted tests for {{n}} device(s)",
+      retest: "Test again",
     },
+    connectDetail: "Details",
+    connectDetailTitle: "Connectivity test log",
+    connectDetailEmpty:
+      "No log yet. Run a connectivity test first; failures store full errors and hop context (passwords excluded).",
     importResult: {
       done: "Import done: {{inserted}} inserted, {{updated}} updated, {{failed}} failed row(s)",
     },
@@ -187,21 +192,34 @@ const en = {
       enable: "Connect to target via jump host",
       vendor: {
         zte: "ZTE device (CLI jump)",
+        huawei: "Huawei device (CLI jump)",
+        cisco: "Cisco device (CLI jump)",
         linux: "Linux server (SSH tunnel)",
       },
       zteHint: "Run ssh/telnet on the ZTE device to reach the target; target credentials use secondary auth.",
+      huaweiHint: "Run telnet / stelnet (SSH) on the Huawei hop; stelnet is SSH. Target credentials use secondary auth.",
+      ciscoHint: "Run Cisco ssh -vrf / telnet /vrf jump commands; target credentials use secondary auth.",
       linuxHint: "SSH to the Linux bastion, then direct-tcpip tunnel to target IP:port (ProxyJump-style).",
       host: "Jump host",
       port: "Jump port",
       protocol: "Jump protocol",
+      protocolSshStelnet: "ssh (stelnet)",
       username: "Jump username",
       password: "Jump password",
       vrf: "Mgmt VRF (optional)",
+      vpnInstance: "VPN-Instance (optional)",
+      vrfCisco: "VRF (optional, e.g. MGMT)",
       commandTemplate: "Jump command template",
       templateHint:
         "ZTE CLI: telnet {target_ip}, telnet {target_ip} vrf {vrf}, ssh {target_ip}, ssh {target_ip} vrf {vrf}. Auto-suggested from jump protocol/VRF; same when left blank. Target credentials via secondary auth prompts.",
+      templateHintHuawei:
+        "Huawei CLI: telnet {target_ip}, telnet vpn-instance {vrf} {target_ip}, stelnet {target_ip}, stelnet {target_ip} -vpn-instance {vrf}. SSH protocol maps to stelnet. Auto-suggested when left blank.",
+      templateHintCisco:
+        "Cisco CLI: ssh {target_ip}, ssh -vrf {vrf} {target_ip}, telnet {target_ip}, telnet {target_ip} /vrf {vrf}. Auto-suggested when left blank.",
       badge: {
         zte: "ZTE hop",
+        huawei: "Huawei hop",
+        cisco: "Cisco hop",
         linux: "Linux hop",
       },
       hostRequired: "Jump host is required",

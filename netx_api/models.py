@@ -240,6 +240,7 @@ class ManagedNE(Base):
     enable_secret_enc: Mapped[str] = mapped_column(Text, default="")
     connect_status: Mapped[str] = mapped_column(String(32), default="unknown", index=True)
     connect_message: Mapped[str] = mapped_column(String(512), default="")
+    connect_detail: Mapped[str] = mapped_column(Text, default="")
     connect_tested_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     site: Mapped[str] = mapped_column(String(256), default="")
     tags: Mapped[str] = mapped_column(String(512), default="")

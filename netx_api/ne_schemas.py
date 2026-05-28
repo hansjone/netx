@@ -89,6 +89,7 @@ class ManagedNeOut(BaseModel):
     username: str
     connect_status: ConnectStatus
     connect_message: str
+    connect_detail: str = ""
     connect_tested_at: datetime | None
     tags: str
     remark: str
