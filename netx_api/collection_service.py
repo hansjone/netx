@@ -217,6 +217,7 @@ def list_collection_jobs(db: Session, *, page: int = 1, page_size: int = 20) -> 
             db.refresh(row)
             if str(row.status or "") == "running":
                 sync_job_progress(db, job_id)
+                finalize_collection_job(db, job_id)
                 db.refresh(row)
     job_ids = [str(x.id) for x in rows]
     output_counts = _output_counts_for_jobs(db, job_ids)
@@ -237,6 +238,7 @@ def get_collection_job(db: Session, job_id: str) -> dict[str, Any]:
         db.refresh(job)
         if str(job.status or "") == "running":
             sync_job_progress(db, job_id)
+            finalize_collection_job(db, job_id)
             db.refresh(job)
     return {
         "job": job_to_out(job, output_count=_output_count_for_job(db, job_id)).model_dump(),
@@ -280,6 +282,33 @@ def list_collection_runs(
 
 def _active_runs(runs: list[NeCollectionRun]) -> bool:
     return any(str(r.status or "") in ("pending", "running") for r in runs)
+
+
+def _runs_in_progress(runs: list[NeCollectionRun]) -> bool:
+    """True when a worker is actively collecting (not merely queued as pending)."""
+    return any(str(r.status or "") == "running" for r in runs)
+
+
+def _blocking_running_job_ids(db: Session, ne_ids: list[str], *, exclude_job_id: str) -> list[str]:
+    if not ne_ids:
+        return []
+    other_jobs = (
+        db.query(NeCollectionJob)
+        .filter(NeCollectionJob.status == "running", NeCollectionJob.id != exclude_job_id)
+        .all()
+    )
+    blocked: list[str] = []
+    ne_set = set(ne_ids)
+    for other in other_jobs:
+        other_id = str(other.id)
+        overlap = (
+            db.query(NeCollectionRun.ne_id)
+            .filter(NeCollectionRun.job_id == other_id, NeCollectionRun.ne_id.in_(list(ne_set)))
+            .first()
+        )
+        if overlap:
+            blocked.append(other_id)
+    return blocked
 
 
 def pause_collection_job(db: Session, job_id: str) -> CollectionJobOut:
@@ -370,17 +399,22 @@ def start_collection_job(db: Session, job_id: str) -> tuple[CollectionJobOut, Co
     runs = db.query(NeCollectionRun).filter(NeCollectionRun.job_id == job_id).all()
     if not runs:
         raise HTTPException(status_code=400, detail="collection_no_runs")
-    if str(job.status or "") == "running" or _active_runs(runs):
+    if str(job.status or "") == "running" or _runs_in_progress(runs):
         raise HTTPException(status_code=400, detail="collection_job_running")
     commands = _parse_commands(str(job.commands or ""))
     if not commands:
         raise HTTPException(status_code=400, detail="commands_empty")
 
+    ne_ids = list({str(r.ne_id) for r in runs if str(r.ne_id or "").strip()})
+    blocking = _blocking_running_job_ids(db, ne_ids, exclude_job_id=job_id)
+    if blocking:
+        raise HTTPException(status_code=409, detail=f"collection_ne_busy: {blocking[0][:12]}")
+
     if str(job.status or "") == "pending":
         run_ids = [str(r.id) for r in runs if str(r.status or "") == "pending"]
         if not run_ids:
             raise HTTPException(status_code=400, detail="collection_nothing_to_start")
-        return _start_job_retry(db, job, job_id, run_ids, commands, reset_all_counts=False)
+        return _start_job_retry(db, job, job_id, run_ids, commands, reset_all_counts=True)
 
     retry_ids = _reset_runs_for_retry(
         db,
@@ -404,11 +438,15 @@ def retry_failed_collection_job(
     runs = db.query(NeCollectionRun).filter(NeCollectionRun.job_id == job_id).all()
     if not runs:
         raise HTTPException(status_code=400, detail="collection_no_runs")
-    if str(job.status or "") == "running" or _active_runs(runs):
+    if str(job.status or "") == "running" or _runs_in_progress(runs):
         raise HTTPException(status_code=400, detail="collection_job_running")
     commands = _parse_commands(str(job.commands or ""))
     if not commands:
         raise HTTPException(status_code=400, detail="commands_empty")
+    ne_ids = list({str(r.ne_id) for r in runs if str(r.ne_id or "").strip()})
+    blocking = _blocking_running_job_ids(db, ne_ids, exclude_job_id=job_id)
+    if blocking:
+        raise HTTPException(status_code=409, detail=f"collection_ne_busy: {blocking[0][:12]}")
     retry_ids = _reset_runs_for_retry(db, job_id, runs, only_statuses=frozenset({"fail"}))
     return _start_job_retry(db, job, job_id, retry_ids, commands, reset_all_counts=False)
 

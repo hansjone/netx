@@ -60,6 +60,8 @@ const zh = {
       added: "已添加",
       create: "创建任务",
       creating: "创建中…",
+      expand: "展开",
+      collapse: "收起",
       meta: "已选 {{ne}} 台网元 · {{cmd}} 条命令",
     },
     eligible: {
@@ -85,6 +87,8 @@ const zh = {
     retryFailedDone: "已开始重采失败网元",
     deleted: "任务已删除",
     nothingToRetry: "没有可重试的失败网元",
+    neBusy: "部分网元正在被其他采集任务占用，请等待其完成后再开始",
+    jobRunning: "该任务已在执行中",
     confirmDelete: "确定删除该采集任务？相关日志文件将一并删除。",
     jobs: {
       title: "采集任务",

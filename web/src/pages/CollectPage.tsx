@@ -23,6 +23,13 @@ import { formatSystemTime } from "../utils/time";
 const POLL_MS = 2000;
 const ELIGIBLE_PAGE_SIZE = 20;
 
+function collectionErrorMessage(err: unknown, t: (key: string) => string): string {
+  const raw = String(err);
+  if (raw.includes("collection_ne_busy")) return t("collect.neBusy");
+  if (raw.includes("collection_job_running")) return t("collect.jobRunning");
+  return raw;
+}
+
 export function CollectPage() {
   const { t } = useI18n();
   const { showOk, showError } = useToast();
@@ -36,6 +43,7 @@ export function CollectPage() {
   const [nePage, setNePage] = useState(1);
   const [jobPage, setJobPage] = useState(1);
   const [expandedJobId, setExpandedJobId] = useState("");
+  const [createOpen, setCreateOpen] = useState(false);
 
   const selectedIds = useMemo(() => Object.keys(selectedMap), [selectedMap]);
   const selectedList = useMemo(() => Object.values(selectedMap), [selectedMap]);
@@ -98,7 +106,7 @@ export function CollectPage() {
       showOk(t("collect.paused"));
       await invalidateJobs(job.id);
     },
-    onError: (err) => showError(String(err)),
+    onError: (err) => showError(collectionErrorMessage(err, t)),
   });
 
   const startJobMutation = useMutation({
@@ -108,7 +116,7 @@ export function CollectPage() {
       setExpandedJobId(job.id);
       await invalidateJobs(job.id);
     },
-    onError: (err) => showError(String(err)),
+    onError: (err) => showError(collectionErrorMessage(err, t)),
   });
 
   const retryFailedMutation = useMutation({
@@ -140,6 +148,7 @@ export function CollectPage() {
       }),
     onSuccess: async (job) => {
       showOk(t("collect.created", { id: job.id }));
+      setCreateOpen(false);
       setExpandedJobId(job.id);
       await queryClient.invalidateQueries({ queryKey: queryKeys.neCollectionsAll });
       await queryClient.invalidateQueries({ queryKey: queryKeys.neCollectionDetail(job.id) });
@@ -199,12 +208,23 @@ export function CollectPage() {
 
   return (
     <div className="page-stack">
-      <section className="panel collect-create-panel">
-        <div>
-          <h2>{t("collect.create.title")}</h2>
-          <p className="panel__hint">{t("collect.create.hint")}</p>
+      <section className={`panel collect-create-panel${createOpen ? "" : " collect-create-panel--collapsed"}`}>
+        <div className="panel__toolbar collect-create-panel__head">
+          <div>
+            <h2>{t("collect.create.title")}</h2>
+            <p className="panel__hint">
+              {createOpen
+                ? t("collect.create.hint")
+                : t("collect.create.meta", { ne: selectedIds.length, cmd: commandLines })}
+            </p>
+          </div>
+          <button type="button" className="link-btn" onClick={() => setCreateOpen((open) => !open)}>
+            {createOpen ? t("collect.create.collapse") : t("collect.create.expand")}
+          </button>
         </div>
 
+        {createOpen ? (
+          <>
         <div className="form-grid form-grid--single">
           <label className="form-grid__full">
             {t("collect.form.jobTitle")}
@@ -406,6 +426,8 @@ export function CollectPage() {
             {createMutation.isPending ? t("collect.create.creating") : t("collect.create.create")}
           </button>
         </div>
+          </>
+        ) : null}
       </section>
 
       <section className="panel">

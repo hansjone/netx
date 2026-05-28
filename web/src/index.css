@@ -909,6 +909,14 @@ pre {
   margin-right: auto;
 }
 
+.collect-create-panel__head {
+  margin-bottom: 0;
+}
+
+.collect-create-panel--collapsed {
+  padding-bottom: 16px;
+}
+
 .collect-create-panel h3 {
   margin: 0;
   font-size: 15px;

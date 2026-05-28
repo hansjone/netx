@@ -129,7 +129,7 @@ def _claim_run(job_id: str, run_id: str) -> bool:
             if job_status != "running":
                 return False
             if run_status == "running":
-                return True
+                return False
             if run_status != "pending":
                 return False
             run.status = "running"
@@ -149,7 +149,7 @@ def _run_single(job_id: str, run_id: str, commands: list[str]) -> None:
         try:
             run = db.get(NeCollectionRun, run_id)
             st = str(run.status or "") if run else ""
-            if st in ("cancelled", "success", "fail"):
+            if st in ("cancelled", "success", "fail", "running"):
                 sync_job_progress(db, job_id)
                 finalize_collection_job(db, job_id)
                 return

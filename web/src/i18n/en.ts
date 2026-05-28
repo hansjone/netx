@@ -60,6 +60,8 @@ const en = {
       added: "Added",
       create: "Create job",
       creating: "Creating…",
+      expand: "Expand",
+      collapse: "Collapse",
       meta: "{{ne}} NE(s) selected · {{cmd}} command(s)",
     },
     eligible: {
@@ -85,6 +87,8 @@ const en = {
     retryFailedDone: "Retrying failed devices",
     deleted: "Job deleted",
     nothingToRetry: "No failed devices to retry",
+    neBusy: "Some NEs are busy in another collection job; wait for it to finish before starting",
+    jobRunning: "This job is already running",
     confirmDelete: "Delete this collection job and its log files?",
     jobs: {
       title: "Collection jobs",
