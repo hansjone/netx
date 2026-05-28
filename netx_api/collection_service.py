@@ -7,7 +7,7 @@ import shutil
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 from fastapi import HTTPException
 from sqlalchemy import func, or_
@@ -21,10 +21,15 @@ from .collection_job_state import (
     _sync_job_counts,
 )
 from .collection_schemas import CollectionJobCreate, CollectionJobOut, CollectionRunOut
-from .ne_collect_runner import schedule_collection_runs
 from .ne_collection_paths import clear_run_output_files, collection_data_root
 
 _log = logging.getLogger("netx.collection")
+
+
+class CollectionSchedulePayload(TypedDict):
+    job_id: str
+    run_ids: list[str]
+    commands: list[str]
 
 
 def _now() -> datetime:
@@ -130,7 +135,9 @@ def list_eligible_ne(db: Session, *, page: int = 1, page_size: int = 200) -> dic
     return {"total": total, "page": page, "page_size": page_size, "items": items}
 
 
-def create_and_start_collection(db: Session, body: CollectionJobCreate) -> CollectionJobOut:
+def create_and_start_collection(
+    db: Session, body: CollectionJobCreate
+) -> tuple[CollectionJobOut, CollectionSchedulePayload]:
     commands = _parse_commands(body.commands)
     if not commands:
         raise HTTPException(status_code=400, detail="commands_empty")
@@ -184,8 +191,12 @@ def create_and_start_collection(db: Session, body: CollectionJobCreate) -> Colle
     db.commit()
     db.refresh(job)
 
-    schedule_collection_runs(str(job.id), run_ids, commands)
-    return job_to_out(job, output_count=0)
+    payload: CollectionSchedulePayload = {
+        "job_id": str(job.id),
+        "run_ids": run_ids,
+        "commands": commands,
+    }
+    return job_to_out(job, output_count=0), payload
 
 
 def list_collection_jobs(db: Session, *, page: int = 1, page_size: int = 20) -> dict[str, Any]:
@@ -319,7 +330,7 @@ def _start_job_retry(
     commands: list[str],
     *,
     reset_all_counts: bool,
-) -> CollectionJobOut:
+) -> tuple[CollectionJobOut, CollectionSchedulePayload]:
     if not retry_ids:
         raise HTTPException(status_code=400, detail="collection_nothing_to_retry")
     now = _now()
@@ -336,11 +347,15 @@ def _start_job_retry(
     job.last_run_at = now
     db.commit()
     db.refresh(job)
-    schedule_collection_runs(job_id, retry_ids, commands)
-    return job_to_out(job, output_count=_output_count_for_job(db, job_id))
+    payload: CollectionSchedulePayload = {
+        "job_id": job_id,
+        "run_ids": retry_ids,
+        "commands": commands,
+    }
+    return job_to_out(job, output_count=_output_count_for_job(db, job_id)), payload
 
 
-def restart_collection_job(db: Session, job_id: str) -> CollectionJobOut:
+def restart_collection_job(db: Session, job_id: str) -> tuple[CollectionJobOut, CollectionSchedulePayload]:
     job = db.get(NeCollectionJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="collection_job_not_found")
@@ -361,7 +376,9 @@ def restart_collection_job(db: Session, job_id: str) -> CollectionJobOut:
     return _start_job_retry(db, job, job_id, retry_ids, commands, reset_all_counts=True)
 
 
-def retry_failed_collection_job(db: Session, job_id: str) -> CollectionJobOut:
+def retry_failed_collection_job(
+    db: Session, job_id: str
+) -> tuple[CollectionJobOut, CollectionSchedulePayload]:
     job = db.get(NeCollectionJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="collection_job_not_found")

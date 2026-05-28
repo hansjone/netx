@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from datetime import datetime
@@ -97,31 +98,70 @@ def _update_run(run_id: str, **fields: Any) -> None:
         db.close()
 
 
-def _collection_aborted(job_id: str, run_id: str) -> bool:
+def _job_is_paused(job_id: str) -> bool:
     db = SessionLocal()
     try:
         job = db.get(NeCollectionJob, job_id)
-        run = db.get(NeCollectionRun, run_id)
-        if not job or not run:
-            return True
-        if str(job.status or "") == "paused":
-            if str(run.status or "") == "pending":
-                run.status = "cancelled"
-                run.message = "paused"
-                run.ended_at = datetime.now()
-                db.commit()
-            return True
-        if str(run.status or "") in ("cancelled", "success", "fail"):
-            return True
-        return False
+        return not job or str(job.status or "") == "paused"
     finally:
         db.close()
 
 
-def _run_single(job_id: str, run_id: str, commands: list[str]) -> None:
-    if _collection_aborted(job_id, run_id):
+def _claim_run(job_id: str, run_id: str) -> bool:
+    """Atomically move a pending run to running; retry while DB rows become visible."""
+    for attempt in range(10):
         db = SessionLocal()
         try:
+            run = db.get(NeCollectionRun, run_id)
+            job = db.get(NeCollectionJob, job_id)
+            if not run or not job:
+                time.sleep(0.05 * (attempt + 1))
+                continue
+            job_status = str(job.status or "")
+            run_status = str(run.status or "")
+            if job_status == "paused":
+                if run_status == "pending":
+                    run.status = "cancelled"
+                    run.message = "paused"
+                    run.ended_at = datetime.now()
+                    db.commit()
+                return False
+            if job_status != "running":
+                return False
+            if run_status == "running":
+                return True
+            if run_status != "pending":
+                return False
+            run.status = "running"
+            run.message = "collecting"
+            run.started_at = datetime.now()
+            db.commit()
+            return True
+        finally:
+            db.close()
+        time.sleep(0.05 * (attempt + 1))
+    return False
+
+
+def _run_single(job_id: str, run_id: str, commands: list[str]) -> None:
+    if not _claim_run(job_id, run_id):
+        db = SessionLocal()
+        try:
+            run = db.get(NeCollectionRun, run_id)
+            st = str(run.status or "") if run else ""
+            if st in ("cancelled", "success", "fail"):
+                sync_job_progress(db, job_id)
+                finalize_collection_job(db, job_id)
+                return
+            if st == "pending":
+                _log.warning("collection claim failed job=%s run=%s", job_id, run_id)
+                _update_run(
+                    run_id,
+                    status="fail",
+                    message="collection_claim_failed",
+                    ended_at=datetime.now(),
+                )
+            sync_job_progress(db, job_id)
             finalize_collection_job(db, job_id)
         finally:
             db.close()
@@ -135,8 +175,9 @@ def _run_single(job_id: str, run_id: str, commands: list[str]) -> None:
         if not ne:
             _update_run(run_id, status="fail", message="managed_ne_not_found", ended_at=datetime.now())
             return
-        started_at = datetime.now()
-        _update_run(run_id, status="running", message="collecting", started_at=started_at)
+        if _job_is_paused(job_id):
+            _update_run(run_id, status="cancelled", message="paused", ended_at=datetime.now())
+            return
         try:
             creds = get_device_credentials(ne)
             output = _collect_with_timeout(creds, commands)
@@ -174,10 +215,37 @@ def _run_single(job_id: str, run_id: str, commands: list[str]) -> None:
             db2.close()
 
 
+def _run_collect_safe(job_id: str, run_id: str, commands: list[str]) -> None:
+    try:
+        _run_single(job_id, run_id, commands)
+    except Exception:
+        _log.exception("collection task crashed job=%s run=%s", job_id, run_id)
+        _update_run(
+            run_id,
+            status="fail",
+            message="collection_worker_crashed",
+            ended_at=datetime.now(),
+        )
+        db = SessionLocal()
+        try:
+            sync_job_progress(db, job_id)
+            finalize_collection_job(db, job_id)
+        finally:
+            db.close()
+
+
 def schedule_collection_runs(job_id: str, run_ids: list[str], commands: list[str]) -> int:
     pool = _executor_pool()
+    cmd_list = list(commands)
     submitted = 0
     for run_id in run_ids:
-        pool.submit(_run_single, job_id, run_id, list(commands))
+        pool.submit(_run_collect_safe, job_id, str(run_id), cmd_list)
         submitted += 1
+    if submitted:
+        _log.info("scheduled collection job=%s runs=%s", job_id, submitted)
     return submitted
+
+
+def dispatch_collection_runs(job_id: str, run_ids: list[str], commands: list[str]) -> int:
+    """Entry point for FastAPI BackgroundTasks after the request transaction commits."""
+    return schedule_collection_runs(job_id, run_ids, commands)

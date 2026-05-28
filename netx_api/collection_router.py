@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 
@@ -20,6 +20,7 @@ from .collection_service import (
 from .collection_schemas import CollectionJobCreate
 from .db import get_db
 from .models import NeCollectionRun
+from .ne_collect_runner import dispatch_collection_runs
 
 router = APIRouter(prefix="/v1/ne-collections", tags=["ne-collections"])
 
@@ -34,8 +35,19 @@ def api_eligible_ne(
 
 
 @router.post("")
-def api_create_collection(body: CollectionJobCreate, db: Session = Depends(get_db)):
-    return create_and_start_collection(db, body).model_dump()
+def api_create_collection(
+    body: CollectionJobCreate,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    out, payload = create_and_start_collection(db, body)
+    background_tasks.add_task(
+        dispatch_collection_runs,
+        payload["job_id"],
+        payload["run_ids"],
+        payload["commands"],
+    )
+    return out.model_dump()
 
 
 @router.get("")
@@ -92,13 +104,35 @@ def api_pause_collection(job_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/{job_id}/restart")
-def api_restart_collection(job_id: str, db: Session = Depends(get_db)):
-    return restart_collection_job(db, job_id).model_dump()
+def api_restart_collection(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    out, payload = restart_collection_job(db, job_id)
+    background_tasks.add_task(
+        dispatch_collection_runs,
+        payload["job_id"],
+        payload["run_ids"],
+        payload["commands"],
+    )
+    return out.model_dump()
 
 
 @router.post("/{job_id}/retry-failed")
-def api_retry_failed_collection(job_id: str, db: Session = Depends(get_db)):
-    return retry_failed_collection_job(db, job_id).model_dump()
+def api_retry_failed_collection(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    out, payload = retry_failed_collection_job(db, job_id)
+    background_tasks.add_task(
+        dispatch_collection_runs,
+        payload["job_id"],
+        payload["run_ids"],
+        payload["commands"],
+    )
+    return out.model_dump()
 
 
 @router.delete("/{job_id}")

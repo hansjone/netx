@@ -36,13 +36,18 @@ export function registerModuleWindow(moduleId: string): () => void {
     /* ignore */
   }
 
-  return registerBroadcastListener<FocusModuleMessage>(MODULE_CHANNEL, moduleAckKey(moduleId), (data) => {
-    const targetPath = String(data.path || "").trim();
-    if (targetPath && window.location.pathname !== targetPath) {
-      window.location.assign(targetPath);
-    }
-    window.focus();
-  });
+  return registerBroadcastListener<FocusModuleMessage>(
+    MODULE_CHANNEL,
+    moduleAckKey(moduleId),
+    (data) => {
+      const targetPath = String(data.path || "").trim();
+      if (targetPath && window.location.pathname !== targetPath) {
+        window.location.assign(targetPath);
+      }
+      window.focus();
+    },
+    (data) => data.moduleId === moduleId,
+  );
 }
 
 export function openOrFocusModule({ moduleId, path }: ModuleWindowSpec): void {

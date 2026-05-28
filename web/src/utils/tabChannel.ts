@@ -10,6 +10,7 @@ export function registerBroadcastListener<T extends { requestId: string }>(
   channelName: string,
   ackStorageKey: string,
   onMessage: (data: T) => void,
+  shouldHandle?: (data: T) => boolean,
 ): () => void {
   if (typeof BroadcastChannel === "undefined") {
     return () => undefined;
@@ -19,6 +20,7 @@ export function registerBroadcastListener<T extends { requestId: string }>(
   channel.onmessage = (ev: MessageEvent<T>) => {
     const data = ev.data;
     if (!data?.requestId) return;
+    if (shouldHandle && !shouldHandle(data)) return;
     try {
       sessionStorage.setItem(ackStorageKey, data.requestId);
     } catch {
