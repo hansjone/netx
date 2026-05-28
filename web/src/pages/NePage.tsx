@@ -349,7 +349,11 @@ export function NePage() {
                     {row.connect_status}
                   </span>
                 </td>
-                <td>{row.connect_tested_at ? formatSystemTime(row.connect_tested_at) : t("common.empty")}</td>
+                <td>
+                  {row.connect_tested_at
+                    ? formatSystemTime(row.connect_tested_at, { assumeUtcNaive: true })
+                    : t("common.empty")}
+                </td>
                 <td className="table-actions">
                   <button type="button" className="link-btn" onClick={() => openEdit(row)}>
                     {t("managedNe.edit")}
