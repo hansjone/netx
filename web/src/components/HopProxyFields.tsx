@@ -1,0 +1,134 @@
+import type { ReactNode } from "react";
+import { useI18n } from "../i18n";
+import { isAutoHopTemplate, zteHopTemplate } from "../utils/zteHop";
+
+export type HopProxyFieldsState = {
+  hop_host: string;
+  hop_port: number;
+  hop_protocol: string;
+  hop_username: string;
+  hop_password: string;
+  hop_command_template: string;
+  hop_vrf: string;
+};
+
+export const emptyHopProxyFields = (): HopProxyFieldsState => ({
+  hop_host: "",
+  hop_port: 22,
+  hop_protocol: "ssh",
+  hop_username: "",
+  hop_password: "",
+  hop_command_template: zteHopTemplate("ssh", ""),
+  hop_vrf: "",
+});
+
+function FormLabel({ children, required }: { children: ReactNode; required?: boolean }) {
+  return (
+    <span className="form-label">
+      {children}
+      {required ? (
+        <span className="form-label__required" title="required" aria-hidden="true">
+          {" "}
+          *
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+function applyHopTemplate(
+  prev: HopProxyFieldsState,
+  protocol: string,
+  vrf: string,
+  force = false,
+): Partial<HopProxyFieldsState> {
+  if (!force && !isAutoHopTemplate(prev.hop_command_template, prev.hop_protocol, prev.hop_vrf)) {
+    return {};
+  }
+  return { hop_command_template: zteHopTemplate(protocol, vrf) };
+}
+
+type Props = {
+  value: HopProxyFieldsState;
+  onChange: (patch: Partial<HopProxyFieldsState>) => void;
+  hopPasswordRequired?: boolean;
+  hopPasswordOptional?: boolean;
+};
+
+export function HopProxyFields({
+  value,
+  onChange,
+  hopPasswordRequired = true,
+  hopPasswordOptional = false,
+}: Props) {
+  const { t } = useI18n();
+
+  const set = (patch: Partial<HopProxyFieldsState>) => onChange(patch);
+
+  return (
+    <div className="form-grid">
+      <label>
+        <FormLabel required>{t("managedNe.hop.host")}</FormLabel>
+        <input required value={value.hop_host} onChange={(e) => set({ hop_host: e.target.value })} />
+      </label>
+      <label>
+        <FormLabel>{t("managedNe.hop.port")}</FormLabel>
+        <input
+          type="number"
+          value={value.hop_port}
+          onChange={(e) => set({ hop_port: Number(e.target.value) || 22 })}
+        />
+      </label>
+      <label>
+        <FormLabel>{t("managedNe.hop.protocol")}</FormLabel>
+        <select
+          value={value.hop_protocol}
+          onChange={(e) => {
+            const hop_protocol = e.target.value;
+            set({ hop_protocol, ...applyHopTemplate(value, hop_protocol, value.hop_vrf) });
+          }}
+        >
+          <option value="ssh">ssh</option>
+          <option value="telnet">telnet</option>
+        </select>
+      </label>
+      <label>
+        <FormLabel required>{t("managedNe.hop.username")}</FormLabel>
+        <input required value={value.hop_username} onChange={(e) => set({ hop_username: e.target.value })} />
+      </label>
+      <label>
+        <FormLabel required={hopPasswordRequired}>
+          {t("managedNe.hop.password")}
+          {hopPasswordOptional ? (
+            <span className="form-label__optional"> ({t("managedNe.form.passwordOptional")})</span>
+          ) : null}
+        </FormLabel>
+        <input
+          type="password"
+          required={hopPasswordRequired}
+          value={value.hop_password}
+          onChange={(e) => set({ hop_password: e.target.value })}
+        />
+      </label>
+      <label>
+        <FormLabel>{t("managedNe.hop.vrf")}</FormLabel>
+        <input
+          value={value.hop_vrf}
+          onChange={(e) => {
+            const hop_vrf = e.target.value;
+            set({ hop_vrf, ...applyHopTemplate(value, value.hop_protocol, hop_vrf) });
+          }}
+        />
+      </label>
+      <label className="form-grid__full">
+        <FormLabel>{t("managedNe.hop.commandTemplate")}</FormLabel>
+        <input
+          value={value.hop_command_template}
+          onChange={(e) => set({ hop_command_template: e.target.value })}
+          placeholder={zteHopTemplate(value.hop_protocol, value.hop_vrf)}
+        />
+        <span className="form-field-hint">{t("managedNe.hop.templateHint")}</span>
+      </label>
+    </div>
+  );
+}

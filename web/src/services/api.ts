@@ -129,6 +129,20 @@ export const deleteManagedNe = (id: string) => apiDelete<{ ok: boolean }>(`/v1/m
 export const connectTestManagedNe = (ids: string[]) =>
   apiPost<{ ok: boolean; submitted: number }>("/v1/managed-ne/connect-test", { ids });
 
+export const batchApplyHopManagedNe = (
+  ids: string[],
+  hop: {
+    hop_host: string;
+    hop_port: number;
+    hop_protocol: string;
+    hop_username: string;
+    hop_password: string;
+    hop_command_template: string;
+    hop_vrf: string;
+    hop_vendor?: string;
+  },
+) => apiPost<{ ok: boolean; updated: number }>("/v1/managed-ne/batch-hop", { ids, hop });
+
 export const managedNeImportTemplateUrl = (format: "xlsx" | "csv" = "xlsx") =>
   `/v1/managed-ne/import/template?format=${format}`;
 

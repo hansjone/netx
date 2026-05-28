@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  batchApplyHopManagedNe,
   connectTestManagedNe,
   createManagedNe,
   deleteManagedNe,
@@ -10,6 +11,7 @@ import {
   managedNeImportTemplateUrl,
   updateManagedNe,
 } from "../services/api";
+import { HopProxyFields, emptyHopProxyFields, type HopProxyFieldsState } from "../components/HopProxyFields";
 import { queryKeys } from "../constants/queryKeys";
 import { useI18n } from "../i18n";
 import { useToast } from "../hooks/useToast";
@@ -101,8 +103,10 @@ export function NePage() {
   const [pageSize, setPageSize] = useState(50);
   const [selected, setSelected] = useState<string[]>([]);
   const [modalOpen, setModalOpen] = useState(false);
+  const [batchHopOpen, setBatchHopOpen] = useState(false);
   const [editing, setEditing] = useState<ManagedNeItem | null>(null);
   const [form, setForm] = useState<FormState>(emptyForm);
+  const [batchHop, setBatchHop] = useState<HopProxyFieldsState>(emptyHopProxyFields);
 
   const metaQuery = useQuery({
     queryKey: queryKeys.managedNeMeta,
@@ -191,6 +195,27 @@ export function NePage() {
     mutationFn: connectTestManagedNe,
     onSuccess: async (res) => {
       showOk(t("managedNe.connect.submitted", { n: res.submitted }));
+      await invalidateList();
+    },
+    onError: (err) => showError(String(err)),
+  });
+
+  const batchHopMutation = useMutation({
+    mutationFn: () =>
+      batchApplyHopManagedNe(selected, {
+        hop_vendor: "zte",
+        hop_host: batchHop.hop_host.trim(),
+        hop_port: batchHop.hop_port,
+        hop_protocol: batchHop.hop_protocol,
+        hop_username: batchHop.hop_username.trim(),
+        hop_password: batchHop.hop_password,
+        hop_command_template: batchHop.hop_command_template.trim(),
+        hop_vrf: batchHop.hop_vrf.trim(),
+      }),
+    onSuccess: async (res) => {
+      setBatchHopOpen(false);
+      setBatchHop(emptyHopProxyFields());
+      showOk(t("managedNe.hop.batchDone", { n: res.updated }));
       await invalidateList();
     },
     onError: (err) => showError(String(err)),
@@ -317,6 +342,20 @@ export function NePage() {
               onClick={() => connectMutation.mutate(selected)}
             >
               {connectMutation.isPending ? t("managedNe.connect.running") : t("managedNe.connect.run")}
+            </button>
+            <button
+              type="button"
+              disabled={!credsOk || selected.length === 0 || batchHopMutation.isPending}
+              onClick={() => {
+                if (selected.length === 0) {
+                  showError(t("managedNe.hop.selectRequired"));
+                  return;
+                }
+                setBatchHop(emptyHopProxyFields());
+                setBatchHopOpen(true);
+              }}
+            >
+              {batchHopMutation.isPending ? t("managedNe.hop.applying") : t("managedNe.hop.batchAdd")}
             </button>
             <button type="button" onClick={() => invalidateList()}>
               {t("common.refresh")}
@@ -565,86 +604,20 @@ export function NePage() {
                 {t("managedNe.hop.enable")}
               </label>
               {form.hop_enabled ? (
-                <div className="form-grid">
-                  <label>
-                    <FormLabel required>{t("managedNe.hop.host")}</FormLabel>
-                    <input
-                      required
-                      value={form.hop_host}
-                      onChange={(e) => setForm({ ...form, hop_host: e.target.value })}
-                    />
-                  </label>
-                  <label>
-                    <FormLabel>{t("managedNe.hop.port")}</FormLabel>
-                    <input
-                      type="number"
-                      value={form.hop_port}
-                      onChange={(e) => setForm({ ...form, hop_port: Number(e.target.value) || 22 })}
-                    />
-                  </label>
-                  <label>
-                    <FormLabel>{t("managedNe.hop.protocol")}</FormLabel>
-                    <select
-                      value={form.hop_protocol}
-                      onChange={(e) => {
-                        const hop_protocol = e.target.value;
-                        setForm((prev) => ({
-                          ...prev,
-                          hop_protocol,
-                          ...applyHopTemplate(prev, hop_protocol, prev.hop_vrf),
-                        }));
-                      }}
-                    >
-                      <option value="ssh">ssh</option>
-                      <option value="telnet">telnet</option>
-                    </select>
-                  </label>
-                  <label>
-                    <FormLabel required>{t("managedNe.hop.username")}</FormLabel>
-                    <input
-                      required
-                      value={form.hop_username}
-                      onChange={(e) => setForm({ ...form, hop_username: e.target.value })}
-                    />
-                  </label>
-                  <label>
-                    <FormLabel required={!editing}>
-                      {t("managedNe.hop.password")}
-                      {editing ? (
-                        <span className="form-label__optional"> ({t("managedNe.form.passwordOptional")})</span>
-                      ) : null}
-                    </FormLabel>
-                    <input
-                      type="password"
-                      required={!editing}
-                      value={form.hop_password}
-                      onChange={(e) => setForm({ ...form, hop_password: e.target.value })}
-                    />
-                  </label>
-                  <label>
-                    <FormLabel>{t("managedNe.hop.vrf")}</FormLabel>
-                    <input
-                      value={form.hop_vrf}
-                      onChange={(e) => {
-                        const hop_vrf = e.target.value;
-                        setForm((prev) => ({
-                          ...prev,
-                          hop_vrf,
-                          ...applyHopTemplate(prev, prev.hop_protocol, hop_vrf),
-                        }));
-                      }}
-                    />
-                  </label>
-                  <label className="form-grid__full">
-                    <FormLabel>{t("managedNe.hop.commandTemplate")}</FormLabel>
-                    <input
-                      value={form.hop_command_template}
-                      onChange={(e) => setForm({ ...form, hop_command_template: e.target.value })}
-                      placeholder={zteHopTemplate(form.hop_protocol, form.hop_vrf)}
-                    />
-                    <span className="form-field-hint">{t("managedNe.hop.templateHint")}</span>
-                  </label>
-                </div>
+                <HopProxyFields
+                  value={{
+                    hop_host: form.hop_host,
+                    hop_port: form.hop_port,
+                    hop_protocol: form.hop_protocol,
+                    hop_username: form.hop_username,
+                    hop_password: form.hop_password,
+                    hop_command_template: form.hop_command_template,
+                    hop_vrf: form.hop_vrf,
+                  }}
+                  onChange={(patch) => setForm((prev) => ({ ...prev, ...patch }))}
+                  hopPasswordRequired={!editing}
+                  hopPasswordOptional={Boolean(editing)}
+                />
               ) : null}
             </fieldset>
             <div className="modal__actions">
@@ -653,6 +626,42 @@ export function NePage() {
               </button>
               <button type="button" disabled={saveMutation.isPending} onClick={() => saveMutation.mutate()}>
                 {saveMutation.isPending ? t("managedNe.form.saving") : t("managedNe.form.save")}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {batchHopOpen ? (
+        <div className="modal-backdrop" role="presentation" onClick={() => setBatchHopOpen(false)}>
+          <div className="modal" role="dialog" onClick={(e) => e.stopPropagation()}>
+            <h3>{t("managedNe.hop.batchTitle")}</h3>
+            <p className="form-hint">{t("managedNe.hop.batchHint", { n: selected.length })}</p>
+            <HopProxyFields value={batchHop} onChange={(patch) => setBatchHop((prev) => ({ ...prev, ...patch }))} />
+            <div className="modal__actions">
+              <button type="button" onClick={() => setBatchHopOpen(false)}>
+                {t("managedNe.form.cancel")}
+              </button>
+              <button
+                type="button"
+                disabled={batchHopMutation.isPending}
+                onClick={() => {
+                  if (!batchHop.hop_host.trim()) {
+                    showError(t("managedNe.hop.hostRequired"));
+                    return;
+                  }
+                  if (!batchHop.hop_username.trim()) {
+                    showError(t("managedNe.hop.userRequired"));
+                    return;
+                  }
+                  if (!batchHop.hop_password) {
+                    showError(t("managedNe.hop.passwordRequired"));
+                    return;
+                  }
+                  batchHopMutation.mutate();
+                }}
+              >
+                {batchHopMutation.isPending ? t("managedNe.hop.applying") : t("managedNe.hop.apply")}
               </button>
             </div>
           </div>

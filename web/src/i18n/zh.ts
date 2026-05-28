@@ -191,6 +191,13 @@ const zh = {
       hostRequired: "请填写跳板地址",
       userRequired: "请填写跳板用户名",
       passwordRequired: "请填写跳板密码",
+      batchAdd: "添加代理",
+      batchTitle: "批量添加代理",
+      batchHint: "将以下跳板配置应用到已选中的 {{n}} 台网元（会覆盖原有跳板设置）。",
+      batchDone: "已为 {{n}} 台网元配置代理",
+      selectRequired: "请先勾选要配置的网元",
+      applying: "应用中…",
+      apply: "应用到选中网元",
     },
   },
   ume: {

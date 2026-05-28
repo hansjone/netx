@@ -108,6 +108,24 @@ class ConnectTestRequest(BaseModel):
     ids: list[str] = Field(min_length=1)
 
 
+class HopProxyConfig(BaseModel):
+    """Shared jump-host (proxy) settings applied to one or many NEs."""
+
+    hop_vendor: str = "zte"
+    hop_host: str
+    hop_port: int = 22
+    hop_protocol: str = "ssh"
+    hop_username: str
+    hop_password: str
+    hop_command_template: str = ""
+    hop_vrf: str = ""
+
+
+class BatchHopApplyRequest(BaseModel):
+    ids: list[str] = Field(min_length=1)
+    hop: HopProxyConfig
+
+
 class ImportFailure(BaseModel):
     row: int
     reason: str

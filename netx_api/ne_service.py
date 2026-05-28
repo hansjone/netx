@@ -11,7 +11,15 @@ from sqlalchemy.orm import Session
 from .device_types import SUPPORTED_DEVICE_TYPES, SUPPORTED_VENDORS
 from .models import ManagedNE
 from .ne_crypto import CredentialCryptoError, credentials_configured, decrypt_secret, encrypt_secret
-from .ne_schemas import ImportFailure, ImportResult, ManagedNeCreate, ManagedNeOut, ManagedNeUpdate
+from .ne_schemas import (
+    HopProxyConfig,
+    ImportFailure,
+    ImportResult,
+    ManagedNeCreate,
+    ManagedNeOut,
+    ManagedNeUpdate,
+)
+from .ne_session_factory import default_zte_hop_template
 
 IMPORT_COLUMNS = (
     "device_type",
@@ -264,6 +272,50 @@ def update_managed_ne(db: Session, ne_id: str, body: ManagedNeUpdate) -> Managed
     db.commit()
     db.refresh(row)
     return row_to_out(row)
+
+
+def batch_apply_hop_proxy(db: Session, ids: list[str], hop: HopProxyConfig) -> dict[str, Any]:
+    """Apply the same jump-host (proxy) settings to multiple managed NEs."""
+    _require_crypto()
+    hop_host = str(hop.hop_host or "").strip()
+    hop_user = str(hop.hop_username or "").strip()
+    hop_pass = str(hop.hop_password or "").strip()
+    if not hop_host:
+        raise HTTPException(status_code=400, detail="hop_host_required")
+    if not hop_user:
+        raise HTTPException(status_code=400, detail="hop_username_required")
+    if not hop_pass:
+        raise HTTPException(status_code=400, detail="hop_password_required")
+
+    template = str(hop.hop_command_template or "").strip()
+    if not template:
+        template = default_zte_hop_template(hop.hop_protocol, hop.hop_vrf)
+
+    ne_ids = [str(x).strip() for x in ids if str(x).strip()]
+    if not ne_ids:
+        raise HTTPException(status_code=400, detail="ids_required")
+
+    rows = db.query(ManagedNE).filter(ManagedNE.id.in_(ne_ids)).all()
+    found_ids = {str(r.id) for r in rows}
+    missing = [x for x in ne_ids if x not in found_ids]
+    if missing:
+        raise HTTPException(status_code=404, detail=f"managed_ne_not_found: {','.join(missing[:5])}")
+
+    enc = encrypt_secret(hop_pass)
+    now = _now()
+    for row in rows:
+        row.hop_enabled = True
+        row.hop_vendor = _normalize_hop_vendor(hop.hop_vendor)
+        row.hop_host = hop_host
+        row.hop_port = int(hop.hop_port or 22)
+        row.hop_protocol = _normalize_protocol(hop.hop_protocol)
+        row.hop_username = hop_user
+        row.hop_password_enc = enc
+        row.hop_command_template = template
+        row.hop_vrf = str(hop.hop_vrf or "").strip()
+        row.updated_at = now
+    db.commit()
+    return {"ok": True, "updated": len(rows)}
 
 
 def delete_managed_ne(db: Session, ne_id: str) -> dict[str, bool]:

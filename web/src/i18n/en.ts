@@ -192,6 +192,13 @@ const en = {
       hostRequired: "Jump host is required",
       userRequired: "Jump username is required",
       passwordRequired: "Jump password is required",
+      batchAdd: "Add proxy",
+      batchTitle: "Batch add jump proxy",
+      batchHint: "Apply the jump-host settings below to {{n}} selected NE(s) (overwrites existing proxy config).",
+      batchDone: "Proxy applied to {{n}} NE(s)",
+      selectRequired: "Select network elements first",
+      applying: "Applying…",
+      apply: "Apply to selected",
     },
   },
   ume: {

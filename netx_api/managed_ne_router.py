@@ -8,8 +8,9 @@ from .db import get_db
 from .device_types import SUPPORTED_DEVICE_TYPES, SUPPORTED_VENDORS
 from .ne_connect import schedule_connect_tests
 from .ne_crypto import credentials_configured
-from .ne_schemas import ConnectTestRequest, ManagedNeCreate, ManagedNeUpdate
+from .ne_schemas import BatchHopApplyRequest, ConnectTestRequest, ManagedNeCreate, ManagedNeUpdate
 from .ne_service import (
+    batch_apply_hop_proxy,
     build_managed_ne_import_template,
     create_managed_ne,
     delete_managed_ne,
@@ -88,6 +89,11 @@ async def api_import_managed_ne(file: UploadFile = File(...), db: Session = Depe
     if not content:
         raise HTTPException(status_code=400, detail="empty_file")
     return import_managed_ne(db, content, file.filename or "import.xlsx").model_dump()
+
+
+@router.post("/batch-hop")
+def api_batch_apply_hop(body: BatchHopApplyRequest, db: Session = Depends(get_db)):
+    return batch_apply_hop_proxy(db, body.ids, body.hop)
 
 
 @router.post("/connect-test")
