@@ -175,6 +175,23 @@ const zh = {
       passwordRequired: "请填写密码",
       passwordOptional: "留空则不修改",
     },
+    hop: {
+      sectionTitle: "ZTE 跳板机",
+      enable: "经跳板登录目标网元",
+      host: "跳板地址",
+      port: "跳板端口",
+      protocol: "跳板协议",
+      username: "跳板用户名",
+      password: "跳板密码",
+      vrf: "管理 VRF（可选）",
+      commandTemplate: "跳登命令模板",
+      templateHint:
+        "ZTE 常用：telnet {target_ip}、telnet {target_ip} vrf {vrf}、ssh {target_ip}、ssh {target_ip} vrf {vrf}。按跳板协议与 VRF 自动推荐；留空时后端同样规则。目标账号密码由二次认证提示输入。",
+      badge: "跳板",
+      hostRequired: "请填写跳板地址",
+      userRequired: "请填写跳板用户名",
+      passwordRequired: "请填写跳板密码",
+    },
   },
   ume: {
     token: {

@@ -135,6 +135,14 @@ export type ManagedNeItem = {
   connect_tested_at: string | null;
   tags: string;
   remark: string;
+  hop_enabled: boolean;
+  hop_vendor: string;
+  hop_host: string;
+  hop_port: number;
+  hop_protocol: string;
+  hop_username: string;
+  hop_command_template: string;
+  hop_vrf: string;
   created_at: string;
   updated_at: string;
 };

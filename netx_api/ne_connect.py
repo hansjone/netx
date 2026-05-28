@@ -6,14 +6,12 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any
 
-from netmiko import ConnectHandler
-
 from .config import settings
 from .db import SessionLocal
 from .models import ManagedNE
-from .ne_crypto import CredentialCryptoError, decrypt_secret
-from .ne_netmiko import normalize_netmiko_device_type
+from .ne_crypto import CredentialCryptoError
 from .ne_service import get_device_credentials
+from .ne_session_factory import open_netmiko_connection
 
 _log = logging.getLogger("netx.ne.connect")
 _executor: ThreadPoolExecutor | None = None
@@ -102,42 +100,53 @@ def _clean_prompt_hostname(prompt: str) -> str | None:
     return p[:256]
 
 
+def _classify_connect_error(creds: dict[str, Any], exc: BaseException) -> str:
+    raw = str(exc).lower()
+    detail = str(exc).split("\n")[0][:480]
+    if creds.get("hop_enabled"):
+        if "hop_credentials_incomplete" in raw or "hop_command_template_invalid" in raw:
+            return detail
+        if "target_auth_timeout" in raw:
+            return "target_auth_failed: " + detail
+        if "authentication" in raw or "auth" in raw:
+            if "hop_host" in raw or str(creds.get("hop_host") or "") in raw:
+                return "hop_auth_failed: " + detail
+            return "target_auth_failed: " + detail
+        if "timed out" in raw or "timeout" in raw:
+            return "hop_connect_failed: " + detail
+        return "hop_command_failed: " + detail
+    return detail
+
+
 def _probe_device(creds: dict[str, Any]) -> tuple[str, str, str | None]:
     """Login via Netmiko, probe hostname, return (status, message, discovered_name)."""
-    device_type = normalize_netmiko_device_type(creds["device_type"], creds["protocol"])
     vendor = str(creds.get("vendor") or "")
-    dev: dict[str, Any] = {
-        "device_type": device_type,
-        "host": creds["ip_address"],
-        "username": creds["username"],
-        "password": creds["password"],
-        "port": int(creds["port"] or 22),
-        "conn_timeout": int(settings.ne_connect_timeout_sec or 30),
-        "auth_timeout": int(settings.ne_connect_timeout_sec or 30),
-        "banner_timeout": int(settings.ne_connect_timeout_sec or 30),
-    }
-    secret = str(creds.get("enable_secret") or "").strip()
-    if secret:
-        dev["secret"] = secret
+    session_timeout = 180 if creds.get("hop_enabled") else None
+    conn = None
     try:
-        with ConnectHandler(**dev) as conn:
-            prompt = str(conn.find_prompt() or "")
-            command = hostname_probe_command(creds["device_type"], vendor)
-            output = ""
-            if command:
-                output = conn.send_command(command_string=command, read_timeout=30)
-            hostname = parse_hostname_from_output(creds["device_type"], vendor, output, prompt)
-            if hostname:
-                return "pass", f"connected: {hostname}", hostname
-            if command:
-                return "pass", "connected (hostname not parsed)", None
-            fallback = _clean_prompt_hostname(prompt)
-            if fallback:
-                return "pass", f"connected: {fallback}", fallback
-            return "pass", "connected", None
+        conn = open_netmiko_connection(creds, session_timeout=session_timeout)
+        prompt = str(conn.find_prompt() or "")
+        command = hostname_probe_command(creds["device_type"], vendor)
+        output = ""
+        if command:
+            output = conn.send_command(command_string=command, read_timeout=30)
+        hostname = parse_hostname_from_output(creds["device_type"], vendor, output, prompt)
+        if hostname:
+            return "pass", f"connected: {hostname}", hostname
+        if command:
+            return "pass", "connected (hostname not parsed)", None
+        fallback = _clean_prompt_hostname(prompt)
+        if fallback:
+            return "pass", f"connected: {fallback}", fallback
+        return "pass", "connected", None
     except Exception as exc:
-        msg = str(exc).split("\n")[0][:480]
-        return "fail", msg, None
+        return "fail", _classify_connect_error(creds, exc), None
+    finally:
+        if conn is not None:
+            try:
+                conn.disconnect()
+            except Exception:
+                pass
 
 
 def _update_row(ne_id: str, status: str, message: str, discovered_name: str | None = None) -> None:

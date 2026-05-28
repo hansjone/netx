@@ -176,6 +176,23 @@ const en = {
       passwordRequired: "Password is required",
       passwordOptional: "leave blank to keep unchanged",
     },
+    hop: {
+      sectionTitle: "ZTE jump host",
+      enable: "Connect to target via jump host",
+      host: "Jump host",
+      port: "Jump port",
+      protocol: "Jump protocol",
+      username: "Jump username",
+      password: "Jump password",
+      vrf: "Mgmt VRF (optional)",
+      commandTemplate: "Jump command template",
+      templateHint:
+        "ZTE CLI: telnet {target_ip}, telnet {target_ip} vrf {vrf}, ssh {target_ip}, ssh {target_ip} vrf {vrf}. Auto-suggested from jump protocol/VRF; same when left blank. Target credentials via secondary auth prompts.",
+      badge: "hop",
+      hostRequired: "Jump host is required",
+      userRequired: "Jump username is required",
+      passwordRequired: "Jump password is required",
+    },
   },
   ume: {
     token: {

@@ -21,6 +21,15 @@ class ManagedNeCreate(BaseModel):
     password: str
     tags: str = ""
     remark: str = ""
+    hop_enabled: bool = False
+    hop_vendor: str = "zte"
+    hop_host: str = ""
+    hop_port: int = 22
+    hop_protocol: str = "ssh"
+    hop_username: str = ""
+    hop_password: str = ""
+    hop_command_template: str = ""
+    hop_vrf: str = ""
 
     @field_validator("vendor")
     @classmethod
@@ -45,6 +54,15 @@ class ManagedNeUpdate(BaseModel):
     password: str | None = None
     tags: str | None = None
     remark: str | None = None
+    hop_enabled: bool | None = None
+    hop_vendor: str | None = None
+    hop_host: str | None = None
+    hop_port: int | None = None
+    hop_protocol: str | None = None
+    hop_username: str | None = None
+    hop_password: str | None = None
+    hop_command_template: str | None = None
+    hop_vrf: str | None = None
 
     @field_validator("vendor")
     @classmethod
@@ -74,6 +92,14 @@ class ManagedNeOut(BaseModel):
     connect_tested_at: datetime | None
     tags: str
     remark: str
+    hop_enabled: bool = False
+    hop_vendor: str = "zte"
+    hop_host: str = ""
+    hop_port: int = 22
+    hop_protocol: str = "ssh"
+    hop_username: str = ""
+    hop_command_template: str = ""
+    hop_vrf: str = ""
     created_at: datetime
     updated_at: datetime
 

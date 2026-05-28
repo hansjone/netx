@@ -16,6 +16,7 @@ import { useToast } from "../hooks/useToast";
 import type { ManagedNeItem } from "../types";
 import { pageCount } from "../utils/display";
 import { formatSystemTime } from "../utils/time";
+import { isAutoHopTemplate, zteHopTemplate } from "../utils/zteHop";
 
 type FormState = {
   name: string;
@@ -28,6 +29,14 @@ type FormState = {
   password: string;
   tags: string;
   remark: string;
+  hop_enabled: boolean;
+  hop_host: string;
+  hop_port: number;
+  hop_protocol: string;
+  hop_username: string;
+  hop_password: string;
+  hop_command_template: string;
+  hop_vrf: string;
 };
 
 const emptyForm = (): FormState => ({
@@ -41,7 +50,22 @@ const emptyForm = (): FormState => ({
   password: "",
   tags: "",
   remark: "",
+  hop_enabled: false,
+  hop_host: "",
+  hop_port: 22,
+  hop_protocol: "ssh",
+  hop_username: "",
+  hop_password: "",
+  hop_command_template: zteHopTemplate("ssh", ""),
+  hop_vrf: "",
 });
+
+function applyHopTemplate(prev: FormState, protocol: string, vrf: string, force = false): Partial<FormState> {
+  if (!force && !isAutoHopTemplate(prev.hop_command_template, prev.hop_protocol, prev.hop_vrf)) {
+    return {};
+  }
+  return { hop_command_template: zteHopTemplate(protocol, vrf) };
+}
 
 function FormLabel({ children, required }: { children: ReactNode; required?: boolean }) {
   return (
@@ -120,10 +144,25 @@ export function NePage() {
         username: form.username,
         tags: form.tags,
         remark: form.remark,
+        hop_enabled: form.hop_enabled,
+        hop_vendor: "zte",
+        hop_host: form.hop_host,
+        hop_port: form.hop_port,
+        hop_protocol: form.hop_protocol,
+        hop_username: form.hop_username,
+        hop_command_template: form.hop_command_template,
+        hop_vrf: form.hop_vrf,
         ...(form.password ? { password: form.password } : {}),
+        ...(form.hop_password ? { hop_password: form.hop_password } : {}),
       };
+      if (form.hop_enabled) {
+        if (!form.hop_host.trim()) throw new Error(t("managedNe.hop.hostRequired"));
+        if (!form.hop_username.trim()) throw new Error(t("managedNe.hop.userRequired"));
+        if (!editing && !form.hop_password) throw new Error(t("managedNe.hop.passwordRequired"));
+      }
       if (editing) {
         if (!form.password) delete (body as { password?: string }).password;
+        if (!form.hop_password) delete (body as { hop_password?: string }).hop_password;
         return updateManagedNe(editing.id, body);
       }
       if (!form.password) throw new Error(t("managedNe.form.passwordRequired"));
@@ -200,6 +239,20 @@ export function NePage() {
       password: "",
       tags: row.tags,
       remark: row.remark,
+      hop_enabled: row.hop_enabled,
+      hop_host: row.hop_host,
+      hop_port: row.hop_port,
+      hop_protocol: row.hop_protocol,
+      hop_username: row.hop_username,
+      hop_password: "",
+      hop_command_template: isAutoHopTemplate(
+        row.hop_command_template,
+        row.hop_protocol,
+        row.hop_vrf,
+      )
+        ? zteHopTemplate(row.hop_protocol, row.hop_vrf)
+        : row.hop_command_template || zteHopTemplate(row.hop_protocol, row.hop_vrf),
+      hop_vrf: row.hop_vrf,
     });
     setModalOpen(true);
   };
@@ -339,6 +392,11 @@ export function NePage() {
                 <td>{row.device_type}</td>
                 <td>
                   {row.ip_address}:{row.port}/{row.protocol}
+                  {row.hop_enabled ? (
+                    <span className="table-tag" title={`${row.hop_host}:${row.hop_port}`}>
+                      {t("managedNe.hop.badge")}
+                    </span>
+                  ) : null}
                 </td>
                 <td>{row.username}</td>
                 <td>
@@ -488,6 +546,107 @@ export function NePage() {
                 <input value={form.remark} onChange={(e) => setForm({ ...form, remark: e.target.value })} />
               </label>
             </div>
+
+            <fieldset className="form-fieldset form-grid__full">
+              <legend>{t("managedNe.hop.sectionTitle")}</legend>
+              <label className="form-check">
+                <input
+                  type="checkbox"
+                  checked={form.hop_enabled}
+                  onChange={(e) => {
+                    const hop_enabled = e.target.checked;
+                    setForm((prev) => ({
+                      ...prev,
+                      hop_enabled,
+                      ...(hop_enabled ? applyHopTemplate(prev, prev.hop_protocol, prev.hop_vrf, true) : {}),
+                    }));
+                  }}
+                />
+                {t("managedNe.hop.enable")}
+              </label>
+              {form.hop_enabled ? (
+                <div className="form-grid">
+                  <label>
+                    <FormLabel required>{t("managedNe.hop.host")}</FormLabel>
+                    <input
+                      required
+                      value={form.hop_host}
+                      onChange={(e) => setForm({ ...form, hop_host: e.target.value })}
+                    />
+                  </label>
+                  <label>
+                    <FormLabel>{t("managedNe.hop.port")}</FormLabel>
+                    <input
+                      type="number"
+                      value={form.hop_port}
+                      onChange={(e) => setForm({ ...form, hop_port: Number(e.target.value) || 22 })}
+                    />
+                  </label>
+                  <label>
+                    <FormLabel>{t("managedNe.hop.protocol")}</FormLabel>
+                    <select
+                      value={form.hop_protocol}
+                      onChange={(e) => {
+                        const hop_protocol = e.target.value;
+                        setForm((prev) => ({
+                          ...prev,
+                          hop_protocol,
+                          ...applyHopTemplate(prev, hop_protocol, prev.hop_vrf),
+                        }));
+                      }}
+                    >
+                      <option value="ssh">ssh</option>
+                      <option value="telnet">telnet</option>
+                    </select>
+                  </label>
+                  <label>
+                    <FormLabel required>{t("managedNe.hop.username")}</FormLabel>
+                    <input
+                      required
+                      value={form.hop_username}
+                      onChange={(e) => setForm({ ...form, hop_username: e.target.value })}
+                    />
+                  </label>
+                  <label>
+                    <FormLabel required={!editing}>
+                      {t("managedNe.hop.password")}
+                      {editing ? (
+                        <span className="form-label__optional"> ({t("managedNe.form.passwordOptional")})</span>
+                      ) : null}
+                    </FormLabel>
+                    <input
+                      type="password"
+                      required={!editing}
+                      value={form.hop_password}
+                      onChange={(e) => setForm({ ...form, hop_password: e.target.value })}
+                    />
+                  </label>
+                  <label>
+                    <FormLabel>{t("managedNe.hop.vrf")}</FormLabel>
+                    <input
+                      value={form.hop_vrf}
+                      onChange={(e) => {
+                        const hop_vrf = e.target.value;
+                        setForm((prev) => ({
+                          ...prev,
+                          hop_vrf,
+                          ...applyHopTemplate(prev, prev.hop_protocol, hop_vrf),
+                        }));
+                      }}
+                    />
+                  </label>
+                  <label className="form-grid__full">
+                    <FormLabel>{t("managedNe.hop.commandTemplate")}</FormLabel>
+                    <input
+                      value={form.hop_command_template}
+                      onChange={(e) => setForm({ ...form, hop_command_template: e.target.value })}
+                      placeholder={zteHopTemplate(form.hop_protocol, form.hop_vrf)}
+                    />
+                    <span className="form-field-hint">{t("managedNe.hop.templateHint")}</span>
+                  </label>
+                </div>
+              ) : null}
+            </fieldset>
             <div className="modal__actions">
               <button type="button" onClick={() => setModalOpen(false)}>
                 {t("managedNe.form.cancel")}

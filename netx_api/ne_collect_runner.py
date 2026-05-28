@@ -9,16 +9,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from netmiko import ConnectHandler
-
 from .collection_job_state import finalize_collection_job, sync_job_progress
 from .config import settings
 from .db import SessionLocal
 from .models import ManagedNE, NeCollectionJob, NeCollectionRun
 from .ne_collection_paths import clear_run_output_files, run_output_dir
 from .ne_crypto import CredentialCryptoError
-from .ne_netmiko import normalize_netmiko_device_type
 from .ne_service import get_device_credentials
+from .ne_session_factory import open_netmiko_connection
 
 _log = logging.getLogger("netx.ne.collect")
 _executor: ThreadPoolExecutor | None = None
@@ -45,32 +43,24 @@ def _safe_filename_part(text: str) -> str:
 
 
 def _collect_on_device(creds: dict[str, Any], commands: list[str]) -> str:
-    device_type = normalize_netmiko_device_type(creds["device_type"], creds["protocol"])
     per_cmd = int(settings.ne_collect_read_timeout_sec or 120)
-    dev: dict[str, Any] = {
-        "device_type": device_type,
-        "host": creds["ip_address"],
-        "username": creds["username"],
-        "password": creds["password"],
-        "port": int(creds["port"] or 22),
-        "conn_timeout": int(settings.ne_connect_timeout_sec or 30),
-        "auth_timeout": int(settings.ne_connect_timeout_sec or 30),
-        "banner_timeout": int(settings.ne_connect_timeout_sec or 30),
-        "session_timeout": per_cmd * max(1, len(commands)) + 60,
-    }
-    secret = str(creds.get("enable_secret") or "").strip()
-    if secret:
-        dev["secret"] = secret
-    chunks: list[str] = []
-    with ConnectHandler(**dev) as conn:
+    session_timeout = per_cmd * max(1, len(commands)) + 60
+    conn = open_netmiko_connection(creds, session_timeout=session_timeout)
+    try:
         prompt = str(conn.find_prompt() or "")
+        chunks: list[str] = []
         for command in commands:
             ts = datetime.now().isoformat(timespec="seconds")
             chunks.append(f'>>> [{ts}] {{"String":"{command}", "Match":"{prompt}", "Timeout":0}}\n')
             out = conn.send_command(command_string=command, read_timeout=per_cmd)
             chunks.append(str(out or ""))
             chunks.append("\n")
-    return "".join(chunks)
+        return "".join(chunks)
+    finally:
+        try:
+            conn.disconnect()
+        except Exception:
+            pass
 
 
 def _collect_with_timeout(creds: dict[str, Any], commands: list[str]) -> str:

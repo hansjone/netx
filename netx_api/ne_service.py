@@ -43,6 +43,63 @@ def _normalize_protocol(protocol: str) -> str:
     return p if p in ("ssh", "telnet") else "ssh"
 
 
+def _normalize_hop_vendor(vendor: str) -> str:
+    v = str(vendor or "zte").strip().lower()
+    return v if v in ("zte",) else "zte"
+
+
+def _validate_hop_on_create(body: ManagedNeCreate) -> None:
+    if not body.hop_enabled:
+        return
+    if not str(body.hop_host or "").strip():
+        raise HTTPException(status_code=400, detail="hop_host_required")
+    if not str(body.hop_username or "").strip():
+        raise HTTPException(status_code=400, detail="hop_username_required")
+    if not str(body.hop_password or "").strip():
+        raise HTTPException(status_code=400, detail="hop_password_required")
+
+
+def _apply_hop_create(row: ManagedNE, body: ManagedNeCreate) -> None:
+    row.hop_enabled = bool(body.hop_enabled)
+    row.hop_vendor = _normalize_hop_vendor(body.hop_vendor)
+    row.hop_host = str(body.hop_host or "").strip()
+    row.hop_port = int(body.hop_port or 22)
+    row.hop_protocol = _normalize_protocol(body.hop_protocol)
+    row.hop_username = str(body.hop_username or "").strip()
+    row.hop_password_enc = encrypt_secret(body.hop_password) if body.hop_enabled else ""
+    row.hop_command_template = str(body.hop_command_template or "").strip()
+    row.hop_vrf = str(body.hop_vrf or "").strip()
+
+
+def _apply_hop_update(row: ManagedNE, data: dict[str, Any]) -> None:
+    if "hop_enabled" in data and data["hop_enabled"] is not None:
+        row.hop_enabled = bool(data["hop_enabled"])
+    if "hop_vendor" in data and data["hop_vendor"] is not None:
+        row.hop_vendor = _normalize_hop_vendor(data["hop_vendor"])
+    if "hop_host" in data and data["hop_host"] is not None:
+        row.hop_host = str(data["hop_host"]).strip()
+    if "hop_port" in data and data["hop_port"] is not None:
+        row.hop_port = int(data["hop_port"])
+    if "hop_protocol" in data and data["hop_protocol"] is not None:
+        row.hop_protocol = _normalize_protocol(data["hop_protocol"])
+    if "hop_username" in data and data["hop_username"] is not None:
+        row.hop_username = str(data["hop_username"]).strip()
+    if "hop_password" in data and data["hop_password"]:
+        _require_crypto()
+        row.hop_password_enc = encrypt_secret(str(data["hop_password"]))
+    if "hop_command_template" in data and data["hop_command_template"] is not None:
+        row.hop_command_template = str(data["hop_command_template"]).strip()
+    if "hop_vrf" in data and data["hop_vrf"] is not None:
+        row.hop_vrf = str(data["hop_vrf"]).strip()
+    if row.hop_enabled:
+        if not str(row.hop_host or "").strip():
+            raise HTTPException(status_code=400, detail="hop_host_required")
+        if not str(row.hop_username or "").strip():
+            raise HTTPException(status_code=400, detail="hop_username_required")
+        if not str(row.hop_password_enc or "").strip():
+            raise HTTPException(status_code=400, detail="hop_password_required")
+
+
 def row_to_out(row: ManagedNE) -> ManagedNeOut:
     status = str(row.connect_status or "unknown")
     if status not in ("unknown", "testing", "pass", "fail"):
@@ -61,6 +118,14 @@ def row_to_out(row: ManagedNE) -> ManagedNeOut:
         connect_tested_at=row.connect_tested_at,
         tags=str(row.tags or ""),
         remark=str(row.remark or ""),
+        hop_enabled=bool(row.hop_enabled),
+        hop_vendor=str(row.hop_vendor or "zte"),
+        hop_host=str(row.hop_host or ""),
+        hop_port=int(row.hop_port or 22),
+        hop_protocol=str(row.hop_protocol or "ssh"),
+        hop_username=str(row.hop_username or ""),
+        hop_command_template=str(row.hop_command_template or ""),
+        hop_vrf=str(row.hop_vrf or ""),
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -114,6 +179,7 @@ def get_managed_ne(db: Session, ne_id: str) -> ManagedNeOut:
 
 def create_managed_ne(db: Session, body: ManagedNeCreate) -> ManagedNeOut:
     _require_crypto()
+    _validate_hop_on_create(body)
     ip = _normalize_ip(body.ip_address)
     if not ip:
         raise HTTPException(status_code=400, detail="ip_address_required")
@@ -139,6 +205,7 @@ def create_managed_ne(db: Session, body: ManagedNeCreate) -> ManagedNeOut:
         created_at=now,
         updated_at=now,
     )
+    _apply_hop_create(row, body)
     db.add(row)
     db.commit()
     db.refresh(row)
@@ -180,6 +247,19 @@ def update_managed_ne(db: Session, ne_id: str, body: ManagedNeUpdate) -> Managed
     if "password" in data and data["password"]:
         _require_crypto()
         row.password_enc = encrypt_secret(str(data["password"]))
+    hop_keys = (
+        "hop_enabled",
+        "hop_vendor",
+        "hop_host",
+        "hop_port",
+        "hop_protocol",
+        "hop_username",
+        "hop_password",
+        "hop_command_template",
+        "hop_vrf",
+    )
+    if any(k in data for k in hop_keys):
+        _apply_hop_update(row, data)
     row.updated_at = _now()
     db.commit()
     db.refresh(row)
@@ -311,6 +391,10 @@ def import_managed_ne(db: Session, content: bytes, filename: str) -> ImportResul
 
 
 def get_device_credentials(row: ManagedNE) -> dict[str, Any]:
+    hop_enabled = bool(row.hop_enabled)
+    hop_password = ""
+    if hop_enabled and str(row.hop_password_enc or "").strip():
+        hop_password = decrypt_secret(row.hop_password_enc)
     return {
         "id": str(row.id),
         "vendor": str(row.vendor or ""),
@@ -322,4 +406,13 @@ def get_device_credentials(row: ManagedNE) -> dict[str, Any]:
         "password": decrypt_secret(row.password_enc),
         "enable_secret": decrypt_secret(row.enable_secret_enc),
         "name": str(row.name or ""),
+        "hop_enabled": hop_enabled,
+        "hop_vendor": str(row.hop_vendor or "zte"),
+        "hop_host": str(row.hop_host or ""),
+        "hop_port": int(row.hop_port or 22),
+        "hop_protocol": str(row.hop_protocol or "ssh"),
+        "hop_username": str(row.hop_username or ""),
+        "hop_password": hop_password,
+        "hop_command_template": str(row.hop_command_template or ""),
+        "hop_vrf": str(row.hop_vrf or ""),
     }
