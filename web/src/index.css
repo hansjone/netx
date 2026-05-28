@@ -793,6 +793,21 @@ pre {
   gap: 8px;
 }
 
+.btn--danger {
+  color: #b71c1c;
+  border-color: #ef9a9a;
+  background: #ffebee;
+}
+
+.btn--danger:hover:not(:disabled) {
+  background: #ffcdd2;
+}
+
+.btn--danger:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .table-actions {
   display: flex;
   gap: 8px;

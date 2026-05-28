@@ -2,6 +2,7 @@ import { useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   batchApplyHopManagedNe,
+  batchDeleteManagedNe,
   connectTestManagedNe,
   createManagedNe,
   deleteManagedNe,
@@ -203,6 +204,16 @@ export function NePage() {
     onError: (err) => showError(String(err)),
   });
 
+  const batchDeleteMutation = useMutation({
+    mutationFn: batchDeleteManagedNe,
+    onSuccess: async (res) => {
+      setSelected([]);
+      showOk(t("managedNe.batchDeleteDone", { n: res.deleted }));
+      await invalidateList();
+    },
+    onError: (err) => showError(String(err)),
+  });
+
   const batchHopMutation = useMutation({
     mutationFn: () =>
       batchApplyHopManagedNe(selected, {
@@ -360,6 +371,21 @@ export function NePage() {
               }}
             >
               {batchHopMutation.isPending ? t("managedNe.hop.applying") : t("managedNe.hop.batchAdd")}
+            </button>
+            <button
+              type="button"
+              className="btn btn--danger"
+              disabled={selected.length === 0 || batchDeleteMutation.isPending}
+              onClick={() => {
+                if (selected.length === 0) {
+                  showError(t("managedNe.batchDeleteSelectRequired"));
+                  return;
+                }
+                if (!window.confirm(t("managedNe.batchDeleteConfirm", { n: selected.length }))) return;
+                batchDeleteMutation.mutate(selected);
+              }}
+            >
+              {batchDeleteMutation.isPending ? t("managedNe.batchDeleting") : t("managedNe.batchDelete")}
             </button>
             <button type="button" onClick={() => invalidateList()}>
               {t("common.refresh")}

@@ -328,6 +328,21 @@ def delete_managed_ne(db: Session, ne_id: str) -> dict[str, bool]:
     return {"ok": True}
 
 
+def batch_delete_managed_ne(db: Session, ids: list[str]) -> dict[str, Any]:
+    ne_ids = [str(x).strip() for x in ids if str(x).strip()]
+    if not ne_ids:
+        raise HTTPException(status_code=400, detail="ids_required")
+    rows = db.query(ManagedNE).filter(ManagedNE.id.in_(ne_ids)).all()
+    found_ids = {str(r.id) for r in rows}
+    missing = [x for x in ne_ids if x not in found_ids]
+    if missing:
+        raise HTTPException(status_code=404, detail=f"managed_ne_not_found: {','.join(missing[:5])}")
+    for row in rows:
+        db.delete(row)
+    db.commit()
+    return {"ok": True, "deleted": len(rows)}
+
+
 def build_managed_ne_import_template(fmt: str = "xlsx") -> tuple[str, bytes, str]:
     """Return (filename, content, media_type) for bulk-import template."""
     rows = [

@@ -13,6 +13,7 @@ from .ne_service import (
     batch_apply_hop_proxy,
     build_managed_ne_import_template,
     create_managed_ne,
+    batch_delete_managed_ne,
     delete_managed_ne,
     get_managed_ne,
     import_managed_ne,
@@ -94,6 +95,11 @@ async def api_import_managed_ne(file: UploadFile = File(...), db: Session = Depe
 @router.post("/batch-hop")
 def api_batch_apply_hop(body: BatchHopApplyRequest, db: Session = Depends(get_db)):
     return batch_apply_hop_proxy(db, body.ids, body.hop)
+
+
+@router.post("/batch-delete")
+def api_batch_delete_managed_ne(body: ConnectTestRequest, db: Session = Depends(get_db)):
+    return batch_delete_managed_ne(db, body.ids)
 
 
 @router.post("/connect-test")

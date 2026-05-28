@@ -126,6 +126,9 @@ export const updateManagedNe = (id: string, body: Record<string, unknown>) =>
 
 export const deleteManagedNe = (id: string) => apiDelete<{ ok: boolean }>(`/v1/managed-ne/${id}`);
 
+export const batchDeleteManagedNe = (ids: string[]) =>
+  apiPost<{ ok: boolean; deleted: number }>("/v1/managed-ne/batch-delete", { ids });
+
 export const connectTestManagedNe = (ids: string[]) =>
   apiPost<{ ok: boolean; submitted: number }>("/v1/managed-ne/connect-test", { ids });
 
