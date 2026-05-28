@@ -34,12 +34,14 @@ export function UmePage() {
   const [nePage, setNePage] = useState(1);
   const [nePageSize, setNePageSize] = useState(50);
   const [expandedNeId, setExpandedNeId] = useState("");
+  const [nePanelOpen, setNePanelOpen] = useState(false);
   const [curSeverity, setCurSeverity] = useState("");
   const [curCleared, setCurCleared] = useState("");
   const [curHostName, setCurHostName] = useState("");
   const [curKeyword, setCurKeyword] = useState("");
   const [curPage, setCurPage] = useState(1);
   const [curPageSize, setCurPageSize] = useState(50);
+  const [alarmsPanelOpen, setAlarmsPanelOpen] = useState(false);
 
   const syncMutation = useMutation({
     mutationFn: async (domains: string[]) => apiPost<{ ok: boolean; jobs: unknown[] }>("/v1/ume/sync", { domains }),
@@ -700,7 +702,14 @@ export function UmePage() {
       </section>
 
       <section className="panel">
-        <h2>{t("ume.ne.title")}</h2>
+        <div className="panel__toolbar">
+          <h2>{t("ume.ne.title")}</h2>
+          <button type="button" className="link-btn" onClick={() => setNePanelOpen((x) => !x)}>
+            {nePanelOpen ? t("ume.ne.hidePanel") : t("ume.ne.showPanel")}
+          </button>
+        </div>
+        {nePanelOpen ? (
+          <>
         <div className="filter-inline">
           <input value={neKeyword} placeholder={t("ume.ne.keywordPh")} onChange={(e) => setNeKeyword(e.target.value)} />
           <button type="button" onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeNEAll })}>
@@ -801,10 +810,19 @@ export function UmePage() {
             </select>
           </div>
         </div>
+          </>
+        ) : null}
       </section>
 
       <section className="panel">
-        <h2>{t("ume.alarms.title")}</h2>
+        <div className="panel__toolbar">
+          <h2>{t("ume.alarms.title")}</h2>
+          <button type="button" className="link-btn" onClick={() => setAlarmsPanelOpen((x) => !x)}>
+            {alarmsPanelOpen ? t("ume.alarms.hidePanel") : t("ume.alarms.showPanel")}
+          </button>
+        </div>
+        {alarmsPanelOpen ? (
+          <>
         <div className="filter-inline">
           <input value={curKeyword} placeholder={t("ume.alarms.keywordPh")} onChange={(e) => setCurKeyword(e.target.value)} />
           <input value={curHostName} placeholder={t("ume.alarms.hostNamePh")} onChange={(e) => setCurHostName(e.target.value)} />
@@ -903,6 +921,8 @@ export function UmePage() {
             </select>
           </div>
         </div>
+          </>
+        ) : null}
       </section>
     </>
   );

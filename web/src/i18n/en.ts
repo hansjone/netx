@@ -260,6 +260,8 @@ const en = {
     },
     ne: {
       title: "Network elements",
+      showPanel: "Expand",
+      hidePanel: "Collapse",
       keywordPh: "keyword(ne_id/ne_name/user_label/ip/host_name)",
       clearTitle: "Clear keyword and reset to page 1",
       expand: "Expand details",
@@ -267,6 +269,8 @@ const en = {
     },
     alarms: {
       title: "Current alarms",
+      showPanel: "Expand",
+      hidePanel: "Collapse",
       keywordPh: "keyword(alarm key/cause/ne_name/host_name/ip…)",
       hostNamePh: "host_name (contains)",
       allSeverity: "All severities",

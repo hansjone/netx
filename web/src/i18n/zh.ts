@@ -259,6 +259,8 @@ const zh = {
     },
     ne: {
       title: "网元清单",
+      showPanel: "展开",
+      hidePanel: "收起",
       keywordPh: "keyword(ne_id/ne_name/user_label/ip/host_name)",
       clearTitle: "清空 keyword，回到第 1 页",
       expand: "展开详情",
@@ -266,6 +268,8 @@ const zh = {
     },
     alarms: {
       title: "当前告警",
+      showPanel: "展开",
+      hidePanel: "收起",
       keywordPh: "keyword(告警键/原因/ne_name/host_name/ip 等)",
       hostNamePh: "host_name（含匹配）",
       allSeverity: "全部级别",
