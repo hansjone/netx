@@ -36,12 +36,20 @@ cd D:\project\chatgpt\netx
 pip install -e ./packages/netx-mcp
 ```
 
-验证：
+验证（**必须用 oclaw 启动时会调用的同一个 `python`**，见下方说明）：
 
 ```powershell
-python -m netx_mcp
-# 另开终端发 JSON-RPC initialize（或见下文「自检」）
+where python
 python -c "import netx_mcp; print('ok')"
+python -m netx_mcp
+```
+
+若你在 A 终端里 `import netx_mcp` 成功，但 oclaw Admin 安装/Health 无反应或失败，多半是 **pip 装到了另一个 Python**。请用 oclaw 实际用的解释器安装：
+
+```powershell
+# 把路径换成 where python 的第一条，或 oclaw 服务 venv 里的 python.exe
+C:\Path\To\Same\python.exe -m pip install "git+https://github.com/hansjone/netx.git#subdirectory=packages/netx-mcp"
+C:\Path\To\Same\python.exe -c "import netx_mcp; print('ok')"
 ```
 
 从 GitHub 安装（无本地仓库时，**子目录必须是 `packages/netx-mcp`**）：
@@ -96,8 +104,8 @@ pip install "git+https://github.com/hansjone/netx.git#subdirectory=packages/netx
 
 与 Cursor **同一份** `mcpServers` JSON 即可，无需转成别的格式。
 
-1. 完成上文 **§1**（本机 `pip install -e packages/netx-mcp`）。
-2. Admin → MCP → **安装 JSON**，粘贴 `mcp.json` 全文。
+1. 完成上文 **§1**（用 **oclaw 同机同一个 `python`** 安装 `netx-mcp`）。
+2. Admin → MCP → 粘贴 `mcp.json` 全文 → 点击 **Install from JSON**（安装状态在下方一行小字）。
 3. **Health** → **Sync Tools**（应看到 **12** 个工具）。
 4. 在 **MCP 专家绑定** 中为 ops 专家勾选 `server_id=netx`。
 
@@ -201,10 +209,12 @@ $p = Start-Process python -ArgumentList "-m","netx_mcp" -RedirectStandardInput p
 
 | 现象 | 处理 |
 |------|------|
-| `ModuleNotFoundError: netx_mcp` | 在 MCP 宿主使用的 Python 上执行 `pip install -e packages/netx-mcp` |
+| `ModuleNotFoundError: netx_mcp` | 用 **oclaw 同机同一个 `python.exe`** 执行 pip 安装（见 §1 验证） |
+| **oclaw Admin 点安装「没反应」** | 1) 必须点 **Install from JSON**（只粘贴不点按钮无效）<br>2) 看安装区下方 **install status** 一行字（应出现 `[json] installing...` 或错误）<br>3) 浏览器 F12 → Console 是否有红色报错<br>4) 确认 JSON 为完整 `mcpServers` 或 `mcp_install_payload.json` 格式 |
+| oclaw preflight `mcp_python_module_missing` | `python` 在 PATH 里但无 `netx_mcp`；对该 python 执行 git+pip 安装 |
 | 工具调用连不上 API | 检查 `NETX_API_URL`、防火墙、远端 API 是否启动 |
 | Windows 乱码 / JSON 解析失败 | 配置里保留 `PYTHONIOENCODING=utf-8`、`PYTHONUTF8=1`（见 `mcp.json`） |
-| oclaw 工具数为 0 | Admin **Sync Tools**；确认 `server_id=netx` 已绑定专家 |
+| oclaw 工具数为 0 | Admin **Health → Sync Tools**；确认 `server_id=netx` 已绑定 ops 专家 |
 | 仍想用仓库脚本路径 | 未 pip 安装时可临时 `"args": ["D:/.../netx_api/mcp_server.py"]`（开发用） |
 
 ---
