@@ -1,3 +1,1 @@
-__all__ = ["__version__"]
-
-__version__ = "0.1.0"
+"""Run netx API or MCP entrypoints via ``python -m netx_api.<module>``."""

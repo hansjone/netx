@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "netx": {
+      "command": "python",
+      "args": ["-m", "netx_mcp"],
+      "env": {
+        "NETX_API_URL": "http://127.0.0.1:8890",
+        "NETX_API_TOKEN": "",
+        "NETX_LANG": "zh",
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONUTF8": "1"
+      }
+    }
+  }
+}

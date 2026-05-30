@@ -1,15 +1,28 @@
 {
   "source_type": "local",
-  "source_ref": "netx-local-mcp",
-  "server_id": "netx-local",
-  "version": "0.1.0",
+  "source_ref": "netx-mcp",
+  "server_id": "netx",
+  "version": "0.2.0",
   "entry_command": "python",
-  "entry_args": [
-    "D:/project/chatgpt/netx/netx_api/mcp_server.py"
-  ],
-  "env_schema": {},
+  "entry_args": ["-m", "netx_mcp"],
+  "env_schema": {
+    "NETX_API_URL": {
+      "type": "string",
+      "description": "netx REST API base URL (no trailing slash)",
+      "default": "http://127.0.0.1:8890"
+    },
+    "NETX_API_TOKEN": {
+      "type": "string",
+      "description": "Optional Bearer token when netx API auth is enabled"
+    },
+    "NETX_LANG": {
+      "type": "string",
+      "description": "Response language hint: zh or en",
+      "default": "zh"
+    }
+  },
   "required_permissions": [],
   "risk_level": "medium",
   "enabled": true,
-  "timeout_s": 30
+  "timeout_s": 120
 }

@@ -125,15 +125,23 @@ powershell -ExecutionPolicy Bypass -File .\scripts\stop_netx.ps1 -Force
 Primary web UI (Vite): `http://127.0.0.1:5173/`  
 API base: `http://127.0.0.1:8890/`
 
-### 6) Optional: MCP server (for oclaw integration)
+### 6) MCP（Cursor / oclaw / Claude）
+
+先启动 netx API（§5），再在 **MCP 宿主同机** 安装轻量客户端并配置。
+
+**完整说明（安装、配置、更新、排错）见：[docs/MCP.md](docs/MCP.md)**
+
+速查：
 
 ```powershell
-.\.venv\Scripts\python -m netx_api.mcp_server
+pip install -e ./packages/netx-mcp
+# 配置见 mcp.json，运行：
+python -m netx_mcp
 ```
 
-Or install via payload:
-
-- `netx/mcp_install_payload.json`
+- 客户端配置：[`mcp.json`](mcp.json)（Cursor / oclaw Admin 粘贴同一份）
+- oclaw 可选 payload：[`mcp_install_payload.json`](mcp_install_payload.json)
+- 子包说明：[`packages/netx-mcp/README.md`](packages/netx-mcp/README.md)
 
 ## Useful API endpoints
 
