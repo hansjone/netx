@@ -50,14 +50,6 @@ python -c "import netx_mcp; print('ok')"
 pip install "git+https://github.com/hansjone/netx.git#subdirectory=packages/netx-mcp"
 ```
 
-固定分支或 tag 时在 `.git` 后加 `@`，例如 `@main` 或 `@v0.2.0`：
-
-```powershell
-pip install "git+https://github.com/hansjone/netx.git@main#subdirectory=packages/netx-mcp"
-```
-
-私有仓库需本机已配置 Git 凭据（或 SSH：`git+ssh://git@github.com/hansjone/netx.git#subdirectory=packages/netx-mcp`）。
-
 开发者在 netx 仓库根目录也可 `pip install -e .`（含 API）；MCP 仍推荐只装 `packages/netx-mcp`。
 
 ---
@@ -139,12 +131,6 @@ MCP 代码在 **`packages/netx-mcp`**（版本见 `packages/netx-mcp/pyproject.t
 
 ```powershell
 pip install --upgrade "git+https://github.com/hansjone/netx.git#subdirectory=packages/netx-mcp"
-```
-
-固定分支或 tag 时：
-
-```powershell
-pip install --upgrade "git+https://github.com/hansjone/netx.git@main#subdirectory=packages/netx-mcp"
 ```
 
 **本机有 netx 仓库（开发）**：
