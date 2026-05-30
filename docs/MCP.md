@@ -133,7 +133,21 @@ oclaw 中名称带前缀：`mcp__netx__<toolName>`。
 
 MCP 代码在 **`packages/netx-mcp`**（版本见 `packages/netx-mcp/pyproject.toml`）。更新步骤：
 
-### 6.1 拉代码并重装包
+### 6.1 重装 `netx-mcp` 包
+
+**远程 MCP 机 / 无本地 netx 仓库**（不必 `git pull`，每次更新执行一条即可）：
+
+```powershell
+pip install --upgrade "git+https://github.com/hansjone/netx.git#subdirectory=packages/netx-mcp"
+```
+
+固定分支或 tag 时：
+
+```powershell
+pip install --upgrade "git+https://github.com/hansjone/netx.git@main#subdirectory=packages/netx-mcp"
+```
+
+**本机有 netx 仓库（开发）**：
 
 ```powershell
 cd D:\project\chatgpt\netx
