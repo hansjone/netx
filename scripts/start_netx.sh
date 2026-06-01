@@ -12,6 +12,8 @@ usage() {
 Usage: ./scripts/start_netx.sh [options]
 
 Options:
+  --python-cmd <path>   Python executable. Default: /usr/local/python_env_new/bin/python3
+                        (or env PYTHON_CMD if set)
   --bind-host <host>    API bind host (sets NETX_HOST). Default: 127.0.0.1
   --port <port>         API port (sets NETX_PORT). Default: 8890
   --web-host <host>     Web bind host. Default: 0.0.0.0
@@ -20,6 +22,7 @@ Options:
   -h, --help            Show help
 
 Notes:
+  - Runs with system/host Python (no .venv).
   - If repo root has a .env file, it will be sourced (exported).
   - Web uses Vite dev proxy (see web/vite.config.ts) to forward /v1 -> API.
 EOF
@@ -36,6 +39,7 @@ WEB_PID_FILE="${RUN_DIR}/web.pid"
 WEB_LOG_FILE="${RUN_DIR}/web.out.log"
 WEB_ERR_FILE="${RUN_DIR}/web.err.log"
 
+PYTHON_CMD="${PYTHON_CMD:-/usr/local/python_env_new/bin/python3}"
 API_BIND_HOST="127.0.0.1"
 API_PORT="8890"
 WEB_BIND_HOST="0.0.0.0"
@@ -44,6 +48,7 @@ SKIP_INSTALL="0"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --python-cmd) PYTHON_CMD="${2:-}"; shift 2 ;;
     --bind-host) API_BIND_HOST="${2:-}"; shift 2 ;;
     --port) API_PORT="${2:-}"; shift 2 ;;
     --web-host) WEB_BIND_HOST="${2:-}"; shift 2 ;;
@@ -71,22 +76,18 @@ fi
 export NETX_HOST="${API_BIND_HOST}"
 export NETX_PORT="${API_PORT}"
 
-VENV_PY="${ROOT_DIR}/.venv/bin/python"
-if [[ ! -x "${VENV_PY}" ]]; then
-  echo "==> .venv not found, creating virtual environment"
-  python3 -m venv "${ROOT_DIR}/.venv"
-fi
-if [[ ! -x "${VENV_PY}" ]]; then
-  echo "[ERR] failed_to_create_venv" >&2
+if [[ ! -x "${PYTHON_CMD}" ]]; then
+  echo "[ERR] python_not_found: ${PYTHON_CMD}" >&2
+  echo "      Set PYTHON_CMD or pass --python-cmd <path>" >&2
   exit 1
 fi
 
 echo "==> Project root: ${ROOT_DIR}"
-echo "==> Using python: ${VENV_PY}"
+echo "==> Using python: ${PYTHON_CMD}"
 
 if [[ "${SKIP_INSTALL}" != "1" ]]; then
   echo "==> Installing backend dependencies"
-  "${VENV_PY}" -m pip install -r "${ROOT_DIR}/requirements.txt"
+  "${PYTHON_CMD}" -m pip install -r "${ROOT_DIR}/requirements.txt"
 else
   echo "==> Skip dependency install"
 fi
@@ -123,19 +124,25 @@ echo "Vite Dev UI:   ${WEB_URL}/"
 echo ""
 
 echo "==> Starting netx API in background"
-nohup "${VENV_PY}" -m netx_api.main >"${LOG_FILE}" 2>"${ERR_FILE}" &
-API_PID="$!"
-echo "${API_PID}" > "${PID_FILE}"
+(
+  cd "${ROOT_DIR}"
+  nohup "${PYTHON_CMD}" -m netx_api.main >"${LOG_FILE}" 2>"${ERR_FILE}" &
+  echo $! > "${PID_FILE}"
+)
+API_PID="$(cat "${PID_FILE}")"
 echo "netx.pid = ${PID_FILE}"
 echo "PID      = ${API_PID}"
 echo "Log      = ${LOG_FILE}"
 echo "Err      = ${ERR_FILE}"
 
 echo "==> Starting Vite dev server in background"
-nohup bash -lc "cd \"${WEB_ROOT}\" && npm run dev -- --host \"${WEB_BIND_HOST}\" --port \"${WEB_PORT}\"" \
-  >"${WEB_LOG_FILE}" 2>"${WEB_ERR_FILE}" &
-WEB_PID="$!"
-echo "${WEB_PID}" > "${WEB_PID_FILE}"
+(
+  cd "${WEB_ROOT}"
+  nohup npm run dev -- --host "${WEB_BIND_HOST}" --port "${WEB_PORT}" \
+    >"${WEB_LOG_FILE}" 2>"${WEB_ERR_FILE}" &
+  echo $! > "${WEB_PID_FILE}"
+)
+WEB_PID="$(cat "${WEB_PID_FILE}")"
 echo "web.pid  = ${WEB_PID_FILE}"
 echo "PID      = ${WEB_PID}"
 echo "Log      = ${WEB_LOG_FILE}"
