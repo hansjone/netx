@@ -808,7 +808,7 @@ class UmeAlarmNotificationTests(unittest.TestCase):
             ws_mod._WS_LOG_ENTRIES.clear()
         try:
             for i in range(5):
-                append_ws_log(f"line-{i}")
+                append_ws_log(f"line-{i}", dedup=False)
             logs = get_ws_logs(limit=3)
             self.assertEqual(len(logs), 3)
             self.assertEqual(logs[-1]["message"], "line-4")
@@ -816,6 +816,25 @@ class UmeAlarmNotificationTests(unittest.TestCase):
         finally:
             with ws_mod._WS_LOG_LOCK:
                 ws_mod._WS_LOG_ENTRIES.clear()
+
+    def test_ws_log_dedup_suppresses_repeat(self):
+        from netx_api import ume_alarm_ws as ws_mod
+
+        with ws_mod._WS_LOG_LOCK:
+            ws_mod._WS_LOG_ENTRIES.clear()
+        with ws_mod._LOG_DEDUP_LOCK:
+            ws_mod._LOG_DEDUP_CACHE.clear()
+        try:
+            append_ws_log("same-line", dedup_cooldown_s=60.0)
+            append_ws_log("same-line", dedup_cooldown_s=60.0)
+            logs = get_ws_logs()
+            self.assertEqual(len(logs), 1)
+            self.assertEqual(logs[0]["message"], "same-line")
+        finally:
+            with ws_mod._WS_LOG_LOCK:
+                ws_mod._WS_LOG_ENTRIES.clear()
+            with ws_mod._LOG_DEDUP_LOCK:
+                ws_mod._LOG_DEDUP_CACHE.clear()
 
     def test_parse_subscription_id_from_already_exists_error(self):
         msg = (

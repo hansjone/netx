@@ -42,6 +42,16 @@ _WS_LOG_LOCK = threading.Lock()
 _WS_LOG_ENTRIES: deque[dict[str, Any]] = deque(maxlen=200)
 _WS_LOG_MAX_RETURN = 100
 
+_LOG_DEDUP_LOCK = threading.Lock()
+_LOG_DEDUP_CACHE: dict[str, tuple[float, int]] = {}
+_LOG_DEDUP_MAX_KEYS = 256
+_WS_NOTIFY_LOCK = threading.Lock()
+_WS_NOTIFY_LAST_KEY = ""
+_WS_NOTIFY_LAST_TS = 0.0
+_WS_NOTIFY_COOLDOWN_S = 45.0
+_LOOP_STATUS_COOLDOWN_S = 60.0
+_WS_IGNORE_COOLDOWN_S = 60.0
+
 # Blocks WSS connect until startup REST sync of current alarms completes (see main.on_startup).
 _STARTUP_ALARM_SYNC_GATE = threading.Event()
 _STARTUP_ALARM_SYNC_GATE.set()
@@ -81,18 +91,58 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _trim_log_dedup_cache() -> None:
+    if len(_LOG_DEDUP_CACHE) <= _LOG_DEDUP_MAX_KEYS:
+        return
+    # Drop oldest half when over capacity (abnormal keys should not grow forever).
+    ranked = sorted(_LOG_DEDUP_CACHE.items(), key=lambda item: item[1][0])
+    drop_n = max(1, len(ranked) // 2)
+    for key, _ in ranked[:drop_n]:
+        _LOG_DEDUP_CACHE.pop(key, None)
+
+
 def append_ws_log(
     message: str,
     *,
     level: str = "info",
     subscription_id: str = "",
+    dedup: bool = True,
+    dedup_cooldown_s: float = 30.0,
 ) -> None:
-    """Ring buffer of recent WSS events for UI (newest last)."""
+    """Ring buffer of recent WSS events for UI (newest last).
+
+    When dedup=True, identical (level, subscription_id, message) within cooldown
+    are suppressed; the next log after cooldown includes a repeat count suffix.
+    """
+    level_norm = str(level or "info").strip().lower() or "info"
+    msg = str(message or "").strip()
+    sub_id = str(subscription_id or "").strip()
+    if not msg:
+        return
+
+    suppressed = 0
+    if dedup:
+        key = f"{level_norm}\0{sub_id}\0{msg}"
+        now = time.monotonic()
+        with _LOG_DEDUP_LOCK:
+            prev = _LOG_DEDUP_CACHE.get(key)
+            if prev is not None:
+                last_ts, prev_suppressed = prev
+                if now - last_ts < max(1.0, float(dedup_cooldown_s)):
+                    _LOG_DEDUP_CACHE[key] = (last_ts, prev_suppressed + 1)
+                    return
+                suppressed = prev_suppressed
+            _LOG_DEDUP_CACHE[key] = (now, 0)
+            _trim_log_dedup_cache()
+
+    if suppressed > 0:
+        msg = f"{msg} (此前相同日志重复 {suppressed} 次)"
+
     entry = {
         "ts": _utc_now_iso(),
-        "level": str(level or "info").strip().lower() or "info",
-        "message": str(message or "").strip()[:500],
-        "subscription_id": str(subscription_id or "").strip(),
+        "level": level_norm,
+        "message": msg[:500],
+        "subscription_id": sub_id,
     }
     with _WS_LOG_LOCK:
         _WS_LOG_ENTRIES.append(entry)
@@ -152,9 +202,15 @@ def mark_ume_subscription_lost(reason: str) -> None:
     global _ume_subscription_lost, _ume_subscription_lost_reason
     detail = str(reason or "").strip()[:500]
     with _ume_lost_lock:
+        if _ume_subscription_lost and detail == _ume_subscription_lost_reason:
+            return
         _ume_subscription_lost = True
         _ume_subscription_lost_reason = detail
-    append_ws_log(f"UME 侧订阅已丢失: {detail[:200]}", level="warning")
+    append_ws_log(
+        f"UME 侧订阅已丢失: {detail[:200]}",
+        level="warning",
+        dedup_cooldown_s=_LOOP_STATUS_COOLDOWN_S,
+    )
     request_ws_reconnect()
 
 
@@ -205,10 +261,28 @@ def _notify_ws_connection(
     subscription_id: str = "",
     on_status: Callable[[str], None] | None = None,
     log_level: str = "info",
+    log_cooldown_s: float = _WS_NOTIFY_COOLDOWN_S,
 ) -> None:
+    global _WS_NOTIFY_LAST_KEY, _WS_NOTIFY_LAST_TS
     _set_ws_connection_state(state, detail=detail)
     label = _WS_CONNECTION_LABELS.get(state, state)
-    append_ws_log(detail or label, level=log_level, subscription_id=subscription_id)
+    log_msg = str(detail or label).strip()
+    notify_key = f"{state}\0{log_msg}\0{subscription_id}"
+    now = time.monotonic()
+    should_log = True
+    with _WS_NOTIFY_LOCK:
+        if notify_key == _WS_NOTIFY_LAST_KEY and now - _WS_NOTIFY_LAST_TS < max(1.0, float(log_cooldown_s)):
+            should_log = False
+        else:
+            _WS_NOTIFY_LAST_KEY = notify_key
+            _WS_NOTIFY_LAST_TS = now
+    if should_log:
+        append_ws_log(
+            log_msg,
+            level=log_level,
+            subscription_id=subscription_id,
+            dedup=False,
+        )
     if on_status is not None:
         on_status(label)
 
@@ -478,13 +552,23 @@ def _run_ws_session(
     def _on_message(_ws: Any, message: str) -> None:
         payload = _parse_ws_message(message)
         if payload is None:
-            append_ws_log("message ignored: invalid JSON", level="warning", subscription_id=subscription_id)
+            append_ws_log(
+                "message ignored: invalid JSON",
+                level="warning",
+                subscription_id=subscription_id,
+                dedup_cooldown_s=_WS_IGNORE_COOLDOWN_S,
+            )
             return
         db = SessionLocal()
         try:
             alarm = extract_alarm_from_notification(payload)
             if alarm is None:
-                append_ws_log("收包忽略: 非告警通知", level="warning", subscription_id=subscription_id)
+                append_ws_log(
+                    "收包忽略: 非告警通知",
+                    level="warning",
+                    subscription_id=subscription_id,
+                    dedup_cooldown_s=_WS_IGNORE_COOLDOWN_S,
+                )
                 return
             norm = normalize_yang_alarm(alarm) or {}
             alarm_key = _alarm_key(norm) or "?"
@@ -493,9 +577,11 @@ def _run_ws_session(
                 db.commit()
             else:
                 db.rollback()
+            if not changed:
+                return
             label = _WS_ALARM_ACTION_LABEL.get(action, action)
-            status_msg = f"{label} key={alarm_key}" + ("" if changed else " (无变更)")
-            append_ws_log(status_msg, subscription_id=subscription_id)
+            status_msg = f"{label} key={alarm_key}"
+            append_ws_log(status_msg, subscription_id=subscription_id, dedup=False)
         except Exception as exc:
             db.rollback()
             append_ws_log(f"alarm apply failed: {str(exc)[:200]}", level="error", subscription_id=subscription_id)
@@ -610,6 +696,7 @@ def run_alarm_ws_consumer_loop(
             subscription_id=subscription_id,
             on_status=on_status,
             log_level=log_level,
+            log_cooldown_s=_LOOP_STATUS_COOLDOWN_S,
         )
 
     while stop_event is None or not stop_event.is_set():
