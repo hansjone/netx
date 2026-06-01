@@ -10,7 +10,7 @@ Usage: ./scripts/stop_netx.sh [options]
 
 Options:
   --port <port>         API port to stop by port scan. Default: 8890
-  --web-port <port>     Web port to stop by port scan. Default: 8055
+  --web-port <port>     Web port to stop by port scan. Default: 8505
   --force               Use SIGKILL (immediate)
   -h, --help            Show help
 EOF
@@ -23,7 +23,7 @@ PID_FILE="${RUN_DIR}/netx.pid"
 WEB_PID_FILE="${RUN_DIR}/web.pid"
 
 API_PORT="8890"
-WEB_PORT="8055"
+WEB_PORT="8505"
 FORCE="0"
 
 while [[ $# -gt 0 ]]; do
