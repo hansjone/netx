@@ -14,22 +14,23 @@ Usage: ./scripts/start_netx.sh [options]
 Options:
   --python-cmd <path>   Python executable. Default: /usr/local/python_env_new/bin/python3
                         (or env PYTHON_CMD if set)
-  --node-cmd <path>     Node.js executable (requires v20+). Default: node in PATH
-                        (or env NODE_CMD if set)
-  --npm-cmd <path>      npm executable. Default: npm next to NODE_CMD, or npm in PATH
-                        (or env NPM_CMD if set)
+  --node-cmd <path>     Node.js executable (requires v20+).
+                        Default: /usr/local/nodejs/node-v24.16.0-linux-x64/bin/node
+  --npm-cmd <path>      npm executable. Default: npm in same directory as NODE_CMD
   --bind-host <host>    API bind host (sets NETX_HOST). Default: 127.0.0.1
   --port <port>         API port (sets NETX_PORT). Default: 8890
   --web-host <host>     Web bind host. Default: 0.0.0.0
   --web-port <port>     Web port. Default: 8505
+  --api-only            Start API only (no Node/npm on this host)
   --skip-install        Skip pip/npm install steps
   -h, --help            Show help
 
 Notes:
   - Runs with system/host Python (no .venv).
-  - Web requires Node.js 20.19+ (Vite 8 / React Router 7). Node 16 will fail.
+  - Web uses isolated Node at /usr/local/nodejs/node-v24.16.0-linux-x64 (not system PATH).
+  - Override with NODE_CMD / --node-cmd if install path differs.
+  - Or use --api-only and serve web/dist via Nginx (no Node on this host).
   - If repo root has a .env file, it will be sourced (exported).
-  - Web uses Vite dev proxy (see web/vite.config.ts) to forward /v1 -> API.
 EOF
 }
 
@@ -43,14 +44,15 @@ check_node_version() {
   major="${version%%.*}"
   if [[ -z "${major}" ]] || [[ "${major}" -lt 20 ]]; then
     echo "[ERR] node_version_too_old: requires Node.js 20+, current: v${version}" >&2
-    echo "      Example: export NODE_CMD=/path/to/node20/bin/node" >&2
-    echo "      Then rerun: ./scripts/start_netx.sh" >&2
+    echo "      Does not require upgrading system Node. Options:" >&2
+        echo "        1) Set NODE_CMD to Node 20+ binary (default: /usr/local/nodejs/node-v24.16.0-linux-x64/bin/node)" >&2
+    echo "        2) API only:         ./scripts/start_netx.sh --api-only" >&2
     exit 1
   fi
 }
 
 resolve_node_tools() {
-  NODE_CMD="${NODE_CMD:-node}"
+  NODE_CMD="${NODE_CMD:-/usr/local/nodejs/node-v24.16.0-linux-x64/bin/node}"
 
   if [[ "${NODE_CMD}" == */* ]]; then
     if [[ ! -x "${NODE_CMD}" ]]; then
@@ -97,11 +99,13 @@ WEB_LOG_FILE="${RUN_DIR}/web.out.log"
 WEB_ERR_FILE="${RUN_DIR}/web.err.log"
 
 PYTHON_CMD="${PYTHON_CMD:-/usr/local/python_env_new/bin/python3}"
+NODE_CMD="${NODE_CMD:-/usr/local/nodejs/node-v24.16.0-linux-x64/bin/node}"
 API_BIND_HOST="127.0.0.1"
 API_PORT="8890"
 WEB_BIND_HOST="0.0.0.0"
 WEB_PORT="8505"
 SKIP_INSTALL="0"
+API_ONLY="0"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -112,6 +116,7 @@ while [[ $# -gt 0 ]]; do
     --port) API_PORT="${2:-}"; shift 2 ;;
     --web-host) WEB_BIND_HOST="${2:-}"; shift 2 ;;
     --web-port) WEB_PORT="${2:-}"; shift 2 ;;
+    --api-only) API_ONLY="1"; shift ;;
     --skip-install) SKIP_INSTALL="1"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "[ERR] Unknown arg: $1" >&2; usage; exit 2 ;;
@@ -141,12 +146,8 @@ if [[ ! -x "${PYTHON_CMD}" ]]; then
   exit 1
 fi
 
-resolve_node_tools
-
 echo "==> Project root: ${ROOT_DIR}"
 echo "==> Using python: ${PYTHON_CMD}"
-echo "==> Using node:   ${NODE_CMD} ($("${NODE_CMD}" -v))"
-echo "==> Using npm:    ${NPM_CMD} ($("${NPM_CMD}" -v))"
 
 if [[ "${SKIP_INSTALL}" != "1" ]]; then
   echo "==> Installing backend dependencies"
@@ -155,20 +156,27 @@ else
   echo "==> Skip dependency install"
 fi
 
-WEB_ROOT="${ROOT_DIR}/web"
-if [[ ! -d "${WEB_ROOT}" ]]; then
-  echo "[ERR] web/ not found: ${WEB_ROOT}" >&2
-  exit 1
-fi
-
-if [[ "${SKIP_INSTALL}" != "1" ]] || [[ ! -d "${WEB_ROOT}/node_modules" ]]; then
-  echo "==> Installing web dependencies (npm install)"
-  (cd "${WEB_ROOT}" && "${NPM_CMD}" install)
-else
-  echo "==> Skip web dependency install (node_modules exists)"
-fi
-
 BASE_URL="http://${API_BIND_HOST}:${API_PORT}"
+
+if [[ "${API_ONLY}" != "1" ]]; then
+  resolve_node_tools
+  echo "==> Using node:   ${NODE_CMD} ($("${NODE_CMD}" -v))"
+  echo "==> Using npm:    ${NPM_CMD} ($("${NPM_CMD}" -v))"
+
+  WEB_ROOT="${ROOT_DIR}/web"
+  if [[ ! -d "${WEB_ROOT}" ]]; then
+    echo "[ERR] web/ not found: ${WEB_ROOT}" >&2
+    exit 1
+  fi
+
+  if [[ "${SKIP_INSTALL}" != "1" ]] || [[ ! -d "${WEB_ROOT}/node_modules" ]]; then
+    echo "==> Installing web dependencies (npm install)"
+    (cd "${WEB_ROOT}" && "${NPM_CMD}" install)
+  else
+    echo "==> Skip web dependency install (node_modules exists)"
+  fi
+fi
+
 WEB_URL="http://${WEB_BIND_HOST}:${WEB_PORT}"
 
 echo ""
@@ -176,9 +184,14 @@ echo "==> netx API URL"
 echo "Base:          ${BASE_URL}/"
 echo "Health:        ${BASE_URL}/health"
 echo "Integrations:  ${BASE_URL}/v1/integrations/status"
-echo ""
-echo "==> netx UI URL"
-echo "Vite Dev UI:   ${WEB_URL}/"
+if [[ "${API_ONLY}" == "1" ]]; then
+  echo ""
+  echo "==> Web: skipped (--api-only). Serve web/dist via Nginx or run dev on another host."
+else
+  echo ""
+  echo "==> netx UI URL"
+  echo "Vite Dev UI:   ${WEB_URL}/"
+fi
 echo ""
 
 echo "==> Starting netx API in background"
@@ -193,18 +206,24 @@ echo "PID      = ${API_PID}"
 echo "Log      = ${LOG_FILE}"
 echo "Err      = ${ERR_FILE}"
 
-echo "==> Starting Vite dev server in background"
-(
-  cd "${WEB_ROOT}"
-  nohup "${NPM_CMD}" run dev -- --host "${WEB_BIND_HOST}" --port "${WEB_PORT}" \
-    >"${WEB_LOG_FILE}" 2>"${WEB_ERR_FILE}" &
-  echo $! > "${WEB_PID_FILE}"
-)
-WEB_PID="$(cat "${WEB_PID_FILE}")"
-echo "web.pid  = ${WEB_PID_FILE}"
-echo "PID      = ${WEB_PID}"
-echo "Log      = ${WEB_LOG_FILE}"
-echo "Err      = ${WEB_ERR_FILE}"
+if [[ "${API_ONLY}" != "1" ]]; then
+  echo "==> Starting Vite dev server in background"
+  (
+    cd "${WEB_ROOT}"
+    nohup "${NPM_CMD}" run dev -- --host "${WEB_BIND_HOST}" --port "${WEB_PORT}" \
+      >"${WEB_LOG_FILE}" 2>"${WEB_ERR_FILE}" &
+    echo $! > "${WEB_PID_FILE}"
+  )
+  WEB_PID="$(cat "${WEB_PID_FILE}")"
+  echo "web.pid  = ${WEB_PID_FILE}"
+  echo "PID      = ${WEB_PID}"
+  echo "Log      = ${WEB_LOG_FILE}"
+  echo "Err      = ${WEB_ERR_FILE}"
+fi
 
 echo ""
-echo "==> Background services started; API/web keep running."
+if [[ "${API_ONLY}" == "1" ]]; then
+  echo "==> API started (--api-only)."
+else
+  echo "==> Background services started; API/web keep running."
+fi
