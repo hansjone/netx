@@ -815,9 +815,23 @@ def on_startup() -> None:
             last_error=f"startup_thread_init_failed: {str(exc)[:180]}",
         )
     try:
-        _run_startup_alarm_sync_before_ws()
+
+        def _startup_alarm_sync_worker() -> None:
+            try:
+                _run_startup_alarm_sync_before_ws()
+            except Exception as exc:
+                _schedule_log.exception("startup: alarm sync before WSS failed: %s", exc)
+                complete_startup_alarm_sync_gate()
+
+        # Do not block HTTP /health on slow UME REST pull; WSS waits on startup_alarm_sync_gate.
+        t_startup_sync = threading.Thread(
+            target=_startup_alarm_sync_worker,
+            name="ume-startup-alarm-sync",
+            daemon=True,
+        )
+        t_startup_sync.start()
     except Exception as exc:
-        _schedule_log.exception("startup: alarm sync before WSS failed: %s", exc)
+        _schedule_log.exception("startup: alarm sync thread init failed: %s", exc)
         complete_startup_alarm_sync_gate()
     try:
         if bool(getattr(settings, "ume_sync_alarms_current_enabled", True)):

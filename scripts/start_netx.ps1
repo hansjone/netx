@@ -93,7 +93,7 @@ function Show-LogTail {
 }
 
 function Test-NetxApiListening {
-    param([string]$HostName, [int]$LocalPort, [int]$WaitSec = 12)
+    param([string]$HostName, [int]$LocalPort, [int]$WaitSec = 45)
     $deadline = (Get-Date).AddSeconds($WaitSec)
     while ((Get-Date) -lt $deadline) {
         try {
@@ -135,8 +135,9 @@ if ($Background) {
         Show-LogTail -Path $logFile
         exit 1
     }
-    if (-not (Test-NetxApiListening -HostName $BindHost -LocalPort $Port)) {
-        Write-Host "[ERR] Port $Port not listening /health not OK within 12s (PID may still be starting or stuck on DB)." -ForegroundColor Red
+    $healthWaitSec = 45
+    if (-not (Test-NetxApiListening -HostName $BindHost -LocalPort $Port -WaitSec $healthWaitSec)) {
+        Write-Host "[ERR] Port $Port not listening /health not OK within ${healthWaitSec}s (process may be stuck on DB or schema migration)." -ForegroundColor Red
         Show-LogTail -Path $errFile
         Show-LogTail -Path $logFile
         exit 1
