@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import hashlib
 import re
 import threading
@@ -10,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 _sync_log = logging.getLogger("netx.ume.sync")
+_ALARMS_CURRENT_SYNC_LOCK = threading.Lock()
 
 from sqlalchemy import func
 from sqlalchemy import text as sql_text
@@ -805,17 +807,23 @@ def sync_alarms_current(
     trigger_mode: str = "manual",
     wss_active: bool | None = None,
 ) -> tuple[UmeSyncJob, UmeAlarmBatch]:
-    if wss_active is None:
-        from .ume_alarm_ws import is_wss_active_for_current_alarms
+    if not _ALARMS_CURRENT_SYNC_LOCK.acquire(blocking=False):
+        _sync_log.warning("alarms_current sync skipped: another sync is in progress")
+        raise RuntimeError("alarms_current_sync_busy")
+    try:
+        if wss_active is None:
+            from .ume_alarm_ws import is_wss_active_for_current_alarms
 
-        wss_active = is_wss_active_for_current_alarms()
-    return _sync_alarms_common(
-        db,
-        client,
-        is_uncleared=False,
-        trigger_mode=trigger_mode,
-        wss_active=bool(wss_active),
-    )
+            wss_active = is_wss_active_for_current_alarms()
+        return _sync_alarms_common(
+            db,
+            client,
+            is_uncleared=False,
+            trigger_mode=trigger_mode,
+            wss_active=bool(wss_active),
+        )
+    finally:
+        _ALARMS_CURRENT_SYNC_LOCK.release()
 
 
 def sync_alarms_history_full(

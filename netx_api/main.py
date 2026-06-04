@@ -290,6 +290,30 @@ def _startup_alarm_pull_delay_s() -> int:
     return max(0, min(3600, int(getattr(settings, "ume_startup_alarm_sync_delay_s", 60) or 60)))
 
 
+def _startup_wss_grace_s() -> int:
+    return max(0, min(3600, int(getattr(settings, "ume_startup_wss_grace_s", 180) or 180)))
+
+
+def _ume_alarm_ws_enabled() -> bool:
+    return bool(getattr(settings, "ume_alarm_ws_enabled", True))
+
+
+def _should_defer_rest_current_sync() -> tuple[bool, str]:
+    """Skip scheduled REST when WSS owns current alarms or grace period after boot."""
+    if (
+        bool(getattr(settings, "ume_sync_alarms_current_skip_when_ws", True))
+        and is_wss_active_for_current_alarms()
+    ):
+        return True, "WSS 实时接收中，已跳过 REST 同步"
+    if not _ume_alarm_ws_enabled():
+        return False, ""
+    grace_end = float(_startup_alarm_pull_delay_s() + _startup_wss_grace_s())
+    if time.monotonic() - _BOOT_MONO < grace_end:
+        left = grace_end - (time.monotonic() - _BOOT_MONO)
+        return True, f"等待 WSS 连接（REST 兜底约 {left:.0f}s 后）"
+    return False, ""
+
+
 def _wait_until_startup_alarm_pull_allowed(label: str) -> None:
     delay_s = _startup_alarm_pull_delay_s()
     if delay_s <= 0:
@@ -313,9 +337,14 @@ def _run_startup_alarm_sync_before_ws() -> None:
         return
 
     _wait_until_startup_alarm_pull_allowed("startup_alarm_sync")
+    if not before_ws:
+        _schedule_log.info("startup: skip REST snapshot before WSS (ume_startup_sync_alarms_before_ws=false)")
+        complete_startup_alarm_sync_gate()
+        return
+
     begin_startup_alarm_sync_gate()
     try:
-        _schedule_log.info("startup: syncing current alarms before WSS")
+        _schedule_log.info("startup: syncing current alarms before WSS (legacy mode)")
         _set_runtime_task(
             "alarms_current_auto_sync",
             status="running",
@@ -335,6 +364,10 @@ def _run_startup_alarm_sync_before_ws() -> None:
             )
         finally:
             db.close()
+    except RuntimeError as exc:
+        if str(exc) != "alarms_current_sync_busy":
+            raise
+        _schedule_log.warning("startup: skip REST before WSS — sync already in progress")
     except Exception as exc:
         _schedule_log.exception("startup: current alarms sync before WSS failed: %s", exc)
         _set_runtime_task(
@@ -406,7 +439,7 @@ def _refresh_runtime_task_idle(task_id: str, domain: str, *, last_error: str | N
         db.close()
     _set_runtime_task(
         task_id,
-        status="running",
+        status="idle",
         last_run_at=ended,
         last_error=prev_error if last_error is None else last_error,
     )
@@ -867,14 +900,12 @@ def on_startup() -> None:
                         if _runtime_is_paused("alarms_current_auto_sync"):
                             time.sleep(1)
                             continue
-                        if (
-                            bool(getattr(settings, "ume_sync_alarms_current_skip_when_ws", True))
-                            and is_wss_active_for_current_alarms()
-                        ):
+                        defer, defer_reason = _should_defer_rest_current_sync()
+                        if defer:
                             _refresh_runtime_task_idle(
                                 "alarms_current_auto_sync",
                                 "alarms_current",
-                                last_error="WSS 实时接收中，已跳过 REST 同步",
+                                last_error=defer_reason,
                             )
                             time.sleep(max(30, min(alarms_interval_s, 300)))
                             continue
@@ -907,6 +938,16 @@ def on_startup() -> None:
                             )
                         finally:
                             db.close()
+                    except RuntimeError as exc:
+                        if str(exc) == "alarms_current_sync_busy":
+                            _refresh_runtime_task_idle(
+                                "alarms_current_auto_sync",
+                                "alarms_current",
+                                last_error="另一条当前告警 REST 同步进行中，已跳过",
+                            )
+                            time.sleep(30)
+                        else:
+                            raise
                     except Exception as exc:
                         _schedule_log.exception("alarms_current_auto_sync: sync failed: %s", exc)
                         _set_runtime_task(
