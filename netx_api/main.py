@@ -50,6 +50,7 @@ from .ume_alarm_ws import (
     get_subscription_status,
     get_ws_connection_status,
     get_ws_logs,
+    is_startup_alarm_sync_pending,
     is_wss_active_for_current_alarms,
     load_persisted_subscription,
     request_ws_reconnect,
@@ -286,32 +287,18 @@ def _fail_stale_running_sync_jobs_on_startup() -> None:
         db.close()
 
 
+def _needs_startup_alarm_sync_before_ws() -> bool:
+    ume_url = str(getattr(settings, "ume_base_url", "") or "").strip()
+    return bool(
+        getattr(settings, "ume_startup_sync_alarms_before_ws", True)
+        and getattr(settings, "ume_alarm_ws_enabled", True)
+        and getattr(settings, "ume_sync_alarms_current_enabled", True)
+        and ume_url
+    )
+
+
 def _startup_alarm_pull_delay_s() -> int:
     return max(0, min(3600, int(getattr(settings, "ume_startup_alarm_sync_delay_s", 60) or 60)))
-
-
-def _startup_wss_grace_s() -> int:
-    return max(0, min(3600, int(getattr(settings, "ume_startup_wss_grace_s", 180) or 180)))
-
-
-def _ume_alarm_ws_enabled() -> bool:
-    return bool(getattr(settings, "ume_alarm_ws_enabled", True))
-
-
-def _should_defer_rest_current_sync() -> tuple[bool, str]:
-    """Skip scheduled REST when WSS owns current alarms or grace period after boot."""
-    if (
-        bool(getattr(settings, "ume_sync_alarms_current_skip_when_ws", True))
-        and is_wss_active_for_current_alarms()
-    ):
-        return True, "WSS 实时接收中，已跳过 REST 同步"
-    if not _ume_alarm_ws_enabled():
-        return False, ""
-    grace_end = float(_startup_alarm_pull_delay_s() + _startup_wss_grace_s())
-    if time.monotonic() - _BOOT_MONO < grace_end:
-        left = grace_end - (time.monotonic() - _BOOT_MONO)
-        return True, f"等待 WSS 连接（REST 兜底约 {left:.0f}s 后）"
-    return False, ""
 
 
 def _wait_until_startup_alarm_pull_allowed(label: str) -> None:
@@ -326,25 +313,14 @@ def _wait_until_startup_alarm_pull_allowed(label: str) -> None:
 
 
 def _run_startup_alarm_sync_before_ws() -> None:
-    """REST-sync current alarms once on boot before WSS connects (avoids stale/reconcile races)."""
-    ume_url = str(getattr(settings, "ume_base_url", "") or "").strip()
-    alarms_enabled = bool(getattr(settings, "ume_sync_alarms_current_enabled", True))
-    ws_enabled = bool(getattr(settings, "ume_alarm_ws_enabled", True))
-    before_ws = bool(getattr(settings, "ume_startup_sync_alarms_before_ws", True))
-
-    if not (before_ws and ws_enabled and alarms_enabled and ume_url):
+    """REST-sync current alarms once on boot; WSS gate must already be closed in on_startup."""
+    if not _needs_startup_alarm_sync_before_ws():
         complete_startup_alarm_sync_gate()
         return
 
     _wait_until_startup_alarm_pull_allowed("startup_alarm_sync")
-    if not before_ws:
-        _schedule_log.info("startup: skip REST snapshot before WSS (ume_startup_sync_alarms_before_ws=false)")
-        complete_startup_alarm_sync_gate()
-        return
-
-    begin_startup_alarm_sync_gate()
     try:
-        _schedule_log.info("startup: syncing current alarms before WSS (legacy mode)")
+        _schedule_log.info("startup: REST current-alarm snapshot (WSS blocked until finished)")
         _set_runtime_task(
             "alarms_current_auto_sync",
             status="running",
@@ -707,6 +683,14 @@ def on_startup() -> None:
     Base.metadata.create_all(bind=engine)
     _reset_runtime_pause_flags()
     _fail_stale_running_sync_jobs_on_startup()
+    if _needs_startup_alarm_sync_before_ws():
+        begin_startup_alarm_sync_gate()
+        _schedule_log.info(
+            "startup: WSS blocked until initial REST current-alarm sync completes (delay=%ss)",
+            _startup_alarm_pull_delay_s(),
+        )
+    else:
+        complete_startup_alarm_sync_gate()
     db = SessionLocal()
     try:
         from .collection_recovery import recover_collection_jobs_on_startup
@@ -900,12 +884,22 @@ def on_startup() -> None:
                         if _runtime_is_paused("alarms_current_auto_sync"):
                             time.sleep(1)
                             continue
-                        defer, defer_reason = _should_defer_rest_current_sync()
-                        if defer:
+                        if is_startup_alarm_sync_pending():
                             _refresh_runtime_task_idle(
                                 "alarms_current_auto_sync",
                                 "alarms_current",
-                                last_error=defer_reason,
+                                last_error="启动 REST 全量同步未完成，定时 REST 与 WSS 均待命",
+                            )
+                            time.sleep(10)
+                            continue
+                        if (
+                            bool(getattr(settings, "ume_sync_alarms_current_skip_when_ws", True))
+                            and is_wss_active_for_current_alarms()
+                        ):
+                            _refresh_runtime_task_idle(
+                                "alarms_current_auto_sync",
+                                "alarms_current",
+                                last_error="WSS 实时接收中，已跳过 REST 同步",
                             )
                             time.sleep(max(30, min(alarms_interval_s, 300)))
                             continue

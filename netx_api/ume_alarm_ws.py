@@ -53,8 +53,8 @@ _LOOP_STATUS_COOLDOWN_S = 60.0
 _WS_IGNORE_COOLDOWN_S = 60.0
 
 # Blocks WSS connect until startup REST sync of current alarms completes (see main.on_startup).
+# Default closed (clear): WSS must not write until main opens the gate after REST snapshot.
 _STARTUP_ALARM_SYNC_GATE = threading.Event()
-_STARTUP_ALARM_SYNC_GATE.set()
 
 
 def begin_startup_alarm_sync_gate() -> None:

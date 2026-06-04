@@ -43,12 +43,10 @@ class Settings(BaseSettings):
     ume_sync_alarms_current_enabled: bool = True
     ume_sync_alarms_current_interval_s: int = 18000
     ume_sync_alarms_current_skip_when_ws: bool = True
-    # When False (default), WSS connects after delay without a blocking full REST snapshot.
-    ume_startup_sync_alarms_before_ws: bool = False
-    # Defer first REST alarm pull after process start (WSS may connect earlier).
+    # Block WSS until initial REST current-alarm snapshot finishes (see startup gate).
+    ume_startup_sync_alarms_before_ws: bool = True
+    # Wait this long after process start before the initial REST snapshot (WSS still blocked).
     ume_startup_alarm_sync_delay_s: int = 60
-    # After delay, wait for WSS before REST fallback (avoids REST+WSS fighting at boot).
-    ume_startup_wss_grace_s: int = 180
     ume_alarm_cleared_tombstone_s: int = 300
     ume_alarm_ws_enabled: bool = True
     ume_notification_establish_path: str = "/restconf/operations/zte-notifications:establish-subscription"
