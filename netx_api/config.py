@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     ume_sync_alarms_current_interval_s: int = 18000
     ume_sync_alarms_current_skip_when_ws: bool = True
     ume_startup_sync_alarms_before_ws: bool = True
+    # Defer first REST alarm pull after process start (WSS may connect earlier).
+    ume_startup_alarm_sync_delay_s: int = 60
     ume_alarm_cleared_tombstone_s: int = 300
     ume_alarm_ws_enabled: bool = True
     ume_notification_establish_path: str = "/restconf/operations/zte-notifications:establish-subscription"

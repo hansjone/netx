@@ -10,6 +10,7 @@ import re
 import threading
 
 _schedule_log = logging.getLogger("netx.ume.schedule")
+_BOOT_MONO = time.monotonic()
 from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from sqlalchemy import text as sql_text
@@ -285,6 +286,21 @@ def _fail_stale_running_sync_jobs_on_startup() -> None:
         db.close()
 
 
+def _startup_alarm_pull_delay_s() -> int:
+    return max(0, min(3600, int(getattr(settings, "ume_startup_alarm_sync_delay_s", 60) or 60)))
+
+
+def _wait_until_startup_alarm_pull_allowed(label: str) -> None:
+    delay_s = _startup_alarm_pull_delay_s()
+    if delay_s <= 0:
+        return
+    remaining = float(delay_s) - (time.monotonic() - _BOOT_MONO)
+    if remaining <= 0:
+        return
+    _schedule_log.info("%s: defer alarm pull %.0fs after process start", label, remaining)
+    time.sleep(remaining)
+
+
 def _run_startup_alarm_sync_before_ws() -> None:
     """REST-sync current alarms once on boot before WSS connects (avoids stale/reconcile races)."""
     ume_url = str(getattr(settings, "ume_base_url", "") or "").strip()
@@ -296,6 +312,7 @@ def _run_startup_alarm_sync_before_ws() -> None:
         complete_startup_alarm_sync_gate()
         return
 
+    _wait_until_startup_alarm_pull_allowed("startup_alarm_sync")
     begin_startup_alarm_sync_gate()
     try:
         _schedule_log.info("startup: syncing current alarms before WSS")
@@ -840,6 +857,7 @@ def on_startup() -> None:
 
             def _alarms_current_sync_loop() -> None:
                 _refresh_runtime_task_idle("alarms_current_auto_sync", "alarms_current")
+                _wait_until_startup_alarm_pull_allowed("alarms_current_auto_sync")
                 while True:
                     try:
                         _schedule_log.info(
@@ -1022,7 +1040,7 @@ def on_shutdown() -> None:
     shutdown_ws_consumer()
 
 
-@app.get("/health")
+@app.get("/health", status_code=200)
 def health() -> dict[str, str]:
     return {"status": "ok"}
 

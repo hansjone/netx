@@ -95,10 +95,17 @@ function Show-LogTail {
 function Test-NetxApiListening {
     param([string]$HostName, [int]$LocalPort, [int]$WaitSec = 45)
     $deadline = (Get-Date).AddSeconds($WaitSec)
+    $healthUrl = "http://${HostName}:${LocalPort}/health"
     while ((Get-Date) -lt $deadline) {
         try {
-            $r = Invoke-WebRequest -Uri "http://${HostName}:${LocalPort}/health" -UseBasicParsing -TimeoutSec 2
-            if ($r.StatusCode -eq 200) { return $true }
+            # Only HTTP 200 with {"status":"ok"} counts; no redirects / other codes.
+            $r = Invoke-WebRequest -Uri $healthUrl -UseBasicParsing -TimeoutSec 2 -MaximumRedirection 0
+            if ($r.StatusCode -ne 200) {
+                Start-Sleep -Milliseconds 500
+                continue
+            }
+            $body = $r.Content | ConvertFrom-Json -ErrorAction Stop
+            if ($body.status -eq "ok") { return $true }
         } catch {}
         Start-Sleep -Milliseconds 500
     }
