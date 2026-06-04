@@ -25,18 +25,16 @@ _BLOCKED_RE = re.compile(
     r"configure\s+terminal|conf\s+t\b|"
     r"\bwrite\s+(memory|erase)|\bcopy\s+run|\bcopy\s+startup|"
     r"\breload\b|\breboot\b|\berase\b|\bformat\b|\bdelete\b|"
-    r"\bcommit\b|\brollback\b|startup-config"
+    r"\bcommit\b|\brollback\b|startup-config|"
+    r"\bsystem-view\b|\bip\s+address\b|\bvlan\s+\d"
     r")"
 )
 
-_ALLOWED_PREFIX_RE = re.compile(
-    r"(?i)^("
-    r"show\s|display\s|get\s|"
-    r"ping\s|ping6\s|traceroute\s|tracert\s|"
-    r"terminal\s+length\s|"
-    r"\?"
-    r")"
-)
+# Only vendor read-only query verbs (Cisco show / Huawei-ZTE display).
+_ALLOWED_PREFIX_RE = re.compile(r"(?i)^(show\s|display\s)")
+
+# Unicode / C1 line separators that can smuggle a second CLI after a show prefix.
+_FORBIDDEN_LINE_SEPARATORS = ("\u2028", "\u2029", "\x85", "\x0b", "\x0c")
 
 
 def _validate_command(command: str) -> None:
@@ -46,6 +44,8 @@ def _validate_command(command: str) -> None:
     if len(cmd) > 500:
         raise HTTPException(status_code=400, detail="command_too_long")
     if any(ch in cmd for ch in ("|", ";", "\n", "\r", "`")):
+        raise HTTPException(status_code=400, detail="command_chars_not_allowed")
+    if any(sep in cmd for sep in _FORBIDDEN_LINE_SEPARATORS):
         raise HTTPException(status_code=400, detail="command_chars_not_allowed")
     if _BLOCKED_RE.search(cmd):
         raise HTTPException(status_code=400, detail="command_blocked")

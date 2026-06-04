@@ -391,7 +391,7 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "execManagedNe",
-        "description": "Run read-only CLI on a managed NE via netx (show/display/ping; max 5 commands).",
+        "description": "Run read-only CLI on a managed NE via netx (show/display only; max 5 commands).",
         "inputSchema": {
             "type": "object",
             "properties": {
