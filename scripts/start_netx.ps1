@@ -64,6 +64,8 @@ if ($WithWeb) {
 
 $env:NETX_HOST = $BindHost
 $env:NETX_PORT = "$Port"
+# netx_api is a source tree (not always pip -e installed); ensure imports work from any launcher cwd.
+$env:PYTHONPATH = $projectRoot
 $baseUrl = "http://$BindHost`:$Port"
 $webUrl = "http://$BindHost`:$WebPort"
 
@@ -79,7 +81,34 @@ if ($WithWeb) {
 }
 Write-Host ""
 
+function Show-LogTail {
+    param([string]$Path, [int]$Lines = 40)
+    if (Test-Path $Path) {
+        $tail = Get-Content -Path $Path -Tail $Lines -ErrorAction SilentlyContinue
+        if ($tail) {
+            Write-Host "--- tail $Path ---"
+            $tail | ForEach-Object { Write-Host $_ }
+        }
+    }
+}
+
+function Test-NetxApiListening {
+    param([string]$HostName, [int]$LocalPort, [int]$WaitSec = 12)
+    $deadline = (Get-Date).AddSeconds($WaitSec)
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $r = Invoke-WebRequest -Uri "http://${HostName}:${LocalPort}/health" -UseBasicParsing -TimeoutSec 2
+            if ($r.StatusCode -eq 200) { return $true }
+        } catch {}
+        Start-Sleep -Milliseconds 500
+    }
+    return $false
+}
+
 if ($Background) {
+    # Truncate logs so a failed start is not confused with an old run.
+    Set-Content -Path $logFile -Value "" -Encoding utf8
+    Set-Content -Path $errFile -Value "" -Encoding utf8
     Write-Host "==> Starting netx in background"
     $proc = Start-Process -FilePath $pythonExe `
         -ArgumentList @("-m", "netx_api.main") `
@@ -93,6 +122,26 @@ if ($Background) {
     Write-Host "PID = $($proc.Id)"
     Write-Host "Log = $logFile"
     Write-Host "Err = $errFile"
+    Start-Sleep -Seconds 2
+    $alive = $false
+    try {
+        $alive = -not $proc.HasExited
+    } catch {
+        $alive = $false
+    }
+    if (-not $alive) {
+        Write-Host "[ERR] netx process exited immediately (PID $($proc.Id))." -ForegroundColor Red
+        Show-LogTail -Path $errFile
+        Show-LogTail -Path $logFile
+        exit 1
+    }
+    if (-not (Test-NetxApiListening -HostName $BindHost -LocalPort $Port)) {
+        Write-Host "[ERR] Port $Port not listening /health not OK within 12s (PID may still be starting or stuck on DB)." -ForegroundColor Red
+        Show-LogTail -Path $errFile
+        Show-LogTail -Path $logFile
+        exit 1
+    }
+    Write-Host "==> netx API ready: http://${BindHost}:${Port}/health" -ForegroundColor Green
     if ($WithWeb) {
         Write-Host "==> Starting Vite dev server in background"
         $webRoot = Join-Path $projectRoot "web"
