@@ -173,8 +173,7 @@ const en = {
       "[Bulk import]\n" +
       "· Required columns: device_type, ip, username, port, protocol, name, vendor. Download the template first.\n" +
       "· password may be empty (required for direct login; optional for bastion-managed or batch proxy later).\n" +
-      "· Optional hop columns: hop_enabled, hop_vendor, hop_host, hop_port, hop_username, hop_password, hop_target_auth_mode, hop_command_template.\n" +
-      "· Or import NEs first, select rows, then use Batch add proxy.\n\n" +
+      "· Recommended flow: import NEs first, select rows, then use Batch add proxy.\n\n" +
       "[Jump / bastion]\n" +
       "· Bastion SSH username template: {hop_user}@{target_user}@{target_ip}@{hop_host}; target account = NE Username.\n" +
       "· Bastion-managed: set Jump password (Vault); target password optional. Manual mode needs target password.\n" +

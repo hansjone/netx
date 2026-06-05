@@ -171,8 +171,7 @@ const zh = {
       "【批量导入】\n" +
       "· 必填列：device_type、ip、username、port、protocol、name、vendor；可先下载模板。\n" +
       "· password 可留空（直连需填；堡垒机托管或后续批量添加代理时可空）。\n" +
-      "· 可选跳板列：hop_enabled、hop_vendor、hop_host、hop_port、hop_username、hop_password、hop_target_auth_mode、hop_command_template。\n" +
-      "· 也可先导入网元，勾选后点「批量添加代理」统一配置跳板。\n\n" +
+      "· 推荐流程：先导入网元 → 勾选网元 → 点「批量添加代理」统一配置跳板/堡垒机。\n\n" +
       "【跳板 / 堡垒机】\n" +
       "· 堡垒机 SSH 用户名模板：{hop_user}@{target_user}@{target_ip}@{hop_host}；目标账号填网元「用户名」。\n" +
       "· 堡垒机托管时填「跳板密码」（Vault 密码），目标密码可留空；手动模式需填目标密码。\n" +

@@ -190,23 +190,6 @@ class ManagedNeServiceImportTests(unittest.TestCase):
         self.assertEqual(row.username, "target-user")
         self.assertEqual(row.password_enc, "")
 
-    def test_csv_import_with_bastion_hop(self):
-        csv = (
-            "device_type,ip,username,password,port,protocol,name,vendor,"
-            "hop_enabled,hop_vendor,hop_host,hop_port,hop_username,hop_password,hop_target_auth_mode\n"
-            "zte_zxros,2.2.2.2,target-user,,22,ssh,NE-C,ZTE,"
-            "true,bastion,1.1.1.1,22,bastion-user,vault-pass,bastion_managed\n"
-        ).encode("utf-8")
-        result = import_managed_ne(self.db, csv, "devices.csv")
-        self.assertEqual(result.inserted, 1)
-        self.assertEqual(len(result.failed), 0)
-        row = self.db.query(ManagedNE).filter(ManagedNE.ip_address == "2.2.2.2").one()
-        self.assertTrue(row.hop_enabled)
-        self.assertEqual(row.hop_vendor, "bastion")
-        self.assertEqual(row.hop_host, "1.1.1.1")
-        self.assertEqual(row.hop_username, "bastion-user")
-        self.assertEqual(decrypt_secret(row.hop_password_enc), "vault-pass")
-
 
 class ManagedNeCreateOptionalPasswordTests(unittest.TestCase):
     def setUp(self):

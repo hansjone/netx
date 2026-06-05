@@ -32,17 +32,6 @@ IMPORT_COLUMNS = (
     "vendor",
 )
 
-OPTIONAL_IMPORT_HOP_COLUMNS = (
-    "hop_enabled",
-    "hop_vendor",
-    "hop_host",
-    "hop_port",
-    "hop_username",
-    "hop_password",
-    "hop_target_auth_mode",
-    "hop_command_template",
-)
-
 
 def _now() -> datetime:
     return datetime.utcnow()
@@ -96,44 +85,6 @@ def _import_cell_str(value: Any) -> str:
         return ""
     text = str(value).strip()
     return "" if text.lower() == "nan" else text
-
-
-def _apply_import_hop(row: ManagedNE, data: Any) -> str | None:
-    """Apply optional hop columns from an import row. Returns failure reason or None."""
-    if "hop_enabled" not in data.index:
-        return None
-    if not _parse_import_bool(data.get("hop_enabled")):
-        row.hop_enabled = False
-        return None
-    hop_host = _import_cell_str(data.get("hop_host", ""))
-    hop_user = _import_cell_str(data.get("hop_username", ""))
-    hop_pass = _import_cell_str(data.get("hop_password", ""))
-    if not hop_host or not hop_user or not hop_pass:
-        return "hop_fields_incomplete"
-    hop_vendor = _normalize_hop_vendor(_import_cell_str(data.get("hop_vendor", "")) or "zte")
-    hop_port_raw = data.get("hop_port", 22)
-    try:
-        hop_port = int(hop_port_raw)
-    except (TypeError, ValueError):
-        hop_port = 22
-    template = _import_cell_str(data.get("hop_command_template", ""))
-    if hop_vendor == "bastion" and not template:
-        template = default_bastion_username_template()
-    elif hop_vendor not in ("linux", "bastion") and not template:
-        template = default_hop_command_template(hop_vendor, "ssh", "")
-    row.hop_enabled = True
-    row.hop_vendor = hop_vendor
-    row.hop_host = hop_host
-    row.hop_port = hop_port
-    row.hop_protocol = "ssh"
-    row.hop_username = hop_user
-    row.hop_password_enc = encrypt_secret(hop_pass)
-    row.hop_command_template = template
-    row.hop_vrf = ""
-    row.hop_target_auth_mode = _normalize_hop_target_auth_mode(
-        _import_cell_str(data.get("hop_target_auth_mode", "")) or "bastion_managed"
-    )
-    return None
 
 
 def _apply_hop_create(row: ManagedNE, body: ManagedNeCreate) -> None:
@@ -433,14 +384,6 @@ def build_managed_ne_import_template(fmt: str = "xlsx") -> tuple[str, bytes, str
             "protocol": "ssh",
             "name": "Core-SW1",
             "vendor": "Cisco",
-            "hop_enabled": "",
-            "hop_vendor": "",
-            "hop_host": "",
-            "hop_port": "",
-            "hop_username": "",
-            "hop_password": "",
-            "hop_target_auth_mode": "",
-            "hop_command_template": "",
         },
         {
             "device_type": "zte_zxros",
@@ -449,20 +392,11 @@ def build_managed_ne_import_template(fmt: str = "xlsx") -> tuple[str, bytes, str
             "password": "",
             "port": 22,
             "protocol": "ssh",
-            "name": "PE-via-bastion",
+            "name": "PE-01",
             "vendor": "ZTE",
-            "hop_enabled": "true",
-            "hop_vendor": "bastion",
-            "hop_host": "1.1.1.1",
-            "hop_port": 22,
-            "hop_username": "bastion-user",
-            "hop_password": "vault_password",
-            "hop_target_auth_mode": "bastion_managed",
-            "hop_command_template": "",
         },
     ]
-    all_columns = list(IMPORT_COLUMNS) + list(OPTIONAL_IMPORT_HOP_COLUMNS)
-    df = pd.DataFrame(rows, columns=all_columns)
+    df = pd.DataFrame(rows, columns=list(IMPORT_COLUMNS))
     buf = BytesIO()
     kind = str(fmt or "xlsx").strip().lower()
     if kind == "csv":
@@ -544,10 +478,6 @@ def import_managed_ne(db: Session, content: bytes, filename: str) -> ImportResul
             existing.protocol = protocol
             existing.username = username
             existing.password_enc = encrypt_secret(password) if password else ""
-            hop_err = _apply_import_hop(existing, row)
-            if hop_err:
-                failed.append(ImportFailure(row=row_no, reason=hop_err))
-                continue
             existing.updated_at = now
         except CredentialCryptoError as exc:
             failed.append(ImportFailure(row=row_no, reason=str(exc)))
