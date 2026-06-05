@@ -20,15 +20,15 @@ class BastionTemplateTests(unittest.TestCase):
     def test_render_bastion_composite_username(self) -> None:
         creds = {
             "hop_vendor": "bastion",
-            "hop_username": "ZTE-TSM",
-            "hop_host": "10.34.145.27",
-            "username": "ca-oper",
-            "ip_address": "114.0.44.11",
+            "hop_username": "bastion-user",
+            "hop_host": "1.1.1.1",
+            "username": "target-user",
+            "ip_address": "2.2.2.2",
             "hop_protocol": "ssh",
             "hop_vrf": "",
         }
         out = render_hop_command("", creds)
-        self.assertEqual(out, "ZTE-TSM@ca-oper@114.0.44.11@10.34.145.27")
+        self.assertEqual(out, "bastion-user@target-user@2.2.2.2@1.1.1.1")
 
     def test_render_custom_bastion_template(self) -> None:
         creds = {
@@ -73,14 +73,14 @@ class BastionConnectImplTests(unittest.TestCase):
         conn = MagicMock()
         connect_handler.return_value = conn
         creds = {
-            "hop_host": "10.34.145.27",
-            "hop_username": "ZTE-TSM",
+            "hop_host": "1.1.1.1",
+            "hop_username": "bastion-user",
             "hop_password": "vault-pass",
             "hop_port": 22,
             "device_type": "zte_zxros",
             "protocol": "ssh",
-            "username": "ca-oper",
-            "ip_address": "114.0.44.11",
+            "username": "target-user",
+            "ip_address": "2.2.2.2",
             "password": "",
             "hop_target_auth_mode": "bastion_managed",
             "hop_vendor": "bastion",
@@ -89,8 +89,8 @@ class BastionConnectImplTests(unittest.TestCase):
         }
         _connect_via_bastion(creds)
         kwargs = connect_handler.call_args.kwargs
-        self.assertEqual(kwargs["host"], "10.34.145.27")
-        self.assertEqual(kwargs["username"], "ZTE-TSM@ca-oper@114.0.44.11@10.34.145.27")
+        self.assertEqual(kwargs["host"], "1.1.1.1")
+        self.assertEqual(kwargs["username"], "bastion-user@target-user@2.2.2.2@1.1.1.1")
         self.assertEqual(kwargs["password"], "vault-pass")
         conn.disconnect.assert_not_called()
 

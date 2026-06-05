@@ -202,14 +202,14 @@ const en = {
       ciscoHint: "Run Cisco ssh -vrf / telnet /vrf jump commands; target credentials use secondary auth.",
       linuxHint: "SSH to the Linux bastion, then direct-tcpip tunnel to target IP:port (ProxyJump-style).",
       bastionHint:
-        "SSH with composite username via bastion protocol proxy. Example: user@account@target_ip@bastion_host; password is the bastion/Vault password. JumpServer/CBH often use port 2222.",
+        "SSH with composite username via bastion protocol proxy. Example: bastion-user@target-user@2.2.2.2@1.1.1.1; password is the bastion/Vault password. JumpServer/CBH often use port 2222.",
       targetAuthMode: "Target credentials",
       targetAuthBastionManaged: "Bastion-managed (target password optional)",
       targetAuthManual: "Manual (secondary auth after connect)",
       targetAuthHint: "Bastion-managed needs only bastion password; manual mode requires target NE password.",
       usernameTemplate: "SSH username template",
       templateHintBastion:
-        "Default {hop_user}@{target_user}@{target_ip}@{hop_host}. Same when left blank.",
+        "Default {hop_user}@{target_user}@{target_ip}@{hop_host}. Same when left blank. Example: bastion-user@target-user@2.2.2.2@1.1.1.1.",
       host: "Jump host",
       port: "Jump port",
       protocol: "Jump protocol",

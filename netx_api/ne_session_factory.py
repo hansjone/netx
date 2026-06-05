@@ -54,7 +54,7 @@ def default_huawei_hop_template(protocol: str, vrf: str = "") -> str:
 
 
 def default_bastion_username_template() -> str:
-    """SSH bastion composite username (JumpServer/CBH/ZTE-TSM style)."""
+    """SSH bastion composite username (JumpServer/CBH/generic protocol-proxy style)."""
     return "{hop_user}@{target_user}@{target_ip}@{hop_host}"
 
 
