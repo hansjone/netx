@@ -30,8 +30,8 @@ _BLOCKED_RE = re.compile(
     r")"
 )
 
-# Only vendor read-only query verbs (Cisco show / Huawei-ZTE display).
-_ALLOWED_PREFIX_RE = re.compile(r"(?i)^(show\s|display\s)")
+# Read-only CLI: show/display plus ping reachability checks.
+_ALLOWED_PREFIX_RE = re.compile(r"(?i)^(show\s|display\s|ping\s|ping6\s)")
 
 # Unicode / C1 line separators that can smuggle a second CLI after a show prefix.
 _FORBIDDEN_LINE_SEPARATORS = ("\u2028", "\u2029", "\x85", "\x0b", "\x0c")

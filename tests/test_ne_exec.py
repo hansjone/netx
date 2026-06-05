@@ -15,10 +15,13 @@ class NeExecValidationTests(unittest.TestCase):
     def test_allows_display(self) -> None:
         _validate_command("display interface brief")
 
-    def test_blocks_ping_and_other_non_show_display(self) -> None:
+    def test_allows_ping(self) -> None:
+        _validate_command("ping 192.168.0.1")
+        _validate_command("ping6 2001::1")
+        _validate_command("PING 10.0.0.1 vrf MGMT")
+
+    def test_blocks_non_allowed_prefix(self) -> None:
         for cmd in (
-            "ping 192.168.0.1",
-            "ping6 2001::1",
             "get system info",
             "traceroute 192.168.0.1",
             "tracert 192.168.0.1",
