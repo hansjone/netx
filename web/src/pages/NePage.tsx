@@ -185,10 +185,6 @@ export function NePage() {
         ...(form.password ? { password: form.password } : {}),
         ...(form.hop_password ? { hop_password: form.hop_password } : {}),
       };
-      const bastionManaged =
-        form.hop_enabled &&
-        form.hop_vendor === "bastion" &&
-        form.hop_target_auth_mode === "bastion_managed";
       if (form.hop_enabled) {
         if (!form.hop_host.trim()) throw new Error(t("managedNe.hop.hostRequired"));
         if (!form.hop_username.trim()) throw new Error(t("managedNe.hop.userRequired"));
@@ -199,7 +195,6 @@ export function NePage() {
         if (!form.hop_password) delete (body as { hop_password?: string }).hop_password;
         return updateManagedNe(editing.id, body);
       }
-      if (!form.password && !bastionManaged) throw new Error(t("managedNe.form.passwordRequired"));
       return createManagedNe({ ...body, password: form.password || "" });
     },
     onSuccess: async () => {
@@ -372,6 +367,7 @@ export function NePage() {
             >
               {importMutation.isPending ? t("managedNe.importing") : t("managedNe.importBtn")}
             </button>
+            <span className="form-field-hint">{t("managedNe.importHint")}</span>
             <input
               ref={importRef}
               type="file"
@@ -638,37 +634,16 @@ export function NePage() {
                 />
               </label>
               <label>
-                <FormLabel
-                  required={
-                    !editing &&
-                    !(
-                      form.hop_enabled &&
-                      form.hop_vendor === "bastion" &&
-                      form.hop_target_auth_mode === "bastion_managed"
-                    )
-                  }
-                >
+                <FormLabel>
                   {t("managedNe.col.password")}
-                  {editing ||
-                  (form.hop_enabled &&
-                    form.hop_vendor === "bastion" &&
-                    form.hop_target_auth_mode === "bastion_managed") ? (
-                    <span className="form-label__optional"> ({t("managedNe.form.passwordOptional")})</span>
-                  ) : null}
+                  <span className="form-label__optional"> ({t("managedNe.form.passwordOptional")})</span>
                 </FormLabel>
                 <input
                   type="password"
-                  required={
-                    !editing &&
-                    !(
-                      form.hop_enabled &&
-                      form.hop_vendor === "bastion" &&
-                      form.hop_target_auth_mode === "bastion_managed"
-                    )
-                  }
                   value={form.password}
                   onChange={(e) => setForm({ ...form, password: e.target.value })}
                 />
+                <span className="form-field-hint">{t("managedNe.form.passwordHint")}</span>
               </label>
               <label>
                 <FormLabel>{t("managedNe.col.tags")}</FormLabel>

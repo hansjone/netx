@@ -178,6 +178,67 @@ class ManagedNeServiceImportTests(unittest.TestCase):
         self.assertEqual(result.updated, 0)
         self.assertEqual(len(result.failed), 0)
 
+    def test_csv_import_without_password(self):
+        csv = (
+            "device_type,ip,username,password,port,protocol,name,vendor\n"
+            "zte_zxros,10.1.1.2,target-user,,22,ssh,NE-B,ZTE\n"
+        ).encode("utf-8")
+        result = import_managed_ne(self.db, csv, "devices.csv")
+        self.assertEqual(result.inserted, 1)
+        self.assertEqual(len(result.failed), 0)
+        row = self.db.query(ManagedNE).filter(ManagedNE.ip_address == "10.1.1.2").one()
+        self.assertEqual(row.username, "target-user")
+        self.assertEqual(row.password_enc, "")
+
+    def test_csv_import_with_bastion_hop(self):
+        csv = (
+            "device_type,ip,username,password,port,protocol,name,vendor,"
+            "hop_enabled,hop_vendor,hop_host,hop_port,hop_username,hop_password,hop_target_auth_mode\n"
+            "zte_zxros,2.2.2.2,target-user,,22,ssh,NE-C,ZTE,"
+            "true,bastion,1.1.1.1,22,bastion-user,vault-pass,bastion_managed\n"
+        ).encode("utf-8")
+        result = import_managed_ne(self.db, csv, "devices.csv")
+        self.assertEqual(result.inserted, 1)
+        self.assertEqual(len(result.failed), 0)
+        row = self.db.query(ManagedNE).filter(ManagedNE.ip_address == "2.2.2.2").one()
+        self.assertTrue(row.hop_enabled)
+        self.assertEqual(row.hop_vendor, "bastion")
+        self.assertEqual(row.hop_host, "1.1.1.1")
+        self.assertEqual(row.hop_username, "bastion-user")
+        self.assertEqual(decrypt_secret(row.hop_password_enc), "vault-pass")
+
+
+class ManagedNeCreateOptionalPasswordTests(unittest.TestCase):
+    def setUp(self):
+        self._orig = settings.credential_secret_key
+        settings.credential_secret_key = Fernet.generate_key().decode()
+        self.engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        ManagedNE.__table__.create(bind=self.engine, checkfirst=True)
+        self.db = sessionmaker(bind=self.engine)()
+
+    def tearDown(self):
+        self.db.close()
+        settings.credential_secret_key = self._orig
+
+    def test_create_without_password(self):
+        out = create_managed_ne(
+            self.db,
+            ManagedNeCreate(
+                vendor="ZTE",
+                device_type="zte_zxros",
+                ip_address="10.9.9.9",
+                username="target-user",
+                password="",
+            ),
+        )
+        self.assertEqual(out.username, "target-user")
+        row = self.db.query(ManagedNE).filter(ManagedNE.ip_address == "10.9.9.9").one()
+        self.assertEqual(row.password_enc, "")
+
 
 if __name__ == "__main__":
     unittest.main()

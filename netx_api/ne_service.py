@@ -32,6 +32,17 @@ IMPORT_COLUMNS = (
     "vendor",
 )
 
+OPTIONAL_IMPORT_HOP_COLUMNS = (
+    "hop_enabled",
+    "hop_vendor",
+    "hop_host",
+    "hop_port",
+    "hop_username",
+    "hop_password",
+    "hop_target_auth_mode",
+    "hop_command_template",
+)
+
 
 def _now() -> datetime:
     return datetime.utcnow()
@@ -76,12 +87,53 @@ def _validate_hop_on_create(body: ManagedNeCreate) -> None:
             raise HTTPException(status_code=400, detail="password_required")
 
 
-def _target_password_optional(body: ManagedNeCreate) -> bool:
-    return (
-        bool(body.hop_enabled)
-        and _normalize_hop_vendor(body.hop_vendor) == "bastion"
-        and _normalize_hop_target_auth_mode(body.hop_target_auth_mode) == "bastion_managed"
+def _parse_import_bool(value: Any) -> bool:
+    return str(value or "").strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def _import_cell_str(value: Any) -> str:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    text = str(value).strip()
+    return "" if text.lower() == "nan" else text
+
+
+def _apply_import_hop(row: ManagedNE, data: Any) -> str | None:
+    """Apply optional hop columns from an import row. Returns failure reason or None."""
+    if "hop_enabled" not in data.index:
+        return None
+    if not _parse_import_bool(data.get("hop_enabled")):
+        row.hop_enabled = False
+        return None
+    hop_host = _import_cell_str(data.get("hop_host", ""))
+    hop_user = _import_cell_str(data.get("hop_username", ""))
+    hop_pass = _import_cell_str(data.get("hop_password", ""))
+    if not hop_host or not hop_user or not hop_pass:
+        return "hop_fields_incomplete"
+    hop_vendor = _normalize_hop_vendor(_import_cell_str(data.get("hop_vendor", "")) or "zte")
+    hop_port_raw = data.get("hop_port", 22)
+    try:
+        hop_port = int(hop_port_raw)
+    except (TypeError, ValueError):
+        hop_port = 22
+    template = _import_cell_str(data.get("hop_command_template", ""))
+    if hop_vendor == "bastion" and not template:
+        template = default_bastion_username_template()
+    elif hop_vendor not in ("linux", "bastion") and not template:
+        template = default_hop_command_template(hop_vendor, "ssh", "")
+    row.hop_enabled = True
+    row.hop_vendor = hop_vendor
+    row.hop_host = hop_host
+    row.hop_port = hop_port
+    row.hop_protocol = "ssh"
+    row.hop_username = hop_user
+    row.hop_password_enc = encrypt_secret(hop_pass)
+    row.hop_command_template = template
+    row.hop_vrf = ""
+    row.hop_target_auth_mode = _normalize_hop_target_auth_mode(
+        _import_cell_str(data.get("hop_target_auth_mode", "")) or "bastion_managed"
     )
+    return None
 
 
 def _apply_hop_create(row: ManagedNE, body: ManagedNeCreate) -> None:
@@ -210,8 +262,6 @@ def get_managed_ne(db: Session, ne_id: str) -> ManagedNeOut:
 def create_managed_ne(db: Session, body: ManagedNeCreate) -> ManagedNeOut:
     _require_crypto()
     _validate_hop_on_create(body)
-    if not str(body.password or "").strip() and not _target_password_optional(body):
-        raise HTTPException(status_code=400, detail="password_required")
     ip = _normalize_ip(body.ip_address)
     if not ip:
         raise HTTPException(status_code=400, detail="ip_address_required")
@@ -383,19 +433,36 @@ def build_managed_ne_import_template(fmt: str = "xlsx") -> tuple[str, bytes, str
             "protocol": "ssh",
             "name": "Core-SW1",
             "vendor": "Cisco",
+            "hop_enabled": "",
+            "hop_vendor": "",
+            "hop_host": "",
+            "hop_port": "",
+            "hop_username": "",
+            "hop_password": "",
+            "hop_target_auth_mode": "",
+            "hop_command_template": "",
         },
         {
-            "device_type": "huawei",
-            "ip": "192.168.0.2",
-            "username": "admin",
-            "password": "your_password",
+            "device_type": "zte_zxros",
+            "ip": "2.2.2.2",
+            "username": "target-user",
+            "password": "",
             "port": 22,
             "protocol": "ssh",
-            "name": "AGG-01",
-            "vendor": "Huawei",
+            "name": "PE-via-bastion",
+            "vendor": "ZTE",
+            "hop_enabled": "true",
+            "hop_vendor": "bastion",
+            "hop_host": "1.1.1.1",
+            "hop_port": 22,
+            "hop_username": "bastion-user",
+            "hop_password": "vault_password",
+            "hop_target_auth_mode": "bastion_managed",
+            "hop_command_template": "",
         },
     ]
-    df = pd.DataFrame(rows, columns=list(IMPORT_COLUMNS))
+    all_columns = list(IMPORT_COLUMNS) + list(OPTIONAL_IMPORT_HOP_COLUMNS)
+    df = pd.DataFrame(rows, columns=all_columns)
     buf = BytesIO()
     kind = str(fmt or "xlsx").strip().lower()
     if kind == "csv":
@@ -436,18 +503,18 @@ def import_managed_ne(db: Session, content: bytes, filename: str) -> ImportResul
     for idx, row in df.iterrows():
         row_no = int(idx) + 2
         try:
-            ip = _normalize_ip(str(row.get("ip", "")))
+            ip = _normalize_ip(_import_cell_str(row.get("ip", "")))
             if not ip:
                 failed.append(ImportFailure(row=row_no, reason="ip_required"))
                 continue
-            device_type = str(row.get("device_type", "")).strip()
+            device_type = _import_cell_str(row.get("device_type", ""))
             if device_type not in SUPPORTED_DEVICE_TYPES:
                 failed.append(ImportFailure(row=row_no, reason="unsupported_device_type"))
                 continue
-            username = str(row.get("username", "")).strip()
-            password = str(row.get("password", "")).strip()
-            if not username or not password:
-                failed.append(ImportFailure(row=row_no, reason="username_password_required"))
+            username = _import_cell_str(row.get("username", ""))
+            password = _import_cell_str(row.get("password", ""))
+            if not username:
+                failed.append(ImportFailure(row=row_no, reason="username_required"))
                 continue
             port_raw = row.get("port", 22)
             try:
@@ -455,8 +522,8 @@ def import_managed_ne(db: Session, content: bytes, filename: str) -> ImportResul
             except (TypeError, ValueError):
                 port = 22
             protocol = _normalize_protocol(str(row.get("protocol", "ssh")))
-            display_name = str(row.get("name", "") or "").strip() or ip
-            vendor_raw = str(row.get("vendor", "") or "Other").strip()
+            display_name = _import_cell_str(row.get("name", "")) or ip
+            vendor_raw = _import_cell_str(row.get("vendor", "")) or "Other"
             vendor = "Other"
             for v in SUPPORTED_VENDORS:
                 if v.lower() == vendor_raw.lower():
@@ -476,7 +543,11 @@ def import_managed_ne(db: Session, content: bytes, filename: str) -> ImportResul
             existing.port = port
             existing.protocol = protocol
             existing.username = username
-            existing.password_enc = encrypt_secret(password)
+            existing.password_enc = encrypt_secret(password) if password else ""
+            hop_err = _apply_import_hop(existing, row)
+            if hop_err:
+                failed.append(ImportFailure(row=row_no, reason=hop_err))
+                continue
             existing.updated_at = now
         except CredentialCryptoError as exc:
             failed.append(ImportFailure(row=row_no, reason=str(exc)))

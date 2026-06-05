@@ -18,7 +18,7 @@ class ManagedNeCreate(BaseModel):
     port: int = 22
     protocol: str = "ssh"
     username: str
-    password: str
+    password: str = ""
     tags: str = ""
     remark: str = ""
     hop_enabled: bool = False

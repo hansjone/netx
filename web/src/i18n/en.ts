@@ -169,6 +169,8 @@ const en = {
     connectDetailTitle: "Connectivity test log",
     connectDetailEmpty:
       "No log yet. Run a connectivity test first; failures store full errors and hop context (passwords excluded).",
+    importHint:
+      "Import template includes optional hop columns (hop_enabled, etc.), or import NEs first then batch-add proxy. Password may be empty for bastion-managed targets.",
     importResult: {
       done: "Import done: {{inserted}} inserted, {{updated}} updated, {{failed}} failed row(s)",
     },
@@ -185,6 +187,8 @@ const en = {
       deleted: "Network element deleted",
       passwordRequired: "Password is required",
       passwordOptional: "leave blank to keep unchanged",
+      passwordHint:
+        "Required for direct login; leave empty when bastion manages target credentials. Use batch proxy later.",
     },
     hop: {
       sectionTitle: "Jump host / proxy",
