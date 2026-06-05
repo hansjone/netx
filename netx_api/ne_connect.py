@@ -47,6 +47,9 @@ def _connect_context_lines(creds: dict[str, Any]) -> list[str]:
         tpl = str(creds.get("hop_command_template") or "").strip()
         if tpl:
             lines.append(f"hop_command_template={tpl}")
+        auth_mode = str(creds.get("hop_target_auth_mode") or "").strip()
+        if auth_mode:
+            lines.append(f"hop_target_auth_mode={auth_mode}")
         vrf = str(creds.get("hop_vrf") or "").strip()
         if vrf:
             lines.append(f"hop_vrf={vrf}")
@@ -150,7 +153,9 @@ def _classify_connect_error(creds: dict[str, Any], exc: BaseException) -> str:
             return "target_auth_failed: " + detail
         if "timed out" in raw or "timeout" in raw or "hop_connect_failed" in raw:
             return "hop_connect_failed: " + detail
-        if hop_v == "linux":
+        if hop_v in ("linux", "bastion"):
+            if "vault" in raw or "bastion" in raw:
+                return "bastion_auth_failed: " + detail
             return "hop_connect_failed: " + detail
         return "hop_command_failed: " + detail
     if "readtimeout" in raw.replace(" ", "") or "pattern not detected" in raw:

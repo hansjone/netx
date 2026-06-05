@@ -42,5 +42,6 @@ export function isAutoHopTemplate(
   if (v === "huawei") return t === huaweiHopTemplate(protocol, vrf);
   if (v === "cisco") return t === ciscoHopTemplate(protocol, vrf);
   if (v === "linux") return t === "";
+  if (v === "bastion") return t === "{hop_user}@{target_user}@{target_ip}@{hop_host}";
   return t === zteHopTemplate(protocol, vrf);
 }

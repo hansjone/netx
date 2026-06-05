@@ -15,7 +15,7 @@ from .ne_netmiko import normalize_netmiko_device_type
 
 _log = logging.getLogger("netx.ne.session")
 
-_HOP_PLACEHOLDERS = ("target_ip", "target_port", "target_user", "target_password", "vrf")
+_HOP_PLACEHOLDERS = ("target_ip", "target_port", "target_user", "target_password", "vrf", "hop_user", "hop_host")
 
 # ZTE CLI jump: ssh/telnet <ip> [vrf <name>] — target user/password via secondary auth.
 _LEGACY_HOP_TEMPLATES = frozenset({"ssh {target_user}@{target_ip}", "ssh {target_ip}", "telnet {target_ip}"})
@@ -53,8 +53,15 @@ def default_huawei_hop_template(protocol: str, vrf: str = "") -> str:
     return "stelnet {target_ip}"
 
 
+def default_bastion_username_template() -> str:
+    """SSH bastion composite username (JumpServer/CBH/ZTE-TSM style)."""
+    return "{hop_user}@{target_user}@{target_ip}@{hop_host}"
+
+
 def default_hop_command_template(vendor: str, protocol: str, vrf: str = "") -> str:
     v = str(vendor or "zte").strip().lower()
+    if v == "bastion":
+        return default_bastion_username_template()
     if v == "huawei":
         return default_huawei_hop_template(protocol, vrf)
     if v == "cisco":
@@ -81,6 +88,8 @@ def render_hop_command(template: str, creds: dict[str, Any]) -> str:
         "target_user": str(creds.get("username") or ""),
         "target_password": str(creds.get("password") or ""),
         "vrf": str(creds.get("hop_vrf") or "").strip(),
+        "hop_user": str(creds.get("hop_username") or ""),
+        "hop_host": str(creds.get("hop_host") or "").strip(),
     }
     out = tpl
     for key in _HOP_PLACEHOLDERS:
@@ -233,6 +242,42 @@ def _connect_via_cli_hop(creds: dict[str, Any], *, session_timeout: int | None =
         raise
 
 
+def _connect_via_bastion(creds: dict[str, Any], *, session_timeout: int | None = None) -> ConnectHandler:
+    """SSH to bastion with composite username; bastion proxies to target (protocol proxy)."""
+    hop_host = str(creds.get("hop_host") or "").strip()
+    hop_user = str(creds.get("hop_username") or "").strip()
+    hop_pass = str(creds.get("hop_password") or "")
+    if not hop_host or not hop_user or not hop_pass:
+        raise ValueError("hop_credentials_incomplete")
+
+    composite_user = render_hop_command(str(creds.get("hop_command_template") or ""), creds)
+    device_type = normalize_netmiko_device_type(creds["device_type"], creds["protocol"])
+    hop_dev = _base_connect_kwargs(
+        device_type=device_type,
+        host=hop_host,
+        port=int(creds.get("hop_port") or 22),
+        username=composite_user,
+        password=hop_pass,
+        enable_secret=str(creds.get("enable_secret") or ""),
+        session_timeout=session_timeout or 180,
+    )
+    conn = ConnectHandler(**hop_dev)
+    auth_mode = str(creds.get("hop_target_auth_mode") or "bastion_managed").strip().lower()
+    if auth_mode == "manual":
+        target_pass = str(creds.get("password") or "")
+        if target_pass:
+            try:
+                _read_channel(conn, wait=0.5)
+                _interactive_target_auth(conn, str(creds["username"]), target_pass)
+            except Exception:
+                try:
+                    conn.disconnect()
+                except Exception:
+                    pass
+                raise
+    return conn
+
+
 def _connect_via_linux_hop(creds: dict[str, Any], *, session_timeout: int | None = None) -> ConnectHandler:
     """SSH to Linux bastion, then direct-tcpip tunnel to target (classic ProxyJump-style)."""
     hop_host = str(creds.get("hop_host") or "").strip()
@@ -311,7 +356,10 @@ def close_netmiko_connection(conn: ConnectHandler | None) -> None:
 def open_netmiko_connection(creds: dict[str, Any], *, session_timeout: int | None = None) -> ConnectHandler:
     """Open a Netmiko connection to the target NE (direct or via configured hop)."""
     if creds.get("hop_enabled"):
-        if _hop_vendor(creds) == "linux":
+        vendor = _hop_vendor(creds)
+        if vendor == "linux":
             return _connect_via_linux_hop(creds, session_timeout=session_timeout)
+        if vendor == "bastion":
+            return _connect_via_bastion(creds, session_timeout=session_timeout)
         return _connect_via_cli_hop(creds, session_timeout=session_timeout)
     return _connect_direct(creds, session_timeout=session_timeout)

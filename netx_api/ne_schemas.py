@@ -30,6 +30,7 @@ class ManagedNeCreate(BaseModel):
     hop_password: str = ""
     hop_command_template: str = ""
     hop_vrf: str = ""
+    hop_target_auth_mode: str = "bastion_managed"
 
     @field_validator("vendor")
     @classmethod
@@ -63,6 +64,7 @@ class ManagedNeUpdate(BaseModel):
     hop_password: str | None = None
     hop_command_template: str | None = None
     hop_vrf: str | None = None
+    hop_target_auth_mode: str | None = None
 
     @field_validator("vendor")
     @classmethod
@@ -101,6 +103,7 @@ class ManagedNeOut(BaseModel):
     hop_username: str = ""
     hop_command_template: str = ""
     hop_vrf: str = ""
+    hop_target_auth_mode: str = "bastion_managed"
     created_at: datetime
     updated_at: datetime
 
@@ -128,6 +131,7 @@ class HopProxyConfig(BaseModel):
     hop_password: str
     hop_command_template: str = ""
     hop_vrf: str = ""
+    hop_target_auth_mode: str = "bastion_managed"
 
 
 class BatchHopApplyRequest(BaseModel):

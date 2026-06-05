@@ -254,6 +254,7 @@ class ManagedNE(Base):
     hop_password_enc: Mapped[str] = mapped_column(Text, default="")
     hop_command_template: Mapped[str] = mapped_column(Text, default="")
     hop_vrf: Mapped[str] = mapped_column(String(128), default="")
+    hop_target_auth_mode: Mapped[str] = mapped_column(String(32), default="bastion_managed")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 

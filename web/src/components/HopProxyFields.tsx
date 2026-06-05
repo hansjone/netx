@@ -4,8 +4,10 @@ import {
   HOP_VENDORS,
   defaultHopTemplate,
   isAutoHopTemplate,
+  isBastionHopVendor,
   isLinuxHopVendor,
   patchHopVendorChange,
+  type HopTargetAuthMode,
   type HopVendor,
 } from "../utils/hopProxy";
 
@@ -18,6 +20,7 @@ export type HopProxyFieldsState = {
   hop_password: string;
   hop_command_template: string;
   hop_vrf: string;
+  hop_target_auth_mode: HopTargetAuthMode;
 };
 
 export const emptyHopProxyFields = (): HopProxyFieldsState => ({
@@ -29,6 +32,7 @@ export const emptyHopProxyFields = (): HopProxyFieldsState => ({
   hop_password: "",
   hop_command_template: defaultHopTemplate("zte", "ssh", ""),
   hop_vrf: "",
+  hop_target_auth_mode: "bastion_managed",
 });
 
 function FormLabel({ children, required }: { children: ReactNode; required?: boolean }) {
@@ -59,6 +63,7 @@ function applyHopTemplate(
 
 function hopHintKey(vendor: string): string {
   const v = String(vendor || "").toLowerCase();
+  if (v === "bastion") return "managedNe.hop.bastionHint";
   if (v === "linux") return "managedNe.hop.linuxHint";
   if (v === "huawei") return "managedNe.hop.huaweiHint";
   if (v === "cisco") return "managedNe.hop.ciscoHint";
@@ -67,6 +72,7 @@ function hopHintKey(vendor: string): string {
 
 function templateHintKey(vendor: string): string {
   const v = String(vendor || "").toLowerCase();
+  if (v === "bastion") return "managedNe.hop.templateHintBastion";
   if (v === "huawei") return "managedNe.hop.templateHintHuawei";
   if (v === "cisco") return "managedNe.hop.templateHintCisco";
   return "managedNe.hop.templateHint";
@@ -94,7 +100,9 @@ export function HopProxyFields({
 }: Props) {
   const { t } = useI18n();
   const linux = isLinuxHopVendor(value.hop_vendor);
+  const bastion = isBastionHopVendor(value.hop_vendor);
   const huawei = value.hop_vendor === "huawei";
+  const cliHop = !linux && !bastion;
 
   const set = (patch: Partial<HopProxyFieldsState>) => onChange(patch);
 
@@ -129,7 +137,20 @@ export function HopProxyFields({
           onChange={(e) => set({ hop_port: Number(e.target.value) || 22 })}
         />
       </label>
-      {!linux ? (
+      {bastion ? (
+        <label className="form-grid__full">
+          <FormLabel>{t("managedNe.hop.targetAuthMode")}</FormLabel>
+          <select
+            value={value.hop_target_auth_mode}
+            onChange={(e) => set({ hop_target_auth_mode: e.target.value as HopTargetAuthMode })}
+          >
+            <option value="bastion_managed">{t("managedNe.hop.targetAuthBastionManaged")}</option>
+            <option value="manual">{t("managedNe.hop.targetAuthManual")}</option>
+          </select>
+          <span className="form-field-hint">{t("managedNe.hop.targetAuthHint")}</span>
+        </label>
+      ) : null}
+      {cliHop ? (
         <label>
           <FormLabel>{t("managedNe.hop.protocol")}</FormLabel>
           <select
@@ -162,7 +183,18 @@ export function HopProxyFields({
           onChange={(e) => set({ hop_password: e.target.value })}
         />
       </label>
-      {!linux ? (
+      {bastion ? (
+        <label className="form-grid__full">
+          <FormLabel>{t("managedNe.hop.usernameTemplate")}</FormLabel>
+          <input
+            value={value.hop_command_template}
+            onChange={(e) => set({ hop_command_template: e.target.value })}
+            placeholder={defaultHopTemplate(value.hop_vendor, value.hop_protocol, value.hop_vrf)}
+          />
+          <span className="form-field-hint">{t(templateHintKey(value.hop_vendor))}</span>
+        </label>
+      ) : null}
+      {cliHop ? (
         <>
           <label>
             <FormLabel>{t(vrfLabelKey(value.hop_vendor))}</FormLabel>

@@ -19,7 +19,7 @@ from .ne_schemas import (
     ManagedNeOut,
     ManagedNeUpdate,
 )
-from .ne_session_factory import default_hop_command_template
+from .ne_session_factory import default_bastion_username_template, default_hop_command_template
 
 IMPORT_COLUMNS = (
     "device_type",
@@ -53,7 +53,12 @@ def _normalize_protocol(protocol: str) -> str:
 
 def _normalize_hop_vendor(vendor: str) -> str:
     v = str(vendor or "zte").strip().lower()
-    return v if v in ("zte", "linux", "huawei", "cisco") else "zte"
+    return v if v in ("zte", "linux", "huawei", "cisco", "bastion") else "zte"
+
+
+def _normalize_hop_target_auth_mode(mode: str) -> str:
+    m = str(mode or "bastion_managed").strip().lower()
+    return m if m in ("bastion_managed", "manual") else "bastion_managed"
 
 
 def _validate_hop_on_create(body: ManagedNeCreate) -> None:
@@ -65,6 +70,18 @@ def _validate_hop_on_create(body: ManagedNeCreate) -> None:
         raise HTTPException(status_code=400, detail="hop_username_required")
     if not str(body.hop_password or "").strip():
         raise HTTPException(status_code=400, detail="hop_password_required")
+    hop_vendor = _normalize_hop_vendor(body.hop_vendor)
+    if hop_vendor == "bastion" and _normalize_hop_target_auth_mode(body.hop_target_auth_mode) == "manual":
+        if not str(body.password or "").strip():
+            raise HTTPException(status_code=400, detail="password_required")
+
+
+def _target_password_optional(body: ManagedNeCreate) -> bool:
+    return (
+        bool(body.hop_enabled)
+        and _normalize_hop_vendor(body.hop_vendor) == "bastion"
+        and _normalize_hop_target_auth_mode(body.hop_target_auth_mode) == "bastion_managed"
+    )
 
 
 def _apply_hop_create(row: ManagedNE, body: ManagedNeCreate) -> None:
@@ -77,6 +94,7 @@ def _apply_hop_create(row: ManagedNE, body: ManagedNeCreate) -> None:
     row.hop_password_enc = encrypt_secret(body.hop_password) if body.hop_enabled else ""
     row.hop_command_template = str(body.hop_command_template or "").strip()
     row.hop_vrf = str(body.hop_vrf or "").strip()
+    row.hop_target_auth_mode = _normalize_hop_target_auth_mode(body.hop_target_auth_mode)
 
 
 def _apply_hop_update(row: ManagedNE, data: dict[str, Any]) -> None:
@@ -99,6 +117,8 @@ def _apply_hop_update(row: ManagedNE, data: dict[str, Any]) -> None:
         row.hop_command_template = str(data["hop_command_template"]).strip()
     if "hop_vrf" in data and data["hop_vrf"] is not None:
         row.hop_vrf = str(data["hop_vrf"]).strip()
+    if "hop_target_auth_mode" in data and data["hop_target_auth_mode"] is not None:
+        row.hop_target_auth_mode = _normalize_hop_target_auth_mode(data["hop_target_auth_mode"])
     if row.hop_enabled:
         if not str(row.hop_host or "").strip():
             raise HTTPException(status_code=400, detail="hop_host_required")
@@ -135,6 +155,7 @@ def row_to_out(row: ManagedNE) -> ManagedNeOut:
         hop_username=str(row.hop_username or ""),
         hop_command_template=str(row.hop_command_template or ""),
         hop_vrf=str(row.hop_vrf or ""),
+        hop_target_auth_mode=str(row.hop_target_auth_mode or "bastion_managed"),
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -189,6 +210,8 @@ def get_managed_ne(db: Session, ne_id: str) -> ManagedNeOut:
 def create_managed_ne(db: Session, body: ManagedNeCreate) -> ManagedNeOut:
     _require_crypto()
     _validate_hop_on_create(body)
+    if not str(body.password or "").strip() and not _target_password_optional(body):
+        raise HTTPException(status_code=400, detail="password_required")
     ip = _normalize_ip(body.ip_address)
     if not ip:
         raise HTTPException(status_code=400, detail="ip_address_required")
@@ -206,7 +229,7 @@ def create_managed_ne(db: Session, body: ManagedNeCreate) -> ManagedNeOut:
         port=int(body.port or 22),
         protocol=_normalize_protocol(body.protocol),
         username=str(body.username or "").strip(),
-        password_enc=encrypt_secret(body.password),
+        password_enc=encrypt_secret(body.password) if str(body.password or "").strip() else "",
         enable_secret_enc="",
         connect_status="unknown",
         tags=str(body.tags or "").strip(),
@@ -266,6 +289,7 @@ def update_managed_ne(db: Session, ne_id: str, body: ManagedNeUpdate) -> Managed
         "hop_password",
         "hop_command_template",
         "hop_vrf",
+        "hop_target_auth_mode",
     )
     if any(k in data for k in hop_keys):
         _apply_hop_update(row, data)
@@ -290,7 +314,9 @@ def batch_apply_hop_proxy(db: Session, ids: list[str], hop: HopProxyConfig) -> d
 
     hop_vendor = _normalize_hop_vendor(hop.hop_vendor)
     template = str(hop.hop_command_template or "").strip()
-    if hop_vendor != "linux" and not template:
+    if hop_vendor == "bastion" and not template:
+        template = default_bastion_username_template()
+    elif hop_vendor not in ("linux", "bastion") and not template:
         template = default_hop_command_template(hop_vendor, hop.hop_protocol, hop.hop_vrf)
 
     ne_ids = [str(x).strip() for x in ids if str(x).strip()]
@@ -315,6 +341,7 @@ def batch_apply_hop_proxy(db: Session, ids: list[str], hop: HopProxyConfig) -> d
         row.hop_password_enc = enc
         row.hop_command_template = template
         row.hop_vrf = str(hop.hop_vrf or "").strip()
+        row.hop_target_auth_mode = _normalize_hop_target_auth_mode(hop.hop_target_auth_mode)
         row.updated_at = now
     db.commit()
     return {"ok": True, "updated": len(rows)}
@@ -484,4 +511,5 @@ def get_device_credentials(row: ManagedNE) -> dict[str, Any]:
         "hop_password": hop_password,
         "hop_command_template": str(row.hop_command_template or ""),
         "hop_vrf": str(row.hop_vrf or ""),
+        "hop_target_auth_mode": str(row.hop_target_auth_mode or "bastion_managed"),
     }

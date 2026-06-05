@@ -46,6 +46,7 @@ type FormState = {
   hop_password: string;
   hop_command_template: string;
   hop_vrf: string;
+  hop_target_auth_mode: "bastion_managed" | "manual";
 };
 
 const emptyForm = (): FormState => ({
@@ -68,6 +69,7 @@ const emptyForm = (): FormState => ({
   hop_password: "",
   hop_command_template: defaultHopTemplate("zte", "ssh", ""),
   hop_vrf: "",
+  hop_target_auth_mode: "bastion_managed",
 });
 
 function applyHopTemplate(prev: FormState, protocol: string, vrf: string, force = false): Partial<FormState> {
@@ -179,9 +181,14 @@ export function NePage() {
         hop_username: form.hop_username,
         hop_command_template: form.hop_command_template,
         hop_vrf: form.hop_vrf,
+        hop_target_auth_mode: form.hop_target_auth_mode,
         ...(form.password ? { password: form.password } : {}),
         ...(form.hop_password ? { hop_password: form.hop_password } : {}),
       };
+      const bastionManaged =
+        form.hop_enabled &&
+        form.hop_vendor === "bastion" &&
+        form.hop_target_auth_mode === "bastion_managed";
       if (form.hop_enabled) {
         if (!form.hop_host.trim()) throw new Error(t("managedNe.hop.hostRequired"));
         if (!form.hop_username.trim()) throw new Error(t("managedNe.hop.userRequired"));
@@ -192,8 +199,8 @@ export function NePage() {
         if (!form.hop_password) delete (body as { hop_password?: string }).hop_password;
         return updateManagedNe(editing.id, body);
       }
-      if (!form.password) throw new Error(t("managedNe.form.passwordRequired"));
-      return createManagedNe({ ...body, password: form.password });
+      if (!form.password && !bastionManaged) throw new Error(t("managedNe.form.passwordRequired"));
+      return createManagedNe({ ...body, password: form.password || "" });
     },
     onSuccess: async () => {
       setModalOpen(false);
@@ -244,6 +251,7 @@ export function NePage() {
         hop_password: batchHop.hop_password,
         hop_command_template: batchHop.hop_command_template.trim(),
         hop_vrf: batchHop.hop_vrf.trim(),
+        hop_target_auth_mode: batchHop.hop_target_auth_mode,
       }),
     onSuccess: async (res) => {
       setBatchHopOpen(false);
@@ -298,7 +306,7 @@ export function NePage() {
       tags: row.tags,
       remark: row.remark,
       hop_enabled: row.hop_enabled,
-      hop_vendor: (["linux", "huawei", "cisco", "zte"].includes(row.hop_vendor)
+      hop_vendor: (["linux", "huawei", "cisco", "zte", "bastion"].includes(row.hop_vendor)
         ? row.hop_vendor
         : "zte") as HopVendor,
       hop_host: row.hop_host,
@@ -315,6 +323,8 @@ export function NePage() {
         ? defaultHopTemplate(row.hop_vendor, row.hop_protocol, row.hop_vrf)
         : row.hop_command_template || defaultHopTemplate(row.hop_vendor, row.hop_protocol, row.hop_vrf),
       hop_vrf: row.hop_vrf,
+      hop_target_auth_mode:
+        row.hop_target_auth_mode === "manual" ? "manual" : "bastion_managed",
     });
     setModalOpen(true);
   };
@@ -489,7 +499,7 @@ export function NePage() {
                       title={`${row.hop_host}:${row.hop_port} (${row.hop_vendor})`}
                     >
                       {t(
-                        `managedNe.hop.badge.${["linux", "huawei", "cisco", "zte"].includes(row.hop_vendor) ? row.hop_vendor : "zte"}`,
+                        `managedNe.hop.badge.${["linux", "huawei", "cisco", "zte", "bastion"].includes(row.hop_vendor) ? row.hop_vendor : "zte"}`,
                       )}
                     </span>
                   ) : null}
@@ -628,15 +638,34 @@ export function NePage() {
                 />
               </label>
               <label>
-                <FormLabel required={!editing}>
+                <FormLabel
+                  required={
+                    !editing &&
+                    !(
+                      form.hop_enabled &&
+                      form.hop_vendor === "bastion" &&
+                      form.hop_target_auth_mode === "bastion_managed"
+                    )
+                  }
+                >
                   {t("managedNe.col.password")}
-                  {editing ? (
+                  {editing ||
+                  (form.hop_enabled &&
+                    form.hop_vendor === "bastion" &&
+                    form.hop_target_auth_mode === "bastion_managed") ? (
                     <span className="form-label__optional"> ({t("managedNe.form.passwordOptional")})</span>
                   ) : null}
                 </FormLabel>
                 <input
                   type="password"
-                  required={!editing}
+                  required={
+                    !editing &&
+                    !(
+                      form.hop_enabled &&
+                      form.hop_vendor === "bastion" &&
+                      form.hop_target_auth_mode === "bastion_managed"
+                    )
+                  }
                   value={form.password}
                   onChange={(e) => setForm({ ...form, password: e.target.value })}
                 />
@@ -684,6 +713,7 @@ export function NePage() {
                     hop_password: form.hop_password,
                     hop_command_template: form.hop_command_template,
                     hop_vrf: form.hop_vrf,
+                    hop_target_auth_mode: form.hop_target_auth_mode,
                   }}
                   onChange={(patch) => setForm((prev) => ({ ...prev, ...patch }))}
                   hopPasswordRequired={!editing}

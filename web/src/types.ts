@@ -144,6 +144,7 @@ export type ManagedNeItem = {
   hop_username: string;
   hop_command_template: string;
   hop_vrf: string;
+  hop_target_auth_mode: string;
   created_at: string;
   updated_at: string;
 };
