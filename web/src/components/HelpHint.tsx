@@ -3,9 +3,10 @@ import { useEffect, useRef, useState } from "react";
 type Props = {
   text: string;
   ariaLabel: string;
+  align?: "start" | "end";
 };
 
-export function HelpHint({ text, ariaLabel }: Props) {
+export function HelpHint({ text, ariaLabel, align = "start" }: Props) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLSpanElement>(null);
 
@@ -26,7 +27,7 @@ export function HelpHint({ text, ariaLabel }: Props) {
   }, [open]);
 
   return (
-    <span className="help-hint" ref={rootRef}>
+    <span className={`help-hint${align === "end" ? " help-hint--align-end" : ""}`} ref={rootRef}>
       <button
         type="button"
         className="help-hint__trigger"

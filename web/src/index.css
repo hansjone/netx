@@ -699,7 +699,21 @@ pre {
   font-size: 13px;
   font-weight: 400;
   line-height: 1.45;
+  white-space: pre-line;
   box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+}
+
+.help-hint--align-end .help-hint__popover {
+  left: auto;
+  right: 0;
+}
+
+.panel__toolbar-end {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .mini-chart__bar-wrap {

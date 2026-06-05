@@ -12,6 +12,7 @@ import {
   managedNeImportTemplateUrl,
   updateManagedNe,
 } from "../services/api";
+import { HelpHint } from "../components/HelpHint";
 import { HopProxyFields, emptyHopProxyFields, type HopProxyFieldsState } from "../components/HopProxyFields";
 import { queryKeys } from "../constants/queryKeys";
 import { useI18n } from "../i18n";
@@ -350,74 +351,76 @@ export function NePage() {
       <section className="panel">
         <div className="panel__toolbar">
           <h2>{t("managedNe.title")}</h2>
-          <div className="panel__actions">
-            <button type="button" onClick={openCreate} disabled={!credsOk}>
-              {t("managedNe.add")}
-            </button>
-            <button
-              type="button"
-              onClick={() => window.location.assign(managedNeImportTemplateUrl("xlsx"))}
-            >
-              {t("managedNe.downloadTemplate")}
-            </button>
-            <button
-              type="button"
-              onClick={() => importRef.current?.click()}
-              disabled={!credsOk || importMutation.isPending}
-            >
-              {importMutation.isPending ? t("managedNe.importing") : t("managedNe.importBtn")}
-            </button>
-            <span className="form-field-hint">{t("managedNe.importHint")}</span>
-            <input
-              ref={importRef}
-              type="file"
-              accept=".csv,.xlsx,.xls"
-              hidden
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                e.target.value = "";
-                if (file) importMutation.mutate(file);
-              }}
-            />
-            <button
-              type="button"
-              disabled={selected.length === 0 || connectMutation.isPending}
-              onClick={() => connectMutation.mutate(selected)}
-            >
-              {connectMutation.isPending ? t("managedNe.connect.running") : t("managedNe.connect.run")}
-            </button>
-            <button
-              type="button"
-              disabled={!credsOk || selected.length === 0 || batchHopMutation.isPending}
-              onClick={() => {
-                if (selected.length === 0) {
-                  showError(t("managedNe.hop.selectRequired"));
-                  return;
-                }
-                setBatchHop(emptyHopProxyFields());
-                setBatchHopOpen(true);
-              }}
-            >
-              {batchHopMutation.isPending ? t("managedNe.hop.applying") : t("managedNe.hop.batchAdd")}
-            </button>
-            <button
-              type="button"
-              className="btn btn--danger"
-              disabled={selected.length === 0 || batchDeleteMutation.isPending}
-              onClick={() => {
-                if (selected.length === 0) {
-                  showError(t("managedNe.batchDeleteSelectRequired"));
-                  return;
-                }
-                if (!window.confirm(t("managedNe.batchDeleteConfirm", { n: selected.length }))) return;
-                batchDeleteMutation.mutate(selected);
-              }}
-            >
-              {batchDeleteMutation.isPending ? t("managedNe.batchDeleting") : t("managedNe.batchDelete")}
-            </button>
-            <button type="button" onClick={() => invalidateList()}>
-              {t("common.refresh")}
-            </button>
+          <div className="panel__toolbar-end">
+            <div className="panel__actions">
+              <button type="button" onClick={openCreate} disabled={!credsOk}>
+                {t("managedNe.add")}
+              </button>
+              <button
+                type="button"
+                onClick={() => window.location.assign(managedNeImportTemplateUrl("xlsx"))}
+              >
+                {t("managedNe.downloadTemplate")}
+              </button>
+              <button
+                type="button"
+                onClick={() => importRef.current?.click()}
+                disabled={!credsOk || importMutation.isPending}
+              >
+                {importMutation.isPending ? t("managedNe.importing") : t("managedNe.importBtn")}
+              </button>
+              <input
+                ref={importRef}
+                type="file"
+                accept=".csv,.xlsx,.xls"
+                hidden
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = "";
+                  if (file) importMutation.mutate(file);
+                }}
+              />
+              <button
+                type="button"
+                disabled={selected.length === 0 || connectMutation.isPending}
+                onClick={() => connectMutation.mutate(selected)}
+              >
+                {connectMutation.isPending ? t("managedNe.connect.running") : t("managedNe.connect.run")}
+              </button>
+              <button
+                type="button"
+                disabled={!credsOk || selected.length === 0 || batchHopMutation.isPending}
+                onClick={() => {
+                  if (selected.length === 0) {
+                    showError(t("managedNe.hop.selectRequired"));
+                    return;
+                  }
+                  setBatchHop(emptyHopProxyFields());
+                  setBatchHopOpen(true);
+                }}
+              >
+                {batchHopMutation.isPending ? t("managedNe.hop.applying") : t("managedNe.hop.batchAdd")}
+              </button>
+              <button
+                type="button"
+                className="btn btn--danger"
+                disabled={selected.length === 0 || batchDeleteMutation.isPending}
+                onClick={() => {
+                  if (selected.length === 0) {
+                    showError(t("managedNe.batchDeleteSelectRequired"));
+                    return;
+                  }
+                  if (!window.confirm(t("managedNe.batchDeleteConfirm", { n: selected.length }))) return;
+                  batchDeleteMutation.mutate(selected);
+                }}
+              >
+                {batchDeleteMutation.isPending ? t("managedNe.batchDeleting") : t("managedNe.batchDelete")}
+              </button>
+              <button type="button" onClick={() => invalidateList()}>
+                {t("common.refresh")}
+              </button>
+            </div>
+            <HelpHint text={t("managedNe.help")} ariaLabel={t("common.help")} align="end" />
           </div>
         </div>
 
@@ -643,7 +646,6 @@ export function NePage() {
                   value={form.password}
                   onChange={(e) => setForm({ ...form, password: e.target.value })}
                 />
-                <span className="form-field-hint">{t("managedNe.form.passwordHint")}</span>
               </label>
               <label>
                 <FormLabel>{t("managedNe.col.tags")}</FormLabel>

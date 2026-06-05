@@ -167,8 +167,19 @@ const zh = {
     connectDetail: "详情",
     connectDetailTitle: "连通性测试日志",
     connectDetailEmpty: "暂无日志。请先执行连通性测试；失败时会记录完整错误与跳板上下文（不含密码）。",
-    importHint:
-      "导入模板含可选跳板列（hop_enabled 等）；也可先导入网元再批量添加代理。密码可留空（堡垒机托管场景）。",
+    help:
+      "【批量导入】\n" +
+      "· 必填列：device_type、ip、username、port、protocol、name、vendor；可先下载模板。\n" +
+      "· password 可留空（直连需填；堡垒机托管或后续批量添加代理时可空）。\n" +
+      "· 可选跳板列：hop_enabled、hop_vendor、hop_host、hop_port、hop_username、hop_password、hop_target_auth_mode、hop_command_template。\n" +
+      "· 也可先导入网元，勾选后点「批量添加代理」统一配置跳板。\n\n" +
+      "【跳板 / 堡垒机】\n" +
+      "· 堡垒机 SSH 用户名模板：{hop_user}@{target_user}@{target_ip}@{hop_host}；目标账号填网元「用户名」。\n" +
+      "· 堡垒机托管时填「跳板密码」（Vault 密码），目标密码可留空；手动模式需填目标密码。\n" +
+      "· JumpServer/CBH 常用跳板端口 2222，部分现场为 22。\n\n" +
+      "【连通性 / 编辑】\n" +
+      "· 保存密码需配置 NETX_CREDENTIAL_SECRET_KEY。\n" +
+      "· 编辑时密码留空表示不修改；连通性失败请点「详情」查看 hop 上下文（不含密码）。",
     importResult: {
       done: "导入完成：新增 {{inserted}}，更新 {{updated}}，失败 {{failed}} 行",
     },
@@ -185,7 +196,6 @@ const zh = {
       deleted: "网元已删除",
       passwordRequired: "请填写密码",
       passwordOptional: "留空则不修改",
-      passwordHint: "直连网元需填写；经堡垒机托管时可留空，后续可用「批量添加代理」统一配置跳板。",
     },
     hop: {
       sectionTitle: "跳板 / 代理",

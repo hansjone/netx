@@ -169,8 +169,19 @@ const en = {
     connectDetailTitle: "Connectivity test log",
     connectDetailEmpty:
       "No log yet. Run a connectivity test first; failures store full errors and hop context (passwords excluded).",
-    importHint:
-      "Import template includes optional hop columns (hop_enabled, etc.), or import NEs first then batch-add proxy. Password may be empty for bastion-managed targets.",
+    help:
+      "[Bulk import]\n" +
+      "· Required columns: device_type, ip, username, port, protocol, name, vendor. Download the template first.\n" +
+      "· password may be empty (required for direct login; optional for bastion-managed or batch proxy later).\n" +
+      "· Optional hop columns: hop_enabled, hop_vendor, hop_host, hop_port, hop_username, hop_password, hop_target_auth_mode, hop_command_template.\n" +
+      "· Or import NEs first, select rows, then use Batch add proxy.\n\n" +
+      "[Jump / bastion]\n" +
+      "· Bastion SSH username template: {hop_user}@{target_user}@{target_ip}@{hop_host}; target account = NE Username.\n" +
+      "· Bastion-managed: set Jump password (Vault); target password optional. Manual mode needs target password.\n" +
+      "· JumpServer/CBH often use port 2222; some sites use 22.\n\n" +
+      "[Connectivity / edit]\n" +
+      "· NETX_CREDENTIAL_SECRET_KEY required to store passwords.\n" +
+      "· Leave password blank on edit to keep unchanged; open Details after failed connect-test for hop context (no secrets).",
     importResult: {
       done: "Import done: {{inserted}} inserted, {{updated}} updated, {{failed}} failed row(s)",
     },
@@ -187,8 +198,6 @@ const en = {
       deleted: "Network element deleted",
       passwordRequired: "Password is required",
       passwordOptional: "leave blank to keep unchanged",
-      passwordHint:
-        "Required for direct login; leave empty when bastion manages target credentials. Use batch proxy later.",
     },
     hop: {
       sectionTitle: "Jump host / proxy",
