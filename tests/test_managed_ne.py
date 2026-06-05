@@ -117,8 +117,33 @@ class ManagedNeApiTests(unittest.TestCase):
         self.assertEqual(r4.status_code, 200)
         self.assertEqual(r4.json()["total"], 1)
 
+        r4b = self.client.get("/v1/managed-ne", params={"keyword": "pe-01"})
+        self.assertEqual(r4b.status_code, 200)
+        self.assertEqual(r4b.json()["total"], 1)
+
         r5 = self.client.delete(f"/v1/managed-ne/{ne_id}")
         self.assertEqual(r5.status_code, 200)
+
+    def test_list_keyword_case_insensitive(self):
+        r = self.client.post(
+            "/v1/managed-ne",
+            json={
+                "name": "Core-R1",
+                "vendor": "Cisco",
+                "device_type": "cisco_ios",
+                "ip_address": "192.168.0.11",
+                "username": "admin",
+                "password": "pass123",
+            },
+        )
+        self.assertEqual(r.status_code, 200, r.text)
+        ne_id = r.json()["id"]
+        for kw in ("R1", "r1", "core-r1"):
+            with self.subTest(keyword=kw):
+                listed = self.client.get("/v1/managed-ne", params={"keyword": kw})
+                self.assertEqual(listed.status_code, 200)
+                self.assertEqual(listed.json()["total"], 1, listed.text)
+        self.client.delete(f"/v1/managed-ne/{ne_id}")
 
     def test_create_without_crypto_key(self):
         settings.credential_secret_key = ""

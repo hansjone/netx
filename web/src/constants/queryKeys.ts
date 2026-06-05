@@ -11,6 +11,7 @@ export const queryKeys = {
   umeSyncStatus: (page: number, pageSize: number) => ["umeSyncStatus", page, pageSize] as const,
   umeNE: (keyword: string, page: number, pageSize: number) => ["umeNE", keyword, page, pageSize] as const,
   managedNeMeta: ["managedNeMeta"] as const,
+  managedNeStats: ["managedNeStats"] as const,
   managedNeAll: ["managedNe"] as const,
   managedNe: (keyword: string, vendor: string, connectStatus: string, page: number, pageSize: number) =>
     ["managedNe", keyword, vendor, connectStatus, page, pageSize] as const,

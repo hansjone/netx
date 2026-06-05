@@ -716,6 +716,112 @@ pre {
   flex-wrap: wrap;
 }
 
+/* ── NE stats card ── */
+.ne-stats-card {
+  padding: 12px 14px;
+}
+
+.ne-stats-card__header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.ne-stats-card__header-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ne-stats-card__header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ne-stats-card__title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.ne-stats-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.ne-stats-pill--pass   { background: #dcfce7; color: #166534; }
+.ne-stats-pill--fail   { background: #fee2e2; color: #991b1b; }
+.ne-stats-pill--testing{ background: #fef9c3; color: #854d0e; }
+.ne-stats-pill--unknown{ background: #f1f5f9; color: #475569; }
+
+.ne-stats-card__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ne-stats-card__tag-select {
+  height: 32px;
+  font-size: 13px;
+  padding: 0 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #fff;
+  min-width: 150px;
+}
+
+.ne-stats-card__loading {
+  color: #94a3b8;
+  font-size: 13px;
+  margin: 0;
+}
+
+.ne-stats-card__tag-cards {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(190px, 1fr));
+  gap: 10px;
+}
+
+.ne-tag-card {
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #f8fafc;
+  padding: 10px 10px;
+}
+
+.ne-tag-card__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #0f172a;
+  margin-bottom: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ne-tag-card__total {
+  font-size: 12px;
+  color: #64748b;
+  margin-bottom: 8px;
+}
+
+.ne-tag-card__pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .mini-chart__bar-wrap {
   height: 10px;
   border-radius: 999px;

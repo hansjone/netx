@@ -6,6 +6,7 @@ from typing import Any
 
 import pandas as pd
 from fastapi import HTTPException
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from .device_types import SUPPORTED_DEVICE_TYPES, SUPPORTED_VENDORS
@@ -30,6 +31,8 @@ IMPORT_COLUMNS = (
     "protocol",
     "name",
     "vendor",
+    "tags",
+    "remark",
 )
 
 
@@ -176,11 +179,16 @@ def list_managed_ne(
     stmt = db.query(ManagedNE)
     kw = str(keyword or "").strip()
     if kw:
+        like = f"%{kw}%"
         stmt = stmt.filter(
-            ManagedNE.name.contains(kw)
-            | ManagedNE.ip_address.contains(kw)
-            | ManagedNE.username.contains(kw)
-            | ManagedNE.tags.contains(kw)
+            or_(
+                ManagedNE.name.ilike(like),
+                ManagedNE.ip_address.ilike(like),
+                ManagedNE.username.ilike(like),
+                ManagedNE.tags.ilike(like),
+                ManagedNE.vendor.ilike(like),
+                ManagedNE.device_type.ilike(like),
+            )
         )
     v = str(vendor or "").strip()
     if v:
@@ -357,6 +365,80 @@ def delete_managed_ne(db: Session, ne_id: str) -> dict[str, bool]:
     return {"ok": True}
 
 
+def get_managed_ne_stats(db: Session) -> dict[str, Any]:
+    """Return total counts by connect_status, and tag statistics."""
+    from sqlalchemy import func
+
+    rows = db.query(ManagedNE.connect_status, func.count(ManagedNE.id)).group_by(ManagedNE.connect_status).all()
+    by_status: dict[str, int] = {}
+    total = 0
+    for status, cnt in rows:
+        by_status[str(status or "unknown")] = int(cnt)
+        total += int(cnt)
+
+    # Tag statistics & per-tag connect_status aggregation (space-separated)
+    def _bump(bucket: dict[str, int], status: str) -> None:
+        s = str(status or "unknown")
+        bucket[s] = int(bucket.get(s, 0)) + 1
+
+    tag_counts: dict[str, int] = {}
+    no_tag_count = 0
+    per_tag_by_status: dict[str, dict[str, int]] = {}
+    per_tag_total: dict[str, int] = {}
+
+    for connect_status, tags_str in db.query(ManagedNE.connect_status, ManagedNE.tags).all():
+        status = str(connect_status or "unknown")
+        tags_val = str(tags_str or "").strip()
+        if not tags_val:
+            no_tag_count += 1
+            per_tag_total["__no_tag__"] = int(per_tag_total.get("__no_tag__", 0)) + 1
+            per_tag_by_status.setdefault("__no_tag__", {})
+            _bump(per_tag_by_status["__no_tag__"], status)
+            continue
+        for t in tags_val.split():
+            if not t:
+                continue
+            tag_counts[t] = int(tag_counts.get(t, 0)) + 1
+            per_tag_total[t] = int(per_tag_total.get(t, 0)) + 1
+            per_tag_by_status.setdefault(t, {})
+            _bump(per_tag_by_status[t], status)
+
+    return {
+        "total": total,
+        "by_status": by_status,
+        "no_tag_count": int(no_tag_count),
+        "tag_counts": {k: int(tag_counts[k]) for k in sorted(tag_counts.keys())},
+        "tags": sorted(tag_counts.keys()),
+        "per_tag": {
+            k: {"total": int(per_tag_total.get(k, 0)), "by_status": per_tag_by_status.get(k, {})}
+            for k in sorted(per_tag_total.keys(), key=lambda x: ("0" if x == "__no_tag__" else "1") + x)
+        },
+    }
+
+
+def get_ids_by_tag(db: Session, tag: str | None) -> list[str]:
+    """
+    Return NE ids by tag.
+
+    - tag is None: all ids
+    - tag == "__no_tag__": ids where tags is empty/blank
+    - otherwise: ids where tag exists in space-separated tags list
+    """
+    result: list[str] = []
+    norm = str(tag).strip() if tag is not None else None
+    for ne_id, tags_str in db.query(ManagedNE.id, ManagedNE.tags).all():
+        tags_val = str(tags_str or "").strip()
+        if norm is None:
+            result.append(str(ne_id))
+        elif norm == "__no_tag__":
+            if not tags_val:
+                result.append(str(ne_id))
+        else:
+            if norm in tags_val.split():
+                result.append(str(ne_id))
+    return result
+
+
 def batch_delete_managed_ne(db: Session, ids: list[str]) -> dict[str, Any]:
     ne_ids = [str(x).strip() for x in ids if str(x).strip()]
     if not ne_ids:
@@ -384,6 +466,8 @@ def build_managed_ne_import_template(fmt: str = "xlsx") -> tuple[str, bytes, str
             "protocol": "ssh",
             "name": "Core-SW1",
             "vendor": "Cisco",
+            "tags": "core",
+            "remark": "",
         },
         {
             "device_type": "zte_zxros",
@@ -394,6 +478,8 @@ def build_managed_ne_import_template(fmt: str = "xlsx") -> tuple[str, bytes, str
             "protocol": "ssh",
             "name": "PE-01",
             "vendor": "ZTE",
+            "tags": "edge bastion",
+            "remark": "no direct password, use batch proxy",
         },
     ]
     df = pd.DataFrame(rows, columns=list(IMPORT_COLUMNS))
@@ -478,6 +564,12 @@ def import_managed_ne(db: Session, content: bytes, filename: str) -> ImportResul
             existing.protocol = protocol
             existing.username = username
             existing.password_enc = encrypt_secret(password) if password else ""
+            tags_val = _import_cell_str(row.get("tags", ""))
+            remark_val = _import_cell_str(row.get("remark", ""))
+            if tags_val:
+                existing.tags = tags_val
+            if remark_val:
+                existing.remark = remark_val
             existing.updated_at = now
         except CredentialCryptoError as exc:
             failed.append(ImportFailure(row=row_no, reason=str(exc)))

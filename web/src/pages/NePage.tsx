@@ -6,11 +6,14 @@ import {
   connectTestManagedNe,
   createManagedNe,
   deleteManagedNe,
+  fetchIdsByTag,
   fetchManagedNe,
   fetchManagedNeMeta,
+  fetchManagedNeStats,
   importManagedNe,
   managedNeImportTemplateUrl,
   updateManagedNe,
+  type ManagedNeStats,
 } from "../services/api";
 import { HelpHint } from "../components/HelpHint";
 import { HopProxyFields, emptyHopProxyFields, type HopProxyFieldsState } from "../components/HopProxyFields";
@@ -120,10 +123,21 @@ export function NePage() {
   const [batchHop, setBatchHop] = useState<HopProxyFieldsState>(emptyHopProxyFields);
   const [connectDetailRow, setConnectDetailRow] = useState<ManagedNeItem | null>(null);
 
+  // --- bulk-by-tag dialog ---
+  const [bulkTagModalOpen, setBulkTagModalOpen] = useState(false);
+  const [bulkTagAction, setBulkTagAction] = useState<"proxy" | "test">("proxy");
+  const [bulkTagSelected, setBulkTagSelected] = useState<string>("");   // "" = all, "__no_tag__" = no-tag NEs
+
   const metaQuery = useQuery({
     queryKey: queryKeys.managedNeMeta,
     queryFn: fetchManagedNeMeta,
     staleTime: 60_000,
+  });
+
+  const statsQuery = useQuery({
+    queryKey: queryKeys.managedNeStats,
+    queryFn: fetchManagedNeStats,
+    staleTime: 10_000,
   });
 
   const listQuery = useQuery({
@@ -273,6 +287,44 @@ export function NePage() {
     onError: (err) => showError(String(err)),
   });
 
+  // Bulk-by-tag: fetch ids then run proxy/test
+  const [bulkHop, setBulkHop] = useState<HopProxyFieldsState>(() => emptyHopProxyFields());
+  const bulkByTagMutation = useMutation({
+    mutationFn: async (params: { action: "proxy" | "test"; tag: string }) => {
+      const apiTag = params.tag === "" ? null : params.tag;
+      const { ids } = await fetchIdsByTag(apiTag);
+      if (ids.length === 0) throw new Error(t("managedNe.stats.loadingIds"));
+      if (!window.confirm(t("managedNe.stats.confirm", { n: ids.length }))) return null;
+      if (params.action === "test") {
+        const res = await connectTestManagedNe(ids);
+        return { type: "test" as const, n: res.submitted };
+      }
+      const res = await batchApplyHopManagedNe(ids, {
+        hop_vendor: bulkHop.hop_vendor,
+        hop_host: bulkHop.hop_host.trim(),
+        hop_port: bulkHop.hop_port,
+        hop_protocol: bulkHop.hop_protocol,
+        hop_username: bulkHop.hop_username.trim(),
+        hop_password: bulkHop.hop_password,
+        hop_command_template: bulkHop.hop_command_template.trim(),
+        hop_vrf: bulkHop.hop_vrf.trim(),
+        hop_target_auth_mode: bulkHop.hop_target_auth_mode,
+      });
+      return { type: "proxy" as const, n: res.updated };
+    },
+    onSuccess: async (res) => {
+      if (!res) return;
+      setBulkTagModalOpen(false);
+      if (res.type === "test") showOk(t("managedNe.stats.testDone", { n: res.n }));
+      else showOk(t("managedNe.stats.proxyDone", { n: res.n }));
+      await Promise.all([
+        invalidateList(),
+        queryClient.invalidateQueries({ queryKey: queryKeys.managedNeStats }),
+      ]);
+    },
+    onError: (err) => showError(String(err)),
+  });
+
   const vendors = metaQuery.data?.vendors ?? [];
   const deviceTypes = metaQuery.data?.device_types ?? [];
   const credsOk = metaQuery.data?.credentials_configured ?? false;
@@ -340,6 +392,34 @@ export function NePage() {
     }
   };
 
+  const stats: ManagedNeStats | undefined = statsQuery.data;
+  const statTags: string[] = stats?.tags ?? [];
+  const perTag = stats?.per_tag ?? {};
+  const tagCardItems = useMemo(() => {
+    if (!stats) return [];
+    const items: Array<{ key: string; title: string; total: number; by_status: Record<string, number> }> = [];
+    items.push({ key: "__all__", title: t("managedNe.stats.all"), total: stats.total, by_status: stats.by_status });
+    // no-tag first (if any)
+    if ((stats.no_tag_count ?? 0) > 0 || perTag["__no_tag__"]) {
+      items.push({
+        key: "__no_tag__",
+        title: t("managedNe.stats.noTag"),
+        total: perTag["__no_tag__"]?.total ?? stats.no_tag_count ?? 0,
+        by_status: perTag["__no_tag__"]?.by_status ?? {},
+      });
+    }
+    for (const tag of stats.tags || []) {
+      const x = perTag[tag];
+      items.push({
+        key: tag,
+        title: tag,
+        total: x?.total ?? 0,
+        by_status: x?.by_status ?? {},
+      });
+    }
+    return items;
+  }, [stats, perTag, t]);
+
   return (
     <div className="page-stack">
       {!credsOk ? (
@@ -347,6 +427,57 @@ export function NePage() {
           <p>{t("managedNe.credsNotConfigured")}</p>
         </section>
       ) : null}
+
+      {/* ── statistics card ── */}
+      <section className="card ne-stats-card">
+        <div className="ne-stats-card__header">
+          <div className="ne-stats-card__header-left">
+            <span className="ne-stats-card__title">{t("managedNe.stats.title")}</span>
+          </div>
+          <div className="ne-stats-card__header-actions">
+            <button
+              type="button"
+              disabled={!credsOk || bulkByTagMutation.isPending}
+              onClick={() => {
+                setBulkTagAction("proxy");
+                setBulkHop(emptyHopProxyFields());
+                setBulkTagModalOpen(true);
+              }}
+            >
+              {t("managedNe.stats.batchProxy")}
+            </button>
+            <button
+              type="button"
+              disabled={bulkByTagMutation.isPending}
+              onClick={() => {
+                setBulkTagAction("test");
+                setBulkTagModalOpen(true);
+              }}
+            >
+              {t("managedNe.stats.batchTest")}
+            </button>
+          </div>
+        </div>
+        {stats ? (
+          <div className="ne-stats-card__tag-cards">
+            {tagCardItems.map((x) => (
+              <div key={x.key} className="ne-tag-card">
+                <div className="ne-tag-card__title">{x.title}</div>
+                <div className="ne-tag-card__total">{t("managedNe.stats.total", { n: x.total })}</div>
+                <div className="ne-tag-card__pills">
+                  {(["pass", "fail", "testing", "unknown"] as const).map((s) => (
+                    <span key={s} className={`ne-stats-pill ne-stats-pill--${s}`}>
+                      {t(`managedNe.stats.${s}`)} {x.by_status[s] ?? 0}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="ne-stats-card__loading">{t("managedNe.stats.loadingIds")}</p>
+        )}
+      </section>
 
       <section className="panel">
         <div className="panel__toolbar">
@@ -740,6 +871,66 @@ export function NePage() {
                 }}
               >
                 {batchHopMutation.isPending ? t("managedNe.hop.applying") : t("managedNe.hop.apply")}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {bulkTagModalOpen ? (
+        <div className="modal-backdrop" role="presentation" onClick={() => setBulkTagModalOpen(false)}>
+          <div className="modal" role="dialog" onClick={(e) => e.stopPropagation()}>
+            <h3>
+              {bulkTagAction === "proxy" ? t("managedNe.stats.batchProxy") : t("managedNe.stats.batchTest")}
+              {bulkTagSelected && bulkTagSelected !== "__no_tag__" ? ` · ${bulkTagSelected}` : ""}
+              {bulkTagSelected === "__no_tag__" ? ` · ${t("managedNe.stats.noTag")}` : ""}
+              {bulkTagSelected === "" ? ` · ${t("managedNe.stats.allTag")}` : ""}
+            </h3>
+            <label>
+              <FormLabel>{t("managedNe.stats.tagFilter")}</FormLabel>
+              <select
+                className="ne-stats-card__tag-select"
+                value={bulkTagSelected}
+                onChange={(e) => setBulkTagSelected(e.target.value)}
+              >
+                <option value="">{t("managedNe.stats.allTag")}</option>
+                <option value="__no_tag__">{t("managedNe.stats.noTag")}</option>
+                {statTags.map((tag) => (
+                  <option key={tag} value={tag}>
+                    {tag}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {bulkTagAction === "proxy" ? (
+              <>
+                <p className="form-hint">{t("managedNe.hop.batchHint", { n: "?" })}</p>
+                <HopProxyFields value={bulkHop} onChange={(patch) => setBulkHop((prev) => ({ ...prev, ...patch }))} />
+              </>
+            ) : (
+              <p className="form-hint">{t("managedNe.stats.confirm", { n: "?" })}</p>
+            )}
+            <div className="modal__actions">
+              <button type="button" onClick={() => setBulkTagModalOpen(false)}>
+                {t("managedNe.form.cancel")}
+              </button>
+              <button
+                type="button"
+                disabled={bulkByTagMutation.isPending}
+                onClick={() => {
+                  if (bulkTagAction === "proxy") {
+                    if (!bulkHop.hop_host.trim()) { showError(t("managedNe.hop.hostRequired")); return; }
+                    if (!bulkHop.hop_username.trim()) { showError(t("managedNe.hop.userRequired")); return; }
+                    if (!bulkHop.hop_password) { showError(t("managedNe.hop.passwordRequired")); return; }
+                  }
+                  bulkByTagMutation.mutate({ action: bulkTagAction, tag: bulkTagSelected });
+                }}
+              >
+                {bulkByTagMutation.isPending
+                  ? t("managedNe.stats.loadingIds")
+                  : bulkTagAction === "proxy"
+                    ? t("managedNe.hop.apply")
+                    : t("managedNe.connect.run")}
               </button>
             </div>
           </div>

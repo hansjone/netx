@@ -16,7 +16,9 @@ from .ne_service import (
     create_managed_ne,
     batch_delete_managed_ne,
     delete_managed_ne,
+    get_ids_by_tag,
     get_managed_ne,
+    get_managed_ne_stats,
     import_managed_ne,
     list_managed_ne,
     update_managed_ne,
@@ -53,6 +55,17 @@ def api_device_types():
 @router.get("/meta/credentials-configured")
 def api_credentials_configured():
     return {"configured": credentials_configured()}
+
+
+@router.get("/meta/stats")
+def api_managed_ne_stats(db: Session = Depends(get_db)):
+    return get_managed_ne_stats(db)
+
+
+@router.get("/meta/ids-by-tag")
+def api_ids_by_tag(tag: str | None = Query(default=None), db: Session = Depends(get_db)):
+    """Return all NE ids that carry the given tag (or every id when tag is omitted)."""
+    return {"ids": get_ids_by_tag(db, tag)}
 
 
 @router.post("")

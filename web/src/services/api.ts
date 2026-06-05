@@ -102,6 +102,28 @@ export const fetchManagedNeMeta = () =>
     credentials_configured: creds.configured,
   }));
 
+export type ManagedNeStats = {
+  total: number;
+  by_status: Record<string, number>;
+  tags: string[];
+  no_tag_count: number;
+  tag_counts: Record<string, number>;
+  per_tag: Record<
+    string,
+    {
+      total: number;
+      by_status: Record<string, number>;
+    }
+  >;
+};
+
+export const fetchManagedNeStats = () => apiGet<ManagedNeStats>("/v1/managed-ne/meta/stats");
+
+export const fetchIdsByTag = (tag: string | null) => {
+  const url = tag ? `/v1/managed-ne/meta/ids-by-tag?tag=${encodeURIComponent(tag)}` : "/v1/managed-ne/meta/ids-by-tag";
+  return apiGet<{ ids: string[] }>(url);
+};
+
 export const fetchManagedNe = (params: {
   keyword: string;
   vendor: string;
