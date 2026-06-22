@@ -337,7 +337,7 @@ const en = {
     },
     keyAlert: {
       title: "AI alarm monitor (OClaw WhatsApp)",
-      help: "Match UME key alarms by notificationId and push via OClaw WebSocket. Uses NETX_OCLAW_ALARM_WS_URL + NETX_OCLAW_ALARM_WS_TOKEN (OClaw OCLAW_NETX_BRIDGE_TOKEN), separate from analyze token.",
+      help: "Match UME key alarms by notificationId and push via OClaw WebSocket. Auth shares NETX_OCLAW_ANALYZE_TOKEN / OCLAW_OPS_AI_SHARED_TOKEN; set NETX_OCLAW_ALARM_WS_URL separately.",
       ws: "OClaw WSS",
       wsConnected: "connected",
       wsDisconnected: "disconnected",

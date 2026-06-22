@@ -33,7 +33,7 @@ def _utc_now_iso() -> str:
 
 
 def _bridge_token() -> str:
-    return str(getattr(settings, "oclaw_alarm_ws_token", "") or "").strip()
+    return str(getattr(settings, "oclaw_analyze_token", "") or "").strip()
 
 
 def _bridge_url() -> str:

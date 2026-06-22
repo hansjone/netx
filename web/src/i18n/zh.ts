@@ -335,7 +335,7 @@ const zh = {
     },
     keyAlert: {
       title: "AI 告警监控（OClaw WhatsApp）",
-      help: "按 notificationId 匹配 UME 关键告警，经 OClaw WebSocket 推送到 WhatsApp 群。使用独立配置：NETX_OCLAW_ALARM_WS_URL + NETX_OCLAW_ALARM_WS_TOKEN（对应 OClaw OCLAW_NETX_BRIDGE_TOKEN）。",
+      help: "按 notificationId 匹配 UME 关键告警，经 OClaw WebSocket 推送到 WhatsApp 群。鉴权与 NETX_OCLAW_ANALYZE_TOKEN / OCLAW_OPS_AI_SHARED_TOKEN 共用；另需配置 NETX_OCLAW_ALARM_WS_URL。",
       ws: "OClaw WSS",
       wsConnected: "已连接",
       wsDisconnected: "未连接",

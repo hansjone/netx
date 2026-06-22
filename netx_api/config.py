@@ -22,7 +22,6 @@ class Settings(BaseSettings):
     oclaw_health_timeout_sec: float = 8.0
     oclaw_alarm_ws_enabled: bool = False
     oclaw_alarm_ws_url: str = "ws://127.0.0.1:8787/ws/netx-bridge"
-    oclaw_alarm_ws_token: str = ""
     # UME RESTCONF integration
     ume_base_url: str = ""
     ume_username: str = ""
