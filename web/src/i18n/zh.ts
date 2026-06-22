@@ -351,7 +351,7 @@ const zh = {
       label: "规则描述",
       labelPh: "必填，如 BGP Down",
       forwardOnClear: "告警清除时也推送",
-      forwardOnClearHelp: "默认只在告警新增/更新时推送。勾选后，当 UME 上报告警已清除（从当前告警表删除）时，也会向 WhatsApp 发送一条清除通知。",
+      forwardOnClearHelp: "全局开关：对所有监控规则生效。默认只在告警新增/更新时推送；勾选后，UME 上报告警已清除时也会向 WhatsApp 发送清除通知。",
       add: "添加规则",
       adding: "添加中…",
       delete: "删除",

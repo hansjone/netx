@@ -353,7 +353,7 @@ const en = {
       label: "Rule description",
       labelPh: "Required, e.g. BGP Down",
       forwardOnClear: "Push on alarm clear",
-      forwardOnClearHelp: "By default only new/updated alarms are pushed. When enabled, a clear notification is also sent when UME reports the alarm cleared.",
+      forwardOnClearHelp: "Global switch for all monitor rules. By default only new/updated alarms are pushed; when enabled, clear notifications are also sent when UME reports alarms cleared.",
       add: "Add rules",
       adding: "Adding…",
       delete: "Delete",

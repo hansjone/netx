@@ -141,6 +141,8 @@ def match_key_alert_rule(
                 continue
             return rule
         if act == "deleted":
-            if int(getattr(rule, "forward_on_clear", 0) or 0) == 1:
+            from .key_alert_config import is_forward_on_clear_enabled
+
+            if is_forward_on_clear_enabled(db):
                 return rule
     return None

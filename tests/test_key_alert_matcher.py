@@ -7,6 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from netx_api.db import Base
+from netx_api.key_alert_config import invalidate_key_alert_config_cache, set_key_alert_monitor_config
 from netx_api.key_alert_matcher import (
     invalidate_key_alert_rule_cache,
     match_key_alert_rule,
@@ -24,9 +25,11 @@ class KeyAlertMatcherTests(unittest.TestCase):
         Base.metadata.create_all(bind=engine)
         self.db = self.SessionLocal()
         invalidate_key_alert_rule_cache()
+        invalidate_key_alert_config_cache()
 
     def tearDown(self) -> None:
         self.db.close()
+        invalidate_key_alert_config_cache()
 
     def test_notification_id_from_norm(self) -> None:
         norm = {"notificationId": "NID-1001", "is-cleared": False}
@@ -57,7 +60,6 @@ class KeyAlertMatcherTests(unittest.TestCase):
             UmeKeyAlertRule(
                 notification_id="NID-42",
                 enabled=1,
-                forward_on_clear=0,
                 label="test",
             )
         )
@@ -68,10 +70,7 @@ class KeyAlertMatcherTests(unittest.TestCase):
         self.assertIsNotNone(rule)
         cleared = {"notificationId": "NID-42", "is-cleared": True}
         self.assertIsNone(match_key_alert_rule(self.db, norm=cleared, action="deleted"))
-        row = self.db.get(UmeKeyAlertRule, "NID-42")
-        assert row is not None
-        row.forward_on_clear = 1
-        self.db.commit()
+        set_key_alert_monitor_config(self.db, forward_on_clear=True)
         invalidate_key_alert_rule_cache()
         self.assertIsNotNone(match_key_alert_rule(self.db, norm=cleared, action="deleted"))
 
@@ -91,7 +90,6 @@ class KeyAlertMatcherTests(unittest.TestCase):
                 match_type="keyword",
                 match_value="链路中断",
                 enabled=1,
-                forward_on_clear=0,
                 label="链路",
             )
         )
@@ -118,7 +116,6 @@ class KeyAlertMatcherTests(unittest.TestCase):
                 match_type="keyword",
                 match_value="BGP DOWN",
                 enabled=1,
-                forward_on_clear=0,
                 label="BGP",
             )
         )

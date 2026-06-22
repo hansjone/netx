@@ -16,6 +16,17 @@ import type {
   UmeTokenStatus,
 } from "../types";
 
+const parseApiResponse = async (res: Response): Promise<Record<string, unknown>> => {
+  const text = await res.text();
+  if (!text) return {};
+  try {
+    return JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    const snippet = text.replace(/\s+/g, " ").trim().slice(0, 160);
+    throw new Error(res.ok ? "invalid_json_response" : `${res.status} ${snippet || res.statusText}`);
+  }
+};
+
 export const apiGet = async <T,>(path: string): Promise<T> => {
   const res = await fetch(path, { headers: { accept: "application/json" } });
   if (!res.ok) throw new Error(`${res.status} ${path}`);
@@ -28,9 +39,8 @@ export const apiPost = async <T,>(path: string, body: unknown): Promise<T> => {
     headers: { "content-type": "application/json", accept: "application/json" },
     body: JSON.stringify(body),
   });
-  const text = await res.text();
-  const data = text ? JSON.parse(text) : {};
-  if (!res.ok) throw new Error(String((data as { detail?: string }).detail || `${res.status} ${path}`));
+  const data = await parseApiResponse(res);
+  if (!res.ok) throw new Error(String(data.detail || `${res.status} ${path}`));
   return data as T;
 };
 
@@ -40,17 +50,15 @@ export const apiPatch = async <T,>(path: string, body: unknown): Promise<T> => {
     headers: { "content-type": "application/json", accept: "application/json" },
     body: JSON.stringify(body),
   });
-  const text = await res.text();
-  const data = text ? JSON.parse(text) : {};
-  if (!res.ok) throw new Error(String((data as { detail?: string }).detail || `${res.status} ${path}`));
+  const data = await parseApiResponse(res);
+  if (!res.ok) throw new Error(String(data.detail || `${res.status} ${path}`));
   return data as T;
 };
 
 export const apiDelete = async <T,>(path: string): Promise<T> => {
   const res = await fetch(path, { method: "DELETE", headers: { accept: "application/json" } });
-  const text = await res.text();
-  const data = text ? JSON.parse(text) : {};
-  if (!res.ok) throw new Error(String((data as { detail?: string }).detail || `${res.status} ${path}`));
+  const data = await parseApiResponse(res);
+  if (!res.ok) throw new Error(String(data.detail || `${res.status} ${path}`));
   return data as T;
 };
 
@@ -79,8 +87,10 @@ export const upsertUmeKeyAlertRule = (payload: {
   match_value: string;
   label: string;
   enabled?: boolean;
-  forward_on_clear?: boolean;
 }) => apiPost<{ ok: boolean; item?: unknown }>("/v1/ume/key-alert-rules", payload);
+
+export const updateUmeKeyAlertMonitorConfig = (payload: { forward_on_clear: boolean }) =>
+  apiPatch<{ ok: boolean; config: { forward_on_clear: boolean } }>("/v1/ume/key-alert-monitor/config", payload);
 
 export const deleteUmeKeyAlertRule = (ruleKey: string) =>
   apiDelete<{ ok: boolean }>(`/v1/ume/key-alert-rules/${encodeURIComponent(ruleKey)}`);

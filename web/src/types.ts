@@ -21,7 +21,6 @@ export type UmeKeyAlertRuleItem = {
   match_type: "notification_id" | "keyword";
   match_value: string;
   enabled: boolean;
-  forward_on_clear: boolean;
   label: string;
   created_at: string;
   updated_at: string;
@@ -45,6 +44,9 @@ export type UmeKeyAlertForwarderStatus = {
 export type UmeKeyAlertMonitorResponse = {
   ok: boolean;
   rules: UmeKeyAlertRuleItem[];
+  config?: {
+    forward_on_clear: boolean;
+  };
   forwarder: UmeKeyAlertForwarderStatus;
 };
 

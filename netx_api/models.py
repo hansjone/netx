@@ -201,6 +201,16 @@ class UmeAlarmHistory(Base):
     raw_json: Mapped[str] = mapped_column(Text, default="{}")
 
 
+class UmeKeyAlertMonitorConfig(Base):
+    """Global monitor options for key alert forwarding (singleton row id=1)."""
+
+    __tablename__ = "ume_key_alert_monitor_config"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    forward_on_clear: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
 class UmeKeyAlertRule(Base):
     """Key alert rule matched by UME notificationId or alarm description keyword."""
 

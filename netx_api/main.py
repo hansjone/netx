@@ -60,6 +60,11 @@ from .ume_alarm_ws import (
     start_ume_alarm_ws_consumer,
 )
 from .ume_sync_service import sync_alarms_current, sync_alarms_history_full, sync_inventory_full
+from .key_alert_config import (
+    get_key_alert_monitor_config,
+    invalidate_key_alert_config_cache,
+    set_key_alert_monitor_config,
+)
 from .key_alert_matcher import (
     invalidate_key_alert_rule_cache,
     normalize_match_type,
@@ -687,10 +692,52 @@ def _configure_ume_diag_logging() -> None:
         lg.propagate = False
 
 
+def _migrate_key_alert_rule_schema() -> None:
+    """Evolve ume_key_alert_rule in its own transaction (avoid rollback with bulk startup DDL)."""
+    try:
+        with engine.begin() as conn:
+            conn.exec_driver_sql(
+                "ALTER TABLE ume_key_alert_rule ADD COLUMN IF NOT EXISTS match_type VARCHAR(32) DEFAULT 'notification_id'"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE ume_key_alert_rule ADD COLUMN IF NOT EXISTS match_value VARCHAR(256) DEFAULT ''"
+            )
+            conn.exec_driver_sql(
+                "UPDATE ume_key_alert_rule SET match_value = notification_id "
+                "WHERE (match_value IS NULL OR match_value = '') AND notification_id NOT LIKE 'kw:%'"
+            )
+            conn.exec_driver_sql(
+                "UPDATE ume_key_alert_rule SET match_type = 'keyword', match_value = SUBSTRING(notification_id FROM 4) "
+                "WHERE notification_id LIKE 'kw:%' "
+                "AND (match_type IS NULL OR match_type = '' OR match_type = 'notification_id')"
+            )
+            conn.exec_driver_sql(
+                """
+                CREATE TABLE IF NOT EXISTS ume_key_alert_monitor_config (
+                    id INTEGER PRIMARY KEY,
+                    forward_on_clear INTEGER DEFAULT 0,
+                    updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW()
+                )
+                """
+            )
+            conn.exec_driver_sql(
+                "INSERT INTO ume_key_alert_monitor_config (id, forward_on_clear, updated_at) "
+                "VALUES (1, 0, NOW()) ON CONFLICT (id) DO NOTHING"
+            )
+            conn.exec_driver_sql(
+                "UPDATE ume_key_alert_monitor_config SET forward_on_clear = 1, updated_at = NOW() "
+                "WHERE id = 1 AND EXISTS (SELECT 1 FROM ume_key_alert_rule WHERE forward_on_clear = 1)"
+            )
+    except Exception:
+        _schedule_log.exception("startup: ume_key_alert_rule schema migration failed")
+    invalidate_key_alert_config_cache()
+
+
 @app.on_event("startup")
 def on_startup() -> None:
     _configure_ume_diag_logging()
     Base.metadata.create_all(bind=engine)
+    _migrate_key_alert_rule_schema()
     _reset_runtime_pause_flags()
     _fail_stale_running_sync_jobs_on_startup()
     if _needs_startup_alarm_sync_before_ws():
@@ -776,20 +823,6 @@ def on_startup() -> None:
             )
             conn.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS ix_ume_alarms_history_notification_id ON ume_alarms_history (notification_id)"
-            )
-            conn.exec_driver_sql(
-                "ALTER TABLE ume_key_alert_rule ADD COLUMN IF NOT EXISTS match_type VARCHAR(32) DEFAULT 'notification_id'"
-            )
-            conn.exec_driver_sql(
-                "ALTER TABLE ume_key_alert_rule ADD COLUMN IF NOT EXISTS match_value VARCHAR(256) DEFAULT ''"
-            )
-            conn.exec_driver_sql(
-                "UPDATE ume_key_alert_rule SET match_value = notification_id "
-                "WHERE (match_value IS NULL OR match_value = '') AND notification_id NOT LIKE 'kw:%'"
-            )
-            conn.exec_driver_sql(
-                "UPDATE ume_key_alert_rule SET match_type = 'keyword', match_value = SUBSTRING(notification_id FROM 4) "
-                "WHERE notification_id LIKE 'kw:%' AND (match_type IS NULL OR match_type = '' OR match_type = 'notification_id')"
             )
             conn.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS ix_ume_alarms_current_host_name ON ume_alarms_current (host_name)"
@@ -1250,7 +1283,6 @@ def ume_list_key_alert_rules(db: Session = Depends(get_db)) -> dict[str, Any]:
             "match_type": rule_match_type(row),
             "match_value": rule_match_value(row),
             "enabled": bool(int(row.enabled or 0)),
-            "forward_on_clear": bool(int(row.forward_on_clear or 0)),
             "label": str(row.label or ""),
             "created_at": (_ensure_utc(row.created_at) or datetime.now(timezone.utc)).isoformat(),
             "updated_at": (_ensure_utc(row.updated_at) or datetime.now(timezone.utc)).isoformat(),
@@ -1272,8 +1304,17 @@ def ume_key_alert_monitor(db: Session = Depends(get_db)) -> dict[str, Any]:
     return {
         "ok": True,
         "rules": base.get("items") or [],
+        "config": get_key_alert_monitor_config(db),
         "forwarder": base.get("forwarder") or forwarder_status(),
     }
+
+
+@app.patch("/v1/ume/key-alert-monitor/config")
+def ume_update_key_alert_monitor_config(payload: dict[str, Any], db: Session = Depends(get_db)) -> dict[str, Any]:
+    if "forward_on_clear" not in payload:
+        raise HTTPException(status_code=400, detail="forward_on_clear_required")
+    config = set_key_alert_monitor_config(db, forward_on_clear=bool(payload.get("forward_on_clear")))
+    return {"ok": True, "config": config}
 
 
 @app.post("/v1/ume/key-alert-rules")
@@ -1285,7 +1326,6 @@ def ume_upsert_key_alert_rule(payload: dict[str, Any], db: Session = Depends(get
     label = str(payload.get("label") or "").strip()
     if not label:
         raise HTTPException(status_code=400, detail="label_required")
-    forward_on_clear = 1 if bool(payload.get("forward_on_clear", False)) else 0
     enabled = 1 if bool(payload.get("enabled", True)) else 0
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     try:
@@ -1299,7 +1339,6 @@ def ume_upsert_key_alert_rule(payload: dict[str, Any], db: Session = Depends(get
     row.match_type = match_type
     row.match_value = match_value
     row.enabled = enabled
-    row.forward_on_clear = forward_on_clear
     row.label = label
     row.updated_at = now
     saved = {
@@ -1307,7 +1346,6 @@ def ume_upsert_key_alert_rule(payload: dict[str, Any], db: Session = Depends(get
         "match_type": match_type,
         "match_value": match_value,
         "enabled": bool(enabled),
-        "forward_on_clear": bool(forward_on_clear),
         "label": label,
     }
     db.commit()

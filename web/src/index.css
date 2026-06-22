@@ -708,6 +708,11 @@ pre {
   right: 0;
 }
 
+.help-hint__popover--portal {
+  z-index: 2000;
+  width: auto;
+}
+
 .help-hint__popover--nowrap {
   width: max-content;
   max-width: min(90vw, 720px);

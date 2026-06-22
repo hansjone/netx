@@ -17,6 +17,7 @@ import {
   refreshUmeToken,
   upsertUmeKeyAlertRule,
   deleteUmeKeyAlertRule,
+  updateUmeKeyAlertMonitorConfig,
 } from "../services/api";
 import { HelpHint } from "../components/HelpHint";
 import { queryKeys } from "../constants/queryKeys";
@@ -50,7 +51,6 @@ export function UmePage() {
   const [keyAlertMatchType, setKeyAlertMatchType] = useState<"notification_id" | "keyword">("keyword");
   const [keyAlertMatchValue, setKeyAlertMatchValue] = useState("");
   const [keyAlertLabel, setKeyAlertLabel] = useState("");
-  const [keyAlertForwardOnClear, setKeyAlertForwardOnClear] = useState(false);
   const [keyAlertOpError, setKeyAlertOpError] = useState("");
   const [keyAlertKeywordHints, setKeyAlertKeywordHints] = useState<string[]>([]);
   const [keyAlertIdHints, setKeyAlertIdHints] = useState<
@@ -300,7 +300,6 @@ export function UmePage() {
         match_value: keyAlertMatchValue.trim(),
         label: keyAlertLabel.trim(),
         enabled: true,
-        forward_on_clear: keyAlertForwardOnClear,
       }),
     onMutate: () => setKeyAlertOpError(""),
     onSuccess: async () => {
@@ -332,6 +331,19 @@ export function UmePage() {
     },
   });
 
+  const keyAlertConfigMutation = useMutation({
+    mutationFn: (forwardOnClear: boolean) => updateUmeKeyAlertMonitorConfig({ forward_on_clear: forwardOnClear }),
+    onMutate: () => setKeyAlertOpError(""),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.umeKeyAlertMonitor });
+    },
+    onError: (err) => {
+      const msg = String(err);
+      setKeyAlertOpError(msg);
+      showError(msg);
+    },
+  });
+
   const syncTotal = Number(syncStatusQuery.data?.total || 0);
   const syncPages = pageCount(syncTotal, syncPageSize);
   const neTotal = Number(neQuery.data?.total || 0);
@@ -341,6 +353,7 @@ export function UmePage() {
 
   const keyAlertForwarder = keyAlertMonitorQuery.data?.forwarder;
   const keyAlertRules = keyAlertMonitorQuery.data?.rules || [];
+  const keyAlertForwardOnClear = Boolean(keyAlertMonitorQuery.data?.config?.forward_on_clear);
   const oclawWsPill =
     !keyAlertForwarder?.enabled
       ? "unknown"
@@ -697,23 +710,22 @@ export function UmePage() {
               className="actions-row actions-row--inline"
               style={{ marginTop: 8, flexWrap: "wrap", alignItems: "center", justifyContent: "space-between" }}
             >
-              <label
-                className="muted"
-                style={{ display: "inline-flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}
-              >
-                <input
-                  type="checkbox"
-                  checked={keyAlertForwardOnClear}
-                  onChange={(e) => setKeyAlertForwardOnClear(e.target.checked)}
-                />
-                {t("ume.keyAlert.forwardOnClear")}
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}>
+                <label className="muted" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  <input
+                    type="checkbox"
+                    checked={keyAlertForwardOnClear}
+                    disabled={keyAlertConfigMutation.isPending || keyAlertMonitorQuery.isLoading}
+                    onChange={(e) => keyAlertConfigMutation.mutate(e.target.checked)}
+                  />
+                  {t("ume.keyAlert.forwardOnClear")}
+                </label>
                 <HelpHint
                   text={t("ume.keyAlert.forwardOnClearHelp")}
                   ariaLabel={t("common.help")}
-                  align="end"
-                  nowrap
+                  align="start"
                 />
-              </label>
+              </span>
               <button
                 type="button"
                 onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeKeyAlertMonitor })}
@@ -734,7 +746,6 @@ export function UmePage() {
                 <th>{t("ume.keyAlert.colType")}</th>
                 <th>{t("ume.keyAlert.colMatch")}</th>
                 <th>{t("ume.keyAlert.colLabel")}</th>
-                <th>{t("ume.keyAlert.colForwardClear")}</th>
                 <th>{t("ume.keyAlert.colPublished")}</th>
                 <th>{t("ume.keyAlert.colAttempts")}</th>
                 <th>{t("ume.keyAlert.colLast")}</th>
@@ -751,7 +762,6 @@ export function UmePage() {
                   </td>
                   <td>{rule.match_value || rule.notification_id}</td>
                   <td>{rule.label || t("common.empty")}</td>
-                  <td>{rule.forward_on_clear ? t("ume.keyAlert.yes") : t("ume.keyAlert.no")}</td>
                   <td>{Number(rule.forward_stats?.published_ok || 0)}</td>
                   <td>{Number(rule.forward_stats?.attempts || 0)}</td>
                   <td>
@@ -776,7 +786,7 @@ export function UmePage() {
               ))}
               {!keyAlertMonitorQuery.isLoading && keyAlertRules.length === 0 ? (
                 <tr>
-                  <td colSpan={8}>{t("ume.keyAlert.emptyRules")}</td>
+                  <td colSpan={7}>{t("ume.keyAlert.emptyRules")}</td>
                 </tr>
               ) : null}
             </tbody>
