@@ -693,43 +693,55 @@ def _configure_ume_diag_logging() -> None:
 
 
 def _migrate_key_alert_rule_schema() -> None:
-    """Evolve ume_key_alert_rule in its own transaction (avoid rollback with bulk startup DDL)."""
-    try:
-        with engine.begin() as conn:
-            conn.exec_driver_sql(
-                "ALTER TABLE ume_key_alert_rule ADD COLUMN IF NOT EXISTS match_type VARCHAR(32) DEFAULT 'notification_id'"
+    """Evolve ume_key_alert_rule in isolated transactions (psycopg3 rejects unescaped % in SQL)."""
+    steps = [
+        (
+            "add match_type",
+            "ALTER TABLE ume_key_alert_rule ADD COLUMN IF NOT EXISTS match_type VARCHAR(32) DEFAULT 'notification_id'",
+        ),
+        (
+            "add match_value",
+            "ALTER TABLE ume_key_alert_rule ADD COLUMN IF NOT EXISTS match_value VARCHAR(256) DEFAULT ''",
+        ),
+        (
+            "create monitor_config",
+            """
+            CREATE TABLE IF NOT EXISTS ume_key_alert_monitor_config (
+                id INTEGER PRIMARY KEY,
+                forward_on_clear INTEGER DEFAULT 0,
+                updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW()
             )
-            conn.exec_driver_sql(
-                "ALTER TABLE ume_key_alert_rule ADD COLUMN IF NOT EXISTS match_value VARCHAR(256) DEFAULT ''"
-            )
-            conn.exec_driver_sql(
-                "UPDATE ume_key_alert_rule SET match_value = notification_id "
-                "WHERE (match_value IS NULL OR match_value = '') AND notification_id NOT LIKE 'kw:%'"
-            )
-            conn.exec_driver_sql(
-                "UPDATE ume_key_alert_rule SET match_type = 'keyword', match_value = SUBSTRING(notification_id FROM 4) "
-                "WHERE notification_id LIKE 'kw:%' "
-                "AND (match_type IS NULL OR match_type = '' OR match_type = 'notification_id')"
-            )
-            conn.exec_driver_sql(
-                """
-                CREATE TABLE IF NOT EXISTS ume_key_alert_monitor_config (
-                    id INTEGER PRIMARY KEY,
-                    forward_on_clear INTEGER DEFAULT 0,
-                    updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW()
-                )
-                """
-            )
-            conn.exec_driver_sql(
-                "INSERT INTO ume_key_alert_monitor_config (id, forward_on_clear, updated_at) "
-                "VALUES (1, 0, NOW()) ON CONFLICT (id) DO NOTHING"
-            )
-            conn.exec_driver_sql(
-                "UPDATE ume_key_alert_monitor_config SET forward_on_clear = 1, updated_at = NOW() "
-                "WHERE id = 1 AND EXISTS (SELECT 1 FROM ume_key_alert_rule WHERE forward_on_clear = 1)"
-            )
-    except Exception:
-        _schedule_log.exception("startup: ume_key_alert_rule schema migration failed")
+            """,
+        ),
+        (
+            "seed monitor_config",
+            "INSERT INTO ume_key_alert_monitor_config (id, forward_on_clear, updated_at) "
+            "VALUES (1, 0, NOW()) ON CONFLICT (id) DO NOTHING",
+        ),
+        (
+            "backfill match_value from notification_id",
+            "UPDATE ume_key_alert_rule SET match_value = notification_id "
+            "WHERE (match_value IS NULL OR match_value = '') "
+            "AND NOT starts_with(notification_id, 'kw:')",
+        ),
+        (
+            "backfill keyword rules",
+            "UPDATE ume_key_alert_rule SET match_type = 'keyword', match_value = SUBSTRING(notification_id FROM 4) "
+            "WHERE starts_with(notification_id, 'kw:') "
+            "AND (match_type IS NULL OR match_type = '' OR match_type = 'notification_id')",
+        ),
+        (
+            "migrate forward_on_clear to global config",
+            "UPDATE ume_key_alert_monitor_config SET forward_on_clear = 1, updated_at = NOW() "
+            "WHERE id = 1 AND EXISTS (SELECT 1 FROM ume_key_alert_rule WHERE forward_on_clear = 1)",
+        ),
+    ]
+    for label, sql in steps:
+        try:
+            with engine.begin() as conn:
+                conn.exec_driver_sql(sql)
+        except Exception:
+            _schedule_log.exception("startup: ume_key_alert_rule schema migration failed at %s", label)
     invalidate_key_alert_config_cache()
 
 
@@ -1348,7 +1360,17 @@ def ume_upsert_key_alert_rule(payload: dict[str, Any], db: Session = Depends(get
         "enabled": bool(enabled),
         "label": label,
     }
-    db.commit()
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        msg = str(exc).lower()
+        if "match_type" in msg or "match_value" in msg or "undefinedcolumn" in msg:
+            raise HTTPException(
+                status_code=503,
+                detail="key_alert_schema_outdated: restart netx API to apply database migration",
+            ) from exc
+        raise
     invalidate_key_alert_rule_cache()
     return {"ok": True, "item": saved}
 
