@@ -202,11 +202,13 @@ class UmeAlarmHistory(Base):
 
 
 class UmeKeyAlertRule(Base):
-    """Key alert rule matched by UME notificationId."""
+    """Key alert rule matched by UME notificationId or alarm description keyword."""
 
     __tablename__ = "ume_key_alert_rule"
 
     notification_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    match_type: Mapped[str] = mapped_column(String(32), default="notification_id", index=True)
+    match_value: Mapped[str] = mapped_column(String(256), default="", index=True)
     enabled: Mapped[int] = mapped_column(Integer, default=1)
     forward_on_clear: Mapped[int] = mapped_column(Integer, default=0)
     label: Mapped[str] = mapped_column(String(256), default="")

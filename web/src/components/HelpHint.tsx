@@ -4,9 +4,10 @@ type Props = {
   text: string;
   ariaLabel: string;
   align?: "start" | "end";
+  nowrap?: boolean;
 };
 
-export function HelpHint({ text, ariaLabel, align = "start" }: Props) {
+export function HelpHint({ text, ariaLabel, align = "start", nowrap = false }: Props) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLSpanElement>(null);
 
@@ -38,7 +39,10 @@ export function HelpHint({ text, ariaLabel, align = "start" }: Props) {
         ?
       </button>
       {open ? (
-        <div className="help-hint__popover" role="tooltip">
+        <div
+          className={`help-hint__popover${nowrap ? " help-hint__popover--nowrap" : ""}`}
+          role="tooltip"
+        >
           {text}
         </div>
       ) : null}

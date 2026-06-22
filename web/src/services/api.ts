@@ -75,18 +75,24 @@ export const clearLocalUmeAlarmSubscription = () =>
 export const fetchUmeKeyAlertMonitor = () => apiGet<UmeKeyAlertMonitorResponse>("/v1/ume/key-alert-monitor");
 
 export const upsertUmeKeyAlertRule = (payload: {
-  notification_id: string;
-  label?: string;
+  match_type: "notification_id" | "keyword";
+  match_value: string;
+  label: string;
   enabled?: boolean;
   forward_on_clear?: boolean;
-}) => apiPost<{ ok: boolean }>("/v1/ume/key-alert-rules", payload);
+}) => apiPost<{ ok: boolean; item?: unknown }>("/v1/ume/key-alert-rules", payload);
 
-export const deleteUmeKeyAlertRule = (notificationId: string) =>
-  apiDelete<{ ok: boolean }>(`/v1/ume/key-alert-rules/${encodeURIComponent(notificationId)}`);
+export const deleteUmeKeyAlertRule = (ruleKey: string) =>
+  apiDelete<{ ok: boolean }>(`/v1/ume/key-alert-rules/${encodeURIComponent(ruleKey)}`);
 
 export const fetchUmeNotificationIds = (limit = 200) =>
   apiGet<{ items: Array<{ notification_id: string; native_probable_cause_sample: string }> }>(
     `/v1/ume/notification-ids?limit=${encodeURIComponent(String(limit))}`,
+  );
+
+export const fetchUmeAlarmKeywords = (limit = 200) =>
+  apiGet<{ items: Array<{ keyword: string; alarm_count: number }> }>(
+    `/v1/ume/alarm-keywords?limit=${encodeURIComponent(String(limit))}`,
   );
 
 export const fetchUmeSyncStatus = (params: { page: number; pageSize: number }) => {

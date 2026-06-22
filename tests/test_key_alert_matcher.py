@@ -7,7 +7,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from netx_api.db import Base
-from netx_api.key_alert_matcher import invalidate_key_alert_rule_cache, match_key_alert_rule
+from netx_api.key_alert_matcher import (
+    invalidate_key_alert_rule_cache,
+    match_key_alert_rule,
+    parse_rule_items,
+    rule_storage_key,
+)
 from netx_api.models import UmeKeyAlertRule
 from netx_api.ume_sync_service import apply_alarm_to_current, notification_id_from_norm
 
@@ -69,6 +74,62 @@ class KeyAlertMatcherTests(unittest.TestCase):
         self.db.commit()
         invalidate_key_alert_rule_cache()
         self.assertIsNotNone(match_key_alert_rule(self.db, norm=cleared, action="deleted"))
+
+    def test_parse_rule_items(self) -> None:
+        self.assertEqual(parse_rule_items("a, b；c\n d"), ["a", "b", "c", "d"])
+        self.assertEqual(parse_rule_items("A, a"), ["A"])
+        self.assertEqual(parse_rule_items(""), [])
+
+    def test_rule_storage_key_keyword(self) -> None:
+        self.assertEqual(rule_storage_key(match_type="keyword", value="BGP Down"), "kw:bgp down")
+
+    def test_keyword_match_insert(self) -> None:
+        pk = rule_storage_key(match_type="keyword", value="链路中断")
+        self.db.add(
+            UmeKeyAlertRule(
+                notification_id=pk,
+                match_type="keyword",
+                match_value="链路中断",
+                enabled=1,
+                forward_on_clear=0,
+                label="链路",
+            )
+        )
+        self.db.commit()
+        invalidate_key_alert_rule_cache()
+        norm = {
+            "notificationId": "NID-999",
+            "nativeProbableCause": "核心链路中断告警",
+            "is-cleared": False,
+        }
+        rule = match_key_alert_rule(self.db, norm=norm, action="inserted")
+        self.assertIsNotNone(rule)
+        assert rule is not None
+        self.assertEqual(rule.match_value, "链路中断")
+
+        norm_miss = {"notificationId": "NID-1", "nativeProbableCause": "CPU high", "is-cleared": False}
+        self.assertIsNone(match_key_alert_rule(self.db, norm=norm_miss, action="inserted"))
+
+    def test_keyword_match_case_insensitive(self) -> None:
+        pk = rule_storage_key(match_type="keyword", value="bgp down")
+        self.db.add(
+            UmeKeyAlertRule(
+                notification_id=pk,
+                match_type="keyword",
+                match_value="BGP DOWN",
+                enabled=1,
+                forward_on_clear=0,
+                label="BGP",
+            )
+        )
+        self.db.commit()
+        invalidate_key_alert_rule_cache()
+        for cause in ("BGP DOWN alarm", "bgp down on port", "Link BGP DOWN detected"):
+            norm = {"notificationId": "NID-x", "nativeProbableCause": cause, "is-cleared": False}
+            self.assertIsNotNone(
+                match_key_alert_rule(self.db, norm=norm, action="inserted"),
+                msg=f"expected match for cause={cause!r}",
+            )
 
 
 if __name__ == "__main__":

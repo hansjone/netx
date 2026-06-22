@@ -18,6 +18,8 @@ export type IntegrationStatus = {
 
 export type UmeKeyAlertRuleItem = {
   notification_id: string;
+  match_type: "notification_id" | "keyword";
+  match_value: string;
   enabled: boolean;
   forward_on_clear: boolean;
   label: string;

@@ -60,7 +60,13 @@ from .ume_alarm_ws import (
     start_ume_alarm_ws_consumer,
 )
 from .ume_sync_service import sync_alarms_current, sync_alarms_history_full, sync_inventory_full
-from .key_alert_matcher import invalidate_key_alert_rule_cache
+from .key_alert_matcher import (
+    invalidate_key_alert_rule_cache,
+    normalize_match_type,
+    rule_match_type,
+    rule_match_value,
+    rule_storage_key,
+)
 from .oclaw_alarm_forwarder import forwarder_status, shutdown_oclaw_alarm_forwarder, start_oclaw_alarm_forwarder
 from .ume_token_store import (
     clear_shared_token,
@@ -772,6 +778,20 @@ def on_startup() -> None:
                 "CREATE INDEX IF NOT EXISTS ix_ume_alarms_history_notification_id ON ume_alarms_history (notification_id)"
             )
             conn.exec_driver_sql(
+                "ALTER TABLE ume_key_alert_rule ADD COLUMN IF NOT EXISTS match_type VARCHAR(32) DEFAULT 'notification_id'"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE ume_key_alert_rule ADD COLUMN IF NOT EXISTS match_value VARCHAR(256) DEFAULT ''"
+            )
+            conn.exec_driver_sql(
+                "UPDATE ume_key_alert_rule SET match_value = notification_id "
+                "WHERE (match_value IS NULL OR match_value = '') AND notification_id NOT LIKE 'kw:%'"
+            )
+            conn.exec_driver_sql(
+                "UPDATE ume_key_alert_rule SET match_type = 'keyword', match_value = SUBSTRING(notification_id FROM 4) "
+                "WHERE notification_id LIKE 'kw:%' AND (match_type IS NULL OR match_type = '' OR match_type = 'notification_id')"
+            )
+            conn.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS ix_ume_alarms_current_host_name ON ume_alarms_current (host_name)"
             )
             conn.exec_driver_sql(
@@ -1227,6 +1247,8 @@ def ume_list_key_alert_rules(db: Session = Depends(get_db)) -> dict[str, Any]:
     items = [
         {
             "notification_id": str(row.notification_id or ""),
+            "match_type": rule_match_type(row),
+            "match_value": rule_match_value(row),
             "enabled": bool(int(row.enabled or 0)),
             "forward_on_clear": bool(int(row.forward_on_clear or 0)),
             "label": str(row.label or ""),
@@ -1256,39 +1278,82 @@ def ume_key_alert_monitor(db: Session = Depends(get_db)) -> dict[str, Any]:
 
 @app.post("/v1/ume/key-alert-rules")
 def ume_upsert_key_alert_rule(payload: dict[str, Any], db: Session = Depends(get_db)) -> dict[str, Any]:
-    notification_id = str(payload.get("notification_id") or "").strip()
-    if not notification_id:
-        raise HTTPException(status_code=400, detail="notification_id_required")
+    match_type = normalize_match_type(str(payload.get("match_type") or "notification_id"))
+    match_value = str(payload.get("match_value") or payload.get("notification_id") or "").strip()
+    if not match_value:
+        raise HTTPException(status_code=400, detail="match_value_required")
+    label = str(payload.get("label") or "").strip()
+    if not label:
+        raise HTTPException(status_code=400, detail="label_required")
+    forward_on_clear = 1 if bool(payload.get("forward_on_clear", False)) else 0
+    enabled = 1 if bool(payload.get("enabled", True)) else 0
     now = datetime.now(timezone.utc).replace(tzinfo=None)
-    row = db.get(UmeKeyAlertRule, notification_id)
+    try:
+        storage_key = rule_storage_key(match_type=match_type, value=match_value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    row = db.get(UmeKeyAlertRule, storage_key)
     if row is None:
-        row = UmeKeyAlertRule(notification_id=notification_id, created_at=now, updated_at=now)
+        row = UmeKeyAlertRule(notification_id=storage_key, created_at=now, updated_at=now)
         db.add(row)
-    row.enabled = 1 if bool(payload.get("enabled", True)) else 0
-    row.forward_on_clear = 1 if bool(payload.get("forward_on_clear", False)) else 0
-    row.label = str(payload.get("label") or "").strip()
+    row.match_type = match_type
+    row.match_value = match_value
+    row.enabled = enabled
+    row.forward_on_clear = forward_on_clear
+    row.label = label
     row.updated_at = now
+    saved = {
+        "notification_id": storage_key,
+        "match_type": match_type,
+        "match_value": match_value,
+        "enabled": bool(enabled),
+        "forward_on_clear": bool(forward_on_clear),
+        "label": label,
+    }
     db.commit()
     invalidate_key_alert_rule_cache()
-    return {
-        "ok": True,
-        "notification_id": notification_id,
-        "enabled": bool(row.enabled),
-        "forward_on_clear": bool(row.forward_on_clear),
-        "label": row.label,
-    }
+    return {"ok": True, "item": saved}
 
 
-@app.delete("/v1/ume/key-alert-rules/{notification_id}")
-def ume_delete_key_alert_rule(notification_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
-    nid = str(notification_id or "").strip()
-    row = db.get(UmeKeyAlertRule, nid)
+@app.delete("/v1/ume/key-alert-rules/{rule_key:path}")
+def ume_delete_key_alert_rule(rule_key: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    key = str(rule_key or "").strip()
+    row = db.get(UmeKeyAlertRule, key)
     if row is None:
         raise HTTPException(status_code=404, detail="rule_not_found")
     db.delete(row)
     db.commit()
     invalidate_key_alert_rule_cache()
-    return {"ok": True, "deleted": nid}
+    return {"ok": True, "deleted": key}
+
+
+@app.get("/v1/ume/alarm-keywords")
+def ume_list_alarm_keywords(
+    limit: int = Query(default=200, ge=1, le=2000),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    from sqlalchemy import func
+
+    rows = (
+        db.query(
+            UmeAlarmCurrent.native_probable_cause,
+            func.count(UmeAlarmCurrent.alarm_key).label("cnt"),
+        )
+        .filter(UmeAlarmCurrent.native_probable_cause != "")
+        .group_by(UmeAlarmCurrent.native_probable_cause)
+        .order_by(func.count(UmeAlarmCurrent.alarm_key).desc(), UmeAlarmCurrent.native_probable_cause.asc())
+        .limit(limit)
+        .all()
+    )
+    items = [
+        {
+            "keyword": str(cause or ""),
+            "alarm_count": int(cnt or 0),
+        }
+        for cause, cnt in rows
+        if str(cause or "").strip()
+    ]
+    return {"items": items, "total": len(items)}
 
 
 @app.get("/v1/ume/notification-ids")

@@ -708,6 +708,12 @@ pre {
   right: 0;
 }
 
+.help-hint__popover--nowrap {
+  width: max-content;
+  max-width: min(90vw, 720px);
+  white-space: nowrap;
+}
+
 .panel__toolbar-end {
   margin-left: auto;
   display: flex;
