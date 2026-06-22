@@ -24,10 +24,7 @@ function App() {
           typeof integrationsQuery.data?.db?.latency_ms === "number" ? integrationsQuery.data.db.latency_ms : undefined,
         oclawBridge:
           integrationsQuery.data?.oclaw_bridge?.status ?? (integrationsQuery.isError ? "down" : "unknown"),
-        oclawBridgeLatencyMs:
-          typeof integrationsQuery.data?.oclaw_bridge?.latency_ms === "number"
-            ? integrationsQuery.data.oclaw_bridge.latency_ms
-            : undefined,
+        oclawBridgeLatencyMs: undefined,
         oclawBridgeErrorKind:
           typeof integrationsQuery.data?.oclaw_bridge?.error_kind === "string"
             ? integrationsQuery.data.oclaw_bridge.error_kind
@@ -35,6 +32,14 @@ function App() {
         oclawBridgeError:
           typeof integrationsQuery.data?.oclaw_bridge?.error === "string"
             ? integrationsQuery.data.oclaw_bridge.error
+            : undefined,
+        oclawBridgeQueueSize:
+          typeof integrationsQuery.data?.oclaw_bridge?.queue_size === "number"
+            ? integrationsQuery.data.oclaw_bridge.queue_size
+            : undefined,
+        oclawBridgePublishedOk:
+          typeof integrationsQuery.data?.oclaw_bridge?.published_ok === "number"
+            ? integrationsQuery.data.oclaw_bridge.published_ok
             : undefined,
       }}
     >

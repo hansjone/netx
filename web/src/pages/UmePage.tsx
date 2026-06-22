@@ -9,9 +9,13 @@ import {
   clearLocalUmeAlarmSubscription,
   establishUmeAlarmSubscription,
   fetchUmeAlarmSubscriptionStatus,
+  fetchUmeKeyAlertMonitor,
+  fetchUmeNotificationIds,
   fetchUmeSyncStatus,
   fetchUmeTokenStatus,
   refreshUmeToken,
+  upsertUmeKeyAlertRule,
+  deleteUmeKeyAlertRule,
 } from "../services/api";
 import { HelpHint } from "../components/HelpHint";
 import { queryKeys } from "../constants/queryKeys";
@@ -42,6 +46,10 @@ export function UmePage() {
   const [curPage, setCurPage] = useState(1);
   const [curPageSize, setCurPageSize] = useState(50);
   const [alarmsPanelOpen, setAlarmsPanelOpen] = useState(false);
+  const [keyAlertNotificationId, setKeyAlertNotificationId] = useState("");
+  const [keyAlertLabel, setKeyAlertLabel] = useState("");
+  const [keyAlertForwardOnClear, setKeyAlertForwardOnClear] = useState(false);
+  const [keyAlertOpError, setKeyAlertOpError] = useState("");
 
   const syncMutation = useMutation({
     mutationFn: async (domains: string[]) => apiPost<{ ok: boolean; jobs: unknown[] }>("/v1/ume/sync", { domains }),
@@ -90,6 +98,18 @@ export function UmePage() {
     queryFn: fetchUmeAlarmSubscriptionStatus,
     staleTime: 3000,
     refetchInterval: 5000,
+  });
+  const keyAlertMonitorQuery = useQuery({
+    queryKey: queryKeys.umeKeyAlertMonitor,
+    queryFn: fetchUmeKeyAlertMonitor,
+    staleTime: 3000,
+    refetchInterval: 5000,
+  });
+  const notificationIdsQuery = useQuery({
+    queryKey: ["umeNotificationIds"],
+    queryFn: () => fetchUmeNotificationIds(200),
+    staleTime: 10000,
+    enabled: false,
   });
 
   const confirmClearLocalSubscription = (hint?: string) =>
@@ -273,12 +293,59 @@ export function UmePage() {
     onError: (err) => setRuntimeTaskError(String(err)),
   });
 
+  const keyAlertAddMutation = useMutation({
+    mutationFn: () =>
+      upsertUmeKeyAlertRule({
+        notification_id: keyAlertNotificationId.trim(),
+        label: keyAlertLabel.trim(),
+        enabled: true,
+        forward_on_clear: keyAlertForwardOnClear,
+      }),
+    onMutate: () => setKeyAlertOpError(""),
+    onSuccess: async () => {
+      setKeyAlertNotificationId("");
+      setKeyAlertLabel("");
+      showOk(t("ume.keyAlert.addOk"));
+      await queryClient.invalidateQueries({ queryKey: queryKeys.umeKeyAlertMonitor });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.integrationsStatus });
+    },
+    onError: (err) => {
+      const msg = String(err);
+      setKeyAlertOpError(msg);
+      showError(msg);
+    },
+  });
+
+  const keyAlertDeleteMutation = useMutation({
+    mutationFn: (notificationId: string) => deleteUmeKeyAlertRule(notificationId),
+    onMutate: () => setKeyAlertOpError(""),
+    onSuccess: async () => {
+      showOk(t("ume.keyAlert.deleteOk"));
+      await queryClient.invalidateQueries({ queryKey: queryKeys.umeKeyAlertMonitor });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.integrationsStatus });
+    },
+    onError: (err) => {
+      const msg = String(err);
+      setKeyAlertOpError(msg);
+      showError(msg);
+    },
+  });
+
   const syncTotal = Number(syncStatusQuery.data?.total || 0);
   const syncPages = pageCount(syncTotal, syncPageSize);
   const neTotal = Number(neQuery.data?.total || 0);
   const nePages = pageCount(neTotal, nePageSize);
   const curTotal = Number(currentQuery.data?.total || 0);
   const curPages = pageCount(curTotal, curPageSize);
+
+  const keyAlertForwarder = keyAlertMonitorQuery.data?.forwarder;
+  const keyAlertRules = keyAlertMonitorQuery.data?.rules || [];
+  const oclawWsPill =
+    !keyAlertForwarder?.enabled
+      ? "unknown"
+      : keyAlertForwarder.connected
+        ? "up"
+        : "down";
 
   const perPage = (n: number) => t("common.perPage", { n: String(n) });
 
@@ -509,6 +576,139 @@ export function UmePage() {
               )}
             </div>
           </div>
+        </article>
+
+        <article className="card card--full">
+          <h3 className="card-title-with-hint">
+            {t("ume.keyAlert.title")}
+            <HelpHint text={t("ume.keyAlert.help")} ariaLabel={t("common.help")} />
+          </h3>
+          <div className="actions-row actions-row--inline">
+            <span className={`conn-pill conn-pill--${oclawWsPill}`}>
+              {t("ume.keyAlert.ws")}:{" "}
+              {!keyAlertForwarder?.enabled
+                ? t("ume.keyAlert.wsDisabled")
+                : keyAlertForwarder.connected
+                  ? t("ume.keyAlert.wsConnected")
+                  : t("ume.keyAlert.wsDisconnected")}
+            </span>
+            {keyAlertForwarder?.enabled ? (
+              <>
+                <span className="conn-pill">
+                  {t("ume.keyAlert.publishedOk")}: {Number(keyAlertForwarder.published_ok || 0)}
+                </span>
+                <span className="conn-pill">
+                  {t("ume.keyAlert.publishedFail")}: {Number(keyAlertForwarder.published_fail || 0)}
+                </span>
+                <span className="conn-pill">
+                  {t("ume.keyAlert.queue")}: {Number(keyAlertForwarder.queue_size || 0)}
+                </span>
+              </>
+            ) : null}
+          </div>
+          <div className="actions-row actions-row--inline" style={{ marginTop: 10, flexWrap: "wrap" }}>
+            <input
+              className="input"
+              style={{ minWidth: 180 }}
+              placeholder={t("ume.keyAlert.notificationIdPh")}
+              value={keyAlertNotificationId}
+              onChange={(e) => setKeyAlertNotificationId(e.target.value)}
+              list="ume-notification-id-options"
+            />
+            <datalist id="ume-notification-id-options">
+              {(notificationIdsQuery.data?.items || []).map((x) => (
+                <option key={x.notification_id} value={x.notification_id}>
+                  {x.native_probable_cause_sample || x.notification_id}
+                </option>
+              ))}
+            </datalist>
+            <input
+              className="input"
+              style={{ minWidth: 140 }}
+              placeholder={t("ume.keyAlert.labelPh")}
+              value={keyAlertLabel}
+              onChange={(e) => setKeyAlertLabel(e.target.value)}
+            />
+            <label className="muted" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              <input
+                type="checkbox"
+                checked={keyAlertForwardOnClear}
+                onChange={(e) => setKeyAlertForwardOnClear(e.target.checked)}
+              />
+              {t("ume.keyAlert.forwardOnClear")}
+            </label>
+            <button
+              type="button"
+              onClick={() => notificationIdsQuery.refetch()}
+              disabled={notificationIdsQuery.isFetching}
+            >
+              {t("ume.keyAlert.pickFromAlarms")}
+            </button>
+            <button
+              type="button"
+              onClick={() => keyAlertAddMutation.mutate()}
+              disabled={keyAlertAddMutation.isPending || !keyAlertNotificationId.trim()}
+            >
+              {keyAlertAddMutation.isPending ? t("ume.keyAlert.adding") : t("ume.keyAlert.add")}
+            </button>
+            <button
+              type="button"
+              onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeKeyAlertMonitor })}
+              disabled={keyAlertMonitorQuery.isFetching}
+            >
+              {keyAlertMonitorQuery.isFetching ? t("common.refreshing") : t("common.refresh")}
+            </button>
+          </div>
+          {keyAlertOpError ? (
+            <div className="pill pill--high" style={{ marginTop: 8 }}>
+              {t("common.opFailed")}: {keyAlertOpError}
+            </div>
+          ) : null}
+          <table style={{ marginTop: 12 }}>
+            <thead>
+              <tr>
+                <th>{t("ume.keyAlert.colId")}</th>
+                <th>{t("ume.keyAlert.colLabel")}</th>
+                <th>{t("ume.keyAlert.colPublished")}</th>
+                <th>{t("ume.keyAlert.colAttempts")}</th>
+                <th>{t("ume.keyAlert.colLast")}</th>
+                <th>{t("ume.keyAlert.colActions")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {keyAlertRules.map((rule) => (
+                <tr key={rule.notification_id}>
+                  <td>{rule.notification_id}</td>
+                  <td>{rule.label || t("common.empty")}</td>
+                  <td>{Number(rule.forward_stats?.published_ok || 0)}</td>
+                  <td>{Number(rule.forward_stats?.attempts || 0)}</td>
+                  <td>
+                    {rule.forward_stats?.last_forwarded_at
+                      ? formatSystemTime(rule.forward_stats.last_forwarded_at)
+                      : t("common.empty")}
+                  </td>
+                  <td>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (window.confirm(t("ume.keyAlert.confirmDelete"))) {
+                          keyAlertDeleteMutation.mutate(rule.notification_id);
+                        }
+                      }}
+                      disabled={keyAlertDeleteMutation.isPending}
+                    >
+                      {t("ume.keyAlert.delete")}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {!keyAlertMonitorQuery.isLoading && keyAlertRules.length === 0 ? (
+                <tr>
+                  <td colSpan={6}>{t("ume.keyAlert.emptyRules")}</td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
         </article>
 
         <article className="card card--full">

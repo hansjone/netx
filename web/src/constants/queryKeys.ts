@@ -4,6 +4,7 @@ export const queryKeys = {
   integrationsStatus: ["integrationsStatus"] as const,
   umeTokenStatus: ["umeTokenStatus"] as const,
   umeAlarmSubscription: ["umeAlarmSubscription"] as const,
+  umeKeyAlertMonitor: ["umeKeyAlertMonitor"] as const,
   /** Prefix keys for invalidating all pages/variants of a domain. */
   umeSyncStatusAll: ["umeSyncStatus"] as const,
   umeNEAll: ["umeNE"] as const,

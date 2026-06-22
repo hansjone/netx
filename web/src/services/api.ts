@@ -10,6 +10,7 @@ import type {
   ManagedNeMeta,
   UmeAlarmItem,
   UmeAlarmSubscriptionStatus,
+  UmeKeyAlertMonitorResponse,
   UmeNeItem,
   UmeSyncStatusResponse,
   UmeTokenStatus,
@@ -70,6 +71,23 @@ export const cancelUmeAlarmSubscription = (opts?: { forceClearLocal?: boolean })
 
 export const clearLocalUmeAlarmSubscription = () =>
   apiPost<UmeAlarmSubscriptionStatus>("/v1/ume/alarm-subscription/clear-local", {});
+
+export const fetchUmeKeyAlertMonitor = () => apiGet<UmeKeyAlertMonitorResponse>("/v1/ume/key-alert-monitor");
+
+export const upsertUmeKeyAlertRule = (payload: {
+  notification_id: string;
+  label?: string;
+  enabled?: boolean;
+  forward_on_clear?: boolean;
+}) => apiPost<{ ok: boolean }>("/v1/ume/key-alert-rules", payload);
+
+export const deleteUmeKeyAlertRule = (notificationId: string) =>
+  apiDelete<{ ok: boolean }>(`/v1/ume/key-alert-rules/${encodeURIComponent(notificationId)}`);
+
+export const fetchUmeNotificationIds = (limit = 200) =>
+  apiGet<{ items: Array<{ notification_id: string; native_probable_cause_sample: string }> }>(
+    `/v1/ume/notification-ids?limit=${encodeURIComponent(String(limit))}`,
+  );
 
 export const fetchUmeSyncStatus = (params: { page: number; pageSize: number }) => {
   const p = new URLSearchParams();

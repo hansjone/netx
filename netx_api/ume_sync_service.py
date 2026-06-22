@@ -237,6 +237,10 @@ def _is_alarm_cleared_tombstone(alarm_key: str) -> bool:
         return True
 
 
+def notification_id_from_norm(norm: dict[str, Any]) -> str:
+    return _s(_pick(norm, "notificationId", "notification-id"))
+
+
 def _alarm_row_from_norm(key: str, norm: dict[str, Any], *, touch_ts: datetime, first_seen_at: datetime) -> dict[str, Any]:
     return {
         "alarm_key": key,
@@ -251,6 +255,7 @@ def _alarm_row_from_norm(key: str, norm: dict[str, Any], *, touch_ts: datetime, 
         "root_cause_alarm_indication": _s(
             _pick(norm, "rootCauseAlarmIndication", "root-cause-alarm-indication")
         ),
+        "notification_id": notification_id_from_norm(norm),
         "first_seen_at": first_seen_at,
         "last_seen_at": touch_ts,
         "raw_json": json.dumps(norm, ensure_ascii=False, default=str),
@@ -268,6 +273,7 @@ def _apply_row_to_model(db: Session, existing: UmeAlarmCurrent, norm: dict[str, 
     existing.root_cause_alarm_indication = _s(
         _pick(norm, "rootCauseAlarmIndication", "root-cause-alarm-indication")
     )
+    existing.notification_id = notification_id_from_norm(norm)
     prev_seen = existing.last_seen_at
     if prev_seen is None or touch_ts >= prev_seen:
         existing.last_seen_at = touch_ts
@@ -300,6 +306,7 @@ def _upsert_alarm_current(db: Session, key: str, norm: dict[str, Any], *, touch_
                 "is_cleared": excluded.is_cleared,
                 "time_created": excluded.time_created,
                 "root_cause_alarm_indication": excluded.root_cause_alarm_indication,
+                "notification_id": excluded.notification_id,
                 "last_seen_at": func.greatest(UmeAlarmCurrent.last_seen_at, excluded.last_seen_at),
                 "raw_json": excluded.raw_json,
             },
@@ -681,6 +688,7 @@ def _sync_alarms_common(
             existing.root_cause_alarm_indication = _s(
                 _pick(alarm, "rootCauseAlarmIndication", "root-cause-alarm-indication")
             )
+            existing.notification_id = notification_id_from_norm(alarm)
             existing.last_seen_at = touch_ts
             existing.raw_json = json.dumps(alarm, ensure_ascii=False, default=str)
 

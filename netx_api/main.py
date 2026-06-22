@@ -35,6 +35,8 @@ from .models import (
     UmeAlarmCurrent,
     UmeAlarmHistory,
     UmeInventoryNE,
+    UmeKeyAlertRule,
+    UmeKeyAlertForwardLog,
     UmeSyncJob,
 )
 from .models import ImportJob
@@ -58,6 +60,8 @@ from .ume_alarm_ws import (
     start_ume_alarm_ws_consumer,
 )
 from .ume_sync_service import sync_alarms_current, sync_alarms_history_full, sync_inventory_full
+from .key_alert_matcher import invalidate_key_alert_rule_cache
+from .oclaw_alarm_forwarder import forwarder_status, shutdown_oclaw_alarm_forwarder, start_oclaw_alarm_forwarder
 from .ume_token_store import (
     clear_shared_token,
     load_shared_token,
@@ -756,6 +760,18 @@ def on_startup() -> None:
             conn.exec_driver_sql("ALTER TABLE ume_alarms_current ADD COLUMN IF NOT EXISTS host_name VARCHAR(256) DEFAULT ''")
             conn.exec_driver_sql("ALTER TABLE ume_alarms_history ADD COLUMN IF NOT EXISTS host_name VARCHAR(256) DEFAULT ''")
             conn.exec_driver_sql(
+                "ALTER TABLE ume_alarms_current ADD COLUMN IF NOT EXISTS notification_id VARCHAR(128) DEFAULT ''"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE ume_alarms_history ADD COLUMN IF NOT EXISTS notification_id VARCHAR(128) DEFAULT ''"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_ume_alarms_current_notification_id ON ume_alarms_current (notification_id)"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_ume_alarms_history_notification_id ON ume_alarms_history (notification_id)"
+            )
+            conn.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS ix_ume_alarms_current_host_name ON ume_alarms_current (host_name)"
             )
             conn.exec_driver_sql(
@@ -1068,11 +1084,18 @@ def on_startup() -> None:
             last_run_at=datetime.now(timezone.utc),
             last_error=f"startup_thread_init_failed: {str(exc)[:180]}",
         )
+    try:
+        t_fwd = start_oclaw_alarm_forwarder()
+        if t_fwd is not None:
+            _schedule_log.info("started thread %s alive=%s", t_fwd.name, t_fwd.is_alive())
+    except Exception as exc:
+        _schedule_log.exception("startup: oclaw_alarm_forwarder thread init failed: %s", exc)
 
 
 @app.on_event("shutdown")
 def on_shutdown() -> None:
     global _UME_WS_STOP_EVENT
+    shutdown_oclaw_alarm_forwarder()
     if _UME_WS_STOP_EVENT is not None:
         _UME_WS_STOP_EVENT.set()
     shutdown_ws_consumer()
@@ -1175,6 +1198,126 @@ def ume_alarm_subscription_clear_local(db: Session = Depends(get_db)) -> dict[st
     except Exception as exc:
         msg = str(exc)[:240]
         raise HTTPException(status_code=502, detail=msg) from exc
+
+
+@app.get("/v1/ume/key-alert-rules")
+def ume_list_key_alert_rules(db: Session = Depends(get_db)) -> dict[str, Any]:
+    from sqlalchemy import func
+
+    rows = db.query(UmeKeyAlertRule).order_by(UmeKeyAlertRule.notification_id.asc()).all()
+    stat_rows = (
+        db.query(
+            UmeKeyAlertForwardLog.notification_id,
+            func.count(UmeKeyAlertForwardLog.id).label("attempts"),
+            func.sum(UmeKeyAlertForwardLog.oclaw_ok).label("published_ok"),
+            func.max(UmeKeyAlertForwardLog.forwarded_at).label("last_forwarded_at"),
+        )
+        .group_by(UmeKeyAlertForwardLog.notification_id)
+        .all()
+    )
+    stat_map = {
+        str(nid or ""): {
+            "attempts": int(attempts or 0),
+            "published_ok": int(published_ok or 0),
+            "last_forwarded_at": (_ensure_utc(last_at) or datetime.now(timezone.utc)).isoformat() if last_at else "",
+        }
+        for nid, attempts, published_ok, last_at in stat_rows
+        if str(nid or "").strip()
+    }
+    items = [
+        {
+            "notification_id": str(row.notification_id or ""),
+            "enabled": bool(int(row.enabled or 0)),
+            "forward_on_clear": bool(int(row.forward_on_clear or 0)),
+            "label": str(row.label or ""),
+            "created_at": (_ensure_utc(row.created_at) or datetime.now(timezone.utc)).isoformat(),
+            "updated_at": (_ensure_utc(row.updated_at) or datetime.now(timezone.utc)).isoformat(),
+            "forward_stats": stat_map.get(str(row.notification_id or ""), {
+                "attempts": 0,
+                "published_ok": 0,
+                "last_forwarded_at": "",
+            }),
+        }
+        for row in rows
+    ]
+    fwd = forwarder_status()
+    return {"items": items, "total": len(items), "forwarder": fwd}
+
+
+@app.get("/v1/ume/key-alert-monitor")
+def ume_key_alert_monitor(db: Session = Depends(get_db)) -> dict[str, Any]:
+    base = ume_list_key_alert_rules(db)
+    return {
+        "ok": True,
+        "rules": base.get("items") or [],
+        "forwarder": base.get("forwarder") or forwarder_status(),
+    }
+
+
+@app.post("/v1/ume/key-alert-rules")
+def ume_upsert_key_alert_rule(payload: dict[str, Any], db: Session = Depends(get_db)) -> dict[str, Any]:
+    notification_id = str(payload.get("notification_id") or "").strip()
+    if not notification_id:
+        raise HTTPException(status_code=400, detail="notification_id_required")
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    row = db.get(UmeKeyAlertRule, notification_id)
+    if row is None:
+        row = UmeKeyAlertRule(notification_id=notification_id, created_at=now, updated_at=now)
+        db.add(row)
+    row.enabled = 1 if bool(payload.get("enabled", True)) else 0
+    row.forward_on_clear = 1 if bool(payload.get("forward_on_clear", False)) else 0
+    row.label = str(payload.get("label") or "").strip()
+    row.updated_at = now
+    db.commit()
+    invalidate_key_alert_rule_cache()
+    return {
+        "ok": True,
+        "notification_id": notification_id,
+        "enabled": bool(row.enabled),
+        "forward_on_clear": bool(row.forward_on_clear),
+        "label": row.label,
+    }
+
+
+@app.delete("/v1/ume/key-alert-rules/{notification_id}")
+def ume_delete_key_alert_rule(notification_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    nid = str(notification_id or "").strip()
+    row = db.get(UmeKeyAlertRule, nid)
+    if row is None:
+        raise HTTPException(status_code=404, detail="rule_not_found")
+    db.delete(row)
+    db.commit()
+    invalidate_key_alert_rule_cache()
+    return {"ok": True, "deleted": nid}
+
+
+@app.get("/v1/ume/notification-ids")
+def ume_list_notification_ids(
+    limit: int = Query(default=200, ge=1, le=2000),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    from sqlalchemy import func
+
+    rows = (
+        db.query(
+            UmeAlarmCurrent.notification_id,
+            func.max(UmeAlarmCurrent.native_probable_cause).label("cause_sample"),
+        )
+        .filter(UmeAlarmCurrent.notification_id != "")
+        .group_by(UmeAlarmCurrent.notification_id)
+        .order_by(UmeAlarmCurrent.notification_id.asc())
+        .limit(limit)
+        .all()
+    )
+    items = [
+        {
+            "notification_id": str(nid or ""),
+            "native_probable_cause_sample": str(cause or ""),
+        }
+        for nid, cause in rows
+        if str(nid or "").strip()
+    ]
+    return {"items": items, "total": len(items), "forwarder": forwarder_status()}
 
 
 @app.post("/v1/ume/sync")
@@ -1464,6 +1607,7 @@ def ume_list_alarms(
             UmeAlarmCurrent.alarm_key.contains(kw)
             | UmeAlarmCurrent.object_name.contains(kw)
             | UmeAlarmCurrent.native_probable_cause.contains(kw)
+            | UmeAlarmCurrent.notification_id.contains(kw)
             | UmeAlarmCurrent.host_name.contains(kw)
             | UmeInventoryNE.ne_name.contains(kw)
             | UmeInventoryNE.user_label.contains(kw)
@@ -1492,6 +1636,7 @@ def ume_list_alarms(
             "object_name": str(alarm.object_name or ""),
             "event_type": str(alarm.event_type or ""),
             "native_probable_cause": str(alarm.native_probable_cause or ""),
+            "notification_id": str(alarm.notification_id or ""),
             "perceived_severity": str(alarm.perceived_severity or ""),
             "is_cleared": str(alarm.is_cleared or ""),
             "time_created": str(alarm.time_created or ""),
@@ -1884,32 +2029,41 @@ def integrations_status(db: Session = Depends(get_db)) -> dict:
         db_status = {"status": "down", "error": str(exc)[:240]}
 
     oclaw_status: dict = {"status": "unknown"}
-    try:
-        t0 = time.monotonic()
-        data = health_with_oclaw()
+    fwd = forwarder_status()
+    if not bool(fwd.get("enabled")):
+        oclaw_status = {
+            "status": "unknown",
+            "mode": "ws",
+            "enabled": False,
+            "connected": False,
+            "error_kind": "disabled",
+            "error": "NETX_OCLAW_ALARM_WS_ENABLED=false or missing token/url",
+            "forwarder": fwd,
+        }
+    elif bool(fwd.get("connected")):
         oclaw_status = {
             "status": "up",
-            "latency_ms": int((time.monotonic() - t0) * 1000),
-            "http_status": int(data.get("status_code") or 200),
-            "detail": data.get("data") or {},
+            "mode": "ws",
+            "enabled": True,
+            "connected": True,
+            "queue_size": int(fwd.get("queue_size") or 0),
+            "published_ok": int(fwd.get("published_ok") or 0),
+            "published_fail": int(fwd.get("published_fail") or 0),
+            "url": str(fwd.get("url") or ""),
+            "forwarder": fwd,
         }
-    except Exception as exc:
-        msg = str(exc)
-        http_status = None
-        kind = "unknown"
-        if " 401 " in msg or "401" in msg:
-            kind = "auth"
-            http_status = 401
-        elif " 404 " in msg or "404" in msg:
-            kind = "not_found"
-            http_status = 404
-        elif "timeout" in msg.lower():
-            kind = "timeout"
-        elif "connect" in msg.lower():
-            kind = "connect"
-        else:
-            kind = "other"
-        oclaw_status = {"status": "down", "error_kind": kind, "http_status": http_status, "error": msg[:240]}
+    else:
+        oclaw_status = {
+            "status": "down",
+            "mode": "ws",
+            "enabled": True,
+            "connected": False,
+            "error_kind": "ws_disconnected",
+            "error": "oclaw netx-bridge WebSocket not connected",
+            "queue_size": int(fwd.get("queue_size") or 0),
+            "url": str(fwd.get("url") or ""),
+            "forwarder": fwd,
+        }
 
     return {"netx_api": netx_api, "db": db_status, "oclaw_bridge": oclaw_status}
 

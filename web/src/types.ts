@@ -3,10 +3,47 @@ export type IntegrationStatus = {
   db: { status: "up" | "down" | "unknown"; latency_ms?: number; error?: string; [k: string]: unknown };
   oclaw_bridge?: {
     status: "up" | "down" | "unknown";
+    mode?: string;
+    enabled?: boolean;
+    connected?: boolean;
+    queue_size?: number;
+    published_ok?: number;
+    published_fail?: number;
     latency_ms?: number;
     error_kind?: string;
+    error?: string;
     [k: string]: unknown;
   };
+};
+
+export type UmeKeyAlertRuleItem = {
+  notification_id: string;
+  enabled: boolean;
+  forward_on_clear: boolean;
+  label: string;
+  created_at: string;
+  updated_at: string;
+  forward_stats?: {
+    attempts: number;
+    published_ok: number;
+    last_forwarded_at: string;
+  };
+};
+
+export type UmeKeyAlertForwarderStatus = {
+  enabled: boolean;
+  connected: boolean;
+  queue_size: number;
+  url: string;
+  published_ok?: number;
+  published_fail?: number;
+  queued_total?: number;
+};
+
+export type UmeKeyAlertMonitorResponse = {
+  ok: boolean;
+  rules: UmeKeyAlertRuleItem[];
+  forwarder: UmeKeyAlertForwarderStatus;
 };
 
 export type UmeSyncJobItem = {

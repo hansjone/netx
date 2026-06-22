@@ -582,6 +582,16 @@ def _run_ws_session(
             label = _WS_ALARM_ACTION_LABEL.get(action, action)
             status_msg = f"{label} key={alarm_key}"
             append_ws_log(status_msg, subscription_id=subscription_id, dedup=False)
+            try:
+                from .key_alert_forward import maybe_forward_key_alert
+
+                maybe_forward_key_alert(db, norm=norm, alarm_key=alarm_key, action=action)
+            except Exception as fwd_exc:
+                append_ws_log(
+                    f"key alert forward failed: {str(fwd_exc)[:160]}",
+                    level="error",
+                    subscription_id=subscription_id,
+                )
         except Exception as exc:
             db.rollback()
             append_ws_log(f"alarm apply failed: {str(exc)[:200]}", level="error", subscription_id=subscription_id)

@@ -17,6 +17,8 @@ type Props = {
     oclawBridgeLatencyMs?: number;
     oclawBridgeErrorKind?: string;
     oclawBridgeError?: string;
+    oclawBridgeQueueSize?: number;
+    oclawBridgePublishedOk?: number;
   };
   children: ReactNode;
 };
@@ -29,11 +31,15 @@ export function AppLayout({ connections, children }: Props) {
   const netxSuffix =
     typeof connections.netxApiLatencyMs === "number" ? ` (${connections.netxApiLatencyMs}ms)` : "";
   const oclawSuffix =
-    typeof connections.oclawBridgeLatencyMs === "number"
-      ? ` (${connections.oclawBridgeLatencyMs}ms)`
+    connections.oclawBridge === "up"
+      ? typeof connections.oclawBridgePublishedOk === "number"
+        ? ` (pub ${connections.oclawBridgePublishedOk})`
+        : ""
       : connections.oclawBridgeErrorKind
         ? ` (${connections.oclawBridgeErrorKind})`
-        : "";
+        : typeof connections.oclawBridgeQueueSize === "number" && connections.oclawBridgeQueueSize > 0
+          ? ` (q ${connections.oclawBridgeQueueSize})`
+          : "";
   const oclawTitle =
     connections.oclawBridge === "down" && connections.oclawBridgeError
       ? connections.oclawBridgeError

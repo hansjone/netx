@@ -176,6 +176,7 @@ class UmeAlarmCurrent(Base):
     is_cleared: Mapped[str] = mapped_column(Text, default="", index=True)
     time_created: Mapped[str] = mapped_column(Text, default="", index=True)
     root_cause_alarm_indication: Mapped[str] = mapped_column(Text, default="")
+    notification_id: Mapped[str] = mapped_column(String(128), default="", index=True)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     raw_json: Mapped[str] = mapped_column(Text, default="{}")
@@ -194,9 +195,35 @@ class UmeAlarmHistory(Base):
     is_cleared: Mapped[str] = mapped_column(Text, default="", index=True)
     time_created: Mapped[str] = mapped_column(Text, default="", index=True)
     root_cause_alarm_indication: Mapped[str] = mapped_column(Text, default="")
+    notification_id: Mapped[str] = mapped_column(String(128), default="", index=True)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     raw_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class UmeKeyAlertRule(Base):
+    """Key alert rule matched by UME notificationId."""
+
+    __tablename__ = "ume_key_alert_rule"
+
+    notification_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    enabled: Mapped[int] = mapped_column(Integer, default=1)
+    forward_on_clear: Mapped[int] = mapped_column(Integer, default=0)
+    label: Mapped[str] = mapped_column(String(256), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class UmeKeyAlertForwardLog(Base):
+    __tablename__ = "ume_key_alert_forward_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    alarm_key: Mapped[str] = mapped_column(Text, index=True)
+    action: Mapped[str] = mapped_column(String(32), default="", index=True)
+    notification_id: Mapped[str] = mapped_column(String(128), default="", index=True)
+    forwarded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    oclaw_ok: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str] = mapped_column(String(512), default="")
 
 
 class UmeAlarmSubscription(Base):
