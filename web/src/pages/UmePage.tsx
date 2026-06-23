@@ -17,6 +17,7 @@ import {
   refreshUmeToken,
   upsertUmeKeyAlertRule,
   deleteUmeKeyAlertRule,
+  patchUmeKeyAlertRule,
   updateUmeKeyAlertMonitorConfig,
 } from "../services/api";
 import { HelpHint } from "../components/HelpHint";
@@ -56,6 +57,11 @@ export function UmePage() {
   const [keyAlertIdHints, setKeyAlertIdHints] = useState<
     Array<{ notification_id: string; native_probable_cause_sample: string }>
   >([]);
+  const [keyAlertPage, setKeyAlertPage] = useState(1);
+  const [keyAlertPageSize, setKeyAlertPageSize] = useState(20);
+  const [keyAlertFilterKeyword, setKeyAlertFilterKeyword] = useState("");
+  const [keyAlertFilterEnabled, setKeyAlertFilterEnabled] = useState<"" | "true" | "false">("");
+  const [keyAlertFilterMatchType, setKeyAlertFilterMatchType] = useState<"" | "notification_id" | "keyword">("");
 
   const syncMutation = useMutation({
     mutationFn: async (domains: string[]) => apiPost<{ ok: boolean; jobs: unknown[] }>("/v1/ume/sync", { domains }),
@@ -106,8 +112,21 @@ export function UmePage() {
     refetchInterval: 5000,
   });
   const keyAlertMonitorQuery = useQuery({
-    queryKey: queryKeys.umeKeyAlertMonitor,
-    queryFn: fetchUmeKeyAlertMonitor,
+    queryKey: queryKeys.umeKeyAlertMonitor(
+      keyAlertPage,
+      keyAlertPageSize,
+      keyAlertFilterKeyword,
+      keyAlertFilterEnabled,
+      keyAlertFilterMatchType,
+    ),
+    queryFn: () =>
+      fetchUmeKeyAlertMonitor({
+        page: keyAlertPage,
+        pageSize: keyAlertPageSize,
+        keyword: keyAlertFilterKeyword,
+        enabled: keyAlertFilterEnabled,
+        matchType: keyAlertFilterMatchType,
+      }),
     staleTime: 3000,
     refetchInterval: 5000,
   });
@@ -306,7 +325,7 @@ export function UmePage() {
       setKeyAlertMatchValue("");
       setKeyAlertLabel("");
       showOk(t("ume.keyAlert.addOk"));
-      await queryClient.invalidateQueries({ queryKey: queryKeys.umeKeyAlertMonitor });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.umeKeyAlertMonitorAll });
       await queryClient.invalidateQueries({ queryKey: queryKeys.integrationsStatus });
     },
     onError: (err) => {
@@ -321,8 +340,22 @@ export function UmePage() {
     onMutate: () => setKeyAlertOpError(""),
     onSuccess: async () => {
       showOk(t("ume.keyAlert.deleteOk"));
-      await queryClient.invalidateQueries({ queryKey: queryKeys.umeKeyAlertMonitor });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.umeKeyAlertMonitorAll });
       await queryClient.invalidateQueries({ queryKey: queryKeys.integrationsStatus });
+    },
+    onError: (err) => {
+      const msg = String(err);
+      setKeyAlertOpError(msg);
+      showError(msg);
+    },
+  });
+
+  const keyAlertToggleMutation = useMutation({
+    mutationFn: (vars: { ruleKey: string; enabled: boolean }) =>
+      patchUmeKeyAlertRule(vars.ruleKey, { enabled: vars.enabled }),
+    onMutate: () => setKeyAlertOpError(""),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.umeKeyAlertMonitorAll });
     },
     onError: (err) => {
       const msg = String(err);
@@ -335,7 +368,7 @@ export function UmePage() {
     mutationFn: (forwardOnClear: boolean) => updateUmeKeyAlertMonitorConfig({ forward_on_clear: forwardOnClear }),
     onMutate: () => setKeyAlertOpError(""),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: queryKeys.umeKeyAlertMonitor });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.umeKeyAlertMonitorAll });
     },
     onError: (err) => {
       const msg = String(err);
@@ -353,6 +386,8 @@ export function UmePage() {
 
   const keyAlertForwarder = keyAlertMonitorQuery.data?.forwarder;
   const keyAlertRules = keyAlertMonitorQuery.data?.rules || [];
+  const keyAlertTotal = Number(keyAlertMonitorQuery.data?.total || keyAlertRules.length);
+  const keyAlertPages = pageCount(keyAlertTotal, keyAlertPageSize);
   const keyAlertForwardOnClear = Boolean(keyAlertMonitorQuery.data?.config?.forward_on_clear);
   const oclawWsPill =
     !keyAlertForwarder?.enabled
@@ -740,9 +775,43 @@ export function UmePage() {
               {t("common.opFailed")}: {keyAlertOpError}
             </div>
           ) : null}
+          <div className="actions-row actions-row--inline" style={{ marginTop: 12, flexWrap: "wrap", gap: 8 }}>
+            <input
+              type="search"
+              placeholder={t("ume.keyAlert.filterKeywordPh")}
+              value={keyAlertFilterKeyword}
+              onChange={(e) => {
+                setKeyAlertFilterKeyword(e.target.value);
+                setKeyAlertPage(1);
+              }}
+            />
+            <select
+              value={keyAlertFilterMatchType}
+              onChange={(e) => {
+                setKeyAlertFilterMatchType(e.target.value as "" | "notification_id" | "keyword");
+                setKeyAlertPage(1);
+              }}
+            >
+              <option value="">{t("ume.keyAlert.filterMatchAll")}</option>
+              <option value="notification_id">{t("ume.keyAlert.matchNotificationId")}</option>
+              <option value="keyword">{t("ume.keyAlert.matchKeyword")}</option>
+            </select>
+            <select
+              value={keyAlertFilterEnabled}
+              onChange={(e) => {
+                setKeyAlertFilterEnabled(e.target.value as "" | "true" | "false");
+                setKeyAlertPage(1);
+              }}
+            >
+              <option value="">{t("ume.keyAlert.filterEnabledAll")}</option>
+              <option value="true">{t("ume.keyAlert.filterEnabledOn")}</option>
+              <option value="false">{t("ume.keyAlert.filterEnabledOff")}</option>
+            </select>
+          </div>
           <table style={{ marginTop: 12 }}>
             <thead>
               <tr>
+                <th>{t("ume.keyAlert.colMonitor")}</th>
                 <th>{t("ume.keyAlert.colType")}</th>
                 <th>{t("ume.keyAlert.colMatch")}</th>
                 <th>{t("ume.keyAlert.colLabel")}</th>
@@ -754,7 +823,23 @@ export function UmePage() {
             </thead>
             <tbody>
               {keyAlertRules.map((rule) => (
-                <tr key={rule.notification_id}>
+                <tr key={rule.notification_id} className={rule.enabled ? undefined : "row--muted"}>
+                  <td>
+                    <label className="checkbox-inline">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(rule.enabled)}
+                        disabled={keyAlertToggleMutation.isPending}
+                        onChange={(e) =>
+                          keyAlertToggleMutation.mutate({
+                            ruleKey: rule.notification_id,
+                            enabled: e.target.checked,
+                          })
+                        }
+                      />
+                      {rule.enabled ? t("ume.keyAlert.monitorOn") : t("ume.keyAlert.monitorOff")}
+                    </label>
+                  </td>
                   <td>
                     {rule.match_type === "keyword"
                       ? t("ume.keyAlert.matchKeyword")
@@ -786,11 +871,44 @@ export function UmePage() {
               ))}
               {!keyAlertMonitorQuery.isLoading && keyAlertRules.length === 0 ? (
                 <tr>
-                  <td colSpan={7}>{t("ume.keyAlert.emptyRules")}</td>
+                  <td colSpan={8}>{t("ume.keyAlert.emptyRules")}</td>
                 </tr>
               ) : null}
             </tbody>
           </table>
+          <div className="pager">
+            <div className="pager__meta">
+              {t("common.pagerMeta", { total: keyAlertTotal, page: keyAlertPage, pages: keyAlertPages })}
+            </div>
+            <div className="pager__controls">
+              <button
+                className="pager__btn"
+                onClick={() => setKeyAlertPage(Math.max(1, keyAlertPage - 1))}
+                disabled={keyAlertPage <= 1}
+              >
+                {t("common.prevPage")}
+              </button>
+              <button
+                className="pager__btn"
+                onClick={() => setKeyAlertPage(keyAlertPage + 1)}
+                disabled={keyAlertPage >= keyAlertPages}
+              >
+                {t("common.nextPage")}
+              </button>
+              <select
+                className="pager__size"
+                value={String(keyAlertPageSize)}
+                onChange={(e) => {
+                  setKeyAlertPageSize(Number(e.target.value) || 20);
+                  setKeyAlertPage(1);
+                }}
+              >
+                <option value="10">10 / page</option>
+                <option value="20">20 / page</option>
+                <option value="50">50 / page</option>
+              </select>
+            </div>
+          </div>
         </article>
 
         <article className="card card--full">

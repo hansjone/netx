@@ -735,6 +735,10 @@ def _migrate_key_alert_rule_schema() -> None:
             "UPDATE ume_key_alert_monitor_config SET forward_on_clear = 1, updated_at = NOW() "
             "WHERE id = 1 AND EXISTS (SELECT 1 FROM ume_key_alert_rule WHERE forward_on_clear = 1)",
         ),
+        (
+            "add forward_log rule_key",
+            "ALTER TABLE ume_key_alert_forward_log ADD COLUMN IF NOT EXISTS rule_key VARCHAR(128) DEFAULT ''",
+        ),
     ]
     for label, sql in steps:
         try:
@@ -1266,28 +1270,63 @@ def ume_alarm_subscription_clear_local(db: Session = Depends(get_db)) -> dict[st
 
 
 @app.get("/v1/ume/key-alert-rules")
-def ume_list_key_alert_rules(db: Session = Depends(get_db)) -> dict[str, Any]:
-    from sqlalchemy import func
+def ume_list_key_alert_rules(
+    db: Session = Depends(get_db),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    keyword: str = Query(default=""),
+    enabled: str | None = Query(default=None),
+    match_type: str | None = Query(default=None),
+) -> dict[str, Any]:
+    from sqlalchemy import func, or_
 
-    rows = db.query(UmeKeyAlertRule).order_by(UmeKeyAlertRule.notification_id.asc()).all()
+    q = db.query(UmeKeyAlertRule)
+    kw = str(keyword or "").strip()
+    if kw:
+        like = f"%{kw}%"
+        q = q.filter(
+            or_(
+                UmeKeyAlertRule.notification_id.ilike(like),
+                UmeKeyAlertRule.match_value.ilike(like),
+                UmeKeyAlertRule.label.ilike(like),
+            )
+        )
+    if enabled is not None:
+        en = str(enabled).strip().lower()
+        if en in {"1", "true", "yes", "on"}:
+            q = q.filter(UmeKeyAlertRule.enabled == 1)
+        elif en in {"0", "false", "no", "off"}:
+            q = q.filter(UmeKeyAlertRule.enabled == 0)
+    if match_type:
+        mt = normalize_match_type(str(match_type))
+        q = q.filter(UmeKeyAlertRule.match_type == mt)
+
+    total = int(q.count())
+    rows = (
+        q.order_by(UmeKeyAlertRule.notification_id.asc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
     stat_rows = (
         db.query(
-            UmeKeyAlertForwardLog.notification_id,
+            UmeKeyAlertForwardLog.rule_key,
             func.count(UmeKeyAlertForwardLog.id).label("attempts"),
             func.sum(UmeKeyAlertForwardLog.oclaw_ok).label("published_ok"),
             func.max(UmeKeyAlertForwardLog.forwarded_at).label("last_forwarded_at"),
         )
-        .group_by(UmeKeyAlertForwardLog.notification_id)
+        .filter(UmeKeyAlertForwardLog.rule_key != "")
+        .group_by(UmeKeyAlertForwardLog.rule_key)
         .all()
     )
     stat_map = {
-        str(nid or ""): {
+        str(rk or ""): {
             "attempts": int(attempts or 0),
             "published_ok": int(published_ok or 0),
             "last_forwarded_at": (_ensure_utc(last_at) or datetime.now(timezone.utc)).isoformat() if last_at else "",
         }
-        for nid, attempts, published_ok, last_at in stat_rows
-        if str(nid or "").strip()
+        for rk, attempts, published_ok, last_at in stat_rows
+        if str(rk or "").strip()
     }
     items = [
         {
@@ -1307,15 +1346,32 @@ def ume_list_key_alert_rules(db: Session = Depends(get_db)) -> dict[str, Any]:
         for row in rows
     ]
     fwd = forwarder_status()
-    return {"items": items, "total": len(items), "forwarder": fwd}
+    return {"items": items, "total": total, "page": page, "page_size": page_size, "forwarder": fwd}
 
 
 @app.get("/v1/ume/key-alert-monitor")
-def ume_key_alert_monitor(db: Session = Depends(get_db)) -> dict[str, Any]:
-    base = ume_list_key_alert_rules(db)
+def ume_key_alert_monitor(
+    db: Session = Depends(get_db),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    keyword: str = Query(default=""),
+    enabled: str | None = Query(default=None),
+    match_type: str | None = Query(default=None),
+) -> dict[str, Any]:
+    base = ume_list_key_alert_rules(
+        db=db,
+        page=page,
+        page_size=page_size,
+        keyword=keyword,
+        enabled=enabled,
+        match_type=match_type,
+    )
     return {
         "ok": True,
         "rules": base.get("items") or [],
+        "total": int(base.get("total") or 0),
+        "page": int(base.get("page") or page),
+        "page_size": int(base.get("page_size") or page_size),
         "config": get_key_alert_monitor_config(db),
         "forwarder": base.get("forwarder") or forwarder_status(),
     }
@@ -1373,6 +1429,33 @@ def ume_upsert_key_alert_rule(payload: dict[str, Any], db: Session = Depends(get
         raise
     invalidate_key_alert_rule_cache()
     return {"ok": True, "item": saved}
+
+
+@app.patch("/v1/ume/key-alert-rules/{rule_key:path}")
+def ume_patch_key_alert_rule(rule_key: str, payload: dict[str, Any], db: Session = Depends(get_db)) -> dict[str, Any]:
+    key = str(rule_key or "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="rule_key_required")
+    row = db.get(UmeKeyAlertRule, key)
+    if row is None:
+        raise HTTPException(status_code=404, detail="rule_not_found")
+    if "enabled" not in payload:
+        raise HTTPException(status_code=400, detail="enabled_required")
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    row.enabled = 1 if bool(payload.get("enabled")) else 0
+    row.updated_at = now
+    db.commit()
+    invalidate_key_alert_rule_cache()
+    return {
+        "ok": True,
+        "item": {
+            "notification_id": key,
+            "match_type": rule_match_type(row),
+            "match_value": rule_match_value(row),
+            "enabled": bool(int(row.enabled or 0)),
+            "label": str(row.label or ""),
+        },
+    }
 
 
 @app.delete("/v1/ume/key-alert-rules/{rule_key:path}")

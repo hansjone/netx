@@ -44,6 +44,9 @@ export type UmeKeyAlertForwarderStatus = {
 export type UmeKeyAlertMonitorResponse = {
   ok: boolean;
   rules: UmeKeyAlertRuleItem[];
+  total?: number;
+  page?: number;
+  page_size?: number;
   config?: {
     forward_on_clear: boolean;
   };

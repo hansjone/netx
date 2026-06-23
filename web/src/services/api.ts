@@ -80,7 +80,24 @@ export const cancelUmeAlarmSubscription = (opts?: { forceClearLocal?: boolean })
 export const clearLocalUmeAlarmSubscription = () =>
   apiPost<UmeAlarmSubscriptionStatus>("/v1/ume/alarm-subscription/clear-local", {});
 
-export const fetchUmeKeyAlertMonitor = () => apiGet<UmeKeyAlertMonitorResponse>("/v1/ume/key-alert-monitor");
+export const fetchUmeKeyAlertMonitor = (params?: {
+  page?: number;
+  pageSize?: number;
+  keyword?: string;
+  enabled?: "" | "true" | "false";
+  matchType?: "" | "notification_id" | "keyword";
+}) => {
+  const p = new URLSearchParams();
+  p.set("page", String(Math.max(1, Number(params?.page || 1))));
+  p.set("page_size", String(Math.max(1, Math.min(200, Number(params?.pageSize || 50)))));
+  const kw = String(params?.keyword || "").trim();
+  if (kw) p.set("keyword", kw);
+  const en = String(params?.enabled || "").trim();
+  if (en) p.set("enabled", en);
+  const mt = String(params?.matchType || "").trim();
+  if (mt) p.set("match_type", mt);
+  return apiGet<UmeKeyAlertMonitorResponse>(`/v1/ume/key-alert-monitor?${p.toString()}`);
+};
 
 export const upsertUmeKeyAlertRule = (payload: {
   match_type: "notification_id" | "keyword";
@@ -94,6 +111,12 @@ export const updateUmeKeyAlertMonitorConfig = (payload: { forward_on_clear: bool
 
 export const deleteUmeKeyAlertRule = (ruleKey: string) =>
   apiDelete<{ ok: boolean }>(`/v1/ume/key-alert-rules/${encodeURIComponent(ruleKey)}`);
+
+export const patchUmeKeyAlertRule = (ruleKey: string, payload: { enabled: boolean }) =>
+  apiPatch<{ ok: boolean; item?: unknown }>(
+    `/v1/ume/key-alert-rules/${encodeURIComponent(ruleKey)}`,
+    payload,
+  );
 
 export const fetchUmeNotificationIds = (limit = 200) =>
   apiGet<{ items: Array<{ notification_id: string; native_probable_cause_sample: string }> }>(

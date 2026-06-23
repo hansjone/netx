@@ -153,6 +153,7 @@ def _run_loop() -> None:
                             action=str(payload.get("action") or ""),
                             ok=ok,
                             error=err,
+                            rule_key=str(payload.get("rule_key") or ""),
                         )
                     except Exception as rec_exc:
                         _log.warning("forward result record failed: %s", str(rec_exc)[:120])

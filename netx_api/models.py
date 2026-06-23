@@ -232,6 +232,7 @@ class UmeKeyAlertForwardLog(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     alarm_key: Mapped[str] = mapped_column(Text, index=True)
     action: Mapped[str] = mapped_column(String(32), default="", index=True)
+    rule_key: Mapped[str] = mapped_column(String(128), default="", index=True)
     notification_id: Mapped[str] = mapped_column(String(128), default="", index=True)
     forwarded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     oclaw_ok: Mapped[int] = mapped_column(Integer, default=0)

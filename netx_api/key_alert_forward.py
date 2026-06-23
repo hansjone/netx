@@ -94,6 +94,7 @@ def maybe_forward_key_alert(
         rule_label=str(rule.label or ""),
     )
     payload["ne"] = _ne_payload(db, ne_id)
+    payload["rule_key"] = str(rule.notification_id or "")
 
     queued = enqueue_alarm_forward(payload)
     if not queued:
@@ -104,6 +105,7 @@ def maybe_forward_key_alert(
         row = UmeKeyAlertForwardLog(
             alarm_key=str(alarm_key or ""),
             action=act,
+            rule_key=str(rule.notification_id or ""),
             notification_id=notification_id_from_norm(norm),
             forwarded_at=_utc_now_naive(),
             oclaw_ok=0,
@@ -112,6 +114,7 @@ def maybe_forward_key_alert(
         db.add(row)
     else:
         row.notification_id = notification_id_from_norm(norm)
+        row.rule_key = str(rule.notification_id or "")
         row.forwarded_at = _utc_now_naive()
         row.oclaw_ok = 0
         row.error = "queued"
@@ -122,7 +125,14 @@ def maybe_forward_key_alert(
     return True
 
 
-def record_forward_result(*, alarm_key: str, action: str, ok: bool, error: str = "") -> None:
+def record_forward_result(
+    *,
+    alarm_key: str,
+    action: str,
+    ok: bool,
+    error: str = "",
+    rule_key: str = "",
+) -> None:
     from .db import SessionLocal
 
     key = str(alarm_key or "").strip()
@@ -140,12 +150,15 @@ def record_forward_result(*, alarm_key: str, action: str, ok: bool, error: str =
             row = UmeKeyAlertForwardLog(
                 alarm_key=key,
                 action=act,
+                rule_key=str(rule_key or "").strip(),
                 forwarded_at=_utc_now_naive(),
                 oclaw_ok=1 if ok else 0,
                 error="" if ok else str(error or "forward_failed")[:240],
             )
             db.add(row)
         else:
+            if rule_key and not str(row.rule_key or "").strip():
+                row.rule_key = str(rule_key or "").strip()
             row.forwarded_at = _utc_now_naive()
             row.oclaw_ok = 1 if ok else 0
             row.error = "" if ok else str(error or "forward_failed")[:240]
