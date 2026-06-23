@@ -54,8 +54,39 @@ def default_huawei_hop_template(protocol: str, vrf: str = "") -> str:
 
 
 def default_bastion_username_template() -> str:
-    """SSH bastion composite username (JumpServer/CBH/generic protocol-proxy style)."""
-    return "{hop_user}@{target_user}@{target_ip}@{hop_host}"
+    """SSH username sent to bastion (OpenSSH splits user@host at the last @)."""
+    return "{hop_user}@{target_user}@{target_ip}"
+
+
+_LEGACY_BASTION_USERNAME_TEMPLATE = "{hop_user}@{target_user}@{target_ip}@{hop_host}"
+
+
+def resolve_bastion_ssh_username(rendered: str, hop_host: str) -> str:
+    """Map template output to the SSH username Paramiko must send.
+
+    CLI ``ssh hop@target@ip@bastion`` is parsed by OpenSSH as user ``hop@target@ip``
+    and host ``bastion``. Legacy templates that included ``{hop_host}`` duplicated the
+    bastion address inside the username and break authentication.
+    """
+    user = str(rendered or "").strip()
+    host = str(hop_host or "").strip()
+    if not user or not host:
+        return user
+    suffix = f"@{host}"
+    if user.endswith(suffix):
+        return user[:-len(suffix)]
+    return user
+
+
+def bastion_ssh_cli(username: str, hop_host: str, hop_port: int = 22) -> str:
+    """Human-readable ssh command equivalent (for logs/UI)."""
+    host = str(hop_host or "").strip()
+    user = str(username or "").strip()
+    target = f"{user}@{host}" if user else host
+    port = int(hop_port or 22)
+    if port != 22:
+        return f"ssh -p {port} {target}"
+    return f"ssh {target}"
 
 
 def default_hop_command_template(vendor: str, protocol: str, vrf: str = "") -> str:
@@ -99,24 +130,37 @@ def render_hop_command(template: str, creds: dict[str, Any]) -> str:
     return out
 
 
-def _bastion_interactive_handler(password: str):
+def _bastion_interactive_handler(password: str) -> tuple[Any, list[str]]:
     """Reply to bastion keyboard-interactive prompts (Vault password, OTP, etc.)."""
+    seen_prompts: list[str] = []
 
     def handler(title: str, instructions: str, prompt_list: list[tuple[str, bool]]) -> list[str]:
+        for prompt, _echo in prompt_list:
+            seen_prompts.append(str(prompt or ""))
         if not prompt_list:
             return []
-        responses: list[str] = []
-        for prompt, _echo in prompt_list:
-            pl = str(prompt or "").lower()
-            if re.search(r"password|vault|口令|密码|passcode|otp|token|verification|verify", pl):
-                responses.append(password)
-            else:
-                responses.append("")
-        if not any(responses):
-            responses = [password] * len(prompt_list)
-        return responses
+        return [password] * len(prompt_list)
 
-    return handler
+    return handler, seen_prompts
+
+
+def _bastion_auth_error_message(*, username: str, prompts: list[str], exc: Exception) -> str:
+    parts = [
+        "bastion_vault_auth_failed: verify hop_password (Vault password)",
+        f"bastion_ssh_username={username!r}",
+    ]
+    if prompts:
+        parts.append(f"prompts={prompts!r}")
+    parts.append(f"detail={exc}")
+    return "; ".join(parts)
+
+
+def _bastion_start_transport(*, host: str, port: int, timeout: int) -> paramiko.Transport:
+    transport = paramiko.Transport((host, int(port or 22)))
+    transport.banner_timeout = timeout
+    transport.auth_timeout = timeout
+    transport.start_client(timeout=timeout)
+    return transport
 
 
 def _bastion_ssh_connect(
@@ -127,47 +171,64 @@ def _bastion_ssh_connect(
     password: str,
     timeout: int,
 ) -> paramiko.SSHClient:
-    """SSH to protocol-proxy bastion; interactive auth first (JumpServer/CBH/ZTE-TSM)."""
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    transport = paramiko.Transport((host, int(port or 22)))
-    transport.banner_timeout = timeout
-    transport.auth_timeout = timeout
-    try:
-        transport.start_client(timeout=timeout)
-    except Exception:
-        try:
-            transport.close()
-        except Exception:
-            pass
-        raise
+    """SSH to protocol-proxy bastion (JumpServer/CBH/ZTE-TSM).
 
-    handler = _bastion_interactive_handler(password)
-    auth_errors: list[Exception] = []
-    for use_interactive in (True, False):
+    Each strategy uses a fresh transport. Prefer password→keyboard-interactive
+    fallback (OpenSSH-style) before a direct interactive attempt.
+    """
+    handler, prompt_trace = _bastion_interactive_handler(password)
+    strategies: list[tuple[str, Any]] = [
+        (
+            "password_kb_fallback",
+            lambda transport: transport.auth_password(username, password, fallback=True),
+        ),
+        (
+            "interactive",
+            lambda transport: transport.auth_interactive(username, handler),
+        ),
+    ]
+    auth_errors: list[tuple[str, Exception]] = []
+
+    for name, authenticate in strategies:
+        transport: paramiko.Transport | None = None
         try:
-            if use_interactive:
-                transport.auth_interactive(username, handler)
-            else:
-                transport.auth_password(username, password, fallback=False)
+            transport = _bastion_start_transport(host=host, port=port, timeout=timeout)
+            authenticate(transport)
             if transport.is_authenticated():
+                client = paramiko.SSHClient()
+                client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
                 client._transport = transport  # noqa: SLF001
                 return client
-        except paramiko.BadAuthenticationType as exc:
-            auth_errors.append(exc)
-            if use_interactive and "keyboard-interactive" not in getattr(exc, "allowed_types", ()):
-                continue
-        except paramiko.AuthenticationException as exc:
-            auth_errors.append(exc)
-            continue
+        except Exception as exc:
+            auth_errors.append((name, exc))
+        finally:
+            if transport is not None and not transport.is_authenticated():
+                try:
+                    transport.close()
+                except Exception:
+                    pass
 
-    try:
-        transport.close()
-    except Exception:
-        pass
-    if auth_errors:
-        raise auth_errors[-1]
-    raise paramiko.AuthenticationException("bastion_auth_failed")
+    preferred = next(
+        (
+            (name, exc)
+            for name, exc in auth_errors
+            if isinstance(exc, paramiko.AuthenticationException)
+            and not isinstance(exc, paramiko.BadAuthenticationType)
+        ),
+        auth_errors[-1] if auth_errors else None,
+    )
+    if preferred is not None:
+        _name, exc = preferred
+        raise paramiko.AuthenticationException(
+            _bastion_auth_error_message(username=username, prompts=prompt_trace, exc=exc)
+        ) from exc
+    raise paramiko.AuthenticationException(
+        _bastion_auth_error_message(
+            username=username,
+            prompts=prompt_trace,
+            exc=Exception("bastion_auth_failed"),
+        )
+    )
 
 
 def _netmiko_over_ssh_client(
@@ -360,7 +421,8 @@ def _connect_via_bastion(creds: dict[str, Any], *, session_timeout: int | None =
     if not hop_host or not hop_user or not hop_pass:
         raise ValueError("hop_credentials_incomplete")
 
-    composite_user = render_hop_command(str(creds.get("hop_command_template") or ""), creds)
+    composite_rendered = render_hop_command(str(creds.get("hop_command_template") or ""), creds)
+    ssh_username = resolve_bastion_ssh_username(composite_rendered, hop_host)
     device_type = normalize_netmiko_device_type(creds["device_type"], creds["protocol"])
     hop_port = int(creds.get("hop_port") or 22)
     timeout = int(settings.ne_connect_timeout_sec or 30)
@@ -369,7 +431,7 @@ def _connect_via_bastion(creds: dict[str, Any], *, session_timeout: int | None =
         ssh_client = _bastion_ssh_connect(
             host=hop_host,
             port=hop_port,
-            username=composite_user,
+            username=ssh_username,
             password=hop_pass,
             timeout=timeout,
         )
@@ -378,7 +440,7 @@ def _connect_via_bastion(creds: dict[str, Any], *, session_timeout: int | None =
             device_type=device_type,
             host=hop_host,
             port=hop_port,
-            username=composite_user,
+            username=ssh_username,
             password=hop_pass,
             enable_secret=str(creds.get("enable_secret") or ""),
             session_timeout=session_timeout or 180,

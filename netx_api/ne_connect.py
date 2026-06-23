@@ -12,7 +12,13 @@ from .db import SessionLocal
 from .models import ManagedNE
 from .ne_crypto import CredentialCryptoError
 from .ne_service import get_device_credentials
-from .ne_session_factory import close_netmiko_connection, open_netmiko_connection
+from .ne_session_factory import (
+    bastion_ssh_cli,
+    close_netmiko_connection,
+    open_netmiko_connection,
+    render_hop_command,
+    resolve_bastion_ssh_username,
+)
 
 _log = logging.getLogger("netx.ne.connect")
 _executor: ThreadPoolExecutor | None = None
@@ -50,6 +56,17 @@ def _connect_context_lines(creds: dict[str, Any]) -> list[str]:
         auth_mode = str(creds.get("hop_target_auth_mode") or "").strip()
         if auth_mode:
             lines.append(f"hop_target_auth_mode={auth_mode}")
+        if str(creds.get("hop_vendor") or "").strip().lower() == "bastion":
+            try:
+                hop_host = str(creds.get("hop_host") or "").strip()
+                rendered = render_hop_command(str(creds.get("hop_command_template") or ""), creds)
+                ssh_user = resolve_bastion_ssh_username(rendered, hop_host)
+                lines.append(f"bastion_ssh_username={ssh_user}")
+                lines.append(
+                    f"bastion_ssh_cli={bastion_ssh_cli(ssh_user, hop_host, int(creds.get('hop_port') or 22))}"
+                )
+            except Exception:
+                pass
         vrf = str(creds.get("hop_vrf") or "").strip()
         if vrf:
             lines.append(f"hop_vrf={vrf}")
@@ -147,7 +164,16 @@ def _classify_connect_error(creds: dict[str, Any], exc: BaseException) -> str:
             return detail
         if "target_auth_timeout" in raw:
             return "target_auth_failed: " + detail
+        if hop_v == "bastion" and (
+            "bastion_vault_auth_failed" in raw
+            or "bad authentication type" in raw
+            or "keyboard-interactive" in raw
+            or "vault" in raw
+        ):
+            return "bastion_auth_failed: " + detail
         if "authentication" in raw or "auth" in raw:
+            if hop_v == "bastion":
+                return "bastion_auth_failed: " + detail
             if "hop_host" in raw or str(creds.get("hop_host") or "") in raw:
                 return "hop_auth_failed: " + detail
             return "target_auth_failed: " + detail

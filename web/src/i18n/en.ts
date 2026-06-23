@@ -194,7 +194,7 @@ const en = {
       "· password may be empty (required for direct login; optional for bastion-managed or batch proxy later).\n" +
       "· Recommended flow: import NEs first, select rows, then use Batch add proxy.\n\n" +
       "[Jump / bastion]\n" +
-      "· Bastion SSH username template: {hop_user}@{target_user}@{target_ip}@{hop_host}; target account = NE Username.\n" +
+      "· Bastion SSH username template: {hop_user}@{target_user}@{target_ip} (bastion host is separate); CLI: ssh user@target@ip@bastion-host.\n" +
       "· Bastion-managed: set Jump password (Vault); target password optional. Manual mode needs target password.\n" +
       "· JumpServer/CBH often use port 2222; some sites use 22.\n\n" +
       "[Connectivity / edit]\n" +
@@ -240,7 +240,7 @@ const en = {
       targetAuthHint: "Bastion-managed needs only bastion password; manual mode requires target NE password.",
       usernameTemplate: "SSH username template",
       templateHintBastion:
-        "Default {hop_user}@{target_user}@{target_ip}@{hop_host}. Same when left blank. Example: bastion-user@target-user@2.2.2.2@1.1.1.1.",
+        "Default {hop_user}@{target_user}@{target_ip}. Bastion address is the hop host field. CLI example: ssh bastion-user@target-user@2.2.2.2@1.1.1.1.",
       host: "Jump host",
       port: "Jump port",
       protocol: "Jump protocol",

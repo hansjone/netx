@@ -192,7 +192,7 @@ const zh = {
       "· password 可留空（直连需填；堡垒机托管或后续批量添加代理时可空）。\n" +
       "· 推荐流程：先导入网元 → 勾选网元 → 点「批量添加代理」统一配置跳板/堡垒机。\n\n" +
       "【跳板 / 堡垒机】\n" +
-      "· 堡垒机 SSH 用户名模板：{hop_user}@{target_user}@{target_ip}@{hop_host}；目标账号填网元「用户名」。\n" +
+      "· 堡垒机 SSH 用户名模板：{hop_user}@{target_user}@{target_ip}（堡垒机地址单独填在跳板地址）；命令行等价：ssh 用户@目标@IP@堡垒机。\n" +
       "· 堡垒机托管时填「跳板密码」（Vault 密码），目标密码可留空；手动模式需填目标密码。\n" +
       "· JumpServer/CBH 常用跳板端口 2222，部分现场为 22。\n\n" +
       "【连通性 / 编辑】\n" +
@@ -238,7 +238,7 @@ const zh = {
       targetAuthHint: "堡垒机托管时仅需堡垒机密码；手动模式需填写目标网元密码。",
       usernameTemplate: "SSH 用户名模板",
       templateHintBastion:
-        "默认 {hop_user}@{target_user}@{target_ip}@{hop_host}。留空时后端同样规则。示例：bastion-user@target-user@2.2.2.2@1.1.1.1。",
+        "默认 {hop_user}@{target_user}@{target_ip}，堡垒机地址填「跳板地址」。命令行示例：ssh bastion-user@target-user@2.2.2.2@1.1.1.1。",
       host: "跳板地址",
       port: "跳板端口",
       protocol: "跳板协议",

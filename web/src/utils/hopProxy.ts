@@ -9,8 +9,10 @@ export type HopTargetAuthMode = "bastion_managed" | "manual";
 export const HOP_VENDORS: HopVendor[] = ["zte", "huawei", "cisco", "linux", "bastion"];
 
 export function bastionHopTemplate(): string {
-  return "{hop_user}@{target_user}@{target_ip}@{hop_host}";
+  return "{hop_user}@{target_user}@{target_ip}";
 }
+
+export const LEGACY_BASTION_HOP_TEMPLATE = "{hop_user}@{target_user}@{target_ip}@{hop_host}";
 
 export function isBastionHopVendor(vendor: string): boolean {
   return String(vendor || "").toLowerCase() === "bastion";

@@ -4,9 +4,11 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from netx_api.ne_session_factory import (
+    bastion_ssh_cli,
     default_bastion_username_template,
     open_netmiko_connection,
     render_hop_command,
+    resolve_bastion_ssh_username,
 )
 
 
@@ -14,7 +16,7 @@ class BastionTemplateTests(unittest.TestCase):
     def test_default_bastion_username_template(self) -> None:
         self.assertEqual(
             default_bastion_username_template(),
-            "{hop_user}@{target_user}@{target_ip}@{hop_host}",
+            "{hop_user}@{target_user}@{target_ip}",
         )
 
     def test_render_bastion_composite_username(self) -> None:
@@ -28,7 +30,7 @@ class BastionTemplateTests(unittest.TestCase):
             "hop_vrf": "",
         }
         out = render_hop_command("", creds)
-        self.assertEqual(out, "bastion-user@target-user@2.2.2.2@1.1.1.1")
+        self.assertEqual(out, "bastion-user@target-user@2.2.2.2")
 
     def test_render_custom_bastion_template(self) -> None:
         creds = {
@@ -43,6 +45,24 @@ class BastionTemplateTests(unittest.TestCase):
         }
         out = render_hop_command(creds["hop_command_template"], creds)
         self.assertEqual(out, "admin#root@5.6.7.8")
+
+    def test_resolve_strips_legacy_hop_host_suffix(self) -> None:
+        self.assertEqual(
+            resolve_bastion_ssh_username("ZTE-FIVIE@ca-admin@114.1.198.1@10.34.145.25", "10.34.145.25"),
+            "ZTE-FIVIE@ca-admin@114.1.198.1",
+        )
+
+    def test_resolve_keeps_username_without_hop_host_suffix(self) -> None:
+        self.assertEqual(
+            resolve_bastion_ssh_username("ZTE-FIVIE@ca-admin@114.1.198.1", "10.34.145.25"),
+            "ZTE-FIVIE@ca-admin@114.1.198.1",
+        )
+
+    def test_bastion_ssh_cli(self) -> None:
+        self.assertEqual(
+            bastion_ssh_cli("ZTE-FIVIE@ca-admin@114.1.198.1", "10.34.145.25"),
+            "ssh ZTE-FIVIE@ca-admin@114.1.198.1@10.34.145.25",
+        )
 
 
 class BastionConnectRoutingTests(unittest.TestCase):
@@ -94,14 +114,14 @@ class BastionConnectImplTests(unittest.TestCase):
         bastion_ssh.assert_called_once_with(
             host="1.1.1.1",
             port=22,
-            username="bastion-user@target-user@2.2.2.2@1.1.1.1",
+            username="bastion-user@target-user@2.2.2.2",
             password="vault-pass",
             timeout=unittest.mock.ANY,
         )
         netmiko_wrap.assert_called_once()
         wrap_kwargs = netmiko_wrap.call_args.kwargs
         self.assertEqual(wrap_kwargs["host"], "1.1.1.1")
-        self.assertEqual(wrap_kwargs["username"], "bastion-user@target-user@2.2.2.2@1.1.1.1")
+        self.assertEqual(wrap_kwargs["username"], "bastion-user@target-user@2.2.2.2")
         self.assertEqual(wrap_kwargs["password"], "vault-pass")
         conn.disconnect.assert_not_called()
 
@@ -131,8 +151,16 @@ class BastionConnectImplTests(unittest.TestCase):
             "hop_vendor": "bastion",
             "hop_protocol": "ssh",
             "hop_vrf": "",
+            "hop_command_template": "{hop_user}@{target_user}@{target_ip}@{hop_host}",
         }
         _connect_via_bastion(creds)
+        bastion_ssh.assert_called_once_with(
+            host="10.0.0.1",
+            port=2222,
+            username="bastion-user@target-user@10.0.0.2",
+            password="bastion-pass",
+            timeout=unittest.mock.ANY,
+        )
         interact.assert_called_once_with(conn, "target-user", "target-pass")
 
 
@@ -140,7 +168,7 @@ class BastionInteractiveHandlerTests(unittest.TestCase):
     def test_replies_to_vault_password_prompt(self) -> None:
         from netx_api.ne_session_factory import _bastion_interactive_handler
 
-        handler = _bastion_interactive_handler("vault-secret")
+        handler, _prompts = _bastion_interactive_handler("vault-secret")
         out = handler(
             "Login",
             "",
@@ -148,18 +176,25 @@ class BastionInteractiveHandlerTests(unittest.TestCase):
         )
         self.assertEqual(out, ["vault-secret"])
 
-    def test_replies_to_all_fields_when_prompt_unknown(self) -> None:
+    def test_replies_to_all_fields(self) -> None:
         from netx_api.ne_session_factory import _bastion_interactive_handler
 
-        handler = _bastion_interactive_handler("vault-secret")
+        handler, _prompts = _bastion_interactive_handler("vault-secret")
         out = handler("Login", "", [("Enter code:", False), ("Confirm:", False)])
         self.assertEqual(out, ["vault-secret", "vault-secret"])
 
     def test_empty_prompt_list_returns_empty(self) -> None:
         from netx_api.ne_session_factory import _bastion_interactive_handler
 
-        handler = _bastion_interactive_handler("vault-secret")
+        handler, _prompts = _bastion_interactive_handler("vault-secret")
         self.assertEqual(handler("Login", "", []), [])
+
+    def test_records_prompts_for_diagnostics(self) -> None:
+        from netx_api.ne_session_factory import _bastion_interactive_handler
+
+        handler, prompts = _bastion_interactive_handler("vault-secret")
+        handler("Login", "", [("Vault Password:", False)])
+        self.assertEqual(prompts, ["Vault Password:"])
 
 
 if __name__ == "__main__":
