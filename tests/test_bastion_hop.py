@@ -64,6 +64,13 @@ class BastionTemplateTests(unittest.TestCase):
             "ssh ZTE-FIVIE@ca-admin@114.1.198.1@10.34.145.25",
         )
 
+    def test_netmiko_driver_class_resolves_zte(self) -> None:
+        from netmiko.zte.zte_zxros import ZteZxrosSSH
+
+        from netx_api.ne_session_factory import _netmiko_driver_class
+
+        self.assertIs(_netmiko_driver_class("zte_zxros_ssh"), ZteZxrosSSH)
+
 
 class BastionConnectRoutingTests(unittest.TestCase):
     @patch("netx_api.ne_session_factory._connect_via_bastion")

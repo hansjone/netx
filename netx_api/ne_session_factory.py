@@ -231,6 +231,17 @@ def _bastion_ssh_connect(
     )
 
 
+def _netmiko_driver_class(device_type: str) -> type:
+    """Resolve Netmiko driver class (ConnectHandler is a factory func, not a base class)."""
+    from netmiko.ssh_dispatcher import CLASS_MAPPER
+
+    dt = str(device_type or "").strip()
+    cls = CLASS_MAPPER.get(dt)
+    if cls is None:
+        raise ValueError(f"unsupported_device_type: {dt}")
+    return cls
+
+
 def _netmiko_over_ssh_client(
     ssh_client: paramiko.SSHClient,
     *,
@@ -243,8 +254,9 @@ def _netmiko_over_ssh_client(
     session_timeout: int | None,
 ) -> ConnectHandler:
     """Netmiko session over an already-authenticated SSH client (bastion protocol proxy)."""
+    base_cls = _netmiko_driver_class(device_type)
 
-    class _PreauthConnectHandler(ConnectHandler):
+    class _PreauthSession(base_cls):
         def establish_connection(self, width: int = 511, height: int = 1000) -> None:
             from netmiko.channel import SSHChannel
 
@@ -267,7 +279,7 @@ def _netmiko_over_ssh_client(
         enable_secret=enable_secret,
         session_timeout=session_timeout,
     )
-    return _PreauthConnectHandler(**dev)
+    return _PreauthSession(**dev)
 
 
 def _base_connect_kwargs(
