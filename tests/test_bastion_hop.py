@@ -66,12 +66,15 @@ class BastionConnectRoutingTests(unittest.TestCase):
 
 
 class BastionConnectImplTests(unittest.TestCase):
-    @patch("netx_api.ne_session_factory.ConnectHandler")
-    def test_bastion_managed_skips_secondary_auth(self, connect_handler) -> None:
+    @patch("netx_api.ne_session_factory._netmiko_over_ssh_client")
+    @patch("netx_api.ne_session_factory._bastion_ssh_connect")
+    def test_bastion_managed_skips_secondary_auth(self, bastion_ssh, netmiko_wrap) -> None:
         from netx_api.ne_session_factory import _connect_via_bastion
 
+        ssh_client = MagicMock()
+        bastion_ssh.return_value = ssh_client
         conn = MagicMock()
-        connect_handler.return_value = conn
+        netmiko_wrap.return_value = conn
         creds = {
             "hop_host": "1.1.1.1",
             "hop_username": "bastion-user",
@@ -88,20 +91,32 @@ class BastionConnectImplTests(unittest.TestCase):
             "hop_vrf": "",
         }
         _connect_via_bastion(creds)
-        kwargs = connect_handler.call_args.kwargs
-        self.assertEqual(kwargs["host"], "1.1.1.1")
-        self.assertEqual(kwargs["username"], "bastion-user@target-user@2.2.2.2@1.1.1.1")
-        self.assertEqual(kwargs["password"], "vault-pass")
+        bastion_ssh.assert_called_once_with(
+            host="1.1.1.1",
+            port=22,
+            username="bastion-user@target-user@2.2.2.2@1.1.1.1",
+            password="vault-pass",
+            timeout=unittest.mock.ANY,
+        )
+        netmiko_wrap.assert_called_once()
+        wrap_kwargs = netmiko_wrap.call_args.kwargs
+        self.assertEqual(wrap_kwargs["host"], "1.1.1.1")
+        self.assertEqual(wrap_kwargs["username"], "bastion-user@target-user@2.2.2.2@1.1.1.1")
+        self.assertEqual(wrap_kwargs["password"], "vault-pass")
         conn.disconnect.assert_not_called()
 
     @patch("netx_api.ne_session_factory._interactive_target_auth")
     @patch("netx_api.ne_session_factory._read_channel")
-    @patch("netx_api.ne_session_factory.ConnectHandler")
-    def test_bastion_manual_invokes_secondary_auth(self, connect_handler, _read, interact) -> None:
+    @patch("netx_api.ne_session_factory._netmiko_over_ssh_client")
+    @patch("netx_api.ne_session_factory._bastion_ssh_connect")
+    def test_bastion_manual_invokes_secondary_auth(
+        self, bastion_ssh, netmiko_wrap, _read, interact
+    ) -> None:
         from netx_api.ne_session_factory import _connect_via_bastion
 
+        bastion_ssh.return_value = MagicMock()
         conn = MagicMock()
-        connect_handler.return_value = conn
+        netmiko_wrap.return_value = conn
         creds = {
             "hop_host": "10.0.0.1",
             "hop_username": "bastion-user",
@@ -119,6 +134,32 @@ class BastionConnectImplTests(unittest.TestCase):
         }
         _connect_via_bastion(creds)
         interact.assert_called_once_with(conn, "target-user", "target-pass")
+
+
+class BastionInteractiveHandlerTests(unittest.TestCase):
+    def test_replies_to_vault_password_prompt(self) -> None:
+        from netx_api.ne_session_factory import _bastion_interactive_handler
+
+        handler = _bastion_interactive_handler("vault-secret")
+        out = handler(
+            "Login",
+            "",
+            [("(ZTE-TSM@user@1.1.1.1@2.2.2.2) Vault Password:", False)],
+        )
+        self.assertEqual(out, ["vault-secret"])
+
+    def test_replies_to_all_fields_when_prompt_unknown(self) -> None:
+        from netx_api.ne_session_factory import _bastion_interactive_handler
+
+        handler = _bastion_interactive_handler("vault-secret")
+        out = handler("Login", "", [("Enter code:", False), ("Confirm:", False)])
+        self.assertEqual(out, ["vault-secret", "vault-secret"])
+
+    def test_empty_prompt_list_returns_empty(self) -> None:
+        from netx_api.ne_session_factory import _bastion_interactive_handler
+
+        handler = _bastion_interactive_handler("vault-secret")
+        self.assertEqual(handler("Login", "", []), [])
 
 
 if __name__ == "__main__":

@@ -99,6 +99,116 @@ def render_hop_command(template: str, creds: dict[str, Any]) -> str:
     return out
 
 
+def _bastion_interactive_handler(password: str):
+    """Reply to bastion keyboard-interactive prompts (Vault password, OTP, etc.)."""
+
+    def handler(title: str, instructions: str, prompt_list: list[tuple[str, bool]]) -> list[str]:
+        if not prompt_list:
+            return []
+        responses: list[str] = []
+        for prompt, _echo in prompt_list:
+            pl = str(prompt or "").lower()
+            if re.search(r"password|vault|口令|密码|passcode|otp|token|verification|verify", pl):
+                responses.append(password)
+            else:
+                responses.append("")
+        if not any(responses):
+            responses = [password] * len(prompt_list)
+        return responses
+
+    return handler
+
+
+def _bastion_ssh_connect(
+    *,
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    timeout: int,
+) -> paramiko.SSHClient:
+    """SSH to protocol-proxy bastion; interactive auth first (JumpServer/CBH/ZTE-TSM)."""
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    transport = paramiko.Transport((host, int(port or 22)))
+    transport.banner_timeout = timeout
+    transport.auth_timeout = timeout
+    try:
+        transport.start_client(timeout=timeout)
+    except Exception:
+        try:
+            transport.close()
+        except Exception:
+            pass
+        raise
+
+    handler = _bastion_interactive_handler(password)
+    auth_errors: list[Exception] = []
+    for use_interactive in (True, False):
+        try:
+            if use_interactive:
+                transport.auth_interactive(username, handler)
+            else:
+                transport.auth_password(username, password, fallback=False)
+            if transport.is_authenticated():
+                client._transport = transport  # noqa: SLF001
+                return client
+        except paramiko.BadAuthenticationType as exc:
+            auth_errors.append(exc)
+            if use_interactive and "keyboard-interactive" not in getattr(exc, "allowed_types", ()):
+                continue
+        except paramiko.AuthenticationException as exc:
+            auth_errors.append(exc)
+            continue
+
+    try:
+        transport.close()
+    except Exception:
+        pass
+    if auth_errors:
+        raise auth_errors[-1]
+    raise paramiko.AuthenticationException("bastion_auth_failed")
+
+
+def _netmiko_over_ssh_client(
+    ssh_client: paramiko.SSHClient,
+    *,
+    device_type: str,
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    enable_secret: str,
+    session_timeout: int | None,
+) -> ConnectHandler:
+    """Netmiko session over an already-authenticated SSH client (bastion protocol proxy)."""
+
+    class _PreauthConnectHandler(ConnectHandler):
+        def establish_connection(self, width: int = 511, height: int = 1000) -> None:
+            from netmiko.channel import SSHChannel
+
+            self.remote_conn_pre = ssh_client
+            self.remote_conn = ssh_client.invoke_shell(term="vt100", width=width, height=height)
+            self.remote_conn.settimeout(self.blocking_timeout)
+            if self.keepalive:
+                chan_transport = self.remote_conn.transport
+                if chan_transport is not None:
+                    chan_transport.set_keepalive(self.keepalive)
+            self.channel = SSHChannel(conn=self.remote_conn, encoding=self.encoding)
+            self.special_login_handler()
+
+    dev = _base_connect_kwargs(
+        device_type=device_type,
+        host=host,
+        port=port,
+        username=username,
+        password=password,
+        enable_secret=enable_secret,
+        session_timeout=session_timeout,
+    )
+    return _PreauthConnectHandler(**dev)
+
+
 def _base_connect_kwargs(
     *,
     device_type: str,
@@ -252,16 +362,35 @@ def _connect_via_bastion(creds: dict[str, Any], *, session_timeout: int | None =
 
     composite_user = render_hop_command(str(creds.get("hop_command_template") or ""), creds)
     device_type = normalize_netmiko_device_type(creds["device_type"], creds["protocol"])
-    hop_dev = _base_connect_kwargs(
-        device_type=device_type,
-        host=hop_host,
-        port=int(creds.get("hop_port") or 22),
-        username=composite_user,
-        password=hop_pass,
-        enable_secret=str(creds.get("enable_secret") or ""),
-        session_timeout=session_timeout or 180,
-    )
-    conn = ConnectHandler(**hop_dev)
+    hop_port = int(creds.get("hop_port") or 22)
+    timeout = int(settings.ne_connect_timeout_sec or 30)
+    ssh_client = None
+    try:
+        ssh_client = _bastion_ssh_connect(
+            host=hop_host,
+            port=hop_port,
+            username=composite_user,
+            password=hop_pass,
+            timeout=timeout,
+        )
+        conn = _netmiko_over_ssh_client(
+            ssh_client,
+            device_type=device_type,
+            host=hop_host,
+            port=hop_port,
+            username=composite_user,
+            password=hop_pass,
+            enable_secret=str(creds.get("enable_secret") or ""),
+            session_timeout=session_timeout or 180,
+        )
+    except Exception:
+        if ssh_client is not None:
+            try:
+                ssh_client.close()
+            except Exception:
+                pass
+        raise
+
     auth_mode = str(creds.get("hop_target_auth_mode") or "bastion_managed").strip().lower()
     if auth_mode == "manual":
         target_pass = str(creds.get("password") or "")
