@@ -824,8 +824,8 @@ export function UmePage() {
             <tbody>
               {keyAlertRules.map((rule) => (
                 <tr key={rule.notification_id} className={rule.enabled ? undefined : "row--muted"}>
-                  <td>
-                    <label className="checkbox-inline">
+                  <td style={{ whiteSpace: "nowrap" }}>
+                    <label style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
                       <input
                         type="checkbox"
                         checked={Boolean(rule.enabled)}
