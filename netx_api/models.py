@@ -222,6 +222,7 @@ class UmeKeyAlertRule(Base):
     enabled: Mapped[int] = mapped_column(Integer, default=1)
     forward_on_clear: Mapped[int] = mapped_column(Integer, default=0)
     label: Mapped[str] = mapped_column(String(256), default="")
+    ne_types: Mapped[str] = mapped_column(Text, default="[]")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 

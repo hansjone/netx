@@ -5,6 +5,7 @@ export const queryKeys = {
   umeTokenStatus: ["umeTokenStatus"] as const,
   umeAlarmSubscription: ["umeAlarmSubscription"] as const,
   umeKeyAlertMonitorAll: ["umeKeyAlertMonitor"] as const,
+  umeInventoryNeTypes: ["umeInventoryNeTypes"] as const,
   umeKeyAlertMonitor: (
     page: number,
     pageSize: number,

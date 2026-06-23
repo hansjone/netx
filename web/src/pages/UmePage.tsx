@@ -10,6 +10,7 @@ import {
   establishUmeAlarmSubscription,
   fetchUmeAlarmSubscriptionStatus,
   fetchUmeAlarmKeywords,
+  fetchUmeInventoryNeTypes,
   fetchUmeKeyAlertMonitor,
   fetchUmeNotificationIds,
   fetchUmeSyncStatus,
@@ -24,7 +25,7 @@ import { HelpHint } from "../components/HelpHint";
 import { queryKeys } from "../constants/queryKeys";
 import { useI18n } from "../i18n";
 import { useToast } from "../hooks/useToast";
-import type { UmeAlarmSubscriptionStatus } from "../types";
+import type { UmeAlarmSubscriptionStatus, UmeKeyAlertRuleItem } from "../types";
 import { pageCount, runtimeIntervalLabel } from "../utils/display";
 import { formatSystemTime } from "../utils/time";
 
@@ -62,6 +63,9 @@ export function UmePage() {
   const [keyAlertFilterKeyword, setKeyAlertFilterKeyword] = useState("");
   const [keyAlertFilterEnabled, setKeyAlertFilterEnabled] = useState<"" | "true" | "false">("");
   const [keyAlertFilterMatchType, setKeyAlertFilterMatchType] = useState<"" | "notification_id" | "keyword">("");
+  const [keyAlertNeTypes, setKeyAlertNeTypes] = useState<string[]>([]);
+  const [keyAlertEditRule, setKeyAlertEditRule] = useState<UmeKeyAlertRuleItem | null>(null);
+  const [keyAlertEditNeTypes, setKeyAlertEditNeTypes] = useState<string[]>([]);
 
   const syncMutation = useMutation({
     mutationFn: async (domains: string[]) => apiPost<{ ok: boolean; jobs: unknown[] }>("/v1/ume/sync", { domains }),
@@ -69,6 +73,7 @@ export function UmePage() {
       await queryClient.invalidateQueries({ queryKey: queryKeys.umeSyncStatusAll });
       await queryClient.invalidateQueries({ queryKey: queryKeys.umeNEAll });
       await queryClient.invalidateQueries({ queryKey: queryKeys.umeCurrentAlarmsAll });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.umeInventoryNeTypes });
     },
   });
 
@@ -129,6 +134,11 @@ export function UmePage() {
       }),
     staleTime: 3000,
     refetchInterval: 5000,
+  });
+  const keyAlertNeTypesQuery = useQuery({
+    queryKey: queryKeys.umeInventoryNeTypes,
+    queryFn: () => fetchUmeInventoryNeTypes(),
+    staleTime: 60_000,
   });
 
   const confirmClearLocalSubscription = (hint?: string) =>
@@ -319,11 +329,13 @@ export function UmePage() {
         match_value: keyAlertMatchValue.trim(),
         label: keyAlertLabel.trim(),
         enabled: true,
+        ne_types: keyAlertNeTypes,
       }),
     onMutate: () => setKeyAlertOpError(""),
     onSuccess: async () => {
       setKeyAlertMatchValue("");
       setKeyAlertLabel("");
+      setKeyAlertNeTypes([]);
       showOk(t("ume.keyAlert.addOk"));
       await queryClient.invalidateQueries({ queryKey: queryKeys.umeKeyAlertMonitorAll });
       await queryClient.invalidateQueries({ queryKey: queryKeys.integrationsStatus });
@@ -355,6 +367,22 @@ export function UmePage() {
       patchUmeKeyAlertRule(vars.ruleKey, { enabled: vars.enabled }),
     onMutate: () => setKeyAlertOpError(""),
     onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.umeKeyAlertMonitorAll });
+    },
+    onError: (err) => {
+      const msg = String(err);
+      setKeyAlertOpError(msg);
+      showError(msg);
+    },
+  });
+
+  const keyAlertEditMutation = useMutation({
+    mutationFn: (vars: { ruleKey: string; ne_types: string[] }) =>
+      patchUmeKeyAlertRule(vars.ruleKey, { ne_types: vars.ne_types }),
+    onMutate: () => setKeyAlertOpError(""),
+    onSuccess: async () => {
+      setKeyAlertEditRule(null);
+      showOk(t("ume.keyAlert.editOk"));
       await queryClient.invalidateQueries({ queryKey: queryKeys.umeKeyAlertMonitorAll });
     },
     onError: (err) => {
@@ -741,6 +769,53 @@ export function UmePage() {
                 {keyAlertAddMutation.isPending ? t("ume.keyAlert.adding") : t("ume.keyAlert.add")}
               </button>
             </div>
+            <div style={{ marginTop: 8 }}>
+              <div className="muted" style={{ marginBottom: 4 }}>
+                {t("ume.keyAlert.neTypesLabel")}
+              </div>
+              {keyAlertNeTypesQuery.isLoading ? (
+                <span className="muted">{t("common.refreshing")}</span>
+              ) : (keyAlertNeTypesQuery.data?.items || []).length === 0 ? (
+                <span className="muted">{t("ume.keyAlert.neTypesEmpty")}</span>
+              ) : (
+                <div
+                  style={{
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: "8px 16px",
+                    maxHeight: 120,
+                    overflowY: "auto",
+                    padding: "6px 8px",
+                    border: "1px solid var(--border, #ddd)",
+                    borderRadius: 4,
+                  }}
+                >
+                  {(keyAlertNeTypesQuery.data?.items || []).map((item) => (
+                    <label
+                      key={item.ne_type}
+                      style={{ display: "inline-flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={keyAlertNeTypes.includes(item.ne_type)}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setKeyAlertNeTypes((prev) => [...prev, item.ne_type]);
+                          } else {
+                            setKeyAlertNeTypes((prev) => prev.filter((x) => x !== item.ne_type));
+                          }
+                        }}
+                      />
+                      {item.ne_type}
+                      <span className="muted">({item.ne_count})</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+              <div className="muted" style={{ marginTop: 4, fontSize: 12 }}>
+                {t("ume.keyAlert.neTypesHint")}
+              </div>
+            </div>
             <div
               className="actions-row actions-row--inline"
               style={{ marginTop: 8, flexWrap: "wrap", alignItems: "center", justifyContent: "space-between" }}
@@ -815,6 +890,7 @@ export function UmePage() {
                 <th>{t("ume.keyAlert.colType")}</th>
                 <th>{t("ume.keyAlert.colMatch")}</th>
                 <th>{t("ume.keyAlert.colLabel")}</th>
+                <th>{t("ume.keyAlert.colNeTypes")}</th>
                 <th>{t("ume.keyAlert.colPublished")}</th>
                 <th>{t("ume.keyAlert.colAttempts")}</th>
                 <th>{t("ume.keyAlert.colLast")}</th>
@@ -847,6 +923,11 @@ export function UmePage() {
                   </td>
                   <td>{rule.match_value || rule.notification_id}</td>
                   <td>{rule.label || t("common.empty")}</td>
+                  <td>
+                    {rule.ne_types?.length
+                      ? rule.ne_types.join(", ")
+                      : t("ume.keyAlert.neTypesAll")}
+                  </td>
                   <td>{Number(rule.forward_stats?.published_ok || 0)}</td>
                   <td>{Number(rule.forward_stats?.attempts || 0)}</td>
                   <td>
@@ -855,23 +936,35 @@ export function UmePage() {
                       : t("common.empty")}
                   </td>
                   <td>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (window.confirm(t("ume.keyAlert.confirmDelete"))) {
-                          keyAlertDeleteMutation.mutate(rule.notification_id);
-                        }
-                      }}
-                      disabled={keyAlertDeleteMutation.isPending}
-                    >
-                      {t("ume.keyAlert.delete")}
-                    </button>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setKeyAlertEditRule(rule);
+                          setKeyAlertEditNeTypes(rule.ne_types || []);
+                        }}
+                        disabled={keyAlertEditMutation.isPending}
+                      >
+                        {t("ume.keyAlert.edit")}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (window.confirm(t("ume.keyAlert.confirmDelete"))) {
+                            keyAlertDeleteMutation.mutate(rule.notification_id);
+                          }
+                        }}
+                        disabled={keyAlertDeleteMutation.isPending}
+                      >
+                        {t("ume.keyAlert.delete")}
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
               {!keyAlertMonitorQuery.isLoading && keyAlertRules.length === 0 ? (
                 <tr>
-                  <td colSpan={8}>{t("ume.keyAlert.emptyRules")}</td>
+                  <td colSpan={9}>{t("ume.keyAlert.emptyRules")}</td>
                 </tr>
               ) : null}
             </tbody>
@@ -1324,6 +1417,83 @@ export function UmePage() {
           </>
         ) : null}
       </section>
+
+      {keyAlertEditRule ? (
+        <div className="modal-backdrop" role="presentation" onClick={() => setKeyAlertEditRule(null)}>
+          <div className="modal" role="dialog" onClick={(e) => e.stopPropagation()}>
+            <h3>{t("ume.keyAlert.editTitle")}</h3>
+            <p className="form-hint muted">
+              {keyAlertEditRule.match_type === "keyword"
+                ? t("ume.keyAlert.matchKeyword")
+                : t("ume.keyAlert.matchNotificationId")}
+              : {keyAlertEditRule.match_value || keyAlertEditRule.notification_id}
+              {keyAlertEditRule.label ? ` · ${keyAlertEditRule.label}` : ""}
+            </p>
+            <div className="muted" style={{ marginBottom: 4 }}>
+              {t("ume.keyAlert.neTypesLabel")}
+            </div>
+            {keyAlertNeTypesQuery.isLoading ? (
+              <span className="muted">{t("common.refreshing")}</span>
+            ) : (keyAlertNeTypesQuery.data?.items || []).length === 0 ? (
+              <span className="muted">{t("ume.keyAlert.neTypesEmpty")}</span>
+            ) : (
+              <div
+                style={{
+                  display: "flex",
+                  flexWrap: "wrap",
+                  gap: "8px 16px",
+                  maxHeight: 240,
+                  overflowY: "auto",
+                  padding: "6px 8px",
+                  border: "1px solid var(--border, #ddd)",
+                  borderRadius: 4,
+                }}
+              >
+                {(keyAlertNeTypesQuery.data?.items || []).map((item) => (
+                  <label
+                    key={item.ne_type}
+                    style={{ display: "inline-flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={keyAlertEditNeTypes.includes(item.ne_type)}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setKeyAlertEditNeTypes((prev) => [...prev, item.ne_type]);
+                        } else {
+                          setKeyAlertEditNeTypes((prev) => prev.filter((x) => x !== item.ne_type));
+                        }
+                      }}
+                    />
+                    {item.ne_type}
+                    <span className="muted">({item.ne_count})</span>
+                  </label>
+                ))}
+              </div>
+            )}
+            <div className="muted" style={{ marginTop: 4, fontSize: 12 }}>
+              {t("ume.keyAlert.neTypesHint")}
+            </div>
+            <div className="actions-row actions-row--inline" style={{ marginTop: 16 }}>
+              <button
+                type="button"
+                onClick={() =>
+                  keyAlertEditMutation.mutate({
+                    ruleKey: keyAlertEditRule.notification_id,
+                    ne_types: keyAlertEditNeTypes,
+                  })
+                }
+                disabled={keyAlertEditMutation.isPending}
+              >
+                {keyAlertEditMutation.isPending ? t("ume.keyAlert.saving") : t("ume.keyAlert.save")}
+              </button>
+              <button type="button" onClick={() => setKeyAlertEditRule(null)} disabled={keyAlertEditMutation.isPending}>
+                {t("ume.keyAlert.cancel")}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </>
   );
 }

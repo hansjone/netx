@@ -14,7 +14,7 @@ from netx_api.key_alert_matcher import (
     parse_rule_items,
     rule_storage_key,
 )
-from netx_api.models import UmeKeyAlertRule
+from netx_api.models import UmeInventoryNE, UmeKeyAlertRule
 from netx_api.ume_sync_service import apply_alarm_to_current, notification_id_from_norm
 
 
@@ -127,6 +127,49 @@ class KeyAlertMatcherTests(unittest.TestCase):
                 match_key_alert_rule(self.db, norm=norm, action="inserted"),
                 msg=f"expected match for cause={cause!r}",
             )
+
+    def test_ne_type_filter(self) -> None:
+        from netx_api.key_alert_matcher import serialize_rule_ne_types
+
+        self.db.add(
+            UmeInventoryNE(
+                ne_id="NE-PTN-1",
+                ne_name="PTN-A",
+                ne_type="PTN 9700",
+            )
+        )
+        self.db.add(
+            UmeInventoryNE(
+                ne_id="NE-ROUTER-1",
+                ne_name="Router-A",
+                ne_type="ZXR10 M6000",
+            )
+        )
+        self.db.add(
+            UmeKeyAlertRule(
+                notification_id="NID-NE-TYPE",
+                match_type="notification_id",
+                match_value="NID-NE-TYPE",
+                enabled=1,
+                label="PTN only",
+                ne_types=serialize_rule_ne_types(["PTN 9700"]),
+            )
+        )
+        self.db.commit()
+        invalidate_key_alert_rule_cache()
+
+        ptn_norm = {
+            "notificationId": "NID-NE-TYPE",
+            "is-cleared": False,
+            "ne-id": "NE-PTN-1",
+        }
+        router_norm = {
+            "notificationId": "NID-NE-TYPE",
+            "is-cleared": False,
+            "ne-id": "NE-ROUTER-1",
+        }
+        self.assertIsNotNone(match_key_alert_rule(self.db, norm=ptn_norm, action="inserted"))
+        self.assertIsNone(match_key_alert_rule(self.db, norm=router_norm, action="inserted"))
 
 
 if __name__ == "__main__":

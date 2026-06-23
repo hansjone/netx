@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import threading
 import time
@@ -7,8 +8,8 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from .models import UmeKeyAlertRule
-from .ume_sync_service import _is_alarm_cleared, _pick, _s, notification_id_from_norm
+from .models import UmeInventoryNE, UmeKeyAlertRule
+from .ume_sync_service import _derive_ne_id_from_alarm, _is_alarm_cleared, _pick, _s, notification_id_from_norm
 
 _RULE_CACHE_LOCK = threading.Lock()
 _RULE_CACHE: list[UmeKeyAlertRule] = []
@@ -75,6 +76,65 @@ def rule_match_type(row: UmeKeyAlertRule) -> str:
     return "keyword" if pk.startswith("kw:") else "notification_id"
 
 
+def serialize_rule_ne_types(ne_types: list[str]) -> str:
+    cleaned = parse_rule_items(",".join(str(x or "").strip() for x in (ne_types or []) if str(x or "").strip()))
+    return json.dumps(cleaned, ensure_ascii=False)
+
+
+def rule_ne_types(row: UmeKeyAlertRule) -> list[str]:
+    raw = str(getattr(row, "ne_types", "") or "").strip()
+    if not raw or raw == "[]":
+        return []
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            return parse_rule_items(",".join(str(x or "").strip() for x in parsed if str(x or "").strip()))
+    except json.JSONDecodeError:
+        pass
+    return parse_rule_items(raw)
+
+
+def parse_rule_ne_types_payload(raw: Any) -> list[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return parse_rule_items(",".join(str(x or "").strip() for x in raw if str(x or "").strip()))
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return []
+        if text.startswith("["):
+            try:
+                parsed = json.loads(text)
+                if isinstance(parsed, list):
+                    return parse_rule_items(",".join(str(x or "").strip() for x in parsed if str(x or "").strip()))
+            except json.JSONDecodeError:
+                pass
+        return parse_rule_items(text)
+    return []
+
+
+def _alarm_ne_type(db: Session, norm: dict[str, Any]) -> str:
+    ne_id = _s(_derive_ne_id_from_alarm(norm))
+    if not ne_id:
+        return ""
+    row = db.get(UmeInventoryNE, ne_id)
+    if row is None:
+        return ""
+    return str(row.ne_type or "").strip()
+
+
+def _ne_type_matches_rule(db: Session, rule: UmeKeyAlertRule, norm: dict[str, Any]) -> bool:
+    allowed = rule_ne_types(rule)
+    if not allowed:
+        return True
+    ne_type = _alarm_ne_type(db, norm)
+    if not ne_type:
+        return False
+    allowed_fold = {_fold(x) for x in allowed}
+    return _fold(ne_type) in allowed_fold
+
+
 def invalidate_key_alert_rule_cache() -> None:
     global _RULE_CACHE_LOADED_AT
     with _RULE_CACHE_LOCK:
@@ -135,6 +195,8 @@ def match_key_alert_rule(
     act = str(action or "").strip().lower()
     for rule in _load_enabled_rules(db):
         if not _rule_matches_norm(rule, norm):
+            continue
+        if not _ne_type_matches_rule(db, rule, norm):
             continue
         if act in {"inserted", "updated"}:
             if _is_alarm_cleared(norm):

@@ -104,6 +104,7 @@ export const upsertUmeKeyAlertRule = (payload: {
   match_value: string;
   label: string;
   enabled?: boolean;
+  ne_types?: string[];
 }) => apiPost<{ ok: boolean; item?: unknown }>("/v1/ume/key-alert-rules", payload);
 
 export const updateUmeKeyAlertMonitorConfig = (payload: { forward_on_clear: boolean }) =>
@@ -112,7 +113,10 @@ export const updateUmeKeyAlertMonitorConfig = (payload: { forward_on_clear: bool
 export const deleteUmeKeyAlertRule = (ruleKey: string) =>
   apiDelete<{ ok: boolean }>(`/v1/ume/key-alert-rules/${encodeURIComponent(ruleKey)}`);
 
-export const patchUmeKeyAlertRule = (ruleKey: string, payload: { enabled: boolean }) =>
+export const patchUmeKeyAlertRule = (
+  ruleKey: string,
+  payload: { enabled?: boolean; ne_types?: string[] },
+) =>
   apiPatch<{ ok: boolean; item?: unknown }>(
     `/v1/ume/key-alert-rules/${encodeURIComponent(ruleKey)}`,
     payload,
@@ -126,6 +130,11 @@ export const fetchUmeNotificationIds = (limit = 200) =>
 export const fetchUmeAlarmKeywords = (limit = 200) =>
   apiGet<{ items: Array<{ keyword: string; alarm_count: number }> }>(
     `/v1/ume/alarm-keywords?limit=${encodeURIComponent(String(limit))}`,
+  );
+
+export const fetchUmeInventoryNeTypes = (limit = 500) =>
+  apiGet<{ items: Array<{ ne_type: string; ne_count: number }>; total: number }>(
+    `/v1/ume/inventory/ne-types?limit=${encodeURIComponent(String(limit))}`,
   );
 
 export const fetchUmeSyncStatus = (params: { page: number; pageSize: number }) => {

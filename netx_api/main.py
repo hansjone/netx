@@ -68,9 +68,12 @@ from .key_alert_config import (
 from .key_alert_matcher import (
     invalidate_key_alert_rule_cache,
     normalize_match_type,
+    parse_rule_ne_types_payload,
     rule_match_type,
     rule_match_value,
+    rule_ne_types,
     rule_storage_key,
+    serialize_rule_ne_types,
 )
 from .oclaw_alarm_forwarder import forwarder_status, shutdown_oclaw_alarm_forwarder, start_oclaw_alarm_forwarder
 from .ume_token_store import (
@@ -739,6 +742,10 @@ def _migrate_key_alert_rule_schema() -> None:
             "add forward_log rule_key",
             "ALTER TABLE ume_key_alert_forward_log ADD COLUMN IF NOT EXISTS rule_key VARCHAR(128) DEFAULT ''",
         ),
+        (
+            "add rule ne_types",
+            "ALTER TABLE ume_key_alert_rule ADD COLUMN IF NOT EXISTS ne_types TEXT DEFAULT '[]'",
+        ),
     ]
     for label, sql in steps:
         try:
@@ -1335,6 +1342,7 @@ def ume_list_key_alert_rules(
             "match_value": rule_match_value(row),
             "enabled": bool(int(row.enabled or 0)),
             "label": str(row.label or ""),
+            "ne_types": rule_ne_types(row),
             "created_at": (_ensure_utc(row.created_at) or datetime.now(timezone.utc)).isoformat(),
             "updated_at": (_ensure_utc(row.updated_at) or datetime.now(timezone.utc)).isoformat(),
             "forward_stats": stat_map.get(str(row.notification_id or ""), {
@@ -1395,6 +1403,7 @@ def ume_upsert_key_alert_rule(payload: dict[str, Any], db: Session = Depends(get
     if not label:
         raise HTTPException(status_code=400, detail="label_required")
     enabled = 1 if bool(payload.get("enabled", True)) else 0
+    ne_types_list = parse_rule_ne_types_payload(payload.get("ne_types"))
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     try:
         storage_key = rule_storage_key(match_type=match_type, value=match_value)
@@ -1408,6 +1417,7 @@ def ume_upsert_key_alert_rule(payload: dict[str, Any], db: Session = Depends(get
     row.match_value = match_value
     row.enabled = enabled
     row.label = label
+    row.ne_types = serialize_rule_ne_types(ne_types_list)
     row.updated_at = now
     saved = {
         "notification_id": storage_key,
@@ -1415,13 +1425,14 @@ def ume_upsert_key_alert_rule(payload: dict[str, Any], db: Session = Depends(get
         "match_value": match_value,
         "enabled": bool(enabled),
         "label": label,
+        "ne_types": ne_types_list,
     }
     try:
         db.commit()
     except Exception as exc:
         db.rollback()
         msg = str(exc).lower()
-        if "match_type" in msg or "match_value" in msg or "undefinedcolumn" in msg:
+        if "match_type" in msg or "match_value" in msg or "ne_types" in msg or "undefinedcolumn" in msg:
             raise HTTPException(
                 status_code=503,
                 detail="key_alert_schema_outdated: restart netx API to apply database migration",
@@ -1439,10 +1450,15 @@ def ume_patch_key_alert_rule(rule_key: str, payload: dict[str, Any], db: Session
     row = db.get(UmeKeyAlertRule, key)
     if row is None:
         raise HTTPException(status_code=404, detail="rule_not_found")
-    if "enabled" not in payload:
-        raise HTTPException(status_code=400, detail="enabled_required")
+    has_enabled = "enabled" in payload
+    has_ne_types = "ne_types" in payload
+    if not has_enabled and not has_ne_types:
+        raise HTTPException(status_code=400, detail="patch_fields_required")
     now = datetime.now(timezone.utc).replace(tzinfo=None)
-    row.enabled = 1 if bool(payload.get("enabled")) else 0
+    if has_enabled:
+        row.enabled = 1 if bool(payload.get("enabled")) else 0
+    if has_ne_types:
+        row.ne_types = serialize_rule_ne_types(parse_rule_ne_types_payload(payload.get("ne_types")))
     row.updated_at = now
     db.commit()
     invalidate_key_alert_rule_cache()
@@ -1454,6 +1470,7 @@ def ume_patch_key_alert_rule(rule_key: str, payload: dict[str, Any], db: Session
             "match_value": rule_match_value(row),
             "enabled": bool(int(row.enabled or 0)),
             "label": str(row.label or ""),
+            "ne_types": rule_ne_types(row),
         },
     }
 
@@ -1698,6 +1715,28 @@ def ume_runtime_task_resume(task: str) -> dict[str, Any]:
         resume_hint = "已恢复"
     _set_runtime_task(tid, status="running", last_error=resume_hint)
     return {"ok": True, "task": tid, "runtime_tasks": _list_runtime_tasks()}
+
+
+@app.get("/v1/ume/inventory/ne-types")
+def ume_list_inventory_ne_types(
+    limit: int = Query(default=500, ge=1, le=2000),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    from sqlalchemy import func
+
+    rows = (
+        db.query(
+            UmeInventoryNE.ne_type,
+            func.count(UmeInventoryNE.ne_id).label("ne_count"),
+        )
+        .filter(UmeInventoryNE.ne_type != "")
+        .group_by(UmeInventoryNE.ne_type)
+        .order_by(func.count(UmeInventoryNE.ne_id).desc(), UmeInventoryNE.ne_type.asc())
+        .limit(limit)
+        .all()
+    )
+    items = [{"ne_type": str(ne_type or ""), "ne_count": int(ne_count or 0)} for ne_type, ne_count in rows if str(ne_type or "").strip()]
+    return {"items": items, "total": len(items)}
 
 
 @app.get("/v1/ume/inventory/ne")

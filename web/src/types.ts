@@ -22,6 +22,7 @@ export type UmeKeyAlertRuleItem = {
   match_value: string;
   enabled: boolean;
   label: string;
+  ne_types?: string[];
   created_at: string;
   updated_at: string;
   forward_stats?: {
@@ -29,6 +30,11 @@ export type UmeKeyAlertRuleItem = {
     published_ok: number;
     last_forwarded_at: string;
   };
+};
+
+export type UmeInventoryNeTypeItem = {
+  ne_type: string;
+  ne_count: number;
 };
 
 export type UmeKeyAlertForwarderStatus = {

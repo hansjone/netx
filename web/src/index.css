@@ -362,6 +362,12 @@ button {
   margin-bottom: 8px;
 }
 
+.pager input,
+.pager select {
+  width: auto;
+  margin-bottom: 0;
+}
+
 .actions-row {
   margin-top: 8px;
 }
@@ -864,7 +870,7 @@ pre {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 
 .pager__btn,
