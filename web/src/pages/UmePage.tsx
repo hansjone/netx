@@ -27,6 +27,7 @@ import { useI18n } from "../i18n";
 import { useToast } from "../hooks/useToast";
 import type { UmeAlarmSubscriptionStatus, UmeKeyAlertRuleItem } from "../types";
 import { pageCount, runtimeIntervalLabel } from "../utils/display";
+import { runtimeLastError, wsConnectionLabel } from "../utils/runtimeMessages";
 import { formatSystemTime } from "../utils/time";
 
 export function UmePage() {
@@ -278,8 +279,12 @@ export function UmePage() {
   const wsState = String(wsConn?.state || "");
   const wsPaused = Boolean(wsConsumer?.paused);
   const wsLabel =
-    wsConn?.label ||
-    (wsPaused ? t("ume.subscription.wssPaused") : wsConsumer?.last_error || wsConsumer?.status || t("common.empty"));
+    (wsPaused
+      ? t("ume.subscription.wssPaused")
+      : wsConnectionLabel(wsState, wsConn?.label, t)) ||
+    runtimeLastError(wsConsumer?.last_error, t) ||
+    wsConsumer?.status ||
+    t("common.empty");
   const subscriptionActive = Boolean(alarmSub.active);
   const serverSubLost = Boolean(
     subscriptionStatusQuery.data?.server_subscription_lost ?? alarmSub.server_subscription_lost,
@@ -303,7 +308,8 @@ export function UmePage() {
             ? "warn"
             : wsState === "no_subscription" || wsState === "disconnected" || wsState === "error" || wsState === "init"
               ? "down"
-              : String(wsConsumer?.last_error || "").includes("connected")
+              : String(wsConsumer?.last_error || "").includes("connected") ||
+                  String(wsConsumer?.last_error || "").includes("ws:connected")
                 ? "up"
                 : "unknown";
   const wsLogs = [...(subscriptionStatusQuery.data?.ws_logs ?? alarmSub.ws_logs ?? [])].reverse();
@@ -420,9 +426,17 @@ export function UmePage() {
   const oclawWsPill =
     !keyAlertForwarder?.enabled
       ? "unknown"
-      : keyAlertForwarder.connected
-        ? "up"
-        : "down";
+      : keyAlertForwarder.paused
+        ? "warn"
+        : keyAlertForwarder.connected
+          ? "up"
+          : "down";
+
+  const runtimeTaskLabel = (task: string) => {
+    const key = `ume.tasks.runtimeTask.${task}`;
+    const label = t(key);
+    return label === key ? task : label;
+  };
 
   const perPage = (n: number) => t("common.perPage", { n: String(n) });
 
@@ -524,7 +538,7 @@ export function UmePage() {
             {subscriptionActive || wsConsumer ? (
               <span
                 className={`conn-pill conn-pill--${wsPillLevel}`}
-                title={wsConn?.detail || wsConsumer?.last_error || alarmSub.wss_uri || ""}
+                title={wsConn?.detail || runtimeLastError(wsConsumer?.last_error, t) || alarmSub.wss_uri || ""}
               >
                 WSS: {wsLabel}
               </span>
@@ -665,9 +679,11 @@ export function UmePage() {
               {t("ume.keyAlert.ws")}:{" "}
               {!keyAlertForwarder?.enabled
                 ? t("ume.keyAlert.wsDisabled")
-                : keyAlertForwarder.connected
-                  ? t("ume.keyAlert.wsConnected")
-                  : t("ume.keyAlert.wsDisconnected")}
+                : keyAlertForwarder.paused
+                  ? t("ume.keyAlert.wsPaused")
+                  : keyAlertForwarder.connected
+                    ? t("ume.keyAlert.wsConnected")
+                    : t("ume.keyAlert.wsDisconnected")}
             </span>
             {keyAlertForwarder?.enabled ? (
               <>
@@ -1078,20 +1094,20 @@ export function UmePage() {
               <th title={t("ume.tasks.intervalTitle")}>interval</th>
               <th>status</th>
               <th title={t("ume.tasks.lastRunTitle")}>last_run_at</th>
-              <th>last_error</th>
+              <th>{t("ume.tasks.lastErrorCol")}</th>
               <th>actions</th>
             </tr>
           </thead>
           <tbody>
             {runtimeTasks.map((x) => (
               <tr key={`runtime-${x.task}`}>
-                <td>{x.task}</td>
+                <td title={x.task}>{runtimeTaskLabel(x.task)}</td>
                 <td title={typeof x.interval_s === "number" ? `${x.interval_s}s` : undefined}>
                   {runtimeIntervalLabel(x.interval_label)}
                 </td>
                 <td>{x.status}</td>
                 <td>{x.last_run_at ? formatSystemTime(x.last_run_at) : t("common.empty")}</td>
-                <td>{x.last_error || t("common.empty")}</td>
+                <td>{runtimeLastError(x.last_error, t) || t("common.empty")}</td>
                 <td>
                   {Boolean(x.paused) ? (
                     <button

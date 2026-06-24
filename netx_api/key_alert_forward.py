@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from .key_alert_matcher import match_key_alert_rule
 from .models import UmeInventoryNE, UmeKeyAlertForwardLog
-from .oclaw_alarm_forwarder import enqueue_alarm_forward, is_forwarder_enabled
+from .oclaw_alarm_forwarder import enqueue_alarm_forward, is_forwarder_operational
 from .ume_sync_service import (
     _derive_ne_id_from_alarm,
     _pick,
@@ -69,7 +69,7 @@ def maybe_forward_key_alert(
     alarm_key: str,
     action: str,
 ) -> bool:
-    if not is_forwarder_enabled():
+    if not is_forwarder_operational():
         return False
     rule = match_key_alert_rule(db, norm=norm, action=action)
     if rule is None:

@@ -5,6 +5,7 @@ import logging
 import queue
 import threading
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
@@ -20,6 +21,8 @@ _THREAD: threading.Thread | None = None
 _CONN_LOCK = threading.Lock()
 _WS: Any | None = None
 _CONNECTED = threading.Event()
+_IS_PAUSED: Callable[[], bool] | None = None
+_ON_STATUS: Callable[[str], None] | None = None
 _STATS_LOCK = threading.Lock()
 _STATS: dict[str, int] = {
     "published_ok": 0,
@@ -46,8 +49,50 @@ def is_forwarder_enabled() -> bool:
     return bool(_bridge_url()) and bool(_bridge_token())
 
 
+def configure_oclaw_alarm_forwarder(
+    *,
+    is_paused: Callable[[], bool] | None = None,
+    on_status: Callable[[str], None] | None = None,
+) -> None:
+    global _IS_PAUSED, _ON_STATUS
+    _IS_PAUSED = is_paused
+    _ON_STATUS = on_status
+
+
+def _forwarder_paused() -> bool:
+    if _IS_PAUSED is None:
+        return False
+    try:
+        return bool(_IS_PAUSED())
+    except Exception:
+        return False
+
+
+def is_forwarder_operational() -> bool:
+    return is_forwarder_enabled() and not _forwarder_paused()
+
+
+def _notify_status(msg: str) -> None:
+    if _ON_STATUS is None:
+        return
+    try:
+        _ON_STATUS(str(msg or "")[:240])
+    except Exception:
+        pass
+
+
+def request_forwarder_reconnect() -> None:
+    with _CONN_LOCK:
+        ws = _WS
+    if ws is not None:
+        try:
+            ws.close()
+        except Exception:
+            pass
+
+
 def enqueue_alarm_forward(payload: dict[str, Any]) -> bool:
-    if not is_forwarder_enabled():
+    if not is_forwarder_operational():
         return False
     try:
         _OUTBOUND_Q.put_nowait(dict(payload))
@@ -112,12 +157,18 @@ def _run_loop() -> None:
     global _WS
     backoff_s = 2.0
     while not _STOP_EVENT.is_set():
-        if not is_forwarder_enabled():
+        if not is_forwarder_enabled() or _forwarder_paused():
+            _CONNECTED.clear()
+            if _forwarder_paused():
+                _notify_status("fwd:paused")
+            else:
+                _notify_status("fwd:disabled")
             time.sleep(2.0)
             continue
         url = _bridge_url()
         ws = None
         try:
+            _notify_status("fwd:connecting")
             ws = websocket.create_connection(url, timeout=20)
             ws.settimeout(30)
             if not _send_auth(ws):
@@ -127,7 +178,14 @@ def _run_loop() -> None:
             _CONNECTED.set()
             backoff_s = 2.0
             _log.info("oclaw netx-bridge connected url=%s", url[:120])
+            _notify_status("fwd:connected")
             while not _STOP_EVENT.is_set():
+                if _forwarder_paused():
+                    _notify_status("fwd:paused")
+                    raise RuntimeError("forwarder paused")
+                if not is_forwarder_enabled():
+                    _notify_status("fwd:disabled")
+                    raise RuntimeError("forwarder disabled")
                 try:
                     payload = _OUTBOUND_Q.get(timeout=1.0)
                 except queue.Empty:
@@ -174,7 +232,9 @@ def _run_loop() -> None:
                     _OUTBOUND_Q.task_done()
         except Exception as exc:
             _CONNECTED.clear()
-            _log.warning("oclaw netx-bridge disconnected: %s", str(exc)[:200])
+            err = str(exc)[:200]
+            _log.warning("oclaw netx-bridge disconnected: %s", err)
+            _notify_status(err)
             time.sleep(backoff_s)
             backoff_s = min(backoff_s * 1.5, 60.0)
         finally:
@@ -192,9 +252,6 @@ def start_oclaw_alarm_forwarder() -> threading.Thread | None:
     global _THREAD
     if _THREAD is not None and _THREAD.is_alive():
         return _THREAD
-    if not is_forwarder_enabled():
-        _log.info("oclaw alarm forwarder disabled")
-        return None
     _STOP_EVENT.clear()
     _THREAD = threading.Thread(target=_run_loop, name="oclaw-alarm-forwarder", daemon=True)
     _THREAD.start()
@@ -208,8 +265,12 @@ def shutdown_oclaw_alarm_forwarder() -> None:
 def forwarder_status() -> dict[str, Any]:
     with _STATS_LOCK:
         stats = dict(_STATS)
+    paused = _forwarder_paused()
+    enabled = is_forwarder_enabled()
     return {
-        "enabled": is_forwarder_enabled(),
+        "enabled": enabled,
+        "operational": bool(enabled and not paused),
+        "paused": paused,
         "connected": _CONNECTED.is_set(),
         "queue_size": int(_OUTBOUND_Q.qsize()),
         "url": _bridge_url(),

@@ -39,6 +39,8 @@ export type UmeInventoryNeTypeItem = {
 
 export type UmeKeyAlertForwarderStatus = {
   enabled: boolean;
+  operational?: boolean;
+  paused?: boolean;
   connected: boolean;
   queue_size: number;
   url: string;

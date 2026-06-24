@@ -249,7 +249,7 @@ def get_ws_connection_status() -> dict[str, Any]:
         detail = str(_ws_connection_detail or "")
     return {
         "state": state,
-        "label": _WS_CONNECTION_LABELS.get(state, state),
+        "label": f"ws:{state}",
         "detail": detail,
     }
 
@@ -284,7 +284,7 @@ def _notify_ws_connection(
             dedup=False,
         )
     if on_status is not None:
-        on_status(label)
+        on_status(f"ws:{state}")
 
 
 def _parse_ws_message(raw: str) -> dict[str, Any] | None:
@@ -804,7 +804,7 @@ def start_ume_alarm_ws_consumer(
         if not str(client.base_url or "").strip():
             append_ws_log("consumer disabled: no UME base URL", level="warning")
             if on_status is not None:
-                on_status("disabled:no_base_url")
+                on_status("ws:disabled_no_base_url")
             return
         append_ws_log("ws consumer thread started")
         global _active_client

@@ -75,7 +75,29 @@ from .key_alert_matcher import (
     rule_storage_key,
     serialize_rule_ne_types,
 )
-from .oclaw_alarm_forwarder import forwarder_status, shutdown_oclaw_alarm_forwarder, start_oclaw_alarm_forwarder
+from .runtime_task_messages import (
+    RT_ALARMS_SYNC_IN_PROGRESS_SKIP,
+    RT_OCLAW_FWD_DISABLED,
+    RT_PULLING_ALARMS_CURRENT,
+    RT_PULLING_INVENTORY,
+    RT_RESUMED,
+    RT_RESUMED_OCLAW_WSS_RECONNECT,
+    RT_RESUMED_SYNC_SOON,
+    RT_RESUMED_WSS_RECONNECT,
+    RT_STARTUP_ALARM_SYNC_BEFORE_WS,
+    RT_STARTUP_GATE_WAITING,
+    RT_KEEPALIVE_FAILED,
+    RT_UME_WS_DISABLED_NO_BASE_URL,
+    RT_WSS_ACTIVE_SKIP_REST,
+)
+from .oclaw_alarm_forwarder import (
+    forwarder_status,
+    is_forwarder_enabled,
+    request_forwarder_reconnect,
+    configure_oclaw_alarm_forwarder,
+    shutdown_oclaw_alarm_forwarder,
+    start_oclaw_alarm_forwarder,
+)
 from .ume_token_store import (
     clear_shared_token,
     load_shared_token,
@@ -117,6 +139,7 @@ _UME_RUNTIME_TASKS: dict[str, dict[str, Any]] = {
     "token_keepalive": {"task": "token_keepalive", "status": "init", "last_run_at": None, "last_error": ""},
     "alarms_current_auto_sync": {"task": "alarms_current_auto_sync", "status": "init", "last_run_at": None, "last_error": ""},
     "alarms_current_ws_consumer": {"task": "alarms_current_ws_consumer", "status": "init", "last_run_at": None, "last_error": ""},
+    "oclaw_alarm_forwarder": {"task": "oclaw_alarm_forwarder", "status": "init", "last_run_at": None, "last_error": ""},
     "inventory_auto_sync": {"task": "inventory_auto_sync", "status": "init", "last_run_at": None, "last_error": ""},
 }
 _UME_WS_STOP_EVENT: threading.Event | None = None
@@ -224,6 +247,10 @@ def _runtime_task_interval_fields(task_id: str) -> tuple[int | None, str]:
         return eff, _format_runtime_interval_label(eff)
     if task_id == "alarms_current_ws_consumer":
         if not bool(getattr(settings, "ume_alarm_ws_enabled", True)):
+            return None, "disabled"
+        return None, "realtime"
+    if task_id == "oclaw_alarm_forwarder":
+        if not is_forwarder_enabled():
             return None, "disabled"
         return None, "realtime"
     if task_id == "inventory_auto_sync":
@@ -343,7 +370,7 @@ def _run_startup_alarm_sync_before_ws() -> None:
             "alarms_current_auto_sync",
             status="running",
             last_run_at=datetime.now(timezone.utc),
-            last_error="启动：正在同步当前告警（完成后连接 WSS）…",
+            last_error=RT_STARTUP_ALARM_SYNC_BEFORE_WS,
         )
         db = SessionLocal()
         try:
@@ -930,7 +957,7 @@ def on_startup() -> None:
                             client.renew_token()
                         _set_runtime_task("token_keepalive", status="running", last_run_at=datetime.now(timezone.utc), last_error="")
                     except Exception:
-                        _set_runtime_task("token_keepalive", status="error", last_run_at=datetime.now(timezone.utc), last_error="keepalive_failed")
+                        _set_runtime_task("token_keepalive", status="error", last_run_at=datetime.now(timezone.utc), last_error=RT_KEEPALIVE_FAILED)
                     time.sleep(interval_keepalive_s)
 
             t = threading.Thread(target=_keepalive_loop, name="ume-token-keepalive", daemon=True)
@@ -983,7 +1010,7 @@ def on_startup() -> None:
                             _refresh_runtime_task_idle(
                                 "alarms_current_auto_sync",
                                 "alarms_current",
-                                last_error="启动 REST 全量同步未完成，定时 REST 与 WSS 均待命",
+                                last_error=RT_STARTUP_GATE_WAITING,
                             )
                             time.sleep(10)
                             continue
@@ -994,7 +1021,7 @@ def on_startup() -> None:
                             _refresh_runtime_task_idle(
                                 "alarms_current_auto_sync",
                                 "alarms_current",
-                                last_error="WSS 实时接收中，已跳过 REST 同步",
+                                last_error=RT_WSS_ACTIVE_SKIP_REST,
                             )
                             time.sleep(max(30, min(alarms_interval_s, 300)))
                             continue
@@ -1012,7 +1039,7 @@ def on_startup() -> None:
                             "alarms_current_auto_sync",
                             status="running",
                             last_run_at=datetime.now(timezone.utc),
-                            last_error="正在拉取 UME 当前告警…",
+                            last_error=RT_PULLING_ALARMS_CURRENT,
                         )
                         db = SessionLocal()
                         try:
@@ -1032,7 +1059,7 @@ def on_startup() -> None:
                             _refresh_runtime_task_idle(
                                 "alarms_current_auto_sync",
                                 "alarms_current",
-                                last_error="另一条当前告警 REST 同步进行中，已跳过",
+                                last_error=RT_ALARMS_SYNC_IN_PROGRESS_SKIP,
                             )
                             time.sleep(30)
                         else:
@@ -1091,7 +1118,7 @@ def on_startup() -> None:
                             "inventory_auto_sync",
                             status="running",
                             last_run_at=datetime.now(timezone.utc),
-                            last_error="正在拉取 UME 网元清单…",
+                            last_error=RT_PULLING_INVENTORY,
                         )
                         db = SessionLocal()
                         try:
@@ -1151,7 +1178,7 @@ def on_startup() -> None:
             )
             _schedule_log.info("started thread %s alive=%s", t_ws.name, t_ws.is_alive())
         else:
-            _set_runtime_task("alarms_current_ws_consumer", status="paused", last_error="未启用或未配置 UME_BASE_URL")
+            _set_runtime_task("alarms_current_ws_consumer", status="paused", last_error=RT_UME_WS_DISABLED_NO_BASE_URL)
     except Exception as exc:
         _schedule_log.exception("startup: alarms_current_ws_consumer thread init failed: %s", exc)
         _set_runtime_task(
@@ -1161,11 +1188,47 @@ def on_startup() -> None:
             last_error=f"startup_thread_init_failed: {str(exc)[:180]}",
         )
     try:
+        def _fwd_on_status(msg: str) -> None:
+            paused = _runtime_is_paused("oclaw_alarm_forwarder")
+            fwd = forwarder_status()
+            if paused:
+                status = "paused"
+            elif not bool(fwd.get("enabled")):
+                status = "paused"
+            elif bool(fwd.get("connected")):
+                status = "running"
+            else:
+                status = "running"
+            _set_runtime_task(
+                "oclaw_alarm_forwarder",
+                status=status,
+                last_run_at=datetime.now(timezone.utc),
+                last_error=str(msg or "")[:240],
+            )
+
+        configure_oclaw_alarm_forwarder(
+            is_paused=lambda: _runtime_is_paused("oclaw_alarm_forwarder"),
+            on_status=_fwd_on_status,
+        )
+        if is_forwarder_enabled():
+            _set_runtime_task("oclaw_alarm_forwarder", status="running", last_error="")
+        else:
+            _set_runtime_task(
+                "oclaw_alarm_forwarder",
+                status="paused",
+                last_error=RT_OCLAW_FWD_DISABLED,
+            )
         t_fwd = start_oclaw_alarm_forwarder()
         if t_fwd is not None:
             _schedule_log.info("started thread %s alive=%s", t_fwd.name, t_fwd.is_alive())
     except Exception as exc:
         _schedule_log.exception("startup: oclaw_alarm_forwarder thread init failed: %s", exc)
+        _set_runtime_task(
+            "oclaw_alarm_forwarder",
+            status="error",
+            last_run_at=datetime.now(timezone.utc),
+            last_error=f"startup_thread_init_failed: {str(exc)[:180]}",
+        )
 
 
 @app.on_event("shutdown")
@@ -1695,6 +1758,8 @@ def ume_runtime_task_pause(task: str) -> dict[str, Any]:
         _clear_force_resume_hints(tid)
     if tid == "alarms_current_ws_consumer":
         request_ws_reconnect()
+    if tid == "oclaw_alarm_forwarder":
+        request_forwarder_reconnect()
     _set_runtime_task(tid, status="paused", last_error="")
     return {"ok": True, "task": tid, "runtime_tasks": _list_runtime_tasks()}
 
@@ -1707,12 +1772,15 @@ def ume_runtime_task_resume(task: str) -> dict[str, Any]:
     _runtime_resume_task(tid)
     if tid in ("alarms_current_auto_sync", "inventory_auto_sync"):
         _request_force_sync_after_resume(tid)
-        resume_hint = "已恢复：将跳过本轮周期等待并尽快同步"
+        resume_hint = RT_RESUMED_SYNC_SOON
     elif tid == "alarms_current_ws_consumer":
         request_ws_reconnect()
-        resume_hint = "已恢复：将尽快重连 WSS"
+        resume_hint = RT_RESUMED_WSS_RECONNECT
+    elif tid == "oclaw_alarm_forwarder":
+        request_forwarder_reconnect()
+        resume_hint = RT_RESUMED_OCLAW_WSS_RECONNECT
     else:
-        resume_hint = "已恢复"
+        resume_hint = RT_RESUMED
     _set_runtime_task(tid, status="running", last_error=resume_hint)
     return {"ok": True, "task": tid, "runtime_tasks": _list_runtime_tasks()}
 
@@ -2285,6 +2353,16 @@ def integrations_status(db: Session = Depends(get_db)) -> dict:
             "connected": False,
             "error_kind": "disabled",
             "error": "NETX_OCLAW_ALARM_WS_ENABLED=false or missing token/url",
+            "forwarder": fwd,
+        }
+    elif bool(fwd.get("paused")):
+        oclaw_status = {
+            "status": "unknown",
+            "mode": "ws",
+            "enabled": True,
+            "connected": False,
+            "error_kind": "paused",
+            "error": "oclaw_alarm_forwarder runtime task paused",
             "forwarder": fwd,
         }
     elif bool(fwd.get("connected")):
