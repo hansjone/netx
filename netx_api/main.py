@@ -22,6 +22,7 @@ from .ap_client import analyze_with_oclaw, health_with_oclaw
 from .config import settings
 from .db import Base, SessionLocal, engine, get_db
 from .collection_router import router as collection_router
+from .cli_router import router as cli_router
 from .managed_ne_router import router as managed_ne_router
 from .importer import aggregate_alarms, import_alarm_excel, query_alarms
 from .models import (
@@ -120,6 +121,7 @@ from .schemas import (
 
 app = FastAPI(title="netx ops tool", version="0.1.0")
 app.include_router(managed_ne_router)
+app.include_router(cli_router)
 app.include_router(collection_router)
 parser_cfg = load_parser_config()
 _UME_CLIENT_SINGLETON = UMEClient(
@@ -912,6 +914,56 @@ def on_startup() -> None:
             conn.exec_driver_sql(
                 "UPDATE ne_collection_job SET last_run_at = COALESCE(ended_at, started_at, created_at) "
                 "WHERE last_run_at IS NULL"
+            )
+            conn.exec_driver_sql(
+                """
+                CREATE TABLE IF NOT EXISTS cli_connect_profile (
+                    id VARCHAR(64) PRIMARY KEY,
+                    name VARCHAR(256) DEFAULT '',
+                    is_default BOOLEAN DEFAULT FALSE,
+                    username VARCHAR(128) DEFAULT '',
+                    password_enc TEXT DEFAULT '',
+                    port INTEGER DEFAULT 22,
+                    protocol VARCHAR(16) DEFAULT 'ssh',
+                    device_type_default VARCHAR(128) DEFAULT 'zte_zxros',
+                    vendor_default VARCHAR(64) DEFAULT 'ZTE',
+                    ne_type_rules TEXT DEFAULT '',
+                    hop_enabled BOOLEAN DEFAULT FALSE,
+                    hop_vendor VARCHAR(32) DEFAULT 'zte',
+                    hop_host VARCHAR(128) DEFAULT '',
+                    hop_port INTEGER DEFAULT 22,
+                    hop_protocol VARCHAR(16) DEFAULT 'ssh',
+                    hop_username VARCHAR(128) DEFAULT '',
+                    hop_password_enc TEXT DEFAULT '',
+                    hop_command_template TEXT DEFAULT '',
+                    hop_vrf VARCHAR(128) DEFAULT '',
+                    hop_target_auth_mode VARCHAR(32) DEFAULT 'bastion_managed',
+                    created_at TIMESTAMP,
+                    updated_at TIMESTAMP
+                )
+                """
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_cli_connect_profile_is_default ON cli_connect_profile (is_default)"
+            )
+            conn.exec_driver_sql(
+                """
+                CREATE TABLE IF NOT EXISTS ume_cli_override (
+                    ume_ne_id VARCHAR(128) PRIMARY KEY,
+                    profile_id VARCHAR(64),
+                    username_override VARCHAR(128) DEFAULT '',
+                    device_type_override VARCHAR(128) DEFAULT '',
+                    vendor_override VARCHAR(64) DEFAULT '',
+                    connect_status VARCHAR(32) DEFAULT 'unknown',
+                    connect_message VARCHAR(512) DEFAULT '',
+                    connect_detail TEXT DEFAULT '',
+                    connect_tested_at TIMESTAMP,
+                    updated_at TIMESTAMP
+                )
+                """
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_ume_cli_override_connect_status ON ume_cli_override (connect_status)"
             )
             conn.exec_driver_sql("COMMENT ON TABLE ume_inventory_ne IS '网元对象详细信息'")
             conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.ne_id IS '网元uuid'")

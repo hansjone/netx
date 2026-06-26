@@ -83,15 +83,14 @@ class NeExecValidationTests(unittest.TestCase):
 class NeExecRunTests(unittest.TestCase):
     @patch("netx_api.ne_exec.credentials_configured", return_value=True)
     @patch("netx_api.ne_exec._collect_on_device", return_value="ok-output")
-    @patch("netx_api.ne_exec.get_device_credentials", return_value={"ip_address": "1.1.1.1"})
-    def test_execute_success(self, _creds, _collect, _configured) -> None:
-        row = MagicMock()
-        row.id = "ne-1"
-        db = MagicMock()
-        db.get.return_value = row
-        with patch("netx_api.ne_exec.row_to_out") as row_out:
-            row_out.return_value.model_dump.return_value = {
+    @patch("netx_api.ne_exec.resolve_cli_target")
+    def test_execute_success(self, resolve, _collect, _configured) -> None:
+        resolve.return_value = (
+            {"ip_address": "1.1.1.1"},
+            {
+                "source": "managed",
                 "id": "ne-1",
+                "ume_ne_id": None,
                 "name": "R2",
                 "vendor": "Cisco",
                 "device_type": "cisco_ios",
@@ -101,26 +100,28 @@ class NeExecRunTests(unittest.TestCase):
                 "connect_status": "pass",
                 "hop_enabled": False,
                 "hop_vendor": "zte",
-            }
-            out = execute_managed_ne_commands(db, "ne-1", ["show version"])
+            },
+        )
+        db = MagicMock()
+        out = execute_managed_ne_commands(db, ["show version"], ne_id="ne-1")
         self.assertTrue(out["ok"])
         self.assertEqual(out["output"], "ok-output")
         self.assertEqual(out["commands"], ["show version"])
 
     @patch("netx_api.ne_exec.credentials_configured", return_value=True)
     @patch("netx_api.ne_exec._collect_on_device", return_value="ok-output")
-    @patch("netx_api.ne_exec.get_device_credentials", return_value={"ip_address": "1.1.1.1"})
-    def test_execute_skips_device_when_any_command_invalid(self, _creds, collect, _configured) -> None:
+    @patch("netx_api.ne_exec.resolve_cli_target")
+    def test_execute_skips_device_when_any_command_invalid(self, resolve, collect, _configured) -> None:
         db = MagicMock()
         with self.assertRaises(HTTPException) as ctx:
             execute_managed_ne_commands(
                 db,
-                "ne-1",
                 ["show interface", "configure terminal"],
+                ne_id="ne-1",
             )
         self.assertEqual(ctx.exception.detail, "command_blocked")
         collect.assert_not_called()
-        db.get.assert_not_called()
+        resolve.assert_not_called()
 
 
 if __name__ == "__main__":

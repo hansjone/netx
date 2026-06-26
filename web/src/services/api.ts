@@ -14,6 +14,9 @@ import type {
   UmeNeItem,
   UmeSyncStatusResponse,
   UmeTokenStatus,
+  CliConnectProfileItem,
+  CliMeta,
+  CliTargetListResponse,
 } from "../types";
 
 const parseApiResponse = async (res: Response): Promise<Record<string, unknown>> => {
@@ -305,6 +308,28 @@ export const deleteCollectionJob = (jobId: string) =>
 export const collectionRunDownloadUrl = (runId: string) => `/v1/ne-collections/runs/${runId}/download`;
 
 export const collectionJobDownloadUrl = (jobId: string) => `/v1/ne-collections/${jobId}/download`;
+
+export const fetchCliMeta = () => apiGet<CliMeta>("/v1/cli/meta");
+
+export const fetchCliProfiles = () =>
+  apiGet<{ items: CliConnectProfileItem[] }>("/v1/cli/profiles");
+
+export const fetchCliTargets = (params: {
+  source?: "managed" | "ume" | "all";
+  keyword?: string;
+  page?: number;
+  pageSize?: number;
+}) => {
+  const p = new URLSearchParams();
+  p.set("source", params.source || "all");
+  if (params.keyword?.trim()) p.set("keyword", params.keyword.trim());
+  p.set("page", String(Math.max(1, Number(params.page || 1))));
+  p.set("page_size", String(Math.max(1, Math.min(500, Number(params.pageSize || 50)))));
+  return apiGet<CliTargetListResponse>(`/v1/cli/targets?${p.toString()}`);
+};
+
+export const postUmeConnectTest = (umeNeIds: string[]) =>
+  apiPost<{ ok: boolean; submitted: number }>("/v1/cli/ume-connect-test", { ume_ne_ids: umeNeIds });
 
 export const fetchUmeCurrentAlarms = (params: {
   severity: string;

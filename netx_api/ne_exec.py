@@ -8,11 +8,10 @@ from typing import Any
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
+from .cli_resolve import resolve_cli_target
 from .config import settings
-from .models import ManagedNE
 from .ne_collect_runner import _collect_on_device
 from .ne_crypto import credentials_configured
-from .ne_service import get_device_credentials, row_to_out
 
 _EXEC_MAX_COMMANDS = 5
 _EXEC_MAX_OUTPUT = 32_000
@@ -60,16 +59,18 @@ def _normalize_read_timeout(sec: int | None) -> int:
 
 def execute_managed_ne_commands(
     db: Session,
-    ne_id: str,
     commands: list[str],
     *,
+    ne_id: str | None = None,
+    ume_ne_id: str | None = None,
     read_timeout_sec: int | None = None,
 ) -> dict[str, Any]:
     if not credentials_configured():
         raise HTTPException(status_code=503, detail="credential_secret_key_not_configured")
-    nid = str(ne_id or "").strip()
-    if not nid:
-        raise HTTPException(status_code=400, detail="ne_id_required")
+    mid = str(ne_id or "").strip()
+    uid = str(ume_ne_id or "").strip()
+    if bool(mid) == bool(uid):
+        raise HTTPException(status_code=400, detail="exactly_one_of_ne_id_or_ume_ne_id_required")
     cmds = [str(c).strip() for c in commands if str(c).strip()]
     if not cmds:
         raise HTTPException(status_code=400, detail="commands_required")
@@ -78,26 +79,8 @@ def execute_managed_ne_commands(
     for c in cmds:
         _validate_command(c)
 
-    row = db.get(ManagedNE, nid)
-    if not row:
-        raise HTTPException(status_code=404, detail="managed_ne_not_found")
-
+    creds, device = resolve_cli_target(db, managed_ne_id=mid or None, ume_ne_id=uid or None)
     read_timeout = _normalize_read_timeout(read_timeout_sec)
-    creds = get_device_credentials(row)
-    meta = row_to_out(row).model_dump()
-    # Shallow copy for response (no secrets).
-    device = {
-        "id": meta["id"],
-        "name": meta["name"],
-        "vendor": meta["vendor"],
-        "device_type": meta["device_type"],
-        "ip_address": meta["ip_address"],
-        "port": meta["port"],
-        "protocol": meta["protocol"],
-        "connect_status": meta["connect_status"],
-        "hop_enabled": meta["hop_enabled"],
-        "hop_vendor": meta["hop_vendor"],
-    }
 
     prev_collect_timeout = int(settings.ne_collect_read_timeout_sec or 120)
     try:

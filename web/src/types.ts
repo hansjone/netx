@@ -219,6 +219,55 @@ export type ManagedNeImportResult = {
   failed: Array<{ row: number; reason: string }>;
 };
 
+export type CliConnectProfileItem = {
+  id: string;
+  name: string;
+  is_default: boolean;
+  username: string;
+  port: number;
+  protocol: string;
+  device_type_default: string;
+  vendor_default: string;
+  ne_type_rules: string;
+  hop_enabled: boolean;
+  hop_vendor: string;
+  hop_host: string;
+  hop_port: number;
+  hop_protocol: string;
+  hop_username: string;
+  hop_command_template: string;
+  hop_vrf: string;
+  hop_target_auth_mode: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CliMeta = {
+  credentials_configured: boolean;
+  default_profile_configured: boolean;
+  cli_profile_ready: boolean;
+};
+
+export type CliTargetItem = {
+  source: string;
+  id: string;
+  ume_ne_id?: string | null;
+  name: string;
+  ip_address: string;
+  ne_type?: string;
+  vendor?: string;
+  device_type?: string;
+  connect_status: string;
+  cli_profile_ready?: boolean;
+};
+
+export type CliTargetListResponse = {
+  total: number;
+  page: number;
+  page_size: number;
+  items: CliTargetItem[];
+};
+
 export type EligibleNeItem = {
   id: string;
   name: string;

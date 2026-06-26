@@ -221,8 +221,13 @@ def _get_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
 
 def _exec_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
     ne_id = str(args.get("ne_id") or "").strip()
-    if not ne_id:
-        return {"ok": False, "error": "ne_id_required", "error_code": "ne_id_required"}
+    ume_ne_id = str(args.get("ume_ne_id") or "").strip()
+    if bool(ne_id) == bool(ume_ne_id):
+        return {
+            "ok": False,
+            "error": "exactly_one_of_ne_id_or_ume_ne_id_required",
+            "error_code": "exactly_one_of_ne_id_or_ume_ne_id_required",
+        }
     raw_cmds = args.get("commands")
     if not isinstance(raw_cmds, list) or not raw_cmds:
         return {"ok": False, "error": "commands_required", "error_code": "commands_required"}
@@ -231,7 +236,11 @@ def _exec_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "error": "commands_required", "error_code": "commands_required"}
     if len(commands) > 5:
         return {"ok": False, "error": "too_many_commands", "error_code": "too_many_commands"}
-    body: dict[str, Any] = {"ne_id": ne_id, "commands": commands}
+    body: dict[str, Any] = {"commands": commands}
+    if ne_id:
+        body["ne_id"] = ne_id
+    if ume_ne_id:
+        body["ume_ne_id"] = ume_ne_id
     rts = args.get("read_timeout_sec")
     if rts is not None:
         body["read_timeout_sec"] = int(rts)
@@ -242,6 +251,17 @@ def _exec_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
     if isinstance(data, dict) and data.get("ok") is False:
         return {"ok": False, "data": data, "error": str(data.get("error") or "exec_failed")}
     return {"ok": True, "data": data}
+
+
+def _list_cli_targets(args: dict[str, Any]) -> dict[str, Any]:
+    page = max(1, int(args.get("page") or 1))
+    page_size = min(500, max(1, int(args.get("page_size") or 50)))
+    params: dict[str, Any] = {"page": page, "page_size": page_size}
+    if str(args.get("source") or "").strip():
+        params["source"] = str(args.get("source")).strip()
+    if str(args.get("keyword") or "").strip():
+        params["keyword"] = str(args.get("keyword")).strip()
+    return http_json("GET", "/v1/cli/targets", params=params)
 
 
 HTTP_MCP_TOOLS: list[dict[str, Any]] = [
@@ -391,15 +411,31 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "execManagedNe",
-        "description": "Run read-only CLI on a managed NE via netx (show/display/ping; max 5 commands).",
+        "description": "Run read-only CLI via netx (show/display/ping; max 5 commands). Use ne_id (managed NE) OR ume_ne_id (UME inventory).",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "ne_id": {"type": "string"},
+                "ume_ne_id": {"type": "string"},
                 "commands": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 5},
                 "read_timeout_sec": {"type": "integer", "minimum": 10, "maximum": 120},
             },
-            "required": ["ne_id", "commands"],
+            "required": ["commands"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "listCliTargets",
+        "description": "List CLI-capable targets (managed NE and/or UME inventory); use before execManagedNe.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "source": {"type": "string", "enum": ["managed", "ume", "all"], "default": "all"},
+                "keyword": {"type": "string"},
+                "page": {"type": "integer", "minimum": 1, "default": 1},
+                "page_size": {"type": "integer", "minimum": 1, "maximum": 500, "default": 50},
+            },
+            "required": [],
             "additionalProperties": False,
         },
     },
@@ -418,6 +454,7 @@ _HANDLERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "listManagedNe": _list_managed_ne,
     "getManagedNe": _get_managed_ne,
     "execManagedNe": _exec_managed_ne,
+    "listCliTargets": _list_cli_targets,
 }
 
 

@@ -12,12 +12,13 @@ import pytest
 from netx_mcp.http_tools import HTTP_MCP_TOOLS, call_http_tool
 
 
-def test_http_mcp_tool_list_has_twelve_tools() -> None:
+def test_http_mcp_tool_list_has_thirteen_tools() -> None:
     names = [str(t.get("name") or "") for t in HTTP_MCP_TOOLS]
-    assert len(names) == 12
+    assert len(names) == 13
     assert "queryUmeAlarms" in names
     assert "queryUmeAlarmsRaw" in names
     assert "execManagedNe" in names
+    assert "listCliTargets" in names
 
 
 def test_call_query_ume_alarms_forwards_http() -> None:
@@ -81,7 +82,7 @@ def test_stdio_initialize_and_tools_list() -> None:
     list_line = proc.stdout.readline()
     list_resp = json.loads(list_line)
     tools = list_resp["result"]["tools"]
-    assert len(tools) == 12
+    assert len(tools) == 13
 
     proc.terminate()
     proc.wait(timeout=5)

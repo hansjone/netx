@@ -32,6 +32,10 @@ export const queryKeys = {
   neCollectionRunsAll: ["neCollectionRuns"] as const,
   neCollectionRuns: (jobId: string, page: number, status: string, keyword: string) =>
     ["neCollectionRuns", jobId, page, status, keyword] as const,
+  cliMeta: ["cliMeta"] as const,
+  cliProfiles: ["cliProfiles"] as const,
+  cliTargets: (keyword: string, page: number, pageSize: number) =>
+    ["cliTargets", keyword, page, pageSize] as const,
   umeCurrentAlarms: (
     severity: string,
     cleared: string,

@@ -1,4 +1,4 @@
-import { Fragment, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   apiPost,
@@ -15,6 +15,7 @@ import {
   fetchUmeNotificationIds,
   fetchUmeSyncStatus,
   fetchUmeTokenStatus,
+  fetchCliTargets,
   refreshUmeToken,
   upsertUmeKeyAlertRule,
   deleteUmeKeyAlertRule,
@@ -22,6 +23,7 @@ import {
   updateUmeKeyAlertMonitorConfig,
 } from "../services/api";
 import { HelpHint } from "../components/HelpHint";
+import { UmeCliConnectPanel } from "../components/UmeCliConnectPanel";
 import { queryKeys } from "../constants/queryKeys";
 import { useI18n } from "../i18n";
 import { useToast } from "../hooks/useToast";
@@ -67,6 +69,7 @@ export function UmePage() {
   const [keyAlertNeTypes, setKeyAlertNeTypes] = useState<string[]>([]);
   const [keyAlertEditRule, setKeyAlertEditRule] = useState<UmeKeyAlertRuleItem | null>(null);
   const [keyAlertEditNeTypes, setKeyAlertEditNeTypes] = useState<string[]>([]);
+  const [umeViewTab, setUmeViewTab] = useState<"main" | "cli">("main");
 
   const syncMutation = useMutation({
     mutationFn: async (domains: string[]) => apiPost<{ ok: boolean; jobs: unknown[] }>("/v1/ume/sync", { domains }),
@@ -254,6 +257,20 @@ export function UmePage() {
     queryFn: () => fetchUmeNe({ keyword: neKeyword, page: nePage, pageSize: nePageSize }),
     staleTime: 5000,
   });
+  const cliTargetsQuery = useQuery({
+    queryKey: queryKeys.cliTargets(neKeyword, nePage, nePageSize),
+    queryFn: () =>
+      fetchCliTargets({ source: "ume", keyword: neKeyword, page: nePage, pageSize: nePageSize }),
+    enabled: nePanelOpen && umeViewTab === "main",
+    staleTime: 5000,
+  });
+  const cliStatusByNeId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const row of cliTargetsQuery.data?.items || []) {
+      map.set(row.id, row.connect_status);
+    }
+    return map;
+  }, [cliTargetsQuery.data]);
   const currentQuery = useQuery({
     queryKey: queryKeys.umeCurrentAlarms(curSeverity, curCleared, curHostName, curKeyword, curPage, curPageSize),
     queryFn: () =>
@@ -442,6 +459,30 @@ export function UmePage() {
 
   return (
     <>
+      <section className="panel" style={{ marginBottom: 12 }}>
+        <div className="filter-inline">
+          <button
+            type="button"
+            className={umeViewTab === "main" ? "link-btn" : "link-btn"}
+            style={{ fontWeight: umeViewTab === "main" ? 700 : 400 }}
+            onClick={() => setUmeViewTab("main")}
+          >
+            {t("ume.tabs.main")}
+          </button>
+          <button
+            type="button"
+            className="link-btn"
+            style={{ fontWeight: umeViewTab === "cli" ? 700 : 400 }}
+            onClick={() => setUmeViewTab("cli")}
+          >
+            {t("ume.tabs.cli")}
+          </button>
+        </div>
+      </section>
+      {umeViewTab === "cli" ? (
+        <UmeCliConnectPanel />
+      ) : (
+      <>
       <section className="cards">
         <article className="card card--full">
           <h3>{t("ume.token.title")}</h3>
@@ -1245,6 +1286,7 @@ export function UmePage() {
               <th>type</th>
               <th>device_level</th>
               <th>host_name</th>
+              <th>{t("ume.ne.cliConnect")}</th>
               <th>hw_ver</th>
               <th>last_seen</th>
             </tr>
@@ -1267,12 +1309,13 @@ export function UmePage() {
                   <td>{x.ne_type}</td>
                   <td>{x.device_level || t("common.empty")}</td>
                   <td>{x.host_name || t("common.empty")}</td>
+                  <td>{cliStatusByNeId.get(x.ne_id) || "unknown"}</td>
                   <td>{x.hardware_version || t("common.empty")}</td>
                   <td>{x.last_seen_at ? formatSystemTime(x.last_seen_at) : t("common.empty")}</td>
                 </tr>
                 {expandedNeId === x.ne_id ? (
                   <tr>
-                    <td colSpan={8}>
+                    <td colSpan={9}>
                       <div style={{ fontSize: 12, display: "grid", gridTemplateColumns: "repeat(3, minmax(180px, 1fr))", gap: 8 }}>
                         <div>consistent_state: {x.consistent_state || t("common.empty")}</div>
                         <div>admin_status: {x.admin_status || t("common.empty")}</div>
@@ -1510,6 +1553,8 @@ export function UmePage() {
           </div>
         </div>
       ) : null}
+    </>
+      )}
     </>
   );
 }

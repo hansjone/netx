@@ -113,9 +113,10 @@ class ConnectTestRequest(BaseModel):
 
 
 class ManagedNeExecRequest(BaseModel):
-    """Run read-only show/display CLI on a managed NE (oclaw ops integration)."""
+    """Run read-only show/display CLI on a managed NE or UME inventory NE (oclaw ops integration)."""
 
-    ne_id: str
+    ne_id: str | None = None
+    ume_ne_id: str | None = None
     commands: list[str] = Field(min_length=1, max_length=5)
     read_timeout_sec: int | None = Field(default=None, ge=10, le=120)
 

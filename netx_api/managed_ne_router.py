@@ -118,11 +118,12 @@ def api_batch_delete_managed_ne(body: ConnectTestRequest, db: Session = Depends(
 
 @router.post("/exec")
 def api_exec_managed_ne(body: ManagedNeExecRequest, db: Session = Depends(get_db)):
-    """Login to a managed NE and run read-only CLI (show/display/ping). For oclaw ops tools."""
+    """Login to a managed NE or UME inventory NE and run read-only CLI (show/display/ping)."""
     return execute_managed_ne_commands(
         db,
-        body.ne_id,
         body.commands,
+        ne_id=body.ne_id,
+        ume_ne_id=body.ume_ne_id,
         read_timeout_sec=body.read_timeout_sec,
     )
 

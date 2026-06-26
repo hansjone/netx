@@ -9,8 +9,9 @@ from typing import Any
 
 from .config import settings
 from .db import SessionLocal
-from .models import ManagedNE
+from .models import ManagedNE, UmeCliOverride, UmeInventoryNE
 from .ne_crypto import CredentialCryptoError
+from .cli_resolve import resolve_cli_target
 from .ne_service import get_device_credentials
 from .ne_session_factory import (
     bastion_ssh_cli,
@@ -354,6 +355,75 @@ def _run_single(ne_id: str) -> None:
         _update_row(ne_id, "fail", str(exc)[:480], detail=_truncate_detail(traceback.format_exc()))
     finally:
         db.close()
+
+
+def _update_ume_override_row(
+    ume_ne_id: str,
+    status: str,
+    message: str,
+    discovered_name: str | None = None,
+    *,
+    detail: str = "",
+) -> None:
+    db = SessionLocal()
+    try:
+        uid = str(ume_ne_id or "").strip()
+        row = db.get(UmeCliOverride, uid)
+        if row is None:
+            if not db.get(UmeInventoryNE, uid):
+                return
+            row = UmeCliOverride(ume_ne_id=uid)
+            db.add(row)
+        row.connect_status = status
+        row.connect_message = str(message or "")[:500]
+        row.connect_detail = _truncate_detail(detail)
+        row.connect_tested_at = datetime.utcnow()
+        row.updated_at = datetime.utcnow()
+        db.commit()
+    finally:
+        db.close()
+
+
+def _run_single_ume(ume_ne_id: str) -> None:
+    db = SessionLocal()
+    try:
+        uid = str(ume_ne_id or "").strip()
+        if not db.get(UmeInventoryNE, uid):
+            return
+        row = db.get(UmeCliOverride, uid)
+        if row is None:
+            row = UmeCliOverride(ume_ne_id=uid)
+            db.add(row)
+        row.connect_status = "testing"
+        row.connect_message = ""
+        row.connect_detail = ""
+        row.updated_at = datetime.utcnow()
+        db.commit()
+        try:
+            creds, _device = resolve_cli_target(db, ume_ne_id=uid)
+        except Exception as exc:
+            detail = _truncate_detail(traceback.format_exc())
+            _update_ume_override_row(uid, "fail", str(exc)[:480], detail=detail)
+            return
+        status, message, discovered, detail = _probe_device(creds)
+        _update_ume_override_row(uid, status, message, discovered, detail=detail)
+    except Exception as exc:
+        _log.exception("ume connect test failed for %s", ume_ne_id)
+        _update_ume_override_row(ume_ne_id, "fail", str(exc)[:480], detail=_truncate_detail(traceback.format_exc()))
+    finally:
+        db.close()
+
+
+def schedule_ume_connect_tests(ume_ne_ids: list[str]) -> int:
+    pool = _executor_pool()
+    submitted = 0
+    for ume_ne_id in ume_ne_ids:
+        uid = str(ume_ne_id or "").strip()
+        if not uid:
+            continue
+        pool.submit(_run_single_ume, uid)
+        submitted += 1
+    return submitted
 
 
 def schedule_connect_tests(ne_ids: list[str]) -> int:
