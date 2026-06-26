@@ -268,6 +268,19 @@ export type CliTargetListResponse = {
   items: CliTargetItem[];
 };
 
+export type UmeCliOverrideItem = {
+  ume_ne_id: string;
+  profile_id: string | null;
+  username_override: string;
+  device_type_override: string;
+  vendor_override: string;
+  connect_status: string;
+  connect_message: string;
+  connect_detail: string;
+  connect_tested_at: string | null;
+  updated_at: string;
+};
+
 export type EligibleNeItem = {
   id: string;
   name: string;

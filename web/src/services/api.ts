@@ -17,6 +17,7 @@ import type {
   CliConnectProfileItem,
   CliMeta,
   CliTargetListResponse,
+  UmeCliOverrideItem,
 } from "../types";
 
 const parseApiResponse = async (res: Response): Promise<Record<string, unknown>> => {
@@ -330,6 +331,9 @@ export const fetchCliTargets = (params: {
 
 export const postUmeConnectTest = (umeNeIds: string[]) =>
   apiPost<{ ok: boolean; submitted: number }>("/v1/cli/ume-connect-test", { ume_ne_ids: umeNeIds });
+
+export const fetchUmeCliOverride = (umeNeId: string) =>
+  apiGet<UmeCliOverrideItem | null>(`/v1/cli/ume-overrides/${encodeURIComponent(umeNeId)}`);
 
 export const fetchUmeCurrentAlarms = (params: {
   severity: string;

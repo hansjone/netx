@@ -7,6 +7,7 @@ import {
   fetchCliMeta,
   fetchCliProfiles,
   fetchManagedNeMeta,
+  fetchUmeCliOverride,
   postUmeConnectTest,
 } from "../services/api";
 import { HopProxyFields, emptyHopProxyFields, type HopProxyFieldsState } from "./HopProxyFields";
@@ -14,7 +15,16 @@ import { HelpHint } from "./HelpHint";
 import { queryKeys } from "../constants/queryKeys";
 import { useI18n } from "../i18n";
 import { useToast } from "../hooks/useToast";
-import type { CliConnectProfileItem } from "../types";
+import type { CliConnectProfileItem, UmeCliOverrideItem } from "../types";
+import { formatSystemTime } from "../utils/time";
+
+function connectPillLevel(status: string): "up" | "down" | "unknown" | "warn" {
+  const s = String(status || "").toLowerCase();
+  if (s === "pass" || s === "ok") return "up";
+  if (s === "fail" || s === "error") return "down";
+  if (s === "testing") return "warn";
+  return "unknown";
+}
 
 type ProfileForm = {
   id: string;
@@ -73,10 +83,29 @@ export function UmeCliConnectPanel() {
   const queryClient = useQueryClient();
   const [form, setForm] = useState<ProfileForm>(emptyForm);
   const [sampleUmeNeId, setSampleUmeNeId] = useState("");
+  const [testPending, setTestPending] = useState(false);
+
+  const testNeId = sampleUmeNeId.trim();
+
+  useEffect(() => {
+    setTestPending(false);
+  }, [testNeId]);
 
   const metaQuery = useQuery({ queryKey: queryKeys.cliMeta, queryFn: fetchCliMeta });
   const neMetaQuery = useQuery({ queryKey: queryKeys.managedNeMeta, queryFn: fetchManagedNeMeta });
   const profilesQuery = useQuery({ queryKey: queryKeys.cliProfiles, queryFn: fetchCliProfiles });
+  const overrideQuery = useQuery({
+    queryKey: queryKeys.umeCliOverride(testNeId),
+    queryFn: () => fetchUmeCliOverride(testNeId),
+    enabled: Boolean(testNeId),
+    refetchInterval: (q) => {
+      const status = String(q.state.data?.connect_status || "").toLowerCase();
+      return status === "testing" || testPending ? 2000 : false;
+    },
+  });
+  const overrideResult: UmeCliOverrideItem | null = overrideQuery.data ?? null;
+  const overrideStatus = String(overrideResult?.connect_status || "").toLowerCase();
+  const overrideTesting = overrideStatus === "testing" || (testPending && !overrideResult?.connect_tested_at);
 
   useEffect(() => {
     const items = profilesQuery.data?.items || [];
@@ -130,11 +159,27 @@ export function UmeCliConnectPanel() {
       if (!id) throw new Error(t("ume.cli.sampleNeRequired"));
       return postUmeConnectTest([id]);
     },
-    onSuccess: () => {
+    onSuccess: async () => {
+      const id = sampleUmeNeId.trim();
+      setTestPending(true);
       showOk(t("ume.cli.connectTestSubmitted"));
+      if (id) {
+        await queryClient.invalidateQueries({ queryKey: queryKeys.umeCliOverride(id) });
+      }
     },
-    onError: (e: Error) => showError(e.message),
+    onError: (e: Error) => {
+      setTestPending(false);
+      showError(e.message);
+    },
   });
+
+  useEffect(() => {
+    if (!testPending) return;
+    if (!overrideResult) return;
+    if (overrideStatus === "testing") return;
+    setTestPending(false);
+    void queryClient.invalidateQueries({ queryKey: queryKeys.cliTargetsAll });
+  }, [testPending, overrideResult, overrideStatus, queryClient]);
 
   const deviceTypes = neMetaQuery.data?.device_types ?? [];
   const vendors = neMetaQuery.data?.vendors ?? [];
@@ -244,9 +289,48 @@ export function UmeCliConnectPanel() {
             style={{ minWidth: 320 }}
           />
           <button type="button" onClick={() => connectTestMutation.mutate()} disabled={connectTestMutation.isPending}>
-            {t("managedNe.connect.run")}
+            {connectTestMutation.isPending || overrideTesting
+              ? t("managedNe.connect.running")
+              : t("managedNe.connect.run")}
           </button>
         </div>
+        {testNeId ? (
+          <div style={{ marginTop: 12 }}>
+            <div className="form-label">{t("ume.cli.connectTestResult")}</div>
+            {overrideQuery.isLoading && !overrideResult ? (
+              <p className="form-field-hint">{t("ume.cli.connectTestWaiting")}</p>
+            ) : overrideTesting ? (
+              <p className="form-field-hint">
+                <span className="inline-spinner" aria-hidden /> {t("ume.cli.connectTestRunning")}
+              </p>
+            ) : overrideResult ? (
+              <>
+                <p style={{ marginTop: 8 }}>
+                  <span className={`conn-pill conn-pill--${connectPillLevel(overrideResult.connect_status)}`}>
+                    {overrideResult.connect_status}
+                  </span>
+                  {overrideResult.connect_message ? (
+                    <span className="connect-detail-summary"> — {overrideResult.connect_message}</span>
+                  ) : null}
+                  {overrideResult.connect_tested_at ? (
+                    <span className="muted" style={{ marginLeft: 8 }}>
+                      {formatSystemTime(overrideResult.connect_tested_at, { assumeUtcNaive: true })}
+                    </span>
+                  ) : null}
+                </p>
+                <pre className="connect-log">
+                  {overrideResult.connect_detail?.trim() ||
+                    overrideResult.connect_message?.trim() ||
+                    t("managedNe.connectDetailEmpty")}
+                </pre>
+              </>
+            ) : testPending ? (
+              <p className="form-field-hint">{t("ume.cli.connectTestWaiting")}</p>
+            ) : (
+              <p className="form-field-hint">{t("managedNe.connectDetailEmpty")}</p>
+            )}
+          </div>
+        ) : null}
       </div>
       {(profilesQuery.data?.items || []).length > 1 ? (
         <div style={{ marginTop: 16 }}>
