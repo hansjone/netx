@@ -54,15 +54,15 @@ function profileToForm(row: CliConnectProfileItem): ProfileForm {
     vendor_default: row.vendor_default,
     is_default: row.is_default,
     hop: {
-      hop_vendor: row.hop_vendor as HopProxyFieldsState["hop_vendor"],
-      hop_host: row.hop_host,
-      hop_port: row.hop_port,
-      hop_protocol: row.hop_protocol,
-      hop_username: row.hop_username,
+      hop_vendor: (row.hop_vendor || "bastion") as HopProxyFieldsState["hop_vendor"],
+      hop_host: row.hop_host ?? "",
+      hop_port: row.hop_port ?? 22,
+      hop_protocol: row.hop_protocol ?? "ssh",
+      hop_username: row.hop_username ?? "",
       hop_password: "",
-      hop_command_template: row.hop_command_template,
-      hop_vrf: row.hop_vrf,
-      hop_target_auth_mode: row.hop_target_auth_mode,
+      hop_command_template: row.hop_command_template ?? "",
+      hop_vrf: row.hop_vrf ?? "",
+      hop_target_auth_mode: (row.hop_target_auth_mode || "bastion_managed") as HopProxyFieldsState["hop_target_auth_mode"],
     },
   };
 }
@@ -98,7 +98,8 @@ export function UmeCliConnectPanel() {
         device_type_default: form.device_type_default,
         vendor_default: form.vendor_default,
         is_default: form.is_default,
-        hop_enabled: form.hop.hop_vendor !== "linux" ? Boolean(form.hop.hop_host.trim()) : true,
+        hop_enabled:
+          form.hop.hop_vendor !== "linux" ? Boolean((form.hop.hop_host ?? "").trim()) : true,
         hop_vendor: form.hop.hop_vendor,
         hop_host: form.hop.hop_host,
         hop_port: form.hop.hop_port,
@@ -197,7 +198,7 @@ export function UmeCliConnectPanel() {
       </div>
       <HopProxyFields
         value={form.hop}
-        onChange={(hop) => setForm({ ...form, hop })}
+        onChange={(patch) => setForm((prev) => ({ ...prev, hop: { ...prev.hop, ...patch } }))}
         hopPasswordRequired={!form.id}
         hopPasswordOptional={Boolean(form.id)}
       />
