@@ -12,10 +12,10 @@ from sqlalchemy.pool import StaticPool
 from netx_api.config import settings
 from netx_api.db import Base, get_db
 from netx_api.main import app
-from netx_api.models import ManagedNE  # noqa: F401 — register table on Base
+from netx_api.models import ManagedNE, UmeInventoryNE  # noqa: F401 — register table on Base
 from netx_api.ne_connect import hostname_probe_command, parse_hostname_from_output
 from netx_api.ne_crypto import decrypt_secret, encrypt_secret
-from netx_api.ne_service import create_managed_ne, import_managed_ne
+from netx_api.ne_service import UME_SYNC_SOURCE, create_managed_ne, import_managed_ne
 from netx_api.ne_schemas import ManagedNeCreate
 
 
@@ -68,6 +68,7 @@ class ManagedNeApiTests(unittest.TestCase):
             poolclass=StaticPool,
         )
         ManagedNE.__table__.create(bind=self.engine, checkfirst=True)
+        UmeInventoryNE.__table__.create(bind=self.engine, checkfirst=True)
         self.Session = sessionmaker(bind=self.engine, autoflush=False, autocommit=False)
 
         def override_get_db():
@@ -183,6 +184,51 @@ class ManagedNeApiTests(unittest.TestCase):
             },
         )
         self.assertEqual(r.status_code, 503, r.text)
+
+    def test_delete_ume_sync_route_not_captured_by_ne_id(self):
+        """DELETE /ume-sync must not match DELETE /{ne_id} with ne_id='ume-sync'."""
+        db = self.Session()
+        db.add(
+            ManagedNE(
+                ip_address="10.0.0.99",
+                source=UME_SYNC_SOURCE,
+                source_ref="ume-ne-1",
+                tags="UME",
+            )
+        )
+        db.commit()
+        db.close()
+
+        r = self.client.delete("/v1/managed-ne/ume-sync")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["deleted"], 1)
+
+        r2 = self.client.delete("/v1/managed-ne/ume-sync")
+        self.assertEqual(r2.status_code, 200, r2.text)
+        self.assertEqual(r2.json()["deleted"], 0)
+
+    def test_ume_sync_prefers_host_name_for_display_name(self):
+        db = self.Session()
+        db.add(
+            UmeInventoryNE(
+                ne_id="ume-ne-100",
+                ip_address="10.0.0.100",
+                ne_name="Resource-Name-100",
+                host_name="Host-Name-100",
+                vendor="ZTE",
+                ne_type="ZXR10",
+            )
+        )
+        db.commit()
+        db.close()
+
+        synced = self.client.post("/v1/managed-ne/ume-sync")
+        self.assertEqual(synced.status_code, 200, synced.text)
+
+        listed = self.client.get("/v1/managed-ne", params={"keyword": "10.0.0.100"})
+        self.assertEqual(listed.status_code, 200, listed.text)
+        self.assertEqual(listed.json()["total"], 1, listed.text)
+        self.assertEqual(listed.json()["items"][0]["name"], "Host-Name-100")
 
     @patch("netx_api.ne_connect._probe_device", return_value=("pass", "ok", None))
     def test_connect_test(self, _mock_probe):

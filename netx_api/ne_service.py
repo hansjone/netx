@@ -564,7 +564,7 @@ def sync_ume_inventory_to_managed_ne(db: Session) -> UmeManagedSyncResult:
         if existing is None:
             existing = db.query(ManagedNE).filter(ManagedNE.ip_address == ip).first()
         device_type, vendor = _infer_managed_ne_type_vendor(str(inv.ne_type or ""), str(inv.vendor or ""))
-        display_name = str(inv.ne_name or "").strip() or ip
+        display_name = str(inv.host_name or "").strip() or str(inv.ne_name or "").strip() or ip
         existing_tags = str(existing.tags or "").strip() if existing is not None else ""
         if existing is None:
             existing = ManagedNE(

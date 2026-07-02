@@ -83,21 +83,6 @@ def api_create_managed_ne(body: ManagedNeCreate, db: Session = Depends(get_db)):
     return create_managed_ne(db, body).model_dump()
 
 
-@router.get("/{ne_id}")
-def api_get_managed_ne(ne_id: str, db: Session = Depends(get_db)):
-    return get_managed_ne(db, ne_id).model_dump()
-
-
-@router.patch("/{ne_id}")
-def api_update_managed_ne(ne_id: str, body: ManagedNeUpdate, db: Session = Depends(get_db)):
-    return update_managed_ne(db, ne_id, body).model_dump()
-
-
-@router.delete("/{ne_id}")
-def api_delete_managed_ne(ne_id: str, db: Session = Depends(get_db)):
-    return delete_managed_ne(db, ne_id)
-
-
 @router.get("/import/template")
 def api_managed_ne_import_template(format: str = Query(default="xlsx")):
     filename, payload, media_type = build_managed_ne_import_template(format)
@@ -165,3 +150,18 @@ def api_connect_test(body: ConnectTestRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail=f"managed_ne_not_found: {','.join(missing[:5])}")
     submitted = schedule_connect_tests(ids)
     return {"ok": True, "submitted": submitted}
+
+
+@router.get("/{ne_id}")
+def api_get_managed_ne(ne_id: str, db: Session = Depends(get_db)):
+    return get_managed_ne(db, ne_id).model_dump()
+
+
+@router.patch("/{ne_id}")
+def api_update_managed_ne(ne_id: str, body: ManagedNeUpdate, db: Session = Depends(get_db)):
+    return update_managed_ne(db, ne_id, body).model_dump()
+
+
+@router.delete("/{ne_id}")
+def api_delete_managed_ne(ne_id: str, db: Session = Depends(get_db)):
+    return delete_managed_ne(db, ne_id)
