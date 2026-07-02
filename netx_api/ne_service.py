@@ -238,10 +238,6 @@ def list_managed_ne(
     kw = str(keyword or "").strip()
     v = str(vendor or "").strip()
     cs = str(connect_status or "").strip()
-    if not (kw or v or cs):
-        raise HTTPException(status_code=400, detail="managed_ne_filter_required")
-    if kw and len(kw) < 2:
-        raise HTTPException(status_code=400, detail="managed_ne_keyword_too_short")
     if kw:
         like = f"%{kw}%"
         stmt = stmt.filter(

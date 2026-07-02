@@ -145,15 +145,11 @@ class ManagedNeApiTests(unittest.TestCase):
                 self.assertEqual(listed.json()["total"], 1, listed.text)
         self.client.delete(f"/v1/managed-ne/{ne_id}")
 
-    def test_list_requires_filter(self):
+    def test_list_allows_empty_and_short_keyword(self):
         listed = self.client.get("/v1/managed-ne")
-        self.assertEqual(listed.status_code, 400)
-        self.assertEqual(listed.json()["detail"], "managed_ne_filter_required")
-
-    def test_list_rejects_short_keyword(self):
-        listed = self.client.get("/v1/managed-ne", params={"keyword": "r"})
-        self.assertEqual(listed.status_code, 400)
-        self.assertEqual(listed.json()["detail"], "managed_ne_keyword_too_short")
+        self.assertEqual(listed.status_code, 200)
+        short_kw = self.client.get("/v1/managed-ne", params={"keyword": "r"})
+        self.assertEqual(short_kw.status_code, 200)
 
     def test_list_allows_vendor_only_filter(self):
         created = self.client.post(
