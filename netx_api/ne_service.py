@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from io import BytesIO
+import re
 from typing import Any
 
 import pandas as pd
@@ -10,15 +11,18 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from .device_types import SUPPORTED_DEVICE_TYPES, SUPPORTED_VENDORS
-from .models import ManagedNE
+from .models import ManagedNE, UmeInventoryNE
 from .ne_crypto import CredentialCryptoError, credentials_configured, decrypt_secret, encrypt_secret
 from .ne_schemas import (
+    BatchAccountConfig,
     HopProxyConfig,
     ImportFailure,
     ImportResult,
     ManagedNeCreate,
     ManagedNeOut,
     ManagedNeUpdate,
+    UmeManagedDeleteResult,
+    UmeManagedSyncResult,
 )
 from .ne_session_factory import default_bastion_username_template, default_hop_command_template
 
@@ -34,6 +38,15 @@ IMPORT_COLUMNS = (
     "tags",
     "remark",
 )
+
+UME_SYNC_SOURCE = "ume_sync"
+UME_SYNC_TAG = "UME"
+_BUILTIN_NE_TYPE_RULES: list[tuple[re.Pattern[str], str, str]] = [
+    (re.compile(r"ZXR|ZXCTN|M6000|\bBN\b", re.I), "zte_zxros", "ZTE"),
+    (re.compile(r"NE40|CE\b|ATN|MA5800|OptiX", re.I), "huawei", "Huawei"),
+    (re.compile(r"ASR|NCS|IOS.?XR|XR\b", re.I), "cisco_xr", "Cisco"),
+    (re.compile(r"Catalyst|Nexus|C9[0-9]{3}|ISR", re.I), "cisco_ios", "Cisco"),
+]
 
 
 def _now() -> datetime:
@@ -62,6 +75,48 @@ def _normalize_hop_vendor(vendor: str) -> str:
 def _normalize_hop_target_auth_mode(mode: str) -> str:
     m = str(mode or "bastion_managed").strip().lower()
     return m if m in ("bastion_managed", "manual") else "bastion_managed"
+
+
+def _normalize_vendor(vendor: str) -> str:
+    raw = str(vendor or "").strip()
+    if not raw:
+        return "Other"
+    for item in SUPPORTED_VENDORS:
+        if item.lower() == raw.lower():
+            return item
+    return "Other"
+
+
+def _merge_tags(tags: str, *extras: str) -> str:
+    seen: set[str] = set()
+    out: list[str] = []
+    for token in str(tags or "").split():
+        t = token.strip()
+        if t and t not in seen:
+            seen.add(t)
+            out.append(t)
+    for extra in extras:
+        t = str(extra or "").strip()
+        if t and t not in seen:
+            seen.add(t)
+            out.append(t)
+    return " ".join(out)
+
+
+def _infer_managed_ne_type_vendor(ne_type: str, vendor: str) -> tuple[str, str]:
+    raw_vendor = _normalize_vendor(vendor)
+    text = str(ne_type or "").strip()
+    for pattern, device_type, inferred_vendor in _BUILTIN_NE_TYPE_RULES:
+        if pattern.search(text):
+            dt = device_type if device_type in SUPPORTED_DEVICE_TYPES else "zte_zxros"
+            return dt, _normalize_vendor(inferred_vendor or raw_vendor)
+    if raw_vendor == "Huawei":
+        return "huawei", "Huawei"
+    if raw_vendor == "Cisco":
+        return "cisco_ios", "Cisco"
+    if raw_vendor == "ZTE":
+        return "zte_zxros", "ZTE"
+    return "zte_zxros", raw_vendor
 
 
 def _validate_hop_on_create(body: ManagedNeCreate) -> None:
@@ -130,7 +185,10 @@ def _apply_hop_update(row: ManagedNE, data: dict[str, Any]) -> None:
             raise HTTPException(status_code=400, detail="hop_host_required")
         if not str(row.hop_username or "").strip():
             raise HTTPException(status_code=400, detail="hop_username_required")
-        if not str(row.hop_password_enc or "").strip():
+        if (
+            not str(row.hop_password_enc or "").strip()
+            and _normalize_hop_target_auth_mode(row.hop_target_auth_mode) != "bastion_managed"
+        ):
             raise HTTPException(status_code=400, detail="hop_password_required")
 
 
@@ -243,6 +301,8 @@ def create_managed_ne(db: Session, body: ManagedNeCreate) -> ManagedNeOut:
         connect_status="unknown",
         tags=str(body.tags or "").strip(),
         remark=str(body.remark or "").strip(),
+        source="",
+        source_ref="",
         created_at=now,
         updated_at=now,
     )
@@ -310,15 +370,17 @@ def update_managed_ne(db: Session, ne_id: str, body: ManagedNeUpdate) -> Managed
 
 def batch_apply_hop_proxy(db: Session, ids: list[str], hop: HopProxyConfig) -> dict[str, Any]:
     """Apply the same jump-host (proxy) settings to multiple managed NEs."""
-    _require_crypto()
     hop_host = str(hop.hop_host or "").strip()
     hop_user = str(hop.hop_username or "").strip()
     hop_pass = str(hop.hop_password or "").strip()
+    if hop_pass:
+        _require_crypto()
     if not hop_host:
         raise HTTPException(status_code=400, detail="hop_host_required")
     if not hop_user:
         raise HTTPException(status_code=400, detail="hop_username_required")
-    if not hop_pass:
+    hop_auth_mode = _normalize_hop_target_auth_mode(hop.hop_target_auth_mode)
+    if not hop_pass and hop_auth_mode != "bastion_managed":
         raise HTTPException(status_code=400, detail="hop_password_required")
 
     hop_vendor = _normalize_hop_vendor(hop.hop_vendor)
@@ -338,7 +400,6 @@ def batch_apply_hop_proxy(db: Session, ids: list[str], hop: HopProxyConfig) -> d
     if missing:
         raise HTTPException(status_code=404, detail=f"managed_ne_not_found: {','.join(missing[:5])}")
 
-    enc = encrypt_secret(hop_pass)
     now = _now()
     for row in rows:
         row.hop_enabled = True
@@ -347,10 +408,40 @@ def batch_apply_hop_proxy(db: Session, ids: list[str], hop: HopProxyConfig) -> d
         row.hop_port = int(hop.hop_port or 22)
         row.hop_protocol = _normalize_protocol(hop.hop_protocol)
         row.hop_username = hop_user
-        row.hop_password_enc = enc
+        if hop_pass:
+            row.hop_password_enc = encrypt_secret(hop_pass)
         row.hop_command_template = template
         row.hop_vrf = str(hop.hop_vrf or "").strip()
-        row.hop_target_auth_mode = _normalize_hop_target_auth_mode(hop.hop_target_auth_mode)
+        row.hop_target_auth_mode = hop_auth_mode
+        row.updated_at = now
+    db.commit()
+    return {"ok": True, "updated": len(rows)}
+
+
+def batch_apply_account(db: Session, ids: list[str], account: BatchAccountConfig) -> dict[str, Any]:
+    user = str(account.username or "").strip()
+    pwd = str(account.password or "")
+    if not user and not pwd:
+        raise HTTPException(status_code=400, detail="username_or_password_required")
+    if pwd:
+        _require_crypto()
+        pwd_enc = encrypt_secret(pwd)
+    else:
+        pwd_enc = ""
+    ne_ids = [str(x).strip() for x in ids if str(x).strip()]
+    if not ne_ids:
+        raise HTTPException(status_code=400, detail="ids_required")
+    rows = db.query(ManagedNE).filter(ManagedNE.id.in_(ne_ids)).all()
+    found_ids = {str(r.id) for r in rows}
+    missing = [x for x in ne_ids if x not in found_ids]
+    if missing:
+        raise HTTPException(status_code=404, detail=f"managed_ne_not_found: {','.join(missing[:5])}")
+    now = _now()
+    for row in rows:
+        if user:
+            row.username = user
+        if pwd:
+            row.password_enc = pwd_enc
         row.updated_at = now
     db.commit()
     return {"ok": True, "updated": len(rows)}
@@ -452,6 +543,71 @@ def batch_delete_managed_ne(db: Session, ids: list[str]) -> dict[str, Any]:
         db.delete(row)
     db.commit()
     return {"ok": True, "deleted": len(rows)}
+
+
+def sync_ume_inventory_to_managed_ne(db: Session) -> UmeManagedSyncResult:
+    rows = db.query(UmeInventoryNE).all()
+    by_source_ref = {
+        str(x.source_ref or ""): x
+        for x in db.query(ManagedNE).filter(ManagedNE.source == UME_SYNC_SOURCE).all()
+    }
+    inventory_ids = {str(x.ne_id or "").strip() for x in rows if str(x.ne_id or "").strip()}
+    inserted = 0
+    updated = 0
+    now = _now()
+    for inv in rows:
+        source_ref = str(inv.ne_id or "").strip()
+        ip = _normalize_ip(str(inv.ip_address or ""))
+        if not source_ref or not ip:
+            continue
+        existing = by_source_ref.get(source_ref)
+        if existing is None:
+            existing = db.query(ManagedNE).filter(ManagedNE.ip_address == ip).first()
+        device_type, vendor = _infer_managed_ne_type_vendor(str(inv.ne_type or ""), str(inv.vendor or ""))
+        display_name = str(inv.ne_name or "").strip() or ip
+        existing_tags = str(existing.tags or "").strip() if existing is not None else ""
+        if existing is None:
+            existing = ManagedNE(
+                ip_address=ip,
+                created_at=now,
+                source=UME_SYNC_SOURCE,
+                source_ref=source_ref,
+            )
+            db.add(existing)
+            inserted += 1
+        else:
+            updated += 1
+        existing.name = display_name
+        existing.vendor = vendor
+        existing.device_type = device_type
+        existing.port = int(existing.port or 22 or 22)
+        existing.protocol = _normalize_protocol(str(existing.protocol or "ssh"))
+        existing.tags = _merge_tags(existing_tags, UME_SYNC_TAG)
+        existing.source = UME_SYNC_SOURCE
+        existing.source_ref = source_ref
+        existing.updated_at = now
+    deleted = 0
+    for row in db.query(ManagedNE).filter(ManagedNE.source == UME_SYNC_SOURCE).all():
+        ref = str(row.source_ref or "").strip()
+        if not ref or ref not in inventory_ids:
+            db.delete(row)
+            deleted += 1
+    db.commit()
+    return UmeManagedSyncResult(
+        inserted=inserted,
+        updated=updated,
+        deleted=deleted,
+        total_inventory=len(inventory_ids),
+    )
+
+
+def delete_ume_synced_managed_ne(db: Session) -> UmeManagedDeleteResult:
+    rows = db.query(ManagedNE).filter(ManagedNE.source == UME_SYNC_SOURCE).all()
+    deleted = len(rows)
+    for row in rows:
+        db.delete(row)
+    db.commit()
+    return UmeManagedDeleteResult(deleted=deleted)
 
 
 def build_managed_ne_import_template(fmt: str = "xlsx") -> tuple[str, bytes, str]:

@@ -188,6 +188,28 @@ const en = {
     connectDetailTitle: "Connectivity test log",
     connectDetailEmpty:
       "No log yet. Run a connectivity test first; failures store full errors and hop context (passwords excluded).",
+    umeSync: {
+      sync: "Sync UME NEs",
+      syncing: "Syncing…",
+      delete: "Delete UME NEs",
+      deleting: "Deleting…",
+      deleteConfirm: "Delete all managed NEs created from UME sync? This cannot be undone.",
+      done: "UME sync done: {{inserted}} inserted, {{updated}} updated, {{deleted}} deleted, {{total}} inventory total",
+      deletedDone: "Deleted {{n}} UME-synced NEs",
+    },
+    account: {
+      batchAdd: "Batch add account",
+      batchByTag: "Batch account by tag",
+      batchTitle: "Batch add account",
+      batchHint: "Apply the account info below to {{n}} selected NE(s).",
+      batchByTagHint: "Apply the account info below to NEs under the selected tag; leave password blank to update only username.",
+      batchDone: "Account updated for {{n}} NE(s)",
+      selectRequired: "Select network elements first",
+      applying: "Applying…",
+      apply: "Apply to NEs",
+      usernameOrPasswordRequired: "Enter at least a username or a password",
+      passwordOptionalBatch: "leave blank to keep unchanged",
+    },
     help:
       "[Bulk import]\n" +
       "· Required columns: device_type, ip, username, port, protocol, name, vendor. Download the template first.\n" +

@@ -286,6 +286,8 @@ class ManagedNE(Base):
     site: Mapped[str] = mapped_column(String(256), default="")
     tags: Mapped[str] = mapped_column(String(512), default="")
     remark: Mapped[str] = mapped_column(String(1024), default="")
+    source: Mapped[str] = mapped_column(String(64), default="", index=True)
+    source_ref: Mapped[str] = mapped_column(String(128), default="", index=True)
     hop_enabled: Mapped[bool] = mapped_column(default=False)
     hop_vendor: Mapped[str] = mapped_column(String(32), default="zte")
     hop_host: Mapped[str] = mapped_column(String(128), default="")

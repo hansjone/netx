@@ -205,7 +205,7 @@ export function UmeCliConnectPanel({ enabled = true, embedded = false }: { enabl
       {!embedded ? (
         <div className="panel__toolbar">
           <h2>{t("ume.cli.title")}</h2>
-          <HelpHint text={t("ume.cli.hint")} />
+          <HelpHint text={t("ume.cli.hint")} ariaLabel={t("common.help")} />
         </div>
       ) : null}
       <p className="form-field-hint" style={{ marginBottom: 12 }}>

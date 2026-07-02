@@ -907,6 +907,8 @@ def on_startup() -> None:
             conn.exec_driver_sql(
                 "ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS hop_target_auth_mode VARCHAR(32) DEFAULT 'bastion_managed'"
             )
+            conn.exec_driver_sql("ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS source VARCHAR(64) DEFAULT ''")
+            conn.exec_driver_sql("ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS source_ref VARCHAR(128) DEFAULT ''")
             conn.exec_driver_sql("ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS connect_detail TEXT DEFAULT ''")
             conn.exec_driver_sql(
                 "ALTER TABLE ne_collection_job ADD COLUMN IF NOT EXISTS last_run_at TIMESTAMP"

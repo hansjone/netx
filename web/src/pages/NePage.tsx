@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  batchApplyAccountManagedNe,
   batchApplyHopManagedNe,
   batchDeleteManagedNe,
   connectTestManagedNe,
   createManagedNe,
+  deleteUmeManagedNe,
   deleteManagedNe,
   fetchIdsByTag,
   fetchManagedNe,
@@ -12,6 +14,7 @@ import {
   fetchManagedNeStats,
   importManagedNe,
   managedNeImportTemplateUrl,
+  syncUmeManagedNe,
   updateManagedNe,
   type ManagedNeStats,
 } from "../services/api";
@@ -53,6 +56,11 @@ type FormState = {
   hop_target_auth_mode: "bastion_managed" | "manual";
 };
 
+type AccountState = {
+  username: string;
+  password: string;
+};
+
 const emptyForm = (): FormState => ({
   name: "",
   vendor: "ZTE",
@@ -74,6 +82,11 @@ const emptyForm = (): FormState => ({
   hop_command_template: defaultHopTemplate("zte", "ssh", ""),
   hop_vrf: "",
   hop_target_auth_mode: "bastion_managed",
+});
+
+const emptyAccount = (): AccountState => ({
+  username: "",
+  password: "",
 });
 
 function applyHopTemplate(prev: FormState, protocol: string, vrf: string, force = false): Partial<FormState> {
@@ -118,15 +131,18 @@ export function NePage() {
   const [selected, setSelected] = useState<string[]>([]);
   const [modalOpen, setModalOpen] = useState(false);
   const [batchHopOpen, setBatchHopOpen] = useState(false);
+  const [batchAccountOpen, setBatchAccountOpen] = useState(false);
   const [editing, setEditing] = useState<ManagedNeItem | null>(null);
   const [form, setForm] = useState<FormState>(emptyForm);
   const [batchHop, setBatchHop] = useState<HopProxyFieldsState>(emptyHopProxyFields);
+  const [batchAccount, setBatchAccount] = useState<AccountState>(emptyAccount);
   const [connectDetailRow, setConnectDetailRow] = useState<ManagedNeItem | null>(null);
 
   // --- bulk-by-tag dialog ---
   const [bulkTagModalOpen, setBulkTagModalOpen] = useState(false);
-  const [bulkTagAction, setBulkTagAction] = useState<"proxy" | "test">("proxy");
+  const [bulkTagAction, setBulkTagAction] = useState<"proxy" | "test" | "account">("proxy");
   const [bulkTagSelected, setBulkTagSelected] = useState<string>("");   // "" = all, "__no_tag__" = no-tag NEs
+  const [bulkAccount, setBulkAccount] = useState<AccountState>(emptyAccount);
 
   const metaQuery = useQuery({
     queryKey: queryKeys.managedNeMeta,
@@ -272,6 +288,52 @@ export function NePage() {
     onError: (err) => showError(String(err)),
   });
 
+  const batchAccountMutation = useMutation({
+    mutationFn: () =>
+      batchApplyAccountManagedNe(selected, {
+        username: batchAccount.username.trim(),
+        password: batchAccount.password,
+      }),
+    onSuccess: async (res) => {
+      setBatchAccountOpen(false);
+      setBatchAccount(emptyAccount());
+      showOk(t("managedNe.account.batchDone", { n: res.updated }));
+      await invalidateList();
+    },
+    onError: (err) => showError(String(err)),
+  });
+
+  const umeSyncMutation = useMutation({
+    mutationFn: syncUmeManagedNe,
+    onSuccess: async (res) => {
+      showOk(
+        t("managedNe.umeSync.done", {
+          inserted: res.inserted,
+          updated: res.updated,
+          deleted: res.deleted,
+          total: res.total_inventory,
+        }),
+      );
+      await Promise.all([
+        invalidateList(),
+        queryClient.invalidateQueries({ queryKey: queryKeys.managedNeStats }),
+      ]);
+    },
+    onError: (err) => showError(String(err)),
+  });
+
+  const umeDeleteMutation = useMutation({
+    mutationFn: deleteUmeManagedNe,
+    onSuccess: async (res) => {
+      showOk(t("managedNe.umeSync.deletedDone", { n: res.deleted }));
+      await Promise.all([
+        invalidateList(),
+        queryClient.invalidateQueries({ queryKey: queryKeys.managedNeStats }),
+      ]);
+    },
+    onError: (err) => showError(String(err)),
+  });
+
   const importMutation = useMutation({
     mutationFn: importManagedNe,
     onSuccess: async (res) => {
@@ -290,7 +352,7 @@ export function NePage() {
   // Bulk-by-tag: fetch ids then run proxy/test
   const [bulkHop, setBulkHop] = useState<HopProxyFieldsState>(() => emptyHopProxyFields());
   const bulkByTagMutation = useMutation({
-    mutationFn: async (params: { action: "proxy" | "test"; tag: string }) => {
+    mutationFn: async (params: { action: "proxy" | "test" | "account"; tag: string }) => {
       const apiTag = params.tag === "" ? null : params.tag;
       const { ids } = await fetchIdsByTag(apiTag);
       if (ids.length === 0) throw new Error(t("managedNe.stats.loadingIds"));
@@ -298,6 +360,13 @@ export function NePage() {
       if (params.action === "test") {
         const res = await connectTestManagedNe(ids);
         return { type: "test" as const, n: res.submitted };
+      }
+      if (params.action === "account") {
+        const res = await batchApplyAccountManagedNe(ids, {
+          username: bulkAccount.username.trim(),
+          password: bulkAccount.password,
+        });
+        return { type: "account" as const, n: res.updated };
       }
       const res = await batchApplyHopManagedNe(ids, {
         hop_vendor: bulkHop.hop_vendor,
@@ -316,6 +385,7 @@ export function NePage() {
       if (!res) return;
       setBulkTagModalOpen(false);
       if (res.type === "test") showOk(t("managedNe.stats.testDone", { n: res.n }));
+      else if (res.type === "account") showOk(t("managedNe.account.batchDone", { n: res.n }));
       else showOk(t("managedNe.stats.proxyDone", { n: res.n }));
       await Promise.all([
         invalidateList(),
@@ -437,7 +507,7 @@ export function NePage() {
           <div className="ne-stats-card__header-actions">
             <button
               type="button"
-              disabled={!credsOk || bulkByTagMutation.isPending}
+              disabled={bulkByTagMutation.isPending}
               onClick={() => {
                 setBulkTagAction("proxy");
                 setBulkHop(emptyHopProxyFields());
@@ -445,6 +515,17 @@ export function NePage() {
               }}
             >
               {t("managedNe.stats.batchProxy")}
+            </button>
+            <button
+              type="button"
+              disabled={bulkByTagMutation.isPending}
+              onClick={() => {
+                setBulkTagAction("account");
+                setBulkAccount(emptyAccount());
+                setBulkTagModalOpen(true);
+              }}
+            >
+              {t("managedNe.account.batchByTag")}
             </button>
             <button
               type="button"
@@ -489,6 +570,24 @@ export function NePage() {
               </button>
               <button
                 type="button"
+                onClick={() => umeSyncMutation.mutate()}
+                disabled={umeSyncMutation.isPending}
+              >
+                {umeSyncMutation.isPending ? t("managedNe.umeSync.syncing") : t("managedNe.umeSync.sync")}
+              </button>
+              <button
+                type="button"
+                className="btn btn--danger"
+                onClick={() => {
+                  if (!window.confirm(t("managedNe.umeSync.deleteConfirm"))) return;
+                  umeDeleteMutation.mutate();
+                }}
+                disabled={umeDeleteMutation.isPending}
+              >
+                {umeDeleteMutation.isPending ? t("managedNe.umeSync.deleting") : t("managedNe.umeSync.delete")}
+              </button>
+              <button
+                type="button"
                 onClick={() => window.location.assign(managedNeImportTemplateUrl("xlsx"))}
               >
                 {t("managedNe.downloadTemplate")}
@@ -520,7 +619,7 @@ export function NePage() {
               </button>
               <button
                 type="button"
-                disabled={!credsOk || selected.length === 0 || batchHopMutation.isPending}
+                disabled={selected.length === 0 || batchHopMutation.isPending}
                 onClick={() => {
                   if (selected.length === 0) {
                     showError(t("managedNe.hop.selectRequired"));
@@ -531,6 +630,20 @@ export function NePage() {
                 }}
               >
                 {batchHopMutation.isPending ? t("managedNe.hop.applying") : t("managedNe.hop.batchAdd")}
+              </button>
+              <button
+                type="button"
+                disabled={selected.length === 0 || batchAccountMutation.isPending}
+                onClick={() => {
+                  if (selected.length === 0) {
+                    showError(t("managedNe.account.selectRequired"));
+                    return;
+                  }
+                  setBatchAccount(emptyAccount());
+                  setBatchAccountOpen(true);
+                }}
+              >
+                {batchAccountMutation.isPending ? t("managedNe.account.applying") : t("managedNe.account.batchAdd")}
               </button>
               <button
                 type="button"
@@ -873,7 +986,7 @@ export function NePage() {
                     showError(t("managedNe.hop.userRequired"));
                     return;
                   }
-                  if (!batchHop.hop_password) {
+                    if (!batchHop.hop_password && batchHop.hop_target_auth_mode !== "bastion_managed") {
                     showError(t("managedNe.hop.passwordRequired"));
                     return;
                   }
@@ -887,11 +1000,62 @@ export function NePage() {
         </div>
       ) : null}
 
+      {batchAccountOpen ? (
+        <div className="modal-backdrop" role="presentation" onClick={() => setBatchAccountOpen(false)}>
+          <div className="modal" role="dialog" onClick={(e) => e.stopPropagation()}>
+            <h3>{t("managedNe.account.batchTitle")}</h3>
+            <p className="form-hint">{t("managedNe.account.batchHint", { n: selected.length })}</p>
+            <div className="form-grid">
+              <label>
+                <FormLabel>{t("managedNe.col.user")}</FormLabel>
+                <input
+                  value={batchAccount.username}
+                  onChange={(e) => setBatchAccount((prev) => ({ ...prev, username: e.target.value }))}
+                />
+              </label>
+              <label>
+                <FormLabel>
+                  {t("managedNe.col.password")}
+                  <span className="form-label__optional"> ({t("managedNe.account.passwordOptionalBatch")})</span>
+                </FormLabel>
+                <input
+                  type="password"
+                  value={batchAccount.password}
+                  onChange={(e) => setBatchAccount((prev) => ({ ...prev, password: e.target.value }))}
+                />
+              </label>
+            </div>
+            <div className="modal__actions">
+              <button type="button" onClick={() => setBatchAccountOpen(false)}>
+                {t("managedNe.form.cancel")}
+              </button>
+              <button
+                type="button"
+                disabled={batchAccountMutation.isPending}
+                onClick={() => {
+                  if (!batchAccount.username.trim() && !batchAccount.password) {
+                    showError(t("managedNe.account.usernameOrPasswordRequired"));
+                    return;
+                  }
+                  batchAccountMutation.mutate();
+                }}
+              >
+                {batchAccountMutation.isPending ? t("managedNe.account.applying") : t("managedNe.account.apply")}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {bulkTagModalOpen ? (
         <div className="modal-backdrop" role="presentation" onClick={() => setBulkTagModalOpen(false)}>
           <div className="modal" role="dialog" onClick={(e) => e.stopPropagation()}>
             <h3>
-              {bulkTagAction === "proxy" ? t("managedNe.stats.batchProxy") : t("managedNe.stats.batchTest")}
+              {bulkTagAction === "proxy"
+                ? t("managedNe.stats.batchProxy")
+                : bulkTagAction === "account"
+                  ? t("managedNe.account.batchByTag")
+                  : t("managedNe.stats.batchTest")}
               {bulkTagSelected && bulkTagSelected !== "__no_tag__" ? ` · ${bulkTagSelected}` : ""}
               {bulkTagSelected === "__no_tag__" ? ` · ${t("managedNe.stats.noTag")}` : ""}
               {bulkTagSelected === "" ? ` · ${t("managedNe.stats.allTag")}` : ""}
@@ -917,6 +1081,30 @@ export function NePage() {
                 <p className="form-hint">{t("managedNe.hop.batchHint", { n: "?" })}</p>
                 <HopProxyFields value={bulkHop} onChange={(patch) => setBulkHop((prev) => ({ ...prev, ...patch }))} />
               </>
+            ) : bulkTagAction === "account" ? (
+              <>
+                <p className="form-hint">{t("managedNe.account.batchByTagHint")}</p>
+                <div className="form-grid">
+                  <label>
+                    <FormLabel>{t("managedNe.col.user")}</FormLabel>
+                    <input
+                      value={bulkAccount.username}
+                      onChange={(e) => setBulkAccount((prev) => ({ ...prev, username: e.target.value }))}
+                    />
+                  </label>
+                  <label>
+                    <FormLabel>
+                      {t("managedNe.col.password")}
+                      <span className="form-label__optional"> ({t("managedNe.account.passwordOptionalBatch")})</span>
+                    </FormLabel>
+                    <input
+                      type="password"
+                      value={bulkAccount.password}
+                      onChange={(e) => setBulkAccount((prev) => ({ ...prev, password: e.target.value }))}
+                    />
+                  </label>
+                </div>
+              </>
             ) : (
               <p className="form-hint">{t("managedNe.stats.confirm", { n: "?" })}</p>
             )}
@@ -931,7 +1119,14 @@ export function NePage() {
                   if (bulkTagAction === "proxy") {
                     if (!bulkHop.hop_host.trim()) { showError(t("managedNe.hop.hostRequired")); return; }
                     if (!bulkHop.hop_username.trim()) { showError(t("managedNe.hop.userRequired")); return; }
-                    if (!bulkHop.hop_password) { showError(t("managedNe.hop.passwordRequired")); return; }
+                    if (!bulkHop.hop_password && bulkHop.hop_target_auth_mode !== "bastion_managed") {
+                      showError(t("managedNe.hop.passwordRequired")); return;
+                    }
+                  }
+                  if (bulkTagAction === "account") {
+                    if (!bulkAccount.username.trim() && !bulkAccount.password) {
+                      showError(t("managedNe.account.usernameOrPasswordRequired")); return;
+                    }
                   }
                   bulkByTagMutation.mutate({ action: bulkTagAction, tag: bulkTagSelected });
                 }}
@@ -940,7 +1135,9 @@ export function NePage() {
                   ? t("managedNe.stats.loadingIds")
                   : bulkTagAction === "proxy"
                     ? t("managedNe.hop.apply")
-                    : t("managedNe.connect.run")}
+                    : bulkTagAction === "account"
+                      ? t("managedNe.account.apply")
+                      : t("managedNe.connect.run")}
               </button>
             </div>
           </div>

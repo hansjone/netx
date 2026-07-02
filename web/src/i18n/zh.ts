@@ -186,6 +186,28 @@ const zh = {
     connectDetail: "详情",
     connectDetailTitle: "连通性测试日志",
     connectDetailEmpty: "暂无日志。请先执行连通性测试；失败时会记录完整错误与跳板上下文（不含密码）。",
+    umeSync: {
+      sync: "同步 UME 网元",
+      syncing: "同步中…",
+      delete: "删除 UME 网元",
+      deleting: "删除中…",
+      deleteConfirm: "确定删除所有通过 UME 同步到网元管理中的网元？此操作不可恢复。",
+      done: "UME 同步完成：新增 {{inserted}}，更新 {{updated}}，删除 {{deleted}}，UME 清单共 {{total}} 台",
+      deletedDone: "已删除 {{n}} 台 UME 同步网元",
+    },
+    account: {
+      batchAdd: "一键添加账号",
+      batchByTag: "按标签添加账号",
+      batchTitle: "批量添加账号",
+      batchHint: "将以下账号信息应用到已选中的 {{n}} 台网元。",
+      batchByTagHint: "将以下账号信息应用到指定标签下的网元；密码可留空，仅更新用户名。",
+      batchDone: "已为 {{n}} 台网元更新账号",
+      selectRequired: "请先勾选要配置账号的网元",
+      applying: "应用中…",
+      apply: "应用到网元",
+      usernameOrPasswordRequired: "用户名和密码至少填写一项",
+      passwordOptionalBatch: "留空则不修改",
+    },
     help:
       "【批量导入】\n" +
       "· 必填列：device_type、ip、username、port、protocol、name、vendor；可先下载模板。\n" +

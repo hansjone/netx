@@ -129,7 +129,7 @@ class HopProxyConfig(BaseModel):
     hop_port: int = 22
     hop_protocol: str = "ssh"
     hop_username: str
-    hop_password: str
+    hop_password: str = ""
     hop_command_template: str = ""
     hop_vrf: str = ""
     hop_target_auth_mode: str = "bastion_managed"
@@ -138,6 +138,16 @@ class HopProxyConfig(BaseModel):
 class BatchHopApplyRequest(BaseModel):
     ids: list[str] = Field(min_length=1)
     hop: HopProxyConfig
+
+
+class BatchAccountConfig(BaseModel):
+    username: str = ""
+    password: str = ""
+
+
+class BatchAccountApplyRequest(BaseModel):
+    ids: list[str] = Field(min_length=1)
+    account: BatchAccountConfig
 
 
 class ImportFailure(BaseModel):
@@ -149,3 +159,14 @@ class ImportResult(BaseModel):
     inserted: int
     updated: int
     failed: list[ImportFailure]
+
+
+class UmeManagedSyncResult(BaseModel):
+    inserted: int
+    updated: int
+    deleted: int
+    total_inventory: int
+
+
+class UmeManagedDeleteResult(BaseModel):
+    deleted: int

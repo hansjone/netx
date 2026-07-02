@@ -9,18 +9,28 @@ from .device_types import SUPPORTED_DEVICE_TYPES, SUPPORTED_VENDORS
 from .ne_connect import schedule_connect_tests
 from .ne_crypto import credentials_configured
 from .ne_exec import execute_managed_ne_commands
-from .ne_schemas import BatchHopApplyRequest, ConnectTestRequest, ManagedNeCreate, ManagedNeExecRequest, ManagedNeUpdate
+from .ne_schemas import (
+    BatchAccountApplyRequest,
+    BatchHopApplyRequest,
+    ConnectTestRequest,
+    ManagedNeCreate,
+    ManagedNeExecRequest,
+    ManagedNeUpdate,
+)
 from .ne_service import (
+    batch_apply_account,
     batch_apply_hop_proxy,
     build_managed_ne_import_template,
     create_managed_ne,
     batch_delete_managed_ne,
+    delete_ume_synced_managed_ne,
     delete_managed_ne,
     get_ids_by_tag,
     get_managed_ne,
     get_managed_ne_stats,
     import_managed_ne,
     list_managed_ne,
+    sync_ume_inventory_to_managed_ne,
     update_managed_ne,
 )
 from .models import ManagedNE
@@ -111,9 +121,24 @@ def api_batch_apply_hop(body: BatchHopApplyRequest, db: Session = Depends(get_db
     return batch_apply_hop_proxy(db, body.ids, body.hop)
 
 
+@router.post("/batch-account")
+def api_batch_apply_account(body: BatchAccountApplyRequest, db: Session = Depends(get_db)):
+    return batch_apply_account(db, body.ids, body.account)
+
+
 @router.post("/batch-delete")
 def api_batch_delete_managed_ne(body: ConnectTestRequest, db: Session = Depends(get_db)):
     return batch_delete_managed_ne(db, body.ids)
+
+
+@router.post("/ume-sync")
+def api_sync_ume_inventory_to_managed_ne(db: Session = Depends(get_db)):
+    return sync_ume_inventory_to_managed_ne(db).model_dump()
+
+
+@router.delete("/ume-sync")
+def api_delete_ume_synced_managed_ne(db: Session = Depends(get_db)):
+    return delete_ume_synced_managed_ne(db).model_dump()
 
 
 @router.post("/exec")

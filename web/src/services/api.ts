@@ -239,6 +239,20 @@ export const batchApplyHopManagedNe = (
   },
 ) => apiPost<{ ok: boolean; updated: number }>("/v1/managed-ne/batch-hop", { ids, hop });
 
+export const batchApplyAccountManagedNe = (
+  ids: string[],
+  account: {
+    username?: string;
+    password?: string;
+  },
+) => apiPost<{ ok: boolean; updated: number }>("/v1/managed-ne/batch-account", { ids, account });
+
+export const syncUmeManagedNe = () =>
+  apiPost<{ inserted: number; updated: number; deleted: number; total_inventory: number }>("/v1/managed-ne/ume-sync", {});
+
+export const deleteUmeManagedNe = () =>
+  apiDelete<{ deleted: number }>("/v1/managed-ne/ume-sync");
+
 export const managedNeImportTemplateUrl = (format: "xlsx" | "csv" = "xlsx") =>
   `/v1/managed-ne/import/template?format=${format}`;
 

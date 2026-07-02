@@ -984,7 +984,7 @@ export function UmePage() {
               </span>
               <button
                 type="button"
-                onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeKeyAlertMonitor })}
+                onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeKeyAlertMonitorAll })}
                 disabled={keyAlertMonitorQuery.isFetching}
               >
                 {keyAlertMonitorQuery.isFetching ? t("common.refreshing") : t("common.refresh")}
