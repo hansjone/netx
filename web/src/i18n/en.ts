@@ -337,6 +337,8 @@ const en = {
     },
     keyAlert: {
       title: "AI alarm monitor (OClaw WhatsApp)",
+      showPanel: "Expand",
+      hidePanel: "Collapse",
       help: "Exact match by notificationId, or substring match on alarm description (case-insensitive; nativeProbableCause, etc.). Optionally restrict to UME inventory ne_type values (multi-select; empty = all devices). Pushed via OClaw WebSocket. Shares NETX_OCLAW_ANALYZE_TOKEN.",
       ws: "OClaw WSS",
       wsConnected: "connected",
@@ -455,6 +457,8 @@ const en = {
     },
     syncStatus: {
       title: "Sync history",
+      showPanel: "Expand",
+      hidePanel: "Collapse",
       empty: "No sync records",
     },
     ne: {
@@ -473,6 +477,8 @@ const en = {
     },
     cli: {
       title: "UME CLI connection profile",
+      showPanel: "Expand",
+      hidePanel: "Collapse",
       hint: "Unified SSH credentials and hop/bastion for UME inventory NEs. OClaw MCP can exec show commands via ume_ne_id without per-device managed_ne entries.",
       statusReady: "CLI profile is ready for UME NE command execution.",
       statusNotReady: "Set target username and hop/bastion settings (if enabled).",

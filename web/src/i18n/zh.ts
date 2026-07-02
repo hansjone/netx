@@ -335,6 +335,8 @@ const zh = {
     },
     keyAlert: {
       title: "AI 告警监控（OClaw WhatsApp）",
+      showPanel: "展开",
+      hidePanel: "收起",
       help: "按 notificationId 精确匹配，或按告警描述关键字模糊匹配（不区分大小写，匹配 nativeProbableCause 等字段）；可选限定 UME Inventory 中的网元类型 (ne_type)，不选则匹配全部设备。经 OClaw WebSocket 推送到 WhatsApp 群。鉴权与 NETX_OCLAW_ANALYZE_TOKEN 共用。",
       ws: "OClaw WSS",
       wsConnected: "已连接",
@@ -453,6 +455,8 @@ const zh = {
     },
     syncStatus: {
       title: "同步状态",
+      showPanel: "展开",
+      hidePanel: "收起",
       empty: "暂无同步记录",
     },
     ne: {
@@ -471,6 +475,8 @@ const zh = {
     },
     cli: {
       title: "UME CLI 连接配置",
+      showPanel: "展开",
+      hidePanel: "收起",
       hint: "为 UME 清单网元配置统一 SSH 凭据与跳板/堡垒机；OClaw MCP 可通过 ume_ne_id 直接执行 show 命令，无需逐台录入 managed_ne。",
       statusReady: "CLI 配置已就绪，可对 UME 网元执行命令。",
       statusNotReady: "请填写目标用户名，并配置跳板/堡垒机（若启用）。",

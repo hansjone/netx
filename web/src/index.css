@@ -355,11 +355,24 @@ button {
   font-size: 16px;
 }
 
-.card input,
+.card__section-title {
+  margin: 14px 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.card input:not([type="checkbox"]):not([type="radio"]),
 .card select,
 .card textarea {
   width: 100%;
   margin-bottom: 8px;
+}
+
+.card input[type="checkbox"],
+.card input[type="radio"] {
+  width: auto;
+  margin-bottom: 0;
+  flex: 0 0 auto;
 }
 
 .pager input,
@@ -902,7 +915,11 @@ pre {
 .page-stack {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 12px;
+}
+
+.page-stack > .cards {
+  margin-bottom: 0;
 }
 
 .panel--warn {
@@ -920,7 +937,8 @@ pre {
   margin-bottom: 12px;
 }
 
-.panel__toolbar h2 {
+.panel__toolbar h2,
+.panel__toolbar h3 {
   margin: 0;
 }
 
@@ -1008,6 +1026,104 @@ pre {
   margin-top: 16px;
 }
 
+.cli-connect-panel {
+  width: 100%;
+  text-align: left;
+}
+
+.cli-connect-panel .form-grid,
+.cli-connect-panel .form-fieldset {
+  width: 100%;
+  max-width: none;
+}
+
+.cli-connect-panel .form-grid label:not(.form-check) {
+  align-items: stretch;
+  text-align: left;
+}
+
+.cli-connect-panel .form-label {
+  display: block;
+  margin: 0;
+  text-align: left;
+}
+
+.cli-connect-panel .form-grid input,
+.cli-connect-panel .form-grid select,
+.cli-connect-panel .form-fieldset input,
+.cli-connect-panel .form-fieldset select {
+  width: 100%;
+  margin: 0;
+  text-align: left;
+}
+
+.cli-connect-panel .form-fieldset {
+  text-align: left;
+  width: 100%;
+  min-width: 0;
+  min-inline-size: 0;
+}
+
+.cli-connect-panel .hop-proxy-fields,
+.cli-connect-panel .hop-proxy-fields .form-grid {
+  width: 100%;
+}
+
+.cli-connect-panel .hop-proxy-fields .form-grid label {
+  align-items: flex-start;
+  justify-content: flex-start;
+  text-align: left;
+  width: 100%;
+}
+
+.cli-connect-panel .hop-proxy-fields .form-grid select,
+.cli-connect-panel .hop-proxy-fields .form-grid input {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  margin: 0;
+  box-sizing: border-box;
+  text-align: left;
+  text-align-last: left;
+}
+
+.cli-connect-panel .hop-proxy-fields .form-field-hint {
+  text-align: left;
+}
+
+.cli-connect-panel .form-fieldset legend {
+  margin: 0 0 8px;
+  padding: 0 6px;
+  text-align: left;
+}
+
+.cli-connect-panel .form-check {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  width: fit-content;
+  max-width: 100%;
+}
+
+.card .cli-connect-panel input,
+.card .cli-connect-panel select,
+.card .cli-connect-panel textarea {
+  margin-bottom: 0;
+}
+
+.cli-connect-test-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.cli-connect-test-row input {
+  flex: 1 1 320px;
+  min-width: 240px;
+  margin-bottom: 0;
+}
+
 .form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1036,6 +1152,14 @@ pre {
   line-height: 1.35;
 }
 
+.form-label {
+  display: block;
+  margin: 0;
+  font-size: 12px;
+  color: #64748b;
+  text-align: left;
+}
+
 .form-grid label {
   display: flex;
   flex-direction: column;
@@ -1060,11 +1184,19 @@ pre {
   border-radius: 8px;
 }
 
-.form-fieldset legend {
+.form-fieldset legend,
+.form-fieldset__title {
   padding: 0 6px;
   font-size: 13px;
   font-weight: 600;
   color: #334155;
+}
+
+.form-fieldset__title {
+  display: block;
+  margin: 0 0 10px;
+  padding: 0;
+  text-align: left;
 }
 
 .form-check {
@@ -1075,6 +1207,21 @@ pre {
   margin-bottom: 12px;
   font-size: 13px;
   color: #334155;
+  width: fit-content;
+  max-width: 100%;
+}
+
+.form-check__text {
+  white-space: nowrap;
+  line-height: 1.4;
+}
+
+/* form-grid labels are column layout; checkbox rows must stay horizontal */
+.form-grid label.form-check {
+  flex-direction: row;
+  align-items: center;
+  width: fit-content;
+  max-width: 100%;
 }
 
 .table-tag {

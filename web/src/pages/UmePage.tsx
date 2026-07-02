@@ -46,6 +46,8 @@ export function UmePage() {
   const [nePageSize, setNePageSize] = useState(50);
   const [expandedNeId, setExpandedNeId] = useState("");
   const [nePanelOpen, setNePanelOpen] = useState(false);
+  const [syncStatusPanelOpen, setSyncStatusPanelOpen] = useState(false);
+  const [keyAlertPanelOpen, setKeyAlertPanelOpen] = useState(false);
   const [curSeverity, setCurSeverity] = useState("");
   const [curCleared, setCurCleared] = useState("");
   const [curHostName, setCurHostName] = useState("");
@@ -69,17 +71,7 @@ export function UmePage() {
   const [keyAlertNeTypes, setKeyAlertNeTypes] = useState<string[]>([]);
   const [keyAlertEditRule, setKeyAlertEditRule] = useState<UmeKeyAlertRuleItem | null>(null);
   const [keyAlertEditNeTypes, setKeyAlertEditNeTypes] = useState<string[]>([]);
-  const [umeViewTab, setUmeViewTab] = useState<"main" | "cli">("main");
-
-  const syncMutation = useMutation({
-    mutationFn: async (domains: string[]) => apiPost<{ ok: boolean; jobs: unknown[] }>("/v1/ume/sync", { domains }),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: queryKeys.umeSyncStatusAll });
-      await queryClient.invalidateQueries({ queryKey: queryKeys.umeNEAll });
-      await queryClient.invalidateQueries({ queryKey: queryKeys.umeCurrentAlarmsAll });
-      await queryClient.invalidateQueries({ queryKey: queryKeys.umeInventoryNeTypes });
-    },
-  });
+  const [cliPanelOpen, setCliPanelOpen] = useState(false);
 
   const syncStatusQuery = useQuery({
     queryKey: queryKeys.umeSyncStatus(syncPage, syncPageSize),
@@ -138,6 +130,7 @@ export function UmePage() {
       }),
     staleTime: 3000,
     refetchInterval: 5000,
+    enabled: keyAlertPanelOpen,
   });
   const keyAlertNeTypesQuery = useQuery({
     queryKey: queryKeys.umeInventoryNeTypes,
@@ -261,7 +254,7 @@ export function UmePage() {
     queryKey: queryKeys.cliTargets(neKeyword, nePage, nePageSize),
     queryFn: () =>
       fetchCliTargets({ source: "ume", keyword: neKeyword, page: nePage, pageSize: nePageSize }),
-    enabled: nePanelOpen && umeViewTab === "main",
+    enabled: nePanelOpen,
     staleTime: 5000,
   });
   const cliStatusByNeId = useMemo(() => {
@@ -459,30 +452,7 @@ export function UmePage() {
 
   return (
     <>
-      <section className="panel" style={{ marginBottom: 12 }}>
-        <div className="filter-inline">
-          <button
-            type="button"
-            className={umeViewTab === "main" ? "link-btn" : "link-btn"}
-            style={{ fontWeight: umeViewTab === "main" ? 700 : 400 }}
-            onClick={() => setUmeViewTab("main")}
-          >
-            {t("ume.tabs.main")}
-          </button>
-          <button
-            type="button"
-            className="link-btn"
-            style={{ fontWeight: umeViewTab === "cli" ? 700 : 400 }}
-            onClick={() => setUmeViewTab("cli")}
-          >
-            {t("ume.tabs.cli")}
-          </button>
-        </div>
-      </section>
-      {umeViewTab === "cli" ? (
-        <UmeCliConnectPanel />
-      ) : (
-      <>
+      <div className="page-stack">
       <section className="cards">
         <article className="card card--full">
           <h3>{t("ume.token.title")}</h3>
@@ -560,6 +530,105 @@ export function UmePage() {
               {t("common.opFailed")}: {tokenOpError || String(tokenRefreshMutation.error || tokenDisconnectMutation.error)}
             </div>
           )}
+        </article>
+
+        <article className="card card--full">
+          <h3>{t("ume.tasks.currentTitle")}</h3>
+          <div className="actions-row actions-row--inline">
+            <span className={`conn-pill conn-pill--${runningTasks.length > 0 ? "unknown" : "up"}`}>
+              {t("ume.tasks.running")}: {runningTasks.length}
+            </span>
+            <button onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeSyncStatusAll })} disabled={syncStatusQuery.isFetching}>
+              {t("common.refresh")}
+            </button>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>domain</th>
+                <th>trigger_mode</th>
+                <th>status</th>
+                <th>started_at</th>
+                <th>error</th>
+              </tr>
+            </thead>
+            <tbody>
+              {runningTasks.map((x) => (
+                <tr key={`running-${x.id}`}>
+                  <td>{x.id}</td>
+                  <td>{x.domain}</td>
+                  <td>{x.trigger_mode}</td>
+                  <td>{x.status}</td>
+                  <td>{formatSystemTime(x.started_at)}</td>
+                  <td>{x.error_message || t("common.empty")}</td>
+                </tr>
+              ))}
+              {!syncStatusQuery.isLoading && runningTasks.length === 0 && (
+                <tr>
+                  <td colSpan={6}>{t("ume.tasks.noRunning")}</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+
+          <h3 className="card__section-title">{t("ume.tasks.runtimeTitle")}</h3>
+          {runtimeTaskError ? (
+            <div className="pill pill--high" style={{ marginBottom: 8 }}>
+              {t("ume.tasks.runtimeOpFailed")}: {runtimeTaskError}
+            </div>
+          ) : null}
+          <table>
+            <thead>
+              <tr>
+                <th>task</th>
+                <th title={t("ume.tasks.intervalTitle")}>interval</th>
+                <th>status</th>
+                <th title={t("ume.tasks.lastRunTitle")}>last_run_at</th>
+                <th>{t("ume.tasks.lastErrorCol")}</th>
+                <th>actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {runtimeTasks.map((x) => (
+                <tr key={`runtime-${x.task}`}>
+                  <td title={x.task}>{runtimeTaskLabel(x.task)}</td>
+                  <td title={typeof x.interval_s === "number" ? `${x.interval_s}s` : undefined}>
+                    {runtimeIntervalLabel(x.interval_label)}
+                  </td>
+                  <td>{x.status}</td>
+                  <td>{x.last_run_at ? formatSystemTime(x.last_run_at) : t("common.empty")}</td>
+                  <td>{runtimeLastError(x.last_error, t) || t("common.empty")}</td>
+                  <td>
+                    {Boolean(x.paused) ? (
+                      <button
+                        type="button"
+                        className="link-btn"
+                        disabled={runtimeTaskMutation.isPending}
+                        onClick={() => runtimeTaskMutation.mutate({ task: x.task, action: "resume" })}
+                      >
+                        resume
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="link-btn"
+                        disabled={runtimeTaskMutation.isPending}
+                        onClick={() => runtimeTaskMutation.mutate({ task: x.task, action: "pause" })}
+                      >
+                        pause
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+              {!syncStatusQuery.isLoading && runtimeTasks.length === 0 && (
+                <tr>
+                  <td colSpan={6}>{t("ume.tasks.noRuntime")}</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </article>
 
         <article className="card card--full">
@@ -711,10 +780,30 @@ export function UmePage() {
         </article>
 
         <article className="card card--full">
-          <h3 className="card-title-with-hint">
-            {t("ume.keyAlert.title")}
-            <HelpHint text={t("ume.keyAlert.help")} ariaLabel={t("common.help")} />
-          </h3>
+          <div className="panel__toolbar" style={{ marginBottom: cliPanelOpen ? 12 : 0 }}>
+            <h3 className="card-title-with-hint">
+              {t("ume.cli.title")}
+              <HelpHint text={t("ume.cli.hint")} ariaLabel={t("common.help")} />
+            </h3>
+            <button type="button" className="link-btn" onClick={() => setCliPanelOpen((x) => !x)}>
+              {cliPanelOpen ? t("ume.cli.hidePanel") : t("ume.cli.showPanel")}
+            </button>
+          </div>
+          {cliPanelOpen ? <UmeCliConnectPanel embedded enabled /> : null}
+        </article>
+
+        <article className="card card--full">
+          <div className="panel__toolbar" style={{ marginBottom: keyAlertPanelOpen ? 12 : 0 }}>
+            <h3 className="card-title-with-hint">
+              {t("ume.keyAlert.title")}
+              <HelpHint text={t("ume.keyAlert.help")} ariaLabel={t("common.help")} />
+            </h3>
+            <button type="button" className="link-btn" onClick={() => setKeyAlertPanelOpen((x) => !x)}>
+              {keyAlertPanelOpen ? t("ume.keyAlert.hidePanel") : t("ume.keyAlert.showPanel")}
+            </button>
+          </div>
+          {keyAlertPanelOpen ? (
+          <>
           <div className="actions-row actions-row--inline">
             <span className={`conn-pill conn-pill--${oclawWsPill}`}>
               {t("ume.keyAlert.ws")}:{" "}
@@ -1059,130 +1148,20 @@ export function UmePage() {
               </select>
             </div>
           </div>
-        </article>
-
-        <article className="card card--full">
-          <h3>{t("ume.sync.title")}</h3>
-          <div className="actions-row actions-row--inline">
-            <button onClick={() => syncMutation.mutate(["inventory"])} disabled={syncMutation.isPending}>
-              {t("ume.sync.inventory")}
-            </button>
-            <button onClick={() => syncMutation.mutate(["alarms_current"])} disabled={syncMutation.isPending}>
-              {t("ume.sync.alarmsCurrent")}
-            </button>
-            <button onClick={() => syncMutation.mutate(["inventory", "alarms_current"])} disabled={syncMutation.isPending}>
-              {t("ume.sync.full")}
-            </button>
-          </div>
-          {syncMutation.error && (
-            <div className="pill pill--high">
-              {t("ume.sync.failed")}: {String(syncMutation.error)}
-            </div>
-          )}
+          </>
+          ) : null}
         </article>
       </section>
 
       <section className="panel">
-        <h2>{t("ume.tasks.currentTitle")}</h2>
-        <div className="actions-row actions-row--inline">
-          <span className={`conn-pill conn-pill--${runningTasks.length > 0 ? "unknown" : "up"}`}>
-            {t("ume.tasks.running")}: {runningTasks.length}
-          </span>
-          <button onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeSyncStatusAll })} disabled={syncStatusQuery.isFetching}>
-            {t("common.refresh")}
+        <div className="panel__toolbar">
+          <h2>{t("ume.syncStatus.title")}</h2>
+          <button type="button" className="link-btn" onClick={() => setSyncStatusPanelOpen((x) => !x)}>
+            {syncStatusPanelOpen ? t("ume.syncStatus.hidePanel") : t("ume.syncStatus.showPanel")}
           </button>
         </div>
-        <table>
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>domain</th>
-              <th>trigger_mode</th>
-              <th>status</th>
-              <th>started_at</th>
-              <th>error</th>
-            </tr>
-          </thead>
-          <tbody>
-            {runningTasks.map((x) => (
-              <tr key={`running-${x.id}`}>
-                <td>{x.id}</td>
-                <td>{x.domain}</td>
-                <td>{x.trigger_mode}</td>
-                <td>{x.status}</td>
-                <td>{formatSystemTime(x.started_at)}</td>
-                <td>{x.error_message || t("common.empty")}</td>
-              </tr>
-            ))}
-            {!syncStatusQuery.isLoading && runningTasks.length === 0 && (
-              <tr>
-                <td colSpan={6}>{t("ume.tasks.noRunning")}</td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-
-        <h3 style={{ marginTop: 12 }}>{t("ume.tasks.runtimeTitle")}</h3>
-        {runtimeTaskError ? (
-          <div className="pill pill--high" style={{ marginBottom: 8 }}>
-            {t("ume.tasks.runtimeOpFailed")}: {runtimeTaskError}
-          </div>
-        ) : null}
-        <table>
-          <thead>
-            <tr>
-              <th>task</th>
-              <th title={t("ume.tasks.intervalTitle")}>interval</th>
-              <th>status</th>
-              <th title={t("ume.tasks.lastRunTitle")}>last_run_at</th>
-              <th>{t("ume.tasks.lastErrorCol")}</th>
-              <th>actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {runtimeTasks.map((x) => (
-              <tr key={`runtime-${x.task}`}>
-                <td title={x.task}>{runtimeTaskLabel(x.task)}</td>
-                <td title={typeof x.interval_s === "number" ? `${x.interval_s}s` : undefined}>
-                  {runtimeIntervalLabel(x.interval_label)}
-                </td>
-                <td>{x.status}</td>
-                <td>{x.last_run_at ? formatSystemTime(x.last_run_at) : t("common.empty")}</td>
-                <td>{runtimeLastError(x.last_error, t) || t("common.empty")}</td>
-                <td>
-                  {Boolean(x.paused) ? (
-                    <button
-                      type="button"
-                      className="link-btn"
-                      disabled={runtimeTaskMutation.isPending}
-                      onClick={() => runtimeTaskMutation.mutate({ task: x.task, action: "resume" })}
-                    >
-                      resume
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      className="link-btn"
-                      disabled={runtimeTaskMutation.isPending}
-                      onClick={() => runtimeTaskMutation.mutate({ task: x.task, action: "pause" })}
-                    >
-                      pause
-                    </button>
-                  )}
-                </td>
-              </tr>
-            ))}
-            {!syncStatusQuery.isLoading && runtimeTasks.length === 0 && (
-              <tr>
-                <td colSpan={6}>{t("ume.tasks.noRuntime")}</td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </section>
-
-      <section className="panel">
-        <h2>{t("ume.syncStatus.title")}</h2>
+        {syncStatusPanelOpen ? (
+        <>
         <div className="actions-row actions-row--inline">
           <button onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeSyncStatusAll })} disabled={syncStatusQuery.isFetching}>
             {t("common.refresh")}
@@ -1249,6 +1228,8 @@ export function UmePage() {
             </select>
           </div>
         </div>
+        </>
+        ) : null}
       </section>
 
       <section className="panel">
@@ -1476,6 +1457,7 @@ export function UmePage() {
           </>
         ) : null}
       </section>
+      </div>
 
       {keyAlertEditRule ? (
         <div className="modal-backdrop" role="presentation" onClick={() => setKeyAlertEditRule(null)}>
@@ -1553,8 +1535,6 @@ export function UmePage() {
           </div>
         </div>
       ) : null}
-    </>
-      )}
     </>
   );
 }

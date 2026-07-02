@@ -16,6 +16,7 @@ import { queryKeys } from "../constants/queryKeys";
 import { useI18n } from "../i18n";
 import { useToast } from "../hooks/useToast";
 import type { CliConnectProfileItem, UmeCliOverrideItem } from "../types";
+import { defaultHopTemplate, isAutoHopTemplate, patchHopVendorChange } from "../utils/hopProxy";
 import { formatSystemTime } from "../utils/time";
 
 function connectPillLevel(status: string): "up" | "down" | "unknown" | "warn" {
@@ -36,8 +37,16 @@ type ProfileForm = {
   device_type_default: string;
   vendor_default: string;
   is_default: boolean;
+  hop_enabled: boolean;
   hop: HopProxyFieldsState;
 };
+
+function applyHopTemplate(hop: HopProxyFieldsState, protocol: string, vrf: string, force = false): Partial<HopProxyFieldsState> {
+  if (!force && !isAutoHopTemplate(hop.hop_command_template, hop.hop_vendor, hop.hop_protocol, hop.hop_vrf)) {
+    return {};
+  }
+  return { hop_command_template: defaultHopTemplate(hop.hop_vendor, protocol, vrf) };
+}
 
 const emptyForm = (): ProfileForm => ({
   id: "",
@@ -49,7 +58,8 @@ const emptyForm = (): ProfileForm => ({
   device_type_default: "zte_zxros",
   vendor_default: "ZTE",
   is_default: true,
-  hop: { ...emptyHopProxyFields(), hop_vendor: "bastion", hop_port: 22 },
+  hop_enabled: false,
+  hop: emptyHopProxyFields(),
 });
 
 function profileToForm(row: CliConnectProfileItem): ProfileForm {
@@ -63,6 +73,7 @@ function profileToForm(row: CliConnectProfileItem): ProfileForm {
     device_type_default: row.device_type_default,
     vendor_default: row.vendor_default,
     is_default: row.is_default,
+    hop_enabled: row.hop_enabled,
     hop: {
       hop_vendor: (row.hop_vendor || "bastion") as HopProxyFieldsState["hop_vendor"],
       hop_host: row.hop_host ?? "",
@@ -77,7 +88,7 @@ function profileToForm(row: CliConnectProfileItem): ProfileForm {
   };
 }
 
-export function UmeCliConnectPanel() {
+export function UmeCliConnectPanel({ enabled = true, embedded = false }: { enabled?: boolean; embedded?: boolean }) {
   const { t } = useI18n();
   const { showOk, showError } = useToast();
   const queryClient = useQueryClient();
@@ -91,9 +102,9 @@ export function UmeCliConnectPanel() {
     setTestPending(false);
   }, [testNeId]);
 
-  const metaQuery = useQuery({ queryKey: queryKeys.cliMeta, queryFn: fetchCliMeta });
-  const neMetaQuery = useQuery({ queryKey: queryKeys.managedNeMeta, queryFn: fetchManagedNeMeta });
-  const profilesQuery = useQuery({ queryKey: queryKeys.cliProfiles, queryFn: fetchCliProfiles });
+  const metaQuery = useQuery({ queryKey: queryKeys.cliMeta, queryFn: fetchCliMeta, enabled });
+  const neMetaQuery = useQuery({ queryKey: queryKeys.managedNeMeta, queryFn: fetchManagedNeMeta, enabled });
+  const profilesQuery = useQuery({ queryKey: queryKeys.cliProfiles, queryFn: fetchCliProfiles, enabled });
   const overrideQuery = useQuery({
     queryKey: queryKeys.umeCliOverride(testNeId),
     queryFn: () => fetchUmeCliOverride(testNeId),
@@ -118,6 +129,11 @@ export function UmeCliConnectPanel() {
 
   const saveMutation = useMutation({
     mutationFn: async () => {
+      if (form.hop_enabled) {
+        if (!form.hop.hop_host.trim()) throw new Error(t("managedNe.hop.hostRequired"));
+        if (!form.hop.hop_username.trim()) throw new Error(t("managedNe.hop.userRequired"));
+        if (!form.id && !form.hop.hop_password) throw new Error(t("managedNe.hop.passwordRequired"));
+      }
       const body = {
         name: form.name.trim(),
         username: form.username.trim(),
@@ -127,14 +143,13 @@ export function UmeCliConnectPanel() {
         device_type_default: form.device_type_default,
         vendor_default: form.vendor_default,
         is_default: form.is_default,
-        hop_enabled:
-          form.hop.hop_vendor !== "linux" ? Boolean((form.hop.hop_host ?? "").trim()) : true,
+        hop_enabled: form.hop_enabled,
         hop_vendor: form.hop.hop_vendor,
         hop_host: form.hop.hop_host,
         hop_port: form.hop.hop_port,
         hop_protocol: form.hop.hop_protocol,
         hop_username: form.hop.hop_username,
-        hop_password: form.hop.hop_password || undefined,
+        hop_password: form.hop_enabled ? form.hop.hop_password || undefined : undefined,
         hop_command_template: form.hop.hop_command_template,
         hop_vrf: form.hop.hop_vrf,
         hop_target_auth_mode: form.hop.hop_target_auth_mode,
@@ -185,16 +200,18 @@ export function UmeCliConnectPanel() {
   const vendors = neMetaQuery.data?.vendors ?? [];
   const cliReady = Boolean(metaQuery.data?.cli_profile_ready);
 
-  return (
-    <section className="panel">
-      <div className="panel__toolbar">
-        <h2>{t("ume.cli.title")}</h2>
-        <HelpHint text={t("ume.cli.hint")} />
-      </div>
+  const body = (
+    <div className={embedded ? "cli-connect-panel" : undefined}>
+      {!embedded ? (
+        <div className="panel__toolbar">
+          <h2>{t("ume.cli.title")}</h2>
+          <HelpHint text={t("ume.cli.hint")} />
+        </div>
+      ) : null}
       <p className="form-field-hint" style={{ marginBottom: 12 }}>
         {cliReady ? t("ume.cli.statusReady") : t("ume.cli.statusNotReady")}
       </p>
-      <div className="form-grid" style={{ maxWidth: 960 }}>
+      <div className="form-grid">
         <label>
           <span className="form-label">{t("ume.cli.profileName")}</span>
           <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
@@ -241,13 +258,43 @@ export function UmeCliConnectPanel() {
           </select>
         </label>
       </div>
-      <HopProxyFields
-        value={form.hop}
-        onChange={(patch) => setForm((prev) => ({ ...prev, hop: { ...prev.hop, ...patch } }))}
-        hopPasswordRequired={!form.id}
-        hopPasswordOptional={Boolean(form.id)}
-      />
-      <div className="filter-inline" style={{ marginTop: 16 }}>
+      <div className="form-fieldset" style={{ marginTop: 16 }}>
+        <div className="form-fieldset__title">{t("managedNe.hop.sectionTitle")}</div>
+        <label className="form-check">
+          <input
+            type="checkbox"
+            checked={form.hop_enabled}
+            onChange={(e) => {
+              const hop_enabled = e.target.checked;
+              setForm((prev) => ({
+                ...prev,
+                hop_enabled,
+                ...(hop_enabled
+                  ? {
+                      hop: {
+                        ...prev.hop,
+                        ...patchHopVendorChange(prev.hop.hop_vendor, prev.hop),
+                        ...applyHopTemplate(prev.hop, prev.hop.hop_protocol, prev.hop.hop_vrf, true),
+                      },
+                    }
+                  : {}),
+              }));
+            }}
+          />
+          <span className="form-check__text">{t("managedNe.hop.enable")}</span>
+        </label>
+        {form.hop_enabled ? (
+          <div className="hop-proxy-fields">
+            <HopProxyFields
+              value={form.hop}
+              onChange={(patch) => setForm((prev) => ({ ...prev, hop: { ...prev.hop, ...patch } }))}
+              hopPasswordRequired={!form.id}
+              hopPasswordOptional={Boolean(form.id)}
+            />
+          </div>
+        ) : null}
+      </div>
+      <div className="actions-row actions-row--inline" style={{ marginTop: 16 }}>
         <button type="button" onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending}>
           {saveMutation.isPending ? t("managedNe.form.saving") : t("managedNe.form.save")}
         </button>
@@ -279,14 +326,13 @@ export function UmeCliConnectPanel() {
           </button>
         ) : null}
       </div>
-      <div className="panel" style={{ marginTop: 20 }}>
-        <h3>{t("ume.cli.connectTestTitle")}</h3>
-        <div className="filter-inline">
+      <div className={embedded ? undefined : "panel"} style={{ marginTop: 20 }}>
+        <h3 className={embedded ? "card__section-title" : undefined}>{t("ume.cli.connectTestTitle")}</h3>
+        <div className="cli-connect-test-row">
           <input
             value={sampleUmeNeId}
             onChange={(e) => setSampleUmeNeId(e.target.value)}
             placeholder={t("ume.cli.sampleNePh")}
-            style={{ minWidth: 320 }}
           />
           <button type="button" onClick={() => connectTestMutation.mutate()} disabled={connectTestMutation.isPending}>
             {connectTestMutation.isPending || overrideTesting
@@ -335,7 +381,7 @@ export function UmeCliConnectPanel() {
       {(profilesQuery.data?.items || []).length > 1 ? (
         <div style={{ marginTop: 16 }}>
           <span className="form-label">{t("ume.cli.existingProfiles")}</span>
-          <div className="filter-inline">
+          <div className="actions-row actions-row--inline">
             {(profilesQuery.data?.items || []).map((p) => (
               <button key={p.id} type="button" className="link-btn" onClick={() => setForm(profileToForm(p))}>
                 {p.name}
@@ -345,6 +391,9 @@ export function UmeCliConnectPanel() {
           </div>
         </div>
       ) : null}
-    </section>
+    </div>
   );
+
+  if (embedded) return body;
+  return <section className="panel">{body}</section>;
 }

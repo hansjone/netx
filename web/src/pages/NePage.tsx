@@ -601,6 +601,7 @@ export function NePage() {
               <th>{t("managedNe.col.name")}</th>
               <th>{t("managedNe.col.vendor")}</th>
               <th>{t("managedNe.col.deviceType")}</th>
+              <th>{t("managedNe.col.tags")}</th>
               <th>{t("managedNe.col.ip")}</th>
               <th>{t("managedNe.col.user")}</th>
               <th>{t("managedNe.col.connect")}</th>
@@ -621,6 +622,15 @@ export function NePage() {
                 <td>{row.name || row.ip_address}</td>
                 <td>{row.vendor}</td>
                 <td>{row.device_type}</td>
+                <td>
+                  {row.tags
+                    ? row.tags.split(/\s+/).map((tag) => (
+                        <span key={tag} className="table-tag">
+                          {tag}
+                        </span>
+                      ))
+                    : t("common.empty")}
+                </td>
                 <td>
                   {row.ip_address}:{row.port}/{row.protocol}
                   {row.hop_enabled ? (
@@ -808,7 +818,7 @@ export function NePage() {
                     }));
                   }}
                 />
-                {t("managedNe.hop.enable")}
+                <span className="form-check__text">{t("managedNe.hop.enable")}</span>
               </label>
               {form.hop_enabled ? (
                 <HopProxyFields
