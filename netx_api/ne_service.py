@@ -236,6 +236,12 @@ def list_managed_ne(
 ) -> dict[str, Any]:
     stmt = db.query(ManagedNE)
     kw = str(keyword or "").strip()
+    v = str(vendor or "").strip()
+    cs = str(connect_status or "").strip()
+    if not (kw or v or cs):
+        raise HTTPException(status_code=400, detail="managed_ne_filter_required")
+    if kw and len(kw) < 2:
+        raise HTTPException(status_code=400, detail="managed_ne_keyword_too_short")
     if kw:
         like = f"%{kw}%"
         stmt = stmt.filter(
@@ -248,10 +254,8 @@ def list_managed_ne(
                 ManagedNE.device_type.ilike(like),
             )
         )
-    v = str(vendor or "").strip()
     if v:
         stmt = stmt.filter(ManagedNE.vendor == v)
-    cs = str(connect_status or "").strip()
     if cs:
         stmt = stmt.filter(ManagedNE.connect_status == cs)
     total = int(stmt.count())

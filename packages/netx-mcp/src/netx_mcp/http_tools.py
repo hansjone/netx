@@ -201,14 +201,21 @@ def _sql_query_ume(args: dict[str, Any]) -> dict[str, Any]:
 
 def _list_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
     page = max(1, int(args.get("page") or 1))
-    page_size = min(500, max(1, int(args.get("page_size") or 50)))
+    page_size = min(100, max(1, int(args.get("page_size") or 20)))
+    keyword = str(args.get("keyword") or "").strip()
+    vendor = str(args.get("vendor") or "").strip()
+    connect_status = str(args.get("connect_status") or "").strip()
+    if not (keyword or vendor or connect_status):
+        return {"ok": False, "error": "managed_ne_filter_required", "error_code": "managed_ne_filter_required"}
+    if keyword and len(keyword) < 2:
+        return {"ok": False, "error": "managed_ne_keyword_too_short", "error_code": "managed_ne_keyword_too_short"}
     params: dict[str, Any] = {"page": page, "page_size": page_size}
-    if str(args.get("keyword") or "").strip():
-        params["keyword"] = str(args.get("keyword")).strip()
-    if str(args.get("vendor") or "").strip():
-        params["vendor"] = str(args.get("vendor")).strip()
-    if str(args.get("connect_status") or "").strip():
-        params["connect_status"] = str(args.get("connect_status")).strip()
+    if keyword:
+        params["keyword"] = keyword
+    if vendor:
+        params["vendor"] = vendor
+    if connect_status:
+        params["connect_status"] = connect_status
     return http_json("GET", "/v1/managed-ne", params=params)
 
 
@@ -385,7 +392,7 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "listManagedNe",
-        "description": "List netx managed NEs (SSH/Telnet inventory); use before execManagedNe.",
+        "description": "List filtered netx managed NEs (keyword/vendor/connect_status required); use before execManagedNe.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -393,7 +400,7 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                 "vendor": {"type": "string"},
                 "connect_status": {"type": "string", "enum": ["unknown", "testing", "pass", "fail"]},
                 "page": {"type": "integer", "minimum": 1, "default": 1},
-                "page_size": {"type": "integer", "minimum": 1, "maximum": 500, "default": 50},
+                "page_size": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
             },
             "required": [],
             "additionalProperties": False,

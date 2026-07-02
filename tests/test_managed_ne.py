@@ -145,6 +145,35 @@ class ManagedNeApiTests(unittest.TestCase):
                 self.assertEqual(listed.json()["total"], 1, listed.text)
         self.client.delete(f"/v1/managed-ne/{ne_id}")
 
+    def test_list_requires_filter(self):
+        listed = self.client.get("/v1/managed-ne")
+        self.assertEqual(listed.status_code, 400)
+        self.assertEqual(listed.json()["detail"], "managed_ne_filter_required")
+
+    def test_list_rejects_short_keyword(self):
+        listed = self.client.get("/v1/managed-ne", params={"keyword": "r"})
+        self.assertEqual(listed.status_code, 400)
+        self.assertEqual(listed.json()["detail"], "managed_ne_keyword_too_short")
+
+    def test_list_allows_vendor_only_filter(self):
+        created = self.client.post(
+            "/v1/managed-ne",
+            json={
+                "name": "Agg-R2",
+                "vendor": "Cisco",
+                "device_type": "cisco_ios",
+                "ip_address": "192.168.0.12",
+                "username": "admin",
+                "password": "pass123",
+            },
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        ne_id = created.json()["id"]
+        listed = self.client.get("/v1/managed-ne", params={"vendor": "Cisco"})
+        self.assertEqual(listed.status_code, 200)
+        self.assertEqual(listed.json()["total"], 1, listed.text)
+        self.client.delete(f"/v1/managed-ne/{ne_id}")
+
     def test_create_without_crypto_key(self):
         settings.credential_secret_key = ""
         r = self.client.post(
