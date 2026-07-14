@@ -37,7 +37,7 @@ _FORBIDDEN_LINE_SEPARATORS = ("\u2028", "\u2029", "\x85", "\x0b", "\x0c")
 
 # Pipe segments allowed after show/display (output filtering only).
 _ALLOWED_PIPE_SEGMENT_RE = re.compile(
-    r"(?i)^(include|exclude|begin|section|count|match|grep|one-line)(\s|$)"
+    r"(?i)^(include|exclude|begin|section|count|match|grep|one-line|no-more)(\s|$)"
 )
 _BLOCKED_PIPE_SEGMENT_RE = re.compile(r"(?i)\b(redirect|append|tee|send)\b")
 

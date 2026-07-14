@@ -45,6 +45,7 @@ class NeExecValidationTests(unittest.TestCase):
             "show run | match hostname",
             "show run | grep hostname",
             "show run | one-line",
+            "display current-configuration | no-more",
             "show run | include x | include y",
         ):
             with self.subTest(cmd=cmd):
