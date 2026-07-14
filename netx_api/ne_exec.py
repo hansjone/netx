@@ -35,6 +35,25 @@ _ALLOWED_PREFIX_RE = re.compile(r"(?i)^(show\s|display\s|ping\s|ping6\s)")
 # Unicode / C1 line separators that can smuggle a second CLI after a show prefix.
 _FORBIDDEN_LINE_SEPARATORS = ("\u2028", "\u2029", "\x85", "\x0b", "\x0c")
 
+# Pipe segments allowed after show/display (output filtering only).
+_ALLOWED_PIPE_SEGMENT_RE = re.compile(
+    r"(?i)^(include|exclude|begin|section|count|match|grep|one-line)(\s|$)"
+)
+_BLOCKED_PIPE_SEGMENT_RE = re.compile(r"(?i)\b(redirect|append|tee|send)\b")
+
+
+def _validate_pipe_segments(cmd: str) -> None:
+    if "|" not in cmd:
+        return
+    parts = [p.strip() for p in cmd.split("|")]
+    if len(parts) < 2 or not parts[0] or any(not p for p in parts[1:]):
+        raise HTTPException(status_code=400, detail="command_pipe_not_allowed")
+    for segment in parts[1:]:
+        if _BLOCKED_PIPE_SEGMENT_RE.search(segment):
+            raise HTTPException(status_code=400, detail="command_pipe_not_allowed")
+        if not _ALLOWED_PIPE_SEGMENT_RE.match(segment):
+            raise HTTPException(status_code=400, detail="command_pipe_not_allowed")
+
 
 def _validate_command(command: str) -> None:
     cmd = str(command or "").strip()
@@ -42,7 +61,7 @@ def _validate_command(command: str) -> None:
         raise HTTPException(status_code=400, detail="empty_command")
     if len(cmd) > 500:
         raise HTTPException(status_code=400, detail="command_too_long")
-    if any(ch in cmd for ch in ("|", ";", "\n", "\r", "`")):
+    if any(ch in cmd for ch in (";", "\n", "\r", "`")):
         raise HTTPException(status_code=400, detail="command_chars_not_allowed")
     if any(sep in cmd for sep in _FORBIDDEN_LINE_SEPARATORS):
         raise HTTPException(status_code=400, detail="command_chars_not_allowed")
@@ -50,6 +69,7 @@ def _validate_command(command: str) -> None:
         raise HTTPException(status_code=400, detail="command_blocked")
     if not _ALLOWED_PREFIX_RE.match(cmd):
         raise HTTPException(status_code=400, detail="command_not_allowed_prefix")
+    _validate_pipe_segments(cmd)
 
 
 def _normalize_read_timeout(sec: int | None) -> int:
