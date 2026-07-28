@@ -12,12 +12,15 @@ import pytest
 from netx_mcp.http_tools import HTTP_MCP_TOOLS, call_http_tool
 
 
-def test_http_mcp_tool_list_has_twelve_tools() -> None:
+def test_http_mcp_tool_list_has_expected_tools() -> None:
     names = [str(t.get("name") or "") for t in HTTP_MCP_TOOLS]
-    assert len(names) == 12
+    assert len(names) == 13
     assert "queryUmeAlarms" in names
     assert "queryUmeAlarmsRaw" in names
     assert "execManagedNe" in names
+    assert "listCliTargets" in names
+    exec_tool = next(t for t in HTTP_MCP_TOOLS if t.get("name") == "execManagedNe")
+    assert exec_tool["inputSchema"]["properties"]["commands"]["maxItems"] >= 5
 
 
 def test_call_query_ume_alarms_forwards_http() -> None:
@@ -59,6 +62,25 @@ def test_call_exec_managed_ne_posts_body() -> None:
         assert payload["ok"] is True
 
 
+def test_call_exec_managed_ne_respects_max_commands_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NETX_NE_EXEC_MAX_COMMANDS", "10")
+    cmds = [f"show version {i}" for i in range(6)]
+    with patch("netx_mcp.http_tools.http_post_json") as mock_post:
+        mock_post.return_value = {"ok": True, "data": {"ok": True, "output": "ok"}}
+        out = call_http_tool("execManagedNe", {"ne_id": "abc", "commands": cmds})
+        mock_post.assert_called_once()
+        text = out["content"][0]["text"]
+        payload = json.loads(text)
+        assert payload["ok"] is True
+
+    monkeypatch.setenv("NETX_NE_EXEC_MAX_COMMANDS", "5")
+    out = call_http_tool("execManagedNe", {"ne_id": "abc", "commands": cmds})
+    text = out["content"][0]["text"]
+    payload = json.loads(text)
+    assert payload.get("ok") is False
+    assert payload.get("error_code") == "too_many_commands"
+
+
 def test_stdio_initialize_and_tools_list() -> None:
     proc = subprocess.Popen(
         [sys.executable, "-m", "netx_mcp"],
@@ -81,7 +103,7 @@ def test_stdio_initialize_and_tools_list() -> None:
     list_line = proc.stdout.readline()
     list_resp = json.loads(list_line)
     tools = list_resp["result"]["tools"]
-    assert len(tools) == 12
+    assert len(tools) == 13
 
     proc.terminate()
     proc.wait(timeout=5)

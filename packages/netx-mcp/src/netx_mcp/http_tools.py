@@ -2,9 +2,23 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any, Callable
 
 from .http_client import http_json, http_post_json, mcp_from_handler_result, quote_ne_id
+
+_EXEC_MAX_COMMANDS_CAP = 50
+_EXEC_MAX_COMMANDS_DEFAULT = 5
+
+
+def exec_max_commands() -> int:
+    """Mirror netx API NETX_NE_EXEC_MAX_COMMANDS (default 5, hard cap 50)."""
+    try:
+        raw = int(os.getenv("NETX_NE_EXEC_MAX_COMMANDS") or _EXEC_MAX_COMMANDS_DEFAULT)
+    except ValueError:
+        raw = _EXEC_MAX_COMMANDS_DEFAULT
+    return max(1, min(_EXEC_MAX_COMMANDS_CAP, raw))
+
 
 UME_RAW_GROUP_FIELDS = [
     "alarm_alarm_key",
@@ -241,7 +255,7 @@ def _exec_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
     commands = [str(c).strip() for c in raw_cmds if str(c).strip()]
     if not commands:
         return {"ok": False, "error": "commands_required", "error_code": "commands_required"}
-    if len(commands) > 5:
+    if len(commands) > exec_max_commands():
         return {"ok": False, "error": "too_many_commands", "error_code": "too_many_commands"}
     body: dict[str, Any] = {"commands": commands}
     if ne_id:
@@ -418,13 +432,22 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "execManagedNe",
-        "description": "Run read-only CLI via netx (show/display/ping; max 5 commands). Use ne_id (managed NE) OR ume_ne_id (UME inventory).",
+        "description": (
+            f"Run read-only CLI via netx (show/display/ping/traceroute; "
+            f"max {exec_max_commands()} commands, NETX_NE_EXEC_MAX_COMMANDS). "
+            "Use ne_id (managed NE) OR ume_ne_id (UME inventory)."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "ne_id": {"type": "string"},
                 "ume_ne_id": {"type": "string"},
-                "commands": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 5},
+                "commands": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                    "maxItems": exec_max_commands(),
+                },
                 "read_timeout_sec": {"type": "integer", "minimum": 10, "maximum": 120},
             },
             "required": ["commands"],

@@ -72,6 +72,8 @@ class Settings(BaseSettings):
     ne_collect_pending_stale_sec: int = 180
     ne_collect_run_timeout_cap_sec: int = 600
     ne_collection_data_dir: str = "data/ne_collections"
+    # Managed NE exec: max CLI commands per request (lab can raise; hard-capped in ne_exec).
+    ne_exec_max_commands: int = 5
 
 
 settings = Settings()

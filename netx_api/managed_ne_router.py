@@ -128,7 +128,7 @@ def api_delete_ume_synced_managed_ne(db: Session = Depends(get_db)):
 
 @router.post("/exec")
 def api_exec_managed_ne(body: ManagedNeExecRequest, db: Session = Depends(get_db)):
-    """Login to a managed NE or UME inventory NE and run read-only CLI (show/display/ping)."""
+    """Login to a managed NE or UME inventory NE and run read-only CLI (show/display/ping/traceroute)."""
     return execute_managed_ne_commands(
         db,
         body.commands,

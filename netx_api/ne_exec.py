@@ -13,10 +13,15 @@ from .config import settings
 from .ne_collect_runner import _collect_on_device
 from .ne_crypto import credentials_configured
 
-_EXEC_MAX_COMMANDS = 5
+_EXEC_MAX_COMMANDS_CAP = 50
 _EXEC_MAX_OUTPUT = 32_000
 _EXEC_READ_TIMEOUT_DEFAULT = 60
 _EXEC_READ_TIMEOUT_MAX = 120
+
+
+def _exec_max_commands() -> int:
+    raw = int(settings.ne_exec_max_commands or 5)
+    return max(1, min(_EXEC_MAX_COMMANDS_CAP, raw))
 
 # Block obvious config-change / destructive patterns (case-insensitive).
 _BLOCKED_RE = re.compile(
@@ -29,8 +34,10 @@ _BLOCKED_RE = re.compile(
     r")"
 )
 
-# Read-only CLI: show/display plus ping reachability checks.
-_ALLOWED_PREFIX_RE = re.compile(r"(?i)^(show\s|display\s|ping\s|ping6\s)")
+# Read-only CLI: show/display plus ping/traceroute reachability checks.
+_ALLOWED_PREFIX_RE = re.compile(
+    r"(?i)^(show\s|display\s|ping\s|ping6\s|traceroute\s|tracert\s|trace\s|trace6\s)"
+)
 
 # Unicode / C1 line separators that can smuggle a second CLI after a show prefix.
 _FORBIDDEN_LINE_SEPARATORS = ("\u2028", "\u2029", "\x85", "\x0b", "\x0c")
@@ -94,8 +101,9 @@ def execute_managed_ne_commands(
     cmds = [str(c).strip() for c in commands if str(c).strip()]
     if not cmds:
         raise HTTPException(status_code=400, detail="commands_required")
-    if len(cmds) > _EXEC_MAX_COMMANDS:
-        raise HTTPException(status_code=400, detail=f"too_many_commands (max {_EXEC_MAX_COMMANDS})")
+    max_cmds = _exec_max_commands()
+    if len(cmds) > max_cmds:
+        raise HTTPException(status_code=400, detail=f"too_many_commands (max {max_cmds})")
     for c in cmds:
         _validate_command(c)
 

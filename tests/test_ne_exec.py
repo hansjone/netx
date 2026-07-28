@@ -20,11 +20,16 @@ class NeExecValidationTests(unittest.TestCase):
         _validate_command("ping6 2001::1")
         _validate_command("PING 10.0.0.1 vrf MGMT")
 
+    def test_allows_traceroute(self) -> None:
+        _validate_command("traceroute 192.168.0.1")
+        _validate_command("tracert 192.168.0.1")
+        _validate_command("trace 10.0.0.1")
+        _validate_command("trace6 2001::1")
+        _validate_command("TRACEROUTE 10.0.0.1 vpn-instance MGMT")
+
     def test_blocks_non_allowed_prefix(self) -> None:
         for cmd in (
             "get system info",
-            "traceroute 192.168.0.1",
-            "tracert 192.168.0.1",
             "terminal length 0",
             "?",
         ):
@@ -155,6 +160,43 @@ class NeExecRunTests(unittest.TestCase):
         self.assertEqual(ctx.exception.detail, "command_blocked")
         collect.assert_not_called()
         resolve.assert_not_called()
+
+    @patch("netx_api.ne_exec.credentials_configured", return_value=True)
+    @patch("netx_api.ne_exec._collect_on_device", return_value="ok-output")
+    @patch("netx_api.ne_exec.resolve_cli_target")
+    def test_execute_respects_max_commands_setting(self, resolve, collect, _configured) -> None:
+        db = MagicMock()
+        cmds = [f"show version {i}" for i in range(6)]
+        with patch("netx_api.ne_exec.settings") as mock_settings:
+            mock_settings.ne_exec_max_commands = 5
+            with self.assertRaises(HTTPException) as ctx:
+                execute_managed_ne_commands(db, cmds, ne_id="ne-1")
+            self.assertIn("too_many_commands", str(ctx.exception.detail))
+            collect.assert_not_called()
+
+        resolve.return_value = (
+            {"ip_address": "1.1.1.1"},
+            {
+                "source": "managed",
+                "id": "ne-1",
+                "ume_ne_id": None,
+                "name": "R2",
+                "vendor": "Cisco",
+                "device_type": "cisco_ios",
+                "ip_address": "192.168.0.128",
+                "port": 22,
+                "protocol": "ssh",
+                "connect_status": "pass",
+                "hop_enabled": False,
+                "hop_vendor": "zte",
+            },
+        )
+        with patch("netx_api.ne_exec.settings") as mock_settings:
+            mock_settings.ne_exec_max_commands = 10
+            mock_settings.ne_collect_read_timeout_sec = 120
+            out = execute_managed_ne_commands(db, cmds, ne_id="ne-1")
+        self.assertTrue(out["ok"])
+        collect.assert_called_once()
 
 
 if __name__ == "__main__":

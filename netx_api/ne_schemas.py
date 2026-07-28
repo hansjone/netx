@@ -117,7 +117,8 @@ class ManagedNeExecRequest(BaseModel):
 
     ne_id: str | None = None
     ume_ne_id: str | None = None
-    commands: list[str] = Field(min_length=1, max_length=5)
+    # Absolute ceiling; runtime limit is settings.ne_exec_max_commands (default 5).
+    commands: list[str] = Field(min_length=1, max_length=50)
     read_timeout_sec: int | None = Field(default=None, ge=10, le=120)
 
 

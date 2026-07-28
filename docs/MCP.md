@@ -69,6 +69,7 @@ pip install "git+https://github.com/hansjone/netx.git#subdirectory=packages/netx
 | `NETX_API_URL` | 否 | `http://127.0.0.1:8890` | netx REST 根地址，可指向远端 |
 | `NETX_API_TOKEN` | 否 | 空 | API 启用 Bearer 时填写 |
 | `NETX_LANG` | 否 | `zh` | `zh` / `en`，影响 API 文案 |
+| `NETX_NE_EXEC_MAX_COMMANDS` | 否 | `5` | `execManagedNe` 单次最多命令数（硬上限 50）；API 与 MCP 需同设 |
 
 本机默认端口时 **可不设任何变量**。
 
