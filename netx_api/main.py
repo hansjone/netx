@@ -25,6 +25,7 @@ from .collection_router import router as collection_router
 from .cli_router import router as cli_router
 from .managed_ne_router import router as managed_ne_router
 from .webcrt_router import router as webcrt_router
+from .topology_router import router as topology_router
 from .importer import aggregate_alarms, import_alarm_excel, query_alarms
 from .models import (
     AiAnalyzeHistory,
@@ -125,6 +126,7 @@ app.include_router(managed_ne_router)
 app.include_router(cli_router)
 app.include_router(collection_router)
 app.include_router(webcrt_router)
+app.include_router(topology_router)
 parser_cfg = load_parser_config()
 _UME_CLIENT_SINGLETON = UMEClient(
     token_loader=lambda: load_shared_token(),

@@ -46,4 +46,6 @@ export const queryKeys = {
     page: number,
     pageSize: number,
   ) => ["umeCurrentAlarms", severity, cleared, hostName, keyword, page, pageSize] as const,
+  topologyMaps: ["topologyMaps"] as const,
+  topologyGraph: (mapId: string) => ["topologyGraph", mapId] as const,
 };

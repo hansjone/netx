@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -384,3 +384,49 @@ class NeCollectionRun(Base):
     output_rel_path: Mapped[str] = mapped_column(String(1024), default="")
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class TopologyMap(Base):
+    """Named topology canvas (document-style graph)."""
+
+    __tablename__ = "topology_map"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
+    name: Mapped[str] = mapped_column(String(256), default="", index=True)
+    remark: Mapped[str] = mapped_column(String(1024), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class TopologyNode(Base):
+    """Node on a topology map; preferably references an inventory NE."""
+
+    __tablename__ = "topology_node"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
+    map_id: Mapped[str] = mapped_column(String(64), index=True)
+    managed_ne_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    ume_ne_id: Mapped[str] = mapped_column(String(128), default="", index=True)
+    label: Mapped[str] = mapped_column(String(256), default="")
+    x: Mapped[float] = mapped_column(Float, default=0.0)
+    y: Mapped[float] = mapped_column(Float, default=0.0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class TopologyEdge(Base):
+    """Link between two topology nodes."""
+
+    __tablename__ = "topology_edge"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
+    map_id: Mapped[str] = mapped_column(String(64), index=True)
+    source_node_id: Mapped[str] = mapped_column(String(64), index=True)
+    target_node_id: Mapped[str] = mapped_column(String(64), index=True)
+    source_port: Mapped[str] = mapped_column(String(128), default="")
+    target_port: Mapped[str] = mapped_column(String(128), default="")
+    # manual | lldp | cdp
+    source: Mapped[str] = mapped_column(String(32), default="manual", index=True)
+    discovered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

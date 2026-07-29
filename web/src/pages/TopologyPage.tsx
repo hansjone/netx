@@ -1,0 +1,718 @@
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  ReactFlow,
+  Background,
+  Controls,
+  MiniMap,
+  addEdge,
+  useEdgesState,
+  useNodesState,
+  Handle,
+  Position,
+  MarkerType,
+  ConnectionMode,
+  type Connection,
+  type Edge,
+  type Node,
+  type NodeProps,
+  type ReactFlowInstance,
+} from "@xyflow/react";
+import "@xyflow/react/dist/style.css";
+import {
+  createTopologyMap,
+  deleteTopologyMap,
+  discoverTopologyNeighbors,
+  fetchManagedNe,
+  fetchTopologyGraph,
+  fetchTopologyMaps,
+  putTopologyGraph,
+  updateTopologyMap,
+} from "../services/api";
+import { queryKeys } from "../constants/queryKeys";
+import { useI18n } from "../i18n";
+import { useToast } from "../hooks/useToast";
+import { openNewModuleWindow, openOrFocusModule } from "../utils/moduleWindows";
+import type { ManagedNeItem, TopologyEdgeItem, TopologyNodeItem } from "../types";
+
+type NeNodeData = {
+  label: string;
+  managed_ne_id: string;
+  ume_ne_id: string;
+  ne_ip: string;
+  vendor: string;
+  connect_status: string;
+};
+
+type TopoDisplayOpts = {
+  hideIp: boolean;
+  hideVendor: boolean;
+  hidePorts: boolean;
+};
+
+const TopoDisplayContext = createContext<TopoDisplayOpts>({
+  hideIp: true,
+  hideVendor: true,
+  hidePorts: true,
+});
+
+function newId(): string {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) {
+    return crypto.randomUUID().replace(/-/g, "");
+  }
+  return `${Date.now().toString(16)}${Math.random().toString(16).slice(2, 10)}`;
+}
+
+function vendorTone(vendor: string): string {
+  const v = String(vendor || "").trim().toLowerCase();
+  if (v.includes("cisco")) return "cisco";
+  if (v.includes("huawei")) return "huawei";
+  if (v.includes("zte")) return "zte";
+  if (v.includes("juniper")) return "juniper";
+  if (v.includes("nokia") || v.includes("alcatel")) return "nokia";
+  if (v.includes("ericsson")) return "ericsson";
+  if (v.includes("h3c") || v.includes("comware")) return "h3c";
+  return "other";
+}
+
+/** Classic Visio/Packet Tracer style router: disc + four outbound arrows. */
+function RouterIcon() {
+  return (
+    <svg className="topo-node__icon" viewBox="0 0 64 64" aria-hidden="true">
+      <ellipse cx="32" cy="39" rx="19" ry="8.5" className="topo-node__icon-shadow" />
+      <path
+        d="M13 31 A19 9.5 0 0 0 51 31 L51 36.5 A19 9.5 0 0 1 13 36.5 Z"
+        className="topo-node__icon-rim"
+      />
+      <ellipse cx="32" cy="31" rx="19" ry="9.5" className="topo-node__icon-body" />
+      <ellipse cx="32" cy="30" rx="15.5" ry="7" className="topo-node__icon-face" />
+      <g className="topo-node__icon-arrows">
+        {/* NW / NE / SW / SE */}
+        <path d="M31 29 L19 18 L24.5 18.8 L23.2 23.8 Z" />
+        <path d="M33 29 L45 18 L39.5 18.8 L40.8 23.8 Z" />
+        <path d="M31 31 L19 42 L24.5 41.2 L23.2 36.2 Z" />
+        <path d="M33 31 L45 42 L39.5 41.2 L40.8 36.2 Z" />
+      </g>
+    </svg>
+  );
+}
+
+function NeNode({ data, selected }: NodeProps<Node<NeNodeData>>) {
+  const { hideIp, hideVendor } = useContext(TopoDisplayContext);
+  const tone = vendorTone(data.vendor);
+  const name = data.label || (!hideIp ? data.ne_ip : "") || "NE";
+  const bits = [
+    name,
+    hideIp ? "" : data.ne_ip,
+    hideVendor ? "" : data.vendor,
+  ].filter((x, i, arr) => {
+    const s = String(x || "").trim();
+    if (!s) return false;
+    return arr.findIndex((y) => String(y || "").trim() === s) === i;
+  });
+  return (
+    <div className={`topo-node topo-node--${tone}${selected ? " is-selected" : ""}`}>
+      <div className="topo-node__glyph">
+        {/* Centered on the disc so edges meet the circular icon, not the caption. */}
+        <Handle type="target" position={Position.Left} className="topo-node__handle topo-node__handle--center" />
+        <Handle type="source" position={Position.Right} className="topo-node__handle topo-node__handle--center" />
+        <RouterIcon />
+      </div>
+      <div className="topo-node__caption">{bits.join(" · ")}</div>
+    </div>
+  );
+}
+
+const nodeTypes = { neNode: NeNode };
+
+function graphToFlow(nodes: TopologyNodeItem[], edges: TopologyEdgeItem[]) {
+  const rfNodes: Node<NeNodeData>[] = nodes.map((n) => ({
+    id: n.id,
+    type: "neNode",
+    position: { x: n.x || 0, y: n.y || 0 },
+    data: {
+      label: n.label || n.ne_name || n.ne_ip || n.id,
+      managed_ne_id: n.managed_ne_id || "",
+      ume_ne_id: n.ume_ne_id || "",
+      ne_ip: n.ne_ip || "",
+      vendor: n.vendor || "",
+      connect_status: n.connect_status || "",
+    },
+  }));
+  const rfEdges: Edge[] = edges.map((e) => {
+    const discovered = e.source === "lldp" || e.source === "cdp";
+    const label = [e.source_port, e.target_port].filter(Boolean).join(" ↔ ");
+    return {
+      id: e.id,
+      source: e.source_node_id,
+      target: e.target_node_id,
+      type: "straight",
+      label: label || undefined,
+      animated: false,
+      style: discovered
+        ? { stroke: "#0ea5e9", strokeDasharray: "6 4" }
+        : { stroke: "#64748b" },
+      markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
+      data: {
+        source: e.source || "manual",
+        source_port: e.source_port || "",
+        target_port: e.target_port || "",
+      },
+    };
+  });
+  return { rfNodes, rfEdges };
+}
+
+function flowToGraphPayload(nodes: Node<NeNodeData>[], edges: Edge[]) {
+  return {
+    nodes: nodes.map((n) => ({
+      id: n.id,
+      managed_ne_id: n.data.managed_ne_id || "",
+      ume_ne_id: n.data.ume_ne_id || "",
+      label: n.data.label || "",
+      x: n.position.x,
+      y: n.position.y,
+    })),
+    edges: edges.map((e) => ({
+      id: e.id,
+      source_node_id: e.source,
+      target_node_id: e.target,
+      source_port: String((e.data as { source_port?: string } | undefined)?.source_port || ""),
+      target_port: String((e.data as { target_port?: string } | undefined)?.target_port || ""),
+      source: String((e.data as { source?: string } | undefined)?.source || "manual"),
+    })),
+  };
+}
+
+export function TopologyPage() {
+  const { t } = useI18n();
+  const { showOk, showError } = useToast();
+  const queryClient = useQueryClient();
+  const [mapId, setMapId] = useState<string>("");
+  const [keyword, setKeyword] = useState("");
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [hideIp, setHideIp] = useState(true);
+  const [hideVendor, setHideVendor] = useState(true);
+  const [hidePorts, setHidePorts] = useState(true);
+  const [edgeFlow, setEdgeFlow] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [hideAddedNes, setHideAddedNes] = useState(true);
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node<NeNodeData>>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+  const rfRef = useRef<ReactFlowInstance<Node<NeNodeData>, Edge> | null>(null);
+  const dirtyRef = useRef(false);
+  const displayOpts = useMemo(
+    () => ({ hideIp, hideVendor, hidePorts }),
+    [hideIp, hideVendor, hidePorts],
+  );
+  const displayEdges = useMemo(
+    () =>
+      edges.map((e) => ({
+        ...e,
+        label: hidePorts ? undefined : e.label,
+        animated: edgeFlow,
+      })),
+    [edges, hidePorts, edgeFlow],
+  );
+
+  const mapsQuery = useQuery({
+    queryKey: queryKeys.topologyMaps,
+    queryFn: fetchTopologyMaps,
+  });
+
+  const graphQuery = useQuery({
+    queryKey: queryKeys.topologyGraph(mapId),
+    queryFn: () => fetchTopologyGraph(mapId),
+    enabled: Boolean(mapId),
+  });
+
+  const neQuery = useQuery({
+    queryKey: [...queryKeys.managedNeAll, "topology-palette", keyword],
+    queryFn: () =>
+      fetchManagedNe({
+        keyword: keyword.trim(),
+        vendor: "",
+        connectStatus: "",
+        page: 1,
+        pageSize: 100,
+      }),
+  });
+
+  useEffect(() => {
+    if (!mapId && mapsQuery.data?.items?.length) {
+      setMapId(mapsQuery.data.items[0].id);
+    }
+  }, [mapId, mapsQuery.data]);
+
+  useEffect(() => {
+    if (!graphQuery.data) return;
+    const { rfNodes, rfEdges } = graphToFlow(graphQuery.data.nodes, graphQuery.data.edges);
+    setNodes(rfNodes);
+    setEdges(rfEdges);
+    dirtyRef.current = false;
+    window.setTimeout(() => rfRef.current?.fitView({ padding: 0.2 }), 50);
+  }, [graphQuery.data, setNodes, setEdges]);
+
+  const renameMapMut = useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string }) =>
+      updateTopologyMap(id, { name }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.topologyMaps });
+      showOk(t("topology.renamed"));
+    },
+    onError: (err) => showError(String(err)),
+  });
+
+  const promptRenameMap = useCallback(
+    (id: string, currentName: string) => {
+      const next = window.prompt(t("topology.renamePrompt"), currentName);
+      if (next == null) return;
+      const name = next.trim();
+      if (!name || name === currentName) return;
+      renameMapMut.mutate({ id, name });
+    },
+    [renameMapMut, t],
+  );
+
+  const createMapMut = useMutation({
+    mutationFn: () => createTopologyMap({ name: t("topology.newMapName") }),
+    onSuccess: async (row) => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.topologyMaps });
+      setMapId(row.id);
+      showOk(t("topology.newMap"));
+      // Prompt rename right after create — default name is a placeholder.
+      window.setTimeout(() => promptRenameMap(row.id, row.name), 0);
+    },
+    onError: (err) => showError(String(err)),
+  });
+
+  const deleteMapMut = useMutation({
+    mutationFn: (id: string) => deleteTopologyMap(id),
+    onSuccess: async (_out, id) => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.topologyMaps });
+      if (mapId === id) {
+        setMapId("");
+        setNodes([]);
+        setEdges([]);
+      }
+    },
+    onError: (err) => showError(String(err)),
+  });
+
+  const saveMut = useMutation({
+    mutationFn: () => putTopologyGraph(mapId, flowToGraphPayload(nodes, edges)),
+    onSuccess: async (graph) => {
+      dirtyRef.current = false;
+      queryClient.setQueryData(queryKeys.topologyGraph(mapId), graph);
+      await queryClient.invalidateQueries({ queryKey: queryKeys.topologyMaps });
+      showOk(t("topology.saved"));
+    },
+    onError: (err) => showError(String(err)),
+  });
+
+  const discoverMut = useMutation({
+    mutationFn: async () => {
+      if (dirtyRef.current) {
+        await putTopologyGraph(mapId, flowToGraphPayload(nodes, edges));
+      }
+      return discoverTopologyNeighbors(mapId, { protocol: "auto" });
+    },
+    onSuccess: async (out) => {
+      if (out.graph) {
+        queryClient.setQueryData(queryKeys.topologyGraph(mapId), out.graph);
+        const { rfNodes, rfEdges } = graphToFlow(out.graph.nodes, out.graph.edges);
+        setNodes(rfNodes);
+        setEdges(rfEdges);
+        dirtyRef.current = false;
+      }
+      await queryClient.invalidateQueries({ queryKey: queryKeys.topologyMaps });
+      showOk(
+        t("topology.discovered")
+          .replace("{{added}}", String(out.edges_added))
+          .replace("{{updated}}", String(out.edges_updated)),
+      );
+    },
+    onError: (err) =>
+      showError(t("topology.discoverFail").replace("{{detail}}", String(err))),
+  });
+
+  const onConnect = useCallback(
+    (connection: Connection) => {
+      dirtyRef.current = true;
+      setEdges((eds) =>
+        addEdge(
+          {
+            ...connection,
+            id: newId(),
+            type: "straight",
+            markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
+            style: { stroke: "#64748b" },
+            data: { source: "manual", source_port: "", target_port: "" },
+          },
+          eds,
+        ),
+      );
+    },
+    [setEdges],
+  );
+
+  const addNeToCanvas = (ne: ManagedNeItem) => {
+    if (!mapId) {
+      showError(t("topology.selectMap"));
+      return;
+    }
+    if (nodes.some((n) => n.data.managed_ne_id === ne.id)) {
+      return;
+    }
+    const offset = nodes.length * 24;
+    dirtyRef.current = true;
+    setNodes((prev) => [
+      ...prev,
+      {
+        id: newId(),
+        type: "neNode",
+        position: { x: 80 + offset, y: 80 + offset },
+        data: {
+          label: ne.name || ne.ip_address,
+          managed_ne_id: ne.id,
+          ume_ne_id: "",
+          ne_ip: ne.ip_address,
+          vendor: ne.vendor,
+          connect_status: ne.connect_status,
+        },
+      },
+    ]);
+  };
+
+  const selectedNode = useMemo(
+    () => nodes.find((n) => n.id === selectedNodeId) || null,
+    [nodes, selectedNodeId],
+  );
+
+  const removeSelected = () => {
+    if (!selectedNodeId) return;
+    dirtyRef.current = true;
+    setNodes((ns) => ns.filter((n) => n.id !== selectedNodeId));
+    setEdges((es) => es.filter((e) => e.source !== selectedNodeId && e.target !== selectedNodeId));
+    setSelectedNodeId(null);
+  };
+
+  const openWebcrt = () => {
+    const neId = selectedNode?.data.managed_ne_id;
+    if (!neId) {
+      showError(t("topology.noNeLink"));
+      return;
+    }
+    openNewModuleWindow({
+      moduleId: "webcrt",
+      path: `/webcrt?ne_id=${encodeURIComponent(neId)}`,
+    });
+  };
+
+  const openNe = () => {
+    const neId = selectedNode?.data.managed_ne_id;
+    if (!neId) {
+      showError(t("topology.noNeLink"));
+      return;
+    }
+    openOrFocusModule({
+      moduleId: "managed-ne",
+      path: "/ne",
+    });
+  };
+
+  const maps = mapsQuery.data?.items || [];
+  const palette = neQuery.data?.items || [];
+  const onCanvasIds = useMemo(
+    () => new Set(nodes.map((n) => n.data.managed_ne_id).filter(Boolean)),
+    [nodes],
+  );
+  const paletteVisible = useMemo(
+    () => (hideAddedNes ? palette.filter((ne) => !onCanvasIds.has(ne.id)) : palette),
+    [palette, hideAddedNes, onCanvasIds],
+  );
+
+  return (
+    <div className={`topo-page${sidebarCollapsed ? " is-sidebar-collapsed" : ""}`}>
+      <aside className="topo-sidebar" aria-label={t("topology.maps")}>
+        {sidebarCollapsed ? (
+          <button
+            type="button"
+            className="topo-sidebar__rail"
+            title={t("topology.expandSidebar")}
+            aria-label={t("topology.expandSidebar")}
+            onClick={() => setSidebarCollapsed(false)}
+          >
+            <span className="topo-sidebar__rail-icon" aria-hidden="true">
+              ›
+            </span>
+            <span className="topo-sidebar__rail-label">{t("topology.maps")}</span>
+          </button>
+        ) : (
+          <>
+            <div className="topo-sidebar__section">
+              <div className="topo-sidebar__head">
+                <strong>{t("topology.maps")}</strong>
+                <div className="topo-sidebar__head-actions">
+                  <button
+                    type="button"
+                    className="btn btn--sm"
+                    onClick={() => createMapMut.mutate()}
+                    disabled={createMapMut.isPending}
+                  >
+                    {t("topology.newMap")}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn--sm btn--ghost"
+                    title={t("topology.collapseSidebar")}
+                    aria-label={t("topology.collapseSidebar")}
+                    onClick={() => setSidebarCollapsed(true)}
+                  >
+                    ‹
+                  </button>
+                </div>
+              </div>
+              {maps.length === 0 ? (
+                <p className="panel__hint">{t("topology.emptyMaps")}</p>
+              ) : (
+                <ul className="topo-map-list">
+                  {maps.map((m) => (
+                    <li key={m.id} className={mapId === m.id ? "is-active" : ""}>
+                      <button
+                        type="button"
+                        className="topo-map-list__item"
+                        onClick={() => setMapId(m.id)}
+                        onDoubleClick={() => promptRenameMap(m.id, m.name)}
+                        title={t("topology.renameHint")}
+                      >
+                        <span className="topo-map-list__name">{m.name}</span>
+                        <span className="topo-map-list__meta">
+                          {m.node_count}N / {m.edge_count}E
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn--sm btn--ghost"
+                        title={t("topology.rename")}
+                        disabled={renameMapMut.isPending}
+                        onClick={() => promptRenameMap(m.id, m.name)}
+                      >
+                        ✎
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn--sm btn--ghost"
+                        title={t("topology.deleteMap")}
+                        onClick={() => {
+                          const msg = t("topology.deleteMapConfirm").replace("{{name}}", m.name);
+                          if (window.confirm(msg)) deleteMapMut.mutate(m.id);
+                        }}
+                      >
+                        ×
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <div className="topo-sidebar__section topo-sidebar__section--grow">
+              <div className="topo-sidebar__head">
+                <strong>{t("topology.palette")}</strong>
+                <label className="topo-display-toggles__item">
+                  <input
+                    type="checkbox"
+                    checked={hideAddedNes}
+                    onChange={(e) => setHideAddedNes(e.target.checked)}
+                  />
+                  {t("topology.hideAdded")}
+                </label>
+              </div>
+              <p className="panel__hint">{t("topology.paletteHint")}</p>
+              <input
+                className="input"
+                value={keyword}
+                onChange={(e) => setKeyword(e.target.value)}
+                placeholder={t("topology.filterPh")}
+              />
+              <ul className="topo-palette">
+                {paletteVisible.length === 0 ? (
+                  <li className="topo-palette__empty">
+                    <span className="panel__hint">
+                      {palette.length === 0
+                        ? t("topology.paletteEmpty")
+                        : t("topology.paletteHiddenAll")}
+                    </span>
+                  </li>
+                ) : (
+                  paletteVisible.map((ne) => {
+                    const onCanvas = onCanvasIds.has(ne.id);
+                    return (
+                      <li key={ne.id}>
+                        <button
+                          type="button"
+                          className="topo-palette__item"
+                          disabled={!mapId || onCanvas}
+                          onClick={() => addNeToCanvas(ne)}
+                          title={`${ne.name}\n${ne.ip_address}`}
+                        >
+                          <span className="topo-palette__name">{ne.name || ne.ip_address}</span>
+                          <span className="topo-palette__meta">
+                            {ne.ip_address} · {ne.vendor}
+                            {onCanvas ? " ✓" : ""}
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })
+                )}
+              </ul>
+            </div>
+          </>
+        )}
+      </aside>
+
+      <main className="topo-main">
+        <div className="topo-toolbar">
+          <div className="topo-toolbar__left">
+            <div className="topo-toolbar__title">
+              <strong>{maps.find((m) => m.id === mapId)?.name || t("topology.selectMap")}</strong>
+              {mapId ? (
+                <button
+                  type="button"
+                  className="btn btn--sm btn--ghost"
+                  title={t("topology.rename")}
+                  disabled={renameMapMut.isPending}
+                  onClick={() => {
+                    const current = maps.find((m) => m.id === mapId)?.name || "";
+                    promptRenameMap(mapId, current);
+                  }}
+                >
+                  {t("topology.rename")}
+                </button>
+              ) : null}
+            </div>
+            <span className="panel__hint">{t("topology.canvasHint")}</span>
+          </div>
+          <div className="topo-toolbar__actions">
+            <div className="topo-display-toggles" role="group" aria-label={t("topology.display")}>
+              <label className="topo-display-toggles__item">
+                <input
+                  type="checkbox"
+                  checked={hideIp}
+                  onChange={(e) => setHideIp(e.target.checked)}
+                />
+                {t("topology.hideIp")}
+              </label>
+              <label className="topo-display-toggles__item">
+                <input
+                  type="checkbox"
+                  checked={hideVendor}
+                  onChange={(e) => setHideVendor(e.target.checked)}
+                />
+                {t("topology.hideVendor")}
+              </label>
+              <label className="topo-display-toggles__item">
+                <input
+                  type="checkbox"
+                  checked={hidePorts}
+                  onChange={(e) => setHidePorts(e.target.checked)}
+                />
+                {t("topology.hidePorts")}
+              </label>
+              <label className="topo-display-toggles__item">
+                <input
+                  type="checkbox"
+                  checked={edgeFlow}
+                  onChange={(e) => setEdgeFlow(e.target.checked)}
+                />
+                {t("topology.edgeFlow")}
+              </label>
+            </div>
+            <button
+              type="button"
+              className="btn btn--sm"
+              disabled={!mapId || saveMut.isPending}
+              onClick={() => saveMut.mutate()}
+            >
+              {saveMut.isPending ? t("topology.saving") : t("topology.save")}
+            </button>
+            <button
+              type="button"
+              className="btn btn--sm"
+              disabled={!mapId || discoverMut.isPending}
+              onClick={() => discoverMut.mutate()}
+            >
+              {discoverMut.isPending ? t("topology.discovering") : t("topology.discover")}
+            </button>
+            <button
+              type="button"
+              className="btn btn--sm btn--ghost"
+              disabled={!mapId}
+              onClick={() => rfRef.current?.fitView({ padding: 0.2 })}
+            >
+              {t("topology.fit")}
+            </button>
+          </div>
+        </div>
+
+        {selectedNode ? (
+          <div className="topo-selection">
+            <span>
+              {t("topology.selected")}: <strong>{selectedNode.data.label}</strong>
+              {selectedNode.data.ne_ip ? ` (${selectedNode.data.ne_ip})` : ""}
+            </span>
+            <div className="topo-selection__actions">
+              <button type="button" className="btn btn--sm" onClick={openWebcrt}>
+                {t("topology.openWebcrt")}
+              </button>
+              <button type="button" className="btn btn--sm" onClick={openNe}>
+                {t("topology.openNe")}
+              </button>
+              <button type="button" className="btn btn--sm btn--ghost" onClick={removeSelected}>
+                {t("topology.removeNode")}
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        <div className="topo-canvas">
+          {mapId ? (
+            <TopoDisplayContext.Provider value={displayOpts}>
+              <ReactFlow
+                nodes={nodes}
+                edges={displayEdges}
+                nodeTypes={nodeTypes}
+                connectionMode={ConnectionMode.Loose}
+                defaultEdgeOptions={{ type: "straight" }}
+                onNodesChange={(changes) => {
+                  dirtyRef.current = true;
+                  onNodesChange(changes);
+                }}
+                onEdgesChange={(changes) => {
+                  dirtyRef.current = true;
+                  onEdgesChange(changes);
+                }}
+                onConnect={onConnect}
+                onNodeClick={(_e, node) => setSelectedNodeId(node.id)}
+                onPaneClick={() => setSelectedNodeId(null)}
+                onInit={(inst) => {
+                  rfRef.current = inst;
+                }}
+                fitView
+                deleteKeyCode={["Backspace", "Delete"]}
+              >
+                <Background gap={18} size={1} />
+                <Controls />
+                <MiniMap pannable zoomable />
+              </ReactFlow>
+            </TopoDisplayContext.Provider>
+          ) : (
+            <div className="topo-canvas__empty">{t("topology.selectMap")}</div>
+          )}
+        </div>
+      </main>
+    </div>
+  );
+}

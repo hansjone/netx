@@ -343,3 +343,68 @@ export type UmeTokenStatus = {
   error_kind?: string;
   error?: string;
 };
+
+export type TopologyMapItem = {
+  id: string;
+  name: string;
+  remark: string;
+  node_count: number;
+  edge_count: number;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type TopologyNodeItem = {
+  id: string;
+  map_id: string;
+  managed_ne_id: string;
+  ume_ne_id: string;
+  label: string;
+  x: number;
+  y: number;
+  ne_name: string;
+  ne_ip: string;
+  vendor: string;
+  protocol: string;
+  connect_status: string;
+};
+
+export type TopologyEdgeItem = {
+  id: string;
+  map_id: string;
+  source_node_id: string;
+  target_node_id: string;
+  source_port: string;
+  target_port: string;
+  source: string;
+  discovered_at?: string | null;
+};
+
+export type TopologyGraph = {
+  map: TopologyMapItem;
+  nodes: TopologyNodeItem[];
+  edges: TopologyEdgeItem[];
+};
+
+export type TopologyDiscoverNeResult = {
+  ne_id: string;
+  ne_name: string;
+  ne_ip: string;
+  ok: boolean;
+  command: string;
+  neighbors: number;
+  edges_added: number;
+  edges_updated: number;
+  error: string;
+  raw_preview: string;
+};
+
+export type TopologyDiscoverOut = {
+  map_id: string;
+  protocol: string;
+  scanned: number;
+  edges_added: number;
+  edges_updated: number;
+  results: TopologyDiscoverNeResult[];
+  graph: TopologyGraph | null;
+};

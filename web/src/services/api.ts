@@ -18,6 +18,9 @@ import type {
   CliMeta,
   CliTargetListResponse,
   UmeCliOverrideItem,
+  TopologyDiscoverOut,
+  TopologyGraph,
+  TopologyMapItem,
 } from "../types";
 
 const parseApiResponse = async (res: Response): Promise<Record<string, unknown>> => {
@@ -61,6 +64,17 @@ export const apiPatch = async <T,>(path: string, body: unknown): Promise<T> => {
 
 export const apiDelete = async <T,>(path: string): Promise<T> => {
   const res = await fetch(path, { method: "DELETE", headers: { accept: "application/json" } });
+  const data = await parseApiResponse(res);
+  if (!res.ok) throw new Error(String(data.detail || `${res.status} ${path}`));
+  return data as T;
+};
+
+export const apiPut = async <T,>(path: string, body: unknown): Promise<T> => {
+  const res = await fetch(path, {
+    method: "PUT",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify(body),
+  });
   const data = await parseApiResponse(res);
   if (!res.ok) throw new Error(String(data.detail || `${res.status} ${path}`));
   return data as T;
@@ -411,3 +425,51 @@ export const fetchUmeCurrentAlarms = (params: {
     `/v1/ume/alarms?${p.toString()}`,
   );
 };
+
+export const fetchTopologyMaps = () =>
+  apiGet<{ total: number; items: TopologyMapItem[] }>("/v1/topology/maps");
+
+export const createTopologyMap = (body: { name: string; remark?: string }) =>
+  apiPost<TopologyMapItem>("/v1/topology/maps", body);
+
+export const fetchTopologyGraph = (mapId: string) =>
+  apiGet<TopologyGraph>(`/v1/topology/maps/${encodeURIComponent(mapId)}`);
+
+export const updateTopologyMap = (mapId: string, body: { name?: string; remark?: string }) =>
+  apiPatch<TopologyMapItem>(`/v1/topology/maps/${encodeURIComponent(mapId)}`, body);
+
+export const deleteTopologyMap = (mapId: string) =>
+  apiDelete<{ ok: boolean; map_id: string; deleted: boolean }>(
+    `/v1/topology/maps/${encodeURIComponent(mapId)}`,
+  );
+
+export const putTopologyGraph = (
+  mapId: string,
+  body: {
+    nodes: Array<{
+      id: string;
+      managed_ne_id?: string;
+      ume_ne_id?: string;
+      label?: string;
+      x?: number;
+      y?: number;
+    }>;
+    edges: Array<{
+      id: string;
+      source_node_id: string;
+      target_node_id: string;
+      source_port?: string;
+      target_port?: string;
+      source?: string;
+    }>;
+  },
+) => apiPut<TopologyGraph>(`/v1/topology/maps/${encodeURIComponent(mapId)}/graph`, body);
+
+export const discoverTopologyNeighbors = (
+  mapId: string,
+  body?: { protocol?: string; ne_ids?: string[] },
+) =>
+  apiPost<TopologyDiscoverOut>(
+    `/v1/topology/maps/${encodeURIComponent(mapId)}/discover`,
+    body || {},
+  );

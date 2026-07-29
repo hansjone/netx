@@ -52,6 +52,15 @@ export const MODULES: readonly ModuleDefinition[] = [
     iconTone: "slate",
     titleKey: "layout.titleWebcrt",
   },
+  {
+    moduleId: "topology",
+    path: "/topology",
+    section: "operations",
+    labelKey: "workbench.cards.topology",
+    descKey: "workbench.cards.topologyDesc",
+    iconTone: "blue",
+    titleKey: "layout.titleTopology",
+  },
 ] as const;
 
 export function getModuleById(moduleId: string): ModuleDefinition | undefined {

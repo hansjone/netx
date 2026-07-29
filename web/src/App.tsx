@@ -7,6 +7,7 @@ import { CollectPage } from "./pages/CollectPage";
 import { NePage } from "./pages/NePage";
 import { UmePage } from "./pages/UmePage";
 import { WebcrtPage } from "./pages/WebcrtPage";
+import { TopologyPage } from "./pages/TopologyPage";
 import { fetchIntegrationStatus } from "./services/api";
 
 function App() {
@@ -51,6 +52,7 @@ function App() {
         <Route path="/ne" element={<NePage />} />
         <Route path="/collect" element={<CollectPage />} />
         <Route path="/webcrt" element={<WebcrtPage />} />
+        <Route path="/topology" element={<TopologyPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </AppLayout>
