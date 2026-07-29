@@ -27,6 +27,54 @@ _sessions_lock = threading.Lock()
 _sessions: dict[str, "WebcrtSession"] = {}
 _reaper_started = False
 
+# Network device CLIs (Huawei/ZTE/Cisco) often reject xterm DEL/CSI arrows over Telnet.
+# Map to classic emacs-style control keys that VRP/IOS/ZXROS accept.
+_NETWORK_CLI_KEY_SEQS: tuple[tuple[str, str], ...] = (
+    ("\x1b[1~", "\x01"),  # Home -> Ctrl-A
+    ("\x1b[3~", "\x04"),  # Delete -> Ctrl-D
+    ("\x1b[4~", "\x05"),  # End -> Ctrl-E
+    ("\x1b[H", "\x01"),
+    ("\x1b[F", "\x05"),
+    ("\x1bOH", "\x01"),
+    ("\x1bOF", "\x05"),
+    ("\x1b[A", "\x10"),  # Up -> Ctrl-P (history)
+    ("\x1b[B", "\x0e"),  # Down -> Ctrl-N
+    ("\x1b[C", "\x06"),  # Right -> Ctrl-F
+    ("\x1b[D", "\x02"),  # Left -> Ctrl-B
+    ("\x7f", "\x08"),  # DEL -> BS
+)
+
+
+def uses_network_cli_keymap(device_type: str = "", vendor: str = "") -> bool:
+    blob = f"{device_type} {vendor}".strip().lower()
+    if not blob:
+        return True
+    for token in ("linux", "ubuntu", "centos", "debian", "redhat", "unix"):
+        if token in blob:
+            return False
+    return True
+
+
+def map_network_cli_keys(data: str) -> str:
+    """Rewrite xterm key sequences for network-device CLIs."""
+    text = str(data or "")
+    if not text:
+        return text
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        matched = False
+        for seq, repl in _NETWORK_CLI_KEY_SEQS:
+            if text.startswith(seq, i):
+                out.append(repl)
+                i += len(seq)
+                matched = True
+                break
+        if not matched:
+            out.append(text[i])
+            i += 1
+    return "".join(out)
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -62,6 +110,9 @@ class WebcrtSession:
     protocol: str
     cols: int
     rows: int
+    device_type: str = ""
+    vendor: str = ""
+    cli_keymap: bool = True
     conn: ConnectHandler | None = None
     created_at: float = field(default_factory=time.time)
     last_activity: float = field(default_factory=time.time)
@@ -82,10 +133,29 @@ class WebcrtSession:
         text = str(data or "")
         if not text:
             return
+        if self.cli_keymap:
+            text = map_network_cli_keys(text)
+        if not text:
+            return
         with self._write_lock:
-            self.conn.write_channel(text)
+            # Prefer raw channel write so control bytes are not altered.
+            channel = getattr(self.conn, "remote_conn", None)
+            try:
+                if channel is not None and hasattr(channel, "send") and callable(channel.send):
+                    payload = text.encode(getattr(self.conn, "encoding", None) or "utf-8", errors="replace")
+                    channel.send(payload)
+                elif channel is not None and hasattr(channel, "write") and callable(channel.write):
+                    encoding = getattr(self.conn, "encoding", None) or "utf-8"
+                    if isinstance(text, str):
+                        channel.write(text.encode(encoding, errors="replace"))
+                    else:
+                        channel.write(text)
+                else:
+                    self.conn.write_channel(text)
+            except Exception:
+                # Fallback to netmiko helper.
+                self.conn.write_channel(text)
         self.touch()
-
     def resize(self, cols: int, rows: int) -> None:
         if self.closed or self.conn is None:
             return
@@ -262,6 +332,9 @@ def create_session(
     target_ip = str(device.get("ip_address") or "")
     target_name = str(device.get("name") or target_ip)
     protocol = str(device.get("protocol") or creds.get("protocol") or "ssh")
+    device_type = str(device.get("device_type") or creds.get("device_type") or "")
+    vendor = str(device.get("vendor") or creds.get("vendor") or "")
+    cli_keymap = uses_network_cli_keymap(device_type, vendor)
 
     try:
         conn = open_netmiko_connection(creds, session_timeout=connect_timeout)
@@ -297,6 +370,9 @@ def create_session(
         protocol=protocol,
         cols=c,
         rows=r,
+        device_type=device_type,
+        vendor=vendor,
+        cli_keymap=cli_keymap,
         conn=conn,
     )
     if leftover:

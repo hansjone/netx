@@ -14,7 +14,7 @@ from netx_api import webcrt_service as svc
 class _FakeConn:
     def __init__(self) -> None:
         self.written: list[str] = []
-        self.remote_conn = MagicMock()
+        self.remote_conn = MagicMock(spec=["recv_ready", "recv", "exit_status_ready", "resize_pty"])
         self.remote_conn.recv_ready.return_value = False
         self.remote_conn.exit_status_ready.return_value = False
         self.remote_conn.resize_pty = MagicMock()
@@ -49,14 +49,26 @@ class WebcrtServiceTests(unittest.TestCase):
             protocol="ssh",
             cols=80,
             rows=24,
+            cli_keymap=True,
             conn=conn,  # type: ignore[arg-type]
         )
         sess.write_stdin("show ver\n")
         self.assertEqual(conn.written, ["show ver\n"])
+        # xterm DEL / arrows -> network CLI controls
+        sess.write_stdin("\x7f")
+        self.assertEqual(conn.written[-1], "\x08")
+        sess.write_stdin("\x1b[D\x1b[C\x1b[A\x1b[B")
+        self.assertEqual(conn.written[-1], "\x02\x06\x10\x0e")
         sess.resize(120, 40)
         conn.remote_conn.resize_pty.assert_called_with(width=120, height=40)
         sess.close("test")
         self.assertTrue(sess.closed)
+
+    def test_map_network_cli_keys_helpers(self) -> None:
+        self.assertEqual(svc.map_network_cli_keys("\x7fab"), "\x08ab")
+        self.assertEqual(svc.map_network_cli_keys("\x1b[D"), "\x02")
+        self.assertTrue(svc.uses_network_cli_keymap("huawei", "Huawei"))
+        self.assertFalse(svc.uses_network_cli_keymap("linux", "bastion"))
 
     @patch.object(svc, "_audit")
     @patch.object(svc, "open_netmiko_connection")
