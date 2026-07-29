@@ -98,7 +98,7 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
         }
     )
 
-    # Replay post-login banner/prompt so the UI is not blank until the user presses Enter.
+    # Replay login transcript once, then draw a live prompt so first keystrokes match later lines.
     bootstrap = bytes(sess.bootstrap_output or b"")
     if bootstrap:
         try:
@@ -107,12 +107,8 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
             )
         except Exception:
             _log.debug("webcrt bootstrap send failed session=%s", session_id, exc_info=True)
-    else:
-        # Last resort: ask the device to redraw the prompt into the live reader.
-        try:
-            await asyncio.get_running_loop().run_in_executor(None, sess.write_stdin, "\r")
-        except Exception:
-            pass
+        # Only replay login banner on the first attach (StrictMode remount / blip).
+        sess.bootstrap_output = b""
 
     stop = asyncio.Event()
 
@@ -141,6 +137,12 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
                 break
 
     reader_task = asyncio.create_task(pump_stdout())
+    if sess.needs_live_prompt:
+        sess.needs_live_prompt = False
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, sess.write_stdin, "\r")
+        except Exception:
+            _log.debug("webcrt live prompt sync failed session=%s", session_id, exc_info=True)
     try:
         while not stop.is_set():
             raw = await websocket.receive_text()

@@ -1456,23 +1456,31 @@ pre {
   background: #f0f0f0;
   border-right: 1px solid #808080;
   min-width: 0;
+  min-height: 0; /* grid/flex: allow tree to shrink and scroll */
+  overflow: hidden;
+  height: 100%;
+}
+
+.webcrt-sidebar__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px 6px 10px;
+  background: linear-gradient(#f8f8f8, #e4e4e4);
+  border-bottom: 1px solid #b0b0b0;
+  flex-shrink: 0;
 }
 
 .webcrt-sidebar__title {
-  padding: 6px 10px;
   font-size: 13px;
   font-weight: 600;
   color: #1e293b;
-  background: linear-gradient(#f8f8f8, #e4e4e4);
-  border-bottom: 1px solid #b0b0b0;
+  line-height: 1.2;
 }
 
 .webcrt-sidebar__toolbar {
-  display: flex;
-  gap: 4px;
-  padding: 4px 6px;
-  border-bottom: 1px solid #d0d0d0;
-  background: #ececec;
+  display: none;
 }
 
 .webcrt-icon-btn {
@@ -1494,6 +1502,7 @@ pre {
 .webcrt-sidebar__search {
   padding: 6px;
   border-bottom: 1px solid #d0d0d0;
+  flex-shrink: 0;
 }
 
 .webcrt-sidebar__search input {
@@ -1511,6 +1520,7 @@ pre {
   grid-template-columns: repeat(3, 1fr);
   gap: 0;
   border-bottom: 1px solid #c8c8c8;
+  flex-shrink: 0;
 }
 
 .webcrt-source-tabs__btn {
@@ -1532,10 +1542,12 @@ pre {
 }
 
 .webcrt-tree {
-  flex: 1;
-  overflow: auto;
+  flex: 1 1 auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   background: #fff;
   min-height: 0;
+  overscroll-behavior: contain;
 }
 
 .webcrt-tree__folder {
@@ -1612,6 +1624,7 @@ pre {
   background: #ececec;
   font-size: 11px;
   color: #475569;
+  flex-shrink: 0;
 }
 
 .webcrt-sidebar__pager-btns {
@@ -1636,6 +1649,7 @@ pre {
   display: flex;
   border-top: 1px solid #a8a8a8;
   background: #ddd;
+  flex-shrink: 0;
 }
 
 .webcrt-sidebar__footer button {
@@ -1698,6 +1712,40 @@ pre {
   color: #475569;
 }
 
+.webcrt-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 8px;
+  background: #f3f4f6;
+  border-bottom: 1px solid #d1d5db;
+  flex-shrink: 0;
+}
+
+.webcrt-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid #c0c0c0;
+  border-radius: 3px;
+  background: #fff;
+  color: #1e293b;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.webcrt-action-btn:hover {
+  background: #f8fafc;
+}
+
+.webcrt-action-btn.is-active {
+  background: #dbeafe;
+  border-color: #93c5fd;
+  color: #1d4ed8;
+}
+
 .webcrt-main__body {
   flex: 1;
   min-height: 0;
@@ -1752,12 +1800,7 @@ pre {
 }
 
 .webcrt-statusline {
-  padding: 3px 8px;
-  background: #ececec;
-  border-top: 1px solid #a8a8a8;
-  font-size: 11px;
-  color: #334155;
-  flex-shrink: 0;
+  display: none;
 }
 
 @media (max-width: 900px) {

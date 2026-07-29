@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 import queue
@@ -77,6 +78,29 @@ def map_network_cli_keys(data: str) -> str:
             i += 1
     return "".join(out)
 
+
+def channel_return(conn: ConnectHandler | None) -> str:
+    """Netmiko line ending for this session (SSH usually \\n, Telnet often \\r\\n)."""
+    if conn is None:
+        return "\n"
+    ret = getattr(conn, "RETURN", None)
+    if isinstance(ret, str) and ret:
+        return ret
+    return "\n"
+
+
+def map_network_cli_enter(data: str, conn: ConnectHandler | None) -> str:
+    """Map xterm Enter (\\r) to the device's Netmiko RETURN."""
+    text = str(data or "")
+    if not text:
+        return text
+    ret = channel_return(conn)
+    if ret == "\r":
+        return text
+    # Prefer replacing CRLF first so Telnet RETURN \\r\\n does not double-expand.
+    return text.replace("\r\n", ret).replace("\r", ret)
+
+
 def _drain_channel(conn: ConnectHandler, *, rounds: int = 10, wait: float = 0.12) -> str:
     """Read whatever is already sitting on the channel after login."""
     chunks: list[str] = []
@@ -97,12 +121,80 @@ def _drain_channel(conn: ConnectHandler, *, rounds: int = 10, wait: float = 0.12
     return "".join(chunks)
 
 
+def _session_log_text(buf: io.BytesIO | None) -> str:
+    """Decode Netmiko session_log buffer into display text."""
+    if buf is None:
+        return ""
+    try:
+        raw = buf.getvalue()
+    except Exception:
+        return ""
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", errors="replace")
+    return str(raw or "")
+
+
 def _looks_like_cli_prompt(text: str) -> bool:
     s = str(text or "").rstrip()
     if not s:
         return False
     # Common network CLI prompts: <r1>  [HUAWEI]  Router#  Router>
     return bool(re.search(r"(?:[>\]]|#)\s*$", s)) or bool(re.search(r"<[^>\r\n]+>\s*$", s))
+
+
+# Cisco/Netmiko often yields "R2#R2#" when a sync Enter is appended without a newline.
+_GLUED_PROMPT_RE = re.compile(r"(?<=[#>])(?=(?:[A-Za-z0-9][\w.\-:]{0,62})[#>])")
+
+
+def normalize_cli_transcript(text: str) -> str:
+    """Normalize login transcript for xterm (convertEol) and un-glue prompts."""
+    s = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    s = _GLUED_PROMPT_RE.sub("\n", s)
+    lines = s.split("\n")
+    while lines and not str(lines[-1]).strip():
+        lines.pop()
+    while len(lines) >= 2 and lines[-1] == lines[-2] and _looks_like_cli_prompt(lines[-1]):
+        lines.pop()
+    return "\n".join(lines)
+
+
+def strip_trailing_prompt_lines(text: str) -> str:
+    """Remove final prompt line(s) so a live RETURN can paint the interactive prompt."""
+    lines = str(text or "").split("\n")
+    while lines and not str(lines[-1]).strip():
+        lines.pop()
+    while lines and _looks_like_cli_prompt(lines[-1]):
+        lines.pop()
+        while lines and not str(lines[-1]).strip():
+            lines.pop()
+    return "\n".join(lines)
+
+
+def prepare_bootstrap_output(text: str) -> str:
+    """Login transcript for UI replay; ends with newline, without the final prompt."""
+    body = strip_trailing_prompt_lines(normalize_cli_transcript(text))
+    if not body:
+        return ""
+    return body if body.endswith("\n") else body + "\n"
+
+
+def _prime_interactive_channel(conn: ConnectHandler) -> None:
+    """Send one RETURN after Netmiko login so the interactive channel is fully ready."""
+    try:
+        _drain_channel(conn, rounds=4, wait=0.05)
+    except Exception:
+        pass
+    try:
+        conn.write_channel(channel_return(conn))
+    except Exception:
+        try:
+            conn.write_channel("\n")
+        except Exception:
+            return
+    try:
+        _drain_channel(conn, rounds=8, wait=0.1)
+    except Exception:
+        pass
 
 
 
@@ -151,6 +243,7 @@ class WebcrtSession:
     closed: bool = False
     close_reason: str = ""
     bootstrap_output: bytes = b""
+    needs_live_prompt: bool = True
     out_queue: queue.Queue[bytes | None] = field(default_factory=queue.Queue)
     _reader: threading.Thread | None = field(default=None, repr=False)
     _write_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
@@ -166,26 +259,26 @@ class WebcrtSession:
             return
         if self.cli_keymap:
             text = map_network_cli_keys(text)
+            text = map_network_cli_enter(text, self.conn)
         if not text:
             return
         with self._write_lock:
-            # Prefer raw channel write so control bytes are not altered.
-            channel = getattr(self.conn, "remote_conn", None)
-            try:
-                if channel is not None and hasattr(channel, "send") and callable(channel.send):
-                    payload = text.encode(getattr(self.conn, "encoding", None) or "utf-8", errors="replace")
-                    channel.send(payload)
-                elif channel is not None and hasattr(channel, "write") and callable(channel.write):
-                    encoding = getattr(self.conn, "encoding", None) or "utf-8"
-                    if isinstance(text, str):
-                        channel.write(text.encode(encoding, errors="replace"))
-                    else:
-                        channel.write(text)
-                else:
-                    self.conn.write_channel(text)
-            except Exception:
-                # Fallback to netmiko helper.
+            # Network CLIs: use Netmiko write_channel so RETURN/encoding match the driver.
+            if self.cli_keymap:
                 self.conn.write_channel(text)
+            else:
+                channel = getattr(self.conn, "remote_conn", None)
+                try:
+                    if channel is not None and hasattr(channel, "send") and callable(channel.send):
+                        payload = text.encode(getattr(self.conn, "encoding", None) or "utf-8", errors="replace")
+                        channel.send(payload)
+                    elif channel is not None and hasattr(channel, "write") and callable(channel.write):
+                        encoding = getattr(self.conn, "encoding", None) or "utf-8"
+                        channel.write(text.encode(encoding, errors="replace") if isinstance(text, str) else text)
+                    else:
+                        self.conn.write_channel(text)
+                except Exception:
+                    self.conn.write_channel(text)
         self.touch()
     def resize(self, cols: int, rows: int) -> None:
         if self.closed or self.conn is None:
@@ -367,9 +460,14 @@ def create_session(
     vendor = str(device.get("vendor") or creds.get("vendor") or "")
     cli_keymap = uses_network_cli_keymap(device_type, vendor)
 
+    # Capture real Telnet/SSH login I/O (banner, Username/Password, prompts).
+    log_buf = io.BytesIO()
     try:
-        conn = open_netmiko_connection(creds, session_timeout=connect_timeout)
+        conn = open_netmiko_connection(
+            creds, session_timeout=connect_timeout, session_log=log_buf
+        )
     except Exception as exc:
+        partial = _session_log_text(log_buf).strip()
         _audit(
             "session_open_failed",
             session_id=session_id,
@@ -378,8 +476,13 @@ def create_session(
             source=str(device.get("source") or ""),
             client=client or "",
             error=str(exc)[:500],
+            transcript_len=len(partial),
         )
-        raise HTTPException(status_code=502, detail=f"connect_failed:{exc}") from exc
+        detail = f"connect_failed:{exc}"
+        if partial:
+            # Keep detail bounded; UI surfaces this on open failure.
+            detail = f"{detail}\n--- device transcript ---\n{partial[-4000:]}"
+        raise HTTPException(status_code=502, detail=detail) from exc
 
     channel = getattr(conn, "remote_conn", None)
     if channel is not None and hasattr(channel, "resize_pty"):
@@ -388,20 +491,23 @@ def create_session(
         except Exception:
             pass
 
+    # Prefer session_log (full login transcript). Prime channel, then strip the final
+    # prompt so WebSocket attach can paint a live interactive prompt (first keystrokes
+    # then behave like subsequent lines).
+    _prime_interactive_channel(conn)
+    bootstrap = prepare_bootstrap_output(_session_log_text(log_buf))
+    if not bootstrap.strip():
+        try:
+            more = _drain_channel(conn, rounds=6, wait=0.1)
+        except Exception:
+            more = ""
+        if more:
+            bootstrap = prepare_bootstrap_output(more)
+    # Discard any unread bytes so the live reader starts clean.
     try:
-        leftover = _drain_channel(conn, rounds=8, wait=0.1)
+        _drain_channel(conn, rounds=3, wait=0.05)
     except Exception:
-        leftover = ""
-    # Netmiko often consumes the login banner; nudge Enter once to surface the prompt.
-    if not _looks_like_cli_prompt(leftover):
-        try:
-            conn.write_channel("\r")
-        except Exception:
-            pass
-        try:
-            leftover = (leftover or "") + _drain_channel(conn, rounds=8, wait=0.12)
-        except Exception:
-            pass
+        pass
 
     sess = WebcrtSession(
         session_id=session_id,
@@ -415,7 +521,8 @@ def create_session(
         vendor=vendor,
         cli_keymap=cli_keymap,
         conn=conn,
-        bootstrap_output=str(leftover or "").encode("utf-8", errors="replace"),
+        bootstrap_output=str(bootstrap or "").encode("utf-8", errors="replace"),
+        needs_live_prompt=True,
     )
     # Keep bootstrap for WS attach replay; do not rely solely on out_queue (StrictMode remount).
     sess.start_reader()

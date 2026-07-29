@@ -26,7 +26,7 @@ import { useToast } from "../hooks/useToast";
 import type { ManagedNeItem } from "../types";
 import { pageCount } from "../utils/display";
 import { formatSystemTime } from "../utils/time";
-import { openOrFocusModule } from "../utils/moduleWindows";
+import { openNewModuleWindow } from "../utils/moduleWindows";
 import {
   defaultHopTemplate,
   isAutoHopTemplate,
@@ -777,7 +777,7 @@ export function NePage() {
                     type="button"
                     className="link-btn"
                     onClick={() =>
-                      openOrFocusModule({
+                      openNewModuleWindow({
                         moduleId: "webcrt",
                         path: `/webcrt?ne_id=${encodeURIComponent(row.id)}`,
                       })

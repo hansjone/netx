@@ -14,6 +14,7 @@ from netx_api import webcrt_service as svc
 class _FakeConn:
     def __init__(self) -> None:
         self.written: list[str] = []
+        self.RETURN = "\n"
         self.remote_conn = MagicMock(spec=["recv_ready", "recv", "exit_status_ready", "resize_pty"])
         self.remote_conn.recv_ready.return_value = False
         self.remote_conn.exit_status_ready.return_value = False
@@ -54,6 +55,9 @@ class WebcrtServiceTests(unittest.TestCase):
         )
         sess.write_stdin("show ver\n")
         self.assertEqual(conn.written, ["show ver\n"])
+        # xterm Enter (\r) -> Netmiko RETURN (\n for SSH)
+        sess.write_stdin("\r")
+        self.assertEqual(conn.written[-1], "\n")
         # xterm DEL / arrows -> network CLI controls
         sess.write_stdin("\x7f")
         self.assertEqual(conn.written[-1], "\x08")
@@ -69,6 +73,15 @@ class WebcrtServiceTests(unittest.TestCase):
         self.assertEqual(svc.map_network_cli_keys("\x1b[D"), "\x02")
         self.assertTrue(svc.uses_network_cli_keymap("huawei", "Huawei"))
         self.assertFalse(svc.uses_network_cli_keymap("linux", "bastion"))
+        self.assertEqual(svc.map_network_cli_enter("\r", _FakeConn()), "\n")  # type: ignore[arg-type]
+        telnet = _FakeConn()
+        telnet.RETURN = "\r\n"
+        self.assertEqual(svc.map_network_cli_enter("\r", telnet), "\r\n")  # type: ignore[arg-type]
+        self.assertEqual(svc.normalize_cli_transcript("R2#R2#\nR2#"), "R2#")
+        self.assertEqual(svc.normalize_cli_transcript("banner\nR2#R2#"), "banner\nR2#")
+        self.assertEqual(svc.prepare_bootstrap_output("login\nR2#\nR2#"), "login\n")
+        self.assertTrue(svc.prepare_bootstrap_output("login\nR2#").endswith("\n"))
+        self.assertFalse(svc._looks_like_cli_prompt(svc.prepare_bootstrap_output("login\nR2#").rstrip("\n") or "x"))
 
     @patch.object(svc, "_audit")
     @patch.object(svc, "open_netmiko_connection")
@@ -133,7 +146,18 @@ class WebcrtServiceTests(unittest.TestCase):
             },
         )
         fake = _FakeConn()
-        mock_open.return_value = fake
+
+        def _open_with_log(*_a, **kwargs):
+            log_buf = kwargs.get("session_log")
+            if log_buf is not None and hasattr(log_buf, "write"):
+                log_buf.write(
+                    b"Warning: Telnet is not a secure protocol...\r\n"
+                    b"Username:huawei\r\nPassword:\r\n"
+                    b"<r1>"
+                )
+            return fake
+
+        mock_open.side_effect = _open_with_log
 
         db = MagicMock()
         out = svc.create_session(db, ne_id="ne-hop", cols=100, rows=30, client="test")
@@ -141,15 +165,19 @@ class WebcrtServiceTests(unittest.TestCase):
         called_creds = mock_open.call_args.args[0]
         self.assertTrue(called_creds["hop_enabled"])
         self.assertEqual(called_creds["hop_vendor"], "bastion")
+        self.assertIn("session_log", mock_open.call_args.kwargs)
         fake.remote_conn.resize_pty.assert_called()
         self.assertEqual(out["ne_id"], "ne-hop")
         sess = svc.get_session(out["session_id"])
         assert sess is not None
-        # create_session may nudge Enter when no prompt was drained.
+        boot = sess.bootstrap_output.decode("utf-8", errors="replace")
+        self.assertIn("Username:huawei", boot)
+        # Final prompt is stripped; live RETURN on WS attach paints the interactive prompt.
+        self.assertNotIn("<r1>", boot)
+        self.assertTrue(sess.needs_live_prompt)
         before = list(fake.written)
         sess.write_stdin("\n")
         self.assertEqual(fake.written[len(before) :], ["\n"])
-        self.assertTrue(isinstance(sess.bootstrap_output, (bytes, bytearray)))
         svc.close_session(out["session_id"], reason="test")
 
     @patch.object(svc, "_audit")

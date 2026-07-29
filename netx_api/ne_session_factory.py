@@ -252,6 +252,7 @@ def _netmiko_over_ssh_client(
     password: str,
     enable_secret: str,
     session_timeout: int | None,
+    session_log: Any = None,
 ) -> ConnectHandler:
     """Netmiko session over an already-authenticated SSH client (bastion protocol proxy)."""
     base_cls = _netmiko_driver_class(device_type)
@@ -278,6 +279,7 @@ def _netmiko_over_ssh_client(
         password=password,
         enable_secret=enable_secret,
         session_timeout=session_timeout,
+        session_log=session_log,
     )
     return _PreauthSession(**dev)
 
@@ -291,6 +293,7 @@ def _base_connect_kwargs(
     password: str,
     enable_secret: str,
     session_timeout: int | None = None,
+    session_log: Any = None,
 ) -> dict[str, Any]:
     timeout = int(settings.ne_connect_timeout_sec or 30)
     dev: dict[str, Any] = {
@@ -308,10 +311,17 @@ def _base_connect_kwargs(
     secret = str(enable_secret or "").strip()
     if secret:
         dev["secret"] = secret
+    if session_log is not None:
+        dev["session_log"] = session_log
     return dev
 
 
-def _connect_direct(creds: dict[str, Any], *, session_timeout: int | None = None) -> ConnectHandler:
+def _connect_direct(
+    creds: dict[str, Any],
+    *,
+    session_timeout: int | None = None,
+    session_log: Any = None,
+) -> ConnectHandler:
     device_type = normalize_netmiko_device_type(creds["device_type"], creds["protocol"])
     dev = _base_connect_kwargs(
         device_type=device_type,
@@ -321,6 +331,7 @@ def _connect_direct(creds: dict[str, Any], *, session_timeout: int | None = None
         password=str(creds["password"]),
         enable_secret=str(creds.get("enable_secret") or ""),
         session_timeout=session_timeout,
+        session_log=session_log,
     )
     return ConnectHandler(**dev)
 
@@ -391,7 +402,12 @@ def _hop_netmiko_device_type(vendor: str, hop_protocol: str) -> str:
     return normalize_netmiko_device_type(base, hop_protocol)
 
 
-def _connect_via_cli_hop(creds: dict[str, Any], *, session_timeout: int | None = None) -> ConnectHandler:
+def _connect_via_cli_hop(
+    creds: dict[str, Any],
+    *,
+    session_timeout: int | None = None,
+    session_log: Any = None,
+) -> ConnectHandler:
     """Login to ZTE/Huawei/Cisco hop NE, run CLI jump command, then target secondary auth."""
     hop_host = str(creds.get("hop_host") or "").strip()
     hop_user = str(creds.get("hop_username") or "").strip()
@@ -409,6 +425,7 @@ def _connect_via_cli_hop(creds: dict[str, Any], *, session_timeout: int | None =
         password=hop_pass,
         enable_secret="",
         session_timeout=session_timeout or 180,
+        session_log=session_log,
     )
     conn = ConnectHandler(**hop_dev)
     try:
@@ -425,7 +442,12 @@ def _connect_via_cli_hop(creds: dict[str, Any], *, session_timeout: int | None =
         raise
 
 
-def _connect_via_bastion(creds: dict[str, Any], *, session_timeout: int | None = None) -> ConnectHandler:
+def _connect_via_bastion(
+    creds: dict[str, Any],
+    *,
+    session_timeout: int | None = None,
+    session_log: Any = None,
+) -> ConnectHandler:
     """SSH to bastion with composite username; bastion proxies to target (protocol proxy)."""
     hop_host = str(creds.get("hop_host") or "").strip()
     hop_user = str(creds.get("hop_username") or "").strip()
@@ -456,6 +478,7 @@ def _connect_via_bastion(creds: dict[str, Any], *, session_timeout: int | None =
             password=hop_pass,
             enable_secret=str(creds.get("enable_secret") or ""),
             session_timeout=session_timeout or 180,
+            session_log=session_log,
         )
     except Exception:
         if ssh_client is not None:
@@ -481,7 +504,12 @@ def _connect_via_bastion(creds: dict[str, Any], *, session_timeout: int | None =
     return conn
 
 
-def _connect_via_linux_hop(creds: dict[str, Any], *, session_timeout: int | None = None) -> ConnectHandler:
+def _connect_via_linux_hop(
+    creds: dict[str, Any],
+    *,
+    session_timeout: int | None = None,
+    session_log: Any = None,
+) -> ConnectHandler:
     """SSH to Linux bastion, then direct-tcpip tunnel to target (classic ProxyJump-style)."""
     hop_host = str(creds.get("hop_host") or "").strip()
     hop_user = str(creds.get("hop_username") or "").strip()
@@ -533,6 +561,7 @@ def _connect_via_linux_hop(creds: dict[str, Any], *, session_timeout: int | None
         password=str(creds["password"]),
         enable_secret=str(creds.get("enable_secret") or ""),
         session_timeout=session_timeout,
+        session_log=session_log,
     )
     dev["sock"] = channel
     conn = ConnectHandler(**dev)
@@ -556,13 +585,18 @@ def close_netmiko_connection(conn: ConnectHandler | None) -> None:
             pass
 
 
-def open_netmiko_connection(creds: dict[str, Any], *, session_timeout: int | None = None) -> ConnectHandler:
+def open_netmiko_connection(
+    creds: dict[str, Any],
+    *,
+    session_timeout: int | None = None,
+    session_log: Any = None,
+) -> ConnectHandler:
     """Open a Netmiko connection to the target NE (direct or via configured hop)."""
     if creds.get("hop_enabled"):
         vendor = _hop_vendor(creds)
         if vendor == "linux":
-            return _connect_via_linux_hop(creds, session_timeout=session_timeout)
+            return _connect_via_linux_hop(creds, session_timeout=session_timeout, session_log=session_log)
         if vendor == "bastion":
-            return _connect_via_bastion(creds, session_timeout=session_timeout)
-        return _connect_via_cli_hop(creds, session_timeout=session_timeout)
-    return _connect_direct(creds, session_timeout=session_timeout)
+            return _connect_via_bastion(creds, session_timeout=session_timeout, session_log=session_log)
+        return _connect_via_cli_hop(creds, session_timeout=session_timeout, session_log=session_log)
+    return _connect_direct(creds, session_timeout=session_timeout, session_log=session_log)
