@@ -136,6 +136,9 @@ class WebcrtServiceTests(unittest.TestCase):
                 "hop_enabled": True,
                 "hop_vendor": "bastion",
                 "hop_host": "jump.example",
+                "hop_username": "jumpuser",
+                "hop_password": "jumppass",
+                "hop_target_auth_mode": "bastion_managed",
                 "ip_address": "10.0.0.2",
                 "protocol": "ssh",
             },
@@ -180,6 +183,83 @@ class WebcrtServiceTests(unittest.TestCase):
         sess.write_stdin("\n")
         self.assertEqual(fake.written[len(before) :], ["\n"])
         svc.close_session(out["session_id"], reason="test")
+
+    @patch.object(svc, "_audit")
+    @patch.object(svc, "open_netmiko_connection")
+    @patch("netx_api.cli_resolve.resolve_cli_target")
+    def test_create_session_bastion_managed_without_target_password(
+        self,
+        mock_resolve: MagicMock,
+        mock_open: MagicMock,
+        _mock_audit: MagicMock,
+    ) -> None:
+        mock_resolve.return_value = (
+            {
+                "username": "ca-oper",
+                "password": "",
+                "hop_enabled": True,
+                "hop_vendor": "bastion",
+                "hop_host": "10.34.145.27",
+                "hop_username": "ZTE-TSM",
+                "hop_password": "bastion-secret",
+                "hop_target_auth_mode": "bastion_managed",
+                "hop_command_template": "ssh {target_ip}",
+                "ip_address": "114.0.44.90",
+                "protocol": "ssh",
+                "device_type": "zte_zxros",
+            },
+            {
+                "id": "ne-bastion",
+                "name": "KND-PUN-EN1-Z20HS",
+                "ip_address": "114.0.44.90",
+                "protocol": "ssh",
+                "source": "managed",
+            },
+        )
+        mock_open.return_value = _FakeConn()
+        out = svc.create_session(MagicMock(), ne_id="ne-bastion", cols=80, rows=24, client="test")
+        mock_open.assert_called_once()
+        self.assertEqual(out["ne_id"], "ne-bastion")
+        svc.close_session(out["session_id"], reason="test")
+
+    def test_webcrt_creds_ready_bastion_managed(self) -> None:
+        self.assertTrue(
+            svc._webcrt_creds_ready(
+                {
+                    "username": "ca-oper",
+                    "password": "",
+                    "hop_enabled": True,
+                    "hop_vendor": "bastion",
+                    "hop_host": "10.34.145.27",
+                    "hop_username": "ZTE-TSM",
+                    "hop_password": "x",
+                    "hop_target_auth_mode": "bastion_managed",
+                }
+            )
+        )
+        self.assertFalse(
+            svc._webcrt_creds_ready(
+                {
+                    "username": "ca-oper",
+                    "password": "",
+                    "hop_enabled": True,
+                    "hop_vendor": "bastion",
+                    "hop_host": "10.34.145.27",
+                    "hop_username": "ZTE-TSM",
+                    "hop_password": "",
+                    "hop_target_auth_mode": "bastion_managed",
+                }
+            )
+        )
+        self.assertFalse(
+            svc._webcrt_creds_ready(
+                {
+                    "username": "u",
+                    "password": "",
+                    "hop_enabled": False,
+                }
+            )
+        )
 
     @patch.object(svc, "_audit")
     def test_attach_gen_exclusive_stdout_and_stale_detach(self, _mock_audit: MagicMock) -> None:

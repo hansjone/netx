@@ -460,6 +460,27 @@ def get_session(session_id: str) -> WebcrtSession | None:
         return sess
 
 
+def _webcrt_creds_ready(creds: dict[str, Any]) -> bool:
+    """True when WebCRT can open a session with the resolved credentials.
+
+    Bastion-managed hops store the target password on the bastion side, so an empty
+    NE password is valid (same as connectivity test). Direct / manual / Linux hops
+    still require a target password.
+    """
+    if not str(creds.get("username") or "").strip():
+        return False
+    hop_enabled = bool(creds.get("hop_enabled"))
+    hop_vendor = str(creds.get("hop_vendor") or "").strip().lower()
+    auth_mode = str(creds.get("hop_target_auth_mode") or "bastion_managed").strip().lower()
+    if hop_enabled and hop_vendor == "bastion" and auth_mode == "bastion_managed":
+        return bool(
+            str(creds.get("hop_host") or "").strip()
+            and str(creds.get("hop_username") or "").strip()
+            and str(creds.get("hop_password") or "")
+        )
+    return bool(str(creds.get("password") or ""))
+
+
 def create_session(
     db: Session,
     *,
@@ -487,7 +508,7 @@ def create_session(
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"credential_error:{exc}") from exc
 
-    if not str(creds.get("username") or "").strip() or not str(creds.get("password") or ""):
+    if not _webcrt_creds_ready(creds):
         raise HTTPException(status_code=400, detail="credentials_incomplete")
 
     session_id = str(uuid.uuid4())
