@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any
+import json
+from typing import Any, Iterator
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from .db import get_db
@@ -19,12 +21,18 @@ from .topology_service import (
     delete_map,
     discover_neighbors,
     get_graph,
+    iter_discover_neighbors,
     list_maps,
     put_graph,
     update_map,
 )
 
 router = APIRouter(prefix="/v1/topology", tags=["topology"])
+
+
+def _sse_pack(event: dict[str, Any]) -> str:
+    etype = str(event.get("type") or "message")
+    return f"event: {etype}\ndata: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
 
 
 @router.get("/maps")
@@ -69,3 +77,30 @@ def api_discover(
 ) -> dict[str, Any]:
     req = body or TopologyDiscoverRequest()
     return discover_neighbors(db, map_id, req).model_dump()
+
+
+@router.post("/maps/{map_id}/discover/stream")
+def api_discover_stream(
+    map_id: str,
+    body: TopologyDiscoverRequest | None = None,
+    db: Session = Depends(get_db),
+) -> StreamingResponse:
+    """SSE stream: start → ne_start/ne_result (per NE) → done."""
+    req = body or TopologyDiscoverRequest()
+
+    def generate() -> Iterator[str]:
+        try:
+            for event in iter_discover_neighbors(db, map_id, req):
+                yield _sse_pack(event)
+        except Exception as exc:  # noqa: BLE001 — surface to client then end stream
+            yield _sse_pack({"type": "error", "detail": str(exc)[:800]})
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

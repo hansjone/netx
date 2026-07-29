@@ -221,7 +221,7 @@ def put_graph(db: Session, map_id: str, body: TopologyGraphPut) -> TopologyGraph
         if sid not in node_ids or tid not in node_ids:
             raise HTTPException(status_code=400, detail="edge_endpoint_not_in_nodes")
         src = str(e.source or "manual").strip().lower() or "manual"
-        if src not in {"manual", "lldp", "cdp"}:
+        if src not in {"manual", "lldp", "cdp", "stale"}:
             raise HTTPException(status_code=400, detail="invalid_edge_source")
 
     now = _utcnow()
@@ -243,6 +243,7 @@ def put_graph(db: Session, map_id: str, body: TopologyGraphPut) -> TopologyGraph
             )
         )
     for e in edges_in:
+        src = str(e.source or "manual").strip().lower() or "manual"
         db.add(
             TopologyEdge(
                 id=str(e.id).strip() or uuid4().hex,
@@ -251,8 +252,8 @@ def put_graph(db: Session, map_id: str, body: TopologyGraphPut) -> TopologyGraph
                 target_node_id=str(e.target_node_id).strip(),
                 source_port=str(e.source_port or "").strip()[:128],
                 target_port=str(e.target_port or "").strip()[:128],
-                source=str(e.source or "manual").strip().lower() or "manual",
-                discovered_at=now if str(e.source or "").lower() in {"lldp", "cdp"} else None,
+                source=src,
+                discovered_at=now if src in {"lldp", "cdp", "stale"} else None,
                 created_at=now,
                 updated_at=now,
             )
@@ -306,11 +307,12 @@ def _edge_pair_key(a: str, b: str, local_port: str, remote_port: str) -> tuple[s
     return (b, a, remote_port, local_port)
 
 
-def discover_neighbors(
+def iter_discover_neighbors(
     db: Session,
     map_id: str,
     body: TopologyDiscoverRequest,
-) -> TopologyDiscoverOut:
+):
+    """Yield discovery progress events: start / ne_start / ne_result / done / error."""
     row = _get_map_or_404(db, map_id)
     nodes = db.query(TopologyNode).filter(TopologyNode.map_id == row.id).all()
     edges = db.query(TopologyEdge).filter(TopologyEdge.map_id == row.id).all()
@@ -325,7 +327,6 @@ def discover_neighbors(
         and (not filter_ids or n.managed_ne_id in filter_ids)
     ]
 
-    # Index existing edges for upsert (undirected + ports).
     existing: dict[tuple[str, str, str, str], TopologyEdge] = {}
     for e in edges:
         key = _edge_pair_key(
@@ -339,28 +340,55 @@ def discover_neighbors(
     results: list[TopologyDiscoverNeResult] = []
     added = 0
     updated = 0
+    stale_count = 0
     now = _utcnow()
     proto_req = str(body.protocol or "auto").strip().lower() or "auto"
+    total = len(scan_nodes)
+    touched_edge_ids: set[str] = set()
+    scanned_ok_node_ids: set[str] = set()
 
-    for n in scan_nodes:
+    yield {
+        "type": "start",
+        "map_id": row.id,
+        "protocol": proto_req,
+        "total": total,
+    }
+
+    for index, n in enumerate(scan_nodes, start=1):
         ne = nes.get(n.managed_ne_id)
         if ne is None:
             continue
+        yield {
+            "type": "ne_start",
+            "index": index,
+            "total": total,
+            "ne_id": ne.id,
+            "ne_name": ne.name or "",
+            "ne_ip": ne.ip_address or "",
+        }
         cmd, proto_tag = pick_neighbor_command(
             protocol=proto_req,
             vendor=ne.vendor or "",
             device_type=ne.device_type or "",
         )
         if not cmd:
-            results.append(
-                TopologyDiscoverNeResult(
-                    ne_id=ne.id,
-                    ne_name=ne.name or "",
-                    ne_ip=ne.ip_address or "",
-                    ok=False,
-                    error="no_command_for_vendor",
-                )
+            result = TopologyDiscoverNeResult(
+                ne_id=ne.id,
+                ne_name=ne.name or "",
+                ne_ip=ne.ip_address or "",
+                ok=False,
+                error="no_command_for_vendor",
             )
+            results.append(result)
+            yield {
+                "type": "ne_result",
+                "index": index,
+                "total": total,
+                "result": result.model_dump(mode="json"),
+                "edges_added": added,
+                "edges_updated": updated,
+                "edges_stale": stale_count,
+            }
             continue
         exec_out = execute_managed_ne_commands(
             db,
@@ -369,18 +397,27 @@ def discover_neighbors(
             read_timeout_sec=60,
         )
         if not exec_out.get("ok"):
-            results.append(
-                TopologyDiscoverNeResult(
-                    ne_id=ne.id,
-                    ne_name=ne.name or "",
-                    ne_ip=ne.ip_address or "",
-                    ok=False,
-                    command=cmd,
-                    error=str(exec_out.get("detail") or exec_out.get("error") or "exec_failed")[:500],
-                )
+            result = TopologyDiscoverNeResult(
+                ne_id=ne.id,
+                ne_name=ne.name or "",
+                ne_ip=ne.ip_address or "",
+                ok=False,
+                command=cmd,
+                error=str(exec_out.get("detail") or exec_out.get("error") or "exec_failed")[:500],
             )
+            results.append(result)
+            yield {
+                "type": "ne_result",
+                "index": index,
+                "total": total,
+                "result": result.model_dump(mode="json"),
+                "edges_added": added,
+                "edges_updated": updated,
+                "edges_stale": stale_count,
+            }
             continue
 
+        scanned_ok_node_ids.add(n.id)
         raw = str(exec_out.get("output") or "")
         hits = parse_neighbor_output(
             raw,
@@ -402,7 +439,6 @@ def discover_neighbors(
             edge_proto = hit.protocol if hit.protocol in {"lldp", "cdp"} else proto_tag
             cur = existing.get(key)
             if cur is not None:
-                # Never downgrade manual edges; refresh discovery metadata only for discovered.
                 if (cur.source or "manual") == "manual":
                     continue
                 cur.source = edge_proto
@@ -410,10 +446,10 @@ def discover_neighbors(
                 cur.target_port = remote_port if cur.source_node_id == n.id else local_port
                 cur.discovered_at = now
                 cur.updated_at = now
+                touched_edge_ids.add(cur.id)
                 ne_updated += 1
                 updated += 1
                 continue
-            # Prefer orientation: scanning node as source.
             new_edge = TopologyEdge(
                 id=uuid4().hex,
                 map_id=row.id,
@@ -428,32 +464,72 @@ def discover_neighbors(
             )
             db.add(new_edge)
             existing[key] = new_edge
+            touched_edge_ids.add(new_edge.id)
             ne_added += 1
             added += 1
 
-        results.append(
-            TopologyDiscoverNeResult(
-                ne_id=ne.id,
-                ne_name=ne.name or "",
-                ne_ip=ne.ip_address or "",
-                ok=True,
-                command=cmd,
-                neighbors=len(hits),
-                edges_added=ne_added,
-                edges_updated=ne_updated,
-                raw_preview=raw[:800],
-            )
+        result = TopologyDiscoverNeResult(
+            ne_id=ne.id,
+            ne_name=ne.name or "",
+            ne_ip=ne.ip_address or "",
+            ok=True,
+            command=cmd,
+            neighbors=len(hits),
+            edges_added=ne_added,
+            edges_updated=ne_updated,
+            raw_preview=raw[:800],
         )
+        results.append(result)
+        yield {
+            "type": "ne_result",
+            "index": index,
+            "total": total,
+            "result": result.model_dump(mode="json"),
+            "edges_added": added,
+            "edges_updated": updated,
+            "edges_stale": stale_count,
+        }
+
+    # Mark previously discovered edges not refreshed by this run as stale
+    # (only when at least one endpoint was successfully scanned).
+    if scanned_ok_node_ids:
+        for e in edges:
+            src = (e.source or "manual").strip().lower()
+            if src not in {"lldp", "cdp", "stale"}:
+                continue
+            if e.id in touched_edge_ids:
+                continue
+            if e.source_node_id not in scanned_ok_node_ids and e.target_node_id not in scanned_ok_node_ids:
+                continue
+            e.source = "stale"
+            e.updated_at = now
+            stale_count += 1
 
     row.updated_at = now
     db.commit()
     graph = get_graph(db, row.id)
-    return TopologyDiscoverOut(
+    report = TopologyDiscoverOut(
         map_id=row.id,
         protocol=proto_req,
         scanned=len(results),
         edges_added=added,
         edges_updated=updated,
+        edges_stale=stale_count,
         results=results,
         graph=graph,
     )
+    yield {"type": "done", "report": report.model_dump(mode="json")}
+
+
+def discover_neighbors(
+    db: Session,
+    map_id: str,
+    body: TopologyDiscoverRequest,
+) -> TopologyDiscoverOut:
+    report: TopologyDiscoverOut | None = None
+    for event in iter_discover_neighbors(db, map_id, body):
+        if event.get("type") == "done":
+            report = TopologyDiscoverOut.model_validate(event.get("report") or {})
+    if report is None:
+        raise HTTPException(status_code=500, detail="discover_failed")
+    return report

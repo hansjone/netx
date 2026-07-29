@@ -425,7 +425,7 @@ class TopologyEdge(Base):
     target_node_id: Mapped[str] = mapped_column(String(64), index=True)
     source_port: Mapped[str] = mapped_column(String(128), default="")
     target_port: Mapped[str] = mapped_column(String(128), default="")
-    # manual | lldp | cdp
+    # manual | lldp | cdp | stale
     source: Mapped[str] = mapped_column(String(32), default="manual", index=True)
     discovered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

@@ -397,6 +397,120 @@ class TopologyServiceTests(unittest.TestCase):
         self.db.delete(ne_b)
         self.db.commit()
 
+    def test_iter_discover_emits_live_progress_events(self) -> None:
+        suffix = uuid4().hex[:8]
+        ne_a_id = f"nea-{suffix}"
+        ne_b_id = f"neb-{suffix}"
+        ip_a = f"198.51.100.{(int(suffix[:2], 16) % 100) + 1}"
+        ip_b = f"198.51.100.{(int(suffix[2:4], 16) % 100) + 101}"
+        ne_a = ManagedNE(
+            id=ne_a_id,
+            name="R2",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address=ip_a,
+        )
+        ne_b = ManagedNE(
+            id=ne_b_id,
+            name="R1",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address=ip_b,
+        )
+        self.db.add(ne_a)
+        self.db.add(ne_b)
+        self.db.commit()
+        created = svc.create_map(self.db, TopologyMapCreate(name=f"Stream-{suffix}"))
+        mid = created.id
+        svc.put_graph(
+            self.db,
+            mid,
+            TopologyGraphPut(
+                nodes=[
+                    TopologyNodeIn(id="n1", managed_ne_id=ne_a_id, label="R2", x=0, y=0),
+                    TopologyNodeIn(id="n2", managed_ne_id=ne_b_id, label="R1", x=100, y=0),
+                ],
+                edges=[],
+            ),
+        )
+        fake_exec = {
+            "ok": True,
+            "output": CISCO_CDP_DETAIL,
+            "commands": ["show cdp neighbors detail"],
+        }
+        events: list[str] = []
+        with patch.object(svc, "execute_managed_ne_commands", return_value=fake_exec):
+            for ev in svc.iter_discover_neighbors(
+                self.db, mid, TopologyDiscoverRequest(protocol="cdp", ne_ids=[ne_a_id])
+            ):
+                events.append(str(ev.get("type") or ""))
+        self.assertEqual(events[0], "start")
+        self.assertIn("ne_start", events)
+        self.assertIn("ne_result", events)
+        self.assertEqual(events[-1], "done")
+        svc.delete_map(self.db, mid)
+        self.db.delete(ne_a)
+        self.db.delete(ne_b)
+        self.db.commit()
+
+    def test_discover_marks_missing_edges_stale(self) -> None:
+        suffix = uuid4().hex[:8]
+        ne_a_id = f"nea-{suffix}"
+        ne_b_id = f"neb-{suffix}"
+        ip_a = f"203.0.113.{(int(suffix[:2], 16) % 80) + 10}"
+        ip_b = f"203.0.113.{(int(suffix[2:4], 16) % 80) + 100}"
+        ne_a = ManagedNE(
+            id=ne_a_id,
+            name="R2",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address=ip_a,
+        )
+        ne_b = ManagedNE(
+            id=ne_b_id,
+            name="R1",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address=ip_b,
+        )
+        self.db.add(ne_a)
+        self.db.add(ne_b)
+        self.db.commit()
+        mid = svc.create_map(self.db, TopologyMapCreate(name=f"Stale-{suffix}")).id
+        svc.put_graph(
+            self.db,
+            mid,
+            TopologyGraphPut(
+                nodes=[
+                    TopologyNodeIn(id="n1", managed_ne_id=ne_a_id, label="R2", x=0, y=0),
+                    TopologyNodeIn(id="n2", managed_ne_id=ne_b_id, label="R1", x=100, y=0),
+                ],
+                edges=[],
+            ),
+        )
+        with_neighbors = {
+            "ok": True,
+            "output": CISCO_CDP_DETAIL,
+            "commands": ["show cdp neighbors detail"],
+        }
+        empty = {"ok": True, "output": "Total entries displayed: 0\n", "commands": ["show cdp neighbors detail"]}
+        with patch.object(svc, "execute_managed_ne_commands", return_value=with_neighbors):
+            out1 = svc.discover_neighbors(
+                self.db, mid, TopologyDiscoverRequest(protocol="cdp", ne_ids=[ne_a_id])
+            )
+        self.assertGreaterEqual(out1.edges_added, 1)
+        with patch.object(svc, "execute_managed_ne_commands", return_value=empty):
+            out2 = svc.discover_neighbors(
+                self.db, mid, TopologyDiscoverRequest(protocol="cdp", ne_ids=[ne_a_id])
+            )
+        self.assertGreaterEqual(out2.edges_stale, 1)
+        graph = svc.get_graph(self.db, mid)
+        self.assertTrue(any(e.source == "stale" for e in graph.edges))
+        svc.delete_map(self.db, mid)
+        self.db.delete(ne_a)
+        self.db.delete(ne_b)
+        self.db.commit()
+
 
 if __name__ == "__main__":
     unittest.main()

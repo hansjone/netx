@@ -19,6 +19,8 @@ import type {
   CliTargetListResponse,
   UmeCliOverrideItem,
   TopologyDiscoverOut,
+  TopologyDiscoverNeResult,
+  TopologyDiscoverStreamHandlers,
   TopologyGraph,
   TopologyMapItem,
 } from "../types";
@@ -473,3 +475,99 @@ export const discoverTopologyNeighbors = (
     `/v1/topology/maps/${encodeURIComponent(mapId)}/discover`,
     body || {},
   );
+
+function parseSseChunks(buffer: string): { events: Array<{ event: string; data: string }>; rest: string } {
+  const events: Array<{ event: string; data: string }> = [];
+  let rest = buffer;
+  while (true) {
+    const sep = rest.indexOf("\n\n");
+    if (sep < 0) break;
+    const raw = rest.slice(0, sep);
+    rest = rest.slice(sep + 2);
+    let event = "message";
+    const dataLines: string[] = [];
+    for (const line of raw.split("\n")) {
+      if (line.startsWith("event:")) event = line.slice(6).trim();
+      else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+    }
+    if (dataLines.length) events.push({ event, data: dataLines.join("\n") });
+  }
+  return { events, rest };
+}
+
+export async function discoverTopologyNeighborsStream(
+  mapId: string,
+  body: { protocol?: string; ne_ids?: string[] } | undefined,
+  handlers: TopologyDiscoverStreamHandlers,
+  signal?: AbortSignal,
+): Promise<TopologyDiscoverOut> {
+  const res = await fetch(`/v1/topology/maps/${encodeURIComponent(mapId)}/discover/stream`, {
+    method: "POST",
+    headers: {
+      accept: "text/event-stream",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(body || {}),
+    signal,
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(text || `discover_stream_failed:${res.status}`);
+  }
+  if (!res.body) throw new Error("discover_stream_empty_body");
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  let finalReport: TopologyDiscoverOut | null = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const parsed = parseSseChunks(buf);
+    buf = parsed.rest;
+    for (const item of parsed.events) {
+      let payload: Record<string, unknown> = {};
+      try {
+        payload = JSON.parse(item.data) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+      const type = String(payload.type || item.event || "");
+      if (type === "start") {
+        handlers.onStart?.({
+          map_id: String(payload.map_id || ""),
+          protocol: String(payload.protocol || ""),
+          total: Number(payload.total || 0),
+        });
+      } else if (type === "ne_start") {
+        handlers.onNeStart?.({
+          index: Number(payload.index || 0),
+          total: Number(payload.total || 0),
+          ne_id: String(payload.ne_id || ""),
+          ne_name: String(payload.ne_name || ""),
+          ne_ip: String(payload.ne_ip || ""),
+        });
+      } else if (type === "ne_result") {
+        handlers.onNeResult?.({
+          index: Number(payload.index || 0),
+          total: Number(payload.total || 0),
+          result: payload.result as TopologyDiscoverNeResult,
+          edges_added: Number(payload.edges_added || 0),
+          edges_updated: Number(payload.edges_updated || 0),
+        });
+      } else if (type === "done") {
+        finalReport = payload.report as TopologyDiscoverOut;
+        if (finalReport) handlers.onDone?.(finalReport);
+      } else if (type === "error") {
+        const detail = String(payload.detail || "discover_stream_error");
+        handlers.onError?.(detail);
+        throw new Error(detail);
+      }
+    }
+  }
+
+  if (!finalReport) throw new Error("discover_stream_incomplete");
+  return finalReport;
+}

@@ -405,6 +405,27 @@ export type TopologyDiscoverOut = {
   scanned: number;
   edges_added: number;
   edges_updated: number;
+  edges_stale?: number;
   results: TopologyDiscoverNeResult[];
   graph: TopologyGraph | null;
+};
+
+export type TopologyDiscoverStreamHandlers = {
+  onStart?: (ev: { map_id: string; protocol: string; total: number }) => void;
+  onNeStart?: (ev: {
+    index: number;
+    total: number;
+    ne_id: string;
+    ne_name: string;
+    ne_ip: string;
+  }) => void;
+  onNeResult?: (ev: {
+    index: number;
+    total: number;
+    result: TopologyDiscoverNeResult;
+    edges_added: number;
+    edges_updated: number;
+  }) => void;
+  onDone?: (report: TopologyDiscoverOut) => void;
+  onError?: (detail: string) => void;
 };

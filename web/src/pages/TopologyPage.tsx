@@ -22,7 +22,7 @@ import "@xyflow/react/dist/style.css";
 import {
   createTopologyMap,
   deleteTopologyMap,
-  discoverTopologyNeighbors,
+  discoverTopologyNeighborsStream,
   fetchManagedNe,
   fetchTopologyGraph,
   fetchTopologyMaps,
@@ -34,7 +34,14 @@ import { queryKeys } from "../constants/queryKeys";
 import { useI18n } from "../i18n";
 import { useToast } from "../hooks/useToast";
 import { openNewModuleWindow, openOrFocusModule } from "../utils/moduleWindows";
-import type { ManagedNeItem, TopologyEdgeItem, TopologyNodeItem, UmeNeItem } from "../types";
+import type {
+  ManagedNeItem,
+  TopologyDiscoverNeResult,
+  TopologyDiscoverOut,
+  TopologyEdgeItem,
+  TopologyNodeItem,
+  UmeNeItem,
+} from "../types";
 
 type NeNodeData = {
   label: string;
@@ -140,6 +147,17 @@ function NeNode({ data, selected }: NodeProps<Node<NeNodeData>>) {
 
 const nodeTypes = { neNode: NeNode };
 
+function edgeStyle(source: string): { stroke: string; strokeDasharray?: string; strokeWidth?: number } {
+  const src = (source || "manual").toLowerCase();
+  if (src === "stale") {
+    return { stroke: "#dc2626", strokeDasharray: "4 4", strokeWidth: 2 };
+  }
+  if (src === "lldp" || src === "cdp") {
+    return { stroke: "#0ea5e9", strokeDasharray: "6 4" };
+  }
+  return { stroke: "#64748b" };
+}
+
 function graphToFlow(nodes: TopologyNodeItem[], edges: TopologyEdgeItem[]) {
   const rfNodes: Node<NeNodeData>[] = nodes.map((n) => ({
     id: n.id,
@@ -155,7 +173,7 @@ function graphToFlow(nodes: TopologyNodeItem[], edges: TopologyEdgeItem[]) {
     },
   }));
   const rfEdges: Edge[] = edges.map((e) => {
-    const discovered = e.source === "lldp" || e.source === "cdp";
+    const src = e.source || "manual";
     const label = [e.source_port, e.target_port].filter(Boolean).join(" ↔ ");
     return {
       id: e.id,
@@ -164,12 +182,10 @@ function graphToFlow(nodes: TopologyNodeItem[], edges: TopologyEdgeItem[]) {
       type: "straight",
       label: label || undefined,
       animated: false,
-      style: discovered
-        ? { stroke: "#0ea5e9", strokeDasharray: "6 4" }
-        : { stroke: "#64748b" },
+      style: edgeStyle(src),
       markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
       data: {
-        source: e.source || "manual",
+        source: src,
         source_port: e.source_port || "",
         target_port: e.target_port || "",
       },
@@ -206,6 +222,7 @@ export function TopologyPage() {
   const [mapId, setMapId] = useState<string>("");
   const [keyword, setKeyword] = useState("");
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [hideIp, setHideIp] = useState(true);
   const [hideVendor, setHideVendor] = useState(true);
   const [hidePorts, setHidePorts] = useState(true);
@@ -213,6 +230,20 @@ export function TopologyPage() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [hideAddedNes, setHideAddedNes] = useState(true);
   const [paletteSource, setPaletteSource] = useState<PaletteSource>("managed");
+  const [discoverOpen, setDiscoverOpen] = useState(false);
+  const [discovering, setDiscovering] = useState(false);
+  const [discoverReport, setDiscoverReport] = useState<TopologyDiscoverOut | null>(null);
+  const [discoverLiveResults, setDiscoverLiveResults] = useState<TopologyDiscoverNeResult[]>([]);
+  const [discoverProgress, setDiscoverProgress] = useState({
+    index: 0,
+    total: 0,
+    neName: "",
+    neIp: "",
+    edgesAdded: 0,
+    edgesUpdated: 0,
+  });
+  const [discoverError, setDiscoverError] = useState("");
+  const discoverAbortRef = useRef<AbortController | null>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<NeNodeData>>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const rfRef = useRef<ReactFlowInstance<Node<NeNodeData>, Edge> | null>(null);
@@ -338,14 +369,60 @@ export function TopologyPage() {
     onError: (err) => showError(String(err)),
   });
 
-  const discoverMut = useMutation({
-    mutationFn: async () => {
+  const runDiscover = useCallback(async () => {
+    if (!mapId || discovering) return;
+    discoverAbortRef.current?.abort();
+    const ac = new AbortController();
+    discoverAbortRef.current = ac;
+    setDiscoverOpen(true);
+    setDiscovering(true);
+    setDiscoverReport(null);
+    setDiscoverLiveResults([]);
+    setDiscoverError("");
+    setDiscoverProgress({
+      index: 0,
+      total: nodes.filter((n) => Boolean(n.data.managed_ne_id)).length,
+      neName: "",
+      neIp: "",
+      edgesAdded: 0,
+      edgesUpdated: 0,
+    });
+    try {
       if (dirtyRef.current) {
         await putTopologyGraph(mapId, flowToGraphPayload(nodes, edges));
+        dirtyRef.current = false;
       }
-      return discoverTopologyNeighbors(mapId, { protocol: "auto" });
-    },
-    onSuccess: async (out) => {
+      const out = await discoverTopologyNeighborsStream(
+        mapId,
+        { protocol: "auto" },
+        {
+          onStart: (ev) => {
+            setDiscoverProgress((p) => ({ ...p, total: ev.total, index: 0 }));
+          },
+          onNeStart: (ev) => {
+            setDiscoverProgress((p) => ({
+              ...p,
+              index: ev.index,
+              total: ev.total,
+              neName: ev.ne_name || ev.ne_ip || ev.ne_id,
+              neIp: ev.ne_ip,
+            }));
+          },
+          onNeResult: (ev) => {
+            if (ev.result) {
+              setDiscoverLiveResults((prev) => [...prev, ev.result]);
+            }
+            setDiscoverProgress((p) => ({
+              ...p,
+              index: ev.index,
+              total: ev.total,
+              edgesAdded: ev.edges_added,
+              edgesUpdated: ev.edges_updated,
+            }));
+          },
+        },
+        ac.signal,
+      );
       if (out.graph) {
         queryClient.setQueryData(queryKeys.topologyGraph(mapId), out.graph);
         const { rfNodes, rfEdges } = graphToFlow(out.graph.nodes, out.graph.edges);
@@ -353,16 +430,42 @@ export function TopologyPage() {
         setEdges(rfEdges);
         dirtyRef.current = false;
       }
+      setDiscoverReport(out);
       await queryClient.invalidateQueries({ queryKey: queryKeys.topologyMaps });
       showOk(
         t("topology.discovered")
           .replace("{{added}}", String(out.edges_added))
-          .replace("{{updated}}", String(out.edges_updated)),
+          .replace("{{updated}}", String(out.edges_updated))
+          .replace("{{stale}}", String(out.edges_stale || 0)),
       );
-    },
-    onError: (err) =>
-      showError(t("topology.discoverFail").replace("{{detail}}", String(err))),
-  });
+    } catch (err) {
+      if (ac.signal.aborted) return;
+      setDiscoverError(String(err));
+      showError(t("topology.discoverFail").replace("{{detail}}", String(err)));
+    } finally {
+      if (discoverAbortRef.current === ac) discoverAbortRef.current = null;
+      setDiscovering(false);
+    }
+  }, [mapId, discovering, nodes, edges, queryClient, setNodes, setEdges, showOk, showError, t]);
+
+  const discoverResults = discoverReport?.results?.length
+    ? discoverReport.results
+    : discoverLiveResults;
+  const discoverSummary = discoverReport
+    ? {
+        scanned: discoverReport.scanned,
+        added: discoverReport.edges_added,
+        updated: discoverReport.edges_updated,
+        stale: discoverReport.edges_stale || 0,
+        failed: discoverReport.results.filter((r) => !r.ok).length,
+      }
+    : {
+        scanned: discoverLiveResults.length,
+        added: discoverProgress.edgesAdded,
+        updated: discoverProgress.edgesUpdated,
+        stale: 0,
+        failed: discoverLiveResults.filter((r) => !r.ok).length,
+      };
 
   const onConnect = useCallback(
     (connection: Connection) => {
@@ -455,13 +558,40 @@ export function TopologyPage() {
     () => nodes.find((n) => n.id === selectedNodeId) || null,
     [nodes, selectedNodeId],
   );
+  const selectedEdge = useMemo(
+    () => edges.find((e) => e.id === selectedEdgeId) || null,
+    [edges, selectedEdgeId],
+  );
+  const staleEdgeCount = useMemo(
+    () =>
+      edges.filter((e) => String((e.data as { source?: string } | undefined)?.source || "") === "stale")
+        .length,
+    [edges],
+  );
 
   const removeSelected = () => {
+    if (selectedEdgeId) {
+      dirtyRef.current = true;
+      setEdges((es) => es.filter((e) => e.id !== selectedEdgeId));
+      setSelectedEdgeId(null);
+      return;
+    }
     if (!selectedNodeId) return;
     dirtyRef.current = true;
     setNodes((ns) => ns.filter((n) => n.id !== selectedNodeId));
     setEdges((es) => es.filter((e) => e.source !== selectedNodeId && e.target !== selectedNodeId));
     setSelectedNodeId(null);
+  };
+
+  const removeStaleEdges = () => {
+    const n = staleEdgeCount;
+    if (n <= 0) return;
+    dirtyRef.current = true;
+    setEdges((es) =>
+      es.filter((e) => String((e.data as { source?: string } | undefined)?.source || "") !== "stale"),
+    );
+    setSelectedEdgeId(null);
+    showOk(t("topology.staleRemoved").replace("{{count}}", String(n)));
   };
 
   const openWebcrt = () => {
@@ -790,10 +920,19 @@ export function TopologyPage() {
             <button
               type="button"
               className="btn btn--sm"
-              disabled={!mapId || discoverMut.isPending}
-              onClick={() => discoverMut.mutate()}
+              disabled={!mapId || discovering}
+              onClick={() => void runDiscover()}
             >
-              {discoverMut.isPending ? t("topology.discovering") : t("topology.discover")}
+              {discovering ? t("topology.discovering") : t("topology.discover")}
+            </button>
+            <button
+              type="button"
+              className="btn btn--sm btn--ghost"
+              disabled={!mapId || discovering || staleEdgeCount <= 0}
+              onClick={removeStaleEdges}
+              title={t("topology.removeStaleHint")}
+            >
+              {t("topology.removeStale").replace("{{count}}", String(staleEdgeCount))}
             </button>
             <button
               type="button"
@@ -824,6 +963,83 @@ export function TopologyPage() {
               </button>
             </div>
           </div>
+        ) : selectedEdge ? (
+          <div className="topo-selection">
+            <span>
+              {t("topology.selectedEdge")}:{" "}
+              <strong>
+                {String((selectedEdge.data as { source?: string } | undefined)?.source || "manual")}
+              </strong>
+              {selectedEdge.label ? ` · ${String(selectedEdge.label)}` : ""}
+            </span>
+            <div className="topo-selection__actions">
+              <button type="button" className="btn btn--sm btn--ghost" onClick={removeSelected}>
+                {t("topology.removeEdge")}
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        {discoverOpen ? (
+          <div className="topo-discover">
+            <div className="topo-discover__head">
+              <strong>{t("topology.discoverReport")}</strong>
+              <button
+                type="button"
+                className="btn btn--sm btn--ghost"
+                onClick={() => setDiscoverOpen(false)}
+                disabled={discovering}
+              >
+                {t("topology.discoverClose")}
+              </button>
+            </div>
+            {discovering ? (
+              <p className="panel__hint panel__hint--live">
+                {t("topology.discoverProgressLive")
+                  .replace("{{index}}", String(discoverProgress.index))
+                  .replace("{{total}}", String(discoverProgress.total))
+                  .replace(
+                    "{{name}}",
+                    discoverProgress.neName || discoverProgress.neIp || "…",
+                  )}
+              </p>
+            ) : null}
+            {discoverError ? <p className="topo-discover__error">{discoverError}</p> : null}
+            {discoverResults.length > 0 || discoverReport ? (
+              <>
+                <p className="topo-discover__summary">
+                  {t("topology.discoverSummary")
+                    .replace("{{scanned}}", String(discoverSummary.scanned))
+                    .replace("{{added}}", String(discoverSummary.added))
+                    .replace("{{updated}}", String(discoverSummary.updated))
+                    .replace("{{stale}}", String(discoverSummary.stale))
+                    .replace("{{failed}}", String(discoverSummary.failed))}
+                </p>
+                <ul className="topo-discover__list">
+                  {discoverResults.map((r) => (
+                    <li key={r.ne_id} className={r.ok ? "is-ok" : "is-fail"}>
+                      <div className="topo-discover__item-title">
+                        <span>{r.ne_name || r.ne_ip || r.ne_id}</span>
+                        <span className="topo-discover__badge">{r.ok ? "OK" : "FAIL"}</span>
+                      </div>
+                      <div className="topo-discover__item-meta">
+                        {r.ne_ip ? `${r.ne_ip} · ` : ""}
+                        {r.ok
+                          ? t("topology.discoverNeOk")
+                              .replace("{{neighbors}}", String(r.neighbors))
+                              .replace("{{added}}", String(r.edges_added))
+                              .replace("{{updated}}", String(r.edges_updated))
+                          : r.error || t("topology.discoverNeFail")}
+                      </div>
+                      {r.command ? (
+                        <div className="topo-discover__item-cmd">{r.command}</div>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            ) : null}
+          </div>
         ) : null}
 
         <div className="topo-canvas">
@@ -844,13 +1060,25 @@ export function TopologyPage() {
                   onEdgesChange(changes);
                 }}
                 onConnect={onConnect}
-                onNodeClick={(_e, node) => setSelectedNodeId(node.id)}
-                onPaneClick={() => setSelectedNodeId(null)}
+                onNodeClick={(_e, node) => {
+                  setSelectedEdgeId(null);
+                  setSelectedNodeId(node.id);
+                }}
+                onEdgeClick={(_e, edge) => {
+                  setSelectedNodeId(null);
+                  setSelectedEdgeId(edge.id);
+                }}
+                onPaneClick={() => {
+                  setSelectedNodeId(null);
+                  setSelectedEdgeId(null);
+                }}
                 onInit={(inst) => {
                   rfRef.current = inst;
                 }}
                 fitView
                 deleteKeyCode={["Backspace", "Delete"]}
+                edgesFocusable
+                elementsSelectable
               >
                 <Background gap={18} size={1} />
                 <Controls />

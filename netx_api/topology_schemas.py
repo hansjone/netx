@@ -108,5 +108,6 @@ class TopologyDiscoverOut(BaseModel):
     scanned: int = 0
     edges_added: int = 0
     edges_updated: int = 0
+    edges_stale: int = 0
     results: list[TopologyDiscoverNeResult] = Field(default_factory=list)
     graph: TopologyGraphOut | None = None
