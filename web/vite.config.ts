@@ -11,6 +11,8 @@ export default defineConfig({
         target: "http://127.0.0.1:8890",
         changeOrigin: true,
         ws: true,
+        // Keep Origin aligned with upstream for WS handshake through proxy.
+        rewriteWsOrigin: true,
       },
     },
   },

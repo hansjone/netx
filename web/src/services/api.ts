@@ -352,7 +352,19 @@ export const closeWebcrtSession = (sessionId: string) =>
 
 export const webcrtWsUrl = (sessionId: string): string => {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${proto}//${window.location.host}/v1/webcrt/sessions/${encodeURIComponent(sessionId)}/ws`;
+  const path = `/v1/webcrt/sessions/${encodeURIComponent(sessionId)}/ws`;
+  // Optional override, e.g. ws://127.0.0.1:8890
+  const override = String((import.meta as ImportMeta & { env?: Record<string, string> }).env?.VITE_NETX_WS_BASE || "").trim();
+  if (override) {
+    return `${override.replace(/\/$/, "")}${path}`;
+  }
+  // Vite/preview: HTTP is proxied, but WS proxy is often flaky — hit API directly.
+  const port = window.location.port;
+  if (port === "5173" || port === "4173") {
+    const apiHost = window.location.hostname === "localhost" ? "127.0.0.1" : window.location.hostname;
+    return `${proto}//${apiHost}:8890${path}`;
+  }
+  return `${proto}//${window.location.host}${path}`;
 };
 
 export const fetchCliMeta = () => apiGet<CliMeta>("/v1/cli/meta");

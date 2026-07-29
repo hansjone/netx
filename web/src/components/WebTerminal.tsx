@@ -113,10 +113,14 @@ export function WebTerminal({ wsUrl, title, onStatus, onReady }: Props) {
     ws.onerror = () => {
       onStatusRef.current?.("error", "websocket_error");
       term.writeln("\r\n\x1b[31m[websocket error]\x1b[0m");
+      term.writeln("\x1b[33mHint: ensure API has package 'websockets' and is restarted; Vite UI should reach ws://127.0.0.1:8890\x1b[0m");
     };
 
-    ws.onclose = () => {
-      onStatusRef.current?.("closed", "websocket_closed");
+    ws.onclose = (ev) => {
+      onStatusRef.current?.("closed", `websocket_closed:${ev.code}`);
+      if (!ev.wasClean) {
+        term.writeln(`\r\n\x1b[33m[websocket closed code=${ev.code}]\x1b[0m`);
+      }
     };
 
     const dataDisposable = term.onData((data) => {
