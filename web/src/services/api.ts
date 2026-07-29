@@ -324,6 +324,37 @@ export const collectionRunDownloadUrl = (runId: string) => `/v1/ne-collections/r
 
 export const collectionJobDownloadUrl = (jobId: string) => `/v1/ne-collections/${jobId}/download`;
 
+export const fetchManagedNeById = (neId: string) =>
+  apiGet<ManagedNeItem>(`/v1/managed-ne/${encodeURIComponent(neId)}`);
+
+export type WebcrtSessionCreateResult = {
+  session_id: string;
+  ne_id: string;
+  ne_name: string;
+  ne_ip: string;
+  protocol: string;
+  cols: number;
+  rows: number;
+  ws_path: string;
+};
+
+export const createWebcrtSession = (body: {
+  ne_id?: string;
+  ume_ne_id?: string;
+  cols?: number;
+  rows?: number;
+}) => apiPost<WebcrtSessionCreateResult>("/v1/webcrt/sessions", body);
+
+export const closeWebcrtSession = (sessionId: string) =>
+  apiDelete<{ ok: boolean; session_id: string; closed: boolean }>(
+    `/v1/webcrt/sessions/${encodeURIComponent(sessionId)}`,
+  );
+
+export const webcrtWsUrl = (sessionId: string): string => {
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${proto}//${window.location.host}/v1/webcrt/sessions/${encodeURIComponent(sessionId)}/ws`;
+};
+
 export const fetchCliMeta = () => apiGet<CliMeta>("/v1/cli/meta");
 
 export const fetchCliProfiles = () =>

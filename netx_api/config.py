@@ -74,6 +74,12 @@ class Settings(BaseSettings):
     ne_collection_data_dir: str = "data/ne_collections"
     # Managed NE exec: max CLI commands per request (lab can raise; hard-capped in ne_exec).
     ne_exec_max_commands: int = 5
+    # WebCRT interactive terminal sessions
+    webcrt_max_sessions: int = 20
+    webcrt_idle_timeout_sec: int = 1800
+    webcrt_connect_timeout_sec: int = 90
+    webcrt_attach_timeout_sec: int = 60
+    webcrt_data_dir: str = "data/webcrt"
 
 
 settings = Settings()

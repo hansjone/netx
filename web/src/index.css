@@ -168,6 +168,11 @@ body {
   color: #f57f17;
 }
 
+.wb-card__icon--slate {
+  background: #eceff1;
+  color: #455a64;
+}
+
 .wb-card__text {
   display: flex;
   flex-direction: column;
@@ -1394,6 +1399,356 @@ pre {
   background: #f8fafc;
   border: 1px solid #e2e8f0;
   border-radius: 6px;
+}
+
+.webcrt-page {
+  min-height: calc(100vh - 120px);
+}
+
+.webcrt-session-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  font-size: 13px;
+  color: #334155;
+}
+
+.webcrt-term-panel {
+  padding: 0;
+  overflow: hidden;
+  min-height: 420px;
+  flex: 1;
+}
+
+.webcrt-term {
+  width: 100%;
+  height: min(70vh, 720px);
+  min-height: 360px;
+  background: #0f172a;
+  padding: 8px;
+  box-sizing: border-box;
+}
+
+.webcrt-term .xterm {
+  height: 100%;
+}
+
+.webcrt-term .xterm-viewport {
+  overflow-y: auto !important;
+}
+
+.webcrt-shell {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  height: calc(100vh - 56px);
+  min-height: 480px;
+  margin: -20px -28px -32px;
+  background: #c0c0c0;
+  border: 1px solid #808080;
+  overflow: hidden;
+}
+
+.webcrt-sidebar {
+  display: flex;
+  flex-direction: column;
+  background: #f0f0f0;
+  border-right: 1px solid #808080;
+  min-width: 0;
+}
+
+.webcrt-sidebar__title {
+  padding: 6px 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #1e293b;
+  background: linear-gradient(#f8f8f8, #e4e4e4);
+  border-bottom: 1px solid #b0b0b0;
+}
+
+.webcrt-sidebar__toolbar {
+  display: flex;
+  gap: 4px;
+  padding: 4px 6px;
+  border-bottom: 1px solid #d0d0d0;
+  background: #ececec;
+}
+
+.webcrt-icon-btn {
+  width: 28px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid #a0a0a0;
+  background: #f7f7f7;
+  border-radius: 2px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.webcrt-icon-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.webcrt-sidebar__search {
+  padding: 6px;
+  border-bottom: 1px solid #d0d0d0;
+}
+
+.webcrt-sidebar__search input {
+  width: 100%;
+  box-sizing: border-box;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid #a8a8a8;
+  border-radius: 2px;
+  font-size: 12px;
+}
+
+.webcrt-source-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0;
+  border-bottom: 1px solid #c8c8c8;
+}
+
+.webcrt-source-tabs__btn {
+  height: 26px;
+  border: 0;
+  border-right: 1px solid #c8c8c8;
+  background: #e8e8e8;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.webcrt-source-tabs__btn:last-child {
+  border-right: 0;
+}
+
+.webcrt-source-tabs__btn.is-active {
+  background: #fff;
+  font-weight: 600;
+}
+
+.webcrt-tree {
+  flex: 1;
+  overflow: auto;
+  background: #fff;
+  min-height: 0;
+}
+
+.webcrt-tree__folder {
+  padding: 6px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #334155;
+}
+
+.webcrt-tree__empty {
+  padding: 10px 12px;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.webcrt-tree__list {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 8px;
+}
+
+.webcrt-tree__item {
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 4px 8px 4px 18px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.webcrt-tree__item:hover {
+  background: #f1f5f9;
+}
+
+.webcrt-tree__item.is-selected,
+.webcrt-tree__item.is-active {
+  background: #cde8ff;
+}
+
+.webcrt-tree__icon {
+  color: #2563eb;
+  line-height: 1.2;
+}
+
+.webcrt-tree__label {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.webcrt-tree__name {
+  color: #0f172a;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.webcrt-tree__meta {
+  color: #64748b;
+  font-size: 11px;
+}
+
+.webcrt-sidebar__pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 4px 8px;
+  border-top: 1px solid #c8c8c8;
+  background: #ececec;
+  font-size: 11px;
+  color: #475569;
+}
+
+.webcrt-sidebar__pager-btns {
+  display: flex;
+  gap: 2px;
+}
+
+.webcrt-sidebar__pager-btns button {
+  width: 22px;
+  height: 20px;
+  border: 1px solid #a0a0a0;
+  background: #f7f7f7;
+  cursor: pointer;
+}
+
+.webcrt-sidebar__pager-btns button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.webcrt-sidebar__footer {
+  display: flex;
+  border-top: 1px solid #a8a8a8;
+  background: #ddd;
+}
+
+.webcrt-sidebar__footer button {
+  flex: 1;
+  height: 28px;
+  border: 0;
+  border-right: 1px solid #b8b8b8;
+  background: transparent;
+  font-size: 12px;
+}
+
+.webcrt-sidebar__footer button.is-active {
+  background: #fff;
+  font-weight: 600;
+}
+
+.webcrt-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: #808080;
+}
+
+.webcrt-tabs {
+  display: flex;
+  gap: 1px;
+  overflow-x: auto;
+  background: #6e6e6e;
+  border-bottom: 1px solid #505050;
+  min-height: 28px;
+}
+
+.webcrt-tabs__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: #cfcfcf;
+  color: #1e293b;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.webcrt-tabs__item.is-active {
+  background: #f3f3f3;
+  font-weight: 600;
+}
+
+.webcrt-tabs__close {
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  color: #475569;
+}
+
+.webcrt-main__body {
+  flex: 1;
+  min-height: 0;
+  background: #0f172a;
+}
+
+.webcrt-main__pane {
+  height: 100%;
+}
+
+.webcrt-main__pane .webcrt-term {
+  height: 100%;
+  min-height: 0;
+}
+
+.webcrt-main__empty,
+.webcrt-main__placeholder {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: #e2e8f0;
+  background: #6b7280;
+  text-align: center;
+  padding: 24px;
+}
+
+.webcrt-main__placeholder--error {
+  color: #fecaca;
+}
+
+.webcrt-statusline {
+  padding: 3px 8px;
+  background: #ececec;
+  border-top: 1px solid #a8a8a8;
+  font-size: 11px;
+  color: #334155;
+}
+
+@media (max-width: 900px) {
+  .webcrt-shell {
+    grid-template-columns: 1fr;
+    height: auto;
+    min-height: calc(100vh - 64px);
+  }
+
+  .webcrt-sidebar {
+    max-height: 42vh;
+  }
+
+  .webcrt-main {
+    min-height: 50vh;
+  }
 }
 
 @media (max-width: 1200px) {

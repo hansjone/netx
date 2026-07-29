@@ -52,7 +52,11 @@ export function registerModuleWindow(moduleId: string): () => void {
 
 export function openOrFocusModule({ moduleId, path }: ModuleWindowSpec): void {
   const mod = getModuleById(moduleId);
-  const targetPath = mod?.path ?? path;
+  const base = mod?.path ?? "/";
+  // Prefer caller path so query strings like /webcrt?ne_id=... are preserved.
+  const targetPath = path && (path === base || path.startsWith(`${base}?`) || path.startsWith(`${base}/`))
+    ? path
+    : base;
   const requestId = createFocusRequestId(`mod-${moduleId}`);
   const name = moduleWindowName(moduleId);
 

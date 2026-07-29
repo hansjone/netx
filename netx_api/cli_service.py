@@ -23,7 +23,6 @@ from .ne_service import (
     _normalize_hop_vendor,
     _normalize_protocol,
     _require_crypto,
-    list_managed_ne,
 )
 
 
@@ -263,32 +262,55 @@ def list_cli_targets(
     if src not in ("managed", "ume", "all"):
         raise HTTPException(status_code=400, detail="invalid_source")
     ready = cli_profile_ready(db)
-    items: list[dict[str, Any]] = []
-    total = 0
+    page = max(1, int(page or 1))
+    page_size = max(1, min(500, int(page_size or 50)))
+    offset = (page - 1) * page_size
+    kw = str(keyword or "").strip()
 
-    if src in ("managed", "all"):
-        managed = list_managed_ne(db, keyword=keyword, page=page, page_size=page_size)
-        total += int(managed["total"])
-        for row in managed["items"]:
-            items.append(
-                CliTargetOut(
-                    source="managed",
-                    id=str(row.id),
-                    ume_ne_id=None,
-                    name=str(row.name or row.ip_address),
-                    ip_address=str(row.ip_address),
-                    vendor=str(row.vendor),
-                    device_type=str(row.device_type),
-                    connect_status=str(row.connect_status),
-                    cli_profile_ready=True,
-                ).model_dump()
+    def _managed_item(row: Any) -> dict[str, Any]:
+        return CliTargetOut(
+            source="managed",
+            id=str(row.id),
+            ume_ne_id=None,
+            name=str(row.name or row.ip_address),
+            ip_address=str(row.ip_address),
+            vendor=str(row.vendor),
+            device_type=str(row.device_type),
+            connect_status=str(row.connect_status),
+            cli_profile_ready=True,
+        ).model_dump()
+
+    def _ume_item(inv: UmeInventoryNE, ov: UmeCliOverride | None) -> dict[str, Any]:
+        return CliTargetOut(
+            source="ume",
+            id=str(inv.ne_id),
+            ume_ne_id=str(inv.ne_id),
+            name=str(inv.user_label or inv.ne_name or inv.host_name or inv.ip_address or inv.ne_id),
+            ip_address=str(inv.ip_address or ""),
+            ne_type=str(inv.ne_type or ""),
+            vendor=str(inv.vendor or ""),
+            connect_status=str(ov.connect_status if ov else "unknown"),
+            cli_profile_ready=ready,
+        ).model_dump()
+
+    def _managed_query():
+        stmt = db.query(ManagedNE)
+        if kw:
+            like = f"%{kw}%"
+            stmt = stmt.filter(
+                ManagedNE.name.ilike(like)
+                | ManagedNE.ip_address.ilike(like)
+                | ManagedNE.username.ilike(like)
+                | ManagedNE.tags.ilike(like)
+                | ManagedNE.vendor.ilike(like)
+                | ManagedNE.device_type.ilike(like)
             )
+        return stmt.order_by(ManagedNE.updated_at.desc())
 
-    if src in ("ume", "all"):
+    def _ume_query():
         stmt = db.query(UmeInventoryNE, UmeCliOverride).outerjoin(
             UmeCliOverride, UmeInventoryNE.ne_id == UmeCliOverride.ume_ne_id
         )
-        kw = str(keyword or "").strip()
         if kw:
             like = f"%{kw}%"
             stmt = stmt.filter(
@@ -298,28 +320,41 @@ def list_cli_targets(
                 | UmeInventoryNE.ip_address.ilike(like)
                 | UmeInventoryNE.host_name.ilike(like)
             )
-        ume_total = stmt.count()
-        total += ume_total if src == "ume" else ume_total
-        rows = (
-            stmt.order_by(UmeInventoryNE.ne_id.asc())
-            .offset((page - 1) * page_size)
-            .limit(page_size)
-            .all()
-        )
-        for inv, ov in rows:
-            items.append(
-                CliTargetOut(
-                    source="ume",
-                    id=str(inv.ne_id),
-                    ume_ne_id=str(inv.ne_id),
-                    name=str(inv.user_label or inv.ne_name or inv.host_name or inv.ip_address or inv.ne_id),
-                    ip_address=str(inv.ip_address or ""),
-                    ne_type=str(inv.ne_type or ""),
-                    vendor=str(inv.vendor or ""),
-                    connect_status=str(ov.connect_status if ov else "unknown"),
-                    cli_profile_ready=ready,
-                ).model_dump()
-            )
+        return stmt.order_by(UmeInventoryNE.ne_id.asc())
+
+    if src == "managed":
+        mq = _managed_query()
+        total = int(mq.count())
+        rows = mq.offset(offset).limit(page_size).all()
+        items = [_managed_item(x) for x in rows]
+        return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+    if src == "ume":
+        uq = _ume_query()
+        total = int(uq.count())
+        rows = uq.offset(offset).limit(page_size).all()
+        items = [_ume_item(inv, ov) for inv, ov in rows]
+        return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+    # source=all: managed first, then UME, with correct cross-list pagination
+    mq = _managed_query()
+    uq = _ume_query()
+    m_total = int(mq.count())
+    u_total = int(uq.count())
+    total = m_total + u_total
+    items: list[dict[str, Any]] = []
+    if offset < m_total:
+        take = min(page_size, m_total - offset)
+        for row in mq.offset(offset).limit(take).all():
+            items.append(_managed_item(row))
+        need = page_size - len(items)
+        if need > 0 and u_total > 0:
+            for inv, ov in uq.offset(0).limit(need).all():
+                items.append(_ume_item(inv, ov))
+    else:
+        u_off = offset - m_total
+        for inv, ov in uq.offset(u_off).limit(page_size).all():
+            items.append(_ume_item(inv, ov))
 
     return {"items": items, "total": total, "page": page, "page_size": page_size}
 

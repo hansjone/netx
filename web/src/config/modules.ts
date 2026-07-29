@@ -2,7 +2,7 @@
  * Single registry for workbench modules. Add new modules here only.
  */
 
-export type ModuleIconTone = "blue" | "green" | "amber";
+export type ModuleIconTone = "blue" | "green" | "amber" | "slate";
 export type WorkbenchSection = "monitoring" | "operations";
 
 export type ModuleDefinition = {
@@ -42,6 +42,15 @@ export const MODULES: readonly ModuleDefinition[] = [
     descKey: "workbench.cards.collectDesc",
     iconTone: "amber",
     titleKey: "layout.titleCollect",
+  },
+  {
+    moduleId: "webcrt",
+    path: "/webcrt",
+    section: "operations",
+    labelKey: "workbench.cards.webcrt",
+    descKey: "workbench.cards.webcrtDesc",
+    iconTone: "slate",
+    titleKey: "layout.titleWebcrt",
   },
 ] as const;
 
