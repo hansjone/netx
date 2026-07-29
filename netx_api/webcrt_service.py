@@ -28,12 +28,14 @@ _log = logging.getLogger("netx.webcrt")
 _sessions_lock = threading.Lock()
 _sessions: dict[str, "WebcrtSession"] = {}
 _reaper_started = False
+# Sentinel for take_stdout timeout (distinct from device EOF None).
+_STDOUT_MISSING = object()
 
-# Network device CLIs (Huawei/ZTE/Cisco) often reject xterm DEL/CSI arrows over Telnet.
-# Map to classic emacs-style control keys that VRP/IOS/ZXROS accept.
+# Network device CLIs often reject xterm CSI arrows over Telnet/SSH.
+# Backspace: map DEL(0x7f) -> BS(0x08), matching common SecureCRT/VT default.
 _NETWORK_CLI_KEY_SEQS: tuple[tuple[str, str], ...] = (
     ("\x1b[1~", "\x01"),  # Home -> Ctrl-A
-    ("\x1b[3~", "\x04"),  # Delete -> Ctrl-D
+    ("\x1b[3~", "\x04"),  # Delete key -> Ctrl-D
     ("\x1b[4~", "\x05"),  # End -> Ctrl-E
     ("\x1b[H", "\x01"),
     ("\x1b[F", "\x05"),
@@ -57,8 +59,9 @@ def uses_network_cli_keymap(device_type: str = "", vendor: str = "") -> bool:
     return True
 
 
-def map_network_cli_keys(data: str) -> str:
+def map_network_cli_keys(data: str, *, device_type: str = "", vendor: str = "") -> str:
     """Rewrite xterm key sequences for network-device CLIs."""
+    del device_type, vendor  # kept for call-site compatibility; keymap is vendor-agnostic
     text = str(data or "")
     if not text:
         return text
@@ -233,12 +236,44 @@ class WebcrtSession:
     close_reason: str = ""
     bootstrap_output: bytes = b""
     needs_live_prompt: bool = True
+    # React StrictMode remounts open a second WS before the first fully tears down.
+    # Only the newest attach_gen may consume out_queue / mark detach.
+    attach_gen: int = 0
     out_queue: queue.Queue[bytes | None] = field(default_factory=queue.Queue)
     _reader: threading.Thread | None = field(default=None, repr=False)
     _write_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _stdout_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def touch(self) -> None:
         self.last_activity = time.time()
+
+    def take_stdout(self, attach_gen: int, *, timeout: float = 0.25) -> bytes | None | str:
+        """Exclusive stdout take for one WS attach generation.
+
+        Returns:
+          bytes — device output chunk
+          None — device reader closed (session end)
+          \"stale\" — a newer WebSocket owns this session; caller must stop
+          \"empty\" — no data within timeout (keep polling)
+        """
+        deadline = time.time() + max(0.05, float(timeout))
+        while True:
+            with self._stdout_lock:
+                if attach_gen != self.attach_gen:
+                    return "stale"
+                try:
+                    chunk = self.out_queue.get_nowait()
+                except queue.Empty:
+                    chunk = _STDOUT_MISSING
+                if chunk is not _STDOUT_MISSING:
+                    if attach_gen != self.attach_gen:
+                        # Put back including EOF sentinel so the new owner still sees close.
+                        self.out_queue.put(chunk)
+                        return "stale"
+                    return chunk  # bytes | None
+            if time.time() >= deadline:
+                return "empty"
+            time.sleep(0.02)
 
     def write_stdin(self, data: str) -> None:
         if self.closed or self.conn is None:
@@ -247,27 +282,28 @@ class WebcrtSession:
         if not text:
             return
         if self.cli_keymap:
-            text = map_network_cli_keys(text)
+            text = map_network_cli_keys(
+                text, device_type=self.device_type, vendor=self.vendor
+            )
             text = map_network_cli_enter(text, self.conn)
         if not text:
             return
         with self._write_lock:
-            # Network CLIs: use Netmiko write_channel so RETURN/encoding match the driver.
-            if self.cli_keymap:
-                self.conn.write_channel(text)
-            else:
-                channel = getattr(self.conn, "remote_conn", None)
-                try:
-                    if channel is not None and hasattr(channel, "send") and callable(channel.send):
-                        payload = text.encode(getattr(self.conn, "encoding", None) or "utf-8", errors="replace")
-                        channel.send(payload)
-                    elif channel is not None and hasattr(channel, "write") and callable(channel.write):
-                        encoding = getattr(self.conn, "encoding", None) or "utf-8"
-                        channel.write(text.encode(encoding, errors="replace") if isinstance(text, str) else text)
-                    else:
-                        self.conn.write_channel(text)
-                except Exception:
+            # Prefer raw channel I/O for interactive typing (char echo / backspace).
+            # Netmiko write_channel is fine for automation but can feel "half-duplex"
+            # on some Telnet/VRP sessions when used keystroke-by-keystroke.
+            channel = getattr(self.conn, "remote_conn", None)
+            try:
+                if channel is not None and hasattr(channel, "send") and callable(channel.send):
+                    payload = text.encode(getattr(self.conn, "encoding", None) or "utf-8", errors="replace")
+                    channel.send(payload)
+                elif channel is not None and hasattr(channel, "write") and callable(channel.write):
+                    encoding = getattr(self.conn, "encoding", None) or "utf-8"
+                    channel.write(text.encode(encoding, errors="replace") if isinstance(text, str) else text)
+                else:
                     self.conn.write_channel(text)
+            except Exception:
+                self.conn.write_channel(text)
         self.touch()
     def resize(self, cols: int, rows: int) -> None:
         if self.closed or self.conn is None:
@@ -305,12 +341,29 @@ class WebcrtSession:
                 chunk = b""
                 try:
                     if channel is not None and hasattr(channel, "recv_ready") and hasattr(channel, "recv"):
+                        # Paramiko SSH: raw bytes keep ANSI / backspace echo intact.
                         if channel.recv_ready():
                             chunk = channel.recv(4096)
                             if not chunk:
                                 break
                         elif hasattr(channel, "exit_status_ready") and channel.exit_status_ready():
                             break
+                        else:
+                            time.sleep(0.04)
+                            continue
+                    elif channel is not None and hasattr(channel, "read_very_eager"):
+                        # Telnet: do NOT use conn.read_channel() — Netmiko strips ANSI
+                        # escape codes, which removes Huawei backspace echo (\x1b[1D \x1b[1D).
+                        data = channel.read_very_eager()
+                        if data:
+                            chunk = (
+                                data
+                                if isinstance(data, (bytes, bytearray))
+                                else str(data).encode(
+                                    getattr(conn, "encoding", None) or "utf-8",
+                                    errors="replace",
+                                )
+                            )
                         else:
                             time.sleep(0.04)
                             continue
@@ -544,25 +597,48 @@ def create_session(
     }
 
 
-def mark_attached(session_id: str) -> WebcrtSession:
+def mark_attached(session_id: str) -> tuple[WebcrtSession, int]:
     sess = get_session(session_id)
     if sess is None:
         raise HTTPException(status_code=404, detail="webcrt_session_not_found")
     # Allow re-attach after brief WS drop (React StrictMode remount / network blip).
+    # Bump generation so the previous WS pump stops and does not steal echo bytes.
+    sess.attach_gen += 1
+    attach_gen = sess.attach_gen
     sess.attached = True
     sess.detach_deadline = None
     sess.touch()
-    _audit("session_attached", session_id=session_id, ne_id=sess.ne_id, ne_ip=sess.ne_ip)
-    return sess
+    _audit(
+        "session_attached",
+        session_id=session_id,
+        ne_id=sess.ne_id,
+        ne_ip=sess.ne_ip,
+        attach_gen=attach_gen,
+    )
+    return sess, attach_gen
 
 
-def detach_session(session_id: str, *, grace_sec: float = 8.0, client: str = "") -> dict[str, Any]:
+def detach_session(
+    session_id: str,
+    *,
+    grace_sec: float = 8.0,
+    client: str = "",
+    attach_gen: int | None = None,
+) -> dict[str, Any]:
     """Mark session unattached but keep device channel open briefly for reconnect."""
     sess = get_session(session_id)
     if sess is None:
         return {"ok": True, "session_id": session_id, "detached": False}
     if sess.closed:
         return {"ok": True, "session_id": session_id, "detached": False}
+    # Ignore detach from an older StrictMode WS once a newer attach owns the session.
+    if attach_gen is not None and attach_gen != sess.attach_gen:
+        return {
+            "ok": True,
+            "session_id": session_id,
+            "detached": False,
+            "ignored_stale_attach": True,
+        }
     sess.attached = False
     sess.detach_deadline = time.time() + max(1.0, float(grace_sec))
     sess.touch()
@@ -573,6 +649,7 @@ def detach_session(session_id: str, *, grace_sec: float = 8.0, client: str = "")
         ne_ip=sess.ne_ip,
         grace_sec=grace_sec,
         client=client or "",
+        attach_gen=attach_gen,
     )
     return {"ok": True, "session_id": session_id, "detached": True}
 

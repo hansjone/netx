@@ -58,7 +58,7 @@ class WebcrtServiceTests(unittest.TestCase):
         # xterm Enter (\r) -> Netmiko RETURN (\n for SSH)
         sess.write_stdin("\r")
         self.assertEqual(conn.written[-1], "\n")
-        # xterm DEL / arrows -> network CLI controls
+        # Backspace DEL -> BS
         sess.write_stdin("\x7f")
         self.assertEqual(conn.written[-1], "\x08")
         sess.write_stdin("\x1b[D\x1b[C\x1b[A\x1b[B")
@@ -69,7 +69,10 @@ class WebcrtServiceTests(unittest.TestCase):
         self.assertTrue(sess.closed)
 
     def test_map_network_cli_keys_helpers(self) -> None:
+        # Backspace: DEL -> BS (SecureCRT/VT default), vendor-agnostic.
         self.assertEqual(svc.map_network_cli_keys("\x7fab"), "\x08ab")
+        self.assertEqual(svc.map_network_cli_keys("\x7fab", device_type="cisco_ios", vendor="Cisco"), "\x08ab")
+        self.assertEqual(svc.map_network_cli_keys("\x7fab", device_type="huawei", vendor="Huawei"), "\x08ab")
         self.assertEqual(svc.map_network_cli_keys("\x1b[D"), "\x02")
         self.assertTrue(svc.uses_network_cli_keymap("huawei", "Huawei"))
         self.assertFalse(svc.uses_network_cli_keymap("linux", "bastion"))
@@ -177,6 +180,45 @@ class WebcrtServiceTests(unittest.TestCase):
         sess.write_stdin("\n")
         self.assertEqual(fake.written[len(before) :], ["\n"])
         svc.close_session(out["session_id"], reason="test")
+
+    @patch.object(svc, "_audit")
+    def test_attach_gen_exclusive_stdout_and_stale_detach(self, _mock_audit: MagicMock) -> None:
+        conn = _FakeConn()
+        sess = svc.WebcrtSession(
+            session_id="race",
+            ne_id="ne1",
+            ne_name="lab",
+            ne_ip="1.2.3.4",
+            protocol="ssh",
+            cols=80,
+            rows=24,
+            conn=conn,  # type: ignore[arg-type]
+        )
+        with svc._sessions_lock:
+            svc._sessions["race"] = sess
+
+        sess1, gen1 = svc.mark_attached("race")
+        self.assertEqual(gen1, 1)
+        sess1.out_queue.put(b"a")
+        sess1.out_queue.put(b"b")
+
+        # Newer StrictMode WS takes ownership before old pump drains.
+        _sess2, gen2 = svc.mark_attached("race")
+        self.assertEqual(gen2, 2)
+        self.assertEqual(sess1.take_stdout(gen1, timeout=0.05), "stale")
+        self.assertEqual(sess1.take_stdout(gen2, timeout=0.05), b"a")
+        self.assertEqual(sess1.take_stdout(gen2, timeout=0.05), b"b")
+
+        # Old WS detach must not clear the live attach.
+        out = svc.detach_session("race", grace_sec=8.0, attach_gen=gen1)
+        self.assertFalse(out.get("detached"))
+        self.assertTrue(sess.attached)
+        self.assertIsNone(sess.detach_deadline)
+
+        out2 = svc.detach_session("race", grace_sec=8.0, attach_gen=gen2)
+        self.assertTrue(out2.get("detached"))
+        self.assertFalse(sess.attached)
+        svc.close_session("race", reason="test")
 
     @patch.object(svc, "_audit")
     def test_attach_timeout_reaper(self, _mock_audit: MagicMock) -> None:

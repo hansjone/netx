@@ -75,8 +75,9 @@ def api_close_session(session_id: str, request: Request) -> dict[str, Any]:
 @router.websocket("/sessions/{session_id}/ws")
 async def websocket_session(websocket: WebSocket, session_id: str) -> None:
     await websocket.accept()
+    attach_gen = 0
     try:
-        sess = mark_attached(session_id)
+        sess, attach_gen = mark_attached(session_id)
     except HTTPException as exc:
         await websocket.send_json({"type": "status", "state": "error", "message": str(exc.detail)})
         await websocket.close(code=4404 if exc.status_code == 404 else 4409)
@@ -113,7 +114,14 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
     async def pump_stdout() -> None:
         loop = asyncio.get_running_loop()
         while not stop.is_set():
-            chunk = await loop.run_in_executor(None, sess.out_queue.get)
+            chunk = await loop.run_in_executor(
+                None, lambda: sess.take_stdout(attach_gen, timeout=0.25)
+            )
+            if chunk == "stale":
+                # Newer WS owns the session (StrictMode remount); exit without stealing bytes.
+                break
+            if chunk == "empty":
+                continue
             if chunk is None:
                 stop.set()
                 try:
@@ -179,7 +187,7 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
                 )
                 break
     except WebSocketDisconnect:
-        _log.info("webcrt ws disconnected session=%s", session_id)
+        _log.info("webcrt ws disconnected session=%s gen=%s", session_id, attach_gen)
     except Exception:
         _log.exception("webcrt ws error session=%s", session_id)
     finally:
@@ -190,9 +198,11 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
         except Exception:
             pass
         # Keep device session briefly so React remount / blip can re-attach.
+        # Only the current attach_gen may detach — older StrictMode sockets must not.
         if get_session(session_id) is not None:
             detach_session(
                 session_id,
                 grace_sec=8.0,
                 client=_client_label(websocket=websocket),
+                attach_gen=attach_gen,
             )

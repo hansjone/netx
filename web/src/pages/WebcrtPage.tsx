@@ -336,6 +336,10 @@ export function WebcrtPage() {
                   <button
                     type="button"
                     className={`webcrt-tree__item${activeTabKey === key ? " is-active" : ""}`}
+                    onMouseDown={(e) => {
+                      // Keep focus off the list button so Enter/Backspace go to the CRT.
+                      e.preventDefault();
+                    }}
                     onClick={() => void openTarget(row)}
                     title={`${deviceLabel(row)}\n${row.ip_address}\n${row.source}`}
                   >
@@ -377,7 +381,11 @@ export function WebcrtPage() {
                 <div
                   key={tab.key}
                   className={`webcrt-tabs__item${activeTabKey === tab.key ? " is-active" : ""}`}
-                  onClick={() => setActiveTabKey(tab.key)}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    setActiveTabKey(tab.key);
+                    window.setTimeout(() => termRefs.current.get(tab.key)?.focus(), 0);
+                  }}
                 >
                   <span>
                     {deviceLabel(tab.target)}
@@ -446,13 +454,21 @@ export function WebcrtPage() {
                       wsUrl={tab.wsUrl}
                       title={deviceLabel(tab.target)}
                       recording={tab.recording}
+                      autoFocus={activeTabKey === tab.key}
                       onStdout={(chunk) => {
                         const prev = logBuffersRef.current.get(tab.key) || "";
                         logBuffersRef.current.set(tab.key, prev + chunk);
                       }}
+                      onReady={() => {
+                        window.setTimeout(() => termRefs.current.get(tab.key)?.focus(), 40);
+                      }}
                       onStatus={(state) => {
-                        if (state === "open" || state === "connected") updateTab(tab.key, { status: "connected" });
-                        else if (state === "error") updateTab(tab.key, { status: "error" });
+                        if (state === "open" || state === "connected") {
+                          updateTab(tab.key, { status: "connected" });
+                          if (activeTabKey === tab.key) {
+                            window.setTimeout(() => termRefs.current.get(tab.key)?.focus(), 40);
+                          }
+                        } else if (state === "error") updateTab(tab.key, { status: "error" });
                         else if (state === "closed") updateTab(tab.key, { status: "closed" });
                       }}
                     />
