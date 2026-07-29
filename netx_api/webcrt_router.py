@@ -98,7 +98,7 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
         }
     )
 
-    # Replay login transcript once, then draw a live prompt so first keystrokes match later lines.
+    # Replay full login transcript (kept for StrictMode remount / brief reconnect).
     bootstrap = bytes(sess.bootstrap_output or b"")
     if bootstrap:
         try:
@@ -107,8 +107,6 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
             )
         except Exception:
             _log.debug("webcrt bootstrap send failed session=%s", session_id, exc_info=True)
-        # Only replay login banner on the first attach (StrictMode remount / blip).
-        sess.bootstrap_output = b""
 
     stop = asyncio.Event()
 

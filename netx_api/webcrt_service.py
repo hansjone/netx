@@ -158,24 +158,13 @@ def normalize_cli_transcript(text: str) -> str:
     return "\n".join(lines)
 
 
-def strip_trailing_prompt_lines(text: str) -> str:
-    """Remove final prompt line(s) so a live RETURN can paint the interactive prompt."""
-    lines = str(text or "").split("\n")
-    while lines and not str(lines[-1]).strip():
-        lines.pop()
-    while lines and _looks_like_cli_prompt(lines[-1]):
-        lines.pop()
-        while lines and not str(lines[-1]).strip():
-            lines.pop()
-    return "\n".join(lines)
-
-
 def prepare_bootstrap_output(text: str) -> str:
-    """Login transcript for UI replay; ends with newline, without the final prompt."""
-    body = strip_trailing_prompt_lines(normalize_cli_transcript(text))
-    if not body:
-        return ""
-    return body if body.endswith("\n") else body + "\n"
+    """Full login transcript for UI replay; keep final prompt, no trailing newline after it.
+
+    Trailing newline would leave the cursor on a blank line so the first typed line
+    looks wrong; cursor should sit after the prompt like a real CRT.
+    """
+    return normalize_cli_transcript(text)
 
 
 def _prime_interactive_channel(conn: ConnectHandler) -> None:
@@ -491,9 +480,7 @@ def create_session(
         except Exception:
             pass
 
-    # Prefer session_log (full login transcript). Prime channel, then strip the final
-    # prompt so WebSocket attach can paint a live interactive prompt (first keystrokes
-    # then behave like subsequent lines).
+    # Prefer session_log (full login transcript including final prompt).
     _prime_interactive_channel(conn)
     bootstrap = prepare_bootstrap_output(_session_log_text(log_buf))
     if not bootstrap.strip():
@@ -522,7 +509,8 @@ def create_session(
         cli_keymap=cli_keymap,
         conn=conn,
         bootstrap_output=str(bootstrap or "").encode("utf-8", errors="replace"),
-        needs_live_prompt=True,
+        # Only nudge a live prompt when transcript has no recognizable prompt yet.
+        needs_live_prompt=not _looks_like_cli_prompt(bootstrap),
     )
     # Keep bootstrap for WS attach replay; do not rely solely on out_queue (StrictMode remount).
     sess.start_reader()

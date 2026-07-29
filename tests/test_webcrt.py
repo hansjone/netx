@@ -79,9 +79,8 @@ class WebcrtServiceTests(unittest.TestCase):
         self.assertEqual(svc.map_network_cli_enter("\r", telnet), "\r\n")  # type: ignore[arg-type]
         self.assertEqual(svc.normalize_cli_transcript("R2#R2#\nR2#"), "R2#")
         self.assertEqual(svc.normalize_cli_transcript("banner\nR2#R2#"), "banner\nR2#")
-        self.assertEqual(svc.prepare_bootstrap_output("login\nR2#\nR2#"), "login\n")
-        self.assertTrue(svc.prepare_bootstrap_output("login\nR2#").endswith("\n"))
-        self.assertFalse(svc._looks_like_cli_prompt(svc.prepare_bootstrap_output("login\nR2#").rstrip("\n") or "x"))
+        self.assertEqual(svc.prepare_bootstrap_output("login\nR2#\nR2#"), "login\nR2#")
+        self.assertTrue(svc.prepare_bootstrap_output("login\nR2#").endswith("R2#"))
 
     @patch.object(svc, "_audit")
     @patch.object(svc, "open_netmiko_connection")
@@ -172,9 +171,8 @@ class WebcrtServiceTests(unittest.TestCase):
         assert sess is not None
         boot = sess.bootstrap_output.decode("utf-8", errors="replace")
         self.assertIn("Username:huawei", boot)
-        # Final prompt is stripped; live RETURN on WS attach paints the interactive prompt.
-        self.assertNotIn("<r1>", boot)
-        self.assertTrue(sess.needs_live_prompt)
+        self.assertIn("<r1>", boot)
+        self.assertFalse(sess.needs_live_prompt)
         before = list(fake.written)
         sess.write_stdin("\n")
         self.assertEqual(fake.written[len(before) :], ["\n"])
