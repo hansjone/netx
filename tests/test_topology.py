@@ -117,6 +117,30 @@ Ethernet1/0/2 has 0 neighbor(s)
 GigabitEthernet0/0/0 has 0 neighbor(s)
 """
 
+ZTE_LLDP_BRIEF = """
+KND-PUN-EN1-Z20HS#show lldp neighbor brief
+23:10:28 Indonesia Wed Jul 29 2026
+Scope codes:
+    NB    = Nearest Bridge
+    NC    = Nearest Customer Bridge
+    NTPMR = Nearest non-TPMR Bridge   
+
+Total neighbors: 11
+Local Interface   Scope  Chassis ID      Port ID           Holdtime  System Name                                                  
+----------------------------------------------------------------------------------------------------------------------------------
+cgei-1/1/0/34     NB     744a.a42d.8970  cgei-1/1/0/36     91        KND-VKAU-EN1-Z20HS
+cgei-1/1/0/36     NB     744a.a42c.d600  cgei-1/1/0/33     99        KND-SAMA-EN1-Z20HS
+xxvgei-1/1/0/15   NB     d4c1.c893.4350  xgei-0/0/0/7      102       KND-KLK-AN1-ZM8S
+xxvgei-1/1/0/16   NB     744a.a430.1540  xxvgei-1/1/0/28   115       KND-PGGL-EN1-Z20HS
+xxvgei-1/1/0/17   NB     744a.a42d.6948  xxvgei-1/1/0/16   112       KND-IWEA-EN1-Z20HS
+xxvgei-1/1/0/18   NB     744a.a42d.6948  xxvgei-1/1/0/17   112       KND-IWEA-EN1-Z20HS
+xxvgei-1/1/0/21   NB     d4c1.c893.4350  xgei-0/0/0/1      108       KND-KLK-AN1-ZM8S
+xxvgei-1/1/0/22   NB     fc44.9f82.1b18  xgei-1/1/0/2      95        MKS-BLB-EN1-Z680H
+xxvgei-1/1/0/23   NB     744a.a42c.d600  xxvgei-1/1/0/28   99        KND-SAMA-EN1-Z20HS
+xxvgei-1/1/0/24   NB     744a.a432.deb8  xxvgei-1/1/0/28   119       KND-AWOA-EN1-Z20HS
+xxvgei-1/1/0/28   NB     744a.a42d.8970  xxvgei-1/1/0/28   91        KND-VKAU-EN1-Z20HS
+"""
+
 
 class TopologyLldpParseTests(unittest.TestCase):
     def test_parse_cisco_lldp_brief_fallback(self) -> None:
@@ -158,6 +182,20 @@ class TopologyLldpParseTests(unittest.TestCase):
         self.assertEqual(lab[0].remote_name, "R2.example.com")
         self.assertEqual(lab[0].remote_ip, "192.168.0.128")
 
+    def test_parse_zte_lldp_brief_lab(self) -> None:
+        hits = lldp.parse_neighbor_output(
+            ZTE_LLDP_BRIEF, protocol="lldp", vendor="ZTE", device_type="zte_zxros"
+        )
+        self.assertEqual(len(hits), 11)
+        self.assertEqual(hits[0].local_port, "cgei-1/1/0/34")
+        self.assertEqual(hits[0].remote_port, "cgei-1/1/0/36")
+        self.assertEqual(hits[0].remote_name, "KND-VKAU-EN1-Z20HS")
+        self.assertEqual(hits[2].local_port, "xxvgei-1/1/0/15")
+        self.assertEqual(hits[2].remote_port, "xgei-0/0/0/7")
+        self.assertEqual(hits[2].remote_name, "KND-KLK-AN1-ZM8S")
+        self.assertEqual(hits[-1].remote_name, "KND-VKAU-EN1-Z20HS")
+        self.assertEqual(hits[-1].local_port, "xxvgei-1/1/0/28")
+
     def test_pick_command_auto(self) -> None:
         cmd, proto = lldp.pick_neighbor_command(protocol="auto", vendor="Cisco", device_type="cisco_ios")
         self.assertEqual(proto, "lldp")
@@ -174,7 +212,7 @@ class TopologyLldpParseTests(unittest.TestCase):
             "cisco": "show lldp neighbors detail",
             "huawei": "display lldp neighbor",
             "h3c": "display lldp neighbor-information list",
-            "zte": "show lldp neighbors",
+            "zte": "show lldp neighbor brief",
             "juniper": "show lldp neighbors",
             "nokia": "show system lldp neighbor",
             "ericsson": "show lldp neighbors",

@@ -1928,6 +1928,32 @@ pre {
   gap: 4px;
 }
 
+.topo-palette-source {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  padding: 2px;
+  background: #f1f5f9;
+  border-radius: 8px;
+}
+
+.topo-palette-source__btn {
+  border: 0;
+  background: transparent;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+  cursor: pointer;
+}
+
+.topo-palette-source__btn.is-active {
+  background: #fff;
+  color: #0f172a;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 8%);
+}
+
 .topo-map-list,
 .topo-palette {
   list-style: none;

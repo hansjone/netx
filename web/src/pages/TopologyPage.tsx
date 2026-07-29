@@ -26,6 +26,7 @@ import {
   fetchManagedNe,
   fetchTopologyGraph,
   fetchTopologyMaps,
+  fetchUmeNe,
   putTopologyGraph,
   updateTopologyMap,
 } from "../services/api";
@@ -33,7 +34,7 @@ import { queryKeys } from "../constants/queryKeys";
 import { useI18n } from "../i18n";
 import { useToast } from "../hooks/useToast";
 import { openNewModuleWindow, openOrFocusModule } from "../utils/moduleWindows";
-import type { ManagedNeItem, TopologyEdgeItem, TopologyNodeItem } from "../types";
+import type { ManagedNeItem, TopologyEdgeItem, TopologyNodeItem, UmeNeItem } from "../types";
 
 type NeNodeData = {
   label: string;
@@ -41,6 +42,20 @@ type NeNodeData = {
   ume_ne_id: string;
   ne_ip: string;
   vendor: string;
+  connect_status: string;
+};
+
+type PaletteSource = "managed" | "ume";
+
+type PaletteItem = {
+  key: string;
+  source: PaletteSource;
+  managed_ne_id: string;
+  ume_ne_id: string;
+  name: string;
+  ip: string;
+  vendor: string;
+  meta: string;
   connect_status: string;
 };
 
@@ -197,6 +212,7 @@ export function TopologyPage() {
   const [edgeFlow, setEdgeFlow] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [hideAddedNes, setHideAddedNes] = useState(true);
+  const [paletteSource, setPaletteSource] = useState<PaletteSource>("managed");
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<NeNodeData>>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const rfRef = useRef<ReactFlowInstance<Node<NeNodeData>, Edge> | null>(null);
@@ -236,6 +252,18 @@ export function TopologyPage() {
         page: 1,
         pageSize: 100,
       }),
+    enabled: paletteSource === "managed",
+  });
+
+  const umeQuery = useQuery({
+    queryKey: ["umeInventoryNe", "topology-palette", keyword],
+    queryFn: () =>
+      fetchUmeNe({
+        keyword: keyword.trim(),
+        page: 1,
+        pageSize: 100,
+      }),
+    enabled: paletteSource === "ume",
   });
 
   useEffect(() => {
@@ -356,7 +384,7 @@ export function TopologyPage() {
     [setEdges],
   );
 
-  const addNeToCanvas = (ne: ManagedNeItem) => {
+  const addManagedNeToCanvas = (ne: ManagedNeItem) => {
     if (!mapId) {
       showError(t("topology.selectMap"));
       return;
@@ -384,6 +412,45 @@ export function TopologyPage() {
     ]);
   };
 
+  const addUmeNeToCanvas = (ne: UmeNeItem) => {
+    if (!mapId) {
+      showError(t("topology.selectMap"));
+      return;
+    }
+    if (nodes.some((n) => n.data.ume_ne_id === ne.ne_id)) {
+      return;
+    }
+    const offset = nodes.length * 24;
+    const name = (ne.host_name || ne.ne_name || ne.user_label || ne.ip_address || ne.ne_id).trim();
+    dirtyRef.current = true;
+    setNodes((prev) => [
+      ...prev,
+      {
+        id: newId(),
+        type: "neNode",
+        position: { x: 80 + offset, y: 80 + offset },
+        data: {
+          label: name,
+          managed_ne_id: "",
+          ume_ne_id: ne.ne_id,
+          ne_ip: ne.ip_address || "",
+          vendor: "ZTE",
+          connect_status: ne.connection_status || "",
+        },
+      },
+    ]);
+  };
+
+  const addPaletteItem = (item: PaletteItem) => {
+    if (item.source === "managed") {
+      const ne = (neQuery.data?.items || []).find((x) => x.id === item.managed_ne_id);
+      if (ne) addManagedNeToCanvas(ne);
+      return;
+    }
+    const ne = (umeQuery.data?.items || []).find((x) => x.ne_id === item.ume_ne_id);
+    if (ne) addUmeNeToCanvas(ne);
+  };
+
   const selectedNode = useMemo(
     () => nodes.find((n) => n.id === selectedNodeId) || null,
     [nodes, selectedNodeId],
@@ -398,39 +465,94 @@ export function TopologyPage() {
   };
 
   const openWebcrt = () => {
-    const neId = selectedNode?.data.managed_ne_id;
-    if (!neId) {
-      showError(t("topology.noNeLink"));
+    const managedId = selectedNode?.data.managed_ne_id;
+    const umeId = selectedNode?.data.ume_ne_id;
+    if (managedId) {
+      openNewModuleWindow({
+        moduleId: "webcrt",
+        path: `/webcrt?ne_id=${encodeURIComponent(managedId)}`,
+      });
       return;
     }
-    openNewModuleWindow({
-      moduleId: "webcrt",
-      path: `/webcrt?ne_id=${encodeURIComponent(neId)}`,
-    });
+    if (umeId) {
+      openNewModuleWindow({
+        moduleId: "webcrt",
+        path: `/webcrt?ne_id=${encodeURIComponent(umeId)}&source=ume`,
+      });
+      return;
+    }
+    showError(t("topology.noNeLink"));
   };
 
   const openNe = () => {
-    const neId = selectedNode?.data.managed_ne_id;
-    if (!neId) {
-      showError(t("topology.noNeLink"));
+    const managedId = selectedNode?.data.managed_ne_id;
+    const umeId = selectedNode?.data.ume_ne_id;
+    if (managedId) {
+      openOrFocusModule({
+        moduleId: "managed-ne",
+        path: "/ne",
+      });
       return;
     }
-    openOrFocusModule({
-      moduleId: "managed-ne",
-      path: "/ne",
-    });
+    if (umeId) {
+      openOrFocusModule({
+        moduleId: "ume",
+        path: "/ume",
+      });
+      return;
+    }
+    showError(t("topology.noNeLink"));
   };
 
   const maps = mapsQuery.data?.items || [];
-  const palette = neQuery.data?.items || [];
-  const onCanvasIds = useMemo(
+  const onCanvasManagedIds = useMemo(
     () => new Set(nodes.map((n) => n.data.managed_ne_id).filter(Boolean)),
     [nodes],
   );
-  const paletteVisible = useMemo(
-    () => (hideAddedNes ? palette.filter((ne) => !onCanvasIds.has(ne.id)) : palette),
-    [palette, hideAddedNes, onCanvasIds],
+  const onCanvasUmeIds = useMemo(
+    () => new Set(nodes.map((n) => n.data.ume_ne_id).filter(Boolean)),
+    [nodes],
   );
+  const palette = useMemo((): PaletteItem[] => {
+    if (paletteSource === "ume") {
+      return (umeQuery.data?.items || []).map((ne) => {
+        const name = (ne.host_name || ne.ne_name || ne.user_label || ne.ip_address || ne.ne_id).trim();
+        return {
+          key: `ume:${ne.ne_id}`,
+          source: "ume" as const,
+          managed_ne_id: "",
+          ume_ne_id: ne.ne_id,
+          name,
+          ip: ne.ip_address || "",
+          vendor: "ZTE",
+          meta: `${ne.ip_address || "-"} · ${ne.ne_type || "UME"}`,
+          connect_status: ne.connection_status || "",
+        };
+      });
+    }
+    return (neQuery.data?.items || []).map((ne) => ({
+      key: `managed:${ne.id}`,
+      source: "managed" as const,
+      managed_ne_id: ne.id,
+      ume_ne_id: "",
+      name: ne.name || ne.ip_address,
+      ip: ne.ip_address,
+      vendor: ne.vendor,
+      meta: `${ne.ip_address} · ${ne.vendor}`,
+      connect_status: ne.connect_status,
+    }));
+  }, [paletteSource, neQuery.data, umeQuery.data]);
+  const paletteVisible = useMemo(() => {
+    if (!hideAddedNes) return palette;
+    return palette.filter((item) =>
+      item.source === "managed"
+        ? !onCanvasManagedIds.has(item.managed_ne_id)
+        : !onCanvasUmeIds.has(item.ume_ne_id),
+    );
+  }, [palette, hideAddedNes, onCanvasManagedIds, onCanvasUmeIds]);
+  const paletteLoading =
+    (paletteSource === "managed" && neQuery.isLoading) ||
+    (paletteSource === "ume" && umeQuery.isLoading);
 
   return (
     <div className={`topo-page${sidebarCollapsed ? " is-sidebar-collapsed" : ""}`}>
@@ -529,6 +651,26 @@ export function TopologyPage() {
                   {t("topology.hideAdded")}
                 </label>
               </div>
+              <div className="topo-palette-source" role="tablist" aria-label={t("topology.paletteSource")}>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={paletteSource === "managed"}
+                  className={`topo-palette-source__btn${paletteSource === "managed" ? " is-active" : ""}`}
+                  onClick={() => setPaletteSource("managed")}
+                >
+                  {t("topology.paletteManaged")}
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={paletteSource === "ume"}
+                  className={`topo-palette-source__btn${paletteSource === "ume" ? " is-active" : ""}`}
+                  onClick={() => setPaletteSource("ume")}
+                >
+                  {t("topology.paletteUme")}
+                </button>
+              </div>
               <p className="panel__hint">{t("topology.paletteHint")}</p>
               <input
                 className="input"
@@ -537,7 +679,11 @@ export function TopologyPage() {
                 placeholder={t("topology.filterPh")}
               />
               <ul className="topo-palette">
-                {paletteVisible.length === 0 ? (
+                {paletteLoading ? (
+                  <li className="topo-palette__empty">
+                    <span className="panel__hint">{t("topology.paletteLoading")}</span>
+                  </li>
+                ) : paletteVisible.length === 0 ? (
                   <li className="topo-palette__empty">
                     <span className="panel__hint">
                       {palette.length === 0
@@ -546,20 +692,23 @@ export function TopologyPage() {
                     </span>
                   </li>
                 ) : (
-                  paletteVisible.map((ne) => {
-                    const onCanvas = onCanvasIds.has(ne.id);
+                  paletteVisible.map((item) => {
+                    const onCanvas =
+                      item.source === "managed"
+                        ? onCanvasManagedIds.has(item.managed_ne_id)
+                        : onCanvasUmeIds.has(item.ume_ne_id);
                     return (
-                      <li key={ne.id}>
+                      <li key={item.key}>
                         <button
                           type="button"
                           className="topo-palette__item"
                           disabled={!mapId || onCanvas}
-                          onClick={() => addNeToCanvas(ne)}
-                          title={`${ne.name}\n${ne.ip_address}`}
+                          onClick={() => addPaletteItem(item)}
+                          title={`${item.name}\n${item.ip}`}
                         >
-                          <span className="topo-palette__name">{ne.name || ne.ip_address}</span>
+                          <span className="topo-palette__name">{item.name}</span>
                           <span className="topo-palette__meta">
-                            {ne.ip_address} · {ne.vendor}
+                            {item.meta}
                             {onCanvas ? " ✓" : ""}
                           </span>
                         </button>

@@ -91,8 +91,8 @@ VENDOR_LLDP_PROFILES: dict[str, VendorLldpProfile] = {
     ),
     "zte": VendorLldpProfile(
         key="zte",
-        lldp_command="show lldp neighbors",
-        notes="device_type zte_*; confirm ZXROS keyword on lab.",
+        lldp_command="show lldp neighbor brief",
+        notes="device_type zte_*; ZXROS brief table (Local Interface / Port ID / System Name).",
     ),
     "juniper": VendorLldpProfile(
         key="juniper",
@@ -203,8 +203,10 @@ def parse_h3c_lldp(text: str) -> list[NeighborHit]:
 
 
 def parse_zte_lldp(text: str) -> list[NeighborHit]:
-    """ZTE ZXROS LLDP — placeholder; brief table may work as interim."""
-    # TODO: replace with ZXROS-specific parser using lab echo.
+    """ZTE ZXROS `show lldp neighbor brief` table."""
+    hits = _parse_zte_lldp_brief(text)
+    if hits:
+        return hits
     return _parse_lldp_brief_table(text)
 
 
@@ -332,6 +334,59 @@ def _parse_cisco_lldp_detail(text: str) -> list[NeighborHit]:
                 remote_ip=ip,
                 local_port=(local_port or "").strip(),
                 remote_port=(remote_port or "").strip(),
+                protocol="lldp",
+            )
+        )
+    return hits
+
+
+def _parse_zte_lldp_brief(text: str) -> list[NeighborHit]:
+    """ZTE ZXROS `show lldp neighbor brief`.
+
+    Columns: Local Interface | Scope | Chassis ID | Port ID | Holdtime | System Name
+    Example:
+      cgei-1/1/0/34  NB  744a.a42d.8970  cgei-1/1/0/36  91  KND-VKAU-EN1-Z20HS
+    """
+    raw = str(text or "")
+    if not re.search(r"(?i)Local\s+Interface", raw) or not re.search(r"(?i)System\s+Name", raw):
+        return []
+
+    # Scope codes seen on ZXROS: NB / NC / NTPMR (and possibly others).
+    row_re = re.compile(
+        r"^(?P<local>\S+)\s+"
+        r"(?P<scope>[A-Za-z]{2,8})\s+"
+        r"(?P<chassis>\S+)\s+"
+        r"(?P<port>\S+)\s+"
+        r"(?P<hold>\d+)\s+"
+        r"(?P<name>\S.*?)\s*$"
+    )
+    hits: list[NeighborHit] = []
+    for ln in raw.splitlines():
+        s = ln.strip()
+        if not s or set(s) <= {"-", "="}:
+            continue
+        low = s.lower()
+        if "local interface" in low or low.startswith(("total", "scope", "capability", "---")):
+            continue
+        if s.endswith("#") or "show lldp" in low:
+            continue
+        m = row_re.match(s)
+        if not m:
+            continue
+        scope = m.group("scope").upper()
+        # Reject rows that clearly aren't neighbor entries (e.g. mis-split header leftovers).
+        if scope in {"INTERFACE", "CHASSIS", "PORT", "HOLDTIME", "SYSTEM"}:
+            continue
+        name = (m.group("name") or "").strip()
+        local_port = (m.group("local") or "").strip()
+        remote_port = (m.group("port") or "").strip()
+        if not name and not remote_port and not local_port:
+            continue
+        hits.append(
+            NeighborHit(
+                remote_name=name,
+                local_port=local_port,
+                remote_port=remote_port,
                 protocol="lldp",
             )
         )

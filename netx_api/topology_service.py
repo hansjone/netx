@@ -9,7 +9,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from .models import ManagedNE, TopologyEdge, TopologyMap, TopologyNode
+from .models import ManagedNE, TopologyEdge, TopologyMap, TopologyNode, UmeInventoryNE
 from .ne_exec import execute_managed_ne_commands
 from .topology_lldp import NeighborHit, parse_neighbor_output, pick_neighbor_command
 from .topology_schemas import (
@@ -113,10 +113,41 @@ def _ne_lookup(db: Session, ne_ids: set[str]) -> dict[str, ManagedNE]:
     return {r.id: r for r in rows}
 
 
-def _node_out(n: TopologyNode, ne: ManagedNE | None) -> TopologyNodeOut:
+def _ume_lookup(db: Session, ume_ids: set[str]) -> dict[str, UmeInventoryNE]:
+    ids = {str(x).strip() for x in ume_ids if str(x).strip()}
+    if not ids:
+        return {}
+    rows = db.query(UmeInventoryNE).filter(UmeInventoryNE.ne_id.in_(list(ids))).all()
+    return {str(r.ne_id): r for r in rows}
+
+
+def _node_out(
+    n: TopologyNode,
+    ne: ManagedNE | None,
+    ume: UmeInventoryNE | None = None,
+) -> TopologyNodeOut:
     label = (n.label or "").strip()
-    if not label and ne is not None:
-        label = (ne.name or ne.ip_address or n.id)[:256]
+    ne_name = ""
+    ne_ip = ""
+    vendor = ""
+    protocol = ""
+    connect_status = ""
+    if ne is not None:
+        if not label:
+            label = (ne.name or ne.ip_address or n.id)[:256]
+        ne_name = ne.name or ""
+        ne_ip = ne.ip_address or ""
+        vendor = ne.vendor or ""
+        protocol = ne.protocol or ""
+        connect_status = ne.connect_status or ""
+    elif ume is not None:
+        ume_name = (ume.host_name or ume.ne_name or ume.user_label or "").strip()
+        if not label:
+            label = (ume_name or ume.ip_address or n.id)[:256]
+        ne_name = ume_name
+        ne_ip = ume.ip_address or ""
+        vendor = (ume.vendor or "ZTE").strip() or "ZTE"
+        connect_status = ume.connection_status or ""
     return TopologyNodeOut(
         id=n.id,
         map_id=n.map_id,
@@ -125,11 +156,11 @@ def _node_out(n: TopologyNode, ne: ManagedNE | None) -> TopologyNodeOut:
         label=label,
         x=float(n.x or 0),
         y=float(n.y or 0),
-        ne_name=(ne.name if ne else ""),
-        ne_ip=(ne.ip_address if ne else ""),
-        vendor=(ne.vendor if ne else ""),
-        protocol=(ne.protocol if ne else ""),
-        connect_status=(ne.connect_status if ne else ""),
+        ne_name=ne_name,
+        ne_ip=ne_ip,
+        vendor=vendor,
+        protocol=protocol,
+        connect_status=connect_status,
     )
 
 
@@ -151,9 +182,17 @@ def get_graph(db: Session, map_id: str) -> TopologyGraphOut:
     nodes = db.query(TopologyNode).filter(TopologyNode.map_id == row.id).all()
     edges = db.query(TopologyEdge).filter(TopologyEdge.map_id == row.id).all()
     nes = _ne_lookup(db, {str(n.managed_ne_id or "") for n in nodes if n.managed_ne_id})
+    umes = _ume_lookup(db, {str(n.ume_ne_id or "") for n in nodes if n.ume_ne_id})
     return TopologyGraphOut(
         map=_map_out(row, node_count=len(nodes), edge_count=len(edges)),
-        nodes=[_node_out(n, nes.get(str(n.managed_ne_id or ""))) for n in nodes],
+        nodes=[
+            _node_out(
+                n,
+                nes.get(str(n.managed_ne_id or "")),
+                umes.get(str(n.ume_ne_id or "")),
+            )
+            for n in nodes
+        ],
         edges=[_edge_out(e) for e in edges],
     )
 

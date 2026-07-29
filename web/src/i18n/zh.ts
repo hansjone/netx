@@ -631,6 +631,10 @@ const zh = {
     hideAdded: "隐藏已添加",
     paletteEmpty: "没有匹配的网元。",
     paletteHiddenAll: "已添加网元已隐藏；取消勾选可重新显示。",
+    paletteSource: "网元来源",
+    paletteManaged: "托管网元",
+    paletteUme: "UME 网元",
+    paletteLoading: "加载中…",
   },
 };
 

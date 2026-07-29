@@ -633,6 +633,10 @@ const en = {
     hideAdded: "Hide added",
     paletteEmpty: "No matching NEs.",
     paletteHiddenAll: "Added NEs are hidden; uncheck to show them again.",
+    paletteSource: "NE source",
+    paletteManaged: "Managed",
+    paletteUme: "UME",
+    paletteLoading: "Loading…",
   },
 };
 
