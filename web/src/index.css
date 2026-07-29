@@ -1424,8 +1424,8 @@ pre {
 
 .webcrt-term {
   width: 100%;
-  height: min(70vh, 720px);
-  min-height: 360px;
+  height: 100%;
+  min-height: 240px;
   background: #0f172a;
   padding: 8px;
   box-sizing: border-box;
@@ -1656,6 +1656,9 @@ pre {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
   background: #808080;
 }
 
@@ -1666,6 +1669,7 @@ pre {
   background: #6e6e6e;
   border-bottom: 1px solid #505050;
   min-height: 28px;
+  flex-shrink: 0;
 }
 
 .webcrt-tabs__item {
@@ -1697,16 +1701,26 @@ pre {
 .webcrt-main__body {
   flex: 1;
   min-height: 0;
+  position: relative;
   background: #0f172a;
 }
 
 .webcrt-main__pane {
-  height: 100%;
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.webcrt-main__pane[hidden] {
+  display: none !important;
 }
 
 .webcrt-main__pane .webcrt-term {
-  height: 100%;
-  min-height: 0;
+  flex: 1;
+  width: 100%;
+  height: auto !important;
+  min-height: 240px !important;
 }
 
 .webcrt-main__empty,
@@ -1733,6 +1747,7 @@ pre {
   border-top: 1px solid #a8a8a8;
   font-size: 11px;
   color: #334155;
+  flex-shrink: 0;
 }
 
 @media (max-width: 900px) {

@@ -66,6 +66,7 @@ class WebcrtSession:
     created_at: float = field(default_factory=time.time)
     last_activity: float = field(default_factory=time.time)
     attached: bool = False
+    detach_deadline: float | None = None
     closed: bool = False
     close_reason: str = ""
     out_queue: queue.Queue[bytes | None] = field(default_factory=queue.Queue)
@@ -181,7 +182,7 @@ def _reaper_loop() -> None:
             _reap_sessions()
         except Exception:
             _log.exception("webcrt reaper failed")
-        time.sleep(5)
+        time.sleep(2)
 
 
 def _reap_sessions() -> None:
@@ -194,7 +195,15 @@ def _reap_sessions() -> None:
             if sess.closed:
                 _sessions.pop(sess.session_id, None)
                 continue
-            if not sess.attached and (now - sess.created_at) > attach:
+            if sess.attached:
+                if (now - sess.last_activity) > idle:
+                    to_close.append((sess, "idle_timeout"))
+                continue
+            # Not attached: either never attached, or briefly detached for reconnect.
+            if sess.detach_deadline is not None:
+                if now >= sess.detach_deadline:
+                    to_close.append((sess, "detach_timeout"))
+            elif (now - sess.created_at) > attach:
                 to_close.append((sess, "attach_timeout"))
             elif (now - sess.last_activity) > idle:
                 to_close.append((sess, "idle_timeout"))
@@ -327,12 +336,33 @@ def mark_attached(session_id: str) -> WebcrtSession:
     sess = get_session(session_id)
     if sess is None:
         raise HTTPException(status_code=404, detail="webcrt_session_not_found")
-    if sess.attached:
-        raise HTTPException(status_code=409, detail="webcrt_session_already_attached")
+    # Allow re-attach after brief WS drop (React StrictMode remount / network blip).
     sess.attached = True
+    sess.detach_deadline = None
     sess.touch()
     _audit("session_attached", session_id=session_id, ne_id=sess.ne_id, ne_ip=sess.ne_ip)
     return sess
+
+
+def detach_session(session_id: str, *, grace_sec: float = 8.0, client: str = "") -> dict[str, Any]:
+    """Mark session unattached but keep device channel open briefly for reconnect."""
+    sess = get_session(session_id)
+    if sess is None:
+        return {"ok": True, "session_id": session_id, "detached": False}
+    if sess.closed:
+        return {"ok": True, "session_id": session_id, "detached": False}
+    sess.attached = False
+    sess.detach_deadline = time.time() + max(1.0, float(grace_sec))
+    sess.touch()
+    _audit(
+        "session_detached",
+        session_id=session_id,
+        ne_id=sess.ne_id,
+        ne_ip=sess.ne_ip,
+        grace_sec=grace_sec,
+        client=client or "",
+    )
+    return {"ok": True, "session_id": session_id, "detached": True}
 
 
 def close_session(session_id: str, *, reason: str = "closed", client: str = "") -> dict[str, Any]:

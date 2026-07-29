@@ -350,6 +350,7 @@ export function WebcrtPage() {
                   {tab.wsUrl ? (
                     <WebTerminal
                       wsUrl={tab.wsUrl}
+                      title={tab.target.ip_address || tab.target.name}
                       onStatus={(state) => {
                         if (state === "open" || state === "connected") updateTab(tab.key, { status: "connected" });
                         else if (state === "error") updateTab(tab.key, { status: "error" });

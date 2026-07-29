@@ -15,6 +15,8 @@ from .db import get_db
 from .webcrt_service import (
     close_session,
     create_session,
+    detach_session,
+    get_session,
     list_sessions,
     mark_attached,
 )
@@ -151,6 +153,12 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
                 sess.touch()
                 await websocket.send_json({"type": "pong"})
             elif mtype == "close":
+                stop.set()
+                close_session(
+                    session_id,
+                    reason="client_close",
+                    client=_client_label(websocket=websocket),
+                )
                 break
     except WebSocketDisconnect:
         _log.info("webcrt ws disconnected session=%s", session_id)
@@ -163,8 +171,10 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
             await reader_task
         except Exception:
             pass
-        close_session(
-            session_id,
-            reason="ws_disconnect",
-            client=_client_label(websocket=websocket),
-        )
+        # Keep device session briefly so React remount / blip can re-attach.
+        if get_session(session_id) is not None:
+            detach_session(
+                session_id,
+                grace_sec=8.0,
+                client=_client_label(websocket=websocket),
+            )

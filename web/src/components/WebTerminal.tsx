@@ -5,11 +5,12 @@ import "@xterm/xterm/css/xterm.css";
 
 type Props = {
   wsUrl: string;
+  title?: string;
   onStatus?: (state: string, message?: string) => void;
   onReady?: () => void;
 };
 
-export function WebTerminal({ wsUrl, onStatus, onReady }: Props) {
+export function WebTerminal({ wsUrl, title, onStatus, onReady }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -40,13 +41,26 @@ export function WebTerminal({ wsUrl, onStatus, onReady }: Props) {
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
-    fit.fit();
     termRef.current = term;
     fitRef.current = fit;
+
+    const doFit = () => {
+      try {
+        fit.fit();
+      } catch {
+        /* ignore */
+      }
+    };
+    // Fit after layout; hidden/zero-size parents need a deferred pass.
+    requestAnimationFrame(() => {
+      doFit();
+      window.setTimeout(doFit, 50);
+    });
 
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
     onStatusRef.current?.("connecting");
+    term.writeln(`\x1b[90mConnecting${title ? ` ${title}` : ""}…\x1b[0m`);
 
     const sendJson = (payload: Record<string, unknown>) => {
       if (ws.readyState === WebSocket.OPEN) {
@@ -55,12 +69,13 @@ export function WebTerminal({ wsUrl, onStatus, onReady }: Props) {
     };
 
     const sendResize = () => {
-      fit.fit();
+      doFit();
       sendJson({ type: "resize", cols: term.cols, rows: term.rows });
     };
 
     ws.onopen = () => {
       onStatusRef.current?.("open");
+      term.writeln("\x1b[32mConnected.\x1b[0m");
       sendResize();
       onReadyRef.current?.();
     };
@@ -79,6 +94,10 @@ export function WebTerminal({ wsUrl, onStatus, onReady }: Props) {
         }
         if (msg.type === "status") {
           onStatusRef.current?.(String(msg.state || ""), msg.message);
+          if (msg.state === "connected") {
+            // Server ack; keep terminal clean.
+            return;
+          }
           if (msg.state === "closed" || msg.state === "error") {
             const detail = msg.message ? `: ${msg.message}` : "";
             term.writeln(`\r\n\x1b[33m[session ${msg.state}${detail}]\x1b[0m`);
@@ -93,6 +112,7 @@ export function WebTerminal({ wsUrl, onStatus, onReady }: Props) {
 
     ws.onerror = () => {
       onStatusRef.current?.("error", "websocket_error");
+      term.writeln("\r\n\x1b[31m[websocket error]\x1b[0m");
     };
 
     ws.onclose = () => {
@@ -123,10 +143,8 @@ export function WebTerminal({ wsUrl, onStatus, onReady }: Props) {
       window.removeEventListener("resize", onWinResize);
       ro?.disconnect();
       dataDisposable.dispose();
+      // Do not send {type:"close"} here — React StrictMode remounts and needs reconnect.
       try {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: "close" }));
-        }
         ws.close();
       } catch {
         /* ignore */
@@ -136,7 +154,7 @@ export function WebTerminal({ wsUrl, onStatus, onReady }: Props) {
       termRef.current = null;
       fitRef.current = null;
     };
-  }, [wsUrl]);
+  }, [wsUrl, title]);
 
   return <div className="webcrt-term" ref={hostRef} />;
 }
