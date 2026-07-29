@@ -75,7 +75,6 @@ export function WebTerminal({ wsUrl, title, onStatus, onReady }: Props) {
 
     ws.onopen = () => {
       onStatusRef.current?.("open");
-      term.writeln("\x1b[32mConnected.\x1b[0m");
       sendResize();
       onReadyRef.current?.();
     };
@@ -87,6 +86,9 @@ export function WebTerminal({ wsUrl, title, onStatus, onReady }: Props) {
           data?: string;
           state?: string;
           message?: string;
+          ne_name?: string;
+          ne_ip?: string;
+          protocol?: string;
         };
         if (msg.type === "stdout" && typeof msg.data === "string") {
           term.write(msg.data);
@@ -95,7 +97,8 @@ export function WebTerminal({ wsUrl, title, onStatus, onReady }: Props) {
         if (msg.type === "status") {
           onStatusRef.current?.(String(msg.state || ""), msg.message);
           if (msg.state === "connected") {
-            // Server ack; keep terminal clean.
+            const where = [msg.ne_name || title, msg.ne_ip, msg.protocol].filter(Boolean).join(" · ");
+            term.writeln(`\x1b[90m--- session ready${where ? `: ${where}` : ""} ---\x1b[0m`);
             return;
           }
           if (msg.state === "closed" || msg.state === "error") {

@@ -93,8 +93,26 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
             "protocol": sess.protocol,
             "cols": sess.cols,
             "rows": sess.rows,
+            "device_type": sess.device_type,
+            "vendor": sess.vendor,
         }
     )
+
+    # Replay post-login banner/prompt so the UI is not blank until the user presses Enter.
+    bootstrap = bytes(sess.bootstrap_output or b"")
+    if bootstrap:
+        try:
+            await websocket.send_json(
+                {"type": "stdout", "data": bootstrap.decode("utf-8", errors="replace")}
+            )
+        except Exception:
+            _log.debug("webcrt bootstrap send failed session=%s", session_id, exc_info=True)
+    else:
+        # Last resort: ask the device to redraw the prompt into the live reader.
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, sess.write_stdin, "\r")
+        except Exception:
+            pass
 
     stop = asyncio.Event()
 

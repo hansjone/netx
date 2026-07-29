@@ -22,6 +22,7 @@ type TermTab = {
   wsUrl: string;
   target: CliTargetItem;
   status: "connecting" | "connected" | "error" | "closed";
+  errorMessage?: string;
 };
 
 function targetKey(t: Pick<CliTargetItem, "source" | "id">): string {
@@ -120,8 +121,9 @@ export function WebcrtPage() {
         updateTab(key, { sessionId: sess.session_id, wsUrl, status: "connecting" });
         showOk(t("webcrt.opened", { name: target.name || target.ip_address }));
       } catch (err) {
-        updateTab(key, { status: "error" });
-        showError(webcrtErrorMessage(err, t));
+        const message = webcrtErrorMessage(err, t);
+        updateTab(key, { status: "error", errorMessage: message });
+        showError(message);
       } finally {
         connectingKeysRef.current.delete(key);
       }
@@ -344,7 +346,8 @@ export function WebcrtPage() {
                   ) : null}
                   {tab.status === "error" && !tab.wsUrl ? (
                     <div className="webcrt-main__placeholder webcrt-main__placeholder--error">
-                      {t("webcrt.status.error")}
+                      <div>{t("webcrt.status.error")}</div>
+                      {tab.errorMessage ? <pre className="webcrt-error-detail">{tab.errorMessage}</pre> : null}
                     </div>
                   ) : null}
                   {tab.wsUrl ? (

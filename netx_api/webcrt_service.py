@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import queue
+import re
 import threading
 import time
 import uuid
@@ -76,6 +77,35 @@ def map_network_cli_keys(data: str) -> str:
             i += 1
     return "".join(out)
 
+def _drain_channel(conn: ConnectHandler, *, rounds: int = 10, wait: float = 0.12) -> str:
+    """Read whatever is already sitting on the channel after login."""
+    chunks: list[str] = []
+    empty_streak = 0
+    for _ in range(max(1, rounds)):
+        time.sleep(wait)
+        try:
+            part = conn.read_channel()
+        except Exception:
+            break
+        if part:
+            chunks.append(str(part))
+            empty_streak = 0
+        else:
+            empty_streak += 1
+            if empty_streak >= 2 and chunks:
+                break
+    return "".join(chunks)
+
+
+def _looks_like_cli_prompt(text: str) -> bool:
+    s = str(text or "").rstrip()
+    if not s:
+        return False
+    # Common network CLI prompts: <r1>  [HUAWEI]  Router#  Router>
+    return bool(re.search(r"(?:[>\]]|#)\s*$", s)) or bool(re.search(r"<[^>\r\n]+>\s*$", s))
+
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -120,6 +150,7 @@ class WebcrtSession:
     detach_deadline: float | None = None
     closed: bool = False
     close_reason: str = ""
+    bootstrap_output: bytes = b""
     out_queue: queue.Queue[bytes | None] = field(default_factory=queue.Queue)
     _reader: threading.Thread | None = field(default=None, repr=False)
     _write_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
@@ -358,9 +389,19 @@ def create_session(
             pass
 
     try:
-        leftover = conn.read_channel()
+        leftover = _drain_channel(conn, rounds=8, wait=0.1)
     except Exception:
         leftover = ""
+    # Netmiko often consumes the login banner; nudge Enter once to surface the prompt.
+    if not _looks_like_cli_prompt(leftover):
+        try:
+            conn.write_channel("\r")
+        except Exception:
+            pass
+        try:
+            leftover = (leftover or "") + _drain_channel(conn, rounds=8, wait=0.12)
+        except Exception:
+            pass
 
     sess = WebcrtSession(
         session_id=session_id,
@@ -374,9 +415,9 @@ def create_session(
         vendor=vendor,
         cli_keymap=cli_keymap,
         conn=conn,
+        bootstrap_output=str(leftover or "").encode("utf-8", errors="replace"),
     )
-    if leftover:
-        sess.out_queue.put(str(leftover).encode("utf-8", errors="replace"))
+    # Keep bootstrap for WS attach replay; do not rely solely on out_queue (StrictMode remount).
     sess.start_reader()
 
     with _sessions_lock:

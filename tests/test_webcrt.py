@@ -145,8 +145,11 @@ class WebcrtServiceTests(unittest.TestCase):
         self.assertEqual(out["ne_id"], "ne-hop")
         sess = svc.get_session(out["session_id"])
         assert sess is not None
+        # create_session may nudge Enter when no prompt was drained.
+        before = list(fake.written)
         sess.write_stdin("\n")
-        self.assertEqual(fake.written, ["\n"])
+        self.assertEqual(fake.written[len(before) :], ["\n"])
+        self.assertTrue(isinstance(sess.bootstrap_output, (bytes, bytearray)))
         svc.close_session(out["session_id"], reason="test")
 
     @patch.object(svc, "_audit")

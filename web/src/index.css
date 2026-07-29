@@ -1741,6 +1741,16 @@ pre {
   color: #fecaca;
 }
 
+.webcrt-error-detail {
+  margin: 8px 0 0;
+  max-width: 80%;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  color: #fee2e2;
+  text-align: left;
+}
+
 .webcrt-statusline {
   padding: 3px 8px;
   background: #ececec;
