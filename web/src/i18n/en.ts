@@ -647,6 +647,8 @@ const en = {
     discoverSummary: "Scanned {{scanned}} · added {{added}} · updated {{updated}} · missing {{stale}} · failed {{failed}}",
     discoverNeOk: "neighbors {{neighbors}} · added {{added}} · updated {{updated}}",
     discoverNeFail: "Collect failed",
+    discoverNoTargets:
+      "No scannable NEs on the map. Add managed NEs, or UME NEs with a CLI connect profile.",
     removeStale: "Clear missing ({{count}})",
     removeStaleHint: "Delete red-marked missing edges",
     staleRemoved: "Removed {{count}} missing edge(s)",

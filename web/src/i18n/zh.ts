@@ -645,6 +645,7 @@ const zh = {
     discoverSummary: "扫描 {{scanned}} 台 · 新增 {{added}} · 更新 {{updated}} · 未发现 {{stale}} · 失败 {{failed}}",
     discoverNeOk: "邻居 {{neighbors}} · 新增 {{added}} · 更新 {{updated}}",
     discoverNeFail: "采集失败",
+    discoverNoTargets: "画布上没有可扫描网元。请添加托管网元，或添加已配置 CLI 凭据的 UME 网元。",
     removeStale: "清除未发现 ({{count}})",
     removeStaleHint: "删除红色标记的未发现链路",
     staleRemoved: "已删除 {{count}} 条未发现链路",

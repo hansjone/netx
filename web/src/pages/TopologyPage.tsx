@@ -995,14 +995,19 @@ export function TopologyPage() {
             </div>
             {discovering ? (
               <p className="panel__hint panel__hint--live">
-                {t("topology.discoverProgressLive")
-                  .replace("{{index}}", String(discoverProgress.index))
-                  .replace("{{total}}", String(discoverProgress.total))
-                  .replace(
-                    "{{name}}",
-                    discoverProgress.neName || discoverProgress.neIp || "…",
-                  )}
+                {discoverProgress.total <= 0
+                  ? t("topology.discoverNoTargets")
+                  : t("topology.discoverProgressLive")
+                      .replace("{{index}}", String(discoverProgress.index))
+                      .replace("{{total}}", String(discoverProgress.total))
+                      .replace(
+                        "{{name}}",
+                        discoverProgress.neName || discoverProgress.neIp || "…",
+                      )}
               </p>
+            ) : null}
+            {!discovering && discoverReport && discoverReport.scanned === 0 ? (
+              <p className="panel__hint">{t("topology.discoverNoTargets")}</p>
             ) : null}
             {discoverError ? <p className="topo-discover__error">{discoverError}</p> : null}
             {discoverResults.length > 0 || discoverReport ? (

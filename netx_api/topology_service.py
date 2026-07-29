@@ -9,6 +9,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
+from .cli_resolve import get_default_profile, infer_device_type_vendor
 from .models import ManagedNE, TopologyEdge, TopologyMap, TopologyNode, UmeInventoryNE
 from .ne_exec import execute_managed_ne_commands
 from .topology_lldp import NeighborHit, parse_neighbor_output, pick_neighbor_command
@@ -278,6 +279,7 @@ def _match_neighbor_to_node(
     *,
     nodes: list[TopologyNode],
     nes: dict[str, ManagedNE],
+    umes: dict[str, UmeInventoryNE],
     self_node_id: str,
 ) -> TopologyNode | None:
     name_key = _norm_key(hit.remote_name)
@@ -286,17 +288,20 @@ def _match_neighbor_to_node(
         if n.id == self_node_id:
             continue
         ne = nes.get(str(n.managed_ne_id or ""))
+        ume = umes.get(str(n.ume_ne_id or ""))
         candidates = [
             _norm_key(n.label or ""),
             _norm_key(ne.name if ne else ""),
             str(ne.ip_address if ne else "").strip(),
+            _norm_key(ume.host_name if ume else ""),
+            _norm_key(ume.ne_name if ume else ""),
+            _norm_key(ume.user_label if ume else ""),
+            str(ume.ip_address if ume else "").strip(),
         ]
-        if ip_key and ip_key in candidates:
+        cand_set = {_norm_key(c) for c in candidates if str(c or "").strip()}
+        if ip_key and ip_key in {str(c).strip() for c in candidates if str(c or "").strip()}:
             return n
-        if name_key and name_key in {_norm_key(c) for c in candidates if c}:
-            return n
-        # Also match managed NE name without case
-        if ne and name_key and name_key == _norm_key(ne.name):
+        if name_key and name_key in cand_set:
             return n
     return None
 
@@ -305,6 +310,47 @@ def _edge_pair_key(a: str, b: str, local_port: str, remote_port: str) -> tuple[s
     if a <= b:
         return (a, b, local_port, remote_port)
     return (b, a, remote_port, local_port)
+
+
+def _discover_target_for_node(
+    n: TopologyNode,
+    *,
+    nes: dict[str, ManagedNE],
+    umes: dict[str, UmeInventoryNE],
+    filter_ids: set[str],
+    default_profile,
+) -> dict[str, str] | None:
+    """Resolve CLI target for a topology node (managed preferred, else UME)."""
+    mid = str(n.managed_ne_id or "").strip()
+    uid = str(n.ume_ne_id or "").strip()
+    if filter_ids and mid not in filter_ids and uid not in filter_ids:
+        return None
+    if mid and mid in nes:
+        ne = nes[mid]
+        return {
+            "ne_id": ne.id,
+            "ume_ne_id": "",
+            "ne_name": ne.name or "",
+            "ne_ip": ne.ip_address or "",
+            "vendor": ne.vendor or "",
+            "device_type": ne.device_type or "",
+        }
+    if uid and uid in umes:
+        ume = umes[uid]
+        if default_profile is not None:
+            dtype, vendor = infer_device_type_vendor(str(ume.ne_type or ""), default_profile)
+        else:
+            dtype, vendor = "zte_zxros", (ume.vendor or "ZTE")
+        name = (ume.host_name or ume.ne_name or ume.user_label or ume.ip_address or uid).strip()
+        return {
+            "ne_id": uid,
+            "ume_ne_id": uid,
+            "ne_name": name,
+            "ne_ip": ume.ip_address or "",
+            "vendor": vendor or (ume.vendor or "ZTE"),
+            "device_type": dtype or "zte_zxros",
+        }
+    return None
 
 
 def iter_discover_neighbors(
@@ -317,15 +363,17 @@ def iter_discover_neighbors(
     nodes = db.query(TopologyNode).filter(TopologyNode.map_id == row.id).all()
     edges = db.query(TopologyEdge).filter(TopologyEdge.map_id == row.id).all()
     nes = _ne_lookup(db, {str(n.managed_ne_id or "") for n in nodes if n.managed_ne_id})
+    umes = _ume_lookup(db, {str(n.ume_ne_id or "") for n in nodes if n.ume_ne_id})
+    default_profile = get_default_profile(db)
 
     filter_ids = {str(x).strip() for x in (body.ne_ids or []) if str(x).strip()}
-    scan_nodes = [
-        n
-        for n in nodes
-        if n.managed_ne_id
-        and n.managed_ne_id in nes
-        and (not filter_ids or n.managed_ne_id in filter_ids)
-    ]
+    scan_targets: list[tuple[TopologyNode, dict[str, str]]] = []
+    for n in nodes:
+        target = _discover_target_for_node(
+            n, nes=nes, umes=umes, filter_ids=filter_ids, default_profile=default_profile
+        )
+        if target is not None:
+            scan_targets.append((n, target))
 
     existing: dict[tuple[str, str, str, str], TopologyEdge] = {}
     for e in edges:
@@ -343,7 +391,7 @@ def iter_discover_neighbors(
     stale_count = 0
     now = _utcnow()
     proto_req = str(body.protocol or "auto").strip().lower() or "auto"
-    total = len(scan_nodes)
+    total = len(scan_targets)
     touched_edge_ids: set[str] = set()
     scanned_ok_node_ids: set[str] = set()
 
@@ -354,28 +402,25 @@ def iter_discover_neighbors(
         "total": total,
     }
 
-    for index, n in enumerate(scan_nodes, start=1):
-        ne = nes.get(n.managed_ne_id)
-        if ne is None:
-            continue
+    for index, (n, target) in enumerate(scan_targets, start=1):
         yield {
             "type": "ne_start",
             "index": index,
             "total": total,
-            "ne_id": ne.id,
-            "ne_name": ne.name or "",
-            "ne_ip": ne.ip_address or "",
+            "ne_id": target["ne_id"],
+            "ne_name": target["ne_name"],
+            "ne_ip": target["ne_ip"],
         }
         cmd, proto_tag = pick_neighbor_command(
             protocol=proto_req,
-            vendor=ne.vendor or "",
-            device_type=ne.device_type or "",
+            vendor=target["vendor"],
+            device_type=target["device_type"],
         )
         if not cmd:
             result = TopologyDiscoverNeResult(
-                ne_id=ne.id,
-                ne_name=ne.name or "",
-                ne_ip=ne.ip_address or "",
+                ne_id=target["ne_id"],
+                ne_name=target["ne_name"],
+                ne_ip=target["ne_ip"],
                 ok=False,
                 error="no_command_for_vendor",
             )
@@ -390,17 +435,39 @@ def iter_discover_neighbors(
                 "edges_stale": stale_count,
             }
             continue
-        exec_out = execute_managed_ne_commands(
-            db,
-            [cmd],
-            ne_id=ne.id,
-            read_timeout_sec=60,
-        )
+
+        exec_kwargs: dict[str, Any] = {"read_timeout_sec": 60}
+        if target["ume_ne_id"] and not str(n.managed_ne_id or "").strip():
+            exec_kwargs["ume_ne_id"] = target["ume_ne_id"]
+        else:
+            exec_kwargs["ne_id"] = target["ne_id"]
+        try:
+            exec_out = execute_managed_ne_commands(db, [cmd], **exec_kwargs)
+        except HTTPException as exc:
+            result = TopologyDiscoverNeResult(
+                ne_id=target["ne_id"],
+                ne_name=target["ne_name"],
+                ne_ip=target["ne_ip"],
+                ok=False,
+                command=cmd,
+                error=str(exc.detail or "exec_failed")[:500],
+            )
+            results.append(result)
+            yield {
+                "type": "ne_result",
+                "index": index,
+                "total": total,
+                "result": result.model_dump(mode="json"),
+                "edges_added": added,
+                "edges_updated": updated,
+                "edges_stale": stale_count,
+            }
+            continue
         if not exec_out.get("ok"):
             result = TopologyDiscoverNeResult(
-                ne_id=ne.id,
-                ne_name=ne.name or "",
-                ne_ip=ne.ip_address or "",
+                ne_id=target["ne_id"],
+                ne_name=target["ne_name"],
+                ne_ip=target["ne_ip"],
                 ok=False,
                 command=cmd,
                 error=str(exec_out.get("detail") or exec_out.get("error") or "exec_failed")[:500],
@@ -422,14 +489,14 @@ def iter_discover_neighbors(
         hits = parse_neighbor_output(
             raw,
             protocol=proto_tag,
-            vendor=ne.vendor or "",
-            device_type=ne.device_type or "",
+            vendor=target["vendor"],
+            device_type=target["device_type"],
         )
         ne_added = 0
         ne_updated = 0
         for hit in hits:
             peer = _match_neighbor_to_node(
-                hit, nodes=nodes, nes=nes, self_node_id=n.id
+                hit, nodes=nodes, nes=nes, umes=umes, self_node_id=n.id
             )
             if peer is None:
                 continue
@@ -469,9 +536,9 @@ def iter_discover_neighbors(
             added += 1
 
         result = TopologyDiscoverNeResult(
-            ne_id=ne.id,
-            ne_name=ne.name or "",
-            ne_ip=ne.ip_address or "",
+            ne_id=target["ne_id"],
+            ne_name=target["ne_name"],
+            ne_ip=target["ne_ip"],
             ok=True,
             command=cmd,
             neighbors=len(hits),
