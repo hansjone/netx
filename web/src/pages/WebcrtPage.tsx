@@ -289,14 +289,6 @@ export function WebcrtPage() {
       <aside className="webcrt-sidebar">
         <div className="webcrt-sidebar__header">
           <div className="webcrt-sidebar__title">{t("webcrt.deviceList")}</div>
-          <button
-            type="button"
-            className="webcrt-icon-btn"
-            title={t("common.refresh")}
-            onClick={() => void targetsQuery.refetch()}
-          >
-            ↻
-          </button>
         </div>
         <div className="webcrt-sidebar__search">
           <input
@@ -363,10 +355,10 @@ export function WebcrtPage() {
         <div className="webcrt-sidebar__pager">
           <span>{t("common.pagerMeta", { total, page, pages })}</span>
           <div className="webcrt-sidebar__pager-btns">
-            <button type="button" disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>
+            <button type="button" disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))} aria-label="prev">
               ‹
             </button>
-            <button type="button" disabled={page >= pages} onClick={() => setPage((p) => p + 1)}>
+            <button type="button" disabled={page >= pages} onClick={() => setPage((p) => p + 1)} aria-label="next">
               ›
             </button>
           </div>

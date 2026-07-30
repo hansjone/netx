@@ -1490,22 +1490,6 @@ pre {
   display: none;
 }
 
-.webcrt-icon-btn {
-  width: 28px;
-  height: 24px;
-  padding: 0;
-  border: 1px solid #a0a0a0;
-  background: #f7f7f7;
-  border-radius: 2px;
-  cursor: pointer;
-  line-height: 1;
-}
-
-.webcrt-icon-btn:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
 .webcrt-sidebar__search {
   padding: 6px;
   border-bottom: 1px solid #d0d0d0;
@@ -1639,16 +1623,23 @@ pre {
   gap: 2px;
 }
 
+.app-main .webcrt-sidebar__pager-btns button,
 .webcrt-sidebar__pager-btns button {
   width: 22px;
   height: 20px;
-  border: 1px solid #a0a0a0;
-  background: #f7f7f7;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #334155;
   cursor: pointer;
+  line-height: 1;
+  font-size: 16px;
 }
 
+.app-main .webcrt-sidebar__pager-btns button:disabled,
 .webcrt-sidebar__pager-btns button:disabled {
-  opacity: 0.4;
+  opacity: 0.35;
   cursor: not-allowed;
 }
 
