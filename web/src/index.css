@@ -2228,29 +2228,47 @@ pre {
   box-shadow: 0 10px 28px rgba(15, 23, 42, 0.28);
 }
 
+/* Beat .app-main button { color:#1f2937; background:#fff } so hover stays readable. */
+.app-main .topo-ctx__item,
 .topo-ctx__item {
   display: block;
   width: 100%;
   padding: 8px 14px;
   border: 0;
+  border-radius: 0;
   background: transparent;
-  color: inherit;
+  color: #e2e8f0;
   text-align: left;
   font: inherit;
   cursor: pointer;
 }
 
-.topo-ctx__item:hover:not(:disabled) {
+.app-main .topo-ctx__item:hover:not(:disabled),
+.app-main .topo-ctx__item:focus-visible:not(:disabled),
+.topo-ctx__item:hover:not(:disabled),
+.topo-ctx__item:focus-visible:not(:disabled) {
   background: #1e293b;
+  color: #f8fafc;
 }
 
+.app-main .topo-ctx__item:disabled,
 .topo-ctx__item:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+  color: #94a3b8;
 }
 
-.topo-ctx__item--danger:hover:not(:disabled) {
+.app-main .topo-ctx__item--danger,
+.topo-ctx__item--danger {
+  color: #fca5a5;
+}
+
+.app-main .topo-ctx__item--danger:hover:not(:disabled),
+.app-main .topo-ctx__item--danger:focus-visible:not(:disabled),
+.topo-ctx__item--danger:hover:not(:disabled),
+.topo-ctx__item--danger:focus-visible:not(:disabled) {
   background: #7f1d1d;
+  color: #fecaca;
 }
 
 .topo-ctx__sep {
