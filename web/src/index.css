@@ -1689,7 +1689,7 @@ pre {
 .webcrt-tabs__item {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 2px;
   padding: 4px 8px;
   background: #cfcfcf;
   color: #1e293b;
@@ -1704,12 +1704,35 @@ pre {
 }
 
 .webcrt-tabs__close {
+  appearance: none;
+  -webkit-appearance: none;
+  display: inline;
+  margin: 0;
+  margin-left: 2px;
+  padding: 0;
   border: 0;
+  border-radius: 0;
   background: transparent;
+  box-shadow: none;
+  outline: none;
   cursor: pointer;
-  font-size: 14px;
+  font: inherit;
+  font-weight: 400;
+  font-size: 1em;
   line-height: 1;
-  color: #475569;
+  color: inherit;
+  opacity: 0.45;
+  vertical-align: baseline;
+}
+
+.webcrt-tabs__close:hover,
+.webcrt-tabs__item:hover .webcrt-tabs__close {
+  opacity: 0.85;
+}
+
+.webcrt-tabs__close:focus-visible {
+  opacity: 1;
+  text-decoration: underline;
 }
 
 .webcrt-actions {
