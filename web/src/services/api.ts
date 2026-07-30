@@ -563,15 +563,20 @@ export async function discoverTopologyNeighborsStream(
   handlers: TopologyDiscoverStreamHandlers,
   signal?: AbortSignal,
 ): Promise<TopologyDiscoverOut> {
-  const res = await fetch(`/v1/topology/maps/${encodeURIComponent(mapId)}/discover/stream`, {
+  const path = `/v1/topology/maps/${encodeURIComponent(mapId)}/discover/stream`;
+  const res = await fetch(path, {
     method: "POST",
-    headers: {
+    headers: authHeaders({
       accept: "text/event-stream",
       "content-type": "application/json",
-    },
+    }),
     body: JSON.stringify(body || {}),
     signal,
   });
+  if (res.status === 401) {
+    handleUnauthorized(path);
+    throw new Error("unauthorized");
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(text || `discover_stream_failed:${res.status}`);
