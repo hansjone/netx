@@ -343,6 +343,81 @@ class WebcrtServiceTests(unittest.TestCase):
                 svc._reap_sessions()
         self.assertIsNone(svc.get_session("idle"))
 
+    @patch.object(svc, "_audit")
+    def test_cli_hop_return_closes_session(self, _mock_audit: MagicMock) -> None:
+        """Vendor CLI hop: nested target exit must tear down WebCRT (no hop shell)."""
+        conn = _FakeConn()
+        chunks = [
+            b"<TARGET>\r\n",
+            b"quit\r\nConnection closed by foreign host\r\n\r\n<HOP>\r\n",
+        ]
+        idx = {"i": 0}
+
+        def recv_ready() -> bool:
+            return idx["i"] < len(chunks)
+
+        def recv(_n: int) -> bytes:
+            i = idx["i"]
+            idx["i"] = i + 1
+            return chunks[i]
+
+        conn.remote_conn.recv_ready.side_effect = recv_ready
+        conn.remote_conn.recv.side_effect = recv
+        conn.remote_conn.exit_status_ready.return_value = False
+
+        sess = svc.WebcrtSession(
+            session_id="hop1",
+            ne_id="ne1",
+            ne_name="lab",
+            ne_ip="1.2.3.4",
+            protocol="ssh",
+            cols=80,
+            rows=24,
+            conn=conn,  # type: ignore[arg-type]
+            cli_hop_guard=True,
+            cli_hop_prompt="<HOP>",
+        )
+        with svc._sessions_lock:
+            svc._sessions["hop1"] = sess
+        sess.start_reader()
+        deadline = time.time() + 3.0
+        got: list[bytes] = []
+        while time.time() < deadline:
+            item = sess.take_stdout(0, timeout=0.2)
+            if item == "empty":
+                if sess.closed:
+                    break
+                continue
+            if item is None:
+                break
+            if isinstance(item, bytes):
+                got.append(item)
+        self.assertTrue(sess.closed)
+        self.assertEqual(sess.close_reason, "cli_hop_return")
+        self.assertIsNone(svc.get_session("hop1"))
+        blob = b"".join(got).decode("utf-8", errors="replace")
+        self.assertIn("Connection closed by foreign host", blob)
+        self.assertIn("目标会话已结束", blob)
+
+    def test_cli_hop_note_ignores_same_sysname_until_close_msg(self) -> None:
+        sess = svc.WebcrtSession(
+            session_id="hop2",
+            ne_id="ne1",
+            ne_name="lab",
+            ne_ip="1.2.3.4",
+            protocol="ssh",
+            cols=80,
+            rows=24,
+            cli_hop_guard=True,
+            cli_hop_prompt="<HUAWEI>",
+        )
+        # Same default sysname on target must not trip prompt-only close.
+        self.assertFalse(sess._note_cli_hop_output(b"<HUAWEI>\r\n"))
+        self.assertFalse(sess._cli_hop_seen_other_prompt)
+        self.assertTrue(
+            sess._note_cli_hop_output(b"Connection closed by foreign host\r\n<HUAWEI>\r\n")
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

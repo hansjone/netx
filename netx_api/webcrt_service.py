@@ -21,7 +21,13 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .ne_crypto import CredentialCryptoError
-from .ne_session_factory import close_netmiko_connection, open_netmiko_connection
+from .ne_session_factory import (
+    close_netmiko_connection,
+    extract_cli_prompt_marker,
+    get_cli_hop_guard,
+    open_netmiko_connection,
+    should_close_cli_hop_session,
+)
 
 _log = logging.getLogger("netx.webcrt")
 
@@ -240,9 +246,14 @@ class WebcrtSession:
     # Only the newest attach_gen may consume out_queue / mark detach.
     attach_gen: int = 0
     out_queue: queue.Queue[bytes | None] = field(default_factory=queue.Queue)
+    # Vendor CLI hop (Huawei/ZTE/Cisco): close when nested target session returns to hop.
+    cli_hop_guard: bool = False
+    cli_hop_prompt: str = ""
     _reader: threading.Thread | None = field(default=None, repr=False)
     _write_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _stdout_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _hop_scan_buf: str = field(default="", repr=False)
+    _cli_hop_seen_other_prompt: bool = field(default=False, repr=False)
 
     def touch(self) -> None:
         self.last_activity = time.time()
@@ -336,6 +347,7 @@ class WebcrtSession:
             self.out_queue.put(None)
             return
         channel = getattr(conn, "remote_conn", None)
+        hop_return = False
         try:
             while not self.closed:
                 chunk = b""
@@ -383,8 +395,41 @@ class WebcrtSession:
                 if chunk:
                     self.touch()
                     self.out_queue.put(chunk)
+                    if self.cli_hop_guard and self._note_cli_hop_output(chunk):
+                        hop_return = True
+                        notice = (
+                            "\r\n*** WebCRT: 目标会话已结束，已断开代理连接 "
+                            "(target session ended; closing hop proxy) ***\r\n"
+                        )
+                        self.out_queue.put(notice.encode("utf-8", errors="replace"))
+                        break
         finally:
+            if hop_return and not self.closed:
+                # Prefer registry close for audit + remove; fall back to local close.
+                try:
+                    close_session(self.session_id, reason="cli_hop_return")
+                except Exception:
+                    self.close("cli_hop_return")
             self.out_queue.put(None)
+
+    def _note_cli_hop_output(self, chunk: bytes) -> bool:
+        """Accumulate stdout and return True when nested CLI hop has returned to proxy."""
+        try:
+            text = chunk.decode("utf-8", errors="replace")
+        except Exception:
+            text = str(chunk)
+        self._hop_scan_buf = (self._hop_scan_buf + text)[-12000:]
+        # Track a prompt that differs from the hop so same-sysname labs still need
+        # an explicit nested-close message before we tear down.
+        marker = str(self.cli_hop_prompt or "").strip()
+        last = extract_cli_prompt_marker(self._hop_scan_buf)
+        if last and (not marker or last != marker):
+            self._cli_hop_seen_other_prompt = True
+        return should_close_cli_hop_session(
+            self._hop_scan_buf,
+            self.cli_hop_prompt,
+            seen_other_prompt=self._cli_hop_seen_other_prompt,
+        )
 
     def close(self, reason: str = "closed") -> None:
         if self.closed:
@@ -570,6 +615,7 @@ def create_session(
     except Exception:
         pass
 
+    hop_guard = get_cli_hop_guard(conn)
     sess = WebcrtSession(
         session_id=session_id,
         ne_id=target_id,
@@ -585,6 +631,8 @@ def create_session(
         bootstrap_output=str(bootstrap or "").encode("utf-8", errors="replace"),
         # Only nudge a live prompt when transcript has no recognizable prompt yet.
         needs_live_prompt=not _looks_like_cli_prompt(bootstrap),
+        cli_hop_guard=bool(hop_guard),
+        cli_hop_prompt=str((hop_guard or {}).get("hop_prompt") or ""),
     )
     # Keep bootstrap for WS attach replay; do not rely solely on out_queue (StrictMode remount).
     sess.start_reader()
@@ -602,6 +650,8 @@ def create_session(
         source=str(device.get("source") or ""),
         hop_enabled=bool(creds.get("hop_enabled")),
         hop_vendor=str(creds.get("hop_vendor") or "") if creds.get("hop_enabled") else "",
+        cli_hop_guard=bool(hop_guard),
+        cli_hop_prompt=str((hop_guard or {}).get("hop_prompt") or ""),
         client=client or "",
         active=active_session_count(),
     )
