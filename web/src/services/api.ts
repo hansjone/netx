@@ -330,10 +330,41 @@ export const deleteUmeManagedNe = () =>
 export const managedNeImportTemplateUrl = (format: "xlsx" | "csv" = "xlsx") =>
   `/v1/managed-ne/import/template?format=${format}`;
 
+export const downloadManagedNeImportTemplate = async (format: "xlsx" | "csv" = "xlsx"): Promise<void> => {
+  const path = managedNeImportTemplateUrl(format);
+  const res = await fetch(path, { headers: authHeaders() });
+  if (res.status === 401) {
+    handleUnauthorized(path);
+    throw new Error("unauthorized");
+  }
+  if (!res.ok) throw new Error(`${res.status} template`);
+  const blob = await res.blob();
+  const cd = res.headers.get("content-disposition") || "";
+  const matched = /filename\*?=(?:UTF-8''|")?([^\";]+)/i.exec(cd);
+  const filename = matched
+    ? decodeURIComponent(matched[1].replace(/"/g, ""))
+    : `managed_ne_import_template.${format}`;
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+};
+
 export const importManagedNe = async (file: File): Promise<ManagedNeImportResult> => {
   const form = new FormData();
   form.append("file", file);
-  const res = await fetch("/v1/managed-ne/import", { method: "POST", body: form });
+  const path = "/v1/managed-ne/import";
+  // Do not set content-type — browser must add multipart boundary.
+  const res = await fetch(path, { method: "POST", headers: authHeaders(), body: form });
+  if (res.status === 401) {
+    handleUnauthorized(path);
+    throw new Error("unauthorized");
+  }
   const text = await res.text();
   const data = text ? JSON.parse(text) : {};
   if (!res.ok) throw new Error(String((data as { detail?: string }).detail || `${res.status} import`));

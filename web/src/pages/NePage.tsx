@@ -13,7 +13,7 @@ import {
   fetchManagedNeMeta,
   fetchManagedNeStats,
   importManagedNe,
-  managedNeImportTemplateUrl,
+  downloadManagedNeImportTemplate,
   syncUmeManagedNe,
   updateManagedNe,
   type ManagedNeStats,
@@ -589,7 +589,9 @@ export function NePage() {
               </button>
               <button
                 type="button"
-                onClick={() => window.location.assign(managedNeImportTemplateUrl("xlsx"))}
+                onClick={() => {
+                  void downloadManagedNeImportTemplate("xlsx").catch((err) => showError(String(err)));
+                }}
               >
                 {t("managedNe.downloadTemplate")}
               </button>
