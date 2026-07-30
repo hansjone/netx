@@ -61,8 +61,11 @@ class WebcrtServiceTests(unittest.TestCase):
         # Backspace DEL -> BS
         sess.write_stdin("\x7f")
         self.assertEqual(conn.written[-1], "\x08")
+        # CSI arrows pass through; application-cursor SS3 -> CSI.
         sess.write_stdin("\x1b[D\x1b[C\x1b[A\x1b[B")
-        self.assertEqual(conn.written[-1], "\x02\x06\x10\x0e")
+        self.assertEqual(conn.written[-1], "\x1b[D\x1b[C\x1b[A\x1b[B")
+        sess.write_stdin("\x1bOD")
+        self.assertEqual(conn.written[-1], "\x1b[D")
         sess.resize(120, 40)
         conn.remote_conn.resize_pty.assert_called_with(width=120, height=40)
         sess.close("test")
@@ -73,7 +76,10 @@ class WebcrtServiceTests(unittest.TestCase):
         self.assertEqual(svc.map_network_cli_keys("\x7fab"), "\x08ab")
         self.assertEqual(svc.map_network_cli_keys("\x7fab", device_type="cisco_ios", vendor="Cisco"), "\x08ab")
         self.assertEqual(svc.map_network_cli_keys("\x7fab", device_type="huawei", vendor="Huawei"), "\x08ab")
-        self.assertEqual(svc.map_network_cli_keys("\x1b[D"), "\x02")
+        # Keep CSI left; normalize SS3 application-cursor left.
+        self.assertEqual(svc.map_network_cli_keys("\x1b[D"), "\x1b[D")
+        self.assertEqual(svc.map_network_cli_keys("\x1bOD"), "\x1b[D")
+        self.assertEqual(svc.map_network_cli_keys("\x1bOA\x1bOB\x1bOC\x1bOD"), "\x1b[A\x1b[B\x1b[C\x1b[D")
         self.assertTrue(svc.uses_network_cli_keymap("huawei", "Huawei"))
         self.assertFalse(svc.uses_network_cli_keymap("linux", "bastion"))
         self.assertEqual(svc.map_network_cli_enter("\r", _FakeConn()), "\n")  # type: ignore[arg-type]

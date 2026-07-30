@@ -37,8 +37,13 @@ _reaper_started = False
 # Sentinel for take_stdout timeout (distinct from device EOF None).
 _STDOUT_MISSING = object()
 
-# Network device CLIs often reject xterm CSI arrows over Telnet/SSH.
-# Backspace: map DEL(0x7f) -> BS(0x08), matching common SecureCRT/VT default.
+# Network device CLI key rewrites (SecureCRT-like).
+# - Backspace: DEL(0x7f) -> BS(0x08)
+# - Home/End/Delete: emacs controls (widely accepted)
+# - Arrows: after login many boxes enable DECCKM (application cursor), so xterm
+#   sends SS3 forms (\x1bOD) which VRP/IOS ignore; normalize SS3 -> CSI and
+#   pass CSI through. Do not rewrite arrows to Ctrl-B/F — that leaves the
+#   device cursor stuck at EOL when SS3 was what actually arrived.
 _NETWORK_CLI_KEY_SEQS: tuple[tuple[str, str], ...] = (
     ("\x1b[1~", "\x01"),  # Home -> Ctrl-A
     ("\x1b[3~", "\x04"),  # Delete key -> Ctrl-D
@@ -47,10 +52,10 @@ _NETWORK_CLI_KEY_SEQS: tuple[tuple[str, str], ...] = (
     ("\x1b[F", "\x05"),
     ("\x1bOH", "\x01"),
     ("\x1bOF", "\x05"),
-    ("\x1b[A", "\x10"),  # Up -> Ctrl-P (history)
-    ("\x1b[B", "\x0e"),  # Down -> Ctrl-N
-    ("\x1b[C", "\x06"),  # Right -> Ctrl-F
-    ("\x1b[D", "\x02"),  # Left -> Ctrl-B
+    ("\x1bOA", "\x1b[A"),  # App Up -> CSI Up
+    ("\x1bOB", "\x1b[B"),
+    ("\x1bOC", "\x1b[C"),
+    ("\x1bOD", "\x1b[D"),  # App Left -> CSI Left
     ("\x7f", "\x08"),  # DEL -> BS
 )
 
@@ -65,9 +70,15 @@ def uses_network_cli_keymap(device_type: str = "", vendor: str = "") -> bool:
     return True
 
 
-def map_network_cli_keys(data: str, *, device_type: str = "", vendor: str = "") -> str:
+def map_network_cli_keys(
+    data: str,
+    *,
+    device_type: str = "",
+    vendor: str = "",
+    protocol: str = "",
+) -> str:
     """Rewrite xterm key sequences for network-device CLIs."""
-    del device_type, vendor  # kept for call-site compatibility; keymap is vendor-agnostic
+    del device_type, vendor, protocol  # protocol kept for call-site compatibility
     text = str(data or "")
     if not text:
         return text
@@ -294,7 +305,10 @@ class WebcrtSession:
             return
         if self.cli_keymap:
             text = map_network_cli_keys(
-                text, device_type=self.device_type, vendor=self.vendor
+                text,
+                device_type=self.device_type,
+                vendor=self.vendor,
+                protocol=self.protocol,
             )
             text = map_network_cli_enter(text, self.conn)
         if not text:
@@ -307,7 +321,14 @@ class WebcrtSession:
             try:
                 if channel is not None and hasattr(channel, "send") and callable(channel.send):
                     payload = text.encode(getattr(self.conn, "encoding", None) or "utf-8", errors="replace")
-                    channel.send(payload)
+                    # Paramiko may write partially when the window is full.
+                    view = memoryview(payload)
+                    while len(view):
+                        n = int(channel.send(view) or 0)
+                        if n <= 0:
+                            time.sleep(0.01)
+                            continue
+                        view = view[n:]
                 elif channel is not None and hasattr(channel, "write") and callable(channel.write):
                     encoding = getattr(self.conn, "encoding", None) or "utf-8"
                     channel.write(text.encode(encoding, errors="replace") if isinstance(text, str) else text)
