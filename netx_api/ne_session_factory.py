@@ -242,6 +242,32 @@ def _netmiko_driver_class(device_type: str) -> type:
     return cls
 
 
+def _interactive_driver_class(base_cls: type) -> type:
+    """Subclass that skips Netmiko auto terminal-length / terminal-width commands.
+
+    Collection and MCP exec need paging disabled; WebCRT must not inject those.
+    """
+
+    class _InteractiveSession(base_cls):  # type: ignore[misc,valid-type]
+        def disable_paging(self, *args: Any, **kwargs: Any) -> str:  # noqa: ANN401
+            return ""
+
+        def set_terminal_width(self, *args: Any, **kwargs: Any) -> str:  # noqa: ANN401
+            return ""
+
+    _InteractiveSession.__name__ = f"Interactive{getattr(base_cls, '__name__', 'Netmiko')}"
+    return _InteractiveSession
+
+
+def _build_netmiko_connection(dev: dict[str, Any], *, interactive: bool = False) -> ConnectHandler:
+    """Instantiate Netmiko from connect kwargs; optional interactive skips paging cmds."""
+    if not interactive:
+        return ConnectHandler(**dev)
+    device_type = str(dev.get("device_type") or "").strip()
+    base_cls = _netmiko_driver_class(device_type)
+    return _interactive_driver_class(base_cls)(**dev)
+
+
 def _netmiko_over_ssh_client(
     ssh_client: paramiko.SSHClient,
     *,
@@ -253,11 +279,14 @@ def _netmiko_over_ssh_client(
     enable_secret: str,
     session_timeout: int | None,
     session_log: Any = None,
+    interactive: bool = False,
 ) -> ConnectHandler:
     """Netmiko session over an already-authenticated SSH client (bastion protocol proxy)."""
     base_cls = _netmiko_driver_class(device_type)
+    if interactive:
+        base_cls = _interactive_driver_class(base_cls)
 
-    class _PreauthSession(base_cls):
+    class _PreauthSession(base_cls):  # type: ignore[misc,valid-type]
         def establish_connection(self, width: int = 511, height: int = 1000) -> None:
             from netmiko.channel import SSHChannel
 
@@ -321,6 +350,7 @@ def _connect_direct(
     *,
     session_timeout: int | None = None,
     session_log: Any = None,
+    interactive: bool = False,
 ) -> ConnectHandler:
     device_type = normalize_netmiko_device_type(creds["device_type"], creds["protocol"])
     dev = _base_connect_kwargs(
@@ -333,7 +363,7 @@ def _connect_direct(
         session_timeout=session_timeout,
         session_log=session_log,
     )
-    return ConnectHandler(**dev)
+    return _build_netmiko_connection(dev, interactive=interactive)
 
 
 def _read_channel(conn: ConnectHandler, wait: float = 0.5, max_loops: int = 40) -> str:
@@ -523,6 +553,7 @@ def _connect_via_cli_hop(
     session_log: Any = None,
     cols: int | None = None,
     rows: int | None = None,
+    interactive: bool = False,
 ) -> ConnectHandler:
     """Login to ZTE/Huawei/Cisco hop NE, run CLI jump command, then target secondary auth."""
     hop_host = str(creds.get("hop_host") or "").strip()
@@ -543,7 +574,7 @@ def _connect_via_cli_hop(
         session_timeout=session_timeout or 180,
         session_log=session_log,
     )
-    conn = ConnectHandler(**hop_dev)
+    conn = _build_netmiko_connection(hop_dev, interactive=interactive)
     try:
         # MUST resize before stelnet/telnet — nested session captures hop TTY size at start
         # and often ignores later WINCH. Wrong width → mid-line edit redraw wraps in WebCRT.
@@ -594,6 +625,7 @@ def _connect_via_bastion(
     *,
     session_timeout: int | None = None,
     session_log: Any = None,
+    interactive: bool = False,
 ) -> ConnectHandler:
     """SSH to bastion with composite username; bastion proxies to target (protocol proxy)."""
     hop_host = str(creds.get("hop_host") or "").strip()
@@ -626,6 +658,7 @@ def _connect_via_bastion(
             enable_secret=str(creds.get("enable_secret") or ""),
             session_timeout=session_timeout or 180,
             session_log=session_log,
+            interactive=interactive,
         )
     except Exception:
         if ssh_client is not None:
@@ -656,6 +689,7 @@ def _connect_via_linux_hop(
     *,
     session_timeout: int | None = None,
     session_log: Any = None,
+    interactive: bool = False,
 ) -> ConnectHandler:
     """SSH to Linux bastion, then direct-tcpip tunnel to target (classic ProxyJump-style)."""
     hop_host = str(creds.get("hop_host") or "").strip()
@@ -711,7 +745,7 @@ def _connect_via_linux_hop(
         session_log=session_log,
     )
     dev["sock"] = channel
-    conn = ConnectHandler(**dev)
+    conn = _build_netmiko_connection(dev, interactive=interactive)
     conn._netx_jump_client = jump  # type: ignore[attr-defined]
     return conn
 
@@ -739,19 +773,40 @@ def open_netmiko_connection(
     session_log: Any = None,
     cols: int | None = None,
     rows: int | None = None,
+    interactive: bool = False,
 ) -> ConnectHandler:
-    """Open a Netmiko connection to the target NE (direct or via configured hop)."""
+    """Open a Netmiko connection to the target NE (direct or via configured hop).
+
+    ``interactive=True`` (WebCRT) skips Netmiko's automatic ``terminal length`` /
+    ``terminal width`` (and vendor equivalents). Collection / MCP keep the default.
+    """
     if creds.get("hop_enabled"):
         vendor = _hop_vendor(creds)
         if vendor == "linux":
-            return _connect_via_linux_hop(creds, session_timeout=session_timeout, session_log=session_log)
+            return _connect_via_linux_hop(
+                creds,
+                session_timeout=session_timeout,
+                session_log=session_log,
+                interactive=interactive,
+            )
         if vendor == "bastion":
-            return _connect_via_bastion(creds, session_timeout=session_timeout, session_log=session_log)
+            return _connect_via_bastion(
+                creds,
+                session_timeout=session_timeout,
+                session_log=session_log,
+                interactive=interactive,
+            )
         return _connect_via_cli_hop(
             creds,
             session_timeout=session_timeout,
             session_log=session_log,
             cols=cols,
             rows=rows,
+            interactive=interactive,
         )
-    return _connect_direct(creds, session_timeout=session_timeout, session_log=session_log)
+    return _connect_direct(
+        creds,
+        session_timeout=session_timeout,
+        session_log=session_log,
+        interactive=interactive,
+    )

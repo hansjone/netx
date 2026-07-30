@@ -598,6 +598,7 @@ def create_session(
             session_log=log_buf,
             cols=c,
             rows=r,
+            interactive=True,
         )
     except Exception as exc:
         partial = _session_log_text(log_buf).strip()
