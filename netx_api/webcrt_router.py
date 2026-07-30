@@ -11,7 +11,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSo
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from .db import get_db
+from .db import SessionLocal, get_db
+from .auth_deps import resolve_user_from_token
+from .config import settings
 from .webcrt_service import (
     close_session,
     create_session,
@@ -74,6 +76,23 @@ def api_close_session(session_id: str, request: Request) -> dict[str, Any]:
 
 @router.websocket("/sessions/{session_id}/ws")
 async def websocket_session(websocket: WebSocket, session_id: str) -> None:
+    if bool(settings.auth_enabled):
+        token = str(websocket.query_params.get("access_token") or "").strip()
+        if not token:
+            auth = str(websocket.headers.get("authorization") or "").strip()
+            if auth.lower().startswith("bearer "):
+                token = auth[7:].strip()
+        db = SessionLocal()
+        try:
+            resolved = resolve_user_from_token(db, token) if token else None
+        finally:
+            db.close()
+        if resolved is None:
+            await websocket.close(code=4401)
+            return
+        websocket.state.auth_user = resolved[0]
+        websocket.state.auth_via = resolved[1]
+
     await websocket.accept()
     attach_gen = 0
     try:

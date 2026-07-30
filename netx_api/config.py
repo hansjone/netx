@@ -80,6 +80,15 @@ class Settings(BaseSettings):
     webcrt_connect_timeout_sec: int = 90
     webcrt_attach_timeout_sec: int = 60
     webcrt_data_dir: str = "data/webcrt"
+    # Local app login / audit (lab defaults; override in production)
+    auth_enabled: bool = True
+    # Stable default so JWT survives restarts without .env. Override in production.
+    auth_secret: str = "netx-dev-auth-secret-change-me-in-production-32b"
+    auth_token_ttl_sec: int = 86400
+    bootstrap_admin_username: str = "admin"
+    bootstrap_admin_password: str = "admin123"
+    # Written on first boot for MCP; path relative to cwd / absolute
+    auth_mcp_token_file: str = "data/auth/mcp_token"
 
 
 settings = Settings()

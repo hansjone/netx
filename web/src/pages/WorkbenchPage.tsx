@@ -2,11 +2,13 @@ import { useI18n } from "../i18n";
 import { WorkbenchCardIcon } from "../components/WorkbenchCardIcon";
 import { modulesInSection, type WorkbenchSection } from "../config/modules";
 import { openOrFocusModule } from "../utils/moduleWindows";
+import { useAuth } from "../auth/AuthContext";
 
-const SECTIONS: WorkbenchSection[] = ["monitoring", "operations"];
+const SECTIONS: WorkbenchSection[] = ["monitoring", "operations", "system"];
 
 export function WorkbenchPage() {
   const { t } = useI18n();
+  const { isAdmin } = useAuth();
 
   return (
     <div className="workbench">
@@ -14,7 +16,9 @@ export function WorkbenchPage() {
         <section key={section} className="wb-section">
           <h2 className="wb-section__title">{t(`workbench.${section}`)}</h2>
           <div className="wb-grid">
-            {modulesInSection(section).map((mod) => (
+            {modulesInSection(section)
+              .filter((mod) => !mod.adminOnly || isAdmin)
+              .map((mod) => (
               <button
                 key={mod.moduleId}
                 type="button"

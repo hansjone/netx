@@ -19,6 +19,9 @@ from typing import Any
 import uvicorn
 
 from .ap_client import analyze_with_oclaw, health_with_oclaw
+from .auth_middleware import AuthAuditMiddleware
+from .auth_router import router as auth_router
+from .auth_service import bootstrap_admin_if_needed
 from .config import settings
 from .db import Base, SessionLocal, engine, get_db
 from .collection_router import router as collection_router
@@ -31,6 +34,9 @@ from .models import (
     AiAnalyzeHistory,
     AlarmBatch,
     AlarmNorm,
+    ApiToken,
+    AppUser,
+    AuditLog,
     ImportErrorRow,
     ManagedNE,
     NeCollectionJob,
@@ -122,6 +128,8 @@ from .schemas import (
 )
 
 app = FastAPI(title="netx ops tool", version="0.1.0")
+app.add_middleware(AuthAuditMiddleware)
+app.include_router(auth_router)
 app.include_router(managed_ne_router)
 app.include_router(cli_router)
 app.include_router(collection_router)
@@ -794,6 +802,15 @@ def on_startup() -> None:
     _configure_ume_diag_logging()
     Base.metadata.create_all(bind=engine)
     _migrate_key_alert_rule_schema()
+    # Auth columns must exist before bootstrap / flag_default_password_users.
+    try:
+        with engine.begin() as conn:
+            conn.exec_driver_sql(
+                "ALTER TABLE app_user ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN DEFAULT FALSE"
+            )
+            conn.exec_driver_sql("ALTER TABLE api_token ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP")
+    except Exception:
+        _schedule_log.exception("startup: auth schema migration failed")
     _reset_runtime_pause_flags()
     _fail_stale_running_sync_jobs_on_startup()
     if _needs_startup_alarm_sync_before_ws():
@@ -806,6 +823,10 @@ def on_startup() -> None:
         complete_startup_alarm_sync_gate()
     db = SessionLocal()
     try:
+        try:
+            bootstrap_admin_if_needed(db)
+        except Exception:
+            _schedule_log.exception("startup: auth bootstrap admin failed")
         from .collection_recovery import recover_collection_jobs_on_startup
 
         resumed = recover_collection_jobs_on_startup(db)
@@ -899,6 +920,10 @@ def on_startup() -> None:
             conn.exec_driver_sql("ALTER TABLE ume_alarms_current DROP COLUMN IF EXISTS user_label")
             conn.exec_driver_sql("ALTER TABLE ume_alarms_history DROP COLUMN IF EXISTS ne_name")
             conn.exec_driver_sql("ALTER TABLE ume_alarms_history DROP COLUMN IF EXISTS user_label")
+            conn.exec_driver_sql("ALTER TABLE api_token ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP")
+            conn.exec_driver_sql(
+                "ALTER TABLE app_user ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN DEFAULT FALSE"
+            )
             conn.exec_driver_sql("ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS hop_enabled BOOLEAN DEFAULT FALSE")
             conn.exec_driver_sql("ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS hop_vendor VARCHAR(32) DEFAULT 'zte'")
             conn.exec_driver_sql("ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS hop_host VARCHAR(128) DEFAULT ''")

@@ -8,15 +8,37 @@ import { NePage } from "./pages/NePage";
 import { UmePage } from "./pages/UmePage";
 import { WebcrtPage } from "./pages/WebcrtPage";
 import { TopologyPage } from "./pages/TopologyPage";
+import { LoginPage } from "./pages/LoginPage";
+import { UsersPage } from "./pages/UsersPage";
+import { AuditPage } from "./pages/AuditPage";
+import { ApiTokensPage } from "./pages/ApiTokensPage";
+import { ForceChangePasswordPage } from "./pages/ForceChangePasswordPage";
 import { fetchIntegrationStatus } from "./services/api";
+import { useAuth } from "./auth/AuthContext";
 
-function App() {
+function ProtectedApp() {
+  const { ready, user } = useAuth();
   const integrationsQuery = useQuery({
     queryKey: queryKeys.integrationsStatus,
     queryFn: fetchIntegrationStatus,
     refetchInterval: 5000,
     staleTime: 2000,
+    enabled: ready && Boolean(user) && !user?.must_change_password,
   });
+
+  if (!ready) {
+    return (
+      <div className="login-page">
+        <div className="login-card">Loading…</div>
+      </div>
+    );
+  }
+  if (!user) {
+    return <Navigate to="/login" replace />;
+  }
+  if (user.must_change_password) {
+    return <ForceChangePasswordPage />;
+  }
 
   return (
     <AppLayout
@@ -53,9 +75,21 @@ function App() {
         <Route path="/collect" element={<CollectPage />} />
         <Route path="/webcrt" element={<WebcrtPage />} />
         <Route path="/topology" element={<TopologyPage />} />
+        <Route path="/users" element={<UsersPage />} />
+        <Route path="/audit" element={<AuditPage />} />
+        <Route path="/api-keys" element={<ApiTokensPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </AppLayout>
+  );
+}
+
+function App() {
+  return (
+    <Routes>
+      <Route path="/login" element={<LoginPage />} />
+      <Route path="/*" element={<ProtectedApp />} />
+    </Routes>
   );
 }
 

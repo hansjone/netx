@@ -3,7 +3,7 @@
  */
 
 export type ModuleIconTone = "blue" | "green" | "amber" | "slate";
-export type WorkbenchSection = "monitoring" | "operations";
+export type WorkbenchSection = "monitoring" | "operations" | "system";
 
 export type ModuleDefinition = {
   moduleId: string;
@@ -13,6 +13,7 @@ export type ModuleDefinition = {
   descKey?: string;
   iconTone: ModuleIconTone;
   titleKey: string;
+  adminOnly?: boolean;
 };
 
 export const MODULES: readonly ModuleDefinition[] = [
@@ -61,7 +62,35 @@ export const MODULES: readonly ModuleDefinition[] = [
     iconTone: "blue",
     titleKey: "layout.titleTopology",
   },
-] as const;
+  {
+    moduleId: "users",
+    path: "/users",
+    section: "system",
+    labelKey: "workbench.cards.users",
+    descKey: "workbench.cards.usersDesc",
+    iconTone: "slate",
+    titleKey: "layout.titleUsers",
+    adminOnly: true,
+  },
+  {
+    moduleId: "audit",
+    path: "/audit",
+    section: "system",
+    labelKey: "workbench.cards.audit",
+    descKey: "workbench.cards.auditDesc",
+    iconTone: "amber",
+    titleKey: "layout.titleAudit",
+  },
+  {
+    moduleId: "api-keys",
+    path: "/api-keys",
+    section: "system",
+    labelKey: "workbench.cards.apiKeys",
+    descKey: "workbench.cards.apiKeysDesc",
+    iconTone: "green",
+    titleKey: "layout.titleApiKeys",
+  },
+] as const satisfies readonly ModuleDefinition[];
 
 export function getModuleById(moduleId: string): ModuleDefinition | undefined {
   return MODULES.find((m) => m.moduleId === moduleId);

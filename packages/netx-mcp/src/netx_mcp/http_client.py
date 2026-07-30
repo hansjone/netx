@@ -29,6 +29,25 @@ def api_base_url() -> str:
 def api_headers() -> dict[str, str]:
     h = {"accept": "application/json"}
     tok = (os.getenv("NETX_API_TOKEN") or os.getenv("OCLAW_NETX_API_TOKEN") or "").strip()
+    if not tok:
+        # Lab default written by netx API bootstrap: data/auth/mcp_token
+        candidates = [
+            os.getenv("NETX_MCP_TOKEN_FILE", "").strip(),
+            "data/auth/mcp_token",
+            os.path.join(os.path.dirname(__file__), "..", "..", "..", "data", "auth", "mcp_token"),
+        ]
+        for raw in candidates:
+            if not raw:
+                continue
+            path = os.path.abspath(raw)
+            try:
+                if os.path.isfile(path):
+                    with open(path, encoding="utf-8") as fh:
+                        tok = fh.read().strip()
+                    if tok:
+                        break
+            except Exception:
+                continue
     if tok:
         h["authorization"] = f"Bearer {tok}"
     return h

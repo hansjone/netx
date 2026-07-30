@@ -25,6 +25,44 @@ import type {
   TopologyMapItem,
 } from "../types";
 
+const AUTH_TOKEN_KEY = "netx_access_token";
+
+export const getAuthToken = (): string | null => {
+  try {
+    return localStorage.getItem(AUTH_TOKEN_KEY);
+  } catch {
+    return null;
+  }
+};
+
+export const setAuthToken = (token: string): void => {
+  localStorage.setItem(AUTH_TOKEN_KEY, String(token || ""));
+};
+
+export const clearAuthToken = (): void => {
+  try {
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+  } catch {
+    // ignore
+  }
+};
+
+const authHeaders = (extra?: Record<string, string>): Record<string, string> => {
+  const h: Record<string, string> = { accept: "application/json", ...(extra || {}) };
+  const tok = getAuthToken();
+  if (tok) h.authorization = `Bearer ${tok}`;
+  return h;
+};
+
+const handleUnauthorized = (path: string): void => {
+  if (path.startsWith("/v1/auth/login")) return;
+  clearAuthToken();
+  if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
+    const next = `${window.location.pathname}${window.location.search || ""}`;
+    window.location.assign(`/login?next=${encodeURIComponent(next)}`);
+  }
+};
+
 const parseApiResponse = async (res: Response): Promise<Record<string, unknown>> => {
   const text = await res.text();
   if (!text) return {};
@@ -37,7 +75,11 @@ const parseApiResponse = async (res: Response): Promise<Record<string, unknown>>
 };
 
 export const apiGet = async <T,>(path: string): Promise<T> => {
-  const res = await fetch(path, { headers: { accept: "application/json" } });
+  const res = await fetch(path, { headers: authHeaders() });
+  if (res.status === 401) {
+    handleUnauthorized(path);
+    throw new Error("401 unauthorized");
+  }
   if (!res.ok) throw new Error(`${res.status} ${path}`);
   return (await res.json()) as T;
 };
@@ -45,10 +87,14 @@ export const apiGet = async <T,>(path: string): Promise<T> => {
 export const apiPost = async <T,>(path: string, body: unknown): Promise<T> => {
   const res = await fetch(path, {
     method: "POST",
-    headers: { "content-type": "application/json", accept: "application/json" },
+    headers: authHeaders({ "content-type": "application/json" }),
     body: JSON.stringify(body),
   });
   const data = await parseApiResponse(res);
+  if (res.status === 401) {
+    handleUnauthorized(path);
+    throw new Error(String(data.detail || "unauthorized"));
+  }
   if (!res.ok) throw new Error(String(data.detail || `${res.status} ${path}`));
   return data as T;
 };
@@ -56,17 +102,25 @@ export const apiPost = async <T,>(path: string, body: unknown): Promise<T> => {
 export const apiPatch = async <T,>(path: string, body: unknown): Promise<T> => {
   const res = await fetch(path, {
     method: "PATCH",
-    headers: { "content-type": "application/json", accept: "application/json" },
+    headers: authHeaders({ "content-type": "application/json" }),
     body: JSON.stringify(body),
   });
   const data = await parseApiResponse(res);
+  if (res.status === 401) {
+    handleUnauthorized(path);
+    throw new Error(String(data.detail || "unauthorized"));
+  }
   if (!res.ok) throw new Error(String(data.detail || `${res.status} ${path}`));
   return data as T;
 };
 
 export const apiDelete = async <T,>(path: string): Promise<T> => {
-  const res = await fetch(path, { method: "DELETE", headers: { accept: "application/json" } });
+  const res = await fetch(path, { method: "DELETE", headers: authHeaders() });
   const data = await parseApiResponse(res);
+  if (res.status === 401) {
+    handleUnauthorized(path);
+    throw new Error(String(data.detail || "unauthorized"));
+  }
   if (!res.ok) throw new Error(String(data.detail || `${res.status} ${path}`));
   return data as T;
 };
@@ -74,10 +128,14 @@ export const apiDelete = async <T,>(path: string): Promise<T> => {
 export const apiPut = async <T,>(path: string, body: unknown): Promise<T> => {
   const res = await fetch(path, {
     method: "PUT",
-    headers: { "content-type": "application/json", accept: "application/json" },
+    headers: authHeaders({ "content-type": "application/json" }),
     body: JSON.stringify(body),
   });
   const data = await parseApiResponse(res);
+  if (res.status === 401) {
+    handleUnauthorized(path);
+    throw new Error(String(data.detail || "unauthorized"));
+  }
   if (!res.ok) throw new Error(String(data.detail || `${res.status} ${path}`));
   return data as T;
 };
@@ -369,18 +427,20 @@ export const closeWebcrtSession = (sessionId: string) =>
 export const webcrtWsUrl = (sessionId: string): string => {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
   const path = `/v1/webcrt/sessions/${encodeURIComponent(sessionId)}/ws`;
+  const tok = getAuthToken();
+  const qs = tok ? `?access_token=${encodeURIComponent(tok)}` : "";
   // Optional override, e.g. ws://127.0.0.1:8890
   const override = String((import.meta as ImportMeta & { env?: Record<string, string> }).env?.VITE_NETX_WS_BASE || "").trim();
   if (override) {
-    return `${override.replace(/\/$/, "")}${path}`;
+    return `${override.replace(/\/$/, "")}${path}${qs}`;
   }
   // Vite/preview: HTTP is proxied, but WS proxy is often flaky — hit API directly.
   const port = window.location.port;
   if (port === "5173" || port === "4173") {
     const apiHost = window.location.hostname === "localhost" ? "127.0.0.1" : window.location.hostname;
-    return `${proto}//${apiHost}:8890${path}`;
+    return `${proto}//${apiHost}:8890${path}${qs}`;
   }
-  return `${proto}//${window.location.host}${path}`;
+  return `${proto}//${window.location.host}${path}${qs}`;
 };
 
 export const fetchCliMeta = () => apiGet<CliMeta>("/v1/cli/meta");

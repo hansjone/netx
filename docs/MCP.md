@@ -67,11 +67,16 @@ pip install "git+https://github.com/hansjone/netx.git#subdirectory=packages/netx
 | 变量 | 必填 | 默认 | 说明 |
 |------|------|------|------|
 | `NETX_API_URL` | 否 | `http://127.0.0.1:8890` | netx REST 根地址，可指向远端 |
-| `NETX_API_TOKEN` | 否 | 空 | API 启用 Bearer 时填写 |
+| `NETX_API_TOKEN` | 否 | 空 | Bearer；空则自动读 `data/auth/mcp_token`（API 首次启动生成） |
+| `NETX_MCP_TOKEN_FILE` | 否 | `data/auth/mcp_token` | 默认 token 文件路径 |
 | `NETX_LANG` | 否 | `zh` | `zh` / `en`，影响 API 文案 |
 | `NETX_NE_EXEC_MAX_COMMANDS` | 否 | `5` | `execManagedNe` 单次最多命令数（硬上限 50）；API 与 MCP 需同设 |
 
-本机默认端口时 **可不设任何变量**。
+本机默认端口时 **可不设任何变量**。启用登录后，先启动一次 netx API，会生成 `data/auth/mcp_token`；MCP 会自动带上该 token。若要把 token 写进 Cursor 配置：
+
+```json
+"NETX_API_TOKEN": "nxt_从文件复制的内容"
+```
 
 ---
 
@@ -87,7 +92,6 @@ pip install "git+https://github.com/hansjone/netx.git#subdirectory=packages/netx
       "args": ["-m", "netx_mcp"],
       "env": {
         "NETX_API_URL": "http://127.0.0.1:8890",
-        "NETX_API_TOKEN": "",
         "NETX_LANG": "zh",
         "PYTHONIOENCODING": "utf-8",
         "PYTHONUTF8": "1"
@@ -96,6 +100,8 @@ pip install "git+https://github.com/hansjone/netx.git#subdirectory=packages/netx
   }
 }
 ```
+
+（可选）显式设置 `"NETX_API_TOKEN": "nxt_..."`；不设则读仓库/`cwd` 下的 `data/auth/mcp_token`。
 
 保存后 **重启 Cursor/客户端**，使 MCP 子进程重新拉起。
 

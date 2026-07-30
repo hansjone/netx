@@ -92,7 +92,38 @@ Option B: local `.env` (recommended)
 NETX_DATABASE_URL=postgresql+psycopg://postgres:admin123@127.0.0.1:5432/netx
 NETX_OCLAW_ANALYZE_TOKEN=admin123
 NETX_OCLAW_HEALTH_URL=http://127.0.0.1:8787/admin/api/ops-ai/health
+# App login (required for production)
+NETX_AUTH_ENABLED=true
+NETX_AUTH_SECRET=replace-with-a-long-random-string
+NETX_BOOTSTRAP_ADMIN_USERNAME=admin
+NETX_BOOTSTRAP_ADMIN_PASSWORD=change-me-on-first-boot
 ```
+
+### Auth & audit
+
+**不必改 `.env` 也能用（本机默认）：**
+
+| 项 | 默认值 |
+|----|--------|
+| 登录账号 | `admin` / `admin123` |
+| `NETX_AUTH_SECRET` | 内置开发密钥（生产请改） |
+| MCP Token 文件 | 首次启动写入 `data/auth/mcp_token` |
+
+生产建议在 `.env` 覆盖：
+
+```env
+NETX_AUTH_SECRET=your-long-random-secret
+NETX_BOOTSTRAP_ADMIN_PASSWORD=your-strong-password
+```
+
+- Web：打开 `/login`，用 `admin` / `admin123`（首次建库后生效）。工作台有 **API Key** 页可为不同用户生成 Token 并设置有效期。
+- MCP：优先读环境变量 `NETX_API_TOKEN`；未设置时自动读 `data/auth/mcp_token`（API 启动时生成）。也可在 Cursor MCP 配置里显式填写：
+
+```json
+"NETX_API_TOKEN": "nxt_...."
+```
+
+Token 内容见 `data/auth/mcp_token`，或登录后调用 `POST /v1/api-tokens` 新建。
 
 ### 5) Start services
 

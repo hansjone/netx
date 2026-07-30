@@ -7,6 +7,7 @@ import App from "./App.tsx";
 import { ErrorBoundary } from "./layout/ErrorBoundary";
 import { I18nProvider } from "./i18n";
 import { ToastProvider } from "./hooks/useToast";
+import { AuthProvider } from "./auth/AuthContext";
 
 const queryClient = new QueryClient();
 
@@ -17,7 +18,9 @@ createRoot(document.getElementById("root")!).render(
         <I18nProvider>
           <ToastProvider>
             <BrowserRouter>
-              <App />
+              <AuthProvider>
+                <App />
+              </AuthProvider>
             </BrowserRouter>
           </ToastProvider>
         </I18nProvider>

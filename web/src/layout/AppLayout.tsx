@@ -6,6 +6,7 @@ import { getPageTitleKey, isWorkbenchPath } from "../config/modules";
 import { useAppWindowRegistration } from "../hooks/useAppWindowRegistration";
 import { useI18n } from "../i18n";
 import { returnToWorkbench } from "../utils/workbench";
+import { useAuth } from "../auth/AuthContext";
 
 type ConnLevel = "up" | "down" | "unknown";
 
@@ -26,6 +27,7 @@ type Props = {
 export function AppLayout({ connections, children }: Props) {
   const { t } = useI18n();
   const { pathname } = useLocation();
+  const { user, logout } = useAuth();
   const onWorkbench = isWorkbenchPath(pathname);
   const pageTitle = t(getPageTitleKey(pathname));
   const netxSuffix =
@@ -86,6 +88,20 @@ export function AppLayout({ connections, children }: Props) {
             {t("layout.oclawBridge")}: {connections.oclawBridge}
             {oclawSuffix}
           </span>
+          {user ? (
+            <span className="conn-pill conn-pill--on-brand conn-pill--up" title={user.role}>
+              {user.username}
+            </span>
+          ) : null}
+          {user ? (
+            <button
+              type="button"
+              className="header-menu__trigger header-menu__trigger--on-brand"
+              onClick={() => void logout()}
+            >
+              {t("auth.logout")}
+            </button>
+          ) : null}
           <HeaderMenu />
         </div>
       </header>
