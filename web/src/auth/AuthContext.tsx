@@ -7,7 +7,14 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { apiGet, apiPost, clearAuthToken, getAuthToken, setAuthToken } from "../services/api";
+import {
+  AUTH_TOKEN_KEY,
+  apiGet,
+  apiPost,
+  clearAuthToken,
+  getAuthToken,
+  setAuthToken,
+} from "../services/api";
 
 export type AuthUser = {
   id: string;
@@ -60,6 +67,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       await refreshMe();
       setReady(true);
     })();
+  }, [refreshMe]);
+
+  // Other tabs keep React auth state until they hear localStorage change.
+  // `storage` fires only in *other* documents — used to sync logout/login.
+  useEffect(() => {
+    const onStorage = (ev: StorageEvent) => {
+      if (ev.storageArea && ev.storageArea !== localStorage) return;
+      if (ev.key !== null && ev.key !== AUTH_TOKEN_KEY) return;
+      if (ev.key === null || ev.newValue == null || ev.newValue === "") {
+        setToken(null);
+        setUser(null);
+        return;
+      }
+      void refreshMe();
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
   }, [refreshMe]);
 
   const login = useCallback(async (username: string, password: string) => {

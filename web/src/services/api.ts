@@ -25,7 +25,7 @@ import type {
   TopologyMapItem,
 } from "../types";
 
-const AUTH_TOKEN_KEY = "netx_access_token";
+export const AUTH_TOKEN_KEY = "netx_access_token";
 
 export const getAuthToken = (): string | null => {
   try {
