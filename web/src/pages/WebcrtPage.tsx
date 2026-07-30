@@ -390,17 +390,25 @@ export function WebcrtPage() {
                   <span>
                     {deviceLabel(tab.target)}
                     {tab.status === "connecting" ? ` (${t("webcrt.status.connecting")})` : ""}
-                    <button
-                      type="button"
+                    <span
+                      role="button"
+                      tabIndex={0}
                       className="webcrt-tabs__close"
                       aria-label={t("webcrt.disconnect")}
                       onClick={(e) => {
                         e.stopPropagation();
                         void closeTab(tab.key);
                       }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          void closeTab(tab.key);
+                        }
+                      }}
                     >
                       ×
-                    </button>
+                    </span>
                   </span>
                 </div>
               ))}
