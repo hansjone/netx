@@ -410,6 +410,8 @@ export type WebcrtSessionCreateResult = {
   cols: number;
   rows: number;
   ws_path: string;
+  /** True when session used a vendor CLI hop (nested stelnet/telnet). */
+  cli_hop?: boolean;
 };
 
 export const createWebcrtSession = (body: {

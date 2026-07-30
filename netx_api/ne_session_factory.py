@@ -497,11 +497,32 @@ def _hop_netmiko_device_type(vendor: str, hop_protocol: str) -> str:
     return normalize_netmiko_device_type(base, hop_protocol)
 
 
+def _resize_pty(conn: ConnectHandler, cols: int | None = None, rows: int | None = None) -> None:
+    """Set SSH PTY size so nested telnet/stelnet inherits the interactive terminal geometry.
+
+    Netmiko defaults to 511x1000. If a CLI hop jump runs at that size and WebCRT is ~80
+    columns, mid-line edit redraws (spaces / clear-to-EOL) wrap and garble the display.
+    """
+    if cols is None and rows is None:
+        return
+    channel = getattr(conn, "remote_conn", None)
+    if channel is None or not hasattr(channel, "resize_pty"):
+        return
+    c = max(20, min(500, int(cols if cols is not None else 80)))
+    r = max(5, min(200, int(rows if rows is not None else 24)))
+    try:
+        channel.resize_pty(width=c, height=r)
+    except Exception:
+        _log.debug("resize_pty failed cols=%s rows=%s", c, r, exc_info=True)
+
+
 def _connect_via_cli_hop(
     creds: dict[str, Any],
     *,
     session_timeout: int | None = None,
     session_log: Any = None,
+    cols: int | None = None,
+    rows: int | None = None,
 ) -> ConnectHandler:
     """Login to ZTE/Huawei/Cisco hop NE, run CLI jump command, then target secondary auth."""
     hop_host = str(creds.get("hop_host") or "").strip()
@@ -524,6 +545,9 @@ def _connect_via_cli_hop(
     )
     conn = ConnectHandler(**hop_dev)
     try:
+        # MUST resize before stelnet/telnet — nested session captures hop TTY size at start
+        # and often ignores later WINCH. Wrong width → mid-line edit redraw wraps in WebCRT.
+        _resize_pty(conn, cols, rows)
         pre = _read_channel(conn, wait=0.5)
         hop_prompt = extract_cli_prompt_marker(pre)
         if not hop_prompt:
@@ -713,6 +737,8 @@ def open_netmiko_connection(
     *,
     session_timeout: int | None = None,
     session_log: Any = None,
+    cols: int | None = None,
+    rows: int | None = None,
 ) -> ConnectHandler:
     """Open a Netmiko connection to the target NE (direct or via configured hop)."""
     if creds.get("hop_enabled"):
@@ -721,5 +747,11 @@ def open_netmiko_connection(
             return _connect_via_linux_hop(creds, session_timeout=session_timeout, session_log=session_log)
         if vendor == "bastion":
             return _connect_via_bastion(creds, session_timeout=session_timeout, session_log=session_log)
-        return _connect_via_cli_hop(creds, session_timeout=session_timeout, session_log=session_log)
+        return _connect_via_cli_hop(
+            creds,
+            session_timeout=session_timeout,
+            session_log=session_log,
+            cols=cols,
+            rows=rows,
+        )
     return _connect_direct(creds, session_timeout=session_timeout, session_log=session_log)

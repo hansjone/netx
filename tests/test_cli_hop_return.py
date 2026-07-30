@@ -62,6 +62,7 @@ class CliHopReturnDetectionTests(unittest.TestCase):
         from netx_api.ne_session_factory import _connect_via_cli_hop
 
         conn = MagicMock()
+        conn.remote_conn = MagicMock()
         mock_ch.return_value = conn
         mock_read.side_effect = ["<HOP>\n", ""]
         mock_auth.return_value = None
@@ -79,8 +80,10 @@ class CliHopReturnDetectionTests(unittest.TestCase):
             "ip_address": "10.0.0.2",
             "port": 22,
         }
-        out = _connect_via_cli_hop(creds)
+        out = _connect_via_cli_hop(creds, cols=120, rows=40)
         self.assertIs(out, conn)
+        # Nested stelnet must see WebCRT geometry, not Netmiko's default 511x1000.
+        conn.remote_conn.resize_pty.assert_called_with(width=120, height=40)
         guard = get_cli_hop_guard(conn)
         self.assertIsNotNone(guard)
         assert guard is not None

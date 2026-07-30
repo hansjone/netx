@@ -593,7 +593,11 @@ def create_session(
     log_buf = io.BytesIO()
     try:
         conn = open_netmiko_connection(
-            creds, session_timeout=connect_timeout, session_log=log_buf
+            creds,
+            session_timeout=connect_timeout,
+            session_log=log_buf,
+            cols=c,
+            rows=r,
         )
     except Exception as exc:
         partial = _session_log_text(log_buf).strip()
@@ -686,6 +690,7 @@ def create_session(
         "cols": sess.cols,
         "rows": sess.rows,
         "ws_path": f"/v1/webcrt/sessions/{session_id}/ws",
+        "cli_hop": bool(hop_guard),
     }
 
 

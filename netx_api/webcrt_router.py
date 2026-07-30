@@ -115,6 +115,7 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
             "rows": sess.rows,
             "device_type": sess.device_type,
             "vendor": sess.vendor,
+            "cli_hop": bool(sess.cli_hop_guard),
         }
     )
 

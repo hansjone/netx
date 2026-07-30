@@ -122,6 +122,7 @@ class WebcrtServiceTests(unittest.TestCase):
         with patch.object(svc.settings, "webcrt_max_sessions", 1):
             out = svc.create_session(db, ne_id="ne-a", cols=80, rows=24, client="test")
             self.assertIn("session_id", out)
+            self.assertFalse(out.get("cli_hop"))
             with self.assertRaises(HTTPException) as ctx:
                 svc.create_session(db, ne_id="ne-a", cols=80, rows=24, client="test")
             self.assertEqual(ctx.exception.status_code, 429)
@@ -179,6 +180,7 @@ class WebcrtServiceTests(unittest.TestCase):
         self.assertIn("session_log", mock_open.call_args.kwargs)
         fake.remote_conn.resize_pty.assert_called()
         self.assertEqual(out["ne_id"], "ne-hop")
+        self.assertFalse(out.get("cli_hop"))  # bastion hop is not vendor CLI hop guard
         sess = svc.get_session(out["session_id"])
         assert sess is not None
         boot = sess.bootstrap_output.decode("utf-8", errors="replace")
@@ -188,6 +190,46 @@ class WebcrtServiceTests(unittest.TestCase):
         before = list(fake.written)
         sess.write_stdin("\n")
         self.assertEqual(fake.written[len(before) :], ["\n"])
+        svc.close_session(out["session_id"], reason="test")
+
+    @patch.object(svc, "_audit")
+    @patch.object(svc, "get_cli_hop_guard")
+    @patch.object(svc, "open_netmiko_connection")
+    @patch("netx_api.cli_resolve.resolve_cli_target")
+    def test_create_session_reports_cli_hop(
+        self,
+        mock_resolve: MagicMock,
+        mock_open: MagicMock,
+        mock_guard: MagicMock,
+        _mock_audit: MagicMock,
+    ) -> None:
+        mock_resolve.return_value = (
+            {
+                "username": "u",
+                "password": "p",
+                "hop_enabled": True,
+                "hop_vendor": "huawei",
+                "ip_address": "10.0.0.3",
+                "protocol": "ssh",
+            },
+            {
+                "id": "ne-cli-hop",
+                "name": "C",
+                "ip_address": "10.0.0.3",
+                "protocol": "ssh",
+                "source": "managed",
+            },
+        )
+        mock_open.side_effect = lambda *a, **k: _FakeConn()
+        mock_guard.return_value = {"hop_prompt": "<HOP>", "hop_vendor": "huawei", "hop_host": "1.1.1.1"}
+        out = svc.create_session(MagicMock(), ne_id="ne-cli-hop", cols=100, rows=30, client="test")
+        self.assertTrue(out.get("cli_hop"))
+        self.assertEqual(mock_open.call_args.kwargs.get("cols"), 100)
+        self.assertEqual(mock_open.call_args.kwargs.get("rows"), 30)
+        sess = svc.get_session(out["session_id"])
+        assert sess is not None
+        self.assertTrue(sess.cli_hop_guard)
+        self.assertEqual(sess.cli_hop_prompt, "<HOP>")
         svc.close_session(out["session_id"], reason="test")
 
     @patch.object(svc, "_audit")
