@@ -677,14 +677,14 @@ export function TopologyPage() {
     if (managedId) {
       openOrFocusModule({
         moduleId: "network",
-        path: `/network/webcrt?ne_id=${encodeURIComponent(managedId)}`,
+        path: `/webcrt?ne_id=${encodeURIComponent(managedId)}`,
       });
       return;
     }
     if (umeId) {
       openOrFocusModule({
         moduleId: "network",
-        path: `/network/webcrt?ne_id=${encodeURIComponent(umeId)}&source=ume`,
+        path: `/webcrt?ne_id=${encodeURIComponent(umeId)}&source=ume`,
       });
       return;
     }

@@ -781,7 +781,7 @@ export function NePage() {
                     onClick={() =>
                       openOrFocusModule({
                         moduleId: "network",
-                        path: `/network/webcrt?ne_id=${encodeURIComponent(row.id)}`,
+                        path: `/webcrt?ne_id=${encodeURIComponent(row.id)}`,
                       })
                     }
                     title={t("managedNe.openTerminal")}

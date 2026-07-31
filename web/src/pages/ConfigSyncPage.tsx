@@ -235,46 +235,43 @@ export function ConfigSyncPage() {
 
       <div className="panel" style={{ marginBottom: 16 }}>
         <h3>{t("configSync.policyTitle")}</h3>
-        <div className="filter-inline" style={{ flexWrap: "wrap", gap: 12 }}>
-          <label>
-            <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />{" "}
-            {t("configSync.enabled")}
+        <div className="config-sync-policy-row">
+          <label className="config-sync-policy-check">
+            <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
+            <span>{t("configSync.enabled")}</span>
           </label>
-          <label>
-            {t("configSync.intervalDays")}{" "}
+          <label className="config-sync-policy-field">
+            <span>{t("configSync.intervalDays")}</span>
             <input
               type="number"
               min={1}
               max={365}
               value={intervalDays}
               onChange={(e) => setIntervalDays(Math.max(1, Number(e.target.value) || 1))}
-              style={{ width: 72 }}
             />
           </label>
-          <label>
-            {t("configSync.concurrency")}{" "}
+          <label className="config-sync-policy-field">
+            <span>{t("configSync.concurrency")}</span>
             <input
               type="number"
               min={1}
               max={30}
               value={concurrency}
               onChange={(e) => setConcurrency(Math.max(1, Math.min(30, Number(e.target.value) || 1)))}
-              style={{ width: 72 }}
             />
           </label>
-          <label>
-            {t("configSync.historyKeep")}{" "}
+          <label className="config-sync-policy-field">
+            <span>{t("configSync.historyKeep")}</span>
             <input
               type="number"
               min={0}
               max={30}
               value={historyKeep}
               onChange={(e) => setHistoryKeep(Math.max(0, Math.min(30, Number(e.target.value) || 0)))}
-              style={{ width: 72 }}
             />
           </label>
-          <label>
-            {t("configSync.scope")}{" "}
+          <label className="config-sync-policy-field">
+            <span>{t("configSync.scope")}</span>
             <select
               value={scopeMode}
               onChange={(e) => setScopeMode(e.target.value === "selected" ? "selected" : "all")}

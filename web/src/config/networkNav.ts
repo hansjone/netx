@@ -24,10 +24,8 @@ export const NETWORK_NAV: readonly NetworkNavGroup[] = [
     labelKey: "network.nav.detail",
     items: [
       { id: "devices", path: "/network/devices", labelKey: "network.nav.devices", group: "detail" },
-      { id: "topology", path: "/network/topology", labelKey: "network.nav.topology", group: "detail" },
       { id: "alarms", path: "/network/alarms", labelKey: "network.nav.alarms", group: "detail" },
       { id: "configs", path: "/network/configs", labelKey: "network.nav.configs", group: "detail" },
-      { id: "webcrt", path: "/network/webcrt", labelKey: "network.nav.webcrt", group: "detail" },
     ],
   },
   {

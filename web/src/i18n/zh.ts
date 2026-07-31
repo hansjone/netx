@@ -24,7 +24,7 @@ const zh = {
       umeSync: "UME同步",
       umeSyncDesc: "UME 告警同步、订阅与清单",
       network: "网络管理",
-      networkDesc: "设备、拓扑、告警、WebCRT 与监控任务",
+      networkDesc: "设备、告警、配置同步与监控任务",
       managedNe: "网元管理",
       managedNeDesc: "多厂商 SSH/Telnet 网元与连通性测试",
       collect: "批量采集",

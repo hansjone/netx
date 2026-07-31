@@ -35,17 +35,17 @@ src/
 | `/ume` | UME 同步 | `ume` |
 | `/network` | 网络管理（左栏 + 子路由） | `network` |
 | `/network/devices` | 设备列表 | `network` |
-| `/network/topology` | 拓扑信息 | `network` |
 | `/network/alarms` | 告警信息 | `network` |
 | `/network/configs` | 配置信息（同步快照） | `network` |
-| `/network/webcrt` | WebCRT 终端 | `network` |
+| `/network/webcrt` | redirect → `/webcrt`（保留 query） | — |
+| `/network/topology` | redirect → `/topology` | — |
 | `/network/tasks/collect` | 采集任务 | `network` |
 | `/network/tasks/config-sync` | 配置同步 | `network` |
 | `/network/tasks/port-traffic` | 端口流量（占位） | `network` |
+| `/topology` | 拓扑管理 | `topology` |
+| `/webcrt` | WebCRT 终端 | `webcrt` |
 | `/ne` | redirect → `/network/devices` | — |
 | `/collect` | redirect → `/network/tasks/collect` | — |
-| `/topology` | redirect → `/network/topology` | — |
-| `/webcrt` | redirect → `/network/webcrt`（保留 query） | — |
 
 菜单树见 `config/networkNav.ts`。**新增网络子页：**
 

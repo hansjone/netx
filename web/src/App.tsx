@@ -21,10 +21,10 @@ import { ForceChangePasswordPage } from "./pages/ForceChangePasswordPage";
 import { fetchIntegrationStatus } from "./services/api";
 import { useAuth } from "./auth/AuthContext";
 
-/** Preserve ?ne_id=… when redirecting legacy /webcrt into the network module. */
-function WebcrtLegacyRedirect() {
+/** Preserve query when redirecting legacy /network/webcrt → /webcrt. */
+function NetworkWebcrtRedirect() {
   const { search } = useLocation();
-  return <Navigate to={`/network/webcrt${search}`} replace />;
+  return <Navigate to={`/webcrt${search}`} replace />;
 }
 
 function ProtectedApp() {
@@ -82,21 +82,21 @@ function ProtectedApp() {
         <Route path="/" element={<WorkbenchPage />} />
         <Route path="/workbench" element={<Navigate to="/" replace />} />
         <Route path="/ume" element={<UmePage />} />
+        <Route path="/topology" element={<TopologyPage />} />
+        <Route path="/webcrt" element={<WebcrtPage />} />
         <Route path="/network" element={<NetworkLayout />}>
           <Route index element={<Navigate to="devices" replace />} />
           <Route path="devices" element={<NePage />} />
-          <Route path="topology" element={<TopologyPage />} />
           <Route path="alarms" element={<NetworkAlarmsPage />} />
           <Route path="configs" element={<NetworkConfigsPage />} />
-          <Route path="webcrt" element={<WebcrtPage />} />
+          <Route path="topology" element={<Navigate to="/topology" replace />} />
+          <Route path="webcrt" element={<NetworkWebcrtRedirect />} />
           <Route path="tasks/collect" element={<CollectPage />} />
           <Route path="tasks/config-sync" element={<ConfigSyncPage />} />
           <Route path="tasks/port-traffic" element={<NetworkPlaceholderPage kind="port-traffic" />} />
         </Route>
         <Route path="/ne" element={<Navigate to="/network/devices" replace />} />
         <Route path="/collect" element={<Navigate to="/network/tasks/collect" replace />} />
-        <Route path="/topology" element={<Navigate to="/network/topology" replace />} />
-        <Route path="/webcrt" element={<WebcrtLegacyRedirect />} />
         <Route path="/users" element={<UsersPage />} />
         <Route path="/audit" element={<AuditPage />} />
         <Route path="/api-keys" element={<ApiTokensPage />} />

@@ -798,6 +798,52 @@ pre {
   width: 100%;
 }
 
+.config-sync-policy-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+}
+
+.config-sync-policy-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 13px;
+  color: #334155;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.config-sync-policy-check input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  flex-shrink: 0;
+}
+
+.config-sync-policy-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 13px;
+  color: #334155;
+  white-space: nowrap;
+}
+
+.config-sync-policy-field input[type="number"] {
+  width: 64px;
+  margin: 0;
+}
+
+.config-sync-policy-field select {
+  width: auto;
+  min-width: 110px;
+  margin: 0;
+}
+
 .ne-stats-card {
   padding: 12px 14px;
 }
@@ -2708,12 +2754,13 @@ pre {
   width: 28px;
   height: 28px;
   padding: 0;
-  border: 1px solid #cbd5e1;
+  border: 0;
   border-radius: 6px;
-  background: #fff;
-  color: #475569;
+  background: transparent;
+  color: #64748b;
   cursor: pointer;
   line-height: 1;
+  box-shadow: none;
 }
 
 .app-main .network-nav__collapse-btn:hover,

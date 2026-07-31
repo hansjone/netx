@@ -125,7 +125,7 @@ export function NetworkConfigsPage() {
                   {t("networkConfigs.view")}
                 </button>
                 <Link
-                  to={`/network/webcrt?${row.source === "ume" ? "ume_ne_id" : "ne_id"}=${encodeURIComponent(row.target_id)}`}
+                  to={`/webcrt?${row.source === "ume" ? "ume_ne_id" : "ne_id"}=${encodeURIComponent(row.target_id)}`}
                   style={{ marginLeft: 8 }}
                 >
                   WebCRT

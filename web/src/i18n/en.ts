@@ -24,7 +24,7 @@ const en = {
       umeSync: "UME Sync",
       umeSyncDesc: "UME alarms, subscription & inventory",
       network: "Network Management",
-      networkDesc: "Devices, topology, alarms, WebCRT, and monitoring tasks",
+      networkDesc: "Devices, alarms, config sync, and monitoring tasks",
       managedNe: "NE Management",
       managedNeDesc: "Multi-vendor SSH/Telnet NEs & connectivity test",
       collect: "Batch Collect",
