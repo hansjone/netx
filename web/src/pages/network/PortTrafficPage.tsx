@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import {
   collectPortTrafficNow,
   createPortTrafficTask,
@@ -17,13 +17,14 @@ import {
 import { queryKeys } from "../../constants/queryKeys";
 import { useI18n } from "../../i18n";
 import { useToast } from "../../hooks/useToast";
-import type { CliTargetItem, PortTrafficDiscoverPort, PortTrafficTargetIn } from "../../types";
+import type { CliTargetItem, PortTrafficDiscoverPort, PortTrafficSamplePoint, PortTrafficTargetIn } from "../../types";
 import { pageCount } from "../../utils/display";
 import { formatSystemTime } from "../../utils/time";
 import { PortTrafficWall } from "./PortTrafficWall";
 
 const POLL_MS = 5000;
 const TARGET_PAGE_SIZE = 20;
+const EMPTY_COMPARE_POINTS: PortTrafficSamplePoint[] = [];
 
 type PortPick = PortTrafficTargetIn & { key: string };
 type BaselineMode = "off" | "shift" | "day" | "week" | "custom";
@@ -136,11 +137,18 @@ export function PortTrafficPage() {
       }),
     enabled: view === "wall" && Boolean(wallTargetId),
     staleTime: 1000,
+    placeholderData: keepPreviousData,
     refetchInterval: (q) => {
       const n = q.state.data?.current?.length ?? 0;
       return n === 0 ? 2500 : POLL_MS;
     },
   });
+
+  const wallPoints = compareQuery.data?.current ?? EMPTY_COMPARE_POINTS;
+  const wallBaselinePoints =
+    baseline === "off" && !mapBaselineTargetId
+      ? EMPTY_COMPARE_POINTS
+      : (compareQuery.data?.baseline ?? EMPTY_COMPARE_POINTS);
 
   const invalidateAll = () => {
     void queryClient.invalidateQueries({ queryKey: queryKeys.portTrafficTasksAll });
@@ -788,12 +796,8 @@ export function PortTrafficPage() {
           ) : null}
           <PortTrafficWall
             target={selectedWallTarget}
-            points={compareQuery.data?.current || []}
-            baselinePoints={
-              baseline === "off" && !mapBaselineTargetId
-                ? []
-                : compareQuery.data?.baseline || []
-            }
+            points={wallPoints}
+            baselinePoints={wallBaselinePoints}
             rangeLabel={`${rangeHours}h${
               baseline === "off"
                 ? ""

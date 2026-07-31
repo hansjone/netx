@@ -65,6 +65,8 @@ function chartSize(el: HTMLElement): { width: number; height: number } {
   return { width, height };
 }
 
+const EMPTY_POINTS: PortTrafficSamplePoint[] = [];
+
 type Props = {
   target: PortTrafficTarget | null;
   points: PortTrafficSamplePoint[];
@@ -77,7 +79,7 @@ type Props = {
 export function PortTrafficWall({
   target,
   points,
-  baselinePoints = [],
+  baselinePoints = EMPTY_POINTS,
   rangeLabel,
   loading,
   hint,
@@ -287,11 +289,25 @@ export function PortTrafficWall({
   useEffect(() => {
     const plot = plotRef.current;
     if (!plot) return;
+    // Always setData with resetScales; toggling series.show before setData can leave
+    // uPlot stuck on a blank [0,1] y-range until a later update.
+    const data = toAlignedSeries(points, baselinePoints);
     const showBaseline = baselinePoints.length > 0;
-    plot.setSeries(3, { show: showBaseline });
-    plot.setSeries(4, { show: showBaseline });
-    plot.setData(toAlignedSeries(points, baselinePoints));
-    if (mountRef.current) plot.setSize(chartSize(mountRef.current));
+    plot.setData(data, true);
+    const s3 = Boolean(plot.series[3]?.show);
+    const s4 = Boolean(plot.series[4]?.show);
+    if (s3 !== showBaseline || s4 !== showBaseline) {
+      plot.setSeries(3, { show: showBaseline }, false);
+      plot.setSeries(4, { show: showBaseline }, false);
+    }
+    const el = mountRef.current;
+    if (el) {
+      // Legend show/hide changes layout; size after paint.
+      requestAnimationFrame(() => {
+        if (!plotRef.current || !mountRef.current) return;
+        plotRef.current.setSize(chartSize(mountRef.current));
+      });
+    }
   }, [points, baselinePoints]);
 
   const empty = points.length === 0 && baselinePoints.length === 0;
