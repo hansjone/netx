@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 import type { PortTrafficSamplePoint, PortTrafficTarget } from "../../types";
@@ -47,14 +47,6 @@ function chartSize(el: HTMLElement): { width: number; height: number } {
   return { width, height };
 }
 
-type HoverKpi = {
-  tsSec: number;
-  inBps: number;
-  outBps: number;
-  inUtil: number;
-  outUtil: number;
-};
-
 type Props = {
   target: PortTrafficTarget | null;
   points: PortTrafficSamplePoint[];
@@ -69,13 +61,10 @@ export function PortTrafficWall({ target, points, rangeLabel, loading, hint }: P
   const plotRef = useRef<uPlot | null>(null);
   const tipRef = useRef<HTMLDivElement | null>(null);
   const pointsRef = useRef(points);
-  const hoverIdxRef = useRef<number | null>(null);
-  const [hover, setHover] = useState<HoverKpi | null>(null);
-
   pointsRef.current = points;
 
   const latest = points.length ? points[points.length - 1] : null;
-  const latestKpi = useMemo(() => {
+  const kpi = useMemo(() => {
     const bw = latest?.bw_bps || target?.bw_bps || 0;
     return {
       bw,
@@ -87,27 +76,11 @@ export function PortTrafficWall({ target, points, rangeLabel, loading, hint }: P
     };
   }, [latest, target]);
 
-  const kpi = hover
-    ? {
-        bw: latestKpi.bw,
-        inBps: hover.inBps,
-        outBps: hover.outBps,
-        inUtil: hover.inUtil,
-        outUtil: hover.outUtil,
-        hovering: true as const,
-      }
-    : {
-        ...latestKpi,
-        hovering: false as const,
-      };
-
   useEffect(() => {
     const el = mountRef.current;
     if (!el) return;
 
     const { width, height } = chartSize(el);
-    const valueFmt = (_u: uPlot, v: number | null | undefined) =>
-      v == null || Number.isNaN(v) ? "—" : `${formatBps(v)} bit/s`;
 
     const placeTip = (u: uPlot, left: number, top: number) => {
       const tip = tipRef.current;
@@ -129,16 +102,13 @@ export function PortTrafficWall({ target, points, rangeLabel, loading, hint }: P
       width,
       height,
       series: [
-        {
-          value: (_u, raw) => (raw == null ? "—" : formatHoverTime(Number(raw))),
-        },
+        {},
         {
           label: "In",
           stroke: "#2dd4bf",
           width: 2,
           fill: "rgba(45, 212, 191, 0.12)",
           points: { show: true, size: 5, fill: "#2dd4bf" },
-          value: valueFmt,
         },
         {
           label: "Out",
@@ -146,7 +116,6 @@ export function PortTrafficWall({ target, points, rangeLabel, loading, hint }: P
           width: 2,
           fill: "rgba(245, 158, 11, 0.10)",
           points: { show: true, size: 5, fill: "#f59e0b" },
-          value: valueFmt,
         },
       ],
       axes: [
@@ -180,7 +149,8 @@ export function PortTrafficWall({ target, points, rangeLabel, loading, hint }: P
           },
         },
       },
-      legend: { show: true, live: true },
+      // Color keys only — no live numeric values (those are in the hover tip).
+      legend: { show: true, live: false },
       cursor: {
         drag: { x: true, y: false },
         focus: { prox: 32 },
@@ -195,10 +165,6 @@ export function PortTrafficWall({ target, points, rangeLabel, loading, hint }: P
             const top = u.cursor.top ?? 0;
 
             if (idx == null || idx < 0 || !u.data[0]?.length) {
-              if (hoverIdxRef.current !== null) {
-                hoverIdxRef.current = null;
-                setHover(null);
-              }
               if (tip) tip.style.display = "none";
               return;
             }
@@ -211,28 +177,17 @@ export function PortTrafficWall({ target, points, rangeLabel, loading, hint }: P
               return d && Math.floor(d.getTime() / 1000) === tsSec;
             });
 
-            if (tip) {
-              tip.style.display = "block";
-              tip.innerHTML = [
-                `<div class="pt-wall__tip-time">${formatHoverTime(tsSec)}</div>`,
-                `<div class="pt-wall__tip-row pt-wall__tip-row--in"><span>In</span><strong>${formatBps(inBps)} bit/s</strong></div>`,
-                `<div class="pt-wall__tip-row pt-wall__tip-row--out"><span>Out</span><strong>${formatBps(outBps)} bit/s</strong></div>`,
-                sample
-                  ? `<div class="pt-wall__tip-row"><span>Util</span><strong>${Number(sample.in_util_pct || 0).toFixed(1)}% / ${Number(sample.out_util_pct || 0).toFixed(1)}%</strong></div>`
-                  : "",
-              ].join("");
-              placeTip(u, left, top);
-            }
-
-            if (hoverIdxRef.current === idx) return;
-            hoverIdxRef.current = idx;
-            setHover({
-              tsSec,
-              inBps,
-              outBps,
-              inUtil: Number(sample?.in_util_pct ?? 0),
-              outUtil: Number(sample?.out_util_pct ?? 0),
-            });
+            if (!tip) return;
+            tip.style.display = "block";
+            tip.innerHTML = [
+              `<div class="pt-wall__tip-time">${formatHoverTime(tsSec)}</div>`,
+              `<div class="pt-wall__tip-row pt-wall__tip-row--in"><span>In</span><strong>${formatBps(inBps)} bit/s</strong></div>`,
+              `<div class="pt-wall__tip-row pt-wall__tip-row--out"><span>Out</span><strong>${formatBps(outBps)} bit/s</strong></div>`,
+              sample
+                ? `<div class="pt-wall__tip-row"><span>Util</span><strong>${Number(sample.in_util_pct || 0).toFixed(1)}% / ${Number(sample.out_util_pct || 0).toFixed(1)}%</strong></div>`
+                : "",
+            ].join("");
+            placeTip(u, left, top);
           },
         ],
       },
@@ -241,8 +196,6 @@ export function PortTrafficWall({ target, points, rangeLabel, loading, hint }: P
     plotRef.current = new uPlot(opts, [[], [], []], el);
 
     const onLeave = () => {
-      hoverIdxRef.current = null;
-      setHover(null);
       if (tipRef.current) tipRef.current.style.display = "none";
     };
     plotRef.current.over.addEventListener("mouseleave", onLeave);
@@ -268,31 +221,29 @@ export function PortTrafficWall({ target, points, rangeLabel, loading, hint }: P
   }, [points]);
 
   const empty = points.length === 0;
+  const neLabel = target ? target.ne_name || target.ne_ip || "—" : "—";
+  const ifLabel = target?.ifname || "—";
+  const ipLabel = target?.ne_ip || "";
 
   return (
     <div className="pt-wall">
       <div className="pt-wall__head">
-        <div className="pt-wall__title">
-          <span className="pt-wall__ne">{target ? target.ne_name || target.ne_ip || "—" : "—"}</span>
-          <span className="pt-wall__if">{target?.ifname || "Select interface"}</span>
-        </div>
+        <div className="pt-wall__head-title">{t("portTraffic.wallLiveTitle")}</div>
         <div className="pt-wall__range">
           {rangeLabel}
-          {kpi.hovering
-            ? ` · ${t("portTraffic.hoverPoint")}`
-            : latestKpi.ts
-              ? ` · ${t("portTraffic.latestAt")} ${formatSystemTime(latestKpi.ts)}`
-              : ""}
+          {kpi.ts ? ` · ${t("portTraffic.latestAt")} ${formatSystemTime(kpi.ts)}` : ""}
         </div>
       </div>
       <div className="pt-wall__kpis">
         <div className="pt-wall__kpi">
-          <div className="pt-wall__kpi-label">{t("portTraffic.kpiBw")}</div>
+          <div className="pt-wall__kpi-label">
+            {t("portTraffic.kpiBw")} · {t("portTraffic.kpiLatest")}
+          </div>
           <div className="pt-wall__kpi-value">{formatBwLabel(kpi.bw)}</div>
         </div>
         <div className="pt-wall__kpi pt-wall__kpi--in">
           <div className="pt-wall__kpi-label">
-            In · {kpi.hovering ? t("portTraffic.hoverPoint") : t("portTraffic.kpiLatest")}
+            In · {t("portTraffic.kpiLatest")}
           </div>
           <div className="pt-wall__kpi-value">
             {formatBps(kpi.inBps)}
@@ -301,7 +252,7 @@ export function PortTrafficWall({ target, points, rangeLabel, loading, hint }: P
         </div>
         <div className="pt-wall__kpi pt-wall__kpi--out">
           <div className="pt-wall__kpi-label">
-            Out · {kpi.hovering ? t("portTraffic.hoverPoint") : t("portTraffic.kpiLatest")}
+            Out · {t("portTraffic.kpiLatest")}
           </div>
           <div className="pt-wall__kpi-value">
             {formatBps(kpi.outBps)}
@@ -310,7 +261,7 @@ export function PortTrafficWall({ target, points, rangeLabel, loading, hint }: P
         </div>
         <div className="pt-wall__kpi">
           <div className="pt-wall__kpi-label">
-            Util · {kpi.hovering ? t("portTraffic.hoverPoint") : t("portTraffic.kpiLatest")}
+            Util · {t("portTraffic.kpiLatest")}
           </div>
           <div className="pt-wall__kpi-value">
             {kpi.inUtil.toFixed(1)}%
@@ -327,6 +278,17 @@ export function PortTrafficWall({ target, points, rangeLabel, loading, hint }: P
             {loading ? "Loading samples…" : hint || "Waiting for samples…"}
           </div>
         ) : null}
+      </div>
+      <div className="pt-wall__foot">
+        <div className="pt-wall__foot-ne" title={neLabel}>
+          <span className="pt-wall__foot-label">{t("portTraffic.wallDevice")}</span>
+          <span className="pt-wall__foot-value">{neLabel}</span>
+          {ipLabel ? <span className="pt-wall__foot-ip">{ipLabel}</span> : null}
+        </div>
+        <div className="pt-wall__foot-if" title={ifLabel}>
+          <span className="pt-wall__foot-label">{t("portTraffic.wallPort")}</span>
+          <span className="pt-wall__foot-value pt-wall__foot-value--mono">{ifLabel}</span>
+        </div>
       </div>
     </div>
   );

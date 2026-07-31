@@ -113,6 +113,8 @@ const zh = {
     kpiBw: "带宽",
     latestAt: "最新样点",
     hoverPoint: "光标位置",
+    wallLiveTitle: "实时流量",
+    wallDevice: "设备",
     kpi: {
       tasks: "任务数",
       running: "运行中",

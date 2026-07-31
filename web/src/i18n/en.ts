@@ -113,6 +113,8 @@ const en = {
     kpiBw: "Bandwidth",
     latestAt: "Latest sample",
     hoverPoint: "Cursor",
+    wallLiveTitle: "Live traffic",
+    wallDevice: "Device",
     kpi: {
       tasks: "Tasks",
       running: "Running",
