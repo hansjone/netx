@@ -107,12 +107,15 @@ src/
 
 ## 端口流量监控
 
-- API：`/v1/port-traffic/*`（任务 CRUD、discover/ports、samples、dashboard）
-- 厂商：ZTE（`show interface brief` / `show interface {if}`）、华为（`display interface brief` / `display interface {if}`）、思科（`show ip interface brief` / `show interfaces {if}`）；解析速率 **bit/s**（华为暂无带宽则 `bw_bps=0`；思科暂无利用率则 util=0）
+- API：`/v1/port-traffic/*`（任务 CRUD、discover/ports、samples、compare、dashboard）
+- 接口：大屏与取样均按 `port_traffic_target`（网元 + ifname，含各类接口）；样点按 `target_row_id`
+- 周期对比：`GET /v1/port-traffic/compare?target_id=&range_hours=&baseline=off|shift|day|week|custom`（同一接口时间平移叠图）
+- 手工映射：可选 `baseline_target_id`（可跨任务），基线取自另一个接口；可与周期偏移叠加
+- 厂商：ZTE / 华为 / 思科；解析速率 **bit/s**
 - 调度：`NETX_PORT_TRAFFIC_SCHEDULER_ENABLED`（默认开），tick `NETX_PORT_TRAFFIC_SCHEDULER_TICK_SEC`（默认 15）
 - 单飞：同一任务同时只允许一轮采集；崩溃启动清除 `collect_running`
-- 保留：按任务 `retention_days` 清理过期 sample
-- 前端：`/network/tasks/port-traffic`（四步向导 + 任务启停 + uPlot 监控大屏）
+- 保留：按任务 `retention_days` 清理过期 sample（周对比建议 ≥8 天）
+- 前端：`/network/tasks/port-traffic`（四步向导 + 任务启停 + uPlot 大屏；接口选择 + 周期对比 + 跨任务映射基线接口）
 
 ## WebCRT
 

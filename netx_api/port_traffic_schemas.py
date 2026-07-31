@@ -63,6 +63,7 @@ class PortTrafficTaskOut(BaseModel):
 class PortTrafficTargetOut(BaseModel):
     id: str
     task_id: str
+    series_id: str = ""
     source: str
     target_id: str
     ne_name: str
@@ -77,8 +78,32 @@ class PortTrafficTargetOut(BaseModel):
     created_at: datetime | None = None
 
 
+class PortTrafficSeriesOut(BaseModel):
+    id: str
+    task_id: str
+    title: str
+    status: str
+    active_target: PortTrafficTargetOut | None = None
+    retired_target_count: int = 0
+    created_at: datetime | None = None
+
+
 class PortTrafficTargetsPut(BaseModel):
     targets: list[PortTrafficTargetIn]
+
+
+class PortTrafficReplacePortRequest(BaseModel):
+    """Replace the active interface under a logical series (keeps history)."""
+
+    source: Literal["managed", "ume"]
+    target_id: str
+    ne_name: str = ""
+    ne_ip: str = ""
+    vendor: str = ""
+    ifname: str
+    if_description: str = ""
+    bw_bps: int = 0
+    series_title: str | None = Field(default=None, max_length=256)
 
 
 class DiscoverPortsRequest(BaseModel):
@@ -116,11 +141,28 @@ class PortTrafficSamplePoint(BaseModel):
     out_util_pct: float
     bw_bps: int
     rate_period_sec: int = 0
+    ts_raw: datetime | None = None  # baseline original time when aligned
 
 
 class PortTrafficSamplesOut(BaseModel):
     target: PortTrafficTargetOut
     points: list[PortTrafficSamplePoint] = Field(default_factory=list)
+
+
+class PortTrafficCompareMeta(BaseModel):
+    target_id: str
+    baseline: str = "off"
+    offset_hours: float = 0
+    range_hours: float = 24
+    current_target: PortTrafficTargetOut | None = None
+    baseline_target: PortTrafficTargetOut | None = None
+    baseline_target_id: str = ""
+
+
+class PortTrafficCompareOut(BaseModel):
+    meta: PortTrafficCompareMeta
+    current: list[PortTrafficSamplePoint] = Field(default_factory=list)
+    baseline: list[PortTrafficSamplePoint] = Field(default_factory=list)
 
 
 class PortTrafficDashboardOut(BaseModel):

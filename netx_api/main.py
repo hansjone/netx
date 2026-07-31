@@ -813,8 +813,11 @@ def on_startup() -> None:
                 "ALTER TABLE app_user ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN DEFAULT FALSE"
             )
             conn.exec_driver_sql("ALTER TABLE api_token ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP")
+            from .port_traffic_migrate import ensure_port_traffic_series_schema
+
+            ensure_port_traffic_series_schema(conn)
     except Exception:
-        _schedule_log.exception("startup: auth schema migration failed")
+        _schedule_log.exception("startup: auth/port_traffic schema migration failed")
     _reset_runtime_pause_flags()
     _fail_stale_running_sync_jobs_on_startup()
     if _needs_startup_alarm_sync_before_ws():
@@ -847,6 +850,12 @@ def on_startup() -> None:
         pt_cleared = recover_port_traffic_on_startup(db)
         if pt_cleared:
             _schedule_log.info("startup: cleared %s port_traffic stuck collect_running flag(s)", pt_cleared)
+        try:
+            from .port_traffic_migrate import backfill_port_traffic_series
+
+            backfill_port_traffic_series(db)
+        except Exception:
+            _schedule_log.exception("startup: port_traffic series backfill failed")
     except Exception:
         _schedule_log.exception("startup: ne collection / config_sync recovery failed")
     finally:

@@ -609,6 +609,19 @@ class PortTrafficTask(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class PortTrafficSeries(Base):
+    """Logical port (business link) that survives physical NE/if replacement."""
+
+    __tablename__ = "port_traffic_series"
+    __table_args__ = (UniqueConstraint("task_id", "title", name="uq_port_traffic_series_title"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
+    task_id: Mapped[str] = mapped_column(String(64), index=True)
+    title: Mapped[str] = mapped_column(String(256), default="")
+    status: Mapped[str] = mapped_column(String(32), default="active", index=True)  # active|disabled
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class PortTrafficTarget(Base):
     """Monitored interface under a port traffic task."""
 
@@ -619,6 +632,7 @@ class PortTrafficTarget(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
     task_id: Mapped[str] = mapped_column(String(64), index=True)
+    series_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     source: Mapped[str] = mapped_column(String(32), default="managed", index=True)
     target_id: Mapped[str] = mapped_column(String(128), index=True)
     ne_name: Mapped[str] = mapped_column(String(256), default="")
@@ -627,7 +641,7 @@ class PortTrafficTarget(Base):
     ifname: Mapped[str] = mapped_column(String(128), default="")
     if_description: Mapped[str] = mapped_column(String(512), default="")
     bw_bps: Mapped[int] = mapped_column(BigInteger, default=0)
-    status: Mapped[str] = mapped_column(String(32), default="active", index=True)  # active|disabled
+    status: Mapped[str] = mapped_column(String(32), default="active", index=True)  # active|disabled|retired
     last_error: Mapped[str] = mapped_column(String(1024), default="")
     last_sample_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -641,6 +655,7 @@ class PortTrafficSample(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
     target_row_id: Mapped[str] = mapped_column(String(64), index=True)
+    series_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     ts: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     in_bps: Mapped[float] = mapped_column(Float, default=0.0)
     out_bps: Mapped[float] = mapped_column(Float, default=0.0)

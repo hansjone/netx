@@ -11,20 +11,24 @@ from .auth_service import write_audit
 from .db import get_db
 from .port_traffic_schemas import (
     DiscoverPortsRequest,
+    PortTrafficReplacePortRequest,
     PortTrafficTaskCreate,
     PortTrafficTaskUpdate,
     PortTrafficTargetsPut,
 )
 from .port_traffic_service import (
+    compare_targets,
     create_task,
     dashboard,
     delete_task,
     discover_ports,
     get_samples,
     get_task,
+    list_series,
     list_targets,
     list_tasks,
     put_targets,
+    replace_series_port,
     set_task_status,
     update_task,
 )
@@ -227,6 +231,34 @@ def api_list_targets(task_id: str, db: Session = Depends(get_db)):
     return {"items": [t.model_dump() for t in list_targets(db, task_id)]}
 
 
+@router.get("/tasks/{task_id}/series")
+def api_list_series(task_id: str, db: Session = Depends(get_db)):
+    return {"items": [s.model_dump() for s in list_series(db, task_id)]}
+
+
+@router.post("/tasks/{task_id}/series/{series_id}/replace")
+def api_replace_series_port(
+    task_id: str,
+    series_id: str,
+    body: PortTrafficReplacePortRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    out = replace_series_port(db, task_id, series_id, body)
+    uid, uname = _actor(request)
+    write_audit(
+        db,
+        action="port_traffic.series.replace",
+        actor_user_id=uid,
+        actor_username=uname,
+        method="POST",
+        path=f"/v1/port-traffic/tasks/{task_id}/series/{series_id}/replace",
+        status_code=200,
+        detail={"series_id": series_id, "ifname": body.ifname, "target_id": body.target_id},
+    )
+    return out.model_dump()
+
+
 @router.put("/tasks/{task_id}/targets")
 def api_put_targets(
     task_id: str,
@@ -262,3 +294,27 @@ def api_samples(
     db: Session = Depends(get_db),
 ):
     return get_samples(db, target_row_id=target_id, from_ts=from_ts, to_ts=to_ts).model_dump()
+
+
+@router.get("/compare")
+def api_compare(
+    target_id: str = Query(..., description="port_traffic_target row id (interface)"),
+    range_hours: float = Query(default=24, ge=0.25, le=24 * 90),
+    baseline: str = Query(default="off", description="off|shift|day|week|custom"),
+    offset_hours: float | None = Query(default=None, ge=0.25, le=24 * 90),
+    baseline_target_id: str | None = Query(
+        default=None,
+        description="optional mapped interface for baseline overlay (any task)",
+    ),
+    to_ts: datetime | None = Query(default=None, alias="to"),
+    db: Session = Depends(get_db),
+):
+    return compare_targets(
+        db,
+        target_row_id=target_id,
+        range_hours=range_hours,
+        baseline=baseline,
+        offset_hours=offset_hours,
+        baseline_target_id=baseline_target_id,
+        to_ts=to_ts,
+    ).model_dump()

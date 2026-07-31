@@ -22,23 +22,41 @@ function formatHoverTime(sec: number): string {
   return formatSystemTime(new Date(sec * 1000));
 }
 
-function toSeries(points: PortTrafficSamplePoint[]): [number[], number[], number[]] {
-  const xs: number[] = [];
-  const ins: number[] = [];
-  const outs: number[] = [];
-  for (const p of points) {
+function toAlignedSeries(
+  current: PortTrafficSamplePoint[],
+  baseline: PortTrafficSamplePoint[],
+): [number[], number[], number[], number[], number[]] {
+  type Row = { x: number; inC?: number; outC?: number; inB?: number; outB?: number };
+  const map = new Map<number, Row>();
+  for (const p of current) {
     const d = parseApiTime(p.ts);
     if (!d) continue;
-    xs.push(Math.floor(d.getTime() / 1000));
-    ins.push(Number(p.in_bps) || 0);
-    outs.push(Number(p.out_bps) || 0);
+    const x = Math.floor(d.getTime() / 1000);
+    const row = map.get(x) || { x };
+    row.inC = Number(p.in_bps) || 0;
+    row.outC = Number(p.out_bps) || 0;
+    map.set(x, row);
   }
-  if (xs.length === 1) {
-    xs.push(xs[0] + 60);
-    ins.push(ins[0]);
-    outs.push(outs[0]);
+  for (const p of baseline) {
+    const d = parseApiTime(p.ts);
+    if (!d) continue;
+    const x = Math.floor(d.getTime() / 1000);
+    const row = map.get(x) || { x };
+    row.inB = Number(p.in_bps) || 0;
+    row.outB = Number(p.out_bps) || 0;
+    map.set(x, row);
   }
-  return [xs, ins, outs];
+  const rows = [...map.values()].sort((a, b) => a.x - b.x);
+  if (rows.length === 1) {
+    rows.push({ ...rows[0], x: rows[0].x + 60 });
+  }
+  return [
+    rows.map((r) => r.x),
+    rows.map((r) => r.inC ?? NaN),
+    rows.map((r) => r.outC ?? NaN),
+    rows.map((r) => r.inB ?? NaN),
+    rows.map((r) => r.outB ?? NaN),
+  ];
 }
 
 function chartSize(el: HTMLElement): { width: number; height: number } {
@@ -50,18 +68,28 @@ function chartSize(el: HTMLElement): { width: number; height: number } {
 type Props = {
   target: PortTrafficTarget | null;
   points: PortTrafficSamplePoint[];
+  baselinePoints?: PortTrafficSamplePoint[];
   rangeLabel: string;
   loading?: boolean;
   hint?: string;
 };
 
-export function PortTrafficWall({ target, points, rangeLabel, loading, hint }: Props) {
+export function PortTrafficWall({
+  target,
+  points,
+  baselinePoints = [],
+  rangeLabel,
+  loading,
+  hint,
+}: Props) {
   const { t } = useI18n();
   const mountRef = useRef<HTMLDivElement | null>(null);
   const plotRef = useRef<uPlot | null>(null);
   const tipRef = useRef<HTMLDivElement | null>(null);
   const pointsRef = useRef(points);
+  const baselineRef = useRef(baselinePoints);
   pointsRef.current = points;
+  baselineRef.current = baselinePoints;
 
   const latest = points.length ? points[points.length - 1] : null;
   const kpi = useMemo(() => {
@@ -104,18 +132,38 @@ export function PortTrafficWall({ target, points, rangeLabel, loading, hint }: P
       series: [
         {},
         {
-          label: "In",
+          label: t("portTraffic.seriesCurrentIn"),
           stroke: "#2dd4bf",
           width: 2,
           fill: "rgba(45, 212, 191, 0.12)",
           points: { show: true, size: 5, fill: "#2dd4bf" },
+          spanGaps: false,
         },
         {
-          label: "Out",
+          label: t("portTraffic.seriesCurrentOut"),
           stroke: "#f59e0b",
           width: 2,
           fill: "rgba(245, 158, 11, 0.10)",
           points: { show: true, size: 5, fill: "#f59e0b" },
+          spanGaps: false,
+        },
+        {
+          label: t("portTraffic.seriesBaselineIn"),
+          stroke: "rgba(45, 212, 191, 0.45)",
+          width: 1.5,
+          dash: [6, 4],
+          points: { show: false },
+          spanGaps: false,
+          show: false,
+        },
+        {
+          label: t("portTraffic.seriesBaselineOut"),
+          stroke: "rgba(245, 158, 11, 0.45)",
+          width: 1.5,
+          dash: [6, 4],
+          points: { show: false },
+          spanGaps: false,
+          show: false,
         },
       ],
       axes: [
@@ -149,7 +197,6 @@ export function PortTrafficWall({ target, points, rangeLabel, loading, hint }: P
           },
         },
       },
-      // Color keys only — no live numeric values (those are in the hover tip).
       legend: { show: true, live: false },
       cursor: {
         drag: { x: true, y: false },
@@ -170,30 +217,53 @@ export function PortTrafficWall({ target, points, rangeLabel, loading, hint }: P
             }
 
             const tsSec = Number(u.data[0][idx]);
-            const inBps = Number(u.data[1]?.[idx] ?? 0);
-            const outBps = Number(u.data[2]?.[idx] ?? 0);
+            const inBps = Number(u.data[1]?.[idx]);
+            const outBps = Number(u.data[2]?.[idx]);
+            const inBase = Number(u.data[3]?.[idx]);
+            const outBase = Number(u.data[4]?.[idx]);
             const sample = pointsRef.current.find((p) => {
+              const d = parseApiTime(p.ts);
+              return d && Math.floor(d.getTime() / 1000) === tsSec;
+            });
+            const baseSample = baselineRef.current.find((p) => {
               const d = parseApiTime(p.ts);
               return d && Math.floor(d.getTime() / 1000) === tsSec;
             });
 
             if (!tip) return;
             tip.style.display = "block";
-            tip.innerHTML = [
+            const rows = [
               `<div class="pt-wall__tip-time">${formatHoverTime(tsSec)}</div>`,
-              `<div class="pt-wall__tip-row pt-wall__tip-row--in"><span>In</span><strong>${formatBps(inBps)} bit/s</strong></div>`,
-              `<div class="pt-wall__tip-row pt-wall__tip-row--out"><span>Out</span><strong>${formatBps(outBps)} bit/s</strong></div>`,
+              Number.isFinite(inBps)
+                ? `<div class="pt-wall__tip-row pt-wall__tip-row--in"><span>In</span><strong>${formatBps(inBps)} bit/s</strong></div>`
+                : "",
+              Number.isFinite(outBps)
+                ? `<div class="pt-wall__tip-row pt-wall__tip-row--out"><span>Out</span><strong>${formatBps(outBps)} bit/s</strong></div>`
+                : "",
               sample
                 ? `<div class="pt-wall__tip-row"><span>Util</span><strong>${Number(sample.in_util_pct || 0).toFixed(1)}% / ${Number(sample.out_util_pct || 0).toFixed(1)}%</strong></div>`
                 : "",
-            ].join("");
+            ];
+            if (Number.isFinite(inBase) || Number.isFinite(outBase)) {
+              rows.push(
+                `<div class="pt-wall__tip-row"><span>${t("portTraffic.baseline")}</span><strong>${
+                  Number.isFinite(inBase) ? formatBps(inBase) : "—"
+                } / ${Number.isFinite(outBase) ? formatBps(outBase) : "—"} bit/s</strong></div>`,
+              );
+              if (baseSample?.ts_raw) {
+                rows.push(
+                  `<div class="pt-wall__tip-row"><span>${t("portTraffic.baselineAt")}</span><strong>${formatSystemTime(baseSample.ts_raw)}</strong></div>`,
+                );
+              }
+            }
+            tip.innerHTML = rows.join("");
             placeTip(u, left, top);
           },
         ],
       },
     };
 
-    plotRef.current = new uPlot(opts, [[], [], []], el);
+    plotRef.current = new uPlot(opts, [[], [], [], [], []], el);
 
     const onLeave = () => {
       if (tipRef.current) tipRef.current.style.display = "none";
@@ -211,16 +281,20 @@ export function PortTrafficWall({ target, points, rangeLabel, loading, hint }: P
       plotRef.current?.destroy();
       plotRef.current = null;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     const plot = plotRef.current;
     if (!plot) return;
-    plot.setData(toSeries(points));
+    const showBaseline = baselinePoints.length > 0;
+    plot.setSeries(3, { show: showBaseline });
+    plot.setSeries(4, { show: showBaseline });
+    plot.setData(toAlignedSeries(points, baselinePoints));
     if (mountRef.current) plot.setSize(chartSize(mountRef.current));
-  }, [points]);
+  }, [points, baselinePoints]);
 
-  const empty = points.length === 0;
+  const empty = points.length === 0 && baselinePoints.length === 0;
   const neLabel = target ? target.ne_name || target.ne_ip || "—" : "—";
   const ifLabel = target?.ifname || "—";
   const ipLabel = target?.ne_ip || "";

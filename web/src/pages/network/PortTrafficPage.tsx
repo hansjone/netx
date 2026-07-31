@@ -6,8 +6,8 @@ import {
   deletePortTrafficTask,
   discoverPortTrafficPorts,
   fetchCliTargets,
+  fetchPortTrafficCompare,
   fetchPortTrafficDashboard,
-  fetchPortTrafficSamples,
   fetchPortTrafficTargets,
   fetchPortTrafficTasks,
   pausePortTrafficTask,
@@ -26,6 +26,7 @@ const POLL_MS = 5000;
 const TARGET_PAGE_SIZE = 20;
 
 type PortPick = PortTrafficTargetIn & { key: string };
+type BaselineMode = "off" | "shift" | "day" | "week" | "custom";
 
 function neKey(source: string, id: string) {
   return `${source}:${id}`;
@@ -51,7 +52,11 @@ export function PortTrafficPage() {
   const [taskPage, setTaskPage] = useState(1);
   const [wallTaskId, setWallTaskId] = useState("");
   const [wallTargetId, setWallTargetId] = useState("");
-  const [rangeHours, setRangeHours] = useState(1);
+  const [mapBaselineTaskId, setMapBaselineTaskId] = useState("");
+  const [mapBaselineTargetId, setMapBaselineTargetId] = useState("");
+  const [rangeHours, setRangeHours] = useState(24);
+  const [baseline, setBaseline] = useState<BaselineMode>("off");
+  const [customOffsetHours, setCustomOffsetHours] = useState(48);
 
   // Wizard state
   const [step, setStep] = useState(1);
@@ -105,22 +110,34 @@ export function PortTrafficPage() {
     refetchInterval: POLL_MS,
   });
 
-  const samplesQuery = useQuery({
-    queryKey: queryKeys.portTrafficSamples(wallTargetId, rangeHours),
-    queryFn: () => {
-      const to = new Date();
-      const from = new Date(to.getTime() - rangeHours * 3600 * 1000);
-      return fetchPortTrafficSamples({
+  const mapBaselineTargetsQuery = useQuery({
+    queryKey: queryKeys.portTrafficTargets(mapBaselineTaskId),
+    queryFn: () => fetchPortTrafficTargets(mapBaselineTaskId),
+    enabled: view === "wall" && Boolean(mapBaselineTaskId),
+    staleTime: 2000,
+    refetchInterval: POLL_MS,
+  });
+
+  const compareQuery = useQuery({
+    queryKey: queryKeys.portTrafficCompare(
+      wallTargetId,
+      rangeHours,
+      baseline,
+      baseline === "custom" ? customOffsetHours : 0,
+      mapBaselineTargetId,
+    ),
+    queryFn: () =>
+      fetchPortTrafficCompare({
         targetId: wallTargetId,
-        from: from.toISOString(),
-        to: to.toISOString(),
-      });
-    },
+        rangeHours,
+        baseline,
+        offsetHours: baseline === "custom" ? customOffsetHours : undefined,
+        baselineTargetId: mapBaselineTargetId || undefined,
+      }),
     enabled: view === "wall" && Boolean(wallTargetId),
     staleTime: 1000,
     refetchInterval: (q) => {
-      const n = q.state.data?.points?.length ?? 0;
-      // Faster while waiting for the first sample; then every 5s for live wall.
+      const n = q.state.data?.current?.length ?? 0;
       return n === 0 ? 2500 : POLL_MS;
     },
   });
@@ -171,7 +188,7 @@ export function PortTrafficPage() {
       showOk(res.started ? t("portTraffic.collectStarted") : t("portTraffic.collectBusy"));
       invalidateAll();
       void queryClient.invalidateQueries({ queryKey: queryKeys.portTrafficTargets(wallTaskId) });
-      void queryClient.invalidateQueries({ queryKey: ["portTrafficSamples"] });
+      void queryClient.invalidateQueries({ queryKey: ["portTrafficCompare"] });
     },
     onError: (e: Error) => showError(e.message),
   });
@@ -206,6 +223,9 @@ export function PortTrafficPage() {
   const openWall = (taskId: string) => {
     setWallTaskId(taskId);
     setWallTargetId("");
+    setMapBaselineTaskId("");
+    setMapBaselineTargetId("");
+    setBaseline("off");
     setView("wall");
   };
 
@@ -265,13 +285,45 @@ export function PortTrafficPage() {
 
   const selectedNeList = useMemo(() => Object.values(selectedNes), [selectedNes]);
   const pickedList = useMemo(() => Object.values(pickedPorts), [pickedPorts]);
-  const wallTargets = wallTargetsQuery.data?.items || [];
+  const wallTaskOptions = wallTasksQuery.data?.items || tasksQuery.data?.items || [];
+  const wallTargets = useMemo(
+    () => (wallTargetsQuery.data?.items || []).filter((x) => x.status === "active"),
+    [wallTargetsQuery.data?.items],
+  );
   const selectedWallTarget = wallTargets.find((x) => x.id === wallTargetId) || null;
+  const mapBaselineOptions = useMemo(
+    () =>
+      (mapBaselineTargetsQuery.data?.items || []).filter(
+        (x) => x.status === "active" && x.id !== wallTargetId,
+      ),
+    [mapBaselineTargetsQuery.data?.items, wallTargetId],
+  );
 
   useEffect(() => {
     if (view !== "wall" || wallTargetId || !wallTargets.length) return;
     setWallTargetId(wallTargets[0].id);
   }, [view, wallTargetId, wallTargets]);
+
+  useEffect(() => {
+    if (!mapBaselineTargetId) return;
+    if (mapBaselineTargetId === wallTargetId) {
+      setMapBaselineTargetId("");
+      return;
+    }
+    if (
+      mapBaselineTaskId &&
+      mapBaselineTargetsQuery.isFetched &&
+      !mapBaselineOptions.some((x) => x.id === mapBaselineTargetId)
+    ) {
+      setMapBaselineTargetId("");
+    }
+  }, [
+    mapBaselineTargetId,
+    wallTargetId,
+    mapBaselineTaskId,
+    mapBaselineOptions,
+    mapBaselineTargetsQuery.isFetched,
+  ]);
 
   const submitWizard = () => {
     if (!title.trim()) {
@@ -459,6 +511,9 @@ export function PortTrafficPage() {
                   value={retentionDays}
                   onChange={(e) => setRetentionDays(Number(e.target.value) || 7)}
                 />
+                <span className="muted" style={{ fontSize: 12 }}>
+                  {t("portTraffic.retentionHintWizard")}
+                </span>
               </label>
               <label className="config-sync-policy-field">
                 {t("portTraffic.concurrency")}
@@ -622,7 +677,7 @@ export function PortTrafficPage() {
                   setWallTargetId("");
                 }}
               >
-                {(wallTasksQuery.data?.items || tasksQuery.data?.items || []).map((task) => (
+                {wallTaskOptions.map((task) => (
                   <option key={task.id} value={task.id}>
                     {task.title}
                   </option>
@@ -631,11 +686,15 @@ export function PortTrafficPage() {
             </label>
             <label>
               {t("portTraffic.wallPort")}
-              <select value={wallTargetId} onChange={(e) => setWallTargetId(e.target.value)}>
+              <select
+                value={wallTargetId}
+                onChange={(e) => setWallTargetId(e.target.value)}
+              >
                 <option value="">{t("portTraffic.pickPort")}</option>
-                {wallTargets.map((tg) => (
-                  <option key={tg.id} value={tg.id}>
-                    {tg.ne_name} / {tg.ifname}
+                {wallTargets.map((tgt) => (
+                  <option key={tgt.id} value={tgt.id}>
+                    {tgt.ne_name || tgt.ne_ip || "—"} / {tgt.ifname}
+                    {tgt.ne_ip ? ` (${tgt.ne_ip})` : ""}
                   </option>
                 ))}
               </select>
@@ -648,6 +707,66 @@ export function PortTrafficPage() {
                 <option value={24}>24h</option>
               </select>
             </label>
+            <label>
+              {t("portTraffic.compare")}
+              <select
+                value={baseline}
+                onChange={(e) => setBaseline(e.target.value as BaselineMode)}
+              >
+                <option value="off">{t("portTraffic.compareOff")}</option>
+                <option value="day">{t("portTraffic.compareDay")}</option>
+                <option value="week">{t("portTraffic.compareWeek")}</option>
+                <option value="shift">{t("portTraffic.compareShift")}</option>
+                <option value="custom">{t("portTraffic.compareCustom")}</option>
+              </select>
+            </label>
+            {baseline === "custom" ? (
+              <label>
+                {t("portTraffic.offsetHours")}
+                <input
+                  type="number"
+                  min={1}
+                  max={24 * 90}
+                  value={customOffsetHours}
+                  onChange={(e) => setCustomOffsetHours(Number(e.target.value) || 24)}
+                  style={{ width: 88 }}
+                />
+              </label>
+            ) : null}
+            <label>
+              {t("portTraffic.mapBaselineTask")}
+              <select
+                value={mapBaselineTaskId}
+                onChange={(e) => {
+                  setMapBaselineTaskId(e.target.value);
+                  setMapBaselineTargetId("");
+                }}
+                disabled={!wallTargetId}
+              >
+                <option value="">{t("portTraffic.mapBaselineNone")}</option>
+                {wallTaskOptions.map((task) => (
+                  <option key={task.id} value={task.id}>
+                    {task.title}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              {t("portTraffic.mapBaselinePort")}
+              <select
+                value={mapBaselineTargetId}
+                onChange={(e) => setMapBaselineTargetId(e.target.value)}
+                disabled={!mapBaselineTaskId}
+              >
+                <option value="">{t("portTraffic.pickPort")}</option>
+                {mapBaselineOptions.map((tgt) => (
+                  <option key={tgt.id} value={tgt.id}>
+                    {tgt.ne_name || tgt.ne_ip || "—"} / {tgt.ifname}
+                    {tgt.ne_ip ? ` (${tgt.ne_ip})` : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
             <button
               type="button"
               className="btn-primary"
@@ -657,6 +776,11 @@ export function PortTrafficPage() {
               {t("portTraffic.collectNow")}
             </button>
           </div>
+          {baseline === "week" ? (
+            <p className="muted" style={{ marginBottom: 8 }}>
+              {t("portTraffic.retentionHint")}
+            </p>
+          ) : null}
           {selectedWallTarget?.last_error ? (
             <p className="muted" style={{ marginBottom: 8 }}>
               {t("portTraffic.targetError")}: {selectedWallTarget.last_error}
@@ -664,9 +788,24 @@ export function PortTrafficPage() {
           ) : null}
           <PortTrafficWall
             target={selectedWallTarget}
-            points={samplesQuery.data?.points || []}
-            rangeLabel={`${rangeHours}h`}
-            loading={samplesQuery.isLoading || samplesQuery.isFetching}
+            points={compareQuery.data?.current || []}
+            baselinePoints={
+              baseline === "off" && !mapBaselineTargetId
+                ? []
+                : compareQuery.data?.baseline || []
+            }
+            rangeLabel={`${rangeHours}h${
+              baseline === "off"
+                ? ""
+                : baseline === "day"
+                  ? ` · ${t("portTraffic.compareDay")}`
+                  : baseline === "week"
+                    ? ` · ${t("portTraffic.compareWeek")}`
+                    : baseline === "shift"
+                      ? ` · ${t("portTraffic.compareShift")}`
+                      : ` · ${t("portTraffic.compareCustom")}`
+            }${mapBaselineTargetId ? ` · ${t("portTraffic.mapBaselinePort")}` : ""}`}
+            loading={compareQuery.isLoading || compareQuery.isFetching}
             hint={
               !wallTargetId
                 ? t("portTraffic.pickPort")

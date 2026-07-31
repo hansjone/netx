@@ -218,6 +218,7 @@ def _sample_one_target(target_row_id: str) -> None:
             PortTrafficSample(
                 id=uuid4().hex,
                 target_row_id=target_row_id,
+                series_id=str(row.series_id or ""),
                 ts=now,
                 in_bps=float(parsed.in_bps),
                 out_bps=float(parsed.out_bps),

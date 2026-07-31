@@ -29,11 +29,11 @@ import type {
   ConfigSyncTask,
   NeConfigSnapshotDetail,
   NeConfigSnapshotMeta,
+  PortTrafficCompare,
   PortTrafficDashboard,
   PortTrafficDiscoverResponse,
   PortTrafficSamples,
   PortTrafficTarget,
-  PortTrafficTargetIn,
   PortTrafficTask,
 } from "../types";
 
@@ -846,4 +846,22 @@ export const fetchPortTrafficSamples = (params: {
   if (params.from) p.set("from", params.from);
   if (params.to) p.set("to", params.to);
   return apiGet<PortTrafficSamples>(`/v1/port-traffic/samples?${p.toString()}`);
+};
+
+export const fetchPortTrafficCompare = (params: {
+  targetId: string;
+  rangeHours: number;
+  baseline: string;
+  offsetHours?: number;
+  baselineTargetId?: string;
+  to?: string;
+}) => {
+  const p = new URLSearchParams();
+  p.set("target_id", params.targetId);
+  p.set("range_hours", String(params.rangeHours));
+  p.set("baseline", params.baseline);
+  if (params.offsetHours != null) p.set("offset_hours", String(params.offsetHours));
+  if (params.baselineTargetId) p.set("baseline_target_id", params.baselineTargetId);
+  if (params.to) p.set("to", params.to);
+  return apiGet<PortTrafficCompare>(`/v1/port-traffic/compare?${p.toString()}`);
 };

@@ -65,4 +65,11 @@ export const queryKeys = {
   portTrafficTargets: (taskId: string) => ["portTrafficTargets", taskId] as const,
   portTrafficSamples: (targetId: string, rangeHours: number) =>
     ["portTrafficSamples", targetId, rangeHours] as const,
+  portTrafficCompare: (
+    targetId: string,
+    rangeHours: number,
+    baseline: string,
+    offsetHours: number,
+    baselineTargetId: string,
+  ) => ["portTrafficCompare", targetId, rangeHours, baseline, offsetHours, baselineTargetId] as const,
 };

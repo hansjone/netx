@@ -527,6 +527,7 @@ export type PortTrafficTask = {
 export type PortTrafficTarget = {
   id: string;
   task_id: string;
+  series_id?: string;
   source: string;
   target_id: string;
   ne_name: string;
@@ -538,6 +539,16 @@ export type PortTrafficTarget = {
   status: string;
   last_error: string;
   last_sample_at?: string | null;
+  created_at?: string | null;
+};
+
+export type PortTrafficSeries = {
+  id: string;
+  task_id: string;
+  title: string;
+  status: string;
+  active_target: PortTrafficTarget | null;
+  retired_target_count: number;
   created_at?: string | null;
 };
 
@@ -582,11 +593,26 @@ export type PortTrafficSamplePoint = {
   out_util_pct: number;
   bw_bps: number;
   rate_period_sec: number;
+  ts_raw?: string | null;
 };
 
 export type PortTrafficSamples = {
   target: PortTrafficTarget;
   points: PortTrafficSamplePoint[];
+};
+
+export type PortTrafficCompare = {
+  meta: {
+    target_id: string;
+    baseline: string;
+    offset_hours: number;
+    range_hours: number;
+    current_target: PortTrafficTarget | null;
+    baseline_target: PortTrafficTarget | null;
+    baseline_target_id: string;
+  };
+  current: PortTrafficSamplePoint[];
+  baseline: PortTrafficSamplePoint[];
 };
 
 export type PortTrafficDashboard = {
