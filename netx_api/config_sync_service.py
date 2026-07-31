@@ -377,7 +377,7 @@ def pause_cycle(db: Session, cycle_id: str) -> ConfigSyncCycleOut:
     row = db.get(ConfigSyncCycle, cycle_id)
     if not row:
         raise HTTPException(status_code=404, detail="cycle_not_found")
-    if str(row.status) != "running":
+    if str(row.status) not in ("running", "pending"):
         raise HTTPException(status_code=400, detail="cycle_not_running")
     row.status = "paused"
     db.commit()
@@ -404,6 +404,45 @@ def resume_cycle(db: Session, cycle_id: str) -> ConfigSyncCycleOut:
     row.status = "running"
     db.commit()
     db.refresh(row)
+    return cycle_to_out(row)
+
+
+def stop_cycle(db: Session, cycle_id: str) -> ConfigSyncCycleOut:
+    """Cancel remaining work and close the cycle (running/paused/pending)."""
+    row = db.get(ConfigSyncCycle, cycle_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="cycle_not_found")
+    if str(row.status) not in ("running", "paused", "pending"):
+        raise HTTPException(status_code=400, detail="cycle_not_active")
+    now = _utcnow()
+    pending = (
+        db.query(ConfigSyncTask)
+        .filter(
+            ConfigSyncTask.cycle_id == cycle_id,
+            ConfigSyncTask.status.in_(("pending", "running")),
+        )
+        .all()
+    )
+    for task in pending:
+        # In-flight workers may still finish and overwrite; pending must not start.
+        if str(task.status) == "pending":
+            task.status = "cancelled"
+            task.message = "stopped_by_user"
+            task.ended_at = now
+        else:
+            task.message = (str(task.message or "") + " · stop_requested")[:1020]
+    row.status = "cancelled"
+    row.error_message = "stopped_by_user"
+    row.ended_at = now
+    db.commit()
+    sync_cycle_progress(db, cycle_id)
+    db.refresh(row)
+    try:
+        from .config_sync_runner import _release_pool
+
+        _release_pool(cycle_id)
+    except Exception:
+        pass
     return cycle_to_out(row)
 
 
@@ -629,7 +668,7 @@ def finalize_cycle(db: Session, cycle_id: str) -> None:
     cycle = db.get(ConfigSyncCycle, cycle_id)
     if not cycle:
         return
-    if str(cycle.status) == "paused":
+    if str(cycle.status) in ("paused", "cancelled"):
         return
     pending = (
         db.query(func.count())
@@ -642,6 +681,8 @@ def finalize_cycle(db: Session, cycle_id: str) -> None:
         return
     sync_cycle_progress(db, cycle_id)
     db.refresh(cycle)
+    if str(cycle.status) in ("paused", "cancelled"):
+        return
     # Cycle outcome is about finishing the run, not per-NE results.
     # Individual task failures stay in fail_count for retry/dashboard.
     cycle.status = "success"

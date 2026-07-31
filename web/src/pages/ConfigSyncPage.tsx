@@ -8,6 +8,7 @@ import {
   fetchConfigSyncDashboard,
   pauseConfigSyncCycle,
   resumeConfigSyncCycle,
+  stopConfigSyncCycle,
   updateConfigSyncPolicy,
 } from "../services/api";
 import { queryKeys } from "../constants/queryKeys";
@@ -48,7 +49,9 @@ export function ConfigSyncPage() {
     staleTime: 1000,
     refetchInterval: (q) => {
       const running = q.state.data?.running_cycle;
-      return running && (running.status === "running" || running.status === "paused") ? POLL_MS : false;
+      return running && (running.status === "running" || running.status === "paused" || running.status === "pending")
+        ? POLL_MS
+        : false;
     },
   });
 
@@ -151,6 +154,15 @@ export function ConfigSyncPage() {
     onError: (err) => showError(String(err)),
   });
 
+  const stopMut = useMutation({
+    mutationFn: (id: string) => stopConfigSyncCycle(id),
+    onSuccess: async () => {
+      showOk(t("configSync.stopped"));
+      await refresh();
+    },
+    onError: (err) => showError(String(err)),
+  });
+
   const dash = dashQuery.data;
   const running = dash?.running_cycle;
   const last = dash?.last_cycle;
@@ -193,7 +205,7 @@ export function ConfigSyncPage() {
           >
             {t("configSync.retryFailed")}
           </button>
-          {running?.status === "running" ? (
+          {running?.status === "running" || running?.status === "pending" ? (
             <button type="button" onClick={() => pauseMut.mutate(running.id)} disabled={pauseMut.isPending}>
               {t("configSync.pause")}
             </button>
@@ -201,6 +213,17 @@ export function ConfigSyncPage() {
           {running?.status === "paused" ? (
             <button type="button" onClick={() => resumeMut.mutate(running.id)} disabled={resumeMut.isPending}>
               {t("configSync.resume")}
+            </button>
+          ) : null}
+          {running && (running.status === "running" || running.status === "paused" || running.status === "pending") ? (
+            <button
+              type="button"
+              onClick={() => {
+                if (window.confirm(t("configSync.confirmStop"))) stopMut.mutate(running.id);
+              }}
+              disabled={stopMut.isPending}
+            >
+              {t("configSync.stop")}
             </button>
           ) : null}
         </div>
@@ -369,6 +392,7 @@ export function ConfigSyncPage() {
             <th>{t("configSync.col.progress")}</th>
             <th>{t("configSync.col.started")}</th>
             <th>{t("configSync.col.ended")}</th>
+            <th>{t("configSync.col.actions")}</th>
           </tr>
         </thead>
         <tbody>
@@ -393,11 +417,36 @@ export function ConfigSyncPage() {
               </td>
               <td>{c.started_at ? formatSystemTime(c.started_at) : "-"}</td>
               <td>{c.ended_at ? formatSystemTime(c.ended_at) : "-"}</td>
+              <td>
+                <div className="btn-row">
+                  {c.status === "running" || c.status === "pending" ? (
+                    <button type="button" onClick={() => pauseMut.mutate(c.id)} disabled={pauseMut.isPending}>
+                      {t("configSync.pause")}
+                    </button>
+                  ) : null}
+                  {c.status === "paused" ? (
+                    <button type="button" onClick={() => resumeMut.mutate(c.id)} disabled={resumeMut.isPending}>
+                      {t("configSync.resume")}
+                    </button>
+                  ) : null}
+                  {c.status === "running" || c.status === "paused" || c.status === "pending" ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (window.confirm(t("configSync.confirmStop"))) stopMut.mutate(c.id);
+                      }}
+                      disabled={stopMut.isPending}
+                    >
+                      {t("configSync.stop")}
+                    </button>
+                  ) : null}
+                </div>
+              </td>
             </tr>
           ))}
           {!cycles.length ? (
             <tr>
-              <td colSpan={7} className="muted">
+              <td colSpan={8} className="muted">
                 {t("configSync.cyclesEmpty")}
               </td>
             </tr>

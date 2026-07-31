@@ -708,6 +708,9 @@ export const pauseConfigSyncCycle = (cycleId: string) =>
 export const resumeConfigSyncCycle = (cycleId: string) =>
   apiPost<ConfigSyncCycle>(`/v1/config-sync/cycles/${encodeURIComponent(cycleId)}/resume`, {});
 
+export const stopConfigSyncCycle = (cycleId: string) =>
+  apiPost<ConfigSyncCycle>(`/v1/config-sync/cycles/${encodeURIComponent(cycleId)}/stop`, {});
+
 export const fetchConfigSyncCycleTasks = (params: {
   cycleId: string;
   page?: number;

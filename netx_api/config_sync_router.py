@@ -24,6 +24,7 @@ from .config_sync_service import (
     list_snapshots,
     pause_cycle,
     resume_cycle,
+    stop_cycle,
     update_policy,
 )
 from .db import get_db
@@ -134,6 +135,23 @@ def api_resume_cycle(
 ):
     out = resume_cycle(db, cycle_id)
     background_tasks.add_task(dispatch_cycle, out.id)
+    return out.model_dump()
+
+
+@router.post("/cycles/{cycle_id}/stop")
+def api_stop_cycle(cycle_id: str, request: Request, db: Session = Depends(get_db)):
+    out = stop_cycle(db, cycle_id)
+    uid, uname = _actor(request)
+    write_audit(
+        db,
+        action="config_sync.stop",
+        actor_user_id=uid,
+        actor_username=uname,
+        method="POST",
+        path=f"/v1/config-sync/cycles/{cycle_id}/stop",
+        status_code=200,
+        detail={"cycle_id": cycle_id},
+    )
     return out.model_dump()
 
 
