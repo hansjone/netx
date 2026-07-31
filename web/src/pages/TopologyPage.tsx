@@ -35,7 +35,7 @@ import { queryKeys } from "../constants/queryKeys";
 import { HelpHint } from "../components/HelpHint";
 import { useI18n } from "../i18n";
 import { useToast } from "../hooks/useToast";
-import { openNewModuleWindow, openOrFocusModule } from "../utils/moduleWindows";
+import { openOrFocusModule } from "../utils/moduleWindows";
 import type {
   ManagedNeItem,
   TopologyDiscoverNeResult,
@@ -675,16 +675,16 @@ export function TopologyPage() {
     const managedId = node?.data.managed_ne_id;
     const umeId = node?.data.ume_ne_id;
     if (managedId) {
-      openNewModuleWindow({
-        moduleId: "webcrt",
-        path: `/webcrt?ne_id=${encodeURIComponent(managedId)}`,
+      openOrFocusModule({
+        moduleId: "network",
+        path: `/network/webcrt?ne_id=${encodeURIComponent(managedId)}`,
       });
       return;
     }
     if (umeId) {
-      openNewModuleWindow({
-        moduleId: "webcrt",
-        path: `/webcrt?ne_id=${encodeURIComponent(umeId)}&source=ume`,
+      openOrFocusModule({
+        moduleId: "network",
+        path: `/network/webcrt?ne_id=${encodeURIComponent(umeId)}&source=ume`,
       });
       return;
     }
@@ -697,8 +697,8 @@ export function TopologyPage() {
     const umeId = node?.data.ume_ne_id;
     if (managedId) {
       openOrFocusModule({
-        moduleId: "managed-ne",
-        path: "/ne",
+        moduleId: "network",
+        path: "/network/devices",
       });
       return;
     }

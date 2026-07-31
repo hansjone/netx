@@ -26,7 +26,7 @@ import { useToast } from "../hooks/useToast";
 import type { ManagedNeItem } from "../types";
 import { pageCount } from "../utils/display";
 import { formatSystemTime } from "../utils/time";
-import { openNewModuleWindow } from "../utils/moduleWindows";
+import { openOrFocusModule } from "../utils/moduleWindows";
 import {
   defaultHopTemplate,
   isAutoHopTemplate,
@@ -779,9 +779,9 @@ export function NePage() {
                     type="button"
                     className="link-btn"
                     onClick={() =>
-                      openNewModuleWindow({
-                        moduleId: "webcrt",
-                        path: `/webcrt?ne_id=${encodeURIComponent(row.id)}`,
+                      openOrFocusModule({
+                        moduleId: "network",
+                        path: `/network/webcrt?ne_id=${encodeURIComponent(row.id)}`,
                       })
                     }
                     title={t("managedNe.openTerminal")}

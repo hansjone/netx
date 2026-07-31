@@ -33,11 +33,25 @@ src/
 |------|------|----------|
 | `/` | 工作台 | — |
 | `/ume` | UME 同步 | `ume` |
-| `/ne` | 网元管理 | `managed-ne` |
-| `/collect` | 批量采集 | `collect` |
-| `/webcrt` | WebCRT 终端 | `webcrt` |
+| `/network` | 网络管理（左栏 + 子路由） | `network` |
+| `/network/devices` | 设备列表 | `network` |
+| `/network/topology` | 拓扑信息 | `network` |
+| `/network/alarms` | 告警信息 | `network` |
+| `/network/webcrt` | WebCRT 终端 | `network` |
+| `/network/tasks/config-sync` | 采集任务（原批量采集） | `network` |
+| `/network/tasks/port-traffic` | 端口流量（占位） | `network` |
+| `/ne` | redirect → `/network/devices` | — |
+| `/collect` | redirect → `/network/tasks/config-sync` | — |
+| `/topology` | redirect → `/network/topology` | — |
+| `/webcrt` | redirect → `/network/webcrt`（保留 query） | — |
 
-**新增模块只需改 `config/modules.ts`：**
+菜单树见 `config/networkNav.ts`。**新增网络子页：**
+
+1. 在 `networkNav.ts` 增加叶子项
+2. 在 `App.tsx` `/network` 下增加子 `<Route>`
+3. 补充 i18n `network.*`
+
+**新增工作台模块仍改 `config/modules.ts`：**
 
 1. 在 `MODULES` 增加一项（`moduleId`、`path`、`section`、i18n key、`iconTone`）
 2. 在 `App.tsx` 增加 `<Route path="..." element={...} />`

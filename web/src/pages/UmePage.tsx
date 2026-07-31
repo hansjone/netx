@@ -3,7 +3,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   apiPost,
   disconnectUmeToken,
-  fetchUmeCurrentAlarms,
   fetchUmeNe,
   cancelUmeAlarmSubscription,
   clearLocalUmeAlarmSubscription,
@@ -31,6 +30,7 @@ import type { UmeAlarmSubscriptionStatus, UmeKeyAlertRuleItem } from "../types";
 import { pageCount, runtimeIntervalLabel } from "../utils/display";
 import { runtimeLastError, wsConnectionLabel } from "../utils/runtimeMessages";
 import { formatSystemTime } from "../utils/time";
+import { openOrFocusModule } from "../utils/moduleWindows";
 
 export function UmePage() {
   const { t } = useI18n();
@@ -48,13 +48,6 @@ export function UmePage() {
   const [nePanelOpen, setNePanelOpen] = useState(false);
   const [syncStatusPanelOpen, setSyncStatusPanelOpen] = useState(false);
   const [keyAlertPanelOpen, setKeyAlertPanelOpen] = useState(false);
-  const [curSeverity, setCurSeverity] = useState("");
-  const [curCleared, setCurCleared] = useState("");
-  const [curHostName, setCurHostName] = useState("");
-  const [curKeyword, setCurKeyword] = useState("");
-  const [curPage, setCurPage] = useState(1);
-  const [curPageSize, setCurPageSize] = useState(50);
-  const [alarmsPanelOpen, setAlarmsPanelOpen] = useState(false);
   const [keyAlertMatchType, setKeyAlertMatchType] = useState<"notification_id" | "keyword">("keyword");
   const [keyAlertMatchValue, setKeyAlertMatchValue] = useState("");
   const [keyAlertLabel, setKeyAlertLabel] = useState("");
@@ -264,19 +257,6 @@ export function UmePage() {
     }
     return map;
   }, [cliTargetsQuery.data]);
-  const currentQuery = useQuery({
-    queryKey: queryKeys.umeCurrentAlarms(curSeverity, curCleared, curHostName, curKeyword, curPage, curPageSize),
-    queryFn: () =>
-      fetchUmeCurrentAlarms({
-        severity: curSeverity,
-        isCleared: curCleared,
-        hostName: curHostName,
-        keyword: curKeyword,
-        page: curPage,
-        pageSize: curPageSize,
-      }),
-    staleTime: 5000,
-  });
 
   const runningTasks = (syncStatusQuery.data?.items || []).filter((x) => String(x.status || "").toLowerCase() === "running");
   const runtimeTasks = syncStatusQuery.data?.runtime_tasks || [];
@@ -425,8 +405,6 @@ export function UmePage() {
   const syncPages = pageCount(syncTotal, syncPageSize);
   const neTotal = Number(neQuery.data?.total || 0);
   const nePages = pageCount(neTotal, nePageSize);
-  const curTotal = Number(currentQuery.data?.total || 0);
-  const curPages = pageCount(curTotal, curPageSize);
 
   const keyAlertForwarder = keyAlertMonitorQuery.data?.forwarder;
   const keyAlertRules = keyAlertMonitorQuery.data?.rules || [];
@@ -1350,112 +1328,16 @@ export function UmePage() {
       <section className="panel">
         <div className="panel__toolbar">
           <h2>{t("ume.alarms.title")}</h2>
-          <button type="button" className="link-btn" onClick={() => setAlarmsPanelOpen((x) => !x)}>
-            {alarmsPanelOpen ? t("ume.alarms.hidePanel") : t("ume.alarms.showPanel")}
-          </button>
         </div>
-        {alarmsPanelOpen ? (
-          <>
-        <div className="filter-inline">
-          <input value={curKeyword} placeholder={t("ume.alarms.keywordPh")} onChange={(e) => setCurKeyword(e.target.value)} />
-          <input value={curHostName} placeholder={t("ume.alarms.hostNamePh")} onChange={(e) => setCurHostName(e.target.value)} />
-          <select value={curSeverity} onChange={(e) => setCurSeverity(e.target.value)}>
-            <option value="">{t("ume.alarms.allSeverity")}</option>
-            <option value="critical">critical</option>
-            <option value="major">major</option>
-            <option value="minor">minor</option>
-            <option value="warning">warning</option>
-            <option value="info">info</option>
-          </select>
-          <select value={curCleared} onChange={(e) => setCurCleared(e.target.value)}>
-            <option value="">{t("ume.alarms.clearedAll")}</option>
-            <option value="true">true</option>
-            <option value="false">false</option>
-          </select>
-          <button
-            type="button"
-            title={t("ume.alarms.clearTitle")}
-            onClick={() => {
-              setCurKeyword("");
-              setCurHostName("");
-              setCurSeverity("");
-              setCurCleared("");
-              setCurPage(1);
-            }}
-            disabled={!curKeyword.trim() && !curHostName.trim() && !curSeverity && !curCleared}
-          >
-            {t("common.clearFilters")}
-          </button>
-        </div>
-        <table>
-          <thead>
-            <tr>
-              <th>time_created</th>
-              <th>severity</th>
-              <th>ne_id</th>
-              <th>host_name</th>
-              <th>ne_type</th>
-              <th>cause</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(currentQuery.data?.items || []).map((x) => (
-              <tr key={x.alarm_key}>
-                <td>{formatSystemTime(x.time_created)}</td>
-                <td>{x.perceived_severity}</td>
-                <td>{x.ne_id}</td>
-                <td>
-                  {(x.host_name || "").trim() ? (
-                    <button
-                      className="link-btn"
-                      type="button"
-                      onClick={() => {
-                        setCurHostName(x.host_name || "");
-                        setCurKeyword("");
-                        setCurPage(1);
-                      }}
-                      title={t("ume.alarms.filterByHost")}
-                    >
-                      {x.host_name}
-                    </button>
-                  ) : (
-                    <span className="muted" title={t("ume.alarms.noHostName")}>
-                      {t("common.empty")}
-                    </span>
-                  )}
-                </td>
-                <td>{x.ne_type ?? ""}</td>
-                <td>{x.native_probable_cause}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        <div className="pager">
-          <div className="pager__meta">{t("common.pagerMeta", { total: curTotal, page: curPage, pages: curPages })}</div>
-          <div className="pager__controls">
-            <button className="pager__btn" onClick={() => setCurPage(Math.max(1, curPage - 1))} disabled={curPage <= 1}>
-              {t("common.prevPage")}
-            </button>
-            <button className="pager__btn" onClick={() => setCurPage(curPage + 1)} disabled={curPage >= curPages}>
-              {t("common.nextPage")}
-            </button>
-            <select
-              className="pager__size"
-              value={String(curPageSize)}
-              onChange={(e) => {
-                setCurPageSize(Number(e.target.value) || 50);
-                setCurPage(1);
-              }}
-            >
-              <option value="50">{perPage(50)}</option>
-              <option value="100">{perPage(100)}</option>
-              <option value="200">{perPage(200)}</option>
-              <option value="500">{perPage(500)}</option>
-            </select>
-          </div>
-        </div>
-          </>
-        ) : null}
+        <p className="muted">
+          {t("ume.alarms.movedHint")}{" "}
+          <a href="/network/alarms" onClick={(e) => {
+            e.preventDefault();
+            openOrFocusModule({ moduleId: "network", path: "/network/alarms" });
+          }}>
+            {t("network.nav.alarms")}
+          </a>
+        </p>
       </section>
       </div>
 

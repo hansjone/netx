@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { AppLayout } from "./layout/AppLayout";
 import { queryKeys } from "./constants/queryKeys";
@@ -8,6 +8,9 @@ import { NePage } from "./pages/NePage";
 import { UmePage } from "./pages/UmePage";
 import { WebcrtPage } from "./pages/WebcrtPage";
 import { TopologyPage } from "./pages/TopologyPage";
+import { NetworkLayout } from "./pages/network/NetworkLayout";
+import { NetworkAlarmsPage } from "./pages/network/NetworkAlarmsPage";
+import { NetworkPlaceholderPage } from "./pages/network/NetworkPlaceholderPage";
 import { LoginPage } from "./pages/LoginPage";
 import { UsersPage } from "./pages/UsersPage";
 import { AuditPage } from "./pages/AuditPage";
@@ -15,6 +18,12 @@ import { ApiTokensPage } from "./pages/ApiTokensPage";
 import { ForceChangePasswordPage } from "./pages/ForceChangePasswordPage";
 import { fetchIntegrationStatus } from "./services/api";
 import { useAuth } from "./auth/AuthContext";
+
+/** Preserve ?ne_id=… when redirecting legacy /webcrt into the network module. */
+function WebcrtLegacyRedirect() {
+  const { search } = useLocation();
+  return <Navigate to={`/network/webcrt${search}`} replace />;
+}
 
 function ProtectedApp() {
   const { ready, user } = useAuth();
@@ -71,10 +80,19 @@ function ProtectedApp() {
         <Route path="/" element={<WorkbenchPage />} />
         <Route path="/workbench" element={<Navigate to="/" replace />} />
         <Route path="/ume" element={<UmePage />} />
-        <Route path="/ne" element={<NePage />} />
-        <Route path="/collect" element={<CollectPage />} />
-        <Route path="/webcrt" element={<WebcrtPage />} />
-        <Route path="/topology" element={<TopologyPage />} />
+        <Route path="/network" element={<NetworkLayout />}>
+          <Route index element={<Navigate to="devices" replace />} />
+          <Route path="devices" element={<NePage />} />
+          <Route path="topology" element={<TopologyPage />} />
+          <Route path="alarms" element={<NetworkAlarmsPage />} />
+          <Route path="webcrt" element={<WebcrtPage />} />
+          <Route path="tasks/config-sync" element={<CollectPage />} />
+          <Route path="tasks/port-traffic" element={<NetworkPlaceholderPage kind="port-traffic" />} />
+        </Route>
+        <Route path="/ne" element={<Navigate to="/network/devices" replace />} />
+        <Route path="/collect" element={<Navigate to="/network/tasks/config-sync" replace />} />
+        <Route path="/topology" element={<Navigate to="/network/topology" replace />} />
+        <Route path="/webcrt" element={<WebcrtLegacyRedirect />} />
         <Route path="/users" element={<UsersPage />} />
         <Route path="/audit" element={<AuditPage />} />
         <Route path="/api-keys" element={<ApiTokensPage />} />
