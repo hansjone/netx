@@ -17,8 +17,9 @@ from .config import settings
 from .db import SessionLocal
 from .models import PortTrafficSample, PortTrafficTarget, PortTrafficTask
 from .ne_session_factory import close_netmiko_connection, open_netmiko_connection
+from .ne_netmiko import send_show_command
 from .port_traffic_commands import commands_for_vendor, detail_command
-from .port_traffic_parsers import parse_zte_interface_detail
+from .port_traffic_parsers import parse_interface_detail
 
 _log = logging.getLogger("netx.port_traffic.runner")
 _pools: dict[str, ThreadPoolExecutor] = {}
@@ -129,7 +130,7 @@ def _finish_collect_round(task_id: str, *, error: str = "") -> None:
 def _run_show(creds: dict[str, Any], command: str, read_timeout: int) -> str:
     conn = open_netmiko_connection(creds, session_timeout=read_timeout + 60)
     try:
-        return str(conn.send_command(command_string=command, read_timeout=read_timeout) or "")
+        return send_show_command(conn, command, read_timeout=read_timeout)
     finally:
         close_netmiko_connection(conn)
 
@@ -137,6 +138,7 @@ def _run_show(creds: dict[str, Any], command: str, read_timeout: int) -> str:
 def _sample_one_target(target_row_id: str) -> None:
     creds: dict[str, Any] | None = None
     cmd = ""
+    vendor_key = "zte"
     per_cmd = int(settings.ne_collect_read_timeout_sec or 120)
     cap = int(settings.ne_collect_run_timeout_cap_sec or 600)
 
@@ -174,6 +176,7 @@ def _sample_one_target(target_row_id: str) -> None:
             row.last_error = "unsupported_vendor"
             db.commit()
             return
+        vendor_key = cmds.vendor_key
         cmd = detail_command(cmds, ifname)
     finally:
         db.close()
@@ -190,8 +193,15 @@ def _sample_one_target(target_row_id: str) -> None:
         _set_target_error(target_row_id, _format_error(exc))
         return
 
-    parsed = parse_zte_interface_detail(raw)
-    if parsed.in_bps == 0 and parsed.out_bps == 0 and parsed.bw_bps == 0 and not parsed.ifname:
+    parsed = parse_interface_detail(raw, vendor_key)
+    if (
+        parsed.in_bps == 0
+        and parsed.out_bps == 0
+        and parsed.bw_bps == 0
+        and parsed.in_util_pct == 0
+        and parsed.out_util_pct == 0
+        and not parsed.ifname
+    ):
         _set_target_error(target_row_id, "parse_empty")
         return
 

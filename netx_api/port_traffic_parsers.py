@@ -1,4 +1,4 @@
-"""Parsers for ZTE show interface brief / detail (rate bit/s)."""
+"""Parsers for ZTE / Huawei / Cisco interface brief & detail (rate bit/s)."""
 
 from __future__ import annotations
 
@@ -15,8 +15,9 @@ _BW_UNIT = {
 }
 
 _RE_BW_COMPACT = re.compile(r"^(\d+(?:\.\d+)?)\s*([kKmMgGtT])(?:bit)?s?$", re.I)
+# ZTE "BW 1 Gbit/s" and Cisco "BW 1000000 Kbit/sec"
 _RE_BW_DETAIL = re.compile(
-    r"\bBW\s+(\d+(?:\.\d+)?)\s*([kKmMgGtT])?\s*(?:G?bit|bit)/s\b",
+    r"\bBW\s+(\d+(?:\.\d+)?)\s*([kKmMgGtT])?\s*(?:G?bit|bit)/s(?:ec)?\b",
     re.I,
 )
 _RE_RATE_PERIOD = re.compile(r"Rate\s+period\s*:\s*(\d+)\s*s", re.I)
@@ -30,12 +31,51 @@ _RE_IF_UP = re.compile(r"^(\S+)\s+is\s+(up|down)\b", re.I | re.M)
 _RE_DESC = re.compile(r"^\s*Description:\s*(.+?)\s*$", re.I | re.M)
 _RE_PROMPT_LINE = re.compile(r"[#>]\s*$")
 _RE_UPDOWN = re.compile(r"^(up|down)$", re.I)
-# ZTE / common logical iface names seen on ZXROS (plus numbered variants).
+_RE_UPDOWN_TOKEN = re.compile(r"^(up|down)\b", re.I)
+# ZTE / Huawei / Cisco / common logical iface names.
 _RE_IFNAME = re.compile(
     r"^(?:"
     r"xxvgei|xgei|cgei|gei|fei|qli|smartgroup|bvi|vlan|loopback|mgmt|"
-    r"null|pos|atm|tunnel|irb|pw|eth|ethernet|port-channel|bundle"
+    r"null|pos|atm|tunnel|irb|pw|eth|ethernet|port-channel|bundle|"
+    r"gigabitethernet|xgigabitethernet|fastethernet|tengigabitethernet|"
+    r"hundredgige|fivegige|fortygige|serial|dialer|cellular|multilink|"
+    r"10ge|25ge|40ge|100ge|eth-trunk|vlanif|meth|loopback"
     r")[\w./:-]*$",
+    re.I,
+)
+_RE_CISCO_BRIEF_ROW = re.compile(
+    r"^(\S+)\s+(\S+)\s+(YES|NO)\s+(\S+)\s+(.+?)\s+(up|down)\s*$",
+    re.I,
+)
+_RE_CISCO_IF_STATE = re.compile(
+    r"^(\S+)\s+is\s+(administratively\s+)?(up|down),\s*line\s+protocol\s+is\s+(up|down)\b",
+    re.I | re.M,
+)
+_RE_CISCO_RATE = re.compile(
+    r"(\d+)\s+(second|minute|hour)s?\s+(input|output)\s+rate\s+([\d.]+)\s*bits/sec",
+    re.I,
+)
+_RE_HW_BRIEF_ROW = re.compile(
+    r"^(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\d+)\s+(\d+)\s*$"
+)
+_RE_HW_STATE = re.compile(
+    r"^(\S+)\s+current\s+state\s*:\s*(UP|DOWN|Administratively\s+DOWN)\b",
+    re.I | re.M,
+)
+_RE_HW_IN_RATE = re.compile(
+    r"Last\s+(\d+)\s+seconds\s+input\s+rate\s*:\s*([\d.]+)\s*bits/sec",
+    re.I,
+)
+_RE_HW_OUT_RATE = re.compile(
+    r"Last\s+(\d+)\s+seconds\s+output\s+rate\s*:\s*([\d.]+)\s*bits/sec",
+    re.I,
+)
+_RE_HW_IN_UTIL = re.compile(
+    r"Last\s+(\d+)\s+seconds\s+input\s+utility\s+rate\s*:\s*([\d.]+)\s*%",
+    re.I,
+)
+_RE_HW_OUT_UTIL = re.compile(
+    r"Last\s+(\d+)\s+seconds\s+output\s+utility\s+rate\s*:\s*([\d.]+)\s*%",
     re.I,
 )
 
@@ -277,3 +317,253 @@ def detail_to_dict(row: DetailRates) -> dict[str, Any]:
         "in_util_pct": row.in_util_pct,
         "out_util_pct": row.out_util_pct,
     }
+
+
+def _norm_updown(token: str) -> str:
+    """Normalize Huawei tokens like up(s) / *down to up|down|''."""
+    text = (token or "").strip().lower()
+    if text.startswith("*"):
+        text = text[1:]
+    m = _RE_UPDOWN_TOKEN.match(text)
+    return m.group(1).lower() if m else ""
+
+
+def parse_huawei_interface_brief(text: str) -> list[BriefPort]:
+    """Parse Huawei `display interface brief` into port rows (BW ignored / 0)."""
+    lines = (text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    out: list[BriefPort] = []
+    started = False
+    for raw in lines:
+        line = raw.rstrip()
+        if not line.strip():
+            continue
+        low = line.lstrip().lower()
+        if low.startswith("interface") and "phy" in low and ("inuti" in low or "protocol" in low):
+            started = True
+            continue
+        if not started:
+            continue
+        stripped = line.strip()
+        if stripped.startswith("<") and stripped.endswith(">"):
+            break
+        if "#" in stripped and " " not in stripped.split("#", 1)[0]:
+            break
+        m = _RE_HW_BRIEF_ROW.match(stripped)
+        if not m:
+            continue
+        ifname = m.group(1)
+        phy = _norm_updown(m.group(2))
+        prot = _norm_updown(m.group(3))
+        if not ifname or ifname.lower() == "interface":
+            continue
+        if "#" in ifname or ">" in ifname:
+            continue
+        if not _RE_IFNAME.match(ifname):
+            continue
+        if not phy or not prot:
+            continue
+        out.append(
+            BriefPort(
+                ifname=ifname,
+                attribute="",
+                mode="",
+                bw_raw="",
+                bw_bps=0,
+                admin=phy,  # Huawei brief has no separate Admin; PHY is closest.
+                phy=phy,
+                prot=prot,
+                description="",
+            )
+        )
+    return out
+
+
+def parse_huawei_interface_detail(text: str) -> DetailRates:
+    """Parse Huawei `display interface {if}` Last N seconds rate / utility."""
+    blob = text or ""
+    ifname = ""
+    admin_oper = ""
+    m_state = _RE_HW_STATE.search(blob)
+    if m_state:
+        ifname = m_state.group(1)
+        st = m_state.group(2).lower()
+        admin_oper = "down" if "down" in st else "up"
+    desc = ""
+    m_desc = _RE_DESC.search(blob)
+    if m_desc:
+        desc = m_desc.group(1).strip()
+
+    rate_period = 0
+    in_bps = 0.0
+    out_bps = 0.0
+    m_in = _RE_HW_IN_RATE.search(blob)
+    if m_in:
+        rate_period = int(m_in.group(1))
+        in_bps = float(m_in.group(2))
+    m_out = _RE_HW_OUT_RATE.search(blob)
+    if m_out:
+        if not rate_period:
+            rate_period = int(m_out.group(1))
+        out_bps = float(m_out.group(2))
+
+    in_util = 0.0
+    out_util = 0.0
+    m_iu = _RE_HW_IN_UTIL.search(blob)
+    if m_iu:
+        if not rate_period:
+            rate_period = int(m_iu.group(1))
+        in_util = float(m_iu.group(2))
+    m_ou = _RE_HW_OUT_UTIL.search(blob)
+    if m_ou:
+        if not rate_period:
+            rate_period = int(m_ou.group(1))
+        out_util = float(m_ou.group(2))
+
+    return DetailRates(
+        ifname=ifname,
+        admin_oper=admin_oper,
+        description=desc,
+        bw_bps=0,  # sample has no BW; leave 0 for now
+        rate_period_sec=rate_period,
+        in_bps=in_bps,
+        out_bps=out_bps,
+        in_util_pct=in_util,
+        out_util_pct=out_util,
+    )
+
+
+def parse_interface_brief(text: str, vendor_key: str = "zte") -> list[BriefPort]:
+    key = str(vendor_key or "zte").strip().lower()
+    if key == "huawei":
+        return parse_huawei_interface_brief(text)
+    if key == "cisco":
+        return parse_cisco_interface_brief(text)
+    return parse_zte_interface_brief(text)
+
+
+def parse_interface_detail(text: str, vendor_key: str = "zte") -> DetailRates:
+    key = str(vendor_key or "zte").strip().lower()
+    if key == "huawei":
+        return parse_huawei_interface_detail(text)
+    if key == "cisco":
+        return parse_cisco_interface_detail(text)
+    return parse_zte_interface_detail(text)
+
+
+def _cisco_period_to_sec(n: int, unit: str) -> int:
+    u = (unit or "").lower()
+    if u.startswith("second"):
+        return int(n)
+    if u.startswith("minute"):
+        return int(n) * 60
+    if u.startswith("hour"):
+        return int(n) * 3600
+    return int(n)
+
+
+def parse_cisco_interface_brief(text: str) -> list[BriefPort]:
+    """Parse Cisco `show ip interface brief` into port rows."""
+    lines = (text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    out: list[BriefPort] = []
+    started = False
+    for raw in lines:
+        line = raw.rstrip()
+        if not line.strip():
+            continue
+        low = line.lstrip().lower()
+        if low.startswith("interface") and "status" in low and "protocol" in low:
+            started = True
+            continue
+        if not started:
+            continue
+        stripped = line.strip()
+        if stripped.endswith("#") or (stripped.endswith(">") and stripped.startswith("<")):
+            break
+        if "#" in stripped and " " not in stripped.split("#", 1)[0]:
+            break
+        m = _RE_CISCO_BRIEF_ROW.match(stripped)
+        if not m:
+            continue
+        ifname = m.group(1)
+        status = (m.group(5) or "").strip().lower()
+        prot = (m.group(6) or "").strip().lower()
+        if not _RE_IFNAME.match(ifname):
+            continue
+        if prot not in ("up", "down"):
+            continue
+        admin_down = "administratively" in status
+        if "down" in status:
+            phy = "down"
+        elif "up" in status:
+            phy = "up"
+        else:
+            continue
+        admin = "down" if admin_down else phy
+        out.append(
+            BriefPort(
+                ifname=ifname,
+                attribute="",
+                mode="",
+                bw_raw="",
+                bw_bps=0,
+                admin=admin,
+                phy=phy,
+                prot=prot,
+                description="",
+            )
+        )
+    return out
+
+
+def parse_cisco_interface_detail(text: str) -> DetailRates:
+    """Parse Cisco `show interfaces {if}` BW + N minute/second rate (util ignored)."""
+    blob = text or ""
+    ifname = ""
+    admin_oper = ""
+    m_state = _RE_CISCO_IF_STATE.search(blob)
+    if m_state:
+        ifname = m_state.group(1)
+        admin_oper = "down" if m_state.group(2) or m_state.group(3).lower() == "down" else "up"
+    if not ifname:
+        m_up = _RE_IF_UP.search(blob)
+        if m_up:
+            ifname = m_up.group(1)
+            admin_oper = m_up.group(2).lower()
+
+    desc = ""
+    m_desc = _RE_DESC.search(blob)
+    if m_desc:
+        desc = m_desc.group(1).strip()
+
+    bw_bps = 0
+    for line in blob.splitlines():
+        if "BW" in line.upper() and ("bit" in line.lower()):
+            bw_bps = parse_bw_to_bps(line)
+            if bw_bps:
+                break
+
+    rate_period = 0
+    in_bps = 0.0
+    out_bps = 0.0
+    for m in _RE_CISCO_RATE.finditer(blob):
+        period = _cisco_period_to_sec(int(m.group(1)), m.group(2))
+        direction = m.group(3).lower()
+        rate = float(m.group(4))
+        if not rate_period:
+            rate_period = period
+        if direction == "input":
+            in_bps = rate
+        else:
+            out_bps = rate
+
+    return DetailRates(
+        ifname=ifname,
+        admin_oper=admin_oper,
+        description=desc,
+        bw_bps=bw_bps,
+        rate_period_sec=rate_period,
+        in_bps=in_bps,
+        out_bps=out_bps,
+        in_util_pct=0.0,  # sample has no util %; ignore for now
+        out_util_pct=0.0,
+    )

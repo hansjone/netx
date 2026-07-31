@@ -1,4 +1,4 @@
-"""Vendor → port traffic CLI command matrix (ZTE first)."""
+"""Vendor → port traffic CLI command matrix (ZTE / Huawei / Cisco)."""
 
 from __future__ import annotations
 
@@ -20,6 +20,18 @@ def commands_for_vendor(vendor: str, device_type: str = "") -> PortTrafficComman
         return PortTrafficCommands(
             brief="show interface brief",
             detail_template="show interface {ifname}",
+            vendor_key=key,
+        )
+    if key == "huawei":
+        return PortTrafficCommands(
+            brief="display interface brief",
+            detail_template="display interface {ifname}",
+            vendor_key=key,
+        )
+    if key == "cisco":
+        return PortTrafficCommands(
+            brief="show ip interface brief",
+            detail_template="show interfaces {ifname}",
             vendor_key=key,
         )
     return None

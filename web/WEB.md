@@ -108,7 +108,7 @@ src/
 ## 端口流量监控
 
 - API：`/v1/port-traffic/*`（任务 CRUD、discover/ports、samples、dashboard）
-- 厂商：本期仅 ZTE（`show interface brief` / `show interface {if}`），解析 Rate period **bit/s**
+- 厂商：ZTE（`show interface brief` / `show interface {if}`）、华为（`display interface brief` / `display interface {if}`）、思科（`show ip interface brief` / `show interfaces {if}`）；解析速率 **bit/s**（华为暂无带宽则 `bw_bps=0`；思科暂无利用率则 util=0）
 - 调度：`NETX_PORT_TRAFFIC_SCHEDULER_ENABLED`（默认开），tick `NETX_PORT_TRAFFIC_SCHEDULER_TICK_SEC`（默认 15）
 - 单飞：同一任务同时只允许一轮采集；崩溃启动清除 `collect_running`
 - 保留：按任务 `retention_days` 清理过期 sample

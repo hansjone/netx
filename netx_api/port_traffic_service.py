@@ -15,8 +15,9 @@ from .cli_resolve import resolve_cli_target
 from .config import settings
 from .models import PortTrafficSample, PortTrafficTarget, PortTrafficTask
 from .ne_session_factory import close_netmiko_connection, open_netmiko_connection
+from .ne_netmiko import send_show_command
 from .port_traffic_commands import commands_for_vendor
-from .port_traffic_parsers import brief_port_to_dict, parse_zte_interface_brief
+from .port_traffic_parsers import brief_port_to_dict, parse_interface_brief
 from .port_traffic_schemas import (
     DiscoverPortItem,
     DiscoverPortsRequest,
@@ -84,7 +85,7 @@ def _target_out(row: PortTrafficTarget) -> PortTrafficTargetOut:
     )
 
 
-def _assert_zte_targets(targets: list[PortTrafficTargetIn]) -> None:
+def _assert_supported_targets(targets: list[PortTrafficTargetIn]) -> None:
     for t in targets:
         cmds = commands_for_vendor(t.vendor or "", "")
         if cmds is None:
@@ -114,7 +115,7 @@ def get_task(db: Session, task_id: str) -> PortTrafficTaskOut:
 
 
 def create_task(db: Session, body: PortTrafficTaskCreate) -> PortTrafficTaskOut:
-    _assert_zte_targets(body.targets)
+    _assert_supported_targets(body.targets)
     now = _utcnow()
     status = "running" if body.start_now and body.targets else "draft"
     if body.start_now and not body.targets:
@@ -219,7 +220,7 @@ def put_targets(db: Session, task_id: str, body: PortTrafficTargetsPut) -> list[
         raise HTTPException(status_code=404, detail="task_not_found")
     if bool(task.collect_running):
         raise HTTPException(status_code=409, detail="collect_running")
-    _assert_zte_targets(body.targets)
+    _assert_supported_targets(body.targets)
     old = db.query(PortTrafficTarget).filter(PortTrafficTarget.task_id == task_id).all()
     old_ids = [str(t.id) for t in old]
     if old_ids:
@@ -291,11 +292,14 @@ def discover_ports(db: Session, body: DiscoverPortsRequest) -> DiscoverPortsResp
     per_cmd = int(settings.ne_collect_read_timeout_sec or 120)
     conn = open_netmiko_connection(creds, session_timeout=per_cmd + 60)
     try:
-        raw = str(conn.send_command(command_string=cmds.brief, read_timeout=per_cmd) or "")
+        raw = send_show_command(conn, cmds.brief, read_timeout=per_cmd)
     finally:
         close_netmiko_connection(conn)
 
-    ports = [DiscoverPortItem(**brief_port_to_dict(p)) for p in parse_zte_interface_brief(raw)]
+    ports = [
+        DiscoverPortItem(**brief_port_to_dict(p))
+        for p in parse_interface_brief(raw, cmds.vendor_key)
+    ]
     return DiscoverPortsResponse(
         source=body.source,
         id=body.id,

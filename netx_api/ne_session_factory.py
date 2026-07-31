@@ -259,13 +259,44 @@ def _interactive_driver_class(base_cls: type) -> type:
     return _InteractiveSession
 
 
+def _cisco_ios_collection_driver_class(base_cls: type) -> type:
+    """Cisco IOSv-friendly session prep: avoid cmd_verify on terminal width/length."""
+
+    class _CiscoIosCollectionSession(base_cls):  # type: ignore[misc,valid-type]
+        def session_preparation(self) -> None:
+            # Default Netmiko waits for exact echo of "terminal width 511" (ReadTimeout on IOSv).
+            self._test_channel_read(pattern=r"[>#]")
+            try:
+                self.set_terminal_width(command="terminal width 511", pattern=r"[>#]")
+            except Exception:
+                pass
+            try:
+                self.disable_paging(command="terminal length 0", cmd_verify=False, pattern=r"[>#]")
+            except Exception:
+                try:
+                    self.send_command_timing("terminal length 0", read_timeout=15)
+                except Exception:
+                    pass
+            self.set_base_prompt()
+
+    _CiscoIosCollectionSession.__name__ = (
+        f"CiscoIosCollection{getattr(base_cls, '__name__', 'Netmiko')}"
+    )
+    return _CiscoIosCollectionSession
+
+
 def _build_netmiko_connection(dev: dict[str, Any], *, interactive: bool = False) -> ConnectHandler:
     """Instantiate Netmiko from connect kwargs; optional interactive skips paging cmds."""
-    if not interactive:
-        return ConnectHandler(**dev)
+    from .ne_netmiko import is_cisco_ios_device_type
+
     device_type = str(dev.get("device_type") or "").strip()
-    base_cls = _netmiko_driver_class(device_type)
-    return _interactive_driver_class(base_cls)(**dev)
+    if interactive:
+        base_cls = _netmiko_driver_class(device_type)
+        return _interactive_driver_class(base_cls)(**dev)
+    if is_cisco_ios_device_type(device_type):
+        base_cls = _netmiko_driver_class(device_type)
+        return _cisco_ios_collection_driver_class(base_cls)(**dev)
+    return ConnectHandler(**dev)
 
 
 def _netmiko_over_ssh_client(

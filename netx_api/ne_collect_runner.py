@@ -15,6 +15,7 @@ from .db import SessionLocal
 from .models import ManagedNE, NeCollectionJob, NeCollectionRun
 from .ne_collection_paths import clear_run_output_files, run_output_dir
 from .ne_crypto import CredentialCryptoError
+from .ne_netmiko import send_show_command
 from .ne_service import get_device_credentials
 from .ne_session_factory import close_netmiko_connection, open_netmiko_connection
 
@@ -52,7 +53,7 @@ def _collect_on_device(creds: dict[str, Any], commands: list[str]) -> str:
         for command in commands:
             ts = datetime.now().isoformat(timespec="seconds")
             chunks.append(f'>>> [{ts}] {{"String":"{command}", "Match":"{prompt}", "Timeout":0}}\n')
-            out = conn.send_command(command_string=command, read_timeout=per_cmd)
+            out = send_show_command(conn, command, read_timeout=per_cmd)
             chunks.append(str(out or ""))
             chunks.append("\n")
         return "".join(chunks)

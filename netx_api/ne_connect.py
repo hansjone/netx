@@ -13,6 +13,7 @@ from .models import ManagedNE, UmeCliOverride, UmeInventoryNE
 from .ne_crypto import CredentialCryptoError
 from .cli_resolve import resolve_cli_target
 from .ne_service import get_device_credentials
+from .ne_netmiko import send_show_command
 from .ne_session_factory import (
     bastion_ssh_cli,
     close_netmiko_connection,
@@ -238,7 +239,7 @@ def _probe_device(creds: dict[str, Any]) -> tuple[str, str, str | None, str]:
         command = hostname_probe_command(creds["device_type"], vendor)
         output = ""
         if command:
-            output = conn.send_command(command_string=command, read_timeout=_PROBE_READ_TIMEOUT)
+            output = send_show_command(conn, command, read_timeout=_PROBE_READ_TIMEOUT)
         hostname = parse_hostname_from_output(creds["device_type"], vendor, output, prompt)
         if hostname:
             msg = f"connected: {hostname}"

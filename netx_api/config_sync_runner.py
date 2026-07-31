@@ -21,6 +21,7 @@ from .config_sync_service import finalize_cycle, sync_cycle_progress
 from .db import SessionLocal
 from .models import ConfigSyncCycle, ConfigSyncPolicy, ConfigSyncTask, NeConfigHistory, NeConfigSnapshot
 from .ne_cli_errors import format_cli_failure, session_log_text
+from .ne_netmiko import send_show_command
 from .ne_session_factory import close_netmiko_connection, open_netmiko_connection
 
 _log = logging.getLogger("netx.config_sync.runner")
@@ -113,7 +114,7 @@ def _collect_commands(creds: dict[str, Any], commands: list[str]) -> list[str]:
         outputs: list[str] = []
         for command in commands:
             try:
-                out = conn.send_command(command_string=command, read_timeout=per_cmd)
+                out = send_show_command(conn, command, read_timeout=per_cmd)
             except Exception as exc:
                 raise RuntimeError(format_cli_failure(exc, session_log_text(log_buf))) from exc
             outputs.append(str(out or ""))
