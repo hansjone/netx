@@ -780,7 +780,7 @@ export function NePage() {
                     className="link-btn"
                     onClick={() =>
                       openOrFocusModule({
-                        moduleId: "network",
+                        moduleId: "webcrt",
                         path: `/webcrt?ne_id=${encodeURIComponent(row.id)}`,
                       })
                     }

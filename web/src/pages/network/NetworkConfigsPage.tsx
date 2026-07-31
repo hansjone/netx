@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
   downloadNeConfigSnapshot,
@@ -9,6 +8,7 @@ import {
 import { queryKeys } from "../../constants/queryKeys";
 import { useI18n } from "../../i18n";
 import { useToast } from "../../hooks/useToast";
+import { openOrFocusModule } from "../../utils/moduleWindows";
 import { pageCount } from "../../utils/display";
 import { formatSystemTime } from "../../utils/time";
 
@@ -161,11 +161,19 @@ export function NetworkConfigsPage() {
                   >
                     {t("networkConfigs.export")}
                   </button>
-                  <Link
-                    to={`/webcrt?${row.source === "ume" ? "ume_ne_id" : "ne_id"}=${encodeURIComponent(row.target_id)}`}
+                  <button
+                    type="button"
+                    className="link-btn"
+                    onClick={() => {
+                      const path =
+                        row.source === "ume"
+                          ? `/webcrt?ne_id=${encodeURIComponent(row.target_id)}&source=ume`
+                          : `/webcrt?ne_id=${encodeURIComponent(row.target_id)}`;
+                      openOrFocusModule({ moduleId: "webcrt", path });
+                    }}
                   >
                     WebCRT
-                  </Link>
+                  </button>
                 </td>
               </tr>
             );

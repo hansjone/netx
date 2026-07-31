@@ -676,14 +676,14 @@ export function TopologyPage() {
     const umeId = node?.data.ume_ne_id;
     if (managedId) {
       openOrFocusModule({
-        moduleId: "network",
+        moduleId: "webcrt",
         path: `/webcrt?ne_id=${encodeURIComponent(managedId)}`,
       });
       return;
     }
     if (umeId) {
       openOrFocusModule({
-        moduleId: "network",
+        moduleId: "webcrt",
         path: `/webcrt?ne_id=${encodeURIComponent(umeId)}&source=ume`,
       });
       return;
