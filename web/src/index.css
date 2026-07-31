@@ -2918,3 +2918,196 @@ pre {
   color: #475569;
   line-height: 1.6;
 }
+
+/* Port traffic monitoring */
+.pt-wizard__steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.pt-wizard__step {
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  color: #334155;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.pt-wizard__step.is-active {
+  border-color: #0f766e;
+  background: #ccfbf1;
+  color: #115e59;
+}
+
+.pt-wizard__ne-block {
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.pt-wizard__confirm-list {
+  margin: 8px 0 16px;
+  padding-left: 1.2rem;
+  max-height: 220px;
+  overflow: auto;
+  color: #334155;
+}
+
+.pt-wall-page__filters {
+  margin-bottom: 12px;
+  gap: 12px 18px;
+  align-items: flex-end;
+}
+
+.pt-wall-page__filters label {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.pt-wall-page__filters select {
+  min-width: 160px;
+}
+
+.pt-wall {
+  --pt-bg: #0b1220;
+  --pt-panel: #111827;
+  --pt-line: rgba(148, 163, 184, 0.22);
+  --pt-text: #e2e8f0;
+  --pt-muted: #94a3b8;
+  --pt-in: #2dd4bf;
+  --pt-out: #f59e0b;
+  background:
+    linear-gradient(180deg, rgba(15, 23, 42, 0.92), rgba(11, 18, 32, 0.98)),
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 23px,
+      rgba(148, 163, 184, 0.05) 24px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      transparent,
+      transparent 23px,
+      rgba(148, 163, 184, 0.05) 24px
+    );
+  border: 1px solid #1f2937;
+  border-radius: 10px;
+  padding: 16px 18px 12px;
+  color: var(--pt-text);
+}
+
+.pt-wall__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.pt-wall__title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.pt-wall__ne {
+  font-size: 13px;
+  color: var(--pt-muted);
+}
+
+.pt-wall__if {
+  font-size: 20px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  font-family: "IBM Plex Mono", "Cascadia Mono", Consolas, monospace;
+}
+
+.pt-wall__range {
+  font-size: 12px;
+  color: var(--pt-muted);
+  white-space: nowrap;
+}
+
+.pt-wall__kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.pt-wall__kpi {
+  background: rgba(17, 24, 39, 0.72);
+  border: 1px solid var(--pt-line);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.pt-wall__kpi-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--pt-muted);
+  margin-bottom: 4px;
+}
+
+.pt-wall__kpi-value {
+  font-size: 22px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  font-family: "IBM Plex Mono", "Cascadia Mono", Consolas, monospace;
+  line-height: 1.2;
+}
+
+.pt-wall__kpi--in .pt-wall__kpi-value {
+  color: var(--pt-in);
+}
+
+.pt-wall__kpi--out .pt-wall__kpi-value {
+  color: var(--pt-out);
+}
+
+.pt-wall__kpi-unit,
+.pt-wall__kpi-sep {
+  margin-left: 4px;
+  font-size: 12px;
+  color: var(--pt-muted);
+  font-weight: 500;
+}
+
+.pt-wall__chart {
+  min-height: 240px;
+  width: 100%;
+}
+
+.pt-wall__chart .uplot,
+.pt-wall__chart .u-wrap {
+  font-family: "IBM Plex Mono", "Cascadia Mono", Consolas, monospace;
+}
+
+.pt-wall__chart .u-legend {
+  color: var(--pt-muted);
+}
+
+.pt-wall__empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 240px;
+  color: var(--pt-muted);
+  border: 1px dashed rgba(148, 163, 184, 0.28);
+  border-radius: 8px;
+}
+
+@media (max-width: 900px) {
+  .pt-wall__kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

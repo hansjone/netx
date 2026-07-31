@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
@@ -588,3 +588,65 @@ class NeConfigHistory(Base):
     collected_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     cycle_id: Mapped[str] = mapped_column(String(64), default="")
     task_id: Mapped[str] = mapped_column(String(64), default="")
+
+
+class PortTrafficTask(Base):
+    """Port traffic monitoring job definition."""
+
+    __tablename__ = "port_traffic_task"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
+    title: Mapped[str] = mapped_column(String(256), default="")
+    status: Mapped[str] = mapped_column(String(32), default="draft", index=True)  # draft|running|paused|stopped
+    interval_sec: Mapped[int] = mapped_column(Integer, default=60)
+    retention_days: Mapped[int] = mapped_column(Integer, default=7)
+    concurrency: Mapped[int] = mapped_column(Integer, default=5)
+    collect_running: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_collect_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_collect_ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[str] = mapped_column(String(1024), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class PortTrafficTarget(Base):
+    """Monitored interface under a port traffic task."""
+
+    __tablename__ = "port_traffic_target"
+    __table_args__ = (
+        UniqueConstraint("task_id", "source", "target_id", "ifname", name="uq_port_traffic_target_if"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
+    task_id: Mapped[str] = mapped_column(String(64), index=True)
+    source: Mapped[str] = mapped_column(String(32), default="managed", index=True)
+    target_id: Mapped[str] = mapped_column(String(128), index=True)
+    ne_name: Mapped[str] = mapped_column(String(256), default="")
+    ne_ip: Mapped[str] = mapped_column(String(128), default="")
+    vendor: Mapped[str] = mapped_column(String(64), default="")
+    ifname: Mapped[str] = mapped_column(String(128), default="")
+    if_description: Mapped[str] = mapped_column(String(512), default="")
+    bw_bps: Mapped[int] = mapped_column(BigInteger, default=0)
+    status: Mapped[str] = mapped_column(String(32), default="active", index=True)  # active|disabled
+    last_error: Mapped[str] = mapped_column(String(1024), default="")
+    last_sample_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class PortTrafficSample(Base):
+    """Time-series sample for a monitored interface."""
+
+    __tablename__ = "port_traffic_sample"
+    __table_args__ = (UniqueConstraint("target_row_id", "ts", name="uq_port_traffic_sample_ts"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
+    target_row_id: Mapped[str] = mapped_column(String(64), index=True)
+    ts: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    in_bps: Mapped[float] = mapped_column(Float, default=0.0)
+    out_bps: Mapped[float] = mapped_column(Float, default=0.0)
+    in_util_pct: Mapped[float] = mapped_column(Float, default=0.0)
+    out_util_pct: Mapped[float] = mapped_column(Float, default=0.0)
+    bw_bps: Mapped[int] = mapped_column(BigInteger, default=0)
+    rate_period_sec: Mapped[int] = mapped_column(Integer, default=0)
+    raw_ok: Mapped[bool] = mapped_column(Boolean, default=True)
+    message: Mapped[str] = mapped_column(String(512), default="")

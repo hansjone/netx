@@ -77,6 +77,9 @@ class Settings(BaseSettings):
     config_sync_scheduler_tick_sec: int = 60
     # After process start / unexpected restart, wait before any scheduled sync.
     config_sync_startup_grace_sec: int = 3600
+    # Port traffic monitoring (CLI rate bit/s samples)
+    port_traffic_scheduler_enabled: bool = True
+    port_traffic_scheduler_tick_sec: int = 15
     # Managed NE exec: max CLI commands per request (lab can raise; hard-capped in ne_exec).
     ne_exec_max_commands: int = 5
     # WebCRT interactive terminal sessions

@@ -13,7 +13,7 @@ import { NetworkLayout } from "./pages/network/NetworkLayout";
 import { NetworkDevicesPage } from "./pages/network/NetworkDevicesPage";
 import { NetworkAlarmsPage } from "./pages/network/NetworkAlarmsPage";
 import { NetworkConfigsPage } from "./pages/network/NetworkConfigsPage";
-import { NetworkPlaceholderPage } from "./pages/network/NetworkPlaceholderPage";
+import { PortTrafficPage } from "./pages/network/PortTrafficPage";
 import { LoginPage } from "./pages/LoginPage";
 import { UsersPage } from "./pages/UsersPage";
 import { AuditPage } from "./pages/AuditPage";
@@ -95,7 +95,7 @@ function ProtectedApp() {
           <Route path="webcrt" element={<NetworkWebcrtRedirect />} />
           <Route path="tasks/collect" element={<CollectPage />} />
           <Route path="tasks/config-sync" element={<ConfigSyncPage />} />
-          <Route path="tasks/port-traffic" element={<NetworkPlaceholderPage kind="port-traffic" />} />
+          <Route path="tasks/port-traffic" element={<PortTrafficPage />} />
         </Route>
         <Route path="/collect" element={<Navigate to="/network/tasks/collect" replace />} />
         <Route path="/users" element={<UsersPage />} />

@@ -29,6 +29,12 @@ import type {
   ConfigSyncTask,
   NeConfigSnapshotDetail,
   NeConfigSnapshotMeta,
+  PortTrafficDashboard,
+  PortTrafficDiscoverResponse,
+  PortTrafficSamples,
+  PortTrafficTarget,
+  PortTrafficTargetIn,
+  PortTrafficTask,
 } from "../types";
 
 export const AUTH_TOKEN_KEY = "netx_access_token";
@@ -778,4 +784,57 @@ export const downloadNeConfigSnapshot = async (
   } finally {
     URL.revokeObjectURL(url);
   }
+};
+
+export const fetchPortTrafficDashboard = () =>
+  apiGet<PortTrafficDashboard>("/v1/port-traffic/dashboard");
+
+export const fetchPortTrafficTasks = (params: { page?: number; pageSize?: number }) => {
+  const p = new URLSearchParams();
+  p.set("page", String(Math.max(1, Number(params.page || 1))));
+  p.set("page_size", String(Math.max(1, Math.min(100, Number(params.pageSize || 20)))));
+  return apiGet<{ total: number; page: number; page_size: number; items: PortTrafficTask[] }>(
+    `/v1/port-traffic/tasks?${p.toString()}`,
+  );
+};
+
+export const createPortTrafficTask = (body: {
+  title: string;
+  interval_sec?: number;
+  retention_days?: number;
+  concurrency?: number;
+  targets?: PortTrafficTargetIn[];
+  start_now?: boolean;
+}) => apiPost<PortTrafficTask>("/v1/port-traffic/tasks", body);
+
+export const startPortTrafficTask = (taskId: string) =>
+  apiPost<PortTrafficTask>(`/v1/port-traffic/tasks/${encodeURIComponent(taskId)}/start`, {});
+
+export const pausePortTrafficTask = (taskId: string) =>
+  apiPost<PortTrafficTask>(`/v1/port-traffic/tasks/${encodeURIComponent(taskId)}/pause`, {});
+
+export const stopPortTrafficTask = (taskId: string) =>
+  apiPost<PortTrafficTask>(`/v1/port-traffic/tasks/${encodeURIComponent(taskId)}/stop`, {});
+
+export const deletePortTrafficTask = (taskId: string) =>
+  apiDelete<{ ok: boolean; id: string }>(`/v1/port-traffic/tasks/${encodeURIComponent(taskId)}`);
+
+export const fetchPortTrafficTargets = (taskId: string) =>
+  apiGet<{ items: PortTrafficTarget[] }>(
+    `/v1/port-traffic/tasks/${encodeURIComponent(taskId)}/targets`,
+  );
+
+export const discoverPortTrafficPorts = (body: { source: "managed" | "ume"; id: string }) =>
+  apiPost<PortTrafficDiscoverResponse>("/v1/port-traffic/discover/ports", body);
+
+export const fetchPortTrafficSamples = (params: {
+  targetId: string;
+  from?: string;
+  to?: string;
+}) => {
+  const p = new URLSearchParams();
+  p.set("target_id", params.targetId);
+  if (params.from) p.set("from", params.from);
+  if (params.to) p.set("to", params.to);
+  return apiGet<PortTrafficSamples>(`/v1/port-traffic/samples?${p.toString()}`);
 };

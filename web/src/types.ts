@@ -507,3 +507,93 @@ export type NeConfigSnapshotDetail = NeConfigSnapshotMeta & {
   config_alt_text: string;
 };
 
+export type PortTrafficTask = {
+  id: string;
+  title: string;
+  status: string;
+  interval_sec: number;
+  retention_days: number;
+  concurrency: number;
+  collect_running: boolean;
+  target_count: number;
+  active_target_count: number;
+  last_collect_started_at?: string | null;
+  last_collect_ended_at?: string | null;
+  last_error: string;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type PortTrafficTarget = {
+  id: string;
+  task_id: string;
+  source: string;
+  target_id: string;
+  ne_name: string;
+  ne_ip: string;
+  vendor: string;
+  ifname: string;
+  if_description: string;
+  bw_bps: number;
+  status: string;
+  last_error: string;
+  last_sample_at?: string | null;
+  created_at?: string | null;
+};
+
+export type PortTrafficTargetIn = {
+  source: "managed" | "ume";
+  target_id: string;
+  ne_name?: string;
+  ne_ip?: string;
+  vendor?: string;
+  ifname: string;
+  if_description?: string;
+  bw_bps?: number;
+};
+
+export type PortTrafficDiscoverPort = {
+  ifname: string;
+  attribute: string;
+  mode: string;
+  bw_raw: string;
+  bw_bps: number;
+  admin: string;
+  phy: string;
+  prot: string;
+  description: string;
+};
+
+export type PortTrafficDiscoverResponse = {
+  source: string;
+  id: string;
+  ne_name: string;
+  ne_ip: string;
+  vendor: string;
+  vendor_key: string;
+  ports: PortTrafficDiscoverPort[];
+};
+
+export type PortTrafficSamplePoint = {
+  ts: string;
+  in_bps: number;
+  out_bps: number;
+  in_util_pct: number;
+  out_util_pct: number;
+  bw_bps: number;
+  rate_period_sec: number;
+};
+
+export type PortTrafficSamples = {
+  target: PortTrafficTarget;
+  points: PortTrafficSamplePoint[];
+};
+
+export type PortTrafficDashboard = {
+  task_count: number;
+  running_task_count: number;
+  active_target_count: number;
+  sample_count_24h: number;
+  last_sample_at?: string | null;
+};
+

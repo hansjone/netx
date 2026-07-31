@@ -42,7 +42,7 @@ src/
 | `/network/topology` | redirect → `/topology` | — |
 | `/network/tasks/collect` | 采集任务 | `network` |
 | `/network/tasks/config-sync` | 配置同步 | `network` |
-| `/network/tasks/port-traffic` | 端口流量（占位） | `network` |
+| `/network/tasks/port-traffic` | 端口流量监控（任务向导 + 大屏） | `network` |
 | `/topology` | 拓扑管理 | `topology` |
 | `/webcrt` | WebCRT 终端 | `webcrt` |
 | `/collect` | redirect → `/network/tasks/collect` | — |
@@ -104,6 +104,15 @@ src/
 - 崩溃续跑：启动时把中断的 `running` 任务重新入队并继续，占用单飞槽位，避免与新周期重叠
 - 进程启动宽限：`NETX_CONFIG_SYNC_STARTUP_GRACE_SEC`（默认 3600）仅约束**新建**自动周期，不影响续跑
 - 前端：`/network/tasks/config-sync`（看板）+ `/network/configs`（查看）
+
+## 端口流量监控
+
+- API：`/v1/port-traffic/*`（任务 CRUD、discover/ports、samples、dashboard）
+- 厂商：本期仅 ZTE（`show interface brief` / `show interface {if}`），解析 Rate period **bit/s**
+- 调度：`NETX_PORT_TRAFFIC_SCHEDULER_ENABLED`（默认开），tick `NETX_PORT_TRAFFIC_SCHEDULER_TICK_SEC`（默认 15）
+- 单飞：同一任务同时只允许一轮采集；崩溃启动清除 `collect_running`
+- 保留：按任务 `retention_days` 清理过期 sample
+- 前端：`/network/tasks/port-traffic`（四步向导 + 任务启停 + uPlot 监控大屏）
 
 ## WebCRT
 
