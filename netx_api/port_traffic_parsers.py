@@ -28,6 +28,16 @@ _RE_UTIL = re.compile(
 )
 _RE_IF_UP = re.compile(r"^(\S+)\s+is\s+(up|down)\b", re.I | re.M)
 _RE_DESC = re.compile(r"^\s*Description:\s*(.+?)\s*$", re.I | re.M)
+_RE_PROMPT_LINE = re.compile(r"[#>]\s*$")
+_RE_UPDOWN = re.compile(r"^(up|down)$", re.I)
+# ZTE / common logical iface names seen on ZXROS (plus numbered variants).
+_RE_IFNAME = re.compile(
+    r"^(?:"
+    r"xxvgei|xgei|cgei|gei|fei|qli|smartgroup|bvi|vlan|loopback|mgmt|"
+    r"null|pos|atm|tunnel|irb|pw|eth|ethernet|port-channel|bundle"
+    r")[\w./:-]*$",
+    re.I,
+)
 
 # Fixed-width columns from ZTE `show interface brief` header.
 _COL_IF = (0, 24)
@@ -106,6 +116,28 @@ def _slice(line: str, start: int, end: int | None) -> str:
     return line[start:end].strip()
 
 
+def _looks_like_brief_port(ifname: str, admin: str, phy: str, prot: str) -> bool:
+    """Reject prompts / hostname lines that leak after the brief table."""
+    name = (ifname or "").strip()
+    if not name or name.lower() == "interface":
+        return False
+    if "#" in name or ">" in name:
+        return False
+    if _RE_PROMPT_LINE.search(name):
+        return False
+    # Real brief rows always have Admin/Phy/Prot as up|down.
+    if not (
+        _RE_UPDOWN.match(admin or "")
+        and _RE_UPDOWN.match(phy or "")
+        and _RE_UPDOWN.match(prot or "")
+    ):
+        return False
+    # Prefer known iface prefixes; still allow smartgroup/bvi style names.
+    if not _RE_IFNAME.match(name):
+        return False
+    return True
+
+
 def parse_zte_interface_brief(text: str) -> list[BriefPort]:
     """Parse ZTE `show interface brief` into port rows."""
     lines = (text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
@@ -120,10 +152,20 @@ def parse_zte_interface_brief(text: str) -> list[BriefPort]:
             continue
         if not started:
             continue
+        stripped = line.strip()
+        # Trailing device prompt after the table (Netmiko often leaves hostname#).
+        if "#" in stripped or (stripped.endswith(">") and " " not in stripped):
+            admin_probe = _slice(line, *_COL_ADMIN).lower()
+            if not _RE_UPDOWN.match(admin_probe):
+                break
         if " is " in line and "ifindex" in line.lower():
             break
-        ifname = _slice(line, *_COL_IF).split()[0] if _slice(line, *_COL_IF) else ""
-        if not ifname or ifname.lower() == "interface":
+        if_field = _slice(line, *_COL_IF)
+        ifname = if_field.split()[0] if if_field else ""
+        admin = _slice(line, *_COL_ADMIN).lower()
+        phy = _slice(line, *_COL_PHY).lower()
+        prot = _slice(line, *_COL_PROT).lower()
+        if not _looks_like_brief_port(ifname, admin, phy, prot):
             continue
         bw_raw = _slice(line, *_COL_BW)
         out.append(
@@ -133,9 +175,9 @@ def parse_zte_interface_brief(text: str) -> list[BriefPort]:
                 mode=_slice(line, *_COL_MODE),
                 bw_raw=bw_raw,
                 bw_bps=parse_bw_to_bps(bw_raw),
-                admin=_slice(line, *_COL_ADMIN).lower(),
-                phy=_slice(line, *_COL_PHY).lower(),
-                prot=_slice(line, *_COL_PROT).lower(),
+                admin=admin,
+                phy=phy,
+                prot=prot,
                 description=_slice(line, *_COL_DESC).strip(),
             )
         )

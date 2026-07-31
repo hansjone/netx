@@ -87,6 +87,26 @@ class BriefParserTests(unittest.TestCase):
         self.assertEqual(by_name["smartgroup10"].bw_bps, 1_000_000_000)
         self.assertEqual(by_name["xgei-1/1/0/2"].phy, "down")
 
+    def test_rejects_trailing_hostname_prompt(self):
+        text = SAMPLE_BRIEF + "\nAL5458-ACC-6120HS#\n"
+        rows = parse_zte_interface_brief(text)
+        names = [r.ifname for r in rows]
+        self.assertNotIn("AL5458-ACC-6120HS#", names)
+        self.assertNotIn("AL5458-ACC-6120HS", names)
+        self.assertTrue(any(n.startswith("xgei-") for n in names))
+
+    def test_rejects_prompt_without_hash(self):
+        # Some captures leave hostname alone after the table.
+        text = (
+            SAMPLE_BRIEF
+            + "\nAL5458-ACC-6120HS\n"
+            + "AL5458-ACC-6120HS#show something\n"
+        )
+        rows = parse_zte_interface_brief(text)
+        names = [r.ifname for r in rows]
+        self.assertNotIn("AL5458-ACC-6120HS", names)
+        self.assertNotIn("AL5458-ACC-6120HS#show", names)
+
 
 class DetailParserTests(unittest.TestCase):
     def test_sample_detail(self):
