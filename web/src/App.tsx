@@ -4,12 +4,14 @@ import { AppLayout } from "./layout/AppLayout";
 import { queryKeys } from "./constants/queryKeys";
 import { WorkbenchPage } from "./pages/WorkbenchPage";
 import { CollectPage } from "./pages/CollectPage";
+import { ConfigSyncPage } from "./pages/ConfigSyncPage";
 import { NePage } from "./pages/NePage";
 import { UmePage } from "./pages/UmePage";
 import { WebcrtPage } from "./pages/WebcrtPage";
 import { TopologyPage } from "./pages/TopologyPage";
 import { NetworkLayout } from "./pages/network/NetworkLayout";
 import { NetworkAlarmsPage } from "./pages/network/NetworkAlarmsPage";
+import { NetworkConfigsPage } from "./pages/network/NetworkConfigsPage";
 import { NetworkPlaceholderPage } from "./pages/network/NetworkPlaceholderPage";
 import { LoginPage } from "./pages/LoginPage";
 import { UsersPage } from "./pages/UsersPage";
@@ -85,12 +87,14 @@ function ProtectedApp() {
           <Route path="devices" element={<NePage />} />
           <Route path="topology" element={<TopologyPage />} />
           <Route path="alarms" element={<NetworkAlarmsPage />} />
+          <Route path="configs" element={<NetworkConfigsPage />} />
           <Route path="webcrt" element={<WebcrtPage />} />
-          <Route path="tasks/config-sync" element={<CollectPage />} />
+          <Route path="tasks/collect" element={<CollectPage />} />
+          <Route path="tasks/config-sync" element={<ConfigSyncPage />} />
           <Route path="tasks/port-traffic" element={<NetworkPlaceholderPage kind="port-traffic" />} />
         </Route>
         <Route path="/ne" element={<Navigate to="/network/devices" replace />} />
-        <Route path="/collect" element={<Navigate to="/network/tasks/config-sync" replace />} />
+        <Route path="/collect" element={<Navigate to="/network/tasks/collect" replace />} />
         <Route path="/topology" element={<Navigate to="/network/topology" replace />} />
         <Route path="/webcrt" element={<WebcrtLegacyRedirect />} />
         <Route path="/users" element={<UsersPage />} />

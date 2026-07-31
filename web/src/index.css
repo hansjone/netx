@@ -758,7 +758,46 @@ pre {
   flex-wrap: wrap;
 }
 
-/* ── NE stats card ── */
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.stat-card {
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: var(--panel-bg, #fff);
+}
+
+.stat-card strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 1.05rem;
+}
+
+.btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.btn-primary {
+  background: #2563eb;
+  color: #fff;
+  border-color: #1d4ed8;
+}
+
+.btn-primary:disabled {
+  opacity: 0.55;
+}
+
+.data-table {
+  width: 100%;
+}
+
 .ne-stats-card {
   padding: 12px 14px;
 }

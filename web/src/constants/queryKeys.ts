@@ -48,4 +48,15 @@ export const queryKeys = {
   ) => ["umeCurrentAlarms", severity, cleared, hostName, keyword, page, pageSize] as const,
   topologyMaps: ["topologyMaps"] as const,
   topologyGraph: (mapId: string) => ["topologyGraph", mapId] as const,
+  configSyncDashboard: ["configSyncDashboard"] as const,
+  configSyncPolicy: ["configSyncPolicy"] as const,
+  configSyncCyclesAll: ["configSyncCycles"] as const,
+  configSyncCycles: (page: number) => ["configSyncCycles", page] as const,
+  configSyncCycleTasksAll: ["configSyncCycleTasks"] as const,
+  configSyncCycleTasks: (cycleId: string, page: number, status: string, keyword: string) =>
+    ["configSyncCycleTasks", cycleId, page, status, keyword] as const,
+  networkConfigsAll: ["networkConfigs"] as const,
+  networkConfigs: (page: number, keyword: string, source: string, vendor: string) =>
+    ["networkConfigs", page, keyword, source, vendor] as const,
+  networkConfigDetail: (source: string, id: string) => ["networkConfigDetail", source, id] as const,
 };

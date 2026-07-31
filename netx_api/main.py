@@ -26,6 +26,7 @@ from .config import settings
 from .db import Base, SessionLocal, engine, get_db
 from .collection_router import router as collection_router
 from .cli_router import router as cli_router
+from .config_sync_router import router as config_sync_router
 from .managed_ne_router import router as managed_ne_router
 from .webcrt_router import router as webcrt_router
 from .topology_router import router as topology_router
@@ -133,6 +134,7 @@ app.include_router(auth_router)
 app.include_router(managed_ne_router)
 app.include_router(cli_router)
 app.include_router(collection_router)
+app.include_router(config_sync_router)
 app.include_router(webcrt_router)
 app.include_router(topology_router)
 parser_cfg = load_parser_config()
@@ -832,10 +834,23 @@ def on_startup() -> None:
         resumed = recover_collection_jobs_on_startup(db)
         if resumed:
             _schedule_log.info("startup: resumed %s pending ne collection runs", resumed)
+        from .config_sync_recovery import recover_config_sync_on_startup
+        from .config_sync_service import ensure_policy
+
+        ensure_policy(db)
+        cfg_resumed = recover_config_sync_on_startup(db)
+        if cfg_resumed:
+            _schedule_log.info("startup: resumed %s pending config_sync tasks", cfg_resumed)
     except Exception:
-        _schedule_log.exception("startup: ne collection job recovery failed")
+        _schedule_log.exception("startup: ne collection / config_sync recovery failed")
     finally:
         db.close()
+    try:
+        from .config_sync_scheduler import start_config_sync_scheduler
+
+        start_config_sync_scheduler()
+    except Exception:
+        _schedule_log.exception("startup: config_sync scheduler init failed")
     # Best-effort schema evolution for new columns (no migrations framework).
     # Safe for Postgres (IF NOT EXISTS); ignored on failure.
     try:

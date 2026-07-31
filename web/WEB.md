@@ -37,11 +37,13 @@ src/
 | `/network/devices` | 设备列表 | `network` |
 | `/network/topology` | 拓扑信息 | `network` |
 | `/network/alarms` | 告警信息 | `network` |
+| `/network/configs` | 配置信息（同步快照） | `network` |
 | `/network/webcrt` | WebCRT 终端 | `network` |
-| `/network/tasks/config-sync` | 采集任务（原批量采集） | `network` |
+| `/network/tasks/collect` | 采集任务 | `network` |
+| `/network/tasks/config-sync` | 配置同步 | `network` |
 | `/network/tasks/port-traffic` | 端口流量（占位） | `network` |
 | `/ne` | redirect → `/network/devices` | — |
-| `/collect` | redirect → `/network/tasks/config-sync` | — |
+| `/collect` | redirect → `/network/tasks/collect` | — |
 | `/topology` | redirect → `/network/topology` | — |
 | `/webcrt` | redirect → `/network/webcrt`（保留 query） | — |
 
@@ -89,6 +91,14 @@ src/
 - API：`/v1/ne-collections/*`（仅 `connect_status=pass` 的网元可参与）
 - 采集日志目录：`NETX_NE_COLLECTION_DATA_DIR`（默认 `data/ne_collections`）
 - 命令每行一条，`#` 为注释；输出格式与旧版 NetX 采集 `.txt` 一致
+
+## 配置同步
+
+- API：`/v1/config-sync/*`（策略、看板、周期、快照）
+- 存储：PostgreSQL `ne_config_snapshot` / `ne_config_history`（zlib BYTEA）
+- 范围：ManagedNE + UME CLI 目标；厂商固定只读命令矩阵
+- 调度：`NETX_CONFIG_SYNC_SCHEDULER_ENABLED`（默认开），周期天数策略可配（默认 3 天）
+- 前端：`/network/tasks/config-sync`（看板）+ `/network/configs`（查看）
 
 ## WebCRT
 

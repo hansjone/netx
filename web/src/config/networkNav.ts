@@ -26,6 +26,7 @@ export const NETWORK_NAV: readonly NetworkNavGroup[] = [
       { id: "devices", path: "/network/devices", labelKey: "network.nav.devices", group: "detail" },
       { id: "topology", path: "/network/topology", labelKey: "network.nav.topology", group: "detail" },
       { id: "alarms", path: "/network/alarms", labelKey: "network.nav.alarms", group: "detail" },
+      { id: "configs", path: "/network/configs", labelKey: "network.nav.configs", group: "detail" },
       { id: "webcrt", path: "/network/webcrt", labelKey: "network.nav.webcrt", group: "detail" },
     ],
   },
@@ -33,6 +34,12 @@ export const NETWORK_NAV: readonly NetworkNavGroup[] = [
     id: "tasks",
     labelKey: "network.nav.tasks",
     items: [
+      {
+        id: "collect",
+        path: "/network/tasks/collect",
+        labelKey: "network.nav.collectTasks",
+        group: "tasks",
+      },
       {
         id: "config-sync",
         path: "/network/tasks/config-sync",
