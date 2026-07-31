@@ -489,11 +489,19 @@ def _prompt_needs_auth(text: str) -> tuple[bool, bool]:
 
 def _interactive_target_auth(conn: ConnectHandler, username: str, password: str) -> None:
     """Respond to username/password prompts after hop command (target credentials)."""
+    from .ne_cli_errors import find_auth_failure_snippet
+
     deadline = time.time() + int(settings.ne_connect_timeout_sec or 30)
     sent_user = False
     sent_pass = False
+    acc = ""
     while time.time() < deadline:
         buf = _read_channel(conn, wait=0.3, max_loops=8)
+        if buf:
+            acc += buf
+            denied = find_auth_failure_snippet(acc)
+            if denied:
+                raise paramiko.AuthenticationException(f"target_auth_rejected: {denied}")
         need_user, need_pass = _prompt_needs_auth(buf)
         if need_pass and not sent_pass:
             _send_line(conn, password)
@@ -504,14 +512,23 @@ def _interactive_target_auth(conn: ConnectHandler, username: str, password: str)
             sent_user = True
             continue
         if sent_pass and not need_user and not need_pass:
+            denied = find_auth_failure_snippet(acc)
+            if denied:
+                raise paramiko.AuthenticationException(f"target_auth_rejected: {denied}")
             return
         if not buf.strip():
             time.sleep(0.3)
             continue
         if re.search(r"[>#]\s*$", buf):
+            denied = find_auth_failure_snippet(acc)
+            if denied:
+                raise paramiko.AuthenticationException(f"target_auth_rejected: {denied}")
             if sent_pass or (sent_user and not need_pass):
                 return
         time.sleep(0.3)
+    denied = find_auth_failure_snippet(acc)
+    if denied:
+        raise paramiko.AuthenticationException(f"target_auth_rejected: {denied}")
     if not sent_pass:
         raise TimeoutError("target_auth_timeout")
 

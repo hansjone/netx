@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
@@ -19,6 +20,7 @@ from .config_sync_commands import command_list, commands_for_vendor
 from .config_sync_service import finalize_cycle, sync_cycle_progress
 from .db import SessionLocal
 from .models import ConfigSyncCycle, ConfigSyncPolicy, ConfigSyncTask, NeConfigHistory, NeConfigSnapshot
+from .ne_cli_errors import format_cli_failure, session_log_text
 from .ne_session_factory import close_netmiko_connection, open_netmiko_connection
 
 _log = logging.getLogger("netx.config_sync.runner")
@@ -31,8 +33,7 @@ def _utcnow() -> datetime:
 
 
 def _format_error(exc: BaseException) -> str:
-    head = f"{type(exc).__name__}: {exc}"
-    return head[:1020]
+    return format_cli_failure(exc, limit=1020)
 
 
 def _pool_for_cycle(cycle_id: str, concurrency: int) -> ThreadPoolExecutor:
@@ -103,11 +104,18 @@ def _claim_task(cycle_id: str, task_id: str) -> bool:
 def _collect_commands(creds: dict[str, Any], commands: list[str]) -> list[str]:
     per_cmd = int(settings.ne_collect_read_timeout_sec or 120)
     session_timeout = per_cmd * max(1, len(commands)) + 60
-    conn = open_netmiko_connection(creds, session_timeout=session_timeout)
+    log_buf = io.BytesIO()
+    try:
+        conn = open_netmiko_connection(creds, session_timeout=session_timeout, session_log=log_buf)
+    except Exception as exc:
+        raise RuntimeError(format_cli_failure(exc, session_log_text(log_buf))) from exc
     try:
         outputs: list[str] = []
         for command in commands:
-            out = conn.send_command(command_string=command, read_timeout=per_cmd)
+            try:
+                out = conn.send_command(command_string=command, read_timeout=per_cmd)
+            except Exception as exc:
+                raise RuntimeError(format_cli_failure(exc, session_log_text(log_buf))) from exc
             outputs.append(str(out or ""))
         return outputs
     finally:

@@ -612,7 +612,10 @@ def create_session(
             error=str(exc)[:500],
             transcript_len=len(partial),
         )
-        detail = f"connect_failed:{exc}"
+        from .ne_cli_errors import format_cli_failure
+
+        classified = format_cli_failure(exc, partial)
+        detail = f"connect_failed:{classified}"
         if partial:
             # Keep detail bounded; UI surfaces this on open failure.
             detail = f"{detail}\n--- device transcript ---\n{partial[-4000:]}"
