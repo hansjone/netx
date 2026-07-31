@@ -3083,7 +3083,13 @@ pre {
 }
 
 .pt-wall__chart {
-  min-height: 240px;
+  min-height: 260px;
+  width: 100%;
+}
+
+.pt-wall__chart-wrap {
+  position: relative;
+  min-height: 260px;
   width: 100%;
 }
 
@@ -3097,13 +3103,19 @@ pre {
 }
 
 .pt-wall__empty {
+  position: absolute;
+  inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 240px;
+  padding: 16px 24px;
+  text-align: center;
+  line-height: 1.5;
   color: var(--pt-muted);
+  background: rgba(11, 18, 32, 0.72);
   border: 1px dashed rgba(148, 163, 184, 0.28);
   border-radius: 8px;
+  pointer-events: none;
 }
 
 @media (max-width: 900px) {

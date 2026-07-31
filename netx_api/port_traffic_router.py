@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from .auth_service import write_audit
@@ -56,10 +56,15 @@ def api_list_tasks(
 @router.post("/tasks")
 def api_create_task(
     body: PortTrafficTaskCreate,
+    background_tasks: BackgroundTasks,
     request: Request,
     db: Session = Depends(get_db),
 ):
     out = create_task(db, body)
+    if body.start_now and out.status == "running":
+        from .port_traffic_runner import dispatch_collect
+
+        background_tasks.add_task(dispatch_collect, out.id)
     uid, uname = _actor(request)
     write_audit(
         db,
@@ -119,8 +124,16 @@ def api_delete_task(task_id: str, request: Request, db: Session = Depends(get_db
 
 
 @router.post("/tasks/{task_id}/start")
-def api_start_task(task_id: str, request: Request, db: Session = Depends(get_db)):
+def api_start_task(
+    task_id: str,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    db: Session = Depends(get_db),
+):
     out = set_task_status(db, task_id, "running")
+    from .port_traffic_runner import dispatch_collect
+
+    background_tasks.add_task(dispatch_collect, task_id)
     uid, uname = _actor(request)
     write_audit(
         db,
@@ -133,6 +146,46 @@ def api_start_task(task_id: str, request: Request, db: Session = Depends(get_db)
         detail={"id": task_id},
     )
     return out.model_dump()
+
+
+@router.post("/tasks/{task_id}/collect-now")
+def api_collect_now(
+    task_id: str,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    task = get_task(db, task_id)
+    if task.status not in ("running", "paused", "draft", "stopped"):
+        raise HTTPException(status_code=400, detail="invalid_status")
+    # Force due: clear last end so claim accepts, ensure running for this round.
+    from .models import PortTrafficTask
+    from .port_traffic_runner import dispatch_collect
+
+    row = db.get(PortTrafficTask, task_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="task_not_found")
+    if bool(row.collect_running):
+        return {"ok": True, "started": False, "reason": "already_collecting", **task.model_dump()}
+    if str(row.status) != "running":
+        row.status = "running"
+    row.last_collect_ended_at = None
+    row.updated_at = datetime.utcnow()
+    db.commit()
+    background_tasks.add_task(dispatch_collect, task_id)
+    uid, uname = _actor(request)
+    write_audit(
+        db,
+        action="port_traffic.task.collect_now",
+        actor_user_id=uid,
+        actor_username=uname,
+        method="POST",
+        path=f"/v1/port-traffic/tasks/{task_id}/collect-now",
+        status_code=200,
+        detail={"id": task_id},
+    )
+    out = get_task(db, task_id)
+    return {"ok": True, "started": True, **out.model_dump()}
 
 
 @router.post("/tasks/{task_id}/pause")

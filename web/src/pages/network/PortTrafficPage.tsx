@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  collectPortTrafficNow,
   createPortTrafficTask,
   deletePortTrafficTask,
   discoverPortTrafficPorts,
@@ -100,7 +101,8 @@ export function PortTrafficPage() {
     queryKey: queryKeys.portTrafficTargets(wallTaskId),
     queryFn: () => fetchPortTrafficTargets(wallTaskId),
     enabled: view === "wall" && Boolean(wallTaskId),
-    staleTime: 3000,
+    staleTime: 2000,
+    refetchInterval: POLL_MS,
   });
 
   const samplesQuery = useQuery({
@@ -115,8 +117,12 @@ export function PortTrafficPage() {
       });
     },
     enabled: view === "wall" && Boolean(wallTargetId),
-    staleTime: 2000,
-    refetchInterval: POLL_MS,
+    staleTime: 1000,
+    refetchInterval: (q) => {
+      const n = q.state.data?.points?.length ?? 0;
+      // Faster while waiting for the first sample; then every 5s for live wall.
+      return n === 0 ? 2500 : POLL_MS;
+    },
   });
 
   const invalidateAll = () => {
@@ -156,6 +162,16 @@ export function PortTrafficPage() {
     onSuccess: () => {
       showOk(t("portTraffic.stopped"));
       invalidateAll();
+    },
+    onError: (e: Error) => showError(e.message),
+  });
+  const collectMut = useMutation({
+    mutationFn: collectPortTrafficNow,
+    onSuccess: (res) => {
+      showOk(res.started ? t("portTraffic.collectStarted") : t("portTraffic.collectBusy"));
+      invalidateAll();
+      void queryClient.invalidateQueries({ queryKey: queryKeys.portTrafficTargets(wallTaskId) });
+      void queryClient.invalidateQueries({ queryKey: ["portTrafficSamples"] });
     },
     onError: (e: Error) => showError(e.message),
   });
@@ -632,11 +648,32 @@ export function PortTrafficPage() {
                 <option value={24}>24h</option>
               </select>
             </label>
+            <button
+              type="button"
+              className="btn-primary"
+              disabled={!wallTaskId || collectMut.isPending}
+              onClick={() => collectMut.mutate(wallTaskId)}
+            >
+              {t("portTraffic.collectNow")}
+            </button>
           </div>
+          {selectedWallTarget?.last_error ? (
+            <p className="muted" style={{ marginBottom: 8 }}>
+              {t("portTraffic.targetError")}: {selectedWallTarget.last_error}
+            </p>
+          ) : null}
           <PortTrafficWall
             target={selectedWallTarget}
             points={samplesQuery.data?.points || []}
             rangeLabel={`${rangeHours}h`}
+            loading={samplesQuery.isLoading || samplesQuery.isFetching}
+            hint={
+              !wallTargetId
+                ? t("portTraffic.pickPort")
+                : selectedWallTarget?.last_error
+                  ? t("portTraffic.waitAfterError")
+                  : t("portTraffic.waitSamples")
+            }
           />
         </div>
       ) : null}

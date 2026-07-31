@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
@@ -204,11 +204,10 @@ def set_task_status(db: Session, task_id: str, status: str) -> PortTrafficTaskOu
         )
         if active <= 0:
             raise HTTPException(status_code=400, detail="no_active_targets")
+        # Allow scheduler/collect-now to fire immediately after start/resume.
+        task.last_collect_ended_at = None
     task.status = status
     task.updated_at = _utcnow()
-    if status in ("stopped", "paused"):
-        # leave collect_running for runner to finish; recovery clears stuck flags
-        pass
     db.commit()
     db.refresh(task)
     return _task_out(db, task)
@@ -308,6 +307,15 @@ def discover_ports(db: Session, body: DiscoverPortsRequest) -> DiscoverPortsResp
     )
 
 
+def _as_naive_utc(value: datetime | None) -> datetime | None:
+    """Normalize query bounds to naive UTC (DB columns are naive utcnow)."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
+
+
 def get_samples(
     db: Session,
     *,
@@ -319,10 +327,10 @@ def get_samples(
     if not target:
         raise HTTPException(status_code=404, detail="target_not_found")
     now = _utcnow()
-    if to_ts is None:
-        to_ts = now
-    if from_ts is None:
-        from_ts = to_ts - timedelta(hours=1)
+    to_ts = _as_naive_utc(to_ts) or now
+    from_ts = _as_naive_utc(from_ts) or (to_ts - timedelta(hours=1))
+    # Slight skew so just-written samples are not clipped by client clock.
+    to_ts = to_ts + timedelta(seconds=5)
     rows = (
         db.query(PortTrafficSample)
         .filter(

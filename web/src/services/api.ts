@@ -816,6 +816,12 @@ export const pausePortTrafficTask = (taskId: string) =>
 export const stopPortTrafficTask = (taskId: string) =>
   apiPost<PortTrafficTask>(`/v1/port-traffic/tasks/${encodeURIComponent(taskId)}/stop`, {});
 
+export const collectPortTrafficNow = (taskId: string) =>
+  apiPost<PortTrafficTask & { ok: boolean; started: boolean; reason?: string }>(
+    `/v1/port-traffic/tasks/${encodeURIComponent(taskId)}/collect-now`,
+    {},
+  );
+
 export const deletePortTrafficTask = (taskId: string) =>
   apiDelete<{ ok: boolean; id: string }>(`/v1/port-traffic/tasks/${encodeURIComponent(taskId)}`);
 

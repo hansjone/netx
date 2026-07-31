@@ -103,6 +103,12 @@ const en = {
     wallPort: "Interface",
     pickPort: "Select interface",
     range: "Range",
+    collectNow: "Collect now",
+    collectStarted: "Collect triggered",
+    collectBusy: "Collect already running",
+    targetError: "Last interface error",
+    waitSamples: "Samples appear after the task runs; or click Collect now. Chart auto-refreshes.",
+    waitAfterError: "Last collect failed — fix connectivity, then Collect now.",
     kpi: {
       tasks: "Tasks",
       running: "Running",

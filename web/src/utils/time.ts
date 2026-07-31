@@ -21,14 +21,24 @@ function normalizeTimeInput(value: string | number | Date, options?: FormatTimeO
   return `${text.replace(" ", "T")}Z`;
 }
 
+/** Parse API timestamps; naive ISO strings are treated as UTC. */
+export function parseApiTime(
+  value: string | number | Date | null | undefined,
+  options?: FormatTimeOptions,
+): Date | null {
+  if (value === null || value === undefined) return null;
+  const normalized = normalizeTimeInput(value, options);
+  const d = normalized instanceof Date ? normalized : new Date(normalized);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 export function formatSystemTime(
   value: string | number | Date | null | undefined,
   options?: FormatTimeOptions,
 ): string {
   if (value === null || value === undefined) return "";
-  const normalized = normalizeTimeInput(value, options);
-  const d = normalized instanceof Date ? normalized : new Date(normalized);
-  if (Number.isNaN(d.getTime())) return String(value);
+  const d = parseApiTime(value, options);
+  if (!d) return String(value);
   return d.toLocaleString(undefined, {
     hour12: false,
     timeZone: systemTimeZone,

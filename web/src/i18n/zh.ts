@@ -103,6 +103,12 @@ const zh = {
     wallPort: "接口",
     pickPort: "选择接口",
     range: "时间范围",
+    collectNow: "立即采集",
+    collectStarted: "已触发采集",
+    collectBusy: "采集进行中",
+    targetError: "接口最近错误",
+    waitSamples: "任务运行后会按周期写入样点；也可点「立即采集」。图会每几秒自动刷新。",
+    waitAfterError: "采集失败，请检查连通性后点「立即采集」重试。",
     kpi: {
       tasks: "任务数",
       running: "运行中",
