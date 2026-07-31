@@ -492,7 +492,7 @@ class ConfigSyncPolicy(Base):
     __tablename__ = "config_sync_policy"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
-    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     interval_days: Mapped[int] = mapped_column(Integer, default=3)
     concurrency: Mapped[int] = mapped_column(Integer, default=5)
     scope_mode: Mapped[str] = mapped_column(String(32), default="all")  # all | selected

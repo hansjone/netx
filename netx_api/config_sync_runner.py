@@ -70,7 +70,7 @@ def _update_task(task_id: str, **fields: Any) -> None:
         db.close()
 
 
-def _update_task(task_id: str, **fields: Any) -> None:
+def _claim_task(cycle_id: str, task_id: str) -> bool:
     for attempt in range(10):
         db = SessionLocal()
         try:

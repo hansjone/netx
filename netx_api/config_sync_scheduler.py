@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 from .config import settings
@@ -22,20 +22,50 @@ from .models import ConfigSyncCycle, ConfigSyncTask
 _log = logging.getLogger("netx.config_sync.scheduler")
 _stop = threading.Event()
 _thread: threading.Thread | None = None
+_BOOT_MONO = time.monotonic()
 
 
 def _utcnow() -> datetime:
     return datetime.utcnow()
 
 
+def startup_grace_remaining_sec() -> float:
+    grace = max(0, int(settings.config_sync_startup_grace_sec or 0))
+    elapsed = time.monotonic() - _BOOT_MONO
+    return max(0.0, float(grace) - elapsed)
+
+
+def in_startup_grace() -> bool:
+    return startup_grace_remaining_sec() > 0
+
+
+def startup_grace_until() -> datetime | None:
+    rem = startup_grace_remaining_sec()
+    if rem <= 0:
+        return None
+    return _utcnow() + timedelta(seconds=rem)
+
+
 def try_start_scheduled_cycle() -> str | None:
-    """Create and dispatch a scheduled cycle if policy is due. Returns cycle id or None."""
+    """Create and dispatch a scheduled cycle if policy is due. Returns cycle id or None.
+
+    Never starts while another cycle is active (running/pending/paused), including
+    a cycle being resumed after crash. Startup grace only delays *new* scheduled runs.
+    """
+    if in_startup_grace():
+        return None
     db = SessionLocal()
     try:
         policy = ensure_policy(db)
         if not policy.enabled:
             return None
-        if has_running_cycle(db):
+        active = has_running_cycle(db)
+        if active:
+            _log.debug(
+                "config_sync schedule skip: active cycle=%s status=%s",
+                active.id,
+                active.status,
+            )
             return None
         due = next_due_at(db, policy)
         if due is not None and due > _utcnow():
@@ -85,7 +115,8 @@ def try_start_scheduled_cycle() -> str | None:
 
 def _loop() -> None:
     tick = max(15, int(settings.config_sync_scheduler_tick_sec or 60))
-    _log.info("config_sync scheduler started tick=%ss", tick)
+    grace = max(0, int(settings.config_sync_startup_grace_sec or 0))
+    _log.info("config_sync scheduler started tick=%ss startup_grace=%ss", tick, grace)
     while not _stop.is_set():
         try:
             if bool(settings.config_sync_scheduler_enabled):

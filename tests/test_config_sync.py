@@ -211,32 +211,80 @@ class ConfigSyncRecoveryTests(unittest.TestCase):
     @patch("netx_api.config_sync_recovery.dispatch_cycle", return_value=2)
     @patch("netx_api.config_sync_recovery.finalize_cycle")
     @patch("netx_api.config_sync_recovery.sync_cycle_progress")
-    def test_orphan_running_tasks_marked_fail(self, _sync, _fin, dispatch):
+    def test_requeues_orphans_and_resumes(self, _sync, _fin, dispatch):
         cycle = MagicMock()
         cycle.id = "c1"
         cycle.status = "running"
+        cycle.created_at = datetime.now(timezone.utc)
         cycle.started_at = datetime.now(timezone.utc)
+        cycle.error_message = ""
+        cycle.ended_at = None
 
         orphan = MagicMock()
         orphan.status = "running"
         orphan.message = ""
+        orphan.started_at = datetime.now(timezone.utc)
         orphan.ended_at = None
+
+        pending = MagicMock()
+        pending.status = "pending"
+        pending.id = "t2"
 
         db = MagicMock()
         db.query.side_effect = [
             MagicMock(filter=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[cycle])))),
             MagicMock(filter=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[orphan])))),
-            MagicMock(filter=MagicMock(return_value=MagicMock(count=MagicMock(return_value=2)))),
+            MagicMock(
+                filter=MagicMock(
+                    return_value=MagicMock(all=MagicMock(return_value=[orphan, pending]))
+                )
+            ),
         ]
         db.refresh = MagicMock()
 
         resumed = recover_config_sync_on_startup(db)
 
-        self.assertEqual(orphan.status, "fail")
-        self.assertEqual(orphan.message, "orphan_recovered")
-        self.assertIsNotNone(orphan.ended_at)
+        self.assertEqual(orphan.status, "pending")
+        self.assertEqual(orphan.message, "requeued_after_restart")
+        self.assertIsNone(orphan.started_at)
         self.assertEqual(resumed, 2)
         dispatch.assert_called_once_with("c1")
+
+    @patch("netx_api.config_sync_recovery.dispatch_cycle")
+    @patch("netx_api.config_sync_recovery.finalize_cycle")
+    @patch("netx_api.config_sync_recovery.sync_cycle_progress")
+    def test_closes_older_active_keeps_newest(self, _sync, _fin, dispatch):
+        old = MagicMock()
+        old.id = "old"
+        old.status = "running"
+        old.created_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        old.error_message = ""
+        old.ended_at = None
+
+        new = MagicMock()
+        new.id = "new"
+        new.status = "running"
+        new.created_at = datetime(2026, 1, 2, tzinfo=timezone.utc)
+        new.started_at = datetime.now(timezone.utc)
+        new.error_message = ""
+        new.ended_at = None
+
+        db = MagicMock()
+        db.query.side_effect = [
+            MagicMock(filter=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[old, new])))),
+            MagicMock(filter=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))),
+            MagicMock(filter=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))),
+            MagicMock(filter=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))),
+        ]
+        db.refresh = MagicMock()
+        dispatch.return_value = 0
+
+        recover_config_sync_on_startup(db)
+
+        self.assertEqual(old.status, "fail")
+        self.assertEqual(old.error_message, "superseded_active_cycle")
+        _fin.assert_called()
+        dispatch.assert_not_called()
 
 
 if __name__ == "__main__":

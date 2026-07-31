@@ -75,6 +75,8 @@ class Settings(BaseSettings):
     # Config sync (periodic running-config backup into DB)
     config_sync_scheduler_enabled: bool = True
     config_sync_scheduler_tick_sec: int = 60
+    # After process start / unexpected restart, wait before any scheduled sync.
+    config_sync_startup_grace_sec: int = 3600
     # Managed NE exec: max CLI commands per request (lab can raise; hard-capped in ne_exec).
     ne_exec_max_commands: int = 5
     # WebCRT interactive terminal sessions

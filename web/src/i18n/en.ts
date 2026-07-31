@@ -55,6 +55,8 @@ const en = {
       configSync: "Config sync",
       portTraffic: "Port traffic",
     },
+    collapseNav: "Collapse sidebar",
+    expandNav: "Expand sidebar",
     placeholder: {
       title: "Coming soon",
       body: "This capability is not available yet.",

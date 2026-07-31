@@ -2670,6 +2670,89 @@ pre {
   background: #f7f9fc;
   border-right: 1px solid #d0d7e2;
   min-height: 0;
+  transition: width 0.18s ease;
+}
+
+.network-shell.is-nav-collapsed .network-nav {
+  width: 48px;
+}
+
+.network-nav__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 8px 8px 12px;
+  border-bottom: 1px solid #e2e8f0;
+  min-height: 44px;
+}
+
+.network-shell.is-nav-collapsed .network-nav__head {
+  justify-content: center;
+  padding: 10px 4px;
+}
+
+.network-nav__title {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f172a;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.app-main .network-nav__collapse-btn,
+.network-nav__collapse-btn {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #fff;
+  color: #475569;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.app-main .network-nav__collapse-btn:hover,
+.network-nav__collapse-btn:hover {
+  background: #eef2f7;
+  color: #0f172a;
+}
+
+.network-nav__rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 4px;
+  overflow: auto;
+}
+
+.network-nav__rail-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  text-decoration: none;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+  background: transparent;
+}
+
+.network-nav__rail-link:hover {
+  background: #eef2f7;
+  color: #0f172a;
+}
+
+.network-nav__rail-link.is-active {
+  background: #e3effc;
+  color: #1565c0;
 }
 
 .network-nav__scroll {

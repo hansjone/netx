@@ -47,7 +47,7 @@ def _utcnow() -> datetime:
 def ensure_policy(db: Session) -> ConfigSyncPolicy:
     row = db.get(ConfigSyncPolicy, POLICY_ID)
     if row is None:
-        row = ConfigSyncPolicy(id=POLICY_ID)
+        row = ConfigSyncPolicy(id=POLICY_ID, enabled=False)
         db.add(row)
         db.commit()
         db.refresh(row)
@@ -202,13 +202,19 @@ def expand_targets(db: Session, policy: ConfigSyncPolicy) -> list[dict[str, str]
     return out
 
 
-def has_running_cycle(db: Session) -> ConfigSyncCycle | None:
+def has_active_cycle(db: Session) -> ConfigSyncCycle | None:
+    """Any non-terminal cycle occupies the single-flight slot (incl. paused)."""
     return (
         db.query(ConfigSyncCycle)
-        .filter(ConfigSyncCycle.status.in_(("running", "pending")))
+        .filter(ConfigSyncCycle.status.in_(("running", "pending", "paused")))
         .order_by(ConfigSyncCycle.created_at.desc())
         .first()
     )
+
+
+def has_running_cycle(db: Session) -> ConfigSyncCycle | None:
+    """Backward-compatible alias: treat paused as active so a new cycle cannot start."""
+    return has_active_cycle(db)
 
 
 def last_finished_cycle(db: Session) -> ConfigSyncCycle | None:
@@ -224,6 +230,8 @@ def next_due_at(db: Session, policy: ConfigSyncPolicy | None = None) -> datetime
     pol = policy or ensure_policy(db)
     if not pol.enabled:
         return None
+    from .config_sync_scheduler import startup_grace_until
+
     last = (
         db.query(ConfigSyncCycle)
         .filter(ConfigSyncCycle.status == "success", ConfigSyncCycle.ended_at.isnot(None))
@@ -232,8 +240,14 @@ def next_due_at(db: Session, policy: ConfigSyncPolicy | None = None) -> datetime
     )
     days = max(1, int(pol.interval_days or 3))
     if last and last.ended_at:
-        return last.ended_at + timedelta(days=days)
-    return _utcnow()
+        due = last.ended_at + timedelta(days=days)
+    else:
+        # Never synced successfully: do not fire immediately on enable / first boot.
+        due = _utcnow() + timedelta(days=days)
+    grace_until = startup_grace_until()
+    if grace_until is not None and due < grace_until:
+        return grace_until
+    return due
 
 
 def create_cycle(db: Session, body: ConfigSyncCycleCreate) -> ConfigSyncCycleOut:

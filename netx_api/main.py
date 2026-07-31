@@ -840,7 +840,7 @@ def on_startup() -> None:
         ensure_policy(db)
         cfg_resumed = recover_config_sync_on_startup(db)
         if cfg_resumed:
-            _schedule_log.info("startup: resumed %s pending config_sync tasks", cfg_resumed)
+            _schedule_log.info("startup: resumed %s config_sync task(s) from interrupted cycle", cfg_resumed)
     except Exception:
         _schedule_log.exception("startup: ne collection / config_sync recovery failed")
     finally:

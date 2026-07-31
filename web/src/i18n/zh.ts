@@ -55,6 +55,8 @@ const zh = {
       configSync: "配置同步",
       portTraffic: "端口流量监控",
     },
+    collapseNav: "折叠侧栏",
+    expandNav: "展开侧栏",
     placeholder: {
       title: "功能规划中",
       body: "该能力尚未开放。",

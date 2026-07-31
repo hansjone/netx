@@ -31,7 +31,7 @@ export function ConfigSyncPage() {
   const [taskStatus, setTaskStatus] = useState("");
   const [taskKeyword, setTaskKeyword] = useState("");
 
-  const [enabled, setEnabled] = useState(true);
+  const [enabled, setEnabled] = useState(false);
   const [intervalDays, setIntervalDays] = useState(3);
   const [concurrency, setConcurrency] = useState(5);
   const [scopeMode, setScopeMode] = useState<"all" | "selected">("all");
