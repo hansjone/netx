@@ -27,12 +27,21 @@ export const MODULES: readonly ModuleDefinition[] = [
     titleKey: "layout.titleUme",
   },
   {
+    moduleId: "ne",
+    path: "/ne",
+    section: "operations",
+    labelKey: "workbench.cards.managedNe",
+    descKey: "workbench.cards.managedNeDesc",
+    iconTone: "green",
+    titleKey: "layout.titleManagedNe",
+  },
+  {
     moduleId: "network",
     path: "/network",
     section: "operations",
     labelKey: "workbench.cards.network",
     descKey: "workbench.cards.networkDesc",
-    iconTone: "green",
+    iconTone: "slate",
     titleKey: "layout.titleNetwork",
   },
   {

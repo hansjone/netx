@@ -10,6 +10,7 @@ import { UmePage } from "./pages/UmePage";
 import { WebcrtPage } from "./pages/WebcrtPage";
 import { TopologyPage } from "./pages/TopologyPage";
 import { NetworkLayout } from "./pages/network/NetworkLayout";
+import { NetworkDevicesPage } from "./pages/network/NetworkDevicesPage";
 import { NetworkAlarmsPage } from "./pages/network/NetworkAlarmsPage";
 import { NetworkConfigsPage } from "./pages/network/NetworkConfigsPage";
 import { NetworkPlaceholderPage } from "./pages/network/NetworkPlaceholderPage";
@@ -82,11 +83,12 @@ function ProtectedApp() {
         <Route path="/" element={<WorkbenchPage />} />
         <Route path="/workbench" element={<Navigate to="/" replace />} />
         <Route path="/ume" element={<UmePage />} />
+        <Route path="/ne" element={<NePage />} />
         <Route path="/topology" element={<TopologyPage />} />
         <Route path="/webcrt" element={<WebcrtPage />} />
         <Route path="/network" element={<NetworkLayout />}>
           <Route index element={<Navigate to="devices" replace />} />
-          <Route path="devices" element={<NePage />} />
+          <Route path="devices" element={<NetworkDevicesPage />} />
           <Route path="alarms" element={<NetworkAlarmsPage />} />
           <Route path="configs" element={<NetworkConfigsPage />} />
           <Route path="topology" element={<Navigate to="/topology" replace />} />
@@ -95,7 +97,6 @@ function ProtectedApp() {
           <Route path="tasks/config-sync" element={<ConfigSyncPage />} />
           <Route path="tasks/port-traffic" element={<NetworkPlaceholderPage kind="port-traffic" />} />
         </Route>
-        <Route path="/ne" element={<Navigate to="/network/devices" replace />} />
         <Route path="/collect" element={<Navigate to="/network/tasks/collect" replace />} />
         <Route path="/users" element={<UsersPage />} />
         <Route path="/audit" element={<AuditPage />} />

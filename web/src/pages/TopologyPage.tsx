@@ -697,8 +697,8 @@ export function TopologyPage() {
     const umeId = node?.data.ume_ne_id;
     if (managedId) {
       openOrFocusModule({
-        moduleId: "network",
-        path: "/network/devices",
+        moduleId: "ne",
+        path: "/ne",
       });
       return;
     }
