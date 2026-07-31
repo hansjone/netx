@@ -8,7 +8,7 @@ import {
 import { queryKeys } from "../../constants/queryKeys";
 import { useI18n } from "../../i18n";
 import { useToast } from "../../hooks/useToast";
-import { openOrFocusModule } from "../../utils/moduleWindows";
+import { openNewModuleWindow } from "../../utils/moduleWindows";
 import { pageCount } from "../../utils/display";
 import { formatSystemTime } from "../../utils/time";
 
@@ -169,7 +169,7 @@ export function NetworkConfigsPage() {
                         row.source === "ume"
                           ? `/webcrt?ne_id=${encodeURIComponent(row.target_id)}&source=ume`
                           : `/webcrt?ne_id=${encodeURIComponent(row.target_id)}`;
-                      openOrFocusModule({ moduleId: "webcrt", path });
+                      openNewModuleWindow({ moduleId: "webcrt", path });
                     }}
                   >
                     WebCRT
