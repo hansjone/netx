@@ -109,6 +109,10 @@ const en = {
     targetError: "Last interface error",
     waitSamples: "Samples appear after the task runs; or click Collect now. Chart auto-refreshes.",
     waitAfterError: "Last collect failed — fix connectivity, then Collect now.",
+    kpiLatest: "latest",
+    kpiBw: "Bandwidth",
+    latestAt: "Latest sample",
+    hoverPoint: "Cursor",
     kpi: {
       tasks: "Tasks",
       running: "Running",

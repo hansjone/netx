@@ -3087,19 +3087,62 @@ pre {
   width: 100%;
 }
 
+.pt-wall__chart .uplot,
+.pt-wall__chart .u-wrap {
+  font-family: "IBM Plex Mono", "Cascadia Mono", Consolas, monospace;
+}
+
 .pt-wall__chart-wrap {
   position: relative;
   min-height: 260px;
   width: 100%;
 }
 
-.pt-wall__chart .uplot,
-.pt-wall__chart .u-wrap {
-  font-family: "IBM Plex Mono", "Cascadia Mono", Consolas, monospace;
+.pt-wall__tip {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 5;
+  min-width: 150px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(15, 23, 42, 0.94);
+  color: #e2e8f0;
+  font-size: 12px;
+  line-height: 1.45;
+  pointer-events: none;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.pt-wall__tip-time {
+  margin-bottom: 6px;
+  color: #94a3b8;
+  font-variant-numeric: tabular-nums;
+}
+
+.pt-wall__tip-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pt-wall__tip-row--in strong {
+  color: #2dd4bf;
+}
+
+.pt-wall__tip-row--out strong {
+  color: #f59e0b;
 }
 
 .pt-wall__chart .u-legend {
   color: var(--pt-muted);
+}
+
+.pt-wall__chart .u-legend .u-value {
+  font-variant-numeric: tabular-nums;
+  color: #e2e8f0;
 }
 
 .pt-wall__empty {

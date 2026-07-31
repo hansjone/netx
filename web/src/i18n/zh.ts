@@ -109,6 +109,10 @@ const zh = {
     targetError: "接口最近错误",
     waitSamples: "任务运行后会按周期写入样点；也可点「立即采集」。图会每几秒自动刷新。",
     waitAfterError: "采集失败，请检查连通性后点「立即采集」重试。",
+    kpiLatest: "最新",
+    kpiBw: "带宽",
+    latestAt: "最新样点",
+    hoverPoint: "光标位置",
     kpi: {
       tasks: "任务数",
       running: "运行中",
