@@ -100,6 +100,7 @@ src/
 - 调度：`NETX_CONFIG_SYNC_SCHEDULER_ENABLED`（默认开），周期天数策略可配（默认 3 天）
 - 默认策略：`enabled=false`（首次无自动任务，需在页面手动开启周期调度或点「立即同步」）
 - 单飞：同一时刻只允许一个 `running|pending|paused` 周期；上轮未结束时不会开启新周期
+- 周期状态：全部任务跑完即为 `success`；单网元失败只计入 `fail_count`，不把整轮标为失败
 - 崩溃续跑：启动时把中断的 `running` 任务重新入队并继续，占用单飞槽位，避免与新周期重叠
 - 进程启动宽限：`NETX_CONFIG_SYNC_STARTUP_GRACE_SEC`（默认 3600）仅约束**新建**自动周期，不影响续跑
 - 前端：`/network/tasks/config-sync`（看板）+ `/network/configs`（查看）

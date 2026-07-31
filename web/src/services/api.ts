@@ -745,3 +745,37 @@ export const fetchNeConfigSnapshotDetail = (
   apiGet<NeConfigSnapshotDetail>(
     `/v1/config-sync/snapshots/${encodeURIComponent(source)}/${encodeURIComponent(targetId)}?field=${field}`,
   );
+
+export const downloadNeConfigSnapshot = async (
+  source: string,
+  targetId: string,
+  field: "primary" | "alt" | "both" = "primary",
+): Promise<void> => {
+  const path =
+    `/v1/config-sync/snapshots/${encodeURIComponent(source)}/${encodeURIComponent(targetId)}` +
+    `/download?field=${encodeURIComponent(field)}`;
+  const res = await fetch(path, { headers: authHeaders() });
+  if (res.status === 401) {
+    handleUnauthorized(path);
+    throw new Error("unauthorized");
+  }
+  if (!res.ok) throw new Error(`${res.status} download`);
+  const blob = await res.blob();
+  const cd = res.headers.get("content-disposition") || "";
+  const star = /filename\*=UTF-8''([^;]+)/i.exec(cd);
+  const plain = /filename="?([^";]+)"?/i.exec(cd);
+  const filename = star
+    ? decodeURIComponent(star[1])
+    : plain
+      ? plain[1]
+      : `ne-config-${source}-${targetId}.txt`;
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+};

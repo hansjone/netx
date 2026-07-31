@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+from urllib.parse import quote
+
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from .auth_service import write_audit
 from .config_sync_runner import dispatch_cycle
 from .config_sync_schemas import ConfigSyncCycleCreate, ConfigSyncPolicyUpdate
 from .config_sync_service import (
+    build_snapshot_export,
     create_cycle,
     dashboard,
     get_cycle,
@@ -144,6 +148,28 @@ def api_list_snapshots(
 ):
     return list_snapshots(
         db, page=page, page_size=page_size, keyword=keyword, source=source, vendor=vendor
+    )
+
+
+@router.get("/snapshots/{source}/{target_id}/download")
+def api_download_snapshot(
+    source: str,
+    target_id: str,
+    field: str = Query(default="primary"),
+    db: Session = Depends(get_db),
+):
+    filename, payload, media_type = build_snapshot_export(db, source, target_id, field=field)
+    # ASCII fallback + UTF-8 filename for CJK device names
+    safe_ascii = filename.encode("ascii", errors="replace").decode("ascii").replace("?", "_")
+    return Response(
+        content=payload,
+        media_type=media_type,
+        headers={
+            "content-disposition": (
+                f'attachment; filename="{safe_ascii}"; '
+                f"filename*=UTF-8''{quote(filename)}"
+            )
+        },
     )
 
 

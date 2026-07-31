@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import io
 import logging
+import re
+import zipfile
 from datetime import datetime, timedelta
 from typing import Any
 from uuid import uuid4
@@ -510,6 +513,42 @@ def get_snapshot_detail(
     return NeConfigSnapshotDetailOut(**meta.model_dump(), config_text=primary, config_alt_text=alt)
 
 
+def _safe_export_part(text: str) -> str:
+    s = re.sub(r'[<>:"/\\|?*\s]+', "_", str(text or "").strip())
+    return (s[:80] or "ne").strip("._") or "ne"
+
+
+def build_snapshot_export(
+    db: Session,
+    source: str,
+    target_id: str,
+    *,
+    field: str = "primary",
+) -> tuple[str, bytes, str]:
+    """Return (filename, payload, media_type) for download."""
+    detail = get_snapshot_detail(db, source, target_id, field="both")
+    name = _safe_export_part(detail.ne_name or detail.target_id)
+    ip = _safe_export_part(detail.ne_ip or "ip")
+    base = f"{name}-{ip}-{detail.source}"
+    f = str(field or "primary").strip().lower()
+
+    if f == "alt":
+        if not detail.has_alt or not detail.config_alt_text:
+            raise HTTPException(status_code=404, detail="alt_config_not_found")
+        filename = f"{base}-hierarchical.txt"
+        return filename, detail.config_alt_text.encode("utf-8"), "text/plain; charset=utf-8"
+
+    if f == "both" and detail.has_alt and detail.config_alt_text:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(f"{base}-set.txt", detail.config_text or "")
+            zf.writestr(f"{base}-hierarchical.txt", detail.config_alt_text or "")
+        return f"{base}-configs.zip", buf.getvalue(), "application/zip"
+
+    filename = f"{base}-config.txt"
+    return filename, (detail.config_text or "").encode("utf-8"), "text/plain; charset=utf-8"
+
+
 def list_snapshot_history(
     db: Session,
     source: str,
@@ -603,12 +642,10 @@ def finalize_cycle(db: Session, cycle_id: str) -> None:
         return
     sync_cycle_progress(db, cycle_id)
     db.refresh(cycle)
-    if int(cycle.fail_count or 0) > 0 and int(cycle.success_count or 0) == 0:
-        cycle.status = "fail"
-    elif int(cycle.fail_count or 0) > 0:
-        cycle.status = "fail"
-        cycle.error_message = cycle.error_message or "completed_with_failures"
-    else:
-        cycle.status = "success"
+    # Cycle outcome is about finishing the run, not per-NE results.
+    # Individual task failures stay in fail_count for retry/dashboard.
+    cycle.status = "success"
+    if cycle.error_message == "completed_with_failures":
+        cycle.error_message = ""
     cycle.ended_at = _utcnow()
     db.commit()

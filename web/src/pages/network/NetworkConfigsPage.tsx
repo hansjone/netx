@@ -1,9 +1,14 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { fetchNeConfigSnapshotDetail, fetchNeConfigSnapshots } from "../../services/api";
+import {
+  downloadNeConfigSnapshot,
+  fetchNeConfigSnapshotDetail,
+  fetchNeConfigSnapshots,
+} from "../../services/api";
 import { queryKeys } from "../../constants/queryKeys";
 import { useI18n } from "../../i18n";
+import { useToast } from "../../hooks/useToast";
 import { pageCount } from "../../utils/display";
 import { formatSystemTime } from "../../utils/time";
 
@@ -16,12 +21,14 @@ function fmtBytes(n: number): string {
 
 export function NetworkConfigsPage() {
   const { t } = useI18n();
+  const { showOk, showError } = useToast();
   const [page, setPage] = useState(1);
   const [keyword, setKeyword] = useState("");
   const [source, setSource] = useState("");
   const [vendor, setVendor] = useState("");
   const [selected, setSelected] = useState<{ source: string; id: string } | null>(null);
   const [tab, setTab] = useState<"primary" | "alt">("primary");
+  const [exporting, setExporting] = useState("");
 
   const listQuery = useQuery({
     queryKey: queryKeys.networkConfigs(page, keyword, source, vendor),
@@ -42,6 +49,23 @@ export function NetworkConfigsPage() {
   const pages = pageCount(total, 20);
   const detail = detailQuery.data;
   const showAlt = Boolean(detail?.has_alt);
+
+  const exportConfig = async (
+    src: string,
+    id: string,
+    field: "primary" | "alt" | "both",
+  ) => {
+    const key = `${src}:${id}:${field}`;
+    setExporting(key);
+    try {
+      await downloadNeConfigSnapshot(src, id, field);
+      showOk(t("networkConfigs.exportOk"));
+    } catch (err) {
+      showError(String(err));
+    } finally {
+      setExporting("");
+    }
+  };
 
   return (
     <section className="panel">
@@ -106,33 +130,46 @@ export function NetworkConfigsPage() {
           </tr>
         </thead>
         <tbody>
-          {items.map((row) => (
-            <tr key={`${row.source}:${row.target_id}`}>
-              <td>{row.ne_name || row.target_id}</td>
-              <td>{row.ne_ip}</td>
-              <td>{row.vendor || "-"}</td>
-              <td>{row.source}</td>
-              <td>{fmtBytes(row.plain_size)}</td>
-              <td>{row.collected_at ? formatSystemTime(row.collected_at) : "-"}</td>
-              <td>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSelected({ source: row.source, id: row.target_id });
-                    setTab("primary");
-                  }}
-                >
-                  {t("networkConfigs.view")}
-                </button>
-                <Link
-                  to={`/webcrt?${row.source === "ume" ? "ume_ne_id" : "ne_id"}=${encodeURIComponent(row.target_id)}`}
-                  style={{ marginLeft: 8 }}
-                >
-                  WebCRT
-                </Link>
-              </td>
-            </tr>
-          ))}
+          {items.map((row) => {
+            const exportKey = `${row.source}:${row.target_id}:list`;
+            return (
+              <tr key={`${row.source}:${row.target_id}`}>
+                <td>{row.ne_name || row.target_id}</td>
+                <td>{row.ne_ip}</td>
+                <td>{row.vendor || "-"}</td>
+                <td>{row.source}</td>
+                <td>{fmtBytes(row.plain_size)}</td>
+                <td>{row.collected_at ? formatSystemTime(row.collected_at) : "-"}</td>
+                <td className="table-actions">
+                  <button
+                    type="button"
+                    className="link-btn"
+                    onClick={() => {
+                      setSelected({ source: row.source, id: row.target_id });
+                      setTab("primary");
+                    }}
+                  >
+                    {t("networkConfigs.view")}
+                  </button>
+                  <button
+                    type="button"
+                    className="link-btn"
+                    disabled={exporting === exportKey || exporting.startsWith(`${row.source}:${row.target_id}:`)}
+                    onClick={() =>
+                      void exportConfig(row.source, row.target_id, row.has_alt ? "both" : "primary")
+                    }
+                  >
+                    {t("networkConfigs.export")}
+                  </button>
+                  <Link
+                    to={`/webcrt?${row.source === "ume" ? "ume_ne_id" : "ne_id"}=${encodeURIComponent(row.target_id)}`}
+                  >
+                    WebCRT
+                  </Link>
+                </td>
+              </tr>
+            );
+          })}
           {!items.length && !listQuery.isLoading ? (
             <tr>
               <td colSpan={7} className="muted">
@@ -164,9 +201,33 @@ export function NetworkConfigsPage() {
                 ({selected.source} / {detail?.ne_ip || "-"})
               </span>
             </h3>
-            <button type="button" onClick={() => setSelected(null)}>
-              {t("networkConfigs.close")}
-            </button>
+            <div className="btn-row">
+              <button
+                type="button"
+                disabled={Boolean(exporting)}
+                onClick={() =>
+                  void exportConfig(
+                    selected.source,
+                    selected.id,
+                    showAlt ? (tab === "alt" ? "alt" : "primary") : "primary",
+                  )
+                }
+              >
+                {t("networkConfigs.export")}
+              </button>
+              {showAlt ? (
+                <button
+                  type="button"
+                  disabled={Boolean(exporting)}
+                  onClick={() => void exportConfig(selected.source, selected.id, "both")}
+                >
+                  {t("networkConfigs.exportBoth")}
+                </button>
+              ) : null}
+              <button type="button" onClick={() => setSelected(null)}>
+                {t("networkConfigs.close")}
+              </button>
+            </div>
           </div>
           {detailQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
           {showAlt ? (
