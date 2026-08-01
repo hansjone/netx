@@ -402,7 +402,27 @@ export type FabricSummary = {
   edge_count: number;
   edge_active: number;
   edge_stale: number;
+  edge_missing?: number;
   last_discover_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type FabricEdge = {
+  id: string;
+  layer: string;
+  a_node_id: string;
+  b_node_id: string;
+  a_port: string;
+  b_port: string;
+  a_name?: string;
+  b_name?: string;
+  a_ip?: string;
+  b_ip?: string;
+  source: string;
+  status: string;
+  attrs?: Record<string, unknown>;
+  discovered_at?: string | null;
+  last_seen_at?: string | null;
   updated_at?: string | null;
 };
 
@@ -444,6 +464,7 @@ export type TopologyDiscoverJob = {
   edges_added: number;
   edges_updated: number;
   edges_stale: number;
+  edges_missing?: number;
   error: string;
   started_at?: string | null;
   ended_at?: string | null;
@@ -483,10 +504,12 @@ export type ConfigSyncTargetRef = {
 export type LldpCollectPolicy = {
   enabled: boolean;
   interval_days: number;
+  interval_hours: number;
   concurrency: number;
   scope_mode: string;
   selected_targets: ConfigSyncTargetRef[];
   auto_add_unmatched: boolean;
+  history_keep: number;
   updated_at?: string | null;
 };
 
@@ -500,6 +523,7 @@ export type LldpCollectJobSummary = {
   edges_added: number;
   edges_updated: number;
   edges_stale: number;
+  edges_missing?: number;
   error: string;
   started_at?: string | null;
   ended_at?: string | null;
@@ -512,6 +536,7 @@ export type LldpCollectDashboard = {
   fabric_edge_count: number;
   fabric_edge_active: number;
   fabric_edge_stale: number;
+  fabric_edge_missing?: number;
   last_discover_at?: string | null;
   running_job: LldpCollectJobSummary | null;
   last_job: LldpCollectJobSummary | null;

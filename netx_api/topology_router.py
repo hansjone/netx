@@ -66,6 +66,7 @@ def api_fabric_edges(
     layer: str = "physical",
     status: str = "",
     source: str = "",
+    keyword: str = "",
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=100, ge=1, le=2000),
     db: Session = Depends(get_db),
@@ -76,6 +77,7 @@ def api_fabric_edges(
         layer=layer,
         status=status,
         source=source,
+        keyword=keyword,
         page=page,
         page_size=page_size,
     )

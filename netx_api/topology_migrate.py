@@ -31,19 +31,51 @@ def ensure_topology_schema(conn: Connection) -> None:
     # Best-effort column add for existing DBs (create_all won't alter).
     alter_stmts: list[str] = []
     if dialect.startswith("postgres"):
-        alter_stmts.append(
-            "ALTER TABLE topo_discover_job ADD COLUMN IF NOT EXISTS trigger_mode VARCHAR(32) DEFAULT 'manual'"
+        alter_stmts.extend(
+            [
+                "ALTER TABLE topo_discover_job ADD COLUMN IF NOT EXISTS trigger_mode VARCHAR(32) DEFAULT 'manual'",
+                "ALTER TABLE lldp_collect_policy ADD COLUMN IF NOT EXISTS history_keep INTEGER DEFAULT 30",
+                "ALTER TABLE lldp_collect_policy ADD COLUMN IF NOT EXISTS interval_hours INTEGER DEFAULT 24",
+            ]
         )
     elif dialect.startswith("sqlite"):
         # SQLite: ignore if column already exists.
-        alter_stmts.append(
-            "ALTER TABLE topo_discover_job ADD COLUMN trigger_mode VARCHAR(32) DEFAULT 'manual'"
+        alter_stmts.extend(
+            [
+                "ALTER TABLE topo_discover_job ADD COLUMN trigger_mode VARCHAR(32) DEFAULT 'manual'",
+                "ALTER TABLE lldp_collect_policy ADD COLUMN history_keep INTEGER DEFAULT 30",
+                "ALTER TABLE lldp_collect_policy ADD COLUMN interval_hours INTEGER DEFAULT 24",
+            ]
         )
     for sql in alter_stmts:
         try:
             conn.execute(text(sql))
         except Exception:
             _log.debug("topology alter skipped/failed: %s", sql[:80], exc_info=True)
+
+    # Backfill hours from legacy days when hours unset/zero.
+    try:
+        conn.execute(
+            text(
+                "UPDATE lldp_collect_policy SET interval_hours = "
+                "CASE WHEN COALESCE(interval_hours, 0) <= 0 "
+                "THEN GREATEST(1, COALESCE(interval_days, 1)) * 24 "
+                "ELSE interval_hours END"
+            )
+        )
+    except Exception:
+        try:
+            # SQLite has no GREATEST in older builds — use MAX.
+            conn.execute(
+                text(
+                    "UPDATE lldp_collect_policy SET interval_hours = "
+                    "CASE WHEN COALESCE(interval_hours, 0) <= 0 "
+                    "THEN MAX(1, COALESCE(interval_days, 1)) * 24 "
+                    "ELSE interval_hours END"
+                )
+            )
+        except Exception:
+            _log.debug("interval_hours backfill skipped", exc_info=True)
 
     if not dialect.startswith("postgres"):
         return

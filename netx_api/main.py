@@ -824,6 +824,20 @@ def on_startup() -> None:
         _schedule_log.exception("startup: auth/port_traffic/topology schema migration failed")
     _reset_runtime_pause_flags()
     _fail_stale_running_sync_jobs_on_startup()
+    try:
+        from .topology_service import reclaim_stale_discover_jobs
+
+        db_topo = SessionLocal()
+        try:
+            closed = reclaim_stale_discover_jobs(db_topo, force_all_open=True)
+            if closed:
+                _schedule_log.warning(
+                    "startup: closed %s orphaned topology discover jobs", closed
+                )
+        finally:
+            db_topo.close()
+    except Exception:
+        _schedule_log.exception("startup: topology discover job cleanup failed")
     if _needs_startup_alarm_sync_before_ws():
         begin_startup_alarm_sync_gate()
         _schedule_log.info(

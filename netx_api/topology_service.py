@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -15,9 +15,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .cli_resolve import get_default_profile, infer_device_type_vendor
+from .config import settings
 from .db import SessionLocal
 from .device_types import LLDP_DISCOVERED_NE_SOURCE, WEBCRT_NE_SOURCE
 from .models import (
+    LldpCollectPolicy,
     ManagedNE,
     TopoDiscoverJob,
     TopoDiscoverJobItem,
@@ -164,10 +166,16 @@ def _node_out(n: TopoFabricNode) -> FabricNodeOut:
     )
 
 
-def _edge_out(e: TopoFabricEdge) -> FabricEdgeOut:
+def _edge_out(
+    e: TopoFabricEdge,
+    *,
+    nodes_by_id: dict[str, TopoFabricNode] | None = None,
+) -> FabricEdgeOut:
     src = str(e.source or "lldp").strip().lower() or "lldp"
     if src == "stale":
         src = "lldp"
+    a_node = (nodes_by_id or {}).get(e.a_node_id)
+    b_node = (nodes_by_id or {}).get(e.b_node_id)
     return FabricEdgeOut(
         id=e.id,
         layer=e.layer or "physical",
@@ -175,12 +183,25 @@ def _edge_out(e: TopoFabricEdge) -> FabricEdgeOut:
         b_node_id=e.b_node_id,
         a_port=e.a_port or "",
         b_port=e.b_port or "",
+        a_name=(a_node.name if a_node else "") or "",
+        b_name=(b_node.name if b_node else "") or "",
+        a_ip=(a_node.ip if a_node else "") or "",
+        b_ip=(b_node.ip if b_node else "") or "",
         source=src,
         status=_normalize_edge_status(e.status or "active"),
         attrs=dict(e.attrs or {}),
         discovered_at=e.discovered_at,
         last_seen_at=e.last_seen_at,
+        updated_at=e.updated_at,
     )
+
+
+def _nodes_by_ids(db: Session, ids: set[str]) -> dict[str, TopoFabricNode]:
+    clean = {str(i).strip() for i in ids if str(i or "").strip()}
+    if not clean:
+        return {}
+    rows = db.query(TopoFabricNode).filter(TopoFabricNode.id.in_(list(clean))).all()
+    return {r.id: r for r in rows}
 
 
 def _normalize_endpoints(
@@ -315,6 +336,7 @@ def get_fabric_summary(db: Session) -> FabricSummaryOut:
         edge_count=row.edge_count,
         edge_active=row.edge_active,
         edge_stale=row.edge_stale,
+        edge_missing=row.edge_stale,
         last_discover_at=row.last_discover_at,
         updated_at=row.updated_at,
     )
@@ -363,6 +385,7 @@ def list_fabric_edges(
     layer: str = "physical",
     status: str = "",
     source: str = "",
+    keyword: str = "",
     page: int = 1,
     page_size: int = PAGE_DEFAULT,
 ) -> dict[str, Any]:
@@ -375,11 +398,33 @@ def list_fabric_edges(
     if nid:
         q = q.filter(or_(TopoFabricEdge.a_node_id == nid, TopoFabricEdge.b_node_id == nid))
     st = str(status or "").strip().lower()
-    if st:
+    if st in _EDGE_STATUS_MISSING_COMPAT:
+        q = q.filter(TopoFabricEdge.status.in_(list(_EDGE_STATUS_MISSING_COMPAT)))
+    elif st:
         q = q.filter(TopoFabricEdge.status == st)
     src = str(source or "").strip().lower()
     if src:
+        if src == "stale":
+            src = "lldp"
         q = q.filter(TopoFabricEdge.source == src)
+    kw = str(keyword or "").strip()
+    if kw:
+        like = f"%{kw}%"
+        matched_ids = [
+            r.id
+            for r in db.query(TopoFabricNode.id)
+            .filter(or_(TopoFabricNode.name.ilike(like), TopoFabricNode.ip.ilike(like)))
+            .limit(2000)
+            .all()
+        ]
+        if not matched_ids:
+            return {"total": 0, "page": page, "page_size": page_size, "items": []}
+        q = q.filter(
+            or_(
+                TopoFabricEdge.a_node_id.in_(matched_ids),
+                TopoFabricEdge.b_node_id.in_(matched_ids),
+            )
+        )
     total = int(q.count())
     rows = (
         q.order_by(TopoFabricEdge.updated_at.desc())
@@ -387,11 +432,12 @@ def list_fabric_edges(
         .limit(page_size)
         .all()
     )
+    node_map = _nodes_by_ids(db, {e.a_node_id for e in rows} | {e.b_node_id for e in rows})
     return {
         "total": total,
         "page": page,
         "page_size": page_size,
-        "items": [_edge_out(e).model_dump() for e in rows],
+        "items": [_edge_out(e, nodes_by_id=node_map).model_dump() for e in rows],
     }
 
 
@@ -1105,7 +1151,11 @@ def _pick_managed_ne(
 
 
 def ensure_lldp_discovered_managed_ne(
-    db: Session, *, remote_name: str = "", remote_ip: str = ""
+    db: Session,
+    *,
+    remote_name: str = "",
+    remote_ip: str = "",
+    placeholder_by_name: dict[str, ManagedNE] | None = None,
 ) -> ManagedNE:
     """SSH placeholder ManagedNE for an LLDP neighbor not in inventory.
 
@@ -1117,18 +1167,24 @@ def ensure_lldp_discovered_managed_ne(
     ip_hint = str(remote_ip or "").strip()[:128]
     now = _utcnow()
 
-    # Reuse existing LLDP placeholder by normalized hostname.
-    if name_key:
+    cache = placeholder_by_name
+    if cache is None:
+        cache = {}
         for ne in (
             db.query(ManagedNE)
             .filter(ManagedNE.source == LLDP_DISCOVERED_NE_SOURCE)
             .all()
         ):
-            if _norm_host(ne.name or "") == name_key:
-                if ip_hint and not str(ne.source_ref or "").strip():
-                    ne.source_ref = ip_hint
-                    ne.updated_at = now
-                return ne
+            nk = _norm_host(ne.name or "")
+            if nk and nk not in cache:
+                cache[nk] = ne
+
+    if name_key and name_key in cache:
+        ne = cache[name_key]
+        if ip_hint and not str(ne.source_ref or "").strip():
+            ne.source_ref = ip_hint
+            ne.updated_at = now
+        return ne
 
     row = ManagedNE(
         id=uuid4().hex,
@@ -1151,42 +1207,106 @@ def ensure_lldp_discovered_managed_ne(
     )
     db.add(row)
     db.flush()
+    if name_key:
+        cache[name_key] = row
+    if placeholder_by_name is not None and name_key:
+        placeholder_by_name[name_key] = row
     return row
+
+
+class _FabricPeerIndex:
+    """In-memory name/IP index for one discover target (avoids O(nodes) per neighbor)."""
+
+    def __init__(self, db: Session, self_id: str) -> None:
+        self.db = db
+        self.self_id = self_id
+        self.by_ip: dict[str, list[TopoFabricNode]] = {}
+        self.by_name: dict[str, list[TopoFabricNode]] = {}
+        self.placeholder_by_name: dict[str, ManagedNE] = {}
+        for n in db.query(TopoFabricNode).filter(TopoFabricNode.id != self_id).all():
+            ip = str(n.ip or "").strip()
+            if ip:
+                self.by_ip.setdefault(ip, []).append(n)
+            nk = _norm_host(n.name or "")
+            if nk:
+                self.by_name.setdefault(nk, []).append(n)
+        for ne in (
+            db.query(ManagedNE).filter(ManagedNE.source == LLDP_DISCOVERED_NE_SOURCE).all()
+        ):
+            nk = _norm_host(ne.name or "")
+            if nk and nk not in self.placeholder_by_name:
+                self.placeholder_by_name[nk] = ne
+
+    def _best(self, matched: list[TopoFabricNode]) -> TopoFabricNode:
+        matched.sort(key=lambda n: _fabric_match_score(self.db, n), reverse=True)
+        return matched[0]
+
+    def match(self, hit: NeighborHit) -> TopoFabricNode | None:
+        name_key = _norm_host(hit.remote_name)
+        ip_key = str(hit.remote_ip or "").strip()
+        matched: list[TopoFabricNode] = []
+        if ip_key:
+            matched.extend(self.by_ip.get(ip_key) or [])
+        if name_key:
+            for n in self.by_name.get(name_key) or []:
+                if n not in matched:
+                    matched.append(n)
+        if matched:
+            return self._best(matched)
+
+        if ip_key:
+            ne = _pick_managed_ne(self.db, ip=ip_key)
+            if ne is not None:
+                node = ensure_fabric_node_for_managed(self.db, ne)
+                self._remember(node)
+                return node
+            ume = (
+                self.db.query(UmeInventoryNE)
+                .filter(UmeInventoryNE.ip_address == ip_key)
+                .first()
+            )
+            if ume is not None:
+                node = ensure_fabric_node_for_ume(self.db, ume)
+                self._remember(node)
+                return node
+        if name_key:
+            ne = _pick_managed_ne(self.db, name_key=name_key)
+            if ne is not None:
+                node = ensure_fabric_node_for_managed(self.db, ne)
+                self._remember(node)
+                return node
+        return None
+
+    def _remember(self, node: TopoFabricNode) -> None:
+        if not node or node.id == self.self_id:
+            return
+        ip = str(node.ip or "").strip()
+        if ip:
+            bucket = self.by_ip.setdefault(ip, [])
+            if node not in bucket:
+                bucket.append(node)
+        nk = _norm_host(node.name or "")
+        if nk:
+            bucket = self.by_name.setdefault(nk, [])
+            if node not in bucket:
+                bucket.append(node)
+
+    def ensure_placeholder(self, *, remote_name: str, remote_ip: str) -> TopoFabricNode:
+        placeholder = ensure_lldp_discovered_managed_ne(
+            self.db,
+            remote_name=remote_name,
+            remote_ip=remote_ip,
+            placeholder_by_name=self.placeholder_by_name,
+        )
+        peer = ensure_fabric_node_for_managed(self.db, placeholder)
+        self._remember(peer)
+        return peer
 
 
 def _match_hit_to_fabric_node(
     db: Session, hit: NeighborHit, *, self_id: str
 ) -> TopoFabricNode | None:
-    name_key = _norm_host(hit.remote_name)
-    ip_key = str(hit.remote_ip or "").strip()
-    candidates = db.query(TopoFabricNode).filter(TopoFabricNode.id != self_id).all()
-
-    matched: list[TopoFabricNode] = []
-    for n in candidates:
-        names = {_norm_host(n.name or "")}
-        ips = {str(n.ip or "").strip()}
-        if ip_key and ip_key in ips:
-            matched.append(n)
-            continue
-        if name_key and name_key in names:
-            matched.append(n)
-    if matched:
-        matched.sort(key=lambda n: _fabric_match_score(db, n), reverse=True)
-        return matched[0]
-
-    # Inventory not yet in fabric (or missed due to concurrent insert).
-    if ip_key:
-        ne = _pick_managed_ne(db, ip=ip_key)
-        if ne is not None:
-            return ensure_fabric_node_for_managed(db, ne)
-        ume = db.query(UmeInventoryNE).filter(UmeInventoryNE.ip_address == ip_key).first()
-        if ume is not None:
-            return ensure_fabric_node_for_ume(db, ume)
-    if name_key:
-        ne = _pick_managed_ne(db, name_key=name_key)
-        if ne is not None:
-            return ensure_fabric_node_for_managed(db, ne)
-    return None
+    return _FabricPeerIndex(db, self_id).match(hit)
 
 
 def _retarget_fabric_edges(db: Session, *, from_id: str, to_id: str) -> None:
@@ -1247,6 +1367,7 @@ def merge_duplicate_fabric_nodes(db: Session) -> dict[str, int]:
     """Collapse duplicate fabric nodes (same managed/ume/name/ip) onto inventory canonicals."""
     nodes = db.query(TopoFabricNode).order_by(TopoFabricNode.created_at.asc()).all()
     merged = 0
+    placeholders_removed = 0
 
     # 1) Same managed_ne_id / ume_ne_id (constraint may be missing on old DBs).
     by_managed: dict[str, list[TopoFabricNode]] = {}
@@ -1320,6 +1441,53 @@ def merge_duplicate_fabric_nodes(db: Session) -> dict[str, int]:
             continue
         _absorb(canon, [o])
 
+    # 2b) LLDP placeholders (score=2) → real inventory (score>=3) by hostname / seen mgmt IP.
+    # Placeholders have managed_ne_id so they are NOT orphans; absorb + drop empty ManagedNE.
+    db.flush()
+    nodes = db.query(TopoFabricNode).all()
+    reals = [n for n in nodes if _fabric_match_score(db, n) >= 3]
+    placeholders = [n for n in nodes if _fabric_match_score(db, n) == 2]
+    real_by_name: dict[str, TopoFabricNode] = {}
+    real_by_ip: dict[str, TopoFabricNode] = {}
+    for n in sorted(reals, key=lambda x: _fabric_match_score(db, x), reverse=True):
+        nk = _norm_host(n.name or "")
+        if nk and nk not in real_by_name:
+            real_by_name[nk] = n
+        ip = str(n.ip or "").strip()
+        if ip and ip not in real_by_ip:
+            real_by_ip[ip] = n
+    for p in placeholders:
+        if db.get(TopoFabricNode, p.id) is None:
+            continue
+        canon = None
+        nk = _norm_host(p.name or "")
+        ip = str(p.ip or "").strip()
+        seen_ip = ""
+        mid = str(p.managed_ne_id or "").strip()
+        ph_ne = db.get(ManagedNE, mid) if mid else None
+        if ph_ne is not None:
+            seen_ip = str(ph_ne.source_ref or "").strip()
+        if ip and ip in real_by_ip:
+            canon = real_by_ip[ip]
+        elif seen_ip and seen_ip in real_by_ip:
+            canon = real_by_ip[seen_ip]
+        elif nk and nk in real_by_name:
+            canon = real_by_name[nk]
+        if canon is None or canon.id == p.id:
+            continue
+        _absorb(canon, [p])
+        db.flush()
+        # Drop placeholder ManagedNE if nothing else references it.
+        if ph_ne is not None and str(ph_ne.source or "").strip().lower() == LLDP_DISCOVERED_NE_SOURCE:
+            still = (
+                db.query(TopoFabricNode)
+                .filter(TopoFabricNode.managed_ne_id == ph_ne.id)
+                .count()
+            )
+            if still == 0:
+                db.delete(ph_ne)
+                placeholders_removed += 1
+
     # 3) WebCRT session hosts sharing an IP with a real inventory fabric node.
     db.flush()
     nodes = db.query(TopoFabricNode).all()
@@ -1338,10 +1506,10 @@ def merge_duplicate_fabric_nodes(db: Session) -> dict[str, int]:
         canon = max(real, key=lambda n: _fabric_match_score(db, n))
         _absorb(canon, webcrtish)
 
-    if merged:
+    if merged or placeholders_removed:
         db.commit()
         refresh_fabric_stats(db)
-    return {"merged": merged}
+    return {"merged": merged, "placeholders_removed": placeholders_removed}
 
 
 def _raw_preview(raw: str, *, limit: int = _RAW_PREVIEW_MAX) -> str:
@@ -1396,6 +1564,7 @@ def _job_out(db: Session, job: TopoDiscoverJob, *, include_items: bool = True) -
         edges_added=int(job.edges_added or 0),
         edges_updated=int(job.edges_updated or 0),
         edges_stale=int(job.edges_stale or 0),
+        edges_missing=int(job.edges_stale or 0),
         error=job.error or "",
         started_at=job.started_at,
         ended_at=job.ended_at,
@@ -1408,6 +1577,25 @@ def get_discover_job(db: Session, job_id: str) -> FabricDiscoverJobOut:
     if job is None:
         raise HTTPException(status_code=404, detail="discover_job_not_found")
     return _job_out(db, job)
+
+
+def _ume_target_dict(db: Session, uid: str, default_profile: Any) -> dict[str, str] | None:
+    ume = db.query(UmeInventoryNE).filter(UmeInventoryNE.ne_id == uid).one_or_none()
+    if ume is None:
+        return None
+    if default_profile is not None:
+        dtype, vendor = infer_device_type_vendor(str(ume.ne_type or ""), default_profile)
+    else:
+        dtype, vendor = "zte_zxros", (ume.vendor or "ZTE")
+    name = (ume.host_name or ume.ne_name or ume.user_label or ume.ip_address or uid).strip()
+    return {
+        "ne_id": uid,
+        "ume_ne_id": uid,
+        "ne_name": name,
+        "ne_ip": ume.ip_address or "",
+        "vendor": vendor or (ume.vendor or "ZTE"),
+        "device_type": dtype or "zte_zxros",
+    }
 
 
 def _resolve_scan_targets(
@@ -1429,6 +1617,42 @@ def _resolve_scan_targets(
                 }
             )
         return targets
+
+    managed_ids = [str(x).strip() for x in (body.managed_ne_ids or []) if str(x).strip()]
+    ume_ids = [str(x).strip() for x in (body.ume_ne_ids or []) if str(x).strip()]
+    if managed_ids or ume_ids:
+        seen: set[str] = set()
+        for mid in managed_ids:
+            if mid in seen:
+                continue
+            ne = db.get(ManagedNE, mid)
+            if ne is None:
+                continue
+            seen.add(mid)
+            targets.append(
+                {
+                    "ne_id": ne.id,
+                    "ume_ne_id": "",
+                    "ne_name": ne.name or "",
+                    "ne_ip": ne.ip_address or "",
+                    "vendor": ne.vendor or "",
+                    "device_type": ne.device_type or "",
+                }
+            )
+        for uid in ume_ids:
+            key = f"ume:{uid}"
+            if key in seen:
+                continue
+            row = _ume_target_dict(db, uid, default_profile)
+            if row is None:
+                continue
+            seen.add(key)
+            targets.append(row)
+        if not targets:
+            raise HTTPException(status_code=400, detail="ne_ids_required")
+        return targets
+
+    # Legacy mixed ne_ids: prefer ManagedNE, leftover treated as UME.
     filter_ids = {str(x).strip() for x in (body.ne_ids or []) if str(x).strip()}
     if not filter_ids:
         raise HTTPException(status_code=400, detail="ne_ids_required")
@@ -1447,25 +1671,34 @@ def _resolve_scan_targets(
             )
             filter_ids.discard(mid)
     for uid in list(filter_ids):
-        ume = db.query(UmeInventoryNE).filter(UmeInventoryNE.ne_id == uid).one_or_none()
-        if ume is None:
-            continue
-        if default_profile is not None:
-            dtype, vendor = infer_device_type_vendor(str(ume.ne_type or ""), default_profile)
-        else:
-            dtype, vendor = "zte_zxros", (ume.vendor or "ZTE")
-        name = (ume.host_name or ume.ne_name or ume.user_label or ume.ip_address or uid).strip()
-        targets.append(
-            {
-                "ne_id": uid,
-                "ume_ne_id": uid,
-                "ne_name": name,
-                "ne_ip": ume.ip_address or "",
-                "vendor": vendor or (ume.vendor or "ZTE"),
-                "device_type": dtype or "zte_zxros",
-            }
-        )
+        row = _ume_target_dict(db, uid, default_profile)
+        if row is not None:
+            targets.append(row)
     return targets
+
+
+def prune_discover_jobs(db: Session, *, keep: int = 30) -> int:
+    """Delete finished discover jobs beyond ``keep`` (newest kept). Open jobs always retained."""
+    keep = max(0, min(200, int(keep)))
+    finished = (
+        db.query(TopoDiscoverJob)
+        .filter(TopoDiscoverJob.status.in_(["done", "failed"]))
+        .order_by(TopoDiscoverJob.created_at.desc())
+        .all()
+    )
+    to_drop = finished if keep == 0 else finished[keep:]
+    if not to_drop:
+        return 0
+    dropped = 0
+    for job in to_drop:
+        db.query(TopoDiscoverJobItem).filter(TopoDiscoverJobItem.job_id == job.id).delete(
+            synchronize_session=False
+        )
+        db.delete(job)
+        dropped += 1
+    if dropped:
+        db.commit()
+    return dropped
 
 
 def _discover_one_target(
@@ -1558,17 +1791,16 @@ def _discover_one_target(
         unmatched: list[dict[str, str]] = []
         touched: list[str] = []
         replaced: list[str] = []
+        peer_index = _FabricPeerIndex(db, fabric_node.id)
         for hit in hits:
-            peer = _match_hit_to_fabric_node(db, hit, self_id=fabric_node.id)
+            peer = peer_index.match(hit)
             if peer is None:
                 if auto_add_unmatched and (hit.remote_name or hit.remote_ip):
                     # Not in inventory → SSH placeholder ManagedNE (empty IP/creds).
-                    placeholder = ensure_lldp_discovered_managed_ne(
-                        db,
+                    peer = peer_index.ensure_placeholder(
                         remote_name=(hit.remote_name or "").strip(),
                         remote_ip=(hit.remote_ip or "").strip(),
                     )
-                    peer = ensure_fabric_node_for_managed(db, placeholder)
                     peer.attrs = dict(peer.attrs or {})
                     peer.attrs["from_lldp_unmatched"] = True
                     peer.last_seen_at = now
@@ -1751,6 +1983,13 @@ def _run_discover_job(job_id: str, body: FabricDiscoverRequest) -> None:
             job.edges_updated = updated
             job.edges_stale = stale
             db.commit()
+        try:
+            from .lldp_collect_service import DEFAULT_HISTORY_KEEP, ensure_policy
+
+            keep = int(getattr(ensure_policy(db), "history_keep", DEFAULT_HISTORY_KEEP) or 0)
+            prune_discover_jobs(db, keep=keep)
+        except Exception:  # noqa: BLE001
+            pass
     except Exception as exc:  # noqa: BLE001
         db.rollback()
         job = db.get(TopoDiscoverJob, job_id)
@@ -1766,12 +2005,87 @@ def _run_discover_job(job_id: str, body: FabricDiscoverRequest) -> None:
             _RUNNING_JOBS.discard(job_id)
 
 
+def reclaim_stale_discover_jobs(
+    db: Session,
+    *,
+    force_all_open: bool = False,
+    now: datetime | None = None,
+) -> int:
+    """Mark orphaned / hung discover jobs as failed so scheduling can proceed.
+
+    - ``force_all_open``: process restart — all pending/running rows are dead.
+    - Otherwise: pending older than pending_stale_sec, or running with stale updated_at.
+    """
+    now = now or _utcnow()
+    run_sec = max(60, int(getattr(settings, "lldp_collect_stale_run_sec", 7200) or 7200))
+    pend_sec = max(30, int(getattr(settings, "lldp_collect_pending_stale_sec", 300) or 300))
+    open_jobs = (
+        db.query(TopoDiscoverJob)
+        .filter(TopoDiscoverJob.status.in_(["pending", "running"]))
+        .all()
+    )
+    if not open_jobs:
+        return 0
+    closed = 0
+    for job in open_jobs:
+        status = str(job.status or "")
+        if force_all_open:
+            reason = "stale_running_reset_on_startup"
+        elif status == "pending":
+            created = job.created_at or job.updated_at or now
+            if created > now - timedelta(seconds=pend_sec):
+                continue
+            reason = "pending_stale_timeout"
+        else:
+            touched = job.updated_at or job.started_at or job.created_at or now
+            if touched > now - timedelta(seconds=run_sec):
+                continue
+            reason = "running_stale_timeout"
+        job.status = "failed"
+        job.ended_at = now
+        job.updated_at = now
+        msg = str(job.error or "").strip()
+        job.error = (msg + ("; " if msg else "") + reason)[:1024]
+        closed += 1
+        with _JOB_LOCK:
+            _RUNNING_JOBS.discard(job.id)
+    if closed:
+        db.commit()
+    return closed
+
+
 def start_discover_job(
     db: Session,
     body: FabricDiscoverRequest,
     *,
     trigger_mode: str = "manual",
 ) -> FabricDiscoverJobOut:
+    reclaim_stale_discover_jobs(db)
+    # Serialize multi-worker starts via singleton policy row lock (PG/SQLite FOR UPDATE).
+    pol = db.get(LldpCollectPolicy, 1)
+    if pol is None:
+        pol = LldpCollectPolicy(
+            id=1,
+            enabled=False,
+            interval_days=1,
+            interval_hours=24,
+            concurrency=4,
+            scope_mode="all",
+            selected_targets=[],
+            auto_add_unmatched=True,
+            history_keep=30,
+            updated_at=_utcnow(),
+        )
+        db.add(pol)
+        db.commit()
+    db.query(LldpCollectPolicy).filter(LldpCollectPolicy.id == 1).with_for_update().one()
+    if (
+        db.query(TopoDiscoverJob)
+        .filter(TopoDiscoverJob.status.in_(["pending", "running"]))
+        .first()
+        is not None
+    ):
+        raise HTTPException(status_code=409, detail="lldp_collect_already_running")
     scope = str(body.scope or "ne_ids").strip().lower() or "ne_ids"
     if scope not in {"all_inventory", "ne_ids"}:
         raise HTTPException(status_code=400, detail="invalid_scope")
@@ -1779,11 +2093,18 @@ def start_discover_job(
     if trig not in {"manual", "schedule", "topology"}:
         trig = "manual"
     now = _utcnow()
+    # Persist explicit source lists when present; keep legacy ne_ids for older clients.
+    stored_ids = list(body.ne_ids or [])
+    if body.managed_ne_ids or body.ume_ne_ids:
+        stored_ids = [
+            *(f"managed:{x}" for x in (body.managed_ne_ids or []) if str(x).strip()),
+            *(f"ume:{x}" for x in (body.ume_ne_ids or []) if str(x).strip()),
+        ]
     job = TopoDiscoverJob(
         id=uuid4().hex,
         scope=scope,
         trigger_mode=trig,
-        ne_ids_json=list(body.ne_ids or []),
+        ne_ids_json=stored_ids,
         status="pending",
         total=0,
         done=0,

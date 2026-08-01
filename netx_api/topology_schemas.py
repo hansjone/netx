@@ -32,18 +32,24 @@ class FabricEdgeOut(BaseModel):
     b_node_id: str
     a_port: str = ""
     b_port: str = ""
+    a_name: str = ""
+    b_name: str = ""
+    a_ip: str = ""
+    b_ip: str = ""
     source: str = "lldp"
     status: str = "active"
     attrs: dict[str, Any] = Field(default_factory=dict)
     discovered_at: datetime | None = None
     last_seen_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class FabricSummaryOut(BaseModel):
     node_count: int = 0
     edge_count: int = 0
     edge_active: int = 0
-    edge_stale: int = 0
+    edge_stale: int = 0  # legacy alias of edge_missing
+    edge_missing: int = 0
     last_discover_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -59,7 +65,12 @@ class FabricDiscoverRequest(BaseModel):
     """Start LLDP discovery into fabric (no CDP)."""
 
     scope: str = Field(default="ne_ids", description="all_inventory | ne_ids")
-    ne_ids: list[str] = Field(default_factory=list)
+    ne_ids: list[str] = Field(
+        default_factory=list,
+        description="Legacy mixed ids (managed first, then ume). Prefer managed_ne_ids/ume_ne_ids.",
+    )
+    managed_ne_ids: list[str] = Field(default_factory=list)
+    ume_ne_ids: list[str] = Field(default_factory=list)
     auto_add_unmatched: bool = Field(
         default=True,
         description="Create SSH placeholder ManagedNEs for LLDP neighbors not in inventory",
@@ -105,7 +116,8 @@ class FabricDiscoverJobOut(BaseModel):
     done: int = 0
     edges_added: int = 0
     edges_updated: int = 0
-    edges_stale: int = 0
+    edges_stale: int = 0  # legacy alias of edges_missing
+    edges_missing: int = 0
     error: str = ""
     started_at: datetime | None = None
     ended_at: datetime | None = None

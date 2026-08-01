@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   fetchCliTargets,
+  fetchFabricEdges,
   fetchLldpCollectDashboard,
   fetchLldpCollectJob,
   fetchLldpCollectJobs,
@@ -28,9 +29,16 @@ export function LldpLinksPage() {
   const [expandedJobId, setExpandedJobId] = useState("");
   const [itemDetail, setItemDetail] = useState<TopologyDiscoverJobItem | null>(null);
 
+  const [edgeStatus, setEdgeStatus] = useState<"all" | "active" | "missing">("all");
+  const [edgeKeyword, setEdgeKeyword] = useState("");
+  const [edgePage, setEdgePage] = useState(1);
+  const EDGE_PAGE_SIZE = 20;
+
   const [enabled, setEnabled] = useState(false);
-  const [intervalDays, setIntervalDays] = useState(1);
+  const [intervalValue, setIntervalValue] = useState(1);
+  const [intervalUnit, setIntervalUnit] = useState<"days" | "hours">("days");
   const [concurrency, setConcurrency] = useState(4);
+  const [historyKeep, setHistoryKeep] = useState(30);
   const [scopeMode, setScopeMode] = useState<"all" | "selected">("all");
   const [autoAdd, setAutoAdd] = useState(true);
   const [selectedMap, setSelectedMap] = useState<Record<string, ConfigSyncTargetRef>>({});
@@ -53,8 +61,16 @@ export function LldpLinksPage() {
     if (!dashQuery.data || policyHydrated) return;
     const p = dashQuery.data.policy;
     setEnabled(Boolean(p.enabled));
-    setIntervalDays(Number(p.interval_days || 1));
+    const hours = Math.max(1, Number(p.interval_hours || (Number(p.interval_days || 1) * 24)));
+    if (hours % 24 === 0) {
+      setIntervalUnit("days");
+      setIntervalValue(Math.max(1, Math.min(365, hours / 24)));
+    } else {
+      setIntervalUnit("hours");
+      setIntervalValue(Math.max(1, Math.min(8760, hours)));
+    }
     setConcurrency(Number(p.concurrency || 4));
+    setHistoryKeep(Math.max(0, Math.min(200, Number(p.history_keep ?? 30))));
     setScopeMode(p.scope_mode === "selected" ? "selected" : "all");
     setAutoAdd(Boolean(p.auto_add_unmatched));
     const map: Record<string, ConfigSyncTargetRef> = {};
@@ -89,30 +105,58 @@ export function LldpLinksPage() {
     staleTime: 5000,
   });
 
+  const edgesQuery = useQuery({
+    queryKey: queryKeys.fabricEdges(edgeStatus, edgeKeyword, edgePage),
+    queryFn: () =>
+      fetchFabricEdges({
+        status: edgeStatus === "all" ? "" : edgeStatus,
+        keyword: edgeKeyword,
+        page: edgePage,
+        pageSize: EDGE_PAGE_SIZE,
+      }),
+    staleTime: 2000,
+    refetchInterval: () => (dashQuery.data?.running_job ? POLL_MS : false),
+  });
+
   const refresh = async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: queryKeys.lldpCollectDashboard }),
       queryClient.invalidateQueries({ queryKey: queryKeys.lldpCollectJobsAll }),
       queryClient.invalidateQueries({ queryKey: queryKeys.lldpCollectJobAll }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.fabricEdgesAll }),
     ]);
   };
 
   const savePolicyMut = useMutation({
-    mutationFn: () =>
-      updateLldpCollectPolicy({
+    mutationFn: () => {
+      const hours =
+        intervalUnit === "days"
+          ? Math.max(1, Math.min(365, intervalValue)) * 24
+          : Math.max(1, Math.min(8760, intervalValue));
+      return updateLldpCollectPolicy({
         enabled,
-        interval_days: intervalDays,
+        interval_hours: hours,
         concurrency,
+        history_keep: historyKeep,
         scope_mode: scopeMode,
         auto_add_unmatched: autoAdd,
         selected_targets: Object.values(selectedMap),
-      }),
+      });
+    },
     onSuccess: async (saved) => {
       // Apply server response immediately — do NOT flip policyHydrated false then
       // rehydrate from a possibly-stale dashboard cache (checkbox "pops back" bug).
       setEnabled(Boolean(saved.enabled));
-      setIntervalDays(Number(saved.interval_days || 1));
+      const hours = Math.max(1, Number(saved.interval_hours || (Number(saved.interval_days || 1) * 24)));
+      if (hours % 24 === 0) {
+        setIntervalUnit("days");
+        setIntervalValue(Math.max(1, Math.min(365, hours / 24)));
+      } else {
+        setIntervalUnit("hours");
+        setIntervalValue(Math.max(1, Math.min(8760, hours)));
+      }
       setConcurrency(Number(saved.concurrency || 4));
+      setHistoryKeep(Math.max(0, Math.min(200, Number(saved.history_keep ?? 30))));
       setScopeMode(saved.scope_mode === "selected" ? "selected" : "all");
       setAutoAdd(Boolean(saved.auto_add_unmatched));
       const map: Record<string, ConfigSyncTargetRef> = {};
@@ -149,6 +193,9 @@ export function LldpLinksPage() {
   const jobPages = pageCount(jobTotal, 10);
   const selectedCount = useMemo(() => Object.keys(selectedMap).length, [selectedMap]);
   const detailItems = jobDetailQuery.data?.items ?? [];
+  const edgeItems = edgesQuery.data?.items ?? [];
+  const edgeTotal = Number(edgesQuery.data?.total || 0);
+  const edgePages = pageCount(edgeTotal, EDGE_PAGE_SIZE);
 
   const toggleTarget = (row: CliTargetItem) => {
     const source = row.source === "ume" ? "ume" : "managed";
@@ -192,7 +239,9 @@ export function LldpLinksPage() {
           </div>
           <div className="pt-list-kpi">
             <div className="pt-list-kpi__label">{t("lldpLinks.kpi.missing")}</div>
-            <div className="pt-list-kpi__value">{dash?.fabric_edge_stale ?? "—"}</div>
+            <div className="pt-list-kpi__value">
+              {dash?.fabric_edge_missing ?? dash?.fabric_edge_stale ?? "—"}
+            </div>
           </div>
           <div className={`pt-list-kpi${running ? " pt-list-kpi--live" : ""}`}>
             <div className="pt-list-kpi__label">{t("lldpLinks.kpi.running")}</div>
@@ -231,14 +280,33 @@ export function LldpLinksPage() {
             <span>{t("lldpLinks.autoAddUnmatched")}</span>
           </label>
           <label className="config-sync-policy-field">
-            <span>{t("lldpLinks.intervalDays")}</span>
+            <span>{t("lldpLinks.interval")}</span>
             <input
               type="number"
               min={1}
-              max={365}
-              value={intervalDays}
-              onChange={(e) => setIntervalDays(Math.max(1, Number(e.target.value) || 1))}
+              max={intervalUnit === "days" ? 365 : 8760}
+              value={intervalValue}
+              onChange={(e) => {
+                const max = intervalUnit === "days" ? 365 : 8760;
+                setIntervalValue(Math.max(1, Math.min(max, Number(e.target.value) || 1)));
+              }}
             />
+            <select
+              value={intervalUnit}
+              onChange={(e) => {
+                const next = e.target.value === "hours" ? "hours" : "days";
+                if (next === intervalUnit) return;
+                if (next === "hours") {
+                  setIntervalValue(Math.max(1, Math.min(8760, intervalValue * 24)));
+                } else {
+                  setIntervalValue(Math.max(1, Math.min(365, Math.round(intervalValue / 24) || 1)));
+                }
+                setIntervalUnit(next);
+              }}
+            >
+              <option value="days">{t("lldpLinks.intervalUnitDays")}</option>
+              <option value="hours">{t("lldpLinks.intervalUnitHours")}</option>
+            </select>
           </label>
           <label className="config-sync-policy-field">
             <span>{t("lldpLinks.concurrency")}</span>
@@ -248,6 +316,16 @@ export function LldpLinksPage() {
               max={32}
               value={concurrency}
               onChange={(e) => setConcurrency(Math.max(1, Math.min(32, Number(e.target.value) || 1)))}
+            />
+          </label>
+          <label className="config-sync-policy-field">
+            <span>{t("lldpLinks.historyKeep")}</span>
+            <input
+              type="number"
+              min={0}
+              max={200}
+              value={historyKeep}
+              onChange={(e) => setHistoryKeep(Math.max(0, Math.min(200, Number(e.target.value) || 0)))}
             />
           </label>
           <label className="config-sync-policy-field">
@@ -338,7 +416,108 @@ export function LldpLinksPage() {
         ) : null}
       </div>
 
-      <h3>{t("lldpLinks.jobsTitle")}</h3>
+      <h3>{t("lldpLinks.edgesTitle")}</h3>
+      <div className="filter-inline" style={{ marginBottom: 8 }}>
+        <select
+          value={edgeStatus}
+          onChange={(e) => {
+            const v = e.target.value;
+            setEdgeStatus(v === "active" || v === "missing" ? v : "all");
+            setEdgePage(1);
+          }}
+        >
+          <option value="all">{t("lldpLinks.edgeStatusAll")}</option>
+          <option value="active">{t("lldpLinks.edgeStatusActive")}</option>
+          <option value="missing">{t("lldpLinks.edgeStatusMissing")}</option>
+        </select>
+        <input
+          value={edgeKeyword}
+          placeholder={t("lldpLinks.edgeKeywordPh")}
+          onChange={(e) => {
+            setEdgeKeyword(e.target.value);
+            setEdgePage(1);
+          }}
+        />
+      </div>
+      <div className="pt-list-table-wrap">
+        <table className="data-table pt-list-table">
+          <thead>
+            <tr>
+              <th>{t("lldpLinks.col.status")}</th>
+              <th>{t("lldpLinks.col.aSide")}</th>
+              <th>{t("lldpLinks.col.aPort")}</th>
+              <th>{t("lldpLinks.col.bSide")}</th>
+              <th>{t("lldpLinks.col.bPort")}</th>
+              <th>{t("lldpLinks.col.source")}</th>
+              <th>{t("lldpLinks.missCount")}</th>
+              <th>{t("lldpLinks.col.lastSeen")}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {edgeItems.map((e) => {
+              const attrs = (e.attrs || {}) as Record<string, unknown>;
+              const missCount = Number(attrs.miss_count || 0) || 0;
+              const replaced = String(attrs.replaced_by_edge_id || "").trim();
+              const aLabel = e.a_name || e.a_ip || e.a_node_id.slice(0, 8);
+              const bLabel = e.b_name || e.b_ip || e.b_node_id.slice(0, 8);
+              const st = e.status === "stale" ? "missing" : e.status;
+              return (
+                <tr key={e.id}>
+                  <td>{st}</td>
+                  <td>
+                    <div>{aLabel}</div>
+                    {e.a_ip && e.a_name ? <div className="muted">{e.a_ip}</div> : null}
+                  </td>
+                  <td>{e.a_port || "—"}</td>
+                  <td>
+                    <div>{bLabel}</div>
+                    {e.b_ip && e.b_name ? <div className="muted">{e.b_ip}</div> : null}
+                  </td>
+                  <td>{e.b_port || "—"}</td>
+                  <td>{e.source}</td>
+                  <td>
+                    {missCount || (st === "missing" ? 1 : 0)}
+                    {replaced ? (
+                      <div className="muted" title={replaced}>
+                        {t("lldpLinks.replacedBy")}
+                      </div>
+                    ) : null}
+                  </td>
+                  <td>{e.last_seen_at ? formatSystemTime(e.last_seen_at) : "—"}</td>
+                </tr>
+              );
+            })}
+            {!edgeItems.length ? (
+              <tr>
+                <td colSpan={8} className="muted">
+                  {edgesQuery.isLoading ? "…" : t("common.empty")}
+                </td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      </div>
+      <div className="pager">
+        <button type="button" disabled={edgePage <= 1} onClick={() => setEdgePage((p) => p - 1)}>
+          {t("common.prevPage")}
+        </button>
+        <span className="muted">
+          {t("common.pagerMeta", {
+            total: String(edgeTotal),
+            page: String(edgePage),
+            pages: String(edgePages),
+          })}
+        </span>
+        <button
+          type="button"
+          disabled={edgePage >= edgePages}
+          onClick={() => setEdgePage((p) => p + 1)}
+        >
+          {t("common.nextPage")}
+        </button>
+      </div>
+
+      <h3 style={{ marginTop: 24 }}>{t("lldpLinks.jobsTitle")}</h3>
       <div className="pt-list-table-wrap">
         <table className="data-table pt-list-table">
           <thead>
@@ -382,7 +561,7 @@ export function LldpLinksPage() {
                   <td>
                     +{job.edges_added} / ~{job.edges_updated}
                   </td>
-                  <td>{job.edges_stale || 0}</td>
+                  <td>{job.edges_missing ?? job.edges_stale ?? 0}</td>
                   <td>{job.started_at ? formatSystemTime(job.started_at) : "—"}</td>
                   <td>{job.ended_at ? formatSystemTime(job.ended_at) : "—"}</td>
                 </tr>

@@ -503,11 +503,14 @@ class LldpCollectPolicy(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
-    interval_days: Mapped[int] = mapped_column(Integer, default=1)
+    interval_days: Mapped[int] = mapped_column(Integer, default=1)  # legacy; prefer interval_hours
+    interval_hours: Mapped[int] = mapped_column(Integer, default=24)
     concurrency: Mapped[int] = mapped_column(Integer, default=4)
     scope_mode: Mapped[str] = mapped_column(String(32), default="all")  # all | selected
     selected_targets: Mapped[list] = mapped_column(_JsonType, default=list)
     auto_add_unmatched: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Keep N finished discover jobs (items + raw_preview); 0 = keep none finished.
+    history_keep: Mapped[int] = mapped_column(Integer, default=30)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

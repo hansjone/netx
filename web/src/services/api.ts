@@ -18,6 +18,7 @@ import type {
   CliMeta,
   CliTargetListResponse,
   UmeCliOverrideItem,
+  FabricEdge,
   FabricSummary,
   TopologyDiscoverJob,
   TopologyViewGraph,
@@ -906,6 +907,26 @@ export const patchTopologyEdgeStyle = (
   apiPatch<TopologyViewGraph>(`/v1/topology/views/${encodeURIComponent(viewId)}/edge-style`, body);
 
 export const fetchFabricSummary = () => apiGet<FabricSummary>("/v1/topology/fabric/summary");
+
+export const fetchFabricEdges = (params?: {
+  keyword?: string;
+  status?: string;
+  source?: string;
+  nodeId?: string;
+  page?: number;
+  pageSize?: number;
+}) => {
+  const p = new URLSearchParams();
+  if (params?.keyword) p.set("keyword", params.keyword);
+  if (params?.status) p.set("status", params.status);
+  if (params?.source) p.set("source", params.source);
+  if (params?.nodeId) p.set("node_id", params.nodeId);
+  p.set("page", String(Math.max(1, Number(params?.page || 1))));
+  p.set("page_size", String(Math.max(1, Math.min(200, Number(params?.pageSize || 20)))));
+  return apiGet<{ total: number; page: number; page_size: number; items: FabricEdge[] }>(
+    `/v1/topology/fabric/edges?${p.toString()}`,
+  );
+};
 
 export const startLldpDiscover = (body?: {
   scope?: "all_inventory" | "ne_ids";

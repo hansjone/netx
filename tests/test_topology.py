@@ -87,6 +87,10 @@ class FabricTopologyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         Base.metadata.create_all(bind=engine)
+        from netx_api.topology_migrate import ensure_topology_schema
+
+        with engine.begin() as conn:
+            ensure_topology_schema(conn)
 
     def setUp(self) -> None:
         self.db = SessionLocal()
@@ -481,6 +485,112 @@ Management Addresses:
         fb = svc.ensure_fabric_node_for_managed(self.db, ne_b)
         self.db.commit()
         return fa, fb, ne_a, ne_b
+
+    def test_merge_lldp_placeholder_into_real_inventory(self) -> None:
+        suffix = uuid4().hex[:8]
+        # Real inventory NE + fabric node.
+        real = ManagedNE(
+            id=f"real-{suffix}",
+            name=f"R1-{suffix}",
+            ip_address=f"198.51.100.{(int(suffix[:2], 16) % 80) + 10}",
+            vendor="Cisco",
+            device_type="cisco_ios",
+        )
+        self.db.add(real)
+        self.db.commit()
+        fr = svc.ensure_fabric_node_for_managed(self.db, real)
+        # LLDP placeholder with same hostname key + seen mgmt IP.
+        ph = svc.ensure_lldp_discovered_managed_ne(
+            self.db,
+            remote_name=f"R1-{suffix}",
+            remote_ip=real.ip_address,
+        )
+        fp = svc.ensure_fabric_node_for_managed(self.db, ph)
+        self.db.commit()
+        # Edge hanging off placeholder should retarget to real.
+        edge, _ = svc.upsert_fabric_edge(
+            self.db,
+            a_node_id=fr.id,
+            b_node_id=fp.id,
+            a_port="Gi0/0",
+            b_port="Gi0/1",
+            source="lldp",
+        )
+        # Need a third node so edge isn't self-loop after merge… actually A=real B=placeholder
+        # after absorb B→A becomes self-loop and edge is deleted. Use external peer.
+        peer_ne = ManagedNE(
+            id=f"peer-{suffix}",
+            name=f"P-{suffix}",
+            ip_address=f"198.51.100.{(int(suffix[2:4], 16) % 80) + 100}",
+            vendor="Cisco",
+            device_type="cisco_ios",
+        )
+        self.db.add(peer_ne)
+        self.db.commit()
+        fpeer = svc.ensure_fabric_node_for_managed(self.db, peer_ne)
+        edge2, _ = svc.upsert_fabric_edge(
+            self.db,
+            a_node_id=fp.id,
+            b_node_id=fpeer.id,
+            a_port="Gi1/0",
+            b_port="Gi1/1",
+            source="lldp",
+        )
+        self.db.commit()
+        edge2_id = edge2.id
+
+        out = svc.merge_duplicate_fabric_nodes(self.db)
+        self.assertGreaterEqual(out["merged"], 1)
+        self.assertGreaterEqual(out.get("placeholders_removed", 0), 1)
+        self.db.expire_all()
+        self.assertIsNone(self.db.get(TopoFabricNode, fp.id))
+        self.assertIsNone(self.db.get(ManagedNE, ph.id))
+        # Edge from placeholder→peer should now be real→peer.
+        moved = self.db.get(TopoFabricEdge, edge2_id)
+        self.assertIsNotNone(moved)
+        assert moved is not None
+        ends = {moved.a_node_id, moved.b_node_id}
+        self.assertEqual(ends, {fr.id, fpeer.id})
+
+        self.db.delete(real)
+        self.db.delete(peer_ne)
+        self.db.commit()
+
+    def test_list_fabric_edges_missing_filter_and_names(self) -> None:
+        suffix = uuid4().hex[:8]
+        fa, fb, ne_a, ne_b = self._pair_nodes(suffix)
+        edge, _ = svc.upsert_fabric_edge(
+            self.db,
+            a_node_id=fa.id,
+            b_node_id=fb.id,
+            a_port="Gi0/0",
+            b_port="Gi0/1",
+            source="lldp",
+        )
+        self.db.commit()
+        svc._apply_missing_and_purge(
+            self.db, scanned_ok={fa.id}, touched_edge_ids=set()
+        )
+        self.db.commit()
+
+        missing = svc.list_fabric_edges(self.db, status="missing", page=1, page_size=50)
+        self.assertGreaterEqual(missing["total"], 1)
+        hit = next(i for i in missing["items"] if i["id"] == edge.id)
+        self.assertEqual(hit["status"], "missing")
+        self.assertTrue(hit["a_name"] or hit["b_name"])
+        self.assertGreaterEqual(int((hit.get("attrs") or {}).get("miss_count") or 0), 1)
+
+        by_kw = svc.list_fabric_edges(
+            self.db, keyword=ne_a.name[:6], status="missing", page=1, page_size=50
+        )
+        self.assertTrue(any(i["id"] == edge.id for i in by_kw["items"]))
+
+        active = svc.list_fabric_edges(self.db, status="active", page=1, page_size=50)
+        self.assertFalse(any(i["id"] == edge.id for i in active["items"]))
+
+        self.db.delete(ne_a)
+        self.db.delete(ne_b)
+        self.db.commit()
 
     def test_edge_missing_after_one_absent_cycle(self) -> None:
         suffix = uuid4().hex[:8]

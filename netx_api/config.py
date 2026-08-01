@@ -82,6 +82,9 @@ class Settings(BaseSettings):
     lldp_collect_scheduler_enabled: bool = True
     lldp_collect_scheduler_tick_sec: int = 60
     lldp_collect_startup_grace_sec: int = 3600
+    # Reclaim hung discover jobs (updated_at / created_at older than these).
+    lldp_collect_stale_run_sec: int = 7200
+    lldp_collect_pending_stale_sec: int = 300
     # Port traffic monitoring (CLI rate bit/s samples)
     port_traffic_scheduler_enabled: bool = True
     port_traffic_scheduler_tick_sec: int = 15

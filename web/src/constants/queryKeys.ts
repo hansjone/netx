@@ -57,6 +57,9 @@ export const queryKeys = {
   lldpCollectJobs: (page: number) => ["lldpCollectJobs", page] as const,
   lldpCollectJobAll: ["lldpCollectJob"] as const,
   lldpCollectJob: (jobId: string) => ["lldpCollectJob", jobId] as const,
+  fabricEdgesAll: ["fabricEdges"] as const,
+  fabricEdges: (status: string, keyword: string, page: number) =>
+    ["fabricEdges", status, keyword, page] as const,
   configSyncDashboard: ["configSyncDashboard"] as const,
   configSyncPolicy: ["configSyncPolicy"] as const,
   configSyncCyclesAll: ["configSyncCycles"] as const,
