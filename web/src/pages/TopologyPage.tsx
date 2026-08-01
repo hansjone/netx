@@ -289,6 +289,25 @@ type EdgeDefaultStyle = {
 type EdgeDefaults = Record<EdgeSourceKind, EdgeDefaultStyle>;
 
 const EDGE_DEFAULTS_KEY = "netx.topology.edgeDefaults";
+const AUTO_LAYOUT_DISCOVER_KEY = "netx.topology.autoLayoutAfterDiscover";
+
+function loadAutoLayoutAfterDiscover(): boolean {
+  try {
+    const raw = localStorage.getItem(AUTO_LAYOUT_DISCOVER_KEY);
+    if (raw === null) return false;
+    return raw === "1" || raw === "true";
+  } catch {
+    return false;
+  }
+}
+
+function persistAutoLayoutAfterDiscover(value: boolean) {
+  try {
+    localStorage.setItem(AUTO_LAYOUT_DISCOVER_KEY, value ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+}
 
 const BUILTIN_EDGE_DEFAULTS: EdgeDefaults = {
   manual: { stroke_color: "#64748b", stroke_width: 2, line_style: "solid" },
@@ -468,7 +487,7 @@ export function TopologyPage() {
   const [edgeDefaults, setEdgeDefaults] = useState<EdgeDefaults>(() => loadEdgeDefaults());
   const [toolMode, setToolMode] = useState<ToolMode>("select");
   const [snapToGrid, setSnapToGrid] = useState(true);
-  const [autoLayoutAfterDiscover, setAutoLayoutAfterDiscover] = useState(true);
+  const [autoLayoutAfterDiscover, setAutoLayoutAfterDiscover] = useState(loadAutoLayoutAfterDiscover);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [hideAddedNes, setHideAddedNes] = useState(true);
   const [paletteSource, setPaletteSource] = useState<PaletteSource>("managed");
@@ -498,6 +517,7 @@ export function TopologyPage() {
   const discoverAbortRef = useRef<AbortController | null>(null);
   const searchHitTimerRef = useRef<number | null>(null);
   const findBoxRef = useRef<HTMLDivElement | null>(null);
+  const displayMenuRef = useRef<HTMLDetailsElement | null>(null);
   const findJustLocatedRef = useRef(false);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<NeNodeData>>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -867,8 +887,10 @@ export function TopologyPage() {
         if (out.graph) {
           queryClient.setQueryData(queryKeys.topologyGraph(mapId), out.graph);
           let { rfNodes, rfEdges } = graphToFlow(out.graph.nodes, out.graph.edges, edgeDefaults);
+          let didAutoLayout = false;
           if (autoLayoutAfterDiscover && rfNodes.length > 1) {
             rfNodes = layoutGraph(rfNodes, rfEdges, "hierarchical-tb");
+            didAutoLayout = true;
             try {
               const graph = await putTopologyGraph(mapId, flowToGraphPayload(rfNodes, rfEdges));
               queryClient.setQueryData(queryKeys.topologyGraph(mapId), graph);
@@ -883,7 +905,10 @@ export function TopologyPage() {
           setNodes(rfNodes);
           setEdges(rfEdges);
           historyLockRef.current = false;
-          window.setTimeout(() => rfRef.current?.fitView({ padding: 0.2 }), 50);
+          // Only refit when layout changed; otherwise keep the user's viewport.
+          if (didAutoLayout) {
+            window.setTimeout(() => rfRef.current?.fitView({ padding: 0.2 }), 50);
+          }
         }
         setDiscoverReport(out);
         await queryClient.invalidateQueries({ queryKey: queryKeys.topologyMaps });
@@ -1251,6 +1276,8 @@ export function TopologyPage() {
         clearSelection();
         connectClickRef.current = null;
         setToolMode((m) => (m === "connect" ? "select" : m));
+        if (displayMenuRef.current?.open) displayMenuRef.current.open = false;
+        setFindOpen(false);
         return;
       }
       const mode = toolModeFromKey(e.key);
@@ -1507,8 +1534,14 @@ export function TopologyPage() {
 
   useEffect(() => {
     const onDoc = (e: MouseEvent) => {
-      if (!findBoxRef.current) return;
-      if (!findBoxRef.current.contains(e.target as HTMLElement)) setFindOpen(false);
+      const target = e.target as HTMLElement | null;
+      if (findBoxRef.current && target && !findBoxRef.current.contains(target)) {
+        setFindOpen(false);
+      }
+      const details = displayMenuRef.current;
+      if (details?.open && target && !details.contains(target)) {
+        details.open = false;
+      }
     };
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
@@ -1915,7 +1948,7 @@ export function TopologyPage() {
                   </button>
                 ))}
               </div>
-              <details className="topo-toolbar__display">
+              <details className="topo-toolbar__display" ref={displayMenuRef}>
                 <summary>{t("topology.display")}</summary>
                 <div className="topo-display-toggles" role="group" aria-label={t("topology.display")}>
                   <label className="topo-display-toggles__item">
@@ -1958,7 +1991,11 @@ export function TopologyPage() {
                     <input
                       type="checkbox"
                       checked={autoLayoutAfterDiscover}
-                      onChange={(e) => setAutoLayoutAfterDiscover(e.target.checked)}
+                      onChange={(e) => {
+                        const next = e.target.checked;
+                        setAutoLayoutAfterDiscover(next);
+                        persistAutoLayoutAfterDiscover(next);
+                      }}
                     />
                     {t("topology.autoLayoutDiscover")}
                   </label>
