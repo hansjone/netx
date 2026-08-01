@@ -33,6 +33,13 @@ class CliAuthClassifyTests(unittest.TestCase):
         msg = format_cli_failure(AuthenticationException("target_auth_rejected: Permission denied"))
         self.assertTrue(msg.startswith("auth_rejected:"))
 
+    def test_authentication_exception_empty_message(self):
+        class AuthenticationException(Exception):
+            pass
+
+        msg = format_cli_failure(AuthenticationException())
+        self.assertTrue(msg.startswith("auth_rejected:"))
+
 
 if __name__ == "__main__":
     unittest.main()

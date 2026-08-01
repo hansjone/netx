@@ -2,6 +2,10 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "re
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
+import {
+  applyKeywordHighlight,
+  type KeywordHighlightConfig,
+} from "../utils/webcrtKeywordHighlight";
 
 export type WebTerminalHandle = {
   clear: () => void;
@@ -16,15 +20,55 @@ export type WebTerminalHandle = {
   findPrevious: (term: string) => void;
 };
 
+export type TermColors = {
+  background: string;
+  foreground: string;
+};
+
+const DEFAULT_TERM_COLORS: TermColors = {
+  background: "#0b1220",
+  foreground: "#e2e8f0",
+};
+
+function normalizeHex(hex: string, fallback: string): string {
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(String(hex || "").trim());
+  return m ? `#${m[1].toLowerCase()}` : fallback;
+}
+
+function hexLuminance(hex: string): number {
+  const n = normalizeHex(hex, "#000000").slice(1);
+  const r = parseInt(n.slice(0, 2), 16) / 255;
+  const g = parseInt(n.slice(2, 4), 16) / 255;
+  const b = parseInt(n.slice(4, 6), 16) / 255;
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function xtermThemeFromColors(colors: TermColors) {
+  const background = normalizeHex(colors.background, DEFAULT_TERM_COLORS.background);
+  const foreground = normalizeHex(colors.foreground, DEFAULT_TERM_COLORS.foreground);
+  return {
+    background,
+    foreground,
+    cursor: foreground,
+    selectionBackground: hexLuminance(background) < 0.5 ? "#334155" : "#93c5fd",
+  };
+}
+
 type Props = {
   wsUrl: string;
   title?: string;
   recording?: boolean;
   autoFocus?: boolean;
   encoding?: string;
+  fontSize?: number;
+  /** Terminal background / foreground (overrides legacy themeName). */
+  termColors?: TermColors;
+  /** @deprecated use termColors */
+  themeName?: "dark" | "light";
   pasteDelayMs?: number;
   copyOnSelect?: boolean;
-  onStatus?: (state: string, message?: string) => void;
+  keywordHighlight?: KeywordHighlightConfig;
+  onStatus?: (state: string, message?: string, phase?: string) => void;
   onReady?: () => void;
   onStdout?: (data: string) => void;
 };
@@ -103,14 +147,22 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
     recording,
     autoFocus = true,
     encoding = "utf-8",
+    fontSize = 13,
+    termColors,
+    themeName = "dark",
     pasteDelayMs,
     copyOnSelect,
+    keywordHighlight,
     onStatus,
     onReady,
     onStdout,
   },
   ref,
 ) {
+  const resolvedColors: TermColors = termColors ||
+    (themeName === "light"
+      ? { background: "#ffffff", foreground: "#000000" }
+      : DEFAULT_TERM_COLORS);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -122,9 +174,14 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
   const recordingRef = useRef(!!recording);
   const autoFocusRef = useRef(autoFocus);
   const encodingRef = useRef(encoding);
+  const fontSizeRef = useRef(Math.max(10, Math.min(28, Number(fontSize) || 13)));
+  const termColorsRef = useRef<TermColors>(resolvedColors);
   const pasteDelayRef = useRef(pasteDelayMs ?? loadPrefs().pasteDelayMs);
   const copyOnSelectRef = useRef(copyOnSelect ?? loadPrefs().copyOnSelect);
   const pasteQueueRef = useRef<Promise<void>>(Promise.resolve());
+  /** Updated whenever device stdout arrives; used to pace paste by echo, not fixed sleep. */
+  const lastStdoutAtRef = useRef(0);
+  const keywordHighlightRef = useRef(keywordHighlight);
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
   const [findOpen, setFindOpen] = useState(false);
   const [findQuery, setFindQuery] = useState("");
@@ -150,12 +207,33 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
   }, [encoding]);
 
   useEffect(() => {
+    fontSizeRef.current = Math.max(10, Math.min(28, Number(fontSize) || 13));
+    const term = termRef.current;
+    if (!term) return;
+    term.options.fontSize = fontSizeRef.current;
+    try {
+      fitRef.current?.fit();
+    } catch {
+      /* ignore */
+    }
+  }, [fontSize]);
+
+  useEffect(() => {
+    termColorsRef.current = resolvedColors;
+    const term = termRef.current;
+    if (!term) return;
+    term.options.theme = xtermThemeFromColors(resolvedColors);
+  }, [resolvedColors.background, resolvedColors.foreground]);
+
+  useEffect(() => {
     if (pasteDelayMs != null) pasteDelayRef.current = pasteDelayMs;
   }, [pasteDelayMs]);
 
   useEffect(() => {
     if (copyOnSelect != null) copyOnSelectRef.current = copyOnSelect;
   }, [copyOnSelect]);
+
+  keywordHighlightRef.current = keywordHighlight;
 
   const focusTerminal = () => {
     try {
@@ -177,11 +255,37 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
     sendJson({ type: "stdin", data });
   };
 
-  /** SecureCRT-like paste: send line-by-line with delay; show progress while sending. */
+  /** Wait until device echoes (stdout after sentAt) or maxMs elapses — whichever first. */
+  const waitForEchoOrTimeout = (maxMs: number, sentAt: number) =>
+    new Promise<void>((resolve) => {
+      if (maxMs <= 0) {
+        resolve();
+        return;
+      }
+      const started = performance.now();
+      const tick = () => {
+        if (lastStdoutAtRef.current >= sentAt) {
+          // Brief settle so multi-chunk echoes finish before the next line.
+          window.setTimeout(resolve, 2);
+          return;
+        }
+        if (performance.now() - started >= maxMs) {
+          resolve();
+          return;
+        }
+        window.setTimeout(tick, 2);
+      };
+      tick();
+    });
+
+  /**
+   * Line-by-line paste paced by device echo.
+   * pasteDelayMs is a *maximum* wait per line; fast responses advance immediately.
+   */
   const sendStdinThrottled = (data: string) => {
     if (!data) return;
-    const delay = pasteDelayRef.current;
-    if (delay <= 0 || data.length < 8) {
+    const maxDelay = pasteDelayRef.current;
+    if (maxDelay <= 0 || data.length < 8) {
       sendStdinImmediate(data);
       return;
     }
@@ -193,10 +297,11 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
         for (let i = 0; i < lines.length; i += 1) {
           const line = lines[i];
           const chunk = i < lines.length - 1 ? `${line}\r` : line;
+          const sentAt = performance.now();
           if (chunk) sendStdinImmediate(chunk);
           setPasteStatus({ done: i + 1, total });
           if (i < lines.length - 1) {
-            await new Promise((r) => window.setTimeout(r, delay));
+            await waitForEchoOrTimeout(maxDelay, sentAt);
           }
         }
       } finally {
@@ -274,15 +379,10 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
 
     const term = new Terminal({
       cursorBlink: true,
-      fontSize: 13,
+      fontSize: fontSizeRef.current,
       fontFamily: 'Consolas, "Courier New", monospace',
       scrollback: 10000,
-      theme: {
-        background: "#0b1220",
-        foreground: "#e2e8f0",
-        cursor: "#e2e8f0",
-        selectionBackground: "#334155",
-      },
+      theme: xtermThemeFromColors(termColorsRef.current),
       convertEol: true,
     });
     const fit = new FitAddon();
@@ -312,22 +412,31 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
       }, 50);
     });
 
+    // Guard against React StrictMode remount: the first WS teardown must not
+    // report closed/error after a newer socket owns the terminal.
+    let cancelled = false;
     const ws = new WebSocket(wsUrl);
     ws.binaryType = "arraybuffer";
     wsRef.current = ws;
     onStatusRef.current?.("connecting");
 
+    const isActiveSocket = () => !cancelled && wsRef.current === ws;
+
     const writeStdout = (raw: string) => {
-      if (raw) term.write(raw);
+      if (!raw || !isActiveSocket()) return;
+      lastStdoutAtRef.current = performance.now();
       if (recordingRef.current) onStdoutRef.current?.(raw);
+      term.write(applyKeywordHighlight(raw, keywordHighlightRef.current));
     };
 
     const sendResize = () => {
+      if (!isActiveSocket()) return;
       doFit();
       sendJson({ type: "resize", cols: term.cols, rows: term.rows });
     };
 
     ws.onopen = () => {
+      if (!isActiveSocket()) return;
       onStatusRef.current?.("open");
       sendResize();
       onReadyRef.current?.();
@@ -335,6 +444,7 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
     };
 
     ws.onmessage = (ev) => {
+      if (!isActiveSocket()) return;
       if (ev.data instanceof ArrayBuffer) {
         writeStdout(decodeBytes(ev.data, encodingRef.current));
         maybeFocus();
@@ -342,6 +452,7 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
       }
       if (typeof Blob !== "undefined" && ev.data instanceof Blob) {
         void ev.data.arrayBuffer().then((buf) => {
+          if (!isActiveSocket()) return;
           writeStdout(decodeBytes(buf, encodingRef.current));
           maybeFocus();
         });
@@ -353,6 +464,7 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
           data?: string;
           state?: string;
           message?: string;
+          phase?: string;
         };
         if (msg.type === "stdout" && typeof msg.data === "string") {
           writeStdout(msg.data);
@@ -360,7 +472,9 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
           return;
         }
         if (msg.type === "status") {
-          onStatusRef.current?.(String(msg.state || ""), msg.message);
+          if (!isActiveSocket()) return;
+          const phase = typeof msg.phase === "string" ? msg.phase : undefined;
+          onStatusRef.current?.(String(msg.state || ""), msg.message, phase);
           if (msg.state === "connected" || msg.state === "connecting") {
             maybeFocus();
             return;
@@ -378,11 +492,14 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
     };
 
     ws.onerror = () => {
+      if (!isActiveSocket()) return;
       onStatusRef.current?.("error", "websocket_error");
       term.writeln("\r\n\x1b[31m[websocket error]\x1b[0m");
     };
 
     ws.onclose = (ev) => {
+      // Intentional unmount/remount closes the socket; do not flip UI to "closed".
+      if (!isActiveSocket()) return;
       onStatusRef.current?.("closed", `websocket_closed:${ev.code}`);
       if (!ev.wasClean) {
         term.writeln(`\r\n\x1b[33m[websocket closed code=${ev.code}]\x1b[0m`);
@@ -475,6 +592,7 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
     ro?.observe(host);
 
     return () => {
+      cancelled = true;
       window.clearInterval(pingTimer);
       window.removeEventListener("resize", onWinResize);
       window.removeEventListener("keydown", onKeyDownCapture, true);
@@ -483,17 +601,18 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
       ro?.disconnect();
       dataDisposable.dispose();
       selDisposable.dispose();
+      if (wsRef.current === ws) wsRef.current = null;
       try {
         ws.close();
       } catch {
         /* ignore */
       }
-      wsRef.current = null;
       term.dispose();
       termRef.current = null;
       fitRef.current = null;
     };
-  }, [wsUrl, title]);
+    // title is display-only; remounting on title change tears down a live WS.
+  }, [wsUrl]);
 
   const pasteFromClipboard = async () => {
     try {

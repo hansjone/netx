@@ -101,6 +101,119 @@ class WebcrtServiceTests(unittest.TestCase):
         self.assertEqual(svc.prepare_bootstrap_output("banner\nR2#\n\nR2#"), "banner\nR2#")
         self.assertTrue(svc._is_prompt_only_echo("\r\nR2#\r\n", "R2#"))
         self.assertFalse(svc._is_prompt_only_echo("R2#show clock\r\n", "R2#"))
+        self.assertTrue(svc._looks_like_login_prompt("Username:"))
+        self.assertTrue(svc._looks_like_login_prompt("login:\nPassword:"))
+        self.assertFalse(svc._looks_like_login_prompt("<r1>"))
+        self.assertTrue(svc._looks_like_cli_prompt("<r1>"))
+        # Stray ':' after Huawei prompt must still count as prompted (no extra Enter).
+        self.assertTrue(svc._looks_like_cli_prompt("<r1>:"))
+        self.assertEqual(svc.prepare_bootstrap_output("banner\n<r1>:"), "banner\n<r1>")
+        self.assertTrue(svc._looks_like_password_change_prompt("Change now? [Y/N]:"))
+        self.assertFalse(svc._looks_like_password_change_prompt("Change now? [Y/N]:N"))
+        # WS attach must not send Enter when bootstrap is a login prompt.
+        self.assertFalse(
+            (not svc._looks_like_cli_prompt("Username:") and not svc._looks_like_login_prompt("Username:"))
+        )
+        self.assertTrue(
+            (not svc._looks_like_cli_prompt("") and not svc._looks_like_login_prompt(""))
+        )
+
+    def test_capture_raw_channel_keeps_banner(self) -> None:
+        conn = _FakeConn()
+        conn.remote_conn.recv_ready.side_effect = [True, True, False, False, False, False]
+        conn.remote_conn.recv.side_effect = [b"*** IOSv BANNER ***\r\n", b"R2#"]
+        text = svc._capture_raw_channel(conn, duration=0.2)
+        self.assertIn("IOSv BANNER", text)
+        self.assertIn("R2#", text)
+        self.assertNotIn("MagicMock", text)
+
+    @patch.object(svc, "_audit")
+    @patch.object(svc, "open_netmiko_connection")
+    @patch("netx_api.cli_resolve.resolve_cli_target")
+    def test_bootstrap_from_channel_when_session_log_empty(
+        self,
+        mock_resolve: MagicMock,
+        mock_open: MagicMock,
+        _mock_audit: MagicMock,
+    ) -> None:
+        """Interactive generic SSH: banner is on the PTY, not in Netmiko session_log."""
+        mock_resolve.return_value = (
+            {"username": "admin", "password": "x", "protocol": "ssh", "ip_address": "192.168.0.128"},
+            {
+                "id": "ne-banner",
+                "name": "R2",
+                "ip_address": "192.168.0.128",
+                "protocol": "ssh",
+                "device_type": "generic",
+                "source": "webcrt",
+            },
+        )
+        fake = _FakeConn()
+        # Already at prompt with banner waiting on the channel (no session_log writes).
+        fake.remote_conn.recv_ready.side_effect = [True, True, False] * 20
+        fake.remote_conn.recv.side_effect = [
+            b"**************************************************************************\r\n",
+            b"R2#",
+        ] + [b""] * 40
+
+        def _open(*_a, **_k):
+            return fake
+
+        mock_open.side_effect = _open
+        out = svc.create_session(
+            MagicMock(), ne_id="ne-banner", cols=80, rows=24, client="test", async_connect=False
+        )
+        sess = svc.get_session(out["session_id"])
+        assert sess is not None
+        boot = sess.bootstrap_output.decode("utf-8", errors="replace")
+        self.assertIn("****", boot)
+        self.assertIn("R2#", boot)
+        svc.close_session(out["session_id"], reason="test")
+
+    @patch.object(svc, "_audit")
+    @patch.object(svc, "open_netmiko_connection")
+    @patch("netx_api.cli_resolve.resolve_cli_target")
+    def test_create_session_password_override(
+        self,
+        mock_resolve: MagicMock,
+        mock_open: MagicMock,
+        _mock_audit: MagicMock,
+    ) -> None:
+        mock_resolve.return_value = (
+            {
+                "username": "u",
+                "password": "",
+                "hop_enabled": False,
+                "ip_address": "10.0.0.9",
+                "protocol": "ssh",
+                "device_type": "linux",
+                "port": 22,
+            },
+            {
+                "id": "ne-ephemeral",
+                "name": "E",
+                "ip_address": "10.0.0.9",
+                "protocol": "ssh",
+                "source": "webcrt",
+                "device_type": "linux",
+            },
+        )
+        mock_open.side_effect = lambda *a, **k: _FakeConn()
+        db = MagicMock()
+        with self.assertRaises(HTTPException) as ctx:
+            svc.create_session(db, ne_id="ne-ephemeral", async_connect=False)
+        self.assertEqual(ctx.exception.status_code, 400)
+        out = svc.create_session(
+            db,
+            ne_id="ne-ephemeral",
+            async_connect=False,
+            username_override="u",
+            password_override="once",
+        )
+        self.assertEqual(out.get("state"), "ready")
+        called_creds = mock_open.call_args.args[0] if mock_open.call_args.args else mock_open.call_args[0][0]
+        self.assertEqual(called_creds.get("password"), "once")
+        svc.close_session(out["session_id"], reason="test")
 
     @patch.object(svc, "_audit")
     @patch.object(svc, "open_netmiko_connection")
@@ -190,6 +303,8 @@ class WebcrtServiceTests(unittest.TestCase):
         self.assertTrue(called_creds["hop_enabled"])
         self.assertEqual(called_creds["hop_vendor"], "bastion")
         self.assertIn("session_log", mock_open.call_args.kwargs)
+        self.assertEqual(mock_open.call_args.kwargs.get("keepalive"), 0)
+        self.assertEqual(out.get("keepalive_sec"), 0)
         fake.remote_conn.resize_pty.assert_called()
         self.assertEqual(out["ne_id"], "ne-hop")
         self.assertFalse(out.get("cli_hop"))  # bastion hop is not vendor CLI hop guard
@@ -320,6 +435,17 @@ class WebcrtServiceTests(unittest.TestCase):
                 {
                     "username": "u",
                     "password": "",
+                    "protocol": "ssh",
+                    "hop_enabled": False,
+                }
+            )
+        )
+        self.assertTrue(
+            svc._webcrt_creds_ready(
+                {
+                    "username": "",
+                    "password": "",
+                    "protocol": "telnet",
                     "hop_enabled": False,
                 }
             )
@@ -494,6 +620,17 @@ class WebcrtServiceTests(unittest.TestCase):
         self.assertEqual(svc._normalize_encoding("GBK"), "gbk")
         self.assertEqual(svc._normalize_encoding("utf8"), "utf-8")
         self.assertEqual(svc._encode_text("测", "gbk")[:1], b"\xb2")
+
+    def test_linux_telnet_maps_to_generic_telnet(self) -> None:
+        from netx_api.ne_netmiko import normalize_netmiko_device_type
+        from netx_api.ne_session_factory import _netmiko_driver_class
+
+        dt = normalize_netmiko_device_type("linux", "telnet")
+        self.assertEqual(dt, "generic_telnet")
+        self.assertIsNotNone(_netmiko_driver_class(dt))
+        self.assertEqual(normalize_netmiko_device_type("linux", "ssh"), "linux_ssh")
+        self.assertEqual(normalize_netmiko_device_type("generic", "ssh"), "generic_termserver_ssh")
+        self.assertIsNotNone(_netmiko_driver_class("generic_termserver_ssh"))
 
 
 if __name__ == "__main__":

@@ -64,7 +64,7 @@ def uses_network_cli_keymap(device_type: str = "", vendor: str = "") -> bool:
     blob = f"{device_type} {vendor}".strip().lower()
     if not blob:
         return True
-    for token in ("linux", "ubuntu", "centos", "debian", "redhat", "unix"):
+    for token in ("linux", "ubuntu", "centos", "debian", "redhat", "unix", "generic_telnet", "generic"):
         if token in blob:
             return False
     return True
@@ -158,8 +158,33 @@ def _looks_like_cli_prompt(text: str) -> bool:
     s = str(text or "").rstrip()
     if not s:
         return False
+    # Buffer races can leave a stray ':' after Huawei ``<r1>`` (from prior ``[Y/N]:``).
+    if s.endswith(":") and ">" in s:
+        s = s[:-1].rstrip()
     # Common network CLI prompts: <r1>  [HUAWEI]  Router#  Router>
     return bool(re.search(r"(?:[>\]]|#)\s*$", s)) or bool(re.search(r"<[^>\r\n]+>\s*$", s))
+
+
+def _looks_like_login_prompt(text: str) -> bool:
+    """True when the transcript ends at Username:/Login:/Password: (interactive auth)."""
+    s = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = [ln.strip() for ln in s.split("\n") if ln.strip()]
+    if not lines:
+        return False
+    last = lines[-1]
+    return bool(re.search(r"(?i)(user\s*name|login|password)\s*:\s*$", last))
+
+
+def _looks_like_password_change_prompt(text: str) -> bool:
+    """Huawei/VRP post-auth ``Change now? [Y/N]:`` (Netmiko already answers N)."""
+    s = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = [ln.strip() for ln in s.split("\n") if ln.strip()]
+    if not lines:
+        return False
+    last = lines[-1]
+    return bool(re.search(r"(?i)(change\s*now|please\s*choose|password\s+needs\s+to\s+be\s+changed).{0,80}:\s*$", last)) or bool(
+        re.search(r"\[Y/N\]\s*:\s*$", last, flags=re.I)
+    )
 
 
 # Cisco/Netmiko often yields "R2#R2#" when a sync Enter is appended without a newline.
@@ -188,47 +213,74 @@ def prepare_bootstrap_output(text: str) -> str:
     Trailing newline would leave the cursor on a blank line so the first typed line
     looks wrong; cursor should sit after the prompt like a real CRT.
     """
-    return normalize_cli_transcript(text)
+    s = normalize_cli_transcript(text)
+    # Drop a stray ':' glued onto Huawei ``<host>`` after ``[Y/N]:`` buffer races.
+    s = re.sub(r"(<[^\r\n>]+>):\s*$", r"\1", s)
+    return s
 
 
-def _drain_raw_channel(conn: ConnectHandler, *, duration: float = 0.5) -> None:
-    """Discard leftover bytes on the live channel (SSH/Telnet) after login priming."""
+def _capture_raw_channel(conn: ConnectHandler, *, duration: float = 0.5) -> str:
+    """Read leftover PTY bytes into text (banner/MOTD after SSH auth).
+
+    Interactive WebCRT skips Netmiko session_preparation, so the post-auth banner
+    often never lands in ``session_log`` and must be pulled from the live channel.
+    """
+    chunks: list[str] = []
     channel = getattr(conn, "remote_conn", None)
     if channel is None:
         try:
-            _drain_channel(conn, rounds=max(2, int(duration / 0.05)), wait=0.05)
+            return _drain_channel(conn, rounds=max(2, int(duration / 0.05)), wait=0.05)
         except Exception:
-            pass
-        return
+            return ""
     end = time.time() + max(0.1, float(duration))
     while time.time() < end:
         got = False
         try:
-            if hasattr(channel, "recv_ready") and hasattr(channel, "recv") and channel.recv_ready():
-                channel.recv(65535)
-                got = True
-            elif hasattr(channel, "read_very_eager"):
+            # Paramiko SSH channel
+            if hasattr(channel, "recv_ready") and hasattr(channel, "recv"):
+                if channel.recv_ready():
+                    raw = channel.recv(65535)
+                    if raw:
+                        got = True
+                        if isinstance(raw, bytes):
+                            chunks.append(raw.decode("utf-8", errors="replace"))
+                        else:
+                            chunks.append(str(raw))
+            # telnetlib-style
+            elif callable(getattr(channel, "read_very_eager", None)):
                 data = channel.read_very_eager()
                 if data:
                     got = True
+                    if isinstance(data, bytes):
+                        chunks.append(data.decode("utf-8", errors="replace"))
+                    else:
+                        chunks.append(str(data))
             else:
                 part = conn.read_channel()
                 if part:
                     got = True
+                    chunks.append(str(part))
         except Exception:
             break
         if not got:
             time.sleep(0.04)
+    return "".join(chunks)
 
 
-def _prime_interactive_channel(conn: ConnectHandler, *, already_prompted: bool = False) -> None:
-    """Send one RETURN after Netmiko login so the interactive channel is fully ready.
+def _drain_raw_channel(conn: ConnectHandler, *, duration: float = 0.5) -> None:
+    """Discard leftover bytes on the live channel (SSH/Telnet) after login priming."""
+    _capture_raw_channel(conn, duration=duration)
+
+
+def _prime_interactive_channel(conn: ConnectHandler, *, already_prompted: bool = False) -> str:
+    """Sync interactive channel after login; return captured banner/prompt text.
 
     Skip the sync Enter when the login transcript already ends with a CLI prompt —
     otherwise slow Cisco VMs accumulate duplicate ``R2#`` lines in the bootstrap.
     """
+    parts: list[str] = []
     try:
-        _drain_raw_channel(conn, duration=0.15)
+        parts.append(_capture_raw_channel(conn, duration=0.25))
     except Exception:
         pass
     if not already_prompted:
@@ -238,15 +290,16 @@ def _prime_interactive_channel(conn: ConnectHandler, *, already_prompted: bool =
             try:
                 conn.write_channel("\n")
             except Exception:
-                return
+                return "".join(parts)
         try:
-            _drain_channel(conn, rounds=6, wait=0.08)
+            parts.append(_drain_channel(conn, rounds=6, wait=0.08))
         except Exception:
             pass
     try:
-        _drain_raw_channel(conn, duration=0.35)
+        parts.append(_capture_raw_channel(conn, duration=0.35))
     except Exception:
         pass
+    return "".join(parts)
 
 
 def _is_prompt_only_echo(text: str, prompt_hint: str = "") -> bool:
@@ -361,6 +414,7 @@ class WebcrtSession:
     vendor: str = ""
     cli_keymap: bool = True
     encoding: str = "utf-8"
+    keepalive_sec: int = 0
     conn: ConnectHandler | None = None
     created_at: float = field(default_factory=time.time)
     last_activity: float = field(default_factory=time.time)
@@ -802,19 +856,25 @@ def _webcrt_creds_ready(creds: dict[str, Any]) -> bool:
 
     Bastion-managed hops store the target password on the bastion side, so an empty
     NE password is valid (same as connectivity test). Direct / manual / Linux hops
-    still require a target password.
+    still require a target password for SSH.
+
+    Telnet (no hop) allows empty username/password so the user can authenticate
+    interactively in the terminal (SecureCRT-style).
     """
-    if not str(creds.get("username") or "").strip():
-        return False
     hop_enabled = bool(creds.get("hop_enabled"))
     hop_vendor = str(creds.get("hop_vendor") or "").strip().lower()
     auth_mode = str(creds.get("hop_target_auth_mode") or "bastion_managed").strip().lower()
+    protocol = str(creds.get("protocol") or "ssh").strip().lower()
     if hop_enabled and hop_vendor == "bastion" and auth_mode == "bastion_managed":
         return bool(
             str(creds.get("hop_host") or "").strip()
             and str(creds.get("hop_username") or "").strip()
             and str(creds.get("hop_password") or "")
         )
+    if protocol == "telnet" and not hop_enabled:
+        return True
+    if not str(creds.get("username") or "").strip():
+        return False
     return bool(str(creds.get("password") or ""))
 
 
@@ -835,6 +895,7 @@ def _finish_connect(
             cols=sess.cols,
             rows=sess.rows,
             interactive=True,
+            keepalive=int(sess.keepalive_sec or 0),
         )
     except Exception as exc:
         partial = _session_log_text(log_buf).strip()
@@ -868,29 +929,57 @@ def _finish_connect(
             pass
 
     pre_log = _session_log_text(log_buf)
-    already_prompted = _looks_like_cli_prompt(pre_log)
-    _prime_interactive_channel(conn, already_prompted=already_prompted)
-    bootstrap = prepare_bootstrap_output(_session_log_text(log_buf))
-    if not bootstrap.strip():
-        try:
-            more = _drain_channel(conn, rounds=6, wait=0.08)
-        except Exception:
-            more = ""
-        if more:
-            bootstrap = prepare_bootstrap_output(more)
-    # Slow Cisco VMs leave extra prompt bytes; discard before the live reader starts.
+    # Pull post-auth banner/MOTD from the PTY. With interactive no-op session_preparation
+    # (generic_termserver), Netmiko session_log is often empty — do not discard these bytes.
     try:
-        _drain_raw_channel(conn, duration=0.55)
+        early = _capture_raw_channel(conn, duration=0.35)
+    except Exception:
+        early = ""
+    seed = f"{pre_log}{early}"
+    already_prompted = _looks_like_cli_prompt(seed)
+    primed = ""
+    # Do not send Enter at Username:/Password: or Huawei password-change [Y/N]:
+    # (Netmiko telnet_login already answers password-change with "N").
+    if _looks_like_login_prompt(seed) or _looks_like_password_change_prompt(seed):
+        try:
+            primed = _capture_raw_channel(conn, duration=0.9)
+        except Exception:
+            primed = ""
+    else:
+        try:
+            primed = _prime_interactive_channel(conn, already_prompted=already_prompted)
+        except Exception:
+            primed = ""
+    combined = f"{seed}{primed}"
+    # Final settle: keep stragglers in bootstrap (normalize collapses duplicate prompts).
+    try:
+        combined += _capture_raw_channel(conn, duration=0.35)
     except Exception:
         pass
+    if not str(combined).strip():
+        try:
+            combined = _drain_channel(conn, rounds=6, wait=0.08)
+        except Exception:
+            combined = ""
+    bootstrap = prepare_bootstrap_output(combined)
+    # Discard lone punctuation left on the wire (would glue onto ``<r1>`` in xterm).
+    try:
+        leftover = _capture_raw_channel(conn, duration=0.12)
+    except Exception:
+        leftover = ""
+    if leftover and leftover.strip() not in {":", ">", "#", "]", "$"}:
+        bootstrap = prepare_bootstrap_output(f"{bootstrap}{leftover}")
 
     hop_guard = get_cli_hop_guard(conn)
     sess.conn = conn
     sess.cli_hop_guard = bool(hop_guard)
     sess.cli_hop_prompt = str((hop_guard or {}).get("hop_prompt") or "")
     sess.bootstrap_output = _encode_text(str(bootstrap or ""), sess.encoding)
-    # Bootstrap already ends at a prompt → never nudge another Enter on WS attach.
-    sess.needs_live_prompt = not _looks_like_cli_prompt(bootstrap)
+    # Nudge Enter on WS attach only when we still need a shell prompt.
+    # Never when already at CLI prompt or Username:/Password: (would empty-submit login).
+    sess.needs_live_prompt = (
+        not _looks_like_cli_prompt(bootstrap) and not _looks_like_login_prompt(bootstrap)
+    )
     sess.open_session_log()
     if bootstrap:
         sess.append_session_log(bootstrap if bootstrap.endswith("\n") else bootstrap + "\n")
@@ -954,8 +1043,11 @@ def create_session(
     rows: int = 24,
     client: str = "",
     encoding: str = "utf-8",
+    keepalive_sec: int | None = None,
     post_login_commands: list[str] | None = None,
     async_connect: bool = True,
+    username_override: str | None = None,
+    password_override: str | None = None,
 ) -> dict[str, Any]:
     from .cli_resolve import resolve_cli_target
 
@@ -975,6 +1067,19 @@ def create_session(
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"credential_error:{exc}") from exc
 
+    # One-shot credentials for SecureCRT-style "do not save password" / retry.
+    if username_override is not None and str(username_override).strip():
+        creds["username"] = str(username_override).strip()
+    if password_override is not None:
+        creds["password"] = str(password_override)
+
+    protocol = str(device.get("protocol") or creds.get("protocol") or "ssh").strip().lower()
+    creds["protocol"] = protocol
+    # Netmiko telnet drivers dislike a completely missing username; use a placeholder
+    # for the wire only (interactive login still happens in the terminal).
+    if protocol == "telnet" and not bool(creds.get("hop_enabled")) and not str(creds.get("username") or "").strip():
+        creds["username"] = "telnet"
+
     if not _webcrt_creds_ready(creds):
         raise HTTPException(status_code=400, detail="credentials_incomplete")
 
@@ -985,11 +1090,14 @@ def create_session(
     target_id = str(device.get("id") or mid or uid)
     target_ip = str(device.get("ip_address") or "")
     target_name = str(device.get("name") or target_ip)
-    protocol = str(device.get("protocol") or creds.get("protocol") or "ssh")
     device_type = str(device.get("device_type") or creds.get("device_type") or "")
     vendor = str(device.get("vendor") or creds.get("vendor") or "")
     cli_keymap = uses_network_cli_keymap(device_type, vendor)
     enc = _normalize_encoding(encoding)
+    if keepalive_sec is None:
+        ka = max(0, int(getattr(settings, "webcrt_keepalive_sec", 0) or 0))
+    else:
+        ka = max(0, min(600, int(keepalive_sec)))
 
     sess = WebcrtSession(
         session_id=session_id,
@@ -1003,6 +1111,7 @@ def create_session(
         vendor=vendor,
         cli_keymap=cli_keymap,
         encoding=enc,
+        keepalive_sec=ka,
         state="connecting",
         post_login_commands=list(post_login_commands or [])[:20],
     )
@@ -1057,6 +1166,7 @@ def create_session(
         "cols": sess.cols,
         "rows": sess.rows,
         "encoding": enc,
+        "keepalive_sec": ka,
         "state": sess.state,
         "ws_path": f"/v1/webcrt/sessions/{session_id}/ws",
         "cli_hop": bool(sess.cli_hop_guard),
@@ -1153,6 +1263,7 @@ def list_sessions() -> dict[str, Any]:
                 "ne_ip": s.ne_ip,
                 "protocol": s.protocol,
                 "encoding": s.encoding,
+                "keepalive_sec": int(s.keepalive_sec or 0),
                 "state": s.state,
                 "attached": s.attached,
                 "created_at": datetime.fromtimestamp(s.created_at, tz=timezone.utc).isoformat(),
@@ -1174,7 +1285,7 @@ def list_sessions() -> dict[str, Any]:
         "total": len(items),
         "max_sessions": max(1, int(settings.webcrt_max_sessions or 20)),
         "idle_timeout_sec": max(60, int(settings.webcrt_idle_timeout_sec or 1800)),
-        "keepalive_sec": int(getattr(settings, "webcrt_keepalive_sec", 30) or 0),
+        "keepalive_sec": int(getattr(settings, "webcrt_keepalive_sec", 0) or 0),
         "anti_idle_sec": int(getattr(settings, "webcrt_anti_idle_sec", 0) or 0),
         "items": items,
     }

@@ -243,9 +243,10 @@ def _netmiko_driver_class(device_type: str) -> type:
 
 
 def _interactive_driver_class(base_cls: type) -> type:
-    """Subclass that skips Netmiko auto terminal-length / terminal-width commands.
+    """Subclass for WebCRT: raw interactive PTY after transport auth (SecureCRT-like).
 
-    Collection and MCP exec need paging disabled; WebCRT must not inject those.
+    Skips Netmiko session prep (prompt discovery, terminal length/width, force RETURN)
+    so the channel is left for the user — not consumed by library automation.
     """
 
     class _InteractiveSession(base_cls):  # type: ignore[misc,valid-type]
@@ -254,6 +255,17 @@ def _interactive_driver_class(base_cls: type) -> type:
 
         def set_terminal_width(self, *args: Any, **kwargs: Any) -> str:  # noqa: ANN401
             return ""
+
+        def session_preparation(self) -> None:
+            return None
+
+        def _try_session_preparation(self, force_data: bool = True) -> None:  # noqa: FBT001, FBT002
+            del force_data
+            try:
+                self.session_preparation()
+            except Exception:
+                self.disconnect()
+                raise
 
     _InteractiveSession.__name__ = f"Interactive{getattr(base_cls, '__name__', 'Netmiko')}"
     return _InteractiveSession

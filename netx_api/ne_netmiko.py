@@ -8,13 +8,22 @@ from typing import Any
 def normalize_netmiko_device_type(device_type: str, protocol: str) -> str:
     dt = str(device_type or "").strip()
     proto = str(protocol or "ssh").strip().lower()
-    if "zte" in dt.lower():
+    low = dt.lower()
+    # Raw / SecureCRT-style sessions (WebCRT quick-connect stores device_type=generic).
+    if low in ("generic", "generic_ssh", "generic_telnet", "terminal_server", "generic_termserver"):
+        return "generic_telnet" if proto == "telnet" or "telnet" in low else "generic_termserver_ssh"
+    # Netmiko ships linux / linux_ssh but not linux_telnet — use generic_telnet.
+    if low in ("linux", "linux_ssh", "linux_telnet") or low.startswith("linux_"):
+        if proto == "telnet" or "telnet" in low:
+            return "generic_telnet"
+        return "linux_ssh"
+    if "zte" in low:
         if dt == "zte":
             return f"zte_zxros_{proto}"
-        if "telnet" not in dt and "ssh" not in dt:
+        if "telnet" not in low and "ssh" not in low:
             return f"{dt}_{proto}"
         return dt
-    if "telnet" not in dt and "ssh" not in dt:
+    if "telnet" not in low and "ssh" not in low:
         return f"{dt}_{proto}"
     return dt
 

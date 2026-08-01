@@ -118,5 +118,8 @@ class CliTargetOut(BaseModel):
     ne_type: str = ""
     vendor: str = ""
     device_type: str = ""
+    protocol: str = ""
+    username: str = ""
+    has_password: bool = False
     connect_status: str = "unknown"
     cli_profile_ready: bool = False

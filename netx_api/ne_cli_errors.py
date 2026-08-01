@@ -54,6 +54,18 @@ def format_cli_failure(exc: BaseException | str, transcript: str = "", *, limit:
     """Human/ops-facing failure message; promote auth rejects above Pattern/ReadTimeout."""
     if isinstance(exc, BaseException):
         exc_text = f"{type(exc).__name__}: {exc}"
+        # Paramiko/Netmiko auth exceptions may carry little/no message text.
+        try:
+            import paramiko
+
+            if isinstance(exc, paramiko.AuthenticationException):
+                detail = str(exc).strip() or type(exc).__name__
+                return f"auth_rejected: {detail}"[:limit]
+        except Exception:
+            pass
+        if "AuthenticationException" in type(exc).__name__:
+            detail = str(exc).strip() or type(exc).__name__
+            return f"auth_rejected: {detail}"[:limit]
     else:
         exc_text = str(exc or "")
     combined = f"{exc_text}\n{transcript or ''}"

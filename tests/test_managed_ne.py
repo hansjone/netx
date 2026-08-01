@@ -12,10 +12,18 @@ from sqlalchemy.pool import StaticPool
 from netx_api.config import settings
 from netx_api.db import Base, get_db
 from netx_api.main import app
-from netx_api.models import ManagedNE, UmeInventoryNE  # noqa: F401 — register table on Base
+from netx_api.models import CliConnectProfile, ManagedNE, UmeInventoryNE  # noqa: F401 — register table on Base
 from netx_api.ne_connect import hostname_probe_command, parse_hostname_from_output
 from netx_api.ne_crypto import decrypt_secret, encrypt_secret
-from netx_api.ne_service import UME_SYNC_SOURCE, create_managed_ne, import_managed_ne
+from netx_api.cli_service import list_cli_targets
+from netx_api.device_types import WEBCRT_DEVICE_TYPES, WEBCRT_NE_SOURCE
+from netx_api.ne_service import (
+    UME_SYNC_SOURCE,
+    create_managed_ne,
+    import_managed_ne,
+    upsert_webcrt_managed_ne,
+    upsert_webcrt_session_host,
+)
 from netx_api.ne_schemas import ManagedNeCreate
 
 
@@ -317,6 +325,183 @@ class ManagedNeCreateOptionalPasswordTests(unittest.TestCase):
         self.assertEqual(out.username, "target-user")
         row = self.db.query(ManagedNE).filter(ManagedNE.ip_address == "10.9.9.9").one()
         self.assertEqual(row.password_enc, "")
+
+
+class WebcrtUpsertAndTargetsTests(unittest.TestCase):
+    def setUp(self):
+        self._orig = settings.credential_secret_key
+        settings.credential_secret_key = Fernet.generate_key().decode()
+        self.engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        ManagedNE.__table__.create(bind=self.engine, checkfirst=True)
+        UmeInventoryNE.__table__.create(bind=self.engine, checkfirst=True)
+        CliConnectProfile.__table__.create(bind=self.engine, checkfirst=True)
+        self.db = sessionmaker(bind=self.engine)()
+
+    def tearDown(self):
+        self.db.close()
+        settings.credential_secret_key = self._orig
+
+    def test_webcrt_device_types_include_linux(self):
+        self.assertIn("linux", WEBCRT_DEVICE_TYPES)
+        self.assertIn("generic", WEBCRT_DEVICE_TYPES)
+        self.assertIn("zte_zxros", WEBCRT_DEVICE_TYPES)
+
+    def test_upsert_webcrt_create_update_reuse(self):
+        created, action = upsert_webcrt_managed_ne(
+            self.db,
+            ManagedNeCreate(
+                name="linux-1",
+                vendor="Other",
+                device_type="linux",
+                ip_address="10.8.8.8",
+                username="root",
+                password="secret",
+            ),
+        )
+        self.assertEqual(action, "created")
+        row = self.db.query(ManagedNE).filter(ManagedNE.id == created.id).one()
+        self.assertEqual(row.source, WEBCRT_NE_SOURCE)
+        self.assertEqual(row.device_type, "linux")
+
+        updated, action2 = upsert_webcrt_managed_ne(
+            self.db,
+            ManagedNeCreate(
+                name="linux-1b",
+                vendor="Other",
+                device_type="linux_ssh",
+                ip_address="10.8.8.8",
+                username="root",
+                password="secret2",
+            ),
+        )
+        self.assertEqual(action2, "updated")
+        self.assertEqual(updated.id, created.id)
+        self.assertEqual(updated.name, "linux-1b")
+        self.assertEqual(updated.device_type, "linux")
+
+        inv = create_managed_ne(
+            self.db,
+            ManagedNeCreate(
+                vendor="ZTE",
+                device_type="zte_zxros",
+                ip_address="10.8.8.9",
+                username="admin",
+                password="p",
+            ),
+        )
+        reused, action3 = upsert_webcrt_managed_ne(
+            self.db,
+            ManagedNeCreate(
+                vendor="ZTE",
+                device_type="zte_zxros",
+                ip_address="10.8.8.9",
+                username="admin",
+                password="ignored",
+            ),
+        )
+        self.assertEqual(action3, "reused")
+        self.assertEqual(reused.id, inv.id)
+        # Inventory row must not be rewritten as webcrt.
+        keep = self.db.query(ManagedNE).filter(ManagedNE.id == inv.id).one()
+        self.assertNotEqual(keep.source, WEBCRT_NE_SOURCE)
+
+    def test_list_cli_targets_webcrt_source(self):
+        upsert_webcrt_managed_ne(
+            self.db,
+            ManagedNeCreate(
+                name="sess-a",
+                vendor="Other",
+                device_type="linux",
+                ip_address="10.7.7.7",
+                username="u",
+                password="p",
+            ),
+        )
+        create_managed_ne(
+            self.db,
+            ManagedNeCreate(
+                vendor="ZTE",
+                device_type="zte_zxros",
+                ip_address="10.7.7.8",
+                username="admin",
+                password="p",
+            ),
+        )
+        webcrt = list_cli_targets(self.db, source="webcrt", page=1, page_size=50)
+        self.assertEqual(webcrt["total"], 1)
+        self.assertEqual(webcrt["items"][0]["source"], "webcrt")
+        self.assertEqual(webcrt["items"][0]["ip_address"], "10.7.7.7")
+        self.assertTrue(webcrt["items"][0]["has_password"])
+
+        managed = list_cli_targets(self.db, source="managed", page=1, page_size=50)
+        ips = {x["ip_address"] for x in managed["items"]}
+        self.assertIn("10.7.7.8", ips)
+        self.assertNotIn("10.7.7.7", ips)
+
+    def test_upsert_session_host_telnet_no_password(self):
+        out, action = upsert_webcrt_session_host(
+            self.db,
+            name="tn",
+            ip_address="10.6.6.6",
+            port=23,
+            protocol="telnet",
+        )
+        self.assertEqual(action, "created")
+        row = self.db.query(ManagedNE).filter(ManagedNE.id == out.id).one()
+        self.assertEqual(row.protocol, "telnet")
+        self.assertEqual(row.password_enc, "")
+        self.assertEqual(row.device_type, "generic")
+        self.assertEqual(row.source, WEBCRT_NE_SOURCE)
+
+    def test_upsert_session_host_ssh_unsaved_password(self):
+        out, action = upsert_webcrt_session_host(
+            self.db,
+            name="ssh1",
+            ip_address="10.6.6.7",
+            port=22,
+            protocol="ssh",
+            username="root",
+            password="ephemeral",
+            save_password=False,
+        )
+        self.assertEqual(action, "created")
+        row = self.db.query(ManagedNE).filter(ManagedNE.id == out.id).one()
+        self.assertEqual(row.username, "root")
+        self.assertEqual(row.password_enc, "")
+
+        out2, action2 = upsert_webcrt_session_host(
+            self.db,
+            name="ssh1",
+            ip_address="10.6.6.7",
+            protocol="ssh",
+            username="root",
+            password="secret",
+            save_password=True,
+        )
+        self.assertEqual(action2, "created")
+        self.assertNotEqual(out2.id, out.id)
+        self.assertEqual(out2.name, "ssh1 (1)")
+        row2 = self.db.query(ManagedNE).filter(ManagedNE.id == out2.id).one()
+        self.assertTrue(str(row2.password_enc or "").strip())
+
+    def test_session_host_same_ip_name_suffix(self):
+        a, _ = upsert_webcrt_session_host(
+            self.db, ip_address="10.5.5.5", protocol="ssh", username="u", password="p", save_password=True
+        )
+        b, _ = upsert_webcrt_session_host(
+            self.db, ip_address="10.5.5.5", protocol="ssh", username="u", password="p", save_password=True
+        )
+        c, _ = upsert_webcrt_session_host(
+            self.db, ip_address="10.5.5.5", protocol="telnet"
+        )
+        self.assertEqual(a.name, "10.5.5.5")
+        self.assertEqual(b.name, "10.5.5.5 (1)")
+        self.assertEqual(c.name, "10.5.5.5 (2)")
+        self.assertEqual(a.ip_address, b.ip_address)
 
 
 if __name__ == "__main__":

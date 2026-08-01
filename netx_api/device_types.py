@@ -43,3 +43,9 @@ SUPPORTED_VENDORS: tuple[str, ...] = (
     "Nokia",
     "Other",
 )
+
+# WebCRT "New Session": inventory types + raw interactive hosts (generic/linux).
+WEBCRT_DEVICE_TYPES: tuple[str, ...] = SUPPORTED_DEVICE_TYPES + ("linux", "generic")
+
+# ManagedNE.source value for sessions created via WebCRT Quick Connect.
+WEBCRT_NE_SOURCE = "webcrt"

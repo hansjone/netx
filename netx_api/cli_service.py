@@ -258,8 +258,10 @@ def list_cli_targets(
     page: int = 1,
     page_size: int = 50,
 ) -> dict[str, Any]:
+    from .device_types import WEBCRT_NE_SOURCE
+
     src = str(source or "all").strip().lower()
-    if src not in ("managed", "ume", "all"):
+    if src not in ("managed", "ume", "webcrt", "all"):
         raise HTTPException(status_code=400, detail="invalid_source")
     ready = cli_profile_ready(db)
     page = max(1, int(page or 1))
@@ -267,15 +269,18 @@ def list_cli_targets(
     offset = (page - 1) * page_size
     kw = str(keyword or "").strip()
 
-    def _managed_item(row: Any) -> dict[str, Any]:
+    def _managed_item(row: Any, *, list_source: str = "managed") -> dict[str, Any]:
         return CliTargetOut(
-            source="managed",
+            source=list_source,
             id=str(row.id),
             ume_ne_id=None,
             name=str(row.name or row.ip_address),
             ip_address=str(row.ip_address),
             vendor=str(row.vendor),
             device_type=str(row.device_type),
+            protocol=str(getattr(row, "protocol", "") or ""),
+            username=str(getattr(row, "username", "") or ""),
+            has_password=bool(str(getattr(row, "password_enc", "") or "").strip()),
             connect_status=str(row.connect_status),
             cli_profile_ready=True,
         ).model_dump()
@@ -293,19 +298,27 @@ def list_cli_targets(
             cli_profile_ready=ready,
         ).model_dump()
 
-    def _managed_query():
-        stmt = db.query(ManagedNE)
-        if kw:
-            like = f"%{kw}%"
-            stmt = stmt.filter(
-                ManagedNE.name.ilike(like)
-                | ManagedNE.ip_address.ilike(like)
-                | ManagedNE.username.ilike(like)
-                | ManagedNE.tags.ilike(like)
-                | ManagedNE.vendor.ilike(like)
-                | ManagedNE.device_type.ilike(like)
-            )
-        return stmt.order_by(ManagedNE.updated_at.desc())
+    def _apply_kw(stmt: Any) -> Any:
+        if not kw:
+            return stmt
+        like = f"%{kw}%"
+        return stmt.filter(
+            ManagedNE.name.ilike(like)
+            | ManagedNE.ip_address.ilike(like)
+            | ManagedNE.username.ilike(like)
+            | ManagedNE.tags.ilike(like)
+            | ManagedNE.vendor.ilike(like)
+            | ManagedNE.device_type.ilike(like)
+        )
+
+    def _inventory_managed_query():
+        # Asset inventory for WebCRT: exclude Quick-Connect (source=webcrt) rows.
+        stmt = db.query(ManagedNE).filter(ManagedNE.source != WEBCRT_NE_SOURCE)
+        return _apply_kw(stmt).order_by(ManagedNE.updated_at.desc())
+
+    def _webcrt_query():
+        stmt = db.query(ManagedNE).filter(ManagedNE.source == WEBCRT_NE_SOURCE)
+        return _apply_kw(stmt).order_by(ManagedNE.updated_at.desc())
 
     def _ume_query():
         stmt = db.query(UmeInventoryNE, UmeCliOverride).outerjoin(
@@ -323,10 +336,17 @@ def list_cli_targets(
         return stmt.order_by(UmeInventoryNE.ne_id.asc())
 
     if src == "managed":
-        mq = _managed_query()
+        mq = _inventory_managed_query()
         total = int(mq.count())
         rows = mq.offset(offset).limit(page_size).all()
-        items = [_managed_item(x) for x in rows]
+        items = [_managed_item(x, list_source="managed") for x in rows]
+        return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+    if src == "webcrt":
+        wq = _webcrt_query()
+        total = int(wq.count())
+        rows = wq.offset(offset).limit(page_size).all()
+        items = [_managed_item(x, list_source="webcrt") for x in rows]
         return {"items": items, "total": total, "page": page, "page_size": page_size}
 
     if src == "ume":
@@ -336,24 +356,40 @@ def list_cli_targets(
         items = [_ume_item(inv, ov) for inv, ov in rows]
         return {"items": items, "total": total, "page": page, "page_size": page_size}
 
-    # source=all: managed first, then UME, with correct cross-list pagination
-    mq = _managed_query()
+    # source=all: inventory managed → webcrt sessions → UME
+    mq = _inventory_managed_query()
+    wq = _webcrt_query()
     uq = _ume_query()
     m_total = int(mq.count())
+    w_total = int(wq.count())
     u_total = int(uq.count())
-    total = m_total + u_total
+    total = m_total + w_total + u_total
     items: list[dict[str, Any]] = []
-    if offset < m_total:
-        take = min(page_size, m_total - offset)
-        for row in mq.offset(offset).limit(take).all():
-            items.append(_managed_item(row))
-        need = page_size - len(items)
-        if need > 0 and u_total > 0:
-            for inv, ov in uq.offset(0).limit(need).all():
-                items.append(_ume_item(inv, ov))
+
+    remaining = page_size
+    cursor = offset
+
+    if cursor < m_total and remaining > 0:
+        take = min(remaining, m_total - cursor)
+        for row in mq.offset(cursor).limit(take).all():
+            items.append(_managed_item(row, list_source="managed"))
+        remaining -= take
+        cursor = 0
     else:
-        u_off = offset - m_total
-        for inv, ov in uq.offset(u_off).limit(page_size).all():
+        cursor = max(0, cursor - m_total)
+
+    if remaining > 0:
+        if cursor < w_total:
+            take = min(remaining, w_total - cursor)
+            for row in wq.offset(cursor).limit(take).all():
+                items.append(_managed_item(row, list_source="webcrt"))
+            remaining -= take
+            cursor = 0
+        else:
+            cursor = max(0, cursor - w_total)
+
+    if remaining > 0:
+        for inv, ov in uq.offset(cursor).limit(remaining).all():
             items.append(_ume_item(inv, ov))
 
     return {"items": items, "total": total, "page": page, "page_size": page_size}

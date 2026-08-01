@@ -975,6 +975,23 @@ def on_startup() -> None:
             conn.exec_driver_sql("ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS source VARCHAR(64) DEFAULT ''")
             conn.exec_driver_sql("ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS source_ref VARCHAR(128) DEFAULT ''")
             conn.exec_driver_sql("ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS connect_detail TEXT DEFAULT ''")
+            # WebCRT sessions may share a host IP; uniqueness is enforced in ne_service for inventory only.
+            for stmt in (
+                "ALTER TABLE managed_ne DROP CONSTRAINT IF EXISTS managed_ne_ip_address_key",
+                "DROP INDEX IF EXISTS managed_ne_ip_address_key",
+                "DROP INDEX IF EXISTS ix_managed_ne_ip_address",
+                "DROP INDEX IF EXISTS sqlite_autoindex_managed_ne_1",
+            ):
+                try:
+                    conn.exec_driver_sql(stmt)
+                except Exception:
+                    pass
+            try:
+                conn.exec_driver_sql(
+                    "CREATE INDEX IF NOT EXISTS ix_managed_ne_ip_address ON managed_ne (ip_address)"
+                )
+            except Exception:
+                pass
             conn.exec_driver_sql(
                 "ALTER TABLE ne_collection_job ADD COLUMN IF NOT EXISTS last_run_at TIMESTAMP"
             )

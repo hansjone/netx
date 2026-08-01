@@ -92,6 +92,46 @@ const parseApiResponse = async (res: Response): Promise<Record<string, unknown>>
   }
 };
 
+/** Preserve FastAPI structured ``detail`` objects (e.g. connect_failed + ne). */
+export class ApiRequestError extends Error {
+  status: number;
+  detail: unknown;
+
+  constructor(status: number, detail: unknown) {
+    super(formatApiDetail(detail) || `${status}`);
+    this.name = "ApiRequestError";
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
+export function formatApiDetail(detail: unknown): string {
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => {
+        if (typeof item === "string") return item;
+        if (item && typeof item === "object" && "msg" in item) {
+          return String((item as { msg?: unknown }).msg || "");
+        }
+        return "";
+      })
+      .filter(Boolean)
+      .join("; ");
+  }
+  if (detail && typeof detail === "object") {
+    const obj = detail as Record<string, unknown>;
+    if (typeof obj.message === "string" && obj.message.trim()) return obj.message;
+    if (typeof obj.error === "string" && obj.error.trim()) return obj.error;
+    try {
+      return JSON.stringify(detail);
+    } catch {
+      /* fall through */
+    }
+  }
+  return detail == null ? "" : String(detail);
+}
+
 export const apiGet = async <T,>(path: string): Promise<T> => {
   const res = await fetch(path, { headers: authHeaders() });
   if (res.status === 401) {
@@ -111,9 +151,9 @@ export const apiPost = async <T,>(path: string, body: unknown): Promise<T> => {
   const data = await parseApiResponse(res);
   if (res.status === 401) {
     handleUnauthorized(path);
-    throw new Error(String(data.detail || "unauthorized"));
+    throw new ApiRequestError(401, data.detail || "unauthorized");
   }
-  if (!res.ok) throw new Error(String(data.detail || `${res.status} ${path}`));
+  if (!res.ok) throw new ApiRequestError(res.status, data.detail || `${res.status} ${path}`);
   return data as T;
 };
 
@@ -126,9 +166,9 @@ export const apiPatch = async <T,>(path: string, body: unknown): Promise<T> => {
   const data = await parseApiResponse(res);
   if (res.status === 401) {
     handleUnauthorized(path);
-    throw new Error(String(data.detail || "unauthorized"));
+    throw new ApiRequestError(401, data.detail || "unauthorized");
   }
-  if (!res.ok) throw new Error(String(data.detail || `${res.status} ${path}`));
+  if (!res.ok) throw new ApiRequestError(res.status, data.detail || `${res.status} ${path}`);
   return data as T;
 };
 
@@ -137,9 +177,9 @@ export const apiDelete = async <T,>(path: string): Promise<T> => {
   const data = await parseApiResponse(res);
   if (res.status === 401) {
     handleUnauthorized(path);
-    throw new Error(String(data.detail || "unauthorized"));
+    throw new ApiRequestError(401, data.detail || "unauthorized");
   }
-  if (!res.ok) throw new Error(String(data.detail || `${res.status} ${path}`));
+  if (!res.ok) throw new ApiRequestError(res.status, data.detail || `${res.status} ${path}`);
   return data as T;
 };
 
@@ -152,9 +192,9 @@ export const apiPut = async <T,>(path: string, body: unknown): Promise<T> => {
   const data = await parseApiResponse(res);
   if (res.status === 401) {
     handleUnauthorized(path);
-    throw new Error(String(data.detail || "unauthorized"));
+    throw new ApiRequestError(401, data.detail || "unauthorized");
   }
-  if (!res.ok) throw new Error(String(data.detail || `${res.status} ${path}`));
+  if (!res.ok) throw new ApiRequestError(res.status, data.detail || `${res.status} ${path}`);
   return data as T;
 };
 
@@ -471,9 +511,33 @@ export const createWebcrtSession = (body: {
   cols?: number;
   rows?: number;
   encoding?: string;
+  keepalive_sec?: number;
   post_login_commands?: string[];
   async_connect?: boolean;
+  username?: string;
+  password?: string;
 }) => apiPost<WebcrtSessionCreateResult>("/v1/webcrt/sessions", body);
+
+export type WebcrtQuickConnectResult = WebcrtSessionCreateResult & {
+  ne: ManagedNeItem;
+  ne_action: "created" | "updated" | "reused" | string;
+  list_source: "webcrt" | "managed" | string;
+};
+
+export const quickConnectWebcrtSession = (body: {
+  name?: string;
+  ip_address: string;
+  port?: number;
+  protocol?: string;
+  username?: string;
+  password?: string;
+  save_password?: boolean;
+  cols?: number;
+  rows?: number;
+  encoding?: string;
+  keepalive_sec?: number;
+  async_connect?: boolean;
+}) => apiPost<WebcrtQuickConnectResult>("/v1/webcrt/sessions/quick-connect", body);
 
 export const closeWebcrtSession = (sessionId: string) =>
   apiDelete<{ ok: boolean; session_id: string; closed: boolean }>(
@@ -565,7 +629,7 @@ export const fetchCliProfiles = () =>
   apiGet<{ items: CliConnectProfileItem[] }>("/v1/cli/profiles");
 
 export const fetchCliTargets = (params: {
-  source?: "managed" | "ume" | "all";
+  source?: "managed" | "ume" | "webcrt" | "all";
   keyword?: string;
   page?: number;
   pageSize?: number;

@@ -88,8 +88,8 @@ class Settings(BaseSettings):
     webcrt_connect_timeout_sec: int = 90
     webcrt_attach_timeout_sec: int = 60
     webcrt_data_dir: str = "data/webcrt"
-    # SSH transport keepalive interval (seconds); 0 disables.
-    webcrt_keepalive_sec: int = 30
+    # SSH transport keepalive interval (seconds); 0 disables (default off).
+    webcrt_keepalive_sec: int = 0
     # Device anti-idle CLI nudge (0 = off). Keep off: NEs close idle VTY themselves.
     webcrt_anti_idle_sec: int = 0
     webcrt_anti_idle_payload: str = " "

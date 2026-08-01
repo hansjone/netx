@@ -257,6 +257,9 @@ export type CliTargetItem = {
   ne_type?: string;
   vendor?: string;
   device_type?: string;
+  protocol?: string;
+  username?: string;
+  has_password?: boolean;
   connect_status: string;
   cli_profile_ready?: boolean;
 };

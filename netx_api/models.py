@@ -278,7 +278,9 @@ class ManagedNE(Base):
     name: Mapped[str] = mapped_column(String(256), default="", index=True)
     vendor: Mapped[str] = mapped_column(String(64), default="Other", index=True)
     device_type: Mapped[str] = mapped_column(String(128), default="")
-    ip_address: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    # Not unique: WebCRT sessions may share a host IP with distinct session names.
+    # Inventory create/update still enforces uniqueness in ne_service.
+    ip_address: Mapped[str] = mapped_column(String(128), index=True)
     port: Mapped[int] = mapped_column(Integer, default=22)
     protocol: Mapped[str] = mapped_column(String(16), default="ssh")
     username: Mapped[str] = mapped_column(String(128), default="")

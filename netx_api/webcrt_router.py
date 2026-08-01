@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
@@ -37,8 +38,31 @@ class WebcrtSessionCreate(BaseModel):
     cols: int = Field(default=80, ge=20, le=500)
     rows: int = Field(default=24, ge=5, le=200)
     encoding: str = Field(default="utf-8")
+    # SSH transport keepalive interval (seconds). None = server default; 0 = off.
+    keepalive_sec: int | None = Field(default=None, ge=0, le=600)
     post_login_commands: list[str] = Field(default_factory=list)
     # Default async so UI can open WS while connect runs; tests may force sync via service API.
+    async_connect: bool = Field(default=True)
+    # One-shot credentials (not written to DB).
+    username: str | None = None
+    password: str | None = None
+
+
+class WebcrtQuickConnectBody(BaseModel):
+    """SecureCRT-style: upsert session host then open a session."""
+
+    name: str = ""
+    ip_address: str
+    port: int = 22
+    protocol: str = "ssh"
+    username: str = ""
+    password: str = ""
+    save_password: bool = False
+    cols: int = Field(default=80, ge=20, le=500)
+    rows: int = Field(default=24, ge=5, le=200)
+    encoding: str = Field(default="utf-8")
+    keepalive_sec: int | None = Field(default=None, ge=0, le=600)
+    post_login_commands: list[str] = Field(default_factory=list)
     async_connect: bool = Field(default=True)
 
 
@@ -68,6 +92,13 @@ def api_list_sessions() -> dict[str, Any]:
     return list_sessions()
 
 
+@router.get("/meta/device-types")
+def api_webcrt_device_types() -> dict[str, Any]:
+    from .device_types import SUPPORTED_VENDORS, WEBCRT_DEVICE_TYPES
+
+    return {"device_types": list(WEBCRT_DEVICE_TYPES), "vendors": list(SUPPORTED_VENDORS)}
+
+
 @router.post("/sessions")
 def api_create_session(
     body: WebcrtSessionCreate,
@@ -86,9 +117,80 @@ def api_create_session(
         rows=body.rows,
         client=_client_label(request=request),
         encoding=body.encoding,
+        keepalive_sec=body.keepalive_sec,
         post_login_commands=list(body.post_login_commands or [])[:20],
         async_connect=bool(body.async_connect),
+        username_override=body.username,
+        password_override=body.password,
     )
+
+
+@router.post("/sessions/quick-connect")
+def api_quick_connect(
+    body: WebcrtQuickConnectBody,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    from .ne_service import upsert_webcrt_session_host
+
+    proto = str(body.protocol or "ssh").strip().lower()
+    if proto not in ("ssh", "telnet"):
+        raise HTTPException(status_code=400, detail="invalid_protocol")
+    save_password = bool(body.save_password) and proto == "ssh"
+    ne_out, action = upsert_webcrt_session_host(
+        db,
+        name=body.name,
+        ip_address=body.ip_address,
+        port=body.port,
+        protocol=proto,
+        username=body.username,
+        password=body.password,
+        save_password=save_password,
+    )
+    # Pass SSH credentials as one-shot overrides (covers unsaved password + reused inventory).
+    pwd_override: str | None = None
+    user_override: str | None = None
+    if proto == "ssh":
+        user_override = str(body.username or "").strip() or None
+        if str(body.password or "").strip():
+            pwd_override = str(body.password)
+    # SSH with password: wait for auth so wrong credentials can re-prompt (SecureCRT-like).
+    wait_for_auth = proto == "ssh" and bool(pwd_override)
+    async_connect = bool(body.async_connect) and not wait_for_auth
+    try:
+        session = create_session(
+            db,
+            ne_id=ne_out.id,
+            cols=body.cols,
+            rows=body.rows,
+            client=_client_label(request=request),
+            encoding=body.encoding,
+            keepalive_sec=body.keepalive_sec,
+            post_login_commands=list(body.post_login_commands or [])[:20],
+            async_connect=async_connect,
+            username_override=user_override,
+            password_override=pwd_override,
+        )
+    except HTTPException as exc:
+        # NE row already exists; return it so the UI retries in place (no duplicate hosts).
+        if exc.status_code == 502 and proto == "ssh":
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": "connect_failed",
+                    "message": str(exc.detail or "connect_failed"),
+                    "ne": ne_out.model_dump(mode="json"),
+                    "ne_action": action,
+                    "list_source": "webcrt",
+                },
+            ) from exc
+        raise
+    return {
+        **session,
+        "ne": ne_out.model_dump(mode="json"),
+        "ne_action": action,
+        "list_source": "webcrt",
+    }
 
 
 @router.delete("/sessions/{session_id}")
@@ -181,6 +283,8 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
         {
             "type": "status",
             "state": "connecting" if sess.state == "connecting" else "connected",
+            "phase": "authenticating" if sess.state == "connecting" else "ready",
+            "message": "authenticating" if sess.state == "connecting" else "",
             "session_id": sess.session_id,
             "ne_id": sess.ne_id,
             "ne_name": sess.ne_name,
@@ -195,24 +299,61 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
         }
     )
 
-    # Wait for async connect without blocking the event loop.
+    # Wait for async connect without blocking the event loop; emit phase updates.
     if sess.state == "connecting":
         loop = asyncio.get_running_loop()
-        try:
-            await loop.run_in_executor(
-                None,
-                lambda: wait_session_ready(
-                    session_id,
-                    timeout=max(30, int(settings.webcrt_connect_timeout_sec or 90)) + 15,
-                ),
-            )
-            sess = get_session(session_id) or sess
-        except HTTPException as exc:
-            await websocket.send_json(
-                {"type": "status", "state": "error", "message": str(exc.detail)}
-            )
-            await websocket.close(code=4502)
-            return
+        budget = max(30, int(settings.webcrt_connect_timeout_sec or 90)) + 15
+        deadline = time.time() + budget
+        while True:
+            cur = get_session(session_id) or sess
+            if cur.state != "connecting":
+                sess = cur
+                break
+            elapsed = max(0.0, time.time() - float(cur.connect_started_at or time.time()))
+            phase = "authenticating" if elapsed < 6.0 else "waiting_prompt"
+            try:
+                await websocket.send_json(
+                    {
+                        "type": "status",
+                        "state": "connecting",
+                        "phase": phase,
+                        "message": phase,
+                        "elapsed_ms": int(elapsed * 1000),
+                        "session_id": cur.session_id,
+                    }
+                )
+            except Exception:
+                break
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                await websocket.send_json(
+                    {"type": "status", "state": "error", "message": "connect_timeout"}
+                )
+                await websocket.close(code=4502)
+                return
+            slice_timeout = min(1.0, max(0.2, remaining))
+            try:
+                await loop.run_in_executor(
+                    None,
+                    lambda t=slice_timeout: wait_session_ready(session_id, timeout=t),
+                )
+                sess = get_session(session_id) or cur
+                break
+            except HTTPException as exc:
+                if exc.status_code == 504:
+                    # Slice timeout while still connecting — keep polling with progress.
+                    continue
+                await websocket.send_json(
+                    {"type": "status", "state": "error", "message": str(exc.detail)}
+                )
+                await websocket.close(code=4502)
+                return
+            except Exception as exc:
+                await websocket.send_json(
+                    {"type": "status", "state": "error", "message": f"connect_failed:{exc}"}
+                )
+                await websocket.close(code=4502)
+                return
 
     await websocket.send_json(
         {
