@@ -150,39 +150,65 @@ def _sftp_client(
     managed_ne_id: str | None,
     ume_ne_id: str | None,
 ) -> Iterator[tuple[Any, dict[str, Any]]]:
-    """Yield ``(sftp, device)`` — prefers live WebCRT SSH session channel."""
+    """Yield ``(sftp, device)`` — prefers a short-lived channel on the live SSH session."""
     creds, device = _resolve(db, managed_ne_id=managed_ne_id, ume_ne_id=ume_ne_id)
     ne_key = str(device.get("id") or managed_ne_id or ume_ne_id or "").strip()
     sess = find_ssh_session_for_ne(ne_key) if ne_key else None
     if sess is not None:
-        opened = False
+        sftp = None
         try:
-            with sess._sftp_lock:
-                sftp = sess._ensure_sftp_unlocked()
-                opened = True
-                yield sftp, device
+            sftp = sess.open_ephemeral_sftp()
+            yield sftp, device
             return
         except HTTPException:
             raise
         except Exception as exc:
-            if opened:
-                # Operation failed on an already-open session channel — don't double-yield.
+            if sftp is not None:
                 raise HTTPException(status_code=502, detail=f"sftp_failed:{exc}") from exc
             _log.debug("session sftp open failed ne=%s: %s — pool fallback", ne_key, exc)
+        finally:
+            if sftp is not None:
+                try:
+                    sftp.close()
+                except Exception:
+                    pass
 
     key = _pool_key(managed_ne_id=managed_ne_id, ume_ne_id=ume_ne_id)
     entry = _get_pooled(key, creds)
+    # Borrow transport under a short lock, then use a dedicated SFTP channel for I/O.
     with entry.lock:
         entry.last_used = time.time()
+        transport = None
         try:
-            yield entry.sftp, device
+            transport = entry.client.get_transport()
         except Exception:
-            # Drop broken pooled socket so the next call reconnects once.
+            transport = None
+        if transport is None or not bool(getattr(transport, "is_active", lambda: False)()):
             with _pool_lock:
                 cur = _pool.pop(key, None)
             if cur is not None:
                 _close_pooled(cur)
-            raise
+            raise HTTPException(status_code=502, detail="sftp_pool_transport_unavailable")
+    sftp = None
+    try:
+        sftp = paramiko.SFTPClient.from_transport(transport)
+        if sftp is None:
+            raise HTTPException(status_code=502, detail="sftp_open_failed")
+        yield sftp, device
+    except HTTPException:
+        raise
+    except Exception:
+        with _pool_lock:
+            cur = _pool.pop(key, None)
+        if cur is not None:
+            _close_pooled(cur)
+        raise
+    finally:
+        if sftp is not None:
+            try:
+                sftp.close()
+            except Exception:
+                pass
 
 
 def _filemode(mode: int) -> str:
@@ -239,6 +265,188 @@ def _mkdir_p(sftp: Any, remote: str) -> None:
             raise HTTPException(status_code=502, detail=f"sftp_mkdir_failed:{candidate}:{exc}") from exc
 
 
+def _rmtree(sftp: Any, remote: str) -> None:
+    path = _normalize_remote(remote, allow_dot=False)
+    if not path or path in (".", "/"):
+        raise HTTPException(status_code=400, detail="sftp_path_required")
+    try:
+        for attr in sftp.listdir_attr(path):
+            name = str(getattr(attr, "filename", "") or "")
+            if not name or name in (".", ".."):
+                continue
+            child = posixpath.join(path, name)
+            mode = int(getattr(attr, "st_mode", 0) or 0)
+            if statmod.S_ISDIR(mode):
+                _rmtree(sftp, child)
+            else:
+                sftp.remove(child)
+        sftp.rmdir(path)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"sftp_remove_failed:{exc}") from exc
+
+
+def sftp_mkdir(
+    db: Session,
+    *,
+    managed_ne_id: str | None,
+    ume_ne_id: str | None,
+    path: str,
+) -> dict[str, Any]:
+    remote = _normalize_remote(path, allow_dot=False)
+    if not remote or remote in (".", "/"):
+        raise HTTPException(status_code=400, detail="sftp_path_required")
+    try:
+        with _sftp_client(db, managed_ne_id=managed_ne_id, ume_ne_id=ume_ne_id) as (sftp, device):
+            _mkdir_p(sftp, remote)
+            return {
+                "ok": True,
+                "ne_id": str(device.get("id") or ""),
+                "path": remote,
+            }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"sftp_mkdir_failed:{exc}") from exc
+
+
+def sftp_remove(
+    db: Session,
+    *,
+    managed_ne_id: str | None,
+    ume_ne_id: str | None,
+    path: str,
+    recursive: bool = False,
+) -> dict[str, Any]:
+    remote = _normalize_remote(path, allow_dot=False)
+    if not remote or remote in (".", "/"):
+        raise HTTPException(status_code=400, detail="sftp_path_required")
+    try:
+        with _sftp_client(db, managed_ne_id=managed_ne_id, ume_ne_id=ume_ne_id) as (sftp, device):
+            try:
+                st = sftp.stat(remote)
+            except Exception as exc:
+                raise HTTPException(status_code=404, detail=f"sftp_not_found:{exc}") from exc
+            mode = int(getattr(st, "st_mode", 0) or 0)
+            if statmod.S_ISDIR(mode):
+                if recursive:
+                    _rmtree(sftp, remote)
+                else:
+                    try:
+                        sftp.rmdir(remote)
+                    except Exception as exc:
+                        raise HTTPException(status_code=409, detail="sftp_dir_not_empty") from exc
+            else:
+                sftp.remove(remote)
+            return {
+                "ok": True,
+                "ne_id": str(device.get("id") or ""),
+                "path": remote,
+            }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"sftp_remove_failed:{exc}") from exc
+
+
+def sftp_rename(
+    db: Session,
+    *,
+    managed_ne_id: str | None,
+    ume_ne_id: str | None,
+    old_path: str,
+    new_path: str,
+) -> dict[str, Any]:
+    src = _normalize_remote(old_path, allow_dot=False)
+    dst = _normalize_remote(new_path, allow_dot=False)
+    if not src or not dst or src in (".", "/") or dst in (".", "/"):
+        raise HTTPException(status_code=400, detail="sftp_path_required")
+    if src == dst:
+        return {"ok": True, "ne_id": "", "old_path": src, "new_path": dst}
+    try:
+        with _sftp_client(db, managed_ne_id=managed_ne_id, ume_ne_id=ume_ne_id) as (sftp, device):
+            parent = posixpath.dirname(dst)
+            if parent and parent not in (".", "/"):
+                _mkdir_p(sftp, parent)
+            try:
+                sftp.rename(src, dst)
+            except Exception as exc:
+                raise HTTPException(status_code=502, detail=f"sftp_rename_failed:{exc}") from exc
+            return {
+                "ok": True,
+                "ne_id": str(device.get("id") or ""),
+                "old_path": src,
+                "new_path": dst,
+            }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"sftp_rename_failed:{exc}") from exc
+
+
+def _parse_chmod_mode(mode: str | int) -> int:
+    if isinstance(mode, int):
+        return int(mode) & 0o7777
+    raw = str(mode or "").strip().lower()
+    if not raw:
+        raise HTTPException(status_code=400, detail="sftp_chmod_invalid_mode")
+    if raw.startswith("0o"):
+        raw = raw[2:]
+    if raw.isdigit():
+        try:
+            return int(raw, 8) & 0o7777
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="sftp_chmod_invalid_mode") from exc
+    sym = raw.lstrip("d").lstrip("-")
+    if len(sym) != 9 or any(c not in "rwx-" for c in sym):
+        raise HTTPException(status_code=400, detail="sftp_chmod_invalid_mode")
+    bits = {"r": 4, "w": 2, "x": 1, "-": 0}
+    value = 0
+    for i in range(3):
+        trip = sym[i * 3 : (i + 1) * 3]
+        value = (value << 3) | (bits[trip[0]] + bits[trip[1]] + bits[trip[2]])
+    return value & 0o7777
+
+
+def sftp_chmod(
+    db: Session,
+    *,
+    managed_ne_id: str | None,
+    ume_ne_id: str | None,
+    path: str,
+    mode: str | int,
+) -> dict[str, Any]:
+    remote = _normalize_remote(path, allow_dot=False)
+    if not remote or remote in (".", "/"):
+        raise HTTPException(status_code=400, detail="sftp_path_required")
+    mode_int = _parse_chmod_mode(mode)
+    try:
+        with _sftp_client(db, managed_ne_id=managed_ne_id, ume_ne_id=ume_ne_id) as (sftp, device):
+            try:
+                sftp.chmod(remote, mode_int)
+            except Exception as exc:
+                raise HTTPException(status_code=502, detail=f"sftp_chmod_failed:{exc}") from exc
+            return {
+                "ok": True,
+                "ne_id": str(device.get("id") or ""),
+                "path": remote,
+                "mode": f"{mode_int:04o}",
+            }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"sftp_chmod_failed:{exc}") from exc
+
+
+def _list_max_entries() -> int:
+    return max(100, int(settings.webcrt_sftp_list_max_entries or 5000))
+
+
+def _list_timeout_sec() -> float:
+    return max(1.0, float(settings.webcrt_sftp_list_timeout_sec or 30.0))
+
+
 def sftp_list(
     db: Session,
     *,
@@ -247,10 +455,17 @@ def sftp_list(
     path: str = ".",
 ) -> dict[str, Any]:
     remote = _normalize_remote(path, allow_dot=True) or "."
+    max_entries = _list_max_entries()
+    timeout_sec = _list_timeout_sec()
     try:
         with _sftp_client(db, managed_ne_id=managed_ne_id, ume_ne_id=ume_ne_id) as (sftp, device):
             entries = []
+            truncated = False
+            deadline = time.monotonic() + timeout_sec
             for attr in sftp.listdir_attr(remote):
+                if time.monotonic() > deadline:
+                    truncated = True
+                    break
                 mode = int(getattr(attr, "st_mode", 0) or 0)
                 name = str(attr.filename or "")
                 if not name or name in (".", ".."):
@@ -269,12 +484,17 @@ def sftp_list(
                         "gid": int(getattr(attr, "st_gid", 0) or 0),
                     }
                 )
+                if len(entries) >= max_entries:
+                    truncated = True
+                    break
             entries.sort(key=lambda x: (not x["is_dir"], str(x["name"]).lower()))
             return {
                 "ne_id": str(device.get("id") or ""),
                 "ne_name": str(device.get("name") or ""),
                 "path": remote,
                 "items": entries,
+                "truncated": truncated,
+                "max_entries": max_entries,
             }
     except HTTPException:
         raise

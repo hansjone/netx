@@ -104,6 +104,9 @@ class Settings(BaseSettings):
     # WebCRT SFTP transfer limits (streamed; default 512 MiB per file).
     webcrt_sftp_max_file_bytes: int = 512 * 1024 * 1024
     webcrt_sftp_chunk_bytes: int = 64 * 1024
+    # Cap directory listings so huge folders cannot pin the API/UI.
+    webcrt_sftp_list_max_entries: int = 5000
+    webcrt_sftp_list_timeout_sec: float = 30.0
     # Local app login / audit (lab defaults; override in production)
     auth_enabled: bool = True
     # Stable default so JWT survives restarts without .env. Override in production.

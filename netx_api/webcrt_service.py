@@ -519,25 +519,14 @@ class WebcrtSession:
         except Exception:
             pass
 
-    def _ensure_sftp_unlocked(self) -> Any:
-        """Caller must hold ``_sftp_lock``."""
-        import paramiko
-
+    def _ssh_transport_unlocked(self) -> Any:
+        """Caller must hold ``_sftp_lock``. Returns an active Paramiko Transport."""
         if self.closed or self.conn is None:
             raise RuntimeError("session_closed")
         if str(self.protocol or "ssh").lower() != "ssh":
             raise RuntimeError("sftp_requires_ssh")
         if self.cli_hop_guard:
             raise RuntimeError("sftp_hop_not_supported")
-        if self._sftp is not None:
-            sock = getattr(self._sftp, "sock", None)
-            if sock is not None and not bool(getattr(sock, "closed", False)):
-                return self._sftp
-            try:
-                self._sftp.close()
-            except Exception:
-                pass
-            self._sftp = None
         channel = getattr(self.conn, "remote_conn", None)
         transport = None
         if channel is not None and hasattr(channel, "get_transport"):
@@ -547,6 +536,22 @@ class WebcrtSession:
                 transport = None
         if transport is None or not bool(getattr(transport, "is_active", lambda: False)()):
             raise RuntimeError("ssh_transport_unavailable")
+        return transport
+
+    def _ensure_sftp_unlocked(self) -> Any:
+        """Caller must hold ``_sftp_lock``. Shared probe client (sftp_ready)."""
+        import paramiko
+
+        if self._sftp is not None:
+            sock = getattr(self._sftp, "sock", None)
+            if sock is not None and not bool(getattr(sock, "closed", False)):
+                return self._sftp
+            try:
+                self._sftp.close()
+            except Exception:
+                pass
+            self._sftp = None
+        transport = self._ssh_transport_unlocked()
         self._sftp = paramiko.SFTPClient.from_transport(transport)
         if self._sftp is None:
             raise RuntimeError("sftp_open_failed")
@@ -558,11 +563,36 @@ class WebcrtSession:
         with self._sftp_lock:
             return self._ensure_sftp_unlocked()
 
-    def run_sftp(self, fn: Any) -> Any:
-        """Run ``fn(sftp)`` while holding the session SFTP lock."""
+    def open_ephemeral_sftp(self) -> Any:
+        """Open a dedicated SFTP channel for one operation; caller must ``close()`` it.
+
+        Only holds ``_sftp_lock`` briefly while resolving the SSH transport, so long
+        list/upload/download work does not block other SFTP ops on the same session.
+        """
+        import paramiko
+
         with self._sftp_lock:
-            sftp = self._ensure_sftp_unlocked()
+            transport = self._ssh_transport_unlocked()
+            # Keep probe client warm for UI sftp_ready without sharing it for I/O.
+            try:
+                self._ensure_sftp_unlocked()
+            except Exception:
+                pass
+        sftp = paramiko.SFTPClient.from_transport(transport)
+        if sftp is None:
+            raise RuntimeError("sftp_open_failed")
+        return sftp
+
+    def run_sftp(self, fn: Any) -> Any:
+        """Run ``fn(sftp)`` on an ephemeral channel (does not hold the lock during ``fn``)."""
+        sftp = self.open_ephemeral_sftp()
+        try:
             return fn(sftp)
+        finally:
+            try:
+                sftp.close()
+            except Exception:
+                pass
 
     def try_attach_sftp(self) -> bool:
         """Best-effort SFTP channel open after SSH login (does not fail the shell)."""

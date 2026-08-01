@@ -771,17 +771,85 @@ class WebcrtServiceTests(unittest.TestCase):
         _mkdir_p(sftp, "/a/b/c")  # idempotent
         self.assertEqual(sftp.mkdir_calls, ["/a", "/a/b", "/a/b/c"])
 
+    def test_sftp_rmtree(self) -> None:
+        from netx_api.webcrt_sftp import _rmtree
+
+        class _Attr:
+            def __init__(self, name: str, is_dir: bool = False) -> None:
+                self.filename = name
+                self.st_mode = 0o040755 if is_dir else 0o100644
+
+        class _FakeSftp:
+            def __init__(self) -> None:
+                self.tree = {
+                    "/p": ["a", "d"],
+                    "/p/d": ["f"],
+                }
+                self.removed: list[str] = []
+                self.rmdirs: list[str] = []
+
+            def listdir_attr(self, path: str):
+                names = self.tree.get(path, [])
+                out = []
+                for n in names:
+                    child = f"{path.rstrip('/')}/{n}"
+                    out.append(_Attr(n, is_dir=child in self.tree))
+                return out
+
+            def remove(self, path: str) -> None:
+                self.removed.append(path)
+
+            def rmdir(self, path: str) -> None:
+                self.rmdirs.append(path)
+                self.tree.pop(path, None)
+
+        sftp = _FakeSftp()
+        _rmtree(sftp, "/p")
+        self.assertEqual(sorted(sftp.removed), ["/p/a", "/p/d/f"])
+        self.assertEqual(sftp.rmdirs, ["/p/d", "/p"])
+
     def test_sftp_transfer_helpers(self) -> None:
         from netx_api import config as cfg
-        from netx_api.webcrt_sftp import _content_disposition, _sftp_chunk_bytes, _sftp_max_file_bytes
+        from netx_api.webcrt_sftp import (
+            _content_disposition,
+            _list_max_entries,
+            _list_timeout_sec,
+            _sftp_chunk_bytes,
+            _sftp_max_file_bytes,
+        )
 
         self.assertGreaterEqual(_sftp_max_file_bytes(), 8 * 1024 * 1024)
         self.assertGreaterEqual(_sftp_chunk_bytes(), 4 * 1024)
+        self.assertGreaterEqual(_list_max_entries(), 100)
+        self.assertGreaterEqual(_list_timeout_sec(), 1.0)
         dispo = _content_disposition('报告"A".bin')
         self.assertIn("filename=", dispo)
         self.assertIn("filename*=UTF-8''", dispo)
         self.assertNotIn("\n", dispo)
         self.assertEqual(int(cfg.settings.webcrt_sftp_max_file_bytes), 512 * 1024 * 1024)
+        self.assertEqual(int(cfg.settings.webcrt_sftp_list_max_entries), 5000)
+
+    def test_sftp_rename_rejects_bad_paths(self) -> None:
+        from unittest.mock import MagicMock
+
+        from netx_api.webcrt_sftp import sftp_rename
+
+        db = MagicMock()
+        with self.assertRaises(HTTPException) as cm:
+            sftp_rename(db, managed_ne_id="n1", ume_ne_id=None, old_path=".", new_path="a")
+        self.assertEqual(cm.exception.status_code, 400)
+        self.assertEqual(cm.exception.detail, "sftp_path_required")
+
+    def test_sftp_parse_chmod_mode(self) -> None:
+        from netx_api.webcrt_sftp import _parse_chmod_mode
+
+        self.assertEqual(_parse_chmod_mode("755"), 0o755)
+        self.assertEqual(_parse_chmod_mode("0644"), 0o644)
+        self.assertEqual(_parse_chmod_mode("rwxr-xr-x"), 0o755)
+        self.assertEqual(_parse_chmod_mode("-rw-r--r--"), 0o644)
+        with self.assertRaises(HTTPException) as cm:
+            _parse_chmod_mode("bad")
+        self.assertEqual(cm.exception.detail, "sftp_chmod_invalid_mode")
 
     @patch.object(svc, "_audit")
     def test_find_ssh_session_for_ne_prefers_attached(self, _mock_audit: MagicMock) -> None:

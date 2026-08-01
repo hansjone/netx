@@ -80,6 +80,33 @@ class WebcrtSftpDownloadBody(BaseModel):
     path: str
 
 
+class WebcrtSftpMkdirBody(BaseModel):
+    ne_id: str | None = Field(default=None)
+    ume_ne_id: str | None = Field(default=None)
+    path: str
+
+
+class WebcrtSftpRemoveBody(BaseModel):
+    ne_id: str | None = Field(default=None)
+    ume_ne_id: str | None = Field(default=None)
+    path: str
+    recursive: bool = False
+
+
+class WebcrtSftpRenameBody(BaseModel):
+    ne_id: str | None = Field(default=None)
+    ume_ne_id: str | None = Field(default=None)
+    old_path: str
+    new_path: str
+
+
+class WebcrtSftpChmodBody(BaseModel):
+    ne_id: str | None = Field(default=None)
+    ume_ne_id: str | None = Field(default=None)
+    path: str
+    mode: str
+
+
 def _client_label(request: Request | None = None, websocket: WebSocket | None = None) -> str:
     host = ""
     if request is not None:
@@ -200,15 +227,64 @@ def api_close_session(session_id: str, request: Request) -> dict[str, Any]:
     return close_session(session_id, reason="client_delete", client=_client_label(request=request))
 
 
+def _sftp_ne_ids(ne_id: str | None, ume_ne_id: str | None) -> tuple[str | None, str | None]:
+    mid = str(ne_id or "").strip()
+    uid = str(ume_ne_id or "").strip()
+    if bool(mid) == bool(uid):
+        raise HTTPException(status_code=400, detail="exactly_one_of_ne_id_or_ume_ne_id_required")
+    return (mid or None, uid or None)
+
+
 @router.post("/sftp/list")
 def api_sftp_list(body: WebcrtSftpListBody, db: Session = Depends(get_db)) -> dict[str, Any]:
     from .webcrt_sftp import sftp_list
 
-    mid = str(body.ne_id or "").strip()
-    uid = str(body.ume_ne_id or "").strip()
-    if bool(mid) == bool(uid):
-        raise HTTPException(status_code=400, detail="exactly_one_of_ne_id_or_ume_ne_id_required")
-    return sftp_list(db, managed_ne_id=mid or None, ume_ne_id=uid or None, path=body.path)
+    mid, uid = _sftp_ne_ids(body.ne_id, body.ume_ne_id)
+    return sftp_list(db, managed_ne_id=mid, ume_ne_id=uid, path=body.path)
+
+
+@router.post("/sftp/mkdir")
+def api_sftp_mkdir(body: WebcrtSftpMkdirBody, db: Session = Depends(get_db)) -> dict[str, Any]:
+    from .webcrt_sftp import sftp_mkdir
+
+    mid, uid = _sftp_ne_ids(body.ne_id, body.ume_ne_id)
+    return sftp_mkdir(db, managed_ne_id=mid, ume_ne_id=uid, path=body.path)
+
+
+@router.post("/sftp/remove")
+def api_sftp_remove(body: WebcrtSftpRemoveBody, db: Session = Depends(get_db)) -> dict[str, Any]:
+    from .webcrt_sftp import sftp_remove
+
+    mid, uid = _sftp_ne_ids(body.ne_id, body.ume_ne_id)
+    return sftp_remove(
+        db,
+        managed_ne_id=mid,
+        ume_ne_id=uid,
+        path=body.path,
+        recursive=bool(body.recursive),
+    )
+
+
+@router.post("/sftp/rename")
+def api_sftp_rename(body: WebcrtSftpRenameBody, db: Session = Depends(get_db)) -> dict[str, Any]:
+    from .webcrt_sftp import sftp_rename
+
+    mid, uid = _sftp_ne_ids(body.ne_id, body.ume_ne_id)
+    return sftp_rename(
+        db,
+        managed_ne_id=mid,
+        ume_ne_id=uid,
+        old_path=body.old_path,
+        new_path=body.new_path,
+    )
+
+
+@router.post("/sftp/chmod")
+def api_sftp_chmod(body: WebcrtSftpChmodBody, db: Session = Depends(get_db)) -> dict[str, Any]:
+    from .webcrt_sftp import sftp_chmod
+
+    mid, uid = _sftp_ne_ids(body.ne_id, body.ume_ne_id)
+    return sftp_chmod(db, managed_ne_id=mid, ume_ne_id=uid, path=body.path, mode=body.mode)
 
 
 @router.post("/sftp/download")
@@ -217,13 +293,8 @@ def api_sftp_download(body: WebcrtSftpDownloadBody, db: Session = Depends(get_db
 
     from .webcrt_sftp import SftpDownloadStream
 
-    mid = str(body.ne_id or "").strip()
-    uid = str(body.ume_ne_id or "").strip()
-    if bool(mid) == bool(uid):
-        raise HTTPException(status_code=400, detail="exactly_one_of_ne_id_or_ume_ne_id_required")
-    stream = SftpDownloadStream(
-        db, managed_ne_id=mid or None, ume_ne_id=uid or None, path=body.path
-    ).open()
+    mid, uid = _sftp_ne_ids(body.ne_id, body.ume_ne_id)
+    stream = SftpDownloadStream(db, managed_ne_id=mid, ume_ne_id=uid, path=body.path).open()
     headers = {
         "Content-Disposition": stream.content_disposition(),
         "Content-Length": str(int(stream.size)),
@@ -249,10 +320,7 @@ async def api_sftp_upload(
     from .config import settings
     from .webcrt_sftp import sftp_upload_stream
 
-    mid = str(ne_id or "").strip()
-    uid = str(ume_ne_id or "").strip()
-    if bool(mid) == bool(uid):
-        raise HTTPException(status_code=400, detail="exactly_one_of_ne_id_or_ume_ne_id_required")
+    mid, uid = _sftp_ne_ids(ne_id, ume_ne_id)
     max_bytes = max(1, int(settings.webcrt_sftp_max_file_bytes or (512 * 1024 * 1024)))
     expected = getattr(file, "size", None)
     if expected is not None and int(expected) > max_bytes:
@@ -261,8 +329,8 @@ async def api_sftp_upload(
     def _upload() -> dict[str, Any]:
         return sftp_upload_stream(
             db,
-            managed_ne_id=mid or None,
-            ume_ne_id=uid or None,
+            managed_ne_id=mid,
+            ume_ne_id=uid,
             remote_path=remote_path,
             reader=file.file,
             expected_size=int(expected) if expected is not None else None,

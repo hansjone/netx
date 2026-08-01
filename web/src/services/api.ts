@@ -563,29 +563,84 @@ export type WebcrtSftpListResult = {
   ne_name: string;
   path: string;
   items: WebcrtSftpItem[];
+  truncated?: boolean;
+  max_entries?: number;
 };
 
 export const webcrtSftpList = (body: { ne_id?: string; ume_ne_id?: string; path?: string }) =>
   apiPost<WebcrtSftpListResult>("/v1/webcrt/sftp/list", body);
+
+export const webcrtSftpMkdir = (body: { ne_id?: string; ume_ne_id?: string; path: string }) =>
+  apiPost<{ ok: boolean; path: string; ne_id: string }>("/v1/webcrt/sftp/mkdir", body);
+
+export const webcrtSftpRemove = (body: {
+  ne_id?: string;
+  ume_ne_id?: string;
+  path: string;
+  recursive?: boolean;
+}) => apiPost<{ ok: boolean; path: string; ne_id: string }>("/v1/webcrt/sftp/remove", body);
+
+export const webcrtSftpRename = (body: {
+  ne_id?: string;
+  ume_ne_id?: string;
+  old_path: string;
+  new_path: string;
+}) => apiPost<{ ok: boolean; old_path: string; new_path: string; ne_id: string }>("/v1/webcrt/sftp/rename", body);
+
+export const webcrtSftpChmod = (body: {
+  ne_id?: string;
+  ume_ne_id?: string;
+  path: string;
+  mode: string;
+}) => apiPost<{ ok: boolean; path: string; mode: string; ne_id: string }>("/v1/webcrt/sftp/chmod", body);
 
 export type WebcrtSftpTransferProgress = {
   loaded: number;
   total: number;
 };
 
-export async function webcrtSftpDownload(
-  body: {
-    ne_id?: string;
-    ume_ne_id?: string;
-    path: string;
-  },
-  onProgress?: (p: WebcrtSftpTransferProgress) => void,
+export type WebcrtSftpTransferOpts = {
+  signal?: AbortSignal;
+  onProgress?: (p: WebcrtSftpTransferProgress) => void;
+  /** Extra attempts after the first failure. Default 2 (3 tries total). */
+  retries?: number;
+  onRetry?: (attempt: number, err: unknown) => void;
+};
+
+const isAbortError = (err: unknown): boolean => {
+  const raw = String(err || "").toLowerCase();
+  return raw.includes("aborted") || raw.includes("abort");
+};
+
+async function withSftpRetries<T>(
+  run: () => Promise<T>,
+  opts?: Pick<WebcrtSftpTransferOpts, "retries" | "signal" | "onRetry">,
+): Promise<T> {
+  const retries = Math.max(0, Number(opts?.retries ?? 2));
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    if (opts?.signal?.aborted) throw new Error("aborted");
+    try {
+      return await run();
+    } catch (err) {
+      lastErr = err;
+      if (isAbortError(err) || attempt >= retries) break;
+      opts?.onRetry?.(attempt + 1, err);
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr || "transfer_failed"));
+}
+
+async function webcrtSftpDownloadOnce(
+  body: { ne_id?: string; ume_ne_id?: string; path: string },
+  opts?: Pick<WebcrtSftpTransferOpts, "signal" | "onProgress">,
 ): Promise<Blob> {
   const path = "/v1/webcrt/sftp/download";
   const res = await fetch(path, {
     method: "POST",
     headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(body),
+    signal: opts?.signal,
   });
   if (res.status === 401) {
     handleUnauthorized(path);
@@ -598,32 +653,57 @@ export async function webcrtSftpDownload(
   const total = Number(res.headers.get("content-length") || 0);
   if (!res.body) {
     const blob = await res.blob();
-    onProgress?.({ loaded: blob.size, total: total || blob.size });
+    opts?.onProgress?.({ loaded: blob.size, total: total || blob.size });
     return blob;
   }
   const reader = res.body.getReader();
   const chunks: Uint8Array[] = [];
   let loaded = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (value) {
-      chunks.push(value);
-      loaded += value.byteLength;
-      onProgress?.({ loaded, total });
+  try {
+    for (;;) {
+      if (opts?.signal?.aborted) {
+        await reader.cancel().catch(() => undefined);
+        throw new Error("aborted");
+      }
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        chunks.push(value);
+        loaded += value.byteLength;
+        opts?.onProgress?.({ loaded, total });
+      }
     }
+  } catch (err) {
+    if (opts?.signal?.aborted || isAbortError(err)) throw new Error("aborted");
+    throw err;
   }
   return new Blob(chunks as BlobPart[], { type: "application/octet-stream" });
 }
 
-export function webcrtSftpUpload(
+export async function webcrtSftpDownload(
+  body: {
+    ne_id?: string;
+    ume_ne_id?: string;
+    path: string;
+  },
+  optsOrProgress?: WebcrtSftpTransferOpts | ((p: WebcrtSftpTransferProgress) => void),
+): Promise<Blob> {
+  const opts: WebcrtSftpTransferOpts =
+    typeof optsOrProgress === "function" ? { onProgress: optsOrProgress } : optsOrProgress || {};
+  return withSftpRetries(
+    () => webcrtSftpDownloadOnce(body, opts),
+    opts,
+  );
+}
+
+function webcrtSftpUploadOnce(
   body: {
     ne_id?: string;
     ume_ne_id?: string;
     remote_path: string;
     file: File;
   },
-  onProgress?: (p: WebcrtSftpTransferProgress) => void,
+  opts?: Pick<WebcrtSftpTransferOpts, "signal" | "onProgress">,
 ): Promise<{ ok: boolean; path: string; size: number }> {
   const path = "/v1/webcrt/sftp/upload";
   const fd = new FormData();
@@ -634,18 +714,33 @@ export function webcrtSftpUpload(
 
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    const onAbort = () => {
+      try {
+        xhr.abort();
+      } catch {
+        /* ignore */
+      }
+    };
+    if (opts?.signal) {
+      if (opts.signal.aborted) {
+        reject(new Error("aborted"));
+        return;
+      }
+      opts.signal.addEventListener("abort", onAbort, { once: true });
+    }
     xhr.open("POST", path);
     const tok = getAuthToken();
     if (tok) xhr.setRequestHeader("Authorization", `Bearer ${tok}`);
     xhr.responseType = "text";
     xhr.upload.onprogress = (ev) => {
-      if (!onProgress) return;
-      onProgress({
+      if (!opts?.onProgress) return;
+      opts.onProgress({
         loaded: Number(ev.loaded || 0),
         total: ev.lengthComputable ? Number(ev.total || 0) : body.file.size || 0,
       });
     };
     xhr.onload = () => {
+      opts?.signal?.removeEventListener("abort", onAbort);
       if (xhr.status === 401) {
         handleUnauthorized(path);
         reject(new Error("401 unauthorized"));
@@ -661,10 +756,30 @@ export function webcrtSftpUpload(
         reject(new Error("invalid_upload_response"));
       }
     };
-    xhr.onerror = () => reject(new Error("network_error"));
-    xhr.onabort = () => reject(new Error("aborted"));
+    xhr.onerror = () => {
+      opts?.signal?.removeEventListener("abort", onAbort);
+      reject(new Error("network_error"));
+    };
+    xhr.onabort = () => {
+      opts?.signal?.removeEventListener("abort", onAbort);
+      reject(new Error("aborted"));
+    };
     xhr.send(fd);
   });
+}
+
+export function webcrtSftpUpload(
+  body: {
+    ne_id?: string;
+    ume_ne_id?: string;
+    remote_path: string;
+    file: File;
+  },
+  optsOrProgress?: WebcrtSftpTransferOpts | ((p: WebcrtSftpTransferProgress) => void),
+): Promise<{ ok: boolean; path: string; size: number }> {
+  const opts: WebcrtSftpTransferOpts =
+    typeof optsOrProgress === "function" ? { onProgress: optsOrProgress } : optsOrProgress || {};
+  return withSftpRetries(() => webcrtSftpUploadOnce(body, opts), opts);
 }
 
 export const webcrtWsUrl = (sessionId: string): string => {
