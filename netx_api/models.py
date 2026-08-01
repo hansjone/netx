@@ -432,6 +432,11 @@ class TopologyEdge(Base):
     target_port: Mapped[str] = mapped_column(String(128), default="")
     # manual | lldp | cdp | stale
     source: Mapped[str] = mapped_column(String(32), default="manual", index=True)
+    # Optional visual overrides; empty / 0 = use provenance defaults.
+    stroke_color: Mapped[str] = mapped_column(String(32), default="")
+    stroke_width: Mapped[int] = mapped_column(Integer, default=0)
+    # "" | solid | dashed | dotted
+    line_style: Mapped[str] = mapped_column(String(16), default="")
     discovered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

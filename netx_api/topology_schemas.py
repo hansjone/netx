@@ -43,6 +43,9 @@ class TopologyEdgeIn(BaseModel):
     source_port: str = ""
     target_port: str = ""
     source: str = "manual"
+    stroke_color: str = Field(default="", max_length=32)
+    stroke_width: int = Field(default=0, ge=0, le=12)
+    line_style: str = Field(default="", max_length=16)
 
 
 class TopologyNodeOut(BaseModel):
@@ -68,6 +71,9 @@ class TopologyEdgeOut(BaseModel):
     source_port: str = ""
     target_port: str = ""
     source: str = "manual"
+    stroke_color: str = ""
+    stroke_width: int = 0
+    line_style: str = ""
     discovered_at: datetime | None = None
 
 

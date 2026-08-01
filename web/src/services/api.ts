@@ -34,6 +34,7 @@ import type {
   PortTrafficDiscoverResponse,
   PortTrafficSamples,
   PortTrafficTarget,
+  PortTrafficTargetIn,
   PortTrafficTask,
 } from "../types";
 
@@ -568,6 +569,9 @@ export const putTopologyGraph = (
       source_port?: string;
       target_port?: string;
       source?: string;
+      stroke_color?: string;
+      stroke_width?: number;
+      line_style?: string;
     }>;
   },
 ) => apiPut<TopologyGraph>(`/v1/topology/maps/${encodeURIComponent(mapId)}/graph`, body);

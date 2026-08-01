@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ReactFlow,
   Background,
+  BackgroundVariant,
   Controls,
   ControlButton,
   MiniMap,
@@ -13,6 +14,7 @@ import {
   Position,
   MarkerType,
   ConnectionMode,
+  SelectionMode,
   type Connection,
   type Edge,
   type Node,
@@ -44,6 +46,12 @@ import type {
   TopologyNodeItem,
   UmeNeItem,
 } from "../types";
+import { alignNodes, layoutGraph, type LayoutKind } from "./topology/layoutGraph";
+import { behaviorForMode, toolModeFromKey, type ToolMode } from "./topology/toolMode";
+
+const SNAP_GRID: [number, number] = [16, 16];
+const UNDO_MAX = 40;
+const PALETTE_DND = "application/x-netx-topo-palette";
 
 function FullscreenIcon({ exit }: { exit?: boolean }) {
   if (exit) {
@@ -75,6 +83,8 @@ type NeNodeData = {
   connect_status: string;
 };
 
+type HistorySnap = { nodes: Node<NeNodeData>[]; edges: Edge[] };
+
 type PaletteSource = "managed" | "ume";
 
 type PaletteItem = {
@@ -93,16 +103,19 @@ type TopoDisplayOpts = {
   hideIp: boolean;
   hideVendor: boolean;
   hidePorts: boolean;
+  connectMode: boolean;
 };
 
 type CtxMenu =
   | { kind: "node"; id: string; x: number; y: number }
-  | { kind: "edge"; id: string; x: number; y: number };
+  | { kind: "edge"; id: string; x: number; y: number }
+  | { kind: "selection"; x: number; y: number };
 
 const TopoDisplayContext = createContext<TopoDisplayOpts>({
   hideIp: true,
   hideVendor: true,
   hidePorts: true,
+  connectMode: false,
 });
 
 function newId(): string {
@@ -138,7 +151,7 @@ function RouterIcon() {
 }
 
 function NeNode({ data, selected }: NodeProps<Node<NeNodeData>>) {
-  const { hideIp, hideVendor } = useContext(TopoDisplayContext);
+  const { hideIp, hideVendor, connectMode } = useContext(TopoDisplayContext);
   const tone = vendorTone(data.vendor);
   const name = data.label || (!hideIp ? data.ne_ip : "") || "NE";
   const bits = [
@@ -151,11 +164,24 @@ function NeNode({ data, selected }: NodeProps<Node<NeNodeData>>) {
     return arr.findIndex((y) => String(y || "").trim() === s) === i;
   });
   return (
-    <div className={`topo-node topo-node--${tone}${selected ? " is-selected" : ""}`}>
+    <div
+      className={`topo-node topo-node--${tone}${selected ? " is-selected" : ""}${
+        connectMode ? " is-connect-mode" : ""
+      }`}
+    >
       <div className="topo-node__glyph">
-        {/* Centered on the disc so edges meet the circular icon, not the caption. */}
-        <Handle type="target" position={Position.Left} className="topo-node__handle topo-node__handle--center" />
-        <Handle type="source" position={Position.Right} className="topo-node__handle topo-node__handle--center" />
+        <Handle
+          type="target"
+          position={Position.Left}
+          className="topo-node__handle topo-node__handle--center"
+          isConnectable={connectMode}
+        />
+        <Handle
+          type="source"
+          position={Position.Right}
+          className="topo-node__handle topo-node__handle--center"
+          isConnectable={connectMode}
+        />
         <RouterIcon />
       </div>
       <div className="topo-node__caption">{bits.join(" · ")}</div>
@@ -165,18 +191,119 @@ function NeNode({ data, selected }: NodeProps<Node<NeNodeData>>) {
 
 const nodeTypes = { neNode: NeNode };
 
-function edgeStyle(source: string): { stroke: string; strokeDasharray?: string; strokeWidth?: number } {
+type EdgeStyleData = {
+  source?: string;
+  source_port?: string;
+  target_port?: string;
+  stroke_color?: string;
+  stroke_width?: number;
+  line_style?: string;
+};
+
+type EdgeLineStyle = "solid" | "dashed" | "dotted";
+type EdgeSourceKind = "manual" | "discovered" | "stale";
+
+type EdgeDefaultStyle = {
+  stroke_color: string;
+  stroke_width: number;
+  line_style: EdgeLineStyle;
+};
+
+type EdgeDefaults = Record<EdgeSourceKind, EdgeDefaultStyle>;
+
+const EDGE_DEFAULTS_KEY = "netx.topology.edgeDefaults";
+
+const BUILTIN_EDGE_DEFAULTS: EdgeDefaults = {
+  manual: { stroke_color: "#64748b", stroke_width: 2, line_style: "solid" },
+  discovered: { stroke_color: "#0ea5e9", stroke_width: 2, line_style: "dashed" },
+  stale: { stroke_color: "#dc2626", stroke_width: 2, line_style: "dashed" },
+};
+
+function sourceKind(source: string): EdgeSourceKind {
   const src = (source || "manual").toLowerCase();
-  if (src === "stale") {
-    return { stroke: "#dc2626", strokeDasharray: "4 4", strokeWidth: 2 };
-  }
-  if (src === "lldp" || src === "cdp") {
-    return { stroke: "#0ea5e9", strokeDasharray: "6 4" };
-  }
-  return { stroke: "#64748b" };
+  if (src === "stale") return "stale";
+  if (src === "lldp" || src === "cdp") return "discovered";
+  return "manual";
 }
 
-function graphToFlow(nodes: TopologyNodeItem[], edges: TopologyEdgeItem[]) {
+function loadEdgeDefaults(): EdgeDefaults {
+  try {
+    const raw = localStorage.getItem(EDGE_DEFAULTS_KEY);
+    if (!raw) return { ...BUILTIN_EDGE_DEFAULTS, manual: { ...BUILTIN_EDGE_DEFAULTS.manual }, discovered: { ...BUILTIN_EDGE_DEFAULTS.discovered }, stale: { ...BUILTIN_EDGE_DEFAULTS.stale } };
+    const parsed = JSON.parse(raw) as Partial<EdgeDefaults>;
+    const pick = (kind: EdgeSourceKind): EdgeDefaultStyle => {
+      const base = BUILTIN_EDGE_DEFAULTS[kind];
+      const cur = parsed?.[kind];
+      const color = String(cur?.stroke_color || base.stroke_color).trim() || base.stroke_color;
+      const width = Math.max(1, Math.min(12, Number(cur?.stroke_width || base.stroke_width) || base.stroke_width));
+      const line = String(cur?.line_style || base.line_style).toLowerCase();
+      const line_style: EdgeLineStyle =
+        line === "dashed" || line === "dotted" || line === "solid" ? line : base.line_style;
+      return { stroke_color: color, stroke_width: width, line_style };
+    };
+    return { manual: pick("manual"), discovered: pick("discovered"), stale: pick("stale") };
+  } catch {
+    return {
+      manual: { ...BUILTIN_EDGE_DEFAULTS.manual },
+      discovered: { ...BUILTIN_EDGE_DEFAULTS.discovered },
+      stale: { ...BUILTIN_EDGE_DEFAULTS.stale },
+    };
+  }
+}
+
+function persistEdgeDefaults(next: EdgeDefaults) {
+  try {
+    localStorage.setItem(EDGE_DEFAULTS_KEY, JSON.stringify(next));
+  } catch {
+    /* ignore quota */
+  }
+}
+
+function dashForLineStyle(lineStyle: string): string | undefined {
+  const s = (lineStyle || "").trim().toLowerCase();
+  if (s === "dashed") return "6 4";
+  if (s === "dotted") return "2 2";
+  return undefined;
+}
+
+function edgeStyleBySource(
+  source: string,
+  defaults: EdgeDefaults,
+): { stroke: string; strokeDasharray?: string; strokeWidth: number } {
+  const d = defaults[sourceKind(source)];
+  return {
+    stroke: d.stroke_color,
+    strokeWidth: d.stroke_width,
+    strokeDasharray: dashForLineStyle(d.line_style),
+  };
+}
+
+function resolveEdgeStyle(
+  data: EdgeStyleData | undefined,
+  defaults: EdgeDefaults,
+): { stroke: string; strokeDasharray?: string; strokeWidth: number } {
+  const base = edgeStyleBySource(data?.source || "manual", defaults);
+  const color = String(data?.stroke_color || "").trim();
+  const width = Number(data?.stroke_width || 0);
+  const line = String(data?.line_style || "").trim().toLowerCase();
+  return {
+    stroke: color || base.stroke,
+    strokeWidth: width > 0 ? width : base.strokeWidth,
+    strokeDasharray: line ? dashForLineStyle(line) : base.strokeDasharray,
+  };
+}
+
+function edgeMarker(stroke: string) {
+  return { type: MarkerType.ArrowClosed, width: 16, height: 16, color: stroke };
+}
+
+function withEdgeVisual(edge: Edge, defaults: EdgeDefaults): Edge {
+  const data = (edge.data || {}) as EdgeStyleData;
+  const style = resolveEdgeStyle(data, defaults);
+  return { ...edge, style, markerEnd: edgeMarker(style.stroke) };
+}
+
+function graphToFlow(nodes: TopologyNodeItem[], edges: TopologyEdgeItem[], defaults: EdgeDefaults) {
   const rfNodes: Node<NeNodeData>[] = nodes.map((n) => ({
     id: n.id,
     type: "neNode",
@@ -193,21 +320,26 @@ function graphToFlow(nodes: TopologyNodeItem[], edges: TopologyEdgeItem[]) {
   const rfEdges: Edge[] = edges.map((e) => {
     const src = e.source || "manual";
     const label = [e.source_port, e.target_port].filter(Boolean).join(" ↔ ");
-    return {
-      id: e.id,
-      source: e.source_node_id,
-      target: e.target_node_id,
-      type: "straight",
-      label: label || undefined,
-      animated: false,
-      style: edgeStyle(src),
-      markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
-      data: {
-        source: src,
-        source_port: e.source_port || "",
-        target_port: e.target_port || "",
-      },
+    const data: EdgeStyleData = {
+      source: src,
+      source_port: e.source_port || "",
+      target_port: e.target_port || "",
+      stroke_color: e.stroke_color || "",
+      stroke_width: Number(e.stroke_width || 0),
+      line_style: e.line_style || "",
     };
+    return withEdgeVisual(
+      {
+        id: e.id,
+        source: e.source_node_id,
+        target: e.target_node_id,
+        type: "straight",
+        label: label || undefined,
+        animated: false,
+        data,
+      },
+      defaults,
+    );
   });
   return { rfNodes, rfEdges };
 }
@@ -222,14 +354,20 @@ function flowToGraphPayload(nodes: Node<NeNodeData>[], edges: Edge[]) {
       x: n.position.x,
       y: n.position.y,
     })),
-    edges: edges.map((e) => ({
-      id: e.id,
-      source_node_id: e.source,
-      target_node_id: e.target,
-      source_port: String((e.data as { source_port?: string } | undefined)?.source_port || ""),
-      target_port: String((e.data as { target_port?: string } | undefined)?.target_port || ""),
-      source: String((e.data as { source?: string } | undefined)?.source || "manual"),
-    })),
+    edges: edges.map((e) => {
+      const data = (e.data || {}) as EdgeStyleData;
+      return {
+        id: e.id,
+        source_node_id: e.source,
+        target_node_id: e.target,
+        source_port: String(data.source_port || ""),
+        target_port: String(data.target_port || ""),
+        source: String(data.source || "manual"),
+        stroke_color: String(data.stroke_color || ""),
+        stroke_width: Number(data.stroke_width || 0),
+        line_style: String(data.line_style || ""),
+      };
+    }),
   };
 }
 
@@ -239,13 +377,16 @@ export function TopologyPage() {
   const queryClient = useQueryClient();
   const [mapId, setMapId] = useState<string>("");
   const [keyword, setKeyword] = useState("");
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [ctxMenu, setCtxMenu] = useState<CtxMenu | null>(null);
   const [hideIp, setHideIp] = useState(true);
   const [hideVendor, setHideVendor] = useState(true);
   const [hidePorts, setHidePorts] = useState(true);
   const [edgeFlow, setEdgeFlow] = useState(false);
+  const [edgeDefaults, setEdgeDefaults] = useState<EdgeDefaults>(() => loadEdgeDefaults());
+  const [toolMode, setToolMode] = useState<ToolMode>("select");
+  const [snapToGrid, setSnapToGrid] = useState(true);
+  const [autoLayoutAfterDiscover, setAutoLayoutAfterDiscover] = useState(true);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [hideAddedNes, setHideAddedNes] = useState(true);
   const [paletteSource, setPaletteSource] = useState<PaletteSource>("managed");
@@ -269,9 +410,14 @@ export function TopologyPage() {
   const rfRef = useRef<ReactFlowInstance<Node<NeNodeData>, Edge> | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const dirtyRef = useRef(false);
+  const historyRef = useRef<HistorySnap[]>([]);
+  const redoRef = useRef<HistorySnap[]>([]);
+  const historyLockRef = useRef(false);
+  const connectClickRef = useRef<string | null>(null);
+  const toolBehavior = useMemo(() => behaviorForMode(toolMode), [toolMode]);
   const displayOpts = useMemo(
-    () => ({ hideIp, hideVendor, hidePorts }),
-    [hideIp, hideVendor, hidePorts],
+    () => ({ hideIp, hideVendor, hidePorts, connectMode: toolMode === "connect" }),
+    [hideIp, hideVendor, hidePorts, toolMode],
   );
   const displayEdges = useMemo(
     () =>
@@ -326,13 +472,125 @@ export function TopologyPage() {
 
   useEffect(() => {
     if (!graphQuery.data) return;
-    const { rfNodes, rfEdges } = graphToFlow(graphQuery.data.nodes, graphQuery.data.edges);
+    const { rfNodes, rfEdges } = graphToFlow(graphQuery.data.nodes, graphQuery.data.edges, edgeDefaults);
+    historyLockRef.current = true;
     setNodes(rfNodes);
     setEdges(rfEdges);
+    historyRef.current = [];
+    redoRef.current = [];
     dirtyRef.current = false;
+    historyLockRef.current = false;
     window.setTimeout(() => rfRef.current?.fitView({ padding: 0.2 }), 50);
+    // edgeDefaults applied separately so changing defaults won't reload the whole graph.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only reload when graph payload changes
   }, [graphQuery.data, setNodes, setEdges]);
 
+  useEffect(() => {
+    setEdges((eds) => eds.map((e) => withEdgeVisual(e, edgeDefaults)));
+  }, [edgeDefaults, setEdges]);
+
+  const updateEdgeDefault = useCallback((kind: EdgeSourceKind, patch: Partial<EdgeDefaultStyle>) => {
+    setEdgeDefaults((prev) => {
+      const next: EdgeDefaults = {
+        ...prev,
+        [kind]: { ...prev[kind], ...patch },
+      };
+      persistEdgeDefaults(next);
+      return next;
+    });
+  }, []);
+
+  const resetEdgeDefaults = useCallback(() => {
+    const next: EdgeDefaults = {
+      manual: { ...BUILTIN_EDGE_DEFAULTS.manual },
+      discovered: { ...BUILTIN_EDGE_DEFAULTS.discovered },
+      stale: { ...BUILTIN_EDGE_DEFAULTS.stale },
+    };
+    persistEdgeDefaults(next);
+    setEdgeDefaults(next);
+  }, []);
+
+  const pushHistory = useCallback(() => {
+    if (historyLockRef.current) return;
+    historyRef.current = [
+      ...historyRef.current.slice(-(UNDO_MAX - 1)),
+      {
+        nodes: nodes.map((n) => ({ ...n, position: { ...n.position }, data: { ...n.data } })),
+        edges: edges.map((e) => ({ ...e })),
+      },
+    ];
+    redoRef.current = [];
+  }, [nodes, edges]);
+
+  const undo = useCallback(() => {
+    const prev = historyRef.current.pop();
+    if (!prev) return;
+    redoRef.current.push({
+      nodes: nodes.map((n) => ({ ...n, position: { ...n.position }, data: { ...n.data } })),
+      edges: edges.map((e) => ({ ...e })),
+    });
+    historyLockRef.current = true;
+    setNodes(prev.nodes);
+    setEdges(prev.edges);
+    dirtyRef.current = true;
+    historyLockRef.current = false;
+  }, [nodes, edges, setNodes, setEdges]);
+
+  const redo = useCallback(() => {
+    const next = redoRef.current.pop();
+    if (!next) return;
+    historyRef.current.push({
+      nodes: nodes.map((n) => ({ ...n, position: { ...n.position }, data: { ...n.data } })),
+      edges: edges.map((e) => ({ ...e })),
+    });
+    historyLockRef.current = true;
+    setNodes(next.nodes);
+    setEdges(next.edges);
+    dirtyRef.current = true;
+    historyLockRef.current = false;
+  }, [nodes, edges, setNodes, setEdges]);
+
+  const applyLayout = useCallback(
+    async (kind: LayoutKind, opts?: { onlySelected?: boolean; persist?: boolean }) => {
+      const onlyIds =
+        opts?.onlySelected
+          ? new Set(nodes.filter((n) => n.selected).map((n) => n.id))
+          : undefined;
+      if (onlyIds && onlyIds.size === 0) {
+        showError(t("topology.layoutNeedSelection"));
+        return;
+      }
+      pushHistory();
+      const next = layoutGraph(nodes, edges, kind, { onlyIds });
+      setNodes(next);
+      dirtyRef.current = true;
+      window.setTimeout(() => rfRef.current?.fitView({ padding: 0.2 }), 40);
+      if (opts?.persist && mapId) {
+        try {
+          const graph = await putTopologyGraph(mapId, flowToGraphPayload(next, edges));
+          dirtyRef.current = false;
+          queryClient.setQueryData(queryKeys.topologyGraph(mapId), graph);
+        } catch (err) {
+          showError(String(err));
+        }
+      }
+    },
+    [nodes, edges, setNodes, pushHistory, mapId, queryClient, showError, t],
+  );
+
+  const applyAlign = useCallback(
+    (kind: Parameters<typeof alignNodes>[2]) => {
+      const ids = nodes.filter((n) => n.selected).map((n) => n.id);
+      if (ids.length < 2) {
+        showError(t("topology.alignNeedSelection"));
+        return;
+      }
+      pushHistory();
+      setNodes(alignNodes(nodes, ids, kind));
+      dirtyRef.current = true;
+    },
+    [nodes, setNodes, pushHistory, showError, t],
+  );
   const renameMapMut = useMutation({
     mutationFn: ({ id, name }: { id: string; name: string }) =>
       updateTopologyMap(id, { name }),
@@ -459,10 +717,24 @@ export function TopologyPage() {
         );
         if (out.graph) {
           queryClient.setQueryData(queryKeys.topologyGraph(mapId), out.graph);
-          const { rfNodes, rfEdges } = graphToFlow(out.graph.nodes, out.graph.edges);
+          let { rfNodes, rfEdges } = graphToFlow(out.graph.nodes, out.graph.edges, edgeDefaults);
+          if (autoLayoutAfterDiscover && rfNodes.length > 1) {
+            rfNodes = layoutGraph(rfNodes, rfEdges, "hierarchical-tb");
+            try {
+              const graph = await putTopologyGraph(mapId, flowToGraphPayload(rfNodes, rfEdges));
+              queryClient.setQueryData(queryKeys.topologyGraph(mapId), graph);
+              dirtyRef.current = false;
+            } catch {
+              dirtyRef.current = true;
+            }
+          } else {
+            dirtyRef.current = false;
+          }
+          historyLockRef.current = true;
           setNodes(rfNodes);
           setEdges(rfEdges);
-          dirtyRef.current = false;
+          historyLockRef.current = false;
+          window.setTimeout(() => rfRef.current?.fitView({ padding: 0.2 }), 50);
         }
         setDiscoverReport(out);
         await queryClient.invalidateQueries({ queryKey: queryKeys.topologyMaps });
@@ -481,7 +753,7 @@ export function TopologyPage() {
         setDiscovering(false);
       }
     },
-    [mapId, discovering, nodes, edges, queryClient, setNodes, setEdges, showOk, showError, t],
+    [mapId, discovering, nodes, edges, queryClient, setNodes, setEdges, showOk, showError, t, autoLayoutAfterDiscover, edgeDefaults],
   );
 
   const discoverResults = discoverReport?.results?.length
@@ -505,79 +777,124 @@ export function TopologyPage() {
 
   const onConnect = useCallback(
     (connection: Connection) => {
+      pushHistory();
       dirtyRef.current = true;
+      connectClickRef.current = null;
+      const data: EdgeStyleData = {
+        source: "manual",
+        source_port: "",
+        target_port: "",
+        stroke_color: "",
+        stroke_width: 0,
+        line_style: "",
+      };
       setEdges((eds) =>
         addEdge(
-          {
-            ...connection,
-            id: newId(),
-            type: "straight",
-            markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
-            style: { stroke: "#64748b" },
-            data: { source: "manual", source_port: "", target_port: "" },
-          },
+          withEdgeVisual(
+            {
+              ...connection,
+              id: newId(),
+              type: "straight",
+              data,
+            },
+            edgeDefaults,
+          ),
           eds,
         ),
       );
     },
-    [setEdges],
+    [setEdges, pushHistory, edgeDefaults],
+  );
+
+  const addNodeAt = useCallback(
+    (item: PaletteItem, position: { x: number; y: number }) => {
+      if (!mapId) {
+        showError(t("topology.selectMap"));
+        return;
+      }
+      if (item.source === "managed") {
+        if (nodes.some((n) => n.data.managed_ne_id === item.managed_ne_id)) return;
+        const ne = (neQuery.data?.items || []).find((x) => x.id === item.managed_ne_id);
+        if (!ne) return;
+        pushHistory();
+        dirtyRef.current = true;
+        setNodes((prev) => [
+          ...prev,
+          {
+            id: newId(),
+            type: "neNode",
+            position,
+            data: {
+              label: ne.name || ne.ip_address,
+              managed_ne_id: ne.id,
+              ume_ne_id: "",
+              ne_ip: ne.ip_address,
+              vendor: ne.vendor,
+              connect_status: ne.connect_status,
+            },
+          },
+        ]);
+        return;
+      }
+      if (nodes.some((n) => n.data.ume_ne_id === item.ume_ne_id)) return;
+      const ne = (umeQuery.data?.items || []).find((x) => x.ne_id === item.ume_ne_id);
+      if (!ne) return;
+      const name = (ne.host_name || ne.ne_name || ne.user_label || ne.ip_address || ne.ne_id).trim();
+      pushHistory();
+      dirtyRef.current = true;
+      setNodes((prev) => [
+        ...prev,
+        {
+          id: newId(),
+          type: "neNode",
+          position,
+          data: {
+            label: name,
+            managed_ne_id: "",
+            ume_ne_id: ne.ne_id,
+            ne_ip: ne.ip_address || "",
+            vendor: "ZTE",
+            connect_status: ne.connection_status || "",
+          },
+        },
+      ]);
+    },
+    [mapId, nodes, neQuery.data, umeQuery.data, setNodes, pushHistory, showError, t],
   );
 
   const addManagedNeToCanvas = (ne: ManagedNeItem) => {
-    if (!mapId) {
-      showError(t("topology.selectMap"));
-      return;
-    }
-    if (nodes.some((n) => n.data.managed_ne_id === ne.id)) {
-      return;
-    }
-    const offset = nodes.length * 24;
-    dirtyRef.current = true;
-    setNodes((prev) => [
-      ...prev,
+    addNodeAt(
       {
-        id: newId(),
-        type: "neNode",
-        position: { x: 80 + offset, y: 80 + offset },
-        data: {
-          label: ne.name || ne.ip_address,
-          managed_ne_id: ne.id,
-          ume_ne_id: "",
-          ne_ip: ne.ip_address,
-          vendor: ne.vendor,
-          connect_status: ne.connect_status,
-        },
+        key: `managed:${ne.id}`,
+        source: "managed",
+        managed_ne_id: ne.id,
+        ume_ne_id: "",
+        name: ne.name || ne.ip_address,
+        ip: ne.ip_address,
+        vendor: ne.vendor,
+        meta: "",
+        connect_status: ne.connect_status,
       },
-    ]);
+      { x: 80 + nodes.length * 24, y: 80 + nodes.length * 24 },
+    );
   };
 
   const addUmeNeToCanvas = (ne: UmeNeItem) => {
-    if (!mapId) {
-      showError(t("topology.selectMap"));
-      return;
-    }
-    if (nodes.some((n) => n.data.ume_ne_id === ne.ne_id)) {
-      return;
-    }
-    const offset = nodes.length * 24;
     const name = (ne.host_name || ne.ne_name || ne.user_label || ne.ip_address || ne.ne_id).trim();
-    dirtyRef.current = true;
-    setNodes((prev) => [
-      ...prev,
+    addNodeAt(
       {
-        id: newId(),
-        type: "neNode",
-        position: { x: 80 + offset, y: 80 + offset },
-        data: {
-          label: name,
-          managed_ne_id: "",
-          ume_ne_id: ne.ne_id,
-          ne_ip: ne.ip_address || "",
-          vendor: "ZTE",
-          connect_status: ne.connection_status || "",
-        },
+        key: `ume:${ne.ne_id}`,
+        source: "ume",
+        managed_ne_id: "",
+        ume_ne_id: ne.ne_id,
+        name,
+        ip: ne.ip_address || "",
+        vendor: "ZTE",
+        meta: "",
+        connect_status: ne.connection_status || "",
       },
-    ]);
+      { x: 80 + nodes.length * 24, y: 80 + nodes.length * 24 },
+    );
   };
 
   const addPaletteItem = (item: PaletteItem) => {
@@ -590,10 +907,65 @@ export function TopologyPage() {
     if (ne) addUmeNeToCanvas(ne);
   };
 
-  const selectedNode = useMemo(
-    () => nodes.find((n) => n.id === selectedNodeId) || null,
-    [nodes, selectedNodeId],
+  const onPaletteDragStart = (e: React.DragEvent, item: PaletteItem) => {
+    e.dataTransfer.setData(PALETTE_DND, JSON.stringify(item));
+    e.dataTransfer.effectAllowed = "copy";
+  };
+
+  const onCanvasDragOver = (e: React.DragEvent) => {
+    if (!e.dataTransfer.types.includes(PALETTE_DND)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+  };
+
+  const onCanvasDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    const raw = e.dataTransfer.getData(PALETTE_DND);
+    if (!raw || !rfRef.current) return;
+    try {
+      const item = JSON.parse(raw) as PaletteItem;
+      const pos = rfRef.current.screenToFlowPosition({ x: e.clientX, y: e.clientY });
+      addNodeAt(item, pos);
+    } catch {
+      /* ignore */
+    }
+  };
+  const selectedNodes = useMemo(() => nodes.filter((n) => n.selected), [nodes]);
+  const selectedNode = selectedNodes[0] || null;
+  const selectedNodeIds = useMemo(() => selectedNodes.map((n) => n.id), [selectedNodes]);
+  const selectedEdge = useMemo(
+    () => (selectedEdgeId ? edges.find((e) => e.id === selectedEdgeId) || null : null),
+    [edges, selectedEdgeId],
   );
+  const selectedEdgeData = (selectedEdge?.data || {}) as EdgeStyleData;
+  const selectedEdgeResolved = selectedEdge ? resolveEdgeStyle(selectedEdgeData, edgeDefaults) : null;
+
+  const patchSelectedEdgeStyle = useCallback(
+    (
+      patch: Partial<Pick<EdgeStyleData, "stroke_color" | "stroke_width" | "line_style">>,
+      opts?: { skipHistory?: boolean },
+    ) => {
+      if (!selectedEdgeId) return;
+      if (!opts?.skipHistory) pushHistory();
+      dirtyRef.current = true;
+      setEdges((eds) =>
+        eds.map((e) => {
+          if (e.id !== selectedEdgeId) return e;
+          const prev = (e.data || {}) as EdgeStyleData;
+          const data: EdgeStyleData = {
+            ...prev,
+            stroke_color: patch.stroke_color !== undefined ? patch.stroke_color : prev.stroke_color || "",
+            stroke_width:
+              patch.stroke_width !== undefined ? Number(patch.stroke_width || 0) : Number(prev.stroke_width || 0),
+            line_style: patch.line_style !== undefined ? patch.line_style : prev.line_style || "",
+          };
+          return withEdgeVisual({ ...e, data }, edgeDefaults);
+        }),
+      );
+    },
+    [selectedEdgeId, setEdges, pushHistory, edgeDefaults],
+  );
+
   const staleEdgeCount = useMemo(
     () =>
       edges.filter((e) => String((e.data as { source?: string } | undefined)?.source || "") === "stale")
@@ -630,29 +1002,94 @@ export function TopologyPage() {
     }
   }, [showError]);
 
+  const clearSelection = useCallback(() => {
+    setSelectedEdgeId(null);
+    setNodes((ns) => ns.map((n) => ({ ...n, selected: false })));
+    setEdges((es) => es.map((e) => ({ ...e, selected: false })));
+    connectClickRef.current = null;
+  }, [setNodes, setEdges]);
+
+  const selectAllNodes = useCallback(() => {
+    setSelectedEdgeId(null);
+    setNodes((ns) => ns.map((n) => ({ ...n, selected: true })));
+    setEdges((es) => es.map((e) => ({ ...e, selected: false })));
+  }, [setNodes, setEdges]);
+
+  const removeSelected = useCallback(() => {
+    const nodeIds = new Set(nodes.filter((n) => n.selected).map((n) => n.id));
+    const edgeIds = new Set(edges.filter((e) => e.selected).map((e) => e.id));
+    if (nodeIds.size === 0 && edgeIds.size === 0) return;
+    pushHistory();
+    dirtyRef.current = true;
+    setNodes((ns) => ns.filter((n) => !nodeIds.has(n.id)));
+    setEdges((es) =>
+      es.filter((e) => !edgeIds.has(e.id) && !nodeIds.has(e.source) && !nodeIds.has(e.target)),
+    );
+    setSelectedEdgeId(null);
+    closeCtxMenu();
+  }, [nodes, edges, setNodes, setEdges, pushHistory, closeCtxMenu]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase();
+      if (tag === "input" || tag === "textarea" || tag === "select" || (e.target as HTMLElement)?.isContentEditable) {
+        return;
+      }
+      if (e.key === "Escape") {
+        closeCtxMenu();
+        clearSelection();
+        return;
+      }
+      const mode = toolModeFromKey(e.key);
+      if (mode && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        setToolMode(mode);
+        connectClickRef.current = null;
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
+        e.preventDefault();
+        undo();
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === "y" || (e.key.toLowerCase() === "z" && e.shiftKey))) {
+        e.preventDefault();
+        redo();
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
+        e.preventDefault();
+        selectAllNodes();
+        return;
+      }
+      if (e.key === "Delete" || e.key === "Backspace") {
+        if (nodes.some((n) => n.selected) || edges.some((ed) => ed.selected)) {
+          e.preventDefault();
+          removeSelected();
+        }
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [closeCtxMenu, clearSelection, undo, redo, selectAllNodes, removeSelected, nodes, edges]);
+
   useEffect(() => {
     if (!ctxMenu) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") closeCtxMenu();
-    };
     const onScroll = () => closeCtxMenu();
-    window.addEventListener("keydown", onKey);
     window.addEventListener("scroll", onScroll, true);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      window.removeEventListener("scroll", onScroll, true);
-    };
+    return () => window.removeEventListener("scroll", onScroll, true);
   }, [ctxMenu, closeCtxMenu]);
 
   const removeNodeById = (nodeId: string) => {
+    pushHistory();
     dirtyRef.current = true;
     setNodes((ns) => ns.filter((n) => n.id !== nodeId));
     setEdges((es) => es.filter((e) => e.source !== nodeId && e.target !== nodeId));
-    setSelectedNodeId((cur) => (cur === nodeId ? null : cur));
     closeCtxMenu();
   };
 
   const removeEdgeById = (edgeId: string) => {
+    pushHistory();
     dirtyRef.current = true;
     setEdges((es) => es.filter((e) => e.id !== edgeId));
     setSelectedEdgeId((cur) => (cur === edgeId ? null : cur));
@@ -662,6 +1099,7 @@ export function TopologyPage() {
   const removeStaleEdges = () => {
     const n = staleEdgeCount;
     if (n <= 0) return;
+    pushHistory();
     dirtyRef.current = true;
     setEdges((es) =>
       es.filter((e) => String((e.data as { source?: string } | undefined)?.source || "") !== "stale"),
@@ -722,28 +1160,34 @@ export function TopologyPage() {
     void runDiscover([id]);
   };
 
-  const placeCtxMenu = (clientX: number, clientY: number): { x: number; y: number } => {
+  const placeCtxMenu = (clientX: number, clientY: number, size?: { w?: number; h?: number }): { x: number; y: number } => {
     const pad = 8;
-    const w = 180;
-    const h = 200;
+    const w = size?.w ?? 200;
+    const h = size?.h ?? 240;
     const x = Math.min(clientX, window.innerWidth - w - pad);
     const y = Math.min(clientY, window.innerHeight - h - pad);
     return { x: Math.max(pad, x), y: Math.max(pad, y) };
   };
 
-  const selectNodeOnly = useCallback(
-    (nodeId: string) => {
+  const focusNode = useCallback(
+    (nodeId: string, additive: boolean) => {
       setSelectedEdgeId(null);
-      setSelectedNodeId(nodeId);
-      setNodes((ns) => ns.map((n) => ({ ...n, selected: n.id === nodeId })));
+      setNodes((ns) =>
+        ns.map((n) => {
+          if (additive) {
+            if (n.id === nodeId) return { ...n, selected: !n.selected };
+            return n;
+          }
+          return { ...n, selected: n.id === nodeId };
+        }),
+      );
       setEdges((es) => es.map((e) => ({ ...e, selected: false })));
     },
     [setNodes, setEdges],
   );
 
-  const selectEdgeOnly = useCallback(
+  const focusEdge = useCallback(
     (edgeId: string) => {
-      setSelectedNodeId(null);
       setSelectedEdgeId(edgeId);
       setNodes((ns) => ns.map((n) => ({ ...n, selected: false })));
       setEdges((es) => es.map((e) => ({ ...e, selected: e.id === edgeId })));
@@ -751,12 +1195,26 @@ export function TopologyPage() {
     [setNodes, setEdges],
   );
 
-  const clearSelection = useCallback(() => {
-    setSelectedNodeId(null);
-    setSelectedEdgeId(null);
-    setNodes((ns) => ns.map((n) => ({ ...n, selected: false })));
-    setEdges((es) => es.map((e) => ({ ...e, selected: false })));
-  }, [setNodes, setEdges]);
+  const onNodeClick = useCallback(
+    (e: React.MouseEvent, node: Node<NeNodeData>) => {
+      setCtxMenu(null);
+      if (toolMode === "connect") {
+        const prev = connectClickRef.current;
+        if (!prev) {
+          connectClickRef.current = node.id;
+          focusNode(node.id, false);
+          return;
+        }
+        if (prev !== node.id) {
+          onConnect({ source: prev, target: node.id, sourceHandle: null, targetHandle: null });
+        }
+        connectClickRef.current = null;
+        return;
+      }
+      focusNode(node.id, e.shiftKey || e.metaKey || e.ctrlKey);
+    },
+    [toolMode, focusNode, onConnect],
+  );
 
   const maps = mapsQuery.data?.items || [];
   const onCanvasManagedIds = useMemo(
@@ -929,7 +1387,7 @@ export function TopologyPage() {
                   {t("topology.paletteUme")}
                 </button>
               </div>
-              <p className="panel__hint">{t("topology.paletteHint")}</p>
+                  <p className="panel__hint">{t("topology.paletteHint")}</p>
               <input
                 className="input"
                 value={keyword}
@@ -962,6 +1420,8 @@ export function TopologyPage() {
                             type="button"
                             className="topo-palette__item"
                             disabled={!mapId || onCanvas}
+                            draggable={Boolean(mapId) && !onCanvas}
+                            onDragStart={(e) => onPaletteDragStart(e, item)}
                             onClick={() => addPaletteItem(item)}
                             title={`${item.name}\n${item.ip}`}
                           >
@@ -984,80 +1444,238 @@ export function TopologyPage() {
 
       <main className="topo-main">
         <div className="topo-toolbar">
-          <div className="topo-toolbar__left">
+          <div className="topo-toolbar__row">
             <div className="topo-toolbar__title">
               <strong>{maps.find((m) => m.id === mapId)?.name || t("topology.selectMap")}</strong>
+              {selectedNodes.length > 0 || selectedEdgeId ? (
+                <span className="topo-toolbar__meta">
+                  {selectedNodes.length > 0
+                    ? t("topology.selectedCount").replace("{{count}}", String(selectedNodes.length))
+                    : t("topology.selectedEdge")}
+                </span>
+              ) : null}
               <HelpHint text={t("topology.canvasHint")} ariaLabel={t("common.help")} />
             </div>
-          </div>
-          <div className="topo-toolbar__actions">
-            <div className="topo-display-toggles" role="group" aria-label={t("topology.display")}>
-              <label className="topo-display-toggles__item">
-                <input
-                  type="checkbox"
-                  checked={hideIp}
-                  onChange={(e) => setHideIp(e.target.checked)}
-                />
-                {t("topology.hideIp")}
-              </label>
-              <label className="topo-display-toggles__item">
-                <input
-                  type="checkbox"
-                  checked={hideVendor}
-                  onChange={(e) => setHideVendor(e.target.checked)}
-                />
-                {t("topology.hideVendor")}
-              </label>
-              <label className="topo-display-toggles__item">
-                <input
-                  type="checkbox"
-                  checked={hidePorts}
-                  onChange={(e) => setHidePorts(e.target.checked)}
-                />
-                {t("topology.hidePorts")}
-              </label>
-              <label className="topo-display-toggles__item">
-                <input
-                  type="checkbox"
-                  checked={edgeFlow}
-                  onChange={(e) => setEdgeFlow(e.target.checked)}
-                />
-                {t("topology.edgeFlow")}
-              </label>
+            <div className="topo-toolbar__actions">
+              <button type="button" className="btn btn--sm btn--ghost" disabled={!mapId} onClick={undo} title="Ctrl+Z">
+                {t("topology.undo")}
+              </button>
+              <button type="button" className="btn btn--sm btn--ghost" disabled={!mapId} onClick={redo} title="Ctrl+Y">
+                {t("topology.redo")}
+              </button>
+              <button
+                type="button"
+                className="btn btn--sm"
+                disabled={!mapId || saveMut.isPending}
+                onClick={() => saveMut.mutate()}
+              >
+                {saveMut.isPending ? t("topology.saving") : t("topology.save")}
+              </button>
+              <button
+                type="button"
+                className="btn btn--sm"
+                disabled={!mapId || discovering}
+                onClick={() => void runDiscover()}
+              >
+                {discovering ? t("topology.discovering") : t("topology.discover")}
+              </button>
+              <button
+                type="button"
+                className="btn btn--sm btn--ghost"
+                disabled={!mapId || discovering || staleEdgeCount <= 0}
+                onClick={removeStaleEdges}
+                title={t("topology.removeStaleHint")}
+              >
+                {t("topology.removeStale").replace("{{count}}", String(staleEdgeCount))}
+              </button>
+              <button
+                type="button"
+                className="btn btn--sm btn--ghost"
+                disabled={!mapId}
+                onClick={() => rfRef.current?.fitView({ padding: 0.2 })}
+              >
+                {t("topology.fit")}
+              </button>
             </div>
-            <button
-              type="button"
-              className="btn btn--sm"
-              disabled={!mapId || saveMut.isPending}
-              onClick={() => saveMut.mutate()}
-            >
-              {saveMut.isPending ? t("topology.saving") : t("topology.save")}
-            </button>
-            <button
-              type="button"
-              className="btn btn--sm"
-              disabled={!mapId || discovering}
-              onClick={() => void runDiscover()}
-            >
-              {discovering ? t("topology.discovering") : t("topology.discover")}
-            </button>
-            <button
-              type="button"
-              className="btn btn--sm btn--ghost"
-              disabled={!mapId || discovering || staleEdgeCount <= 0}
-              onClick={removeStaleEdges}
-              title={t("topology.removeStaleHint")}
-            >
-              {t("topology.removeStale").replace("{{count}}", String(staleEdgeCount))}
-            </button>
-            <button
-              type="button"
-              className="btn btn--sm btn--ghost"
-              disabled={!mapId}
-              onClick={() => rfRef.current?.fitView({ padding: 0.2 })}
-            >
-              {t("topology.fit")}
-            </button>
+          </div>
+          <div className="topo-toolbar__row topo-toolbar__row--tools">
+            <div className="topo-tools" role="toolbar" aria-label={t("topology.toolModes")}>
+              {(
+                [
+                  ["select", t("topology.toolSelect"), "V"],
+                  ["pan", t("topology.toolPan"), "H"],
+                  ["drag", t("topology.toolDrag"), "A"],
+                  ["connect", t("topology.toolConnect"), "C"],
+                ] as const
+              ).map(([mode, label, key]) => (
+                <button
+                  key={mode}
+                  type="button"
+                  className={`topo-tools__btn${toolMode === mode ? " is-active" : ""}`}
+                  title={`${label} (${key})`}
+                  aria-pressed={toolMode === mode}
+                  onClick={() => {
+                    setToolMode(mode);
+                    connectClickRef.current = null;
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div className="topo-toolbar__group" aria-label={t("topology.layout")}>
+              <select
+                className="topo-toolbar__select"
+                aria-label={t("topology.layout")}
+                disabled={!mapId || nodes.length === 0}
+                defaultValue=""
+                onChange={(e) => {
+                  const v = e.target.value as LayoutKind | "selected-tb" | "";
+                  e.target.value = "";
+                  if (!v) return;
+                  if (v === "selected-tb") void applyLayout("hierarchical-tb", { onlySelected: true });
+                  else void applyLayout(v);
+                }}
+              >
+                <option value="" disabled>
+                  {t("topology.layout")}
+                </option>
+                <option value="hierarchical-tb">{t("topology.layoutHierarchicalTb")}</option>
+                <option value="hierarchical-lr">{t("topology.layoutHierarchicalLr")}</option>
+                <option value="force">{t("topology.layoutForce")}</option>
+                <option value="grid">{t("topology.layoutGrid")}</option>
+                <option value="radial">{t("topology.layoutRadial")}</option>
+                <option value="selected-tb">{t("topology.layoutSelected")}</option>
+              </select>
+              <select
+                className="topo-toolbar__select"
+                aria-label={t("topology.align")}
+                disabled={selectedNodes.length < 2}
+                defaultValue=""
+                onChange={(e) => {
+                  const v = e.target.value as Parameters<typeof alignNodes>[2] | "";
+                  e.target.value = "";
+                  if (v) applyAlign(v);
+                }}
+              >
+                <option value="" disabled>
+                  {t("topology.align")}
+                </option>
+                <option value="left">{t("topology.alignLeft")}</option>
+                <option value="right">{t("topology.alignRight")}</option>
+                <option value="top">{t("topology.alignTop")}</option>
+                <option value="bottom">{t("topology.alignBottom")}</option>
+                <option value="h-center">{t("topology.alignHCenter")}</option>
+                <option value="v-center">{t("topology.alignVCenter")}</option>
+                <option value="h-distribute">{t("topology.alignHDistribute")}</option>
+                <option value="v-distribute">{t("topology.alignVDistribute")}</option>
+              </select>
+            </div>
+            <details className="topo-toolbar__display">
+              <summary>{t("topology.display")}</summary>
+              <div className="topo-display-toggles" role="group" aria-label={t("topology.display")}>
+                <label className="topo-display-toggles__item">
+                  <input type="checkbox" checked={hideIp} onChange={(e) => setHideIp(e.target.checked)} />
+                  {t("topology.hideIp")}
+                </label>
+                <label className="topo-display-toggles__item">
+                  <input
+                    type="checkbox"
+                    checked={hideVendor}
+                    onChange={(e) => setHideVendor(e.target.checked)}
+                  />
+                  {t("topology.hideVendor")}
+                </label>
+                <label className="topo-display-toggles__item">
+                  <input
+                    type="checkbox"
+                    checked={hidePorts}
+                    onChange={(e) => setHidePorts(e.target.checked)}
+                  />
+                  {t("topology.hidePorts")}
+                </label>
+                <label className="topo-display-toggles__item">
+                  <input
+                    type="checkbox"
+                    checked={edgeFlow}
+                    onChange={(e) => setEdgeFlow(e.target.checked)}
+                  />
+                  {t("topology.edgeFlow")}
+                </label>
+                <label className="topo-display-toggles__item">
+                  <input
+                    type="checkbox"
+                    checked={snapToGrid}
+                    onChange={(e) => setSnapToGrid(e.target.checked)}
+                  />
+                  {t("topology.snapGrid")}
+                </label>
+                <label className="topo-display-toggles__item">
+                  <input
+                    type="checkbox"
+                    checked={autoLayoutAfterDiscover}
+                    onChange={(e) => setAutoLayoutAfterDiscover(e.target.checked)}
+                  />
+                  {t("topology.autoLayoutDiscover")}
+                </label>
+                <div className="topo-display-defaults">
+                  <div className="topo-display-defaults__head">
+                    <strong>{t("topology.edgeDefaults")}</strong>
+                    <button type="button" className="btn btn--sm btn--ghost" onClick={resetEdgeDefaults}>
+                      {t("topology.edgeDefaultsReset")}
+                    </button>
+                  </div>
+                  {(
+                    [
+                      ["manual", t("topology.edgeManual")],
+                      ["discovered", t("topology.edgeDiscovered")],
+                      ["stale", t("topology.edgeStale")],
+                    ] as const
+                  ).map(([kind, label]) => {
+                    const d = edgeDefaults[kind];
+                    return (
+                      <div key={kind} className="topo-display-defaults__row">
+                        <span className="topo-display-defaults__name">{label}</span>
+                        <input
+                          type="color"
+                          value={d.stroke_color}
+                          title={t("topology.edgeColor")}
+                          onChange={(e) => updateEdgeDefault(kind, { stroke_color: e.target.value })}
+                        />
+                        <select
+                          className="topo-toolbar__select"
+                          aria-label={t("topology.edgeLineStyle")}
+                          value={d.line_style}
+                          onChange={(e) =>
+                            updateEdgeDefault(kind, {
+                              line_style: e.target.value as EdgeLineStyle,
+                            })
+                          }
+                        >
+                          <option value="solid">{t("topology.edgeLineSolid")}</option>
+                          <option value="dashed">{t("topology.edgeLineDashed")}</option>
+                          <option value="dotted">{t("topology.edgeLineDotted")}</option>
+                        </select>
+                        <select
+                          className="topo-toolbar__select"
+                          aria-label={t("topology.edgeWidth")}
+                          value={String(d.stroke_width)}
+                          onChange={(e) =>
+                            updateEdgeDefault(kind, { stroke_width: Number(e.target.value) || 2 })
+                          }
+                        >
+                          {[1, 2, 3, 4, 5, 6, 8].map((w) => (
+                            <option key={w} value={w}>
+                              {w}px
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </details>
           </div>
         </div>
 
@@ -1128,7 +1746,12 @@ export function TopologyPage() {
           </div>
         ) : null}
 
-        <div className={`topo-canvas${fullscreen ? " is-fullscreen" : ""}`} ref={canvasRef}>
+        <div
+          className={`topo-canvas${fullscreen ? " is-fullscreen" : ""}${toolMode === "pan" ? " is-pan-mode" : ""}`}
+          ref={canvasRef}
+          onDragOver={onCanvasDragOver}
+          onDrop={onCanvasDrop}
+        >
           {mapId ? (
             <TopoDisplayContext.Provider value={displayOpts}>
               <ReactFlow
@@ -1137,22 +1760,34 @@ export function TopologyPage() {
                 nodeTypes={nodeTypes}
                 connectionMode={ConnectionMode.Loose}
                 defaultEdgeOptions={{ type: "straight" }}
+                nodesDraggable={toolBehavior.nodesDraggable}
+                nodesConnectable={toolBehavior.nodesConnectable}
+                elementsSelectable={toolBehavior.elementsSelectable}
+                panOnDrag={toolBehavior.panOnDrag}
+                selectionOnDrag={toolBehavior.selectionOnDrag}
+                panOnScroll={toolBehavior.panOnScroll}
+                selectionMode={SelectionMode.Partial}
+                multiSelectionKeyCode="Shift"
+                snapToGrid={snapToGrid}
+                snapGrid={SNAP_GRID}
+                onNodeDragStart={() => pushHistory()}
                 onNodesChange={(changes) => {
-                  if (changes.some((c) => c.type !== "select")) dirtyRef.current = true;
+                  if (changes.some((c) => c.type === "position" || c.type === "remove" || c.type === "add")) {
+                    dirtyRef.current = true;
+                  }
                   onNodesChange(changes);
                 }}
                 onEdgesChange={(changes) => {
-                  if (changes.some((c) => c.type !== "select")) dirtyRef.current = true;
+                  if (changes.some((c) => c.type !== "select")) {
+                    dirtyRef.current = true;
+                  }
                   onEdgesChange(changes);
                 }}
                 onConnect={onConnect}
-                onNodeClick={(_e, node) => {
-                  setCtxMenu(null);
-                  selectNodeOnly(node.id);
-                }}
+                onNodeClick={onNodeClick}
                 onEdgeClick={(_e, edge) => {
                   setCtxMenu(null);
-                  selectEdgeOnly(edge.id);
+                  focusEdge(edge.id);
                 }}
                 onPaneClick={() => {
                   setCtxMenu(null);
@@ -1160,26 +1795,31 @@ export function TopologyPage() {
                 }}
                 onNodeContextMenu={(e, node) => {
                   e.preventDefault();
-                  selectNodeOnly(node.id);
+                  const multi = selectedNodeIds.length > 1 && selectedNodeIds.includes(node.id);
+                  if (!multi) focusNode(node.id, false);
                   const pos = placeCtxMenu(e.clientX, e.clientY);
-                  setCtxMenu({ kind: "node", id: node.id, ...pos });
+                  setCtxMenu(multi ? { kind: "selection", ...pos } : { kind: "node", id: node.id, ...pos });
                 }}
                 onEdgeContextMenu={(e, edge) => {
                   e.preventDefault();
-                  selectEdgeOnly(edge.id);
-                  const pos = placeCtxMenu(e.clientX, e.clientY);
+                  focusEdge(edge.id);
+                  const pos = placeCtxMenu(e.clientX, e.clientY, { w: 260, h: 280 });
                   setCtxMenu({ kind: "edge", id: edge.id, ...pos });
+                }}
+                onSelectionContextMenu={(e) => {
+                  e.preventDefault();
+                  const pos = placeCtxMenu(e.clientX, e.clientY);
+                  setCtxMenu({ kind: "selection", ...pos });
                 }}
                 onMoveStart={closeCtxMenu}
                 onInit={(inst) => {
-                  rfRef.current = inst;
+                  rfRef.current = inst as ReactFlowInstance<Node<NeNodeData>, Edge>;
                 }}
                 fitView
-                deleteKeyCode={["Backspace", "Delete"]}
+                deleteKeyCode={null}
                 edgesFocusable
-                elementsSelectable
               >
-                <Background gap={18} size={1} />
+                <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="#cbd5e1" />
                 <Controls showInteractive>
                   <ControlButton
                     className="topo-fs-control"
@@ -1191,6 +1831,30 @@ export function TopologyPage() {
                   </ControlButton>
                 </Controls>
                 <MiniMap pannable zoomable />
+                <div className="topo-legend" aria-hidden="true">
+                  {(
+                    [
+                      ["manual", t("topology.edgeManual")],
+                      ["discovered", t("topology.edgeDiscovered")],
+                      ["stale", t("topology.edgeStale")],
+                    ] as const
+                  ).map(([kind, label]) => {
+                    const d = edgeDefaults[kind];
+                    return (
+                      <span key={kind} className="topo-legend__item">
+                        <span
+                          className="topo-legend__swatch"
+                          style={{
+                            borderTopColor: d.stroke_color,
+                            borderTopWidth: Math.max(1, Math.min(4, d.stroke_width)),
+                            borderTopStyle: d.line_style === "solid" ? "solid" : "dashed",
+                          }}
+                        />
+                        {label}
+                      </span>
+                    );
+                  })}
+                </div>
               </ReactFlow>
             </TopoDisplayContext.Provider>
           ) : (
@@ -1201,13 +1865,54 @@ export function TopologyPage() {
 
       {ctxMenu ? (
         <ul
-          className="topo-ctx"
+          className={`topo-ctx${ctxMenu.kind === "edge" ? " topo-ctx--edge" : ""}`}
           style={{ left: ctxMenu.x, top: ctxMenu.y }}
           role="menu"
           onContextMenu={(e) => e.preventDefault()}
         >
-          {ctxMenu.kind === "node" ? (
+          {ctxMenu.kind === "selection" ? (
             <>
+              <li className="topo-ctx__head" role="presentation">
+                {t("topology.selectionMenu")}
+              </li>
+              <li role="none">
+                <button
+                  type="button"
+                  className="topo-ctx__item"
+                  role="menuitem"
+                  disabled={discovering}
+                  onClick={() => {
+                    const ids = selectedNodes
+                      .map((n) => String(n.data.managed_ne_id || n.data.ume_ne_id || "").trim())
+                      .filter(Boolean);
+                    closeCtxMenu();
+                    if (!ids.length) {
+                      showError(t("topology.discoverOneNeedNe"));
+                      return;
+                    }
+                    void runDiscover(ids);
+                  }}
+                >
+                  {t("topology.discoverSelected").replace("{{count}}", String(selectedNodes.length))}
+                </button>
+              </li>
+              <li className="topo-ctx__sep" aria-hidden />
+              <li role="none">
+                <button
+                  type="button"
+                  className="topo-ctx__item topo-ctx__item--danger"
+                  role="menuitem"
+                  onClick={() => removeSelected()}
+                >
+                  {t("topology.removeSelected").replace("{{count}}", String(selectedNodes.length))}
+                </button>
+              </li>
+            </>
+          ) : ctxMenu.kind === "node" ? (
+            <>
+              <li className="topo-ctx__head" role="presentation">
+                {t("topology.nodeMenu")}
+              </li>
               <li role="none">
                 <button
                   type="button"
@@ -1252,16 +1957,84 @@ export function TopologyPage() {
               </li>
             </>
           ) : (
-            <li role="none">
-              <button
-                type="button"
-                className="topo-ctx__item topo-ctx__item--danger"
-                role="menuitem"
-                onClick={() => removeEdgeById(ctxMenu.id)}
-              >
-                {t("topology.removeEdge")}
-              </button>
-            </li>
+            <>
+              <li className="topo-ctx__section" role="none">
+                <div className="topo-ctx__style" onMouseDown={(e) => e.stopPropagation()}>
+                  <div className="topo-ctx__style-title">{t("topology.edgeStyle")}</div>
+                  {selectedEdgeResolved ? (
+                    <div className="topo-ctx__style-grid">
+                      <label className="topo-ctx__style-row">
+                        <span>{t("topology.edgeColor")}</span>
+                        <input
+                          type="color"
+                          value={selectedEdgeResolved.stroke}
+                          onFocus={() => pushHistory()}
+                          onChange={(e) =>
+                            patchSelectedEdgeStyle({ stroke_color: e.target.value }, { skipHistory: true })
+                          }
+                        />
+                      </label>
+                      <label className="topo-ctx__style-row">
+                        <span>{t("topology.edgeLineStyle")}</span>
+                        <select
+                          value={
+                            selectedEdgeData.line_style ||
+                            (selectedEdgeResolved.strokeDasharray ? "dashed" : "solid")
+                          }
+                          onChange={(e) => patchSelectedEdgeStyle({ line_style: e.target.value })}
+                        >
+                          <option value="solid">{t("topology.edgeLineSolid")}</option>
+                          <option value="dashed">{t("topology.edgeLineDashed")}</option>
+                          <option value="dotted">{t("topology.edgeLineDotted")}</option>
+                        </select>
+                      </label>
+                      <label className="topo-ctx__style-row">
+                        <span>{t("topology.edgeWidth")}</span>
+                        <select
+                          value={String(
+                            Number(selectedEdgeData.stroke_width || 0) > 0
+                              ? Number(selectedEdgeData.stroke_width)
+                              : Math.round(Number(selectedEdgeResolved.strokeWidth || 2)),
+                          )}
+                          onChange={(e) =>
+                            patchSelectedEdgeStyle({ stroke_width: Number(e.target.value) || 0 })
+                          }
+                        >
+                          {[1, 2, 3, 4, 5, 6, 8].map((w) => (
+                            <option key={w} value={w}>
+                              {w}px
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                  ) : null}
+                </div>
+              </li>
+              <li className="topo-ctx__sep" aria-hidden />
+              <li role="none">
+                <button
+                  type="button"
+                  className="topo-ctx__item"
+                  role="menuitem"
+                  onClick={() =>
+                    patchSelectedEdgeStyle({ stroke_color: "", stroke_width: 0, line_style: "" })
+                  }
+                >
+                  {t("topology.edgeStyleReset")}
+                </button>
+              </li>
+              <li role="none">
+                <button
+                  type="button"
+                  className="topo-ctx__item topo-ctx__item--danger"
+                  role="menuitem"
+                  onClick={() => removeEdgeById(ctxMenu.id)}
+                >
+                  {t("topology.removeEdge")}
+                </button>
+              </li>
+            </>
           )}
         </ul>
       ) : null}

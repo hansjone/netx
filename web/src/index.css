@@ -2233,21 +2233,36 @@ pre {
 
 .topo-toolbar {
   display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #e2e8f0;
+  background: #f8fafc;
+}
+
+.topo-toolbar__row {
+  display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 8px 12px;
-  border-bottom: 1px solid #e2e8f0;
-  flex-wrap: nowrap;
+  min-width: 0;
 }
 
-.topo-toolbar__left {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  flex: 1 1 auto;
+.topo-toolbar__row--tools {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding-top: 2px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.topo-toolbar__group + .topo-toolbar__group,
+.topo-tools + .topo-toolbar__group,
+.topo-toolbar__group + .topo-toolbar__display,
+.topo-tools + .topo-toolbar__display {
+  margin-left: 2px;
+  padding-left: 10px;
+  border-left: 1px solid #e2e8f0;
 }
 
 .topo-toolbar__title {
@@ -2261,33 +2276,221 @@ pre {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 14px;
+}
+
+.topo-toolbar__meta {
+  font-size: 12px;
+  color: #64748b;
+  white-space: nowrap;
 }
 
 .topo-toolbar__actions {
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   align-items: center;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.topo-toolbar__group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.topo-tools {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: #e2e8f0;
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+
+.topo-tools__btn {
+  border: 0;
+  background: transparent;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.topo-tools__btn:hover {
+  background: #cbd5e1;
+  color: #0f172a;
+}
+
+.topo-tools__btn.is-active {
+  background: #0f172a;
+  color: #f8fafc;
+}
+
+.topo-toolbar__select {
+  min-width: 88px;
+  height: 30px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #fff;
+  color: #0f172a;
+  font-size: 12px;
+  padding: 0 8px;
+}
+
+.topo-toolbar__display {
+  position: relative;
+}
+
+.topo-toolbar__display > summary {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #fff;
+  color: #0f172a;
+  font-size: 12px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+}
+
+.topo-toolbar__display > summary::-webkit-details-marker {
+  display: none;
+}
+
+.topo-toolbar__display[open] > summary {
+  border-color: #94a3b8;
+  background: #f1f5f9;
+}
+
+.topo-toolbar__display .topo-display-toggles {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  display: grid;
+  gap: 6px;
+  min-width: 260px;
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+}
+
+.topo-display-defaults {
+  display: grid;
   gap: 8px;
-  flex: 0 0 auto;
+  margin-top: 6px;
+  padding-top: 8px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.topo-display-defaults__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: #334155;
+}
+
+.topo-display-defaults__row {
+  display: grid;
+  grid-template-columns: 48px 28px minmax(72px, 1fr) 64px;
+  align-items: center;
+  gap: 6px;
+}
+
+.topo-display-defaults__name {
+  font-size: 12px;
+  color: #475569;
+}
+
+.topo-display-defaults__row input[type="color"] {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.topo-display-defaults__row .topo-toolbar__select {
+  min-width: 0;
+  width: 100%;
+}
+
+.topo-canvas.is-pan-mode .react-flow__pane {
+  cursor: grab;
+}
+
+.topo-legend {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid #e2e8f0;
+  font-size: 11px;
+  color: #475569;
+  pointer-events: none;
+}
+
+.topo-legend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.topo-legend__swatch {
+  display: inline-block;
+  width: 16px;
+  height: 0;
+  border-top: 2px solid #64748b;
+  vertical-align: middle;
+}
+
+.topo-node.is-connect-mode .topo-node__handle {
+  width: 12px !important;
+  height: 12px !important;
+  opacity: 1 !important;
+  background: #0ea5e9 !important;
+  border: 2px solid #fff !important;
+}
+
+.react-flow__selection {
+  background: rgba(37, 99, 235, 0.08);
+  border: 1px solid rgba(37, 99, 235, 0.55);
 }
 
 .topo-display-toggles {
-  display: flex;
-  flex-wrap: nowrap;
-  align-items: center;
-  gap: 10px;
-  margin-right: 4px;
-  font-size: 12px;
-  color: #475569;
+  display: grid;
+  gap: 6px;
 }
 
 .topo-display-toggles__item {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
+  font-size: 12px;
+  color: #334155;
+  white-space: nowrap;
   cursor: pointer;
   user-select: none;
-  white-space: nowrap;
 }
 
 .topo-ctx {
@@ -2302,6 +2505,90 @@ pre {
   border: 1px solid #334155;
   border-radius: 8px;
   box-shadow: 0 10px 28px rgba(15, 23, 42, 0.28);
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.topo-ctx--edge {
+  min-width: 196px;
+}
+
+.topo-ctx__head {
+  margin: 0;
+  padding: 8px 12px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #94a3b8;
+}
+
+.topo-ctx__style {
+  padding: 4px 12px 6px;
+}
+
+.topo-ctx__style-title {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #94a3b8;
+}
+
+.topo-ctx__style-grid {
+  display: grid;
+  gap: 6px;
+}
+
+.topo-ctx__style-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0;
+  font-size: 12px;
+  font-weight: 400;
+  color: #e2e8f0;
+  line-height: 1.2;
+}
+
+.topo-ctx__style-row > span {
+  flex: 0 0 auto;
+  min-width: 2.5em;
+  color: #cbd5e1;
+}
+
+.topo-ctx__style-row input[type="color"] {
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  width: 28px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid #475569;
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.topo-ctx__style-row input[type="color"]::-webkit-color-swatch-wrapper {
+  padding: 1px;
+}
+
+.topo-ctx__style-row input[type="color"]::-webkit-color-swatch {
+  border: 0;
+  border-radius: 2px;
+}
+
+.topo-ctx__style-row select {
+  flex: 1 1 auto;
+  max-width: 108px;
+  height: 24px;
+  border: 1px solid #475569;
+  border-radius: 4px;
+  background: #1e293b;
+  color: #e2e8f0;
+  font-size: 12px;
+  line-height: 1.2;
+  padding: 0 6px;
 }
 
 /* Beat .app-main button { color:#1f2937; background:#fff } so hover stays readable. */
@@ -2309,13 +2596,16 @@ pre {
 .topo-ctx__item {
   display: block;
   width: 100%;
-  padding: 8px 14px;
+  box-sizing: border-box;
+  padding: 7px 12px;
   border: 0;
   border-radius: 0;
   background: transparent;
   color: #e2e8f0;
   text-align: left;
-  font: inherit;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.3;
   cursor: pointer;
 }
 
@@ -2481,40 +2771,31 @@ pre {
   font-size: 11px;
   text-align: center;
   /* Default asset is blue (= ZTE). */
-  --topo-vendor: #0277bd;
   --topo-icon-filter: none;
 }
 
 .topo-node--cisco {
-  --topo-vendor: #1d4ed8;
   --topo-icon-filter: hue-rotate(-8deg) saturate(1.15);
 }
 .topo-node--huawei {
-  --topo-vendor: #c62828;
   --topo-icon-filter: hue-rotate(155deg) saturate(1.35);
 }
 .topo-node--zte {
-  --topo-vendor: #0277bd;
   --topo-icon-filter: none;
 }
 .topo-node--juniper {
-  --topo-vendor: #2e7d32;
   --topo-icon-filter: hue-rotate(95deg) saturate(1.2);
 }
 .topo-node--nokia {
-  --topo-vendor: #00838f;
   --topo-icon-filter: hue-rotate(-28deg) saturate(1.1) brightness(0.98);
 }
 .topo-node--ericsson {
-  --topo-vendor: #f9a825;
   --topo-icon-filter: hue-rotate(175deg) saturate(1.45) brightness(1.05);
 }
 .topo-node--h3c {
-  --topo-vendor: #ef6c00;
   --topo-icon-filter: hue-rotate(165deg) saturate(1.4);
 }
 .topo-node--other {
-  --topo-vendor: #546e7a;
   --topo-icon-filter: grayscale(0.85) brightness(0.95);
 }
 
@@ -2526,13 +2807,18 @@ pre {
 }
 
 .topo-node__handle {
-  width: 12px !important;
-  height: 12px !important;
-  min-width: 12px !important;
-  min-height: 12px !important;
+  width: 10px !important;
+  height: 10px !important;
+  min-width: 10px !important;
+  min-height: 10px !important;
   background: transparent !important;
   border: 0 !important;
-  opacity: 0;
+  opacity: 0 !important;
+  pointer-events: none;
+}
+
+.topo-node.is-connect-mode .topo-node__handle {
+  pointer-events: all;
 }
 
 .topo-node__handle--center {

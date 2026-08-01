@@ -377,6 +377,9 @@ export type TopologyEdgeItem = {
   source_port: string;
   target_port: string;
   source: string;
+  stroke_color?: string;
+  stroke_width?: number;
+  line_style?: string;
   discovered_at?: string | null;
 };
 

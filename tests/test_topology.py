@@ -262,6 +262,16 @@ class TopologyLldpParseTests(unittest.TestCase):
 class TopologyServiceTests(unittest.TestCase):
     def setUp(self) -> None:
         Base.metadata.create_all(bind=engine)
+        with engine.begin() as conn:
+            conn.exec_driver_sql(
+                "ALTER TABLE topology_edge ADD COLUMN IF NOT EXISTS stroke_color VARCHAR(32) DEFAULT ''"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE topology_edge ADD COLUMN IF NOT EXISTS stroke_width INTEGER DEFAULT 0"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE topology_edge ADD COLUMN IF NOT EXISTS line_style VARCHAR(16) DEFAULT ''"
+            )
         self.db = SessionLocal()
         # Clean topology tables between tests
         for m in self.db.query(TopologyMap).all():
@@ -289,6 +299,9 @@ class TopologyServiceTests(unittest.TestCase):
                         source_node_id="n1",
                         target_node_id="n2",
                         source="manual",
+                        stroke_color="#2563eb",
+                        stroke_width=3,
+                        line_style="dashed",
                     )
                 ],
             ),
@@ -296,6 +309,9 @@ class TopologyServiceTests(unittest.TestCase):
         self.assertEqual(len(graph.nodes), 2)
         self.assertEqual(len(graph.edges), 1)
         self.assertEqual(graph.edges[0].source, "manual")
+        self.assertEqual(graph.edges[0].stroke_color, "#2563eb")
+        self.assertEqual(graph.edges[0].stroke_width, 3)
+        self.assertEqual(graph.edges[0].line_style, "dashed")
 
         listed = svc.list_maps(self.db)
         self.assertGreaterEqual(listed["total"], 1)

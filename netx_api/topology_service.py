@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 from uuid import uuid4
+import re
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -165,6 +166,31 @@ def _node_out(
     )
 
 
+_HEX_COLOR_RE = re.compile(r"^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
+_LINE_STYLES = {"", "solid", "dashed", "dotted"}
+
+
+def _normalize_edge_style(
+    *,
+    stroke_color: str = "",
+    stroke_width: int = 0,
+    line_style: str = "",
+) -> tuple[str, int, str]:
+    color = str(stroke_color or "").strip()
+    if color and not _HEX_COLOR_RE.match(color):
+        raise HTTPException(status_code=400, detail="invalid_stroke_color")
+    try:
+        width = int(stroke_width or 0)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="invalid_stroke_width") from exc
+    if width < 0 or width > 12:
+        raise HTTPException(status_code=400, detail="invalid_stroke_width")
+    style = str(line_style or "").strip().lower()
+    if style not in _LINE_STYLES:
+        raise HTTPException(status_code=400, detail="invalid_line_style")
+    return color, width, style
+
+
 def _edge_out(e: TopologyEdge) -> TopologyEdgeOut:
     return TopologyEdgeOut(
         id=e.id,
@@ -174,6 +200,9 @@ def _edge_out(e: TopologyEdge) -> TopologyEdgeOut:
         source_port=e.source_port or "",
         target_port=e.target_port or "",
         source=e.source or "manual",
+        stroke_color=getattr(e, "stroke_color", None) or "",
+        stroke_width=int(getattr(e, "stroke_width", 0) or 0),
+        line_style=getattr(e, "line_style", None) or "",
         discovered_at=e.discovered_at,
     )
 
@@ -216,6 +245,7 @@ def put_graph(db: Session, map_id: str, body: TopologyGraphPut) -> TopologyGraph
             raise HTTPException(status_code=400, detail=f"duplicate_node_id:{nid}")
         node_ids.add(nid)
 
+    normalized_edges: list[tuple[TopologyEdgeIn, str, str, int, str]] = []
     for e in edges_in:
         sid = str(e.source_node_id or "").strip()
         tid = str(e.target_node_id or "").strip()
@@ -224,6 +254,12 @@ def put_graph(db: Session, map_id: str, body: TopologyGraphPut) -> TopologyGraph
         src = str(e.source or "manual").strip().lower() or "manual"
         if src not in {"manual", "lldp", "cdp", "stale"}:
             raise HTTPException(status_code=400, detail="invalid_edge_source")
+        color, width, line = _normalize_edge_style(
+            stroke_color=getattr(e, "stroke_color", "") or "",
+            stroke_width=int(getattr(e, "stroke_width", 0) or 0),
+            line_style=getattr(e, "line_style", "") or "",
+        )
+        normalized_edges.append((e, src, color, width, line))
 
     now = _utcnow()
     db.query(TopologyEdge).filter(TopologyEdge.map_id == row.id).delete(synchronize_session=False)
@@ -243,8 +279,7 @@ def put_graph(db: Session, map_id: str, body: TopologyGraphPut) -> TopologyGraph
                 updated_at=now,
             )
         )
-    for e in edges_in:
-        src = str(e.source or "manual").strip().lower() or "manual"
+    for e, src, color, width, line in normalized_edges:
         db.add(
             TopologyEdge(
                 id=str(e.id).strip() or uuid4().hex,
@@ -254,6 +289,9 @@ def put_graph(db: Session, map_id: str, body: TopologyGraphPut) -> TopologyGraph
                 source_port=str(e.source_port or "").strip()[:128],
                 target_port=str(e.target_port or "").strip()[:128],
                 source=src,
+                stroke_color=color,
+                stroke_width=width,
+                line_style=line,
                 discovered_at=now if src in {"lldp", "cdp", "stale"} else None,
                 created_at=now,
                 updated_at=now,

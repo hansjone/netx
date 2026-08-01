@@ -43,7 +43,7 @@ src/
 | `/network/tasks/collect` | 采集任务 | `network` |
 | `/network/tasks/config-sync` | 配置同步 | `network` |
 | `/network/tasks/port-traffic` | 端口流量监控（任务向导 + 大屏） | `network` |
-| `/topology` | 拓扑管理 | `topology` |
+| `/topology` | 拓扑管理（模式化编辑器：选择/平移/拖动/连线、框选、自动布局、拖放添加） | `topology` |
 | `/webcrt` | WebCRT 终端 | `webcrt` |
 | `/collect` | redirect → `/network/tasks/collect` | — |
 
@@ -116,6 +116,15 @@ src/
 - 单飞：同一任务同时只允许一轮采集；崩溃启动清除 `collect_running`
 - 保留：按任务 `retention_days` 清理过期 sample（周对比建议 ≥8 天）
 - 前端：`/network/tasks/port-traffic`（四步向导 + 任务启停 + uPlot 大屏；接口选择 + 周期对比 + 跨任务映射基线接口）
+
+## 拓扑管理
+
+- 渲染：`@xyflow/react`；布局：`dagre`（层次）+ 内置力导向/网格/环形
+- 工具模式：选择（框选多选）/ 平移 / 拖动 / 连线；快捷键 `V` `H` `A` `C`
+- 侧栏网元可点击或拖放到画布；发现链路后可选自动层次布局并写回坐标
+- 支持对齐、网格吸附、轻量撤销/重做、链路图例
+- 选中链路可手动定制颜色 / 线型（实线·虚线·点线）/ 粗细，保存后持久化；空值回退到来源默认样式（人工灰 / 发现蓝虚线 / 未发现红虚线）
+- 「显示」里可改人工 / 发现 / 未发现三类默认样式（本机记住）；单链路样式在右键菜单中调整
 
 ## WebCRT
 
