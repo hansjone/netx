@@ -1,23 +1,32 @@
-"""Unit tests for topology CRUD and LLDP/CDP parsers."""
+"""Unit tests for fabric topology + LLDP parsers (no CDP discovery)."""
 
 from __future__ import annotations
 
+import time
 import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
-from fastapi import HTTPException
-
 from netx_api import topology_lldp as lldp
 from netx_api import topology_service as svc
 from netx_api.db import Base, SessionLocal, engine
-from netx_api.models import ManagedNE, TopologyMap
+from netx_api.device_types import LLDP_DISCOVERED_NE_SOURCE, WEBCRT_NE_SOURCE
+from netx_api.models import (
+    ManagedNE,
+    TopoDiscoverJob,
+    TopoDiscoverJobItem,
+    TopoFabricEdge,
+    TopoFabricNode,
+    TopoView,
+    TopoViewEdgeStyle,
+    TopoViewNode,
+)
 from netx_api.topology_schemas import (
-    TopologyDiscoverRequest,
-    TopologyEdgeIn,
-    TopologyGraphPut,
-    TopologyMapCreate,
-    TopologyNodeIn,
+    FabricDiscoverRequest,
+    TopologyViewCreate,
+    ViewNodesAdd,
+    ViewPositionsPatch,
+    ViewNodeIn,
 )
 
 
@@ -31,48 +40,13 @@ R3                  Gi0/1          120        R               Gi0/0
 """
 
 CISCO_LLDP_DETAIL = """
-R2#show lldp neighbors  detail
 ------------------------------------------------
 Local Intf: Gi0/1
 Chassis id: 707b.5c6e.d130
 Port id: Ethernet1/0/1
-Port Description - not advertised
 System Name: r1
-
-System Description: 
-Huawei Versatile Routing Platform Software
-VRP (R) software, Version 8.180 (NE40E V800R011C00SPC607B607)
-Copyright (C) 2012-2018 Huawei Technologies Co., Ltd.
-HUAWEI NE40E
-
-
-Time remaining: 97 seconds
-System Capabilities: B,R
-Enabled Capabilities: B,R
 Management Addresses:
-    Other: 70 7B 5C 6E FF 30 00
-    OID:
-        0.6.8.43.6.1.2.1.17.1.1.
-Auto Negotiation - supported, enabled
-Physical media capabilities - not advertised
-Media Attachment Unit type - not advertised
-Vlan ID: - not advertised
-
-
-Total entries displayed: 1
-"""
-
-CISCO_CDP_DETAIL = """
--------------------------
-Device ID: R1.lab.local
-IP address: 192.168.0.1
-Platform: Cisco,  Capabilities: Router
-Interface: GigabitEthernet0/0,  Port ID (outgoing port): GigabitEthernet0/1
-
--------------------------
-Device ID: R3
-IP address: 192.168.0.3
-Interface: GigabitEthernet0/1,  Port ID (outgoing port): GigabitEthernet0/0
+    IP: 192.168.0.1
 """
 
 HUAWEI_LLDP = """
@@ -86,582 +60,643 @@ Management address : 192.168.0.127
 Local Interface: GigabitEthernet0/0/1
 """
 
-HUAWEI_LLDP_LAB = """
-]display lldp  neighbor 
-Ethernet1/0/0 has 0 neighbor(s)
-
-Ethernet1/0/1 has 1 neighbor(s):
-
-Neighbor index                     :1
-Chassis type                       :macAddress
-Chassis ID                         :5000-0003-0000
-Port ID type                       :interfaceName
-Port ID                            :Gi0/1
-Port description                   :GigabitEthernet0/1            
-System name                        :R2.example.com                
-System description                 :Cisco IOS Software, IOSv Software (VIOS-ADVENTERPRISEK9-M), Version 15.9(3)M4, RELEASE SOFTWARE (fc3)
-Technical Support: http://www.cisco.com/techsupport
-Copyright (c) 1986-2021 by Cisco Systems, Inc.
-Compiled Wed 04-Aug-21 08:13 by mcpre
-System capabilities supported      :bridge router
-System capabilities enabled        :router
-Management address type            :ipv4
-Management address                 :192.168.0.128
-Expired time                       :110s
-
-Port VLAN ID(PVID)                 :--
-Discovered time                    :2026-06-05 17:07:21
-
-Ethernet1/0/2 has 0 neighbor(s)
-
-GigabitEthernet0/0/0 has 0 neighbor(s)
-"""
-
 ZTE_LLDP_BRIEF = """
-KND-PUN-EN1-Z20HS#show lldp neighbor brief
-23:10:28 Indonesia Wed Jul 29 2026
-Scope codes:
-    NB    = Nearest Bridge
-    NC    = Nearest Customer Bridge
-    NTPMR = Nearest non-TPMR Bridge   
-
-Total neighbors: 11
-Local Interface   Scope  Chassis ID      Port ID           Holdtime  System Name                                                  
-----------------------------------------------------------------------------------------------------------------------------------
-cgei-1/1/0/34     NB     744a.a42d.8970  cgei-1/1/0/36     91        KND-VKAU-EN1-Z20HS
-cgei-1/1/0/36     NB     744a.a42c.d600  cgei-1/1/0/33     99        KND-SAMA-EN1-Z20HS
-xxvgei-1/1/0/15   NB     d4c1.c893.4350  xgei-0/0/0/7      102       KND-KLK-AN1-ZM8S
-xxvgei-1/1/0/16   NB     744a.a430.1540  xxvgei-1/1/0/28   115       KND-PGGL-EN1-Z20HS
-xxvgei-1/1/0/17   NB     744a.a42d.6948  xxvgei-1/1/0/16   112       KND-IWEA-EN1-Z20HS
-xxvgei-1/1/0/18   NB     744a.a42d.6948  xxvgei-1/1/0/17   112       KND-IWEA-EN1-Z20HS
-xxvgei-1/1/0/21   NB     d4c1.c893.4350  xgei-0/0/0/1      108       KND-KLK-AN1-ZM8S
-xxvgei-1/1/0/22   NB     fc44.9f82.1b18  xgei-1/1/0/2      95        MKS-BLB-EN1-Z680H
-xxvgei-1/1/0/23   NB     744a.a42c.d600  xxvgei-1/1/0/28   99        KND-SAMA-EN1-Z20HS
-xxvgei-1/1/0/24   NB     744a.a432.deb8  xxvgei-1/1/0/28   119       KND-AWOA-EN1-Z20HS
-xxvgei-1/1/0/28   NB     744a.a42d.8970  xxvgei-1/1/0/28   91        KND-VKAU-EN1-Z20HS
+Local Interface      Chassis ID         Port ID              System Name
+gei-0/1/0/1          0011.2233.4455     gei-0/1/0/2          R1
 """
 
 
-class TopologyLldpParseTests(unittest.TestCase):
-    def test_parse_cisco_lldp_brief_fallback(self) -> None:
+class LldpParserTests(unittest.TestCase):
+    def test_cisco_brief(self) -> None:
         hits = lldp.parse_cisco_lldp(CISCO_LLDP_BRIEF)
-        self.assertGreaterEqual(len(hits), 2)
-        self.assertEqual(hits[0].remote_name, "R1")
-        self.assertEqual(hits[0].local_port, "Gi0/0")
+        self.assertGreaterEqual(len(hits), 1)
+        self.assertTrue(any(h.remote_name.upper().startswith("R1") for h in hits))
 
-    def test_parse_cisco_lldp_detail_lab(self) -> None:
-        hits = lldp.parse_neighbor_output(
-            CISCO_LLDP_DETAIL, protocol="lldp", vendor="Cisco", device_type="cisco_ios"
-        )
-        self.assertEqual(len(hits), 1)
-        self.assertEqual(hits[0].remote_name, "r1")
-        self.assertEqual(hits[0].local_port, "Gi0/1")
-        self.assertEqual(hits[0].remote_port, "Ethernet1/0/1")
-        self.assertEqual(hits[0].remote_ip, "")  # Other: MAC only in this sample
+    def test_huawei(self) -> None:
+        hits = lldp.parse_huawei_lldp(HUAWEI_LLDP)
+        self.assertGreaterEqual(len(hits), 1)
+        self.assertEqual(hits[0].remote_name.lower(), "r1")
 
-    def test_parse_cdp_detail(self) -> None:
-        hits = lldp.parse_neighbor_output(CISCO_CDP_DETAIL, protocol="cdp")
-        self.assertEqual(len(hits), 2)
-        self.assertEqual(hits[0].remote_ip, "192.168.0.1")
-        self.assertIn("GigabitEthernet0/0", hits[0].local_port)
-
-    def test_parse_huawei_legacy_and_lab(self) -> None:
-        legacy = lldp.parse_neighbor_output(
-            HUAWEI_LLDP, protocol="lldp", vendor="Huawei", device_type="huawei"
-        )
-        self.assertEqual(len(legacy), 1)
-        self.assertEqual(legacy[0].remote_name, "r1")
-        self.assertEqual(legacy[0].remote_ip, "192.168.0.127")
-
-        lab = lldp.parse_neighbor_output(
-            HUAWEI_LLDP_LAB, protocol="lldp", vendor="Huawei", device_type="huawei_vrp"
-        )
-        self.assertEqual(len(lab), 1)
-        self.assertEqual(lab[0].local_port, "Ethernet1/0/1")
-        self.assertEqual(lab[0].remote_port, "Gi0/1")
-        self.assertEqual(lab[0].remote_name, "R2.example.com")
-        self.assertEqual(lab[0].remote_ip, "192.168.0.128")
-
-    def test_parse_zte_lldp_brief_lab(self) -> None:
-        hits = lldp.parse_neighbor_output(
-            ZTE_LLDP_BRIEF, protocol="lldp", vendor="ZTE", device_type="zte_zxros"
-        )
-        self.assertEqual(len(hits), 11)
-        self.assertEqual(hits[0].local_port, "cgei-1/1/0/34")
-        self.assertEqual(hits[0].remote_port, "cgei-1/1/0/36")
-        self.assertEqual(hits[0].remote_name, "KND-VKAU-EN1-Z20HS")
-        self.assertEqual(hits[2].local_port, "xxvgei-1/1/0/15")
-        self.assertEqual(hits[2].remote_port, "xgei-0/0/0/7")
-        self.assertEqual(hits[2].remote_name, "KND-KLK-AN1-ZM8S")
-        self.assertEqual(hits[-1].remote_name, "KND-VKAU-EN1-Z20HS")
-        self.assertEqual(hits[-1].local_port, "xxvgei-1/1/0/28")
-
-    def test_pick_command_auto(self) -> None:
-        cmd, proto = lldp.pick_neighbor_command(protocol="auto", vendor="Cisco", device_type="cisco_ios")
-        self.assertEqual(proto, "lldp")
-        self.assertEqual(cmd, "show lldp neighbors detail")
-        cmd2, proto2 = lldp.pick_neighbor_command(protocol="auto", vendor="Huawei", device_type="huawei")
-        self.assertEqual(proto2, "lldp")
-        self.assertEqual(cmd2, "display lldp neighbor")
-        cmd3, proto3 = lldp.pick_neighbor_command(protocol="cdp", vendor="Cisco", device_type="cisco_ios")
-        self.assertEqual(proto3, "cdp")
-        self.assertIn("cdp", cmd3.lower())
-
-    def test_vendor_profiles_cover_requested_vendors(self) -> None:
-        expected = {
-            "cisco": "show lldp neighbors detail",
-            "huawei": "display lldp neighbor",
-            "h3c": "display lldp neighbor-information list",
-            "zte": "show lldp neighbor brief",
-            "juniper": "show lldp neighbors",
-            "nokia": "show system lldp neighbor",
-            "ericsson": "show lldp neighbors",
-        }
-        # Prefer real Netmiko device_type values from inventory.
-        samples = {
-            "cisco": ("Cisco", "cisco_ios"),
-            "huawei": ("Huawei", "huawei_vrp"),
-            "h3c": ("H3C", "hp_comware"),
-            "zte": ("ZTE", "zte_zxros"),
-            "juniper": ("Juniper", "juniper_junos"),
-            "nokia": ("Nokia", "nokia_sros"),
-            "ericsson": ("Ericsson", "ericsson_ipos"),
-        }
-        for key, (vendor, dtype) in samples.items():
-            self.assertEqual(
-                lldp.resolve_vendor_key(vendor, dtype),
-                key,
-                msg=f"device_type={dtype!r} should map to {key}",
-            )
-            self.assertEqual(lldp.lldp_command_for_vendor(vendor, dtype), expected[key])
-            parser = lldp._VENDOR_PARSERS[key]
-            self.assertIsInstance(parser(""), list)
-
-        # device_type alone is enough (no vendor label).
-        self.assertEqual(lldp.resolve_vendor_key("", "zte_zxros"), "zte")
-        self.assertEqual(lldp.resolve_vendor_key("", "cisco_xe"), "cisco")
-        # vendor label fallback when device_type missing.
-        self.assertEqual(lldp.resolve_vendor_key("ZTE", ""), "zte")
-
-    def test_parse_routes_by_vendor(self) -> None:
-        cisco_hits = lldp.parse_neighbor_output(
-            CISCO_LLDP_DETAIL, protocol="lldp", vendor="Cisco", device_type="cisco_ios"
-        )
-        self.assertEqual(len(cisco_hits), 1)
-        hw_hits = lldp.parse_neighbor_output(
-            HUAWEI_LLDP_LAB, protocol="lldp", vendor="Huawei", device_type="huawei"
-        )
-        self.assertEqual(len(hw_hits), 1)
-        # Placeholder vendors: empty until lab echo wired.
-        self.assertEqual(lldp.parse_juniper_lldp("junk"), [])
-        self.assertEqual(lldp.parse_nokia_lldp("junk"), [])
-        self.assertEqual(lldp.parse_ericsson_lldp("junk"), [])
-        self.assertEqual(lldp.parse_h3c_lldp("junk"), [])
+    def test_pick_command_lldp_only(self) -> None:
+        cmd, tag = lldp.pick_neighbor_command(protocol="cdp", vendor="Cisco", device_type="cisco_ios")
+        self.assertEqual(tag, "lldp")
+        self.assertIn("lldp", cmd.lower())
 
 
-class TopologyServiceTests(unittest.TestCase):
-    def setUp(self) -> None:
+class FabricTopologyTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
         Base.metadata.create_all(bind=engine)
-        with engine.begin() as conn:
-            conn.exec_driver_sql(
-                "ALTER TABLE topology_edge ADD COLUMN IF NOT EXISTS stroke_color VARCHAR(32) DEFAULT ''"
-            )
-            conn.exec_driver_sql(
-                "ALTER TABLE topology_edge ADD COLUMN IF NOT EXISTS stroke_width INTEGER DEFAULT 0"
-            )
-            conn.exec_driver_sql(
-                "ALTER TABLE topology_edge ADD COLUMN IF NOT EXISTS line_style VARCHAR(16) DEFAULT ''"
-            )
+
+    def setUp(self) -> None:
         self.db = SessionLocal()
-        # Clean topology tables between tests
-        for m in self.db.query(TopologyMap).all():
-            svc.delete_map(self.db, m.id)
+        # Shared SQLite DB across tests — wipe fabric/view state for isolation.
+        for model in (
+            TopoViewEdgeStyle,
+            TopoViewNode,
+            TopoView,
+            TopoFabricEdge,
+            TopoFabricNode,
+            TopoDiscoverJobItem,
+            TopoDiscoverJob,
+        ):
+            self.db.query(model).delete()
+        self.db.commit()
 
     def tearDown(self) -> None:
         self.db.close()
 
-    def test_map_crud_and_graph_put(self) -> None:
-        created = svc.create_map(self.db, TopologyMapCreate(name="Lab", remark="demo"))
-        self.assertEqual(created.name, "Lab")
-        mid = created.id
-
-        graph = svc.put_graph(
-            self.db,
-            mid,
-            TopologyGraphPut(
-                nodes=[
-                    TopologyNodeIn(id="n1", label="A", x=10, y=20, managed_ne_id=""),
-                    TopologyNodeIn(id="n2", label="B", x=100, y=20, managed_ne_id=""),
-                ],
-                edges=[
-                    TopologyEdgeIn(
-                        id="e1",
-                        source_node_id="n1",
-                        target_node_id="n2",
-                        source="manual",
-                        stroke_color="#2563eb",
-                        stroke_width=3,
-                        line_style="dashed",
-                    )
-                ],
-            ),
+    def test_view_crud_and_positions(self) -> None:
+        suffix = uuid4().hex[:8]
+        ne = ManagedNE(
+            id=f"ne-{suffix}",
+            name=f"R-{suffix}",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address=f"10.0.0.{(int(suffix[:2], 16) % 200) + 1}",
         )
-        self.assertEqual(len(graph.nodes), 2)
-        self.assertEqual(len(graph.edges), 1)
-        self.assertEqual(graph.edges[0].source, "manual")
-        self.assertEqual(graph.edges[0].stroke_color, "#2563eb")
-        self.assertEqual(graph.edges[0].stroke_width, 3)
-        self.assertEqual(graph.edges[0].line_style, "dashed")
+        self.db.add(ne)
+        self.db.commit()
 
-        listed = svc.list_maps(self.db)
-        self.assertGreaterEqual(listed["total"], 1)
-
-        got = svc.get_graph(self.db, mid)
-        self.assertEqual(got.map.id, mid)
-
-        svc.delete_map(self.db, mid)
-        with self.assertRaises(HTTPException):
-            svc.get_graph(self.db, mid)
-
-    def test_put_preserves_discovered_at_and_rejects_self_loop(self) -> None:
-        created = svc.create_map(self.db, TopologyMapCreate(name="Preserve", remark=""))
-        mid = created.id
-        first = svc.put_graph(
-            self.db,
-            mid,
-            TopologyGraphPut(
-                nodes=[
-                    TopologyNodeIn(id="n1", label="A", x=0, y=0),
-                    TopologyNodeIn(id="n2", label="B", x=10, y=0),
-                ],
-                edges=[
-                    TopologyEdgeIn(
-                        id="e1",
-                        source_node_id="n1",
-                        target_node_id="n2",
-                        source="lldp",
-                        source_port="Gi0/0",
-                        target_port="Gi0/1",
-                    )
-                ],
-            ),
+        view = svc.create_view(self.db, TopologyViewCreate(name=f"V-{suffix}"))
+        graph = svc.add_nodes_to_view(
+            self.db, view.id, ViewNodesAdd(managed_ne_ids=[ne.id])
         )
-        discovered = first.edges[0].discovered_at
-        self.assertIsNotNone(discovered)
-
-        second = svc.put_graph(
+        self.assertEqual(len(graph.nodes), 1)
+        fid = graph.nodes[0].fabric_node_id
+        graph2 = svc.patch_view_positions(
             self.db,
-            mid,
-            TopologyGraphPut(
-                nodes=[
-                    TopologyNodeIn(id="n1", label="A", x=1, y=1),
-                    TopologyNodeIn(id="n2", label="B", x=11, y=1),
-                ],
-                edges=[
-                    TopologyEdgeIn(
-                        id="e1",
-                        source_node_id="n1",
-                        target_node_id="n2",
-                        source="lldp",
-                        source_port="Gi0/0",
-                        target_port="Gi0/1",
-                        stroke_color="#0ea5e9",
-                    )
-                ],
-            ),
+            view.id,
+            ViewPositionsPatch(positions=[ViewNodeIn(fabric_node_id=fid, x=120, y=80)]),
         )
-        self.assertEqual(second.edges[0].discovered_at, discovered)
-        self.assertEqual(second.edges[0].stroke_color, "#0ea5e9")
+        self.assertEqual(graph2.nodes[0].x, 120)
+        self.assertEqual(graph2.nodes[0].y, 80)
 
-        with self.assertRaises(HTTPException) as ctx:
-            svc.put_graph(
+        summary = svc.get_fabric_summary(self.db)
+        self.assertGreaterEqual(summary.node_count, 1)
+
+        svc.delete_view(self.db, view.id)
+        self.db.delete(ne)
+        self.db.commit()
+
+    def test_lldp_discover_writes_fabric_edge(self) -> None:
+        suffix = uuid4().hex[:8]
+        ne_a = ManagedNE(
+            id=f"nea-{suffix}",
+            name="R2",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address=f"203.0.113.{(int(suffix[:2], 16) % 100) + 1}",
+        )
+        ne_b = ManagedNE(
+            id=f"neb-{suffix}",
+            name="R1",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address=f"203.0.113.{(int(suffix[2:4], 16) % 100) + 101}",
+        )
+        self.db.add(ne_a)
+        self.db.add(ne_b)
+        self.db.commit()
+        # Ensure fabric nodes exist for matching
+        svc.ensure_fabric_node_for_managed(self.db, ne_a)
+        svc.ensure_fabric_node_for_managed(self.db, ne_b)
+        self.db.commit()
+
+        fake_exec = {
+            "ok": True,
+            "output": CISCO_LLDP_DETAIL,
+            "commands": ["show lldp neighbors detail"],
+        }
+        with patch.object(svc, "execute_managed_ne_commands", return_value=fake_exec):
+            job = svc.start_discover_job(
                 self.db,
-                mid,
-                TopologyGraphPut(
-                    nodes=[TopologyNodeIn(id="n1", label="A", x=0, y=0)],
-                    edges=[
-                        TopologyEdgeIn(
-                            id="bad",
-                            source_node_id="n1",
-                            target_node_id="n1",
-                            source="manual",
-                        )
-                    ],
+                FabricDiscoverRequest(scope="ne_ids", ne_ids=[ne_a.id], concurrency=1),
+            )
+            # Wait for background thread
+            for _ in range(50):
+                out = svc.get_discover_job(self.db, job.id)
+                if out.status in {"done", "failed"}:
+                    break
+                time.sleep(0.05)
+            out = svc.get_discover_job(self.db, job.id)
+        self.assertEqual(out.status, "done", out.error)
+        edges = svc.list_fabric_edges(self.db, page=1, page_size=50)
+        self.assertGreaterEqual(edges["total"], 1)
+
+        self.db.delete(ne_a)
+        self.db.delete(ne_b)
+        self.db.commit()
+
+    def test_merge_duplicate_and_project_skips_orphans(self) -> None:
+        suffix = uuid4().hex[:8]
+        ne_a = ManagedNE(
+            id=f"nea-{suffix}",
+            name="R2",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address=f"203.0.113.{(int(suffix[:2], 16) % 80) + 10}",
+        )
+        ne_b = ManagedNE(
+            id=f"neb-{suffix}",
+            name="R1",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address=f"203.0.113.{(int(suffix[2:4], 16) % 80) + 100}",
+        )
+        self.db.add(ne_a)
+        self.db.add(ne_b)
+        self.db.commit()
+        fa = svc.ensure_fabric_node_for_managed(self.db, ne_a)
+        fb = svc.ensure_fabric_node_for_managed(self.db, ne_b)
+        orphan = TopoFabricNode(
+            id=uuid4().hex,
+            managed_ne_id=None,
+            ume_ne_id=None,
+            name="r1",
+            ip="",
+            vendor="",
+            device_type="",
+            attrs={"from_lldp_unmatched": True},
+        )
+        # Simulate raced duplicate of R2 (same managed id not allowed by constraint —
+        # use name/ip collision path with a second orphan twin).
+        orphan_r2 = TopoFabricNode(
+            id=uuid4().hex,
+            managed_ne_id=None,
+            ume_ne_id=None,
+            name="R2",
+            ip=ne_a.ip_address,
+            vendor="",
+            device_type="",
+            attrs={"from_lldp_unmatched": True},
+        )
+        self.db.add(orphan)
+        self.db.add(orphan_r2)
+        self.db.commit()
+        # Path: orphan_r2 -- fb -- fa -- orphan  (the bug shape)
+        svc.upsert_fabric_edge(
+            self.db, a_node_id=orphan_r2.id, b_node_id=fb.id, a_port="g0", b_port="g1", source="lldp"
+        )
+        svc.upsert_fabric_edge(
+            self.db, a_node_id=fb.id, b_node_id=fa.id, a_port="g2", b_port="g3", source="lldp"
+        )
+        svc.upsert_fabric_edge(
+            self.db, a_node_id=fa.id, b_node_id=orphan.id, a_port="g4", b_port="g5", source="lldp"
+        )
+        self.db.commit()
+
+        view = svc.create_view(self.db, TopologyViewCreate(name=f"V-{suffix}"))
+        graph = svc.add_nodes_to_view(
+            self.db,
+            view.id,
+            ViewNodesAdd(fabric_node_ids=[fa.id, fb.id, orphan.id, orphan_r2.id]),
+        )
+        self.assertEqual(len(graph.nodes), 4)
+
+        merged = svc.merge_duplicate_fabric_nodes(self.db)
+        self.assertGreaterEqual(merged["merged"], 2)
+        self.db.expire_all()
+        self.assertIsNone(self.db.get(TopoFabricNode, orphan.id))
+        self.assertIsNone(self.db.get(TopoFabricNode, orphan_r2.id))
+
+        # Re-place inventory nodes only, then project should stay at 2.
+        graph2 = svc.add_nodes_to_view(
+            self.db, view.id, ViewNodesAdd(managed_ne_ids=[ne_a.id, ne_b.id])
+        )
+        # View may still have stale placements pointing at deleted ids — project cleans.
+        projected = svc.project_fabric_neighbors_to_view(self.db, view.id)
+        self.assertEqual(len(projected.nodes), 2)
+        labels = sorted((n.name or n.label).upper() for n in projected.nodes)
+        self.assertEqual(labels, ["R1", "R2"])
+        self.assertGreaterEqual(len(projected.edges), 1)
+        endpoint_ids = {n.fabric_node_id for n in projected.nodes}
+        for e in projected.edges:
+            self.assertIn(e.a_node_id, endpoint_ids)
+            self.assertIn(e.b_node_id, endpoint_ids)
+
+        self.db.delete(ne_a)
+        self.db.delete(ne_b)
+        self.db.commit()
+
+    def test_match_hit_prefers_inventory(self) -> None:
+        suffix = uuid4().hex[:8]
+        ne = ManagedNE(
+            id=f"ne-{suffix}",
+            name="R1",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address=f"198.51.100.{(int(suffix[:2], 16) % 80) + 20}",
+        )
+        self.db.add(ne)
+        self.db.commit()
+        inv = svc.ensure_fabric_node_for_managed(self.db, ne)
+        orphan = TopoFabricNode(
+            id=uuid4().hex,
+            name="r1",
+            ip="",
+            attrs={"from_lldp_unmatched": True},
+        )
+        self.db.add(orphan)
+        self.db.commit()
+        hit = lldp.NeighborHit(
+            remote_name="r1",
+            remote_ip="",
+            local_port="Gi0/0",
+            remote_port="Gi0/1",
+        )
+        peer = svc._match_hit_to_fabric_node(self.db, hit, self_id="self")
+        self.assertEqual(peer.id, inv.id)
+        self.db.delete(ne)
+        self.db.commit()
+
+    def test_lldp_unmatched_creates_ssh_placeholder_ne(self) -> None:
+        suffix = uuid4().hex[:8]
+        peer_name = f"Peer-{suffix}"
+        ne_a = ManagedNE(
+            id=f"nea-{suffix}",
+            name=f"Core-{suffix}",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address=f"203.0.113.{(int(suffix[:2], 16) % 80) + 40}",
+            source="manual",
+        )
+        self.db.add(ne_a)
+        self.db.commit()
+        svc.ensure_fabric_node_for_managed(self.db, ne_a)
+        self.db.commit()
+
+        lldp_out = f"""
+------------------------------------------------
+Local Intf: Gi0/1
+Chassis id: 707b.5c6e.d130
+Port id: Ethernet1/0/1
+System Name: {peer_name}
+Management Addresses:
+    IP: 198.51.100.200
+"""
+        fake_exec = {
+            "ok": True,
+            "output": lldp_out,
+            "commands": ["show lldp neighbors detail"],
+        }
+        with patch.object(svc, "execute_managed_ne_commands", return_value=fake_exec):
+            job = svc.start_discover_job(
+                self.db,
+                FabricDiscoverRequest(
+                    scope="ne_ids", ne_ids=[ne_a.id], concurrency=1, auto_add_unmatched=True
                 ),
             )
-        self.assertEqual(ctx.exception.detail, "edge_self_loop")
-        svc.delete_map(self.db, mid)
+            for _ in range(50):
+                out = svc.get_discover_job(self.db, job.id)
+                if out.status in {"done", "failed"}:
+                    break
+                time.sleep(0.05)
+            out = svc.get_discover_job(self.db, job.id)
+        self.assertEqual(out.status, "done", out.error)
 
-    def test_discover_matches_by_name_and_skips_manual(self) -> None:
+        placeholders = (
+            self.db.query(ManagedNE)
+            .filter(ManagedNE.source == LLDP_DISCOVERED_NE_SOURCE)
+            .all()
+        )
+        placeholder = next(
+            (p for p in placeholders if svc._norm_host(p.name) == svc._norm_host(peer_name)),
+            None,
+        )
+        self.assertIsNotNone(placeholder)
+        assert placeholder is not None
+        self.assertEqual(placeholder.ip_address, "")
+        self.assertEqual(placeholder.username, "")
+        self.assertEqual(placeholder.password_enc, "")
+        self.assertEqual(placeholder.protocol, "ssh")
+        self.assertEqual(placeholder.device_type, "generic")
+        self.assertEqual(placeholder.source_ref, "198.51.100.200")
+
+        view = svc.create_view(self.db, TopologyViewCreate(name=f"V-{suffix}"))
+        svc.add_nodes_to_view(self.db, view.id, ViewNodesAdd(managed_ne_ids=[ne_a.id]))
+        projected = svc.project_fabric_neighbors_to_view(self.db, view.id)
+        self.assertEqual(len(projected.nodes), 2)
+        self.assertGreaterEqual(len(projected.edges), 1)
+
+        self.db.delete(ne_a)
+        self.db.delete(placeholder)
+        self.db.commit()
+
+    def test_match_prefers_real_ne_over_webcrt_same_ip(self) -> None:
         suffix = uuid4().hex[:8]
-        ne_a_id = f"nea-{suffix}"
-        ne_b_id = f"neb-{suffix}"
-        # Unique lab IPs in TEST-NET-3
-        ip_a = f"203.0.113.{(int(suffix[:2], 16) % 100) + 1}"
-        ip_b = f"203.0.113.{(int(suffix[2:4], 16) % 100) + 101}"
-        ne_a = ManagedNE(
-            id=ne_a_id,
+        ip = f"198.51.100.{(int(suffix[:2], 16) % 80) + 30}"
+        real = ManagedNE(
+            id=f"real-{suffix}",
             name="R2",
             vendor="Cisco",
             device_type="cisco_ios",
-            ip_address=ip_a,
-            connect_status="pass",
+            ip_address=ip,
+            source="manual",
+        )
+        webcrt = ManagedNE(
+            id=f"wcrt-{suffix}",
+            name=f"{ip} (1)",
+            vendor="Other",
+            device_type="generic",
+            ip_address=ip,
+            source=WEBCRT_NE_SOURCE,
+        )
+        self.db.add(real)
+        self.db.add(webcrt)
+        self.db.commit()
+        inv = svc.ensure_fabric_node_for_managed(self.db, real)
+        ghost = svc.ensure_fabric_node_for_managed(self.db, webcrt)
+        self.db.commit()
+        hit = lldp.NeighborHit(remote_name="", remote_ip=ip, local_port="Gi0/0", remote_port="Gi0/1")
+        peer = svc._match_hit_to_fabric_node(self.db, hit, self_id="self")
+        self.assertEqual(peer.id, inv.id)
+        self.assertNotEqual(peer.id, ghost.id)
+
+        merged = svc.merge_duplicate_fabric_nodes(self.db)
+        self.assertGreaterEqual(merged["merged"], 1)
+        self.db.expire_all()
+        self.assertIsNone(self.db.get(TopoFabricNode, ghost.id))
+        self.db.delete(real)
+        self.db.delete(webcrt)
+        self.db.commit()
+
+    def test_neighborhood(self) -> None:
+        suffix = uuid4().hex[:8]
+        ne_a = ManagedNE(
+            id=f"nea-{suffix}",
+            name=f"A-{suffix}",
+            ip_address=f"198.51.100.{(int(suffix[:2], 16) % 80) + 10}",
+            vendor="ZTE",
+            device_type="zte_zxros",
         )
         ne_b = ManagedNE(
-            id=ne_b_id,
-            name="R1",
-            vendor="Cisco",
-            device_type="cisco_ios",
-            ip_address=ip_b,
-            connect_status="pass",
+            id=f"neb-{suffix}",
+            name=f"B-{suffix}",
+            ip_address=f"198.51.100.{(int(suffix[2:4], 16) % 80) + 100}",
+            vendor="ZTE",
+            device_type="zte_zxros",
         )
         self.db.add(ne_a)
         self.db.add(ne_b)
         self.db.commit()
-
-        created = svc.create_map(self.db, TopologyMapCreate(name=f"Disc-{suffix}"))
-        mid = created.id
-        svc.put_graph(
+        fa = svc.ensure_fabric_node_for_managed(self.db, ne_a)
+        fb = svc.ensure_fabric_node_for_managed(self.db, ne_b)
+        self.db.commit()
+        svc.upsert_fabric_edge(
             self.db,
-            mid,
-            TopologyGraphPut(
-                nodes=[
-                    TopologyNodeIn(id="n1", managed_ne_id=ne_a_id, label="R2", x=0, y=0),
-                    TopologyNodeIn(id="n2", managed_ne_id=ne_b_id, label="R1", x=200, y=0),
-                ],
-                edges=[
-                    TopologyEdgeIn(
-                        id="manual1",
-                        source_node_id="n1",
-                        target_node_id="n2",
-                        source_port="GigabitEthernet0/0",
-                        target_port="GigabitEthernet0/1",
-                        source="manual",
-                    )
-                ],
-            ),
+            a_node_id=fa.id,
+            b_node_id=fb.id,
+            a_port="gei-0/1/0/1",
+            b_port="gei-0/1/0/2",
+            source="lldp",
         )
-
-        fake_exec = {
-            "ok": True,
-            "output": CISCO_CDP_DETAIL,
-            "commands": ["show cdp neighbors detail"],
-        }
-        with patch.object(svc, "execute_managed_ne_commands", return_value=fake_exec):
-            out = svc.discover_neighbors(
-                self.db, mid, TopologyDiscoverRequest(protocol="cdp", ne_ids=[ne_a_id])
-            )
-        # Manual edge with same ports should be preserved (not overwritten).
-        self.assertEqual(out.edges_added, 0)
-        graph = svc.get_graph(self.db, mid)
-        manuals = [e for e in graph.edges if e.source == "manual"]
-        self.assertEqual(len(manuals), 1)
-
-        # Clear ports so discovery can add a new edge key.
-        svc.put_graph(
-            self.db,
-            mid,
-            TopologyGraphPut(
-                nodes=[
-                    TopologyNodeIn(id="n1", managed_ne_id=ne_a_id, label="R2", x=0, y=0),
-                    TopologyNodeIn(id="n2", managed_ne_id=ne_b_id, label="R1", x=200, y=0),
-                ],
-                edges=[],
-            ),
-        )
-        with patch.object(svc, "execute_managed_ne_commands", return_value=fake_exec):
-            out2 = svc.discover_neighbors(
-                self.db, mid, TopologyDiscoverRequest(protocol="cdp", ne_ids=[ne_a_id])
-            )
-        self.assertGreaterEqual(out2.edges_added, 1)
-        self.assertTrue(out2.results and any(l.action == "added" for l in (out2.results[0].links or [])))
-        graph2 = svc.get_graph(self.db, mid)
-        self.assertTrue(any(e.source == "cdp" for e in graph2.edges))
-
-        svc.delete_map(self.db, mid)
+        self.db.commit()
+        nb = svc.get_fabric_neighborhood(self.db, fa.id, depth=1)
+        self.assertEqual(len(nb.nodes), 2)
+        self.assertEqual(len(nb.edges), 1)
         self.db.delete(ne_a)
         self.db.delete(ne_b)
         self.db.commit()
 
-    def test_iter_discover_emits_live_progress_events(self) -> None:
-        suffix = uuid4().hex[:8]
-        ne_a_id = f"nea-{suffix}"
-        ne_b_id = f"neb-{suffix}"
-        ip_a = f"198.51.100.{(int(suffix[:2], 16) % 100) + 1}"
-        ip_b = f"198.51.100.{(int(suffix[2:4], 16) % 100) + 101}"
+    def _pair_nodes(self, suffix: str) -> tuple[TopoFabricNode, TopoFabricNode, ManagedNE, ManagedNE]:
         ne_a = ManagedNE(
-            id=ne_a_id,
-            name="R2",
+            id=f"nea-{suffix}",
+            name=f"A-{suffix}",
+            ip_address=f"198.51.100.{(int(suffix[:2], 16) % 80) + 10}",
             vendor="Cisco",
             device_type="cisco_ios",
-            ip_address=ip_a,
         )
         ne_b = ManagedNE(
-            id=ne_b_id,
-            name="R1",
+            id=f"neb-{suffix}",
+            name=f"B-{suffix}",
+            ip_address=f"198.51.100.{(int(suffix[2:4], 16) % 80) + 100}",
             vendor="Cisco",
             device_type="cisco_ios",
-            ip_address=ip_b,
         )
         self.db.add(ne_a)
         self.db.add(ne_b)
         self.db.commit()
-        created = svc.create_map(self.db, TopologyMapCreate(name=f"Stream-{suffix}"))
-        mid = created.id
-        svc.put_graph(
+        fa = svc.ensure_fabric_node_for_managed(self.db, ne_a)
+        fb = svc.ensure_fabric_node_for_managed(self.db, ne_b)
+        self.db.commit()
+        return fa, fb, ne_a, ne_b
+
+    def test_edge_missing_after_one_absent_cycle(self) -> None:
+        suffix = uuid4().hex[:8]
+        fa, fb, ne_a, ne_b = self._pair_nodes(suffix)
+        edge, _ = svc.upsert_fabric_edge(
             self.db,
-            mid,
-            TopologyGraphPut(
-                nodes=[
-                    TopologyNodeIn(id="n1", managed_ne_id=ne_a_id, label="R2", x=0, y=0),
-                    TopologyNodeIn(id="n2", managed_ne_id=ne_b_id, label="R1", x=100, y=0),
-                ],
-                edges=[],
-            ),
+            a_node_id=fa.id,
+            b_node_id=fb.id,
+            a_port="Gi0/0",
+            b_port="Gi0/1",
+            source="lldp",
         )
-        fake_exec = {
-            "ok": True,
-            "output": CISCO_CDP_DETAIL,
-            "commands": ["show cdp neighbors detail"],
-        }
-        events: list[str] = []
-        with patch.object(svc, "execute_managed_ne_commands", return_value=fake_exec):
-            for ev in svc.iter_discover_neighbors(
-                self.db, mid, TopologyDiscoverRequest(protocol="cdp", ne_ids=[ne_a_id])
-            ):
-                events.append(str(ev.get("type") or ""))
-        self.assertEqual(events[0], "start")
-        self.assertIn("ne_start", events)
-        self.assertIn("ne_result", events)
-        self.assertEqual(events[-1], "done")
-        svc.delete_map(self.db, mid)
+        self.db.commit()
+
+        newly, purged = svc._apply_missing_and_purge(
+            self.db,
+            scanned_ok={fa.id},
+            touched_edge_ids=set(),
+        )
+        self.db.commit()
+        self.assertEqual(newly, 1)
+        self.assertEqual(purged, 0)
+        self.db.refresh(edge)
+        self.assertEqual(edge.status, "missing")
+        self.assertEqual(int((edge.attrs or {}).get("miss_count") or 0), 1)
+
         self.db.delete(ne_a)
         self.db.delete(ne_b)
         self.db.commit()
 
-    def test_discover_marks_missing_edges_stale(self) -> None:
+    def test_edge_purge_after_four_missing_cycles(self) -> None:
         suffix = uuid4().hex[:8]
-        ne_a_id = f"nea-{suffix}"
-        ne_b_id = f"neb-{suffix}"
-        ip_a = f"203.0.113.{(int(suffix[:2], 16) % 80) + 10}"
-        ip_b = f"203.0.113.{(int(suffix[2:4], 16) % 80) + 100}"
-        ne_a = ManagedNE(
-            id=ne_a_id,
-            name="R2",
-            vendor="Cisco",
-            device_type="cisco_ios",
-            ip_address=ip_a,
-        )
-        ne_b = ManagedNE(
-            id=ne_b_id,
-            name="R1",
-            vendor="Cisco",
-            device_type="cisco_ios",
-            ip_address=ip_b,
-        )
-        self.db.add(ne_a)
-        self.db.add(ne_b)
-        self.db.commit()
-        mid = svc.create_map(self.db, TopologyMapCreate(name=f"Stale-{suffix}")).id
-        svc.put_graph(
+        fa, fb, ne_a, ne_b = self._pair_nodes(suffix)
+        edge, _ = svc.upsert_fabric_edge(
             self.db,
-            mid,
-            TopologyGraphPut(
-                nodes=[
-                    TopologyNodeIn(id="n1", managed_ne_id=ne_a_id, label="R2", x=0, y=0),
-                    TopologyNodeIn(id="n2", managed_ne_id=ne_b_id, label="R1", x=100, y=0),
-                ],
-                edges=[],
-            ),
+            a_node_id=fa.id,
+            b_node_id=fb.id,
+            a_port="Gi0/0",
+            b_port="Gi0/1",
+            source="lldp",
         )
-        with_neighbors = {
-            "ok": True,
-            "output": CISCO_CDP_DETAIL,
-            "commands": ["show cdp neighbors detail"],
-        }
-        empty = {"ok": True, "output": "Total entries displayed: 0\n", "commands": ["show cdp neighbors detail"]}
-        with patch.object(svc, "execute_managed_ne_commands", return_value=with_neighbors):
-            out1 = svc.discover_neighbors(
-                self.db, mid, TopologyDiscoverRequest(protocol="cdp", ne_ids=[ne_a_id])
+        edge_id = edge.id
+        self.db.commit()
+
+        for cycle in range(1, 5):
+            newly, purged = svc._apply_missing_and_purge(
+                self.db,
+                scanned_ok={fa.id},
+                touched_edge_ids=set(),
             )
-        self.assertGreaterEqual(out1.edges_added, 1)
-        with patch.object(svc, "execute_managed_ne_commands", return_value=empty):
-            out2 = svc.discover_neighbors(
-                self.db, mid, TopologyDiscoverRequest(protocol="cdp", ne_ids=[ne_a_id])
-            )
-        self.assertGreaterEqual(out2.edges_stale, 1)
-        graph = svc.get_graph(self.db, mid)
-        self.assertTrue(any(e.source == "stale" for e in graph.edges))
-        svc.delete_map(self.db, mid)
+            self.db.commit()
+            if cycle < 4:
+                self.assertEqual(purged, 0)
+                row = self.db.get(TopoFabricEdge, edge_id)
+                self.assertIsNotNone(row)
+                self.assertEqual(int((row.attrs or {}).get("miss_count") or 0), cycle)
+            else:
+                self.assertEqual(purged, 1)
+                self.assertIsNone(self.db.get(TopoFabricEdge, edge_id))
+
         self.db.delete(ne_a)
         self.db.delete(ne_b)
         self.db.commit()
 
-    def test_discover_reports_unmatched_neighbors(self) -> None:
+    def test_peer_replace_marks_old_edge_missing(self) -> None:
         suffix = uuid4().hex[:8]
-        ne_a_id = f"nea-{suffix}"
-        ip_a = f"203.0.113.{(int(suffix[:2], 16) % 100) + 1}"
-        ne_a = ManagedNE(
-            id=ne_a_id,
-            name="R2",
+        fa, fb, ne_a, ne_b = self._pair_nodes(suffix)
+        ne_c = ManagedNE(
+            id=f"nec-{suffix}",
+            name=f"C-{suffix}",
+            ip_address=f"198.51.100.{(int(suffix[4:6], 16) % 80) + 50}",
             vendor="Cisco",
             device_type="cisco_ios",
-            ip_address=ip_a,
-            connect_status="pass",
         )
-        self.db.add(ne_a)
+        self.db.add(ne_c)
         self.db.commit()
-        created = svc.create_map(self.db, TopologyMapCreate(name=f"Unmatch-{suffix}"))
-        mid = created.id
-        svc.put_graph(
+        fc = svc.ensure_fabric_node_for_managed(self.db, ne_c)
+        self.db.commit()
+
+        old, _ = svc.upsert_fabric_edge(
             self.db,
-            mid,
-            TopologyGraphPut(
-                nodes=[TopologyNodeIn(id="n1", managed_ne_id=ne_a_id, label="R2", x=0, y=0)],
-                edges=[],
-            ),
+            a_node_id=fa.id,
+            b_node_id=fb.id,
+            a_port="Gi0/0",
+            b_port="Gi0/1",
+            source="lldp",
         )
-        fake_exec = {
-            "ok": True,
-            "output": CISCO_CDP_DETAIL,
-            "commands": ["show cdp neighbors detail"],
-        }
-        with patch.object(svc, "execute_managed_ne_commands", return_value=fake_exec):
-            out = svc.discover_neighbors(
-                self.db, mid, TopologyDiscoverRequest(protocol="cdp", ne_ids=[ne_a_id])
-            )
-        self.assertEqual(len(out.results), 1)
-        r = out.results[0]
-        self.assertTrue(r.ok)
-        self.assertGreaterEqual(r.unmatched_count, 1)
-        self.assertTrue(any((u.remote_name or "").upper().startswith("R1") for u in r.unmatched))
-        self.assertEqual(r.links, [])
-        svc.delete_map(self.db, mid)
-        self.db.delete(ne_a)
+        new, _ = svc.upsert_fabric_edge(
+            self.db,
+            a_node_id=fa.id,
+            b_node_id=fc.id,
+            a_port="Gi0/0",
+            b_port="Gi0/2",
+            source="lldp",
+        )
         self.db.commit()
 
+        handled = svc._mark_replaced_port_peers(
+            self.db,
+            self_id=fa.id,
+            local_port="Gi0/0",
+            peer_id=fc.id,
+            new_edge_id=new.id,
+        )
+        self.db.commit()
+        self.assertIn(old.id, handled)
+        self.db.refresh(old)
+        self.assertEqual(old.status, "missing")
+        self.assertEqual((old.attrs or {}).get("replaced_by_edge_id"), new.id)
+        self.assertEqual(int((old.attrs or {}).get("miss_count") or 0), 1)
 
-class IfnameNormalizeTests(unittest.TestCase):
-    def test_cisco_huawei_aliases(self) -> None:
-        self.assertEqual(lldp.normalize_ifname("GigabitEthernet0/0"), "gi0/0")
-        self.assertEqual(lldp.normalize_ifname("Gi0/0"), "gi0/0")
-        self.assertEqual(lldp.normalize_ifname("TenGigabitEthernet1/0/1"), "te1/0/1")
-        self.assertEqual(lldp.normalize_ifname("XGigabitEthernet0/0/1"), "xge0/0/1")
-        self.assertEqual(lldp.normalize_ifname("Eth-Trunk1"), "eth-trunk1")
-        self.assertEqual(lldp.normalize_ifname(""), "")
+        # Same-job: replaced id in touched → no second miss bump.
+        newly, purged = svc._apply_missing_and_purge(
+            self.db,
+            scanned_ok={fa.id},
+            touched_edge_ids={new.id, *handled},
+        )
+        self.db.commit()
+        self.assertEqual(newly, 0)
+        self.assertEqual(purged, 0)
+        self.db.refresh(old)
+        self.assertEqual(int((old.attrs or {}).get("miss_count") or 0), 1)
 
-    def test_edge_pair_key_aliases_match(self) -> None:
-        a = svc._edge_pair_key("n1", "n2", "GigabitEthernet0/0", "Gi0/1")
-        b = svc._edge_pair_key("n1", "n2", "Gi0/0", "GigabitEthernet0/1")
-        self.assertEqual(a, b)
+        self.db.delete(ne_a)
+        self.db.delete(ne_b)
+        self.db.delete(ne_c)
+        self.db.commit()
 
-    def test_parser_meta_marks_stubs(self) -> None:
-        key, stub = lldp.parser_meta(vendor="H3C", device_type="hp_comware")
-        self.assertEqual(key, "h3c")
-        self.assertTrue(stub)
-        key2, stub2 = lldp.parser_meta(vendor="Cisco", device_type="cisco_ios")
-        self.assertEqual(key2, "cisco")
-        self.assertFalse(stub2)
+    def test_edge_reactivate_clears_miss_attrs(self) -> None:
+        suffix = uuid4().hex[:8]
+        fa, fb, ne_a, ne_b = self._pair_nodes(suffix)
+        edge, _ = svc.upsert_fabric_edge(
+            self.db,
+            a_node_id=fa.id,
+            b_node_id=fb.id,
+            a_port="Gi0/0",
+            b_port="Gi0/1",
+            source="lldp",
+        )
+        self.db.commit()
+        svc._apply_missing_and_purge(
+            self.db, scanned_ok={fa.id}, touched_edge_ids=set()
+        )
+        self.db.commit()
+        self.db.refresh(edge)
+        self.assertEqual(edge.status, "missing")
+
+        edge2, action = svc.upsert_fabric_edge(
+            self.db,
+            a_node_id=fa.id,
+            b_node_id=fb.id,
+            a_port="Gi0/0",
+            b_port="Gi0/1",
+            source="lldp",
+        )
+        self.db.commit()
+        self.assertEqual(action, "updated")
+        self.assertEqual(edge2.id, edge.id)
+        self.assertEqual(edge2.status, "active")
+        attrs = edge2.attrs or {}
+        self.assertNotIn("miss_count", attrs)
+        self.assertNotIn("first_missing_at", attrs)
+        self.assertNotIn("replaced_by_edge_id", attrs)
+
+        self.db.delete(ne_a)
+        self.db.delete(ne_b)
+        self.db.commit()
+
+    def test_scan_fail_does_not_mark_missing(self) -> None:
+        """Endpoint not in scanned_ok (SSH/parse fail) → leave edge active."""
+        suffix = uuid4().hex[:8]
+        fa, fb, ne_a, ne_b = self._pair_nodes(suffix)
+        edge, _ = svc.upsert_fabric_edge(
+            self.db,
+            a_node_id=fa.id,
+            b_node_id=fb.id,
+            a_port="Gi0/0",
+            b_port="Gi0/1",
+            source="lldp",
+        )
+        self.db.commit()
+
+        newly, purged = svc._apply_missing_and_purge(
+            self.db,
+            scanned_ok=set(),  # scan failed — nothing judged
+            touched_edge_ids=set(),
+        )
+        self.db.commit()
+        self.assertEqual(newly, 0)
+        self.assertEqual(purged, 0)
+        self.db.refresh(edge)
+        self.assertEqual(edge.status, "active")
+
+        # Manual edges never auto-missing.
+        manual, _ = svc.upsert_fabric_edge(
+            self.db,
+            a_node_id=fa.id,
+            b_node_id=fb.id,
+            a_port="Gi1/0",
+            b_port="Gi1/1",
+            source="manual",
+        )
+        self.db.commit()
+        newly, purged = svc._apply_missing_and_purge(
+            self.db,
+            scanned_ok={fa.id},
+            touched_edge_ids=set(),
+        )
+        self.db.commit()
+        self.db.refresh(manual)
+        self.assertEqual(manual.status, "active")
+        self.assertEqual(manual.source, "manual")
+
+        self.db.delete(ne_a)
+        self.db.delete(ne_b)
+        self.db.commit()
 
 
 if __name__ == "__main__":

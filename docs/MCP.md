@@ -123,16 +123,17 @@ pip install "git+https://github.com/hansjone/netx.git#subdirectory=packages/netx
 
 ---
 
-## 5. 暴露的 12 个工具
+## 5. 暴露的工具
 
 | 类别 | 工具名 |
 |------|--------|
 | UME 告警 | `queryUmeAlarms`, `aggregateUmeAlarms`, `runUmeDiagnostics` |
 | UME 网元 | `queryUmeNeInventory`, `getUmeNe` |
 | UME 原始/SQL | `queryUmeAlarmsRaw`, `aggregateUmeAlarmsRaw`, `listUmeAlarmFields`, `sqlQueryUme` |
-| 托管网元 CLI | `listManagedNe`, `getManagedNe`, `execManagedNe` |
+| 托管网元 CLI | `listManagedNe`, `getManagedNe`, `execManagedNe`, `listCliTargets` |
+| 拓扑 Fabric | `getTopologySummary`, `queryTopologyNodes`, `queryTopologyEdges`, `getTopologyNeighborhood`, `runLldpDiscover`, `getLldpDiscoverJob`, `listTopologyViews`, `getTopologyView` |
 
-oclaw 中名称带前缀：`mcp__netx__<toolName>`。
+物理拓扑仅 LLDP；分页查询，勿默认拉全图。oclaw 中名称带前缀：`mcp__netx__<toolName>`。
 
 ---
 

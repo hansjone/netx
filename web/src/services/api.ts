@@ -18,11 +18,13 @@ import type {
   CliMeta,
   CliTargetListResponse,
   UmeCliOverrideItem,
-  TopologyDiscoverOut,
-  TopologyDiscoverNeResult,
-  TopologyDiscoverStreamHandlers,
-  TopologyGraph,
-  TopologyMapItem,
+  FabricSummary,
+  TopologyDiscoverJob,
+  TopologyViewGraph,
+  TopologyViewItem,
+  LldpCollectDashboard,
+  LldpCollectJobSummary,
+  LldpCollectPolicy,
   ConfigSyncCycle,
   ConfigSyncDashboard,
   ConfigSyncPolicy,
@@ -846,158 +848,110 @@ export const fetchUmeCurrentAlarms = (params: {
   );
 };
 
-export const fetchTopologyMaps = () =>
-  apiGet<{ total: number; items: TopologyMapItem[] }>("/v1/topology/maps");
+export const fetchTopologyViews = () =>
+  apiGet<{ total: number; items: TopologyViewItem[] }>("/v1/topology/views");
 
-export const createTopologyMap = (body: { name: string; remark?: string }) =>
-  apiPost<TopologyMapItem>("/v1/topology/maps", body);
+export const createTopologyView = (body: { name: string; remark?: string; filter?: Record<string, unknown> }) =>
+  apiPost<TopologyViewItem>("/v1/topology/views", body);
 
-export const fetchTopologyGraph = (mapId: string) =>
-  apiGet<TopologyGraph>(`/v1/topology/maps/${encodeURIComponent(mapId)}`);
+export const fetchTopologyViewGraph = (viewId: string) =>
+  apiGet<TopologyViewGraph>(`/v1/topology/views/${encodeURIComponent(viewId)}`);
 
-export const updateTopologyMap = (mapId: string, body: { name?: string; remark?: string }) =>
-  apiPatch<TopologyMapItem>(`/v1/topology/maps/${encodeURIComponent(mapId)}`, body);
+export const updateTopologyView = (
+  viewId: string,
+  body: { name?: string; remark?: string; filter?: Record<string, unknown>; viewport?: Record<string, unknown> },
+) => apiPatch<TopologyViewItem>(`/v1/topology/views/${encodeURIComponent(viewId)}`, body);
 
-export const deleteTopologyMap = (mapId: string) =>
-  apiDelete<{ ok: boolean; map_id: string; deleted: boolean }>(
-    `/v1/topology/maps/${encodeURIComponent(mapId)}`,
+export const deleteTopologyView = (viewId: string) =>
+  apiDelete<{ ok: boolean; view_id: string; deleted: boolean }>(
+    `/v1/topology/views/${encodeURIComponent(viewId)}`,
   );
 
-export const putTopologyGraph = (
-  mapId: string,
-  body: {
-    nodes: Array<{
-      id: string;
-      managed_ne_id?: string;
-      ume_ne_id?: string;
-      label?: string;
-      x?: number;
-      y?: number;
-    }>;
-    edges: Array<{
-      id: string;
-      source_node_id: string;
-      target_node_id: string;
-      source_port?: string;
-      target_port?: string;
-      source?: string;
-      stroke_color?: string;
-      stroke_width?: number;
-      line_style?: string;
-      discovered_at?: string | null;
-    }>;
-  },
-) => apiPut<TopologyGraph>(`/v1/topology/maps/${encodeURIComponent(mapId)}/graph`, body);
-
-export const discoverTopologyNeighbors = (
-  mapId: string,
-  body?: { protocol?: string; ne_ids?: string[] },
+export const patchTopologyPositions = (
+  viewId: string,
+  positions: Array<{
+    fabric_node_id: string;
+    x?: number;
+    y?: number;
+    label?: string;
+    locked?: boolean;
+  }>,
 ) =>
-  apiPost<TopologyDiscoverOut>(
-    `/v1/topology/maps/${encodeURIComponent(mapId)}/discover`,
-    body || {},
-  );
-
-function parseSseChunks(buffer: string): { events: Array<{ event: string; data: string }>; rest: string } {
-  const events: Array<{ event: string; data: string }> = [];
-  let rest = buffer;
-  while (true) {
-    const sep = rest.indexOf("\n\n");
-    if (sep < 0) break;
-    const raw = rest.slice(0, sep);
-    rest = rest.slice(sep + 2);
-    let event = "message";
-    const dataLines: string[] = [];
-    for (const line of raw.split("\n")) {
-      if (line.startsWith("event:")) event = line.slice(6).trim();
-      else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
-    }
-    if (dataLines.length) events.push({ event, data: dataLines.join("\n") });
-  }
-  return { events, rest };
-}
-
-export async function discoverTopologyNeighborsStream(
-  mapId: string,
-  body: { protocol?: string; ne_ids?: string[] } | undefined,
-  handlers: TopologyDiscoverStreamHandlers,
-  signal?: AbortSignal,
-): Promise<TopologyDiscoverOut> {
-  const path = `/v1/topology/maps/${encodeURIComponent(mapId)}/discover/stream`;
-  const res = await fetch(path, {
-    method: "POST",
-    headers: authHeaders({
-      accept: "text/event-stream",
-      "content-type": "application/json",
-    }),
-    body: JSON.stringify(body || {}),
-    signal,
+  apiPatch<TopologyViewGraph>(`/v1/topology/views/${encodeURIComponent(viewId)}/positions`, {
+    positions,
   });
-  if (res.status === 401) {
-    handleUnauthorized(path);
-    throw new Error("unauthorized");
-  }
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(text || `discover_stream_failed:${res.status}`);
-  }
-  if (!res.body) throw new Error("discover_stream_empty_body");
 
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buf = "";
-  let finalReport: TopologyDiscoverOut | null = null;
+export const addTopologyViewNodes = (
+  viewId: string,
+  body: {
+    managed_ne_ids?: string[];
+    ume_ne_ids?: string[];
+    fabric_node_ids?: string[];
+    layout?: string;
+  },
+) => apiPost<TopologyViewGraph>(`/v1/topology/views/${encodeURIComponent(viewId)}/nodes`, body);
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    const parsed = parseSseChunks(buf);
-    buf = parsed.rest;
-    for (const item of parsed.events) {
-      let payload: Record<string, unknown> = {};
-      try {
-        payload = JSON.parse(item.data) as Record<string, unknown>;
-      } catch {
-        continue;
-      }
-      const type = String(payload.type || item.event || "");
-      if (type === "start") {
-        handlers.onStart?.({
-          map_id: String(payload.map_id || ""),
-          protocol: String(payload.protocol || ""),
-          total: Number(payload.total || 0),
-        });
-      } else if (type === "ne_start") {
-        handlers.onNeStart?.({
-          index: Number(payload.index || 0),
-          total: Number(payload.total || 0),
-          ne_id: String(payload.ne_id || ""),
-          ne_name: String(payload.ne_name || ""),
-          ne_ip: String(payload.ne_ip || ""),
-        });
-      } else if (type === "ne_result") {
-        handlers.onNeResult?.({
-          index: Number(payload.index || 0),
-          total: Number(payload.total || 0),
-          result: payload.result as TopologyDiscoverNeResult,
-          edges_added: Number(payload.edges_added || 0),
-          edges_updated: Number(payload.edges_updated || 0),
-        });
-      } else if (type === "done") {
-        finalReport = payload.report as TopologyDiscoverOut;
-        if (finalReport) handlers.onDone?.(finalReport);
-      } else if (type === "error") {
-        const detail = String(payload.detail || "discover_stream_error");
-        handlers.onError?.(detail);
-        throw new Error(detail);
-      }
-    }
-  }
+export const removeTopologyViewNodes = (viewId: string, fabricNodeIds: string[]) =>
+  apiPost<TopologyViewGraph>(`/v1/topology/views/${encodeURIComponent(viewId)}/nodes/remove`, {
+    fabric_node_ids: fabricNodeIds,
+  });
 
-  if (!finalReport) throw new Error("discover_stream_incomplete");
-  return finalReport;
-}
+export const projectTopologyNeighbors = (viewId: string) =>
+  apiPost<TopologyViewGraph>(`/v1/topology/views/${encodeURIComponent(viewId)}/project-neighbors`, {});
+
+export const patchTopologyEdgeStyle = (
+  viewId: string,
+  body: { fabric_edge_id: string; stroke_color?: string; stroke_width?: number; line_style?: string },
+) =>
+  apiPatch<TopologyViewGraph>(`/v1/topology/views/${encodeURIComponent(viewId)}/edge-style`, body);
+
+export const fetchFabricSummary = () => apiGet<FabricSummary>("/v1/topology/fabric/summary");
+
+export const startLldpDiscover = (body?: {
+  scope?: "all_inventory" | "ne_ids";
+  ne_ids?: string[];
+  auto_add_unmatched?: boolean;
+  concurrency?: number;
+  trigger_mode?: "manual" | "schedule" | "topology";
+}) => apiPost<TopologyDiscoverJob>("/v1/topology/fabric/discover", body || {});
+
+export const fetchLldpDiscoverJob = (jobId: string) =>
+  apiGet<TopologyDiscoverJob>(`/v1/topology/fabric/discover/${encodeURIComponent(jobId)}`);
+
+export const fetchLldpCollectDashboard = () =>
+  apiGet<LldpCollectDashboard>("/v1/topology/lldp-collect/dashboard");
+
+export const updateLldpCollectPolicy = (body: Partial<LldpCollectPolicy>) =>
+  apiPut<LldpCollectPolicy>("/v1/topology/lldp-collect/policy", body);
+
+export const startLldpCollect = () =>
+  apiPost<{ ok: boolean; job: TopologyDiscoverJob }>("/v1/topology/lldp-collect/start", {});
+
+export const fetchLldpCollectJobs = (params: { page?: number; pageSize?: number }) => {
+  const p = new URLSearchParams();
+  p.set("page", String(Math.max(1, Number(params.page || 1))));
+  p.set("page_size", String(Math.max(1, Math.min(100, Number(params.pageSize || 20)))));
+  return apiGet<{ total: number; page: number; page_size: number; items: LldpCollectJobSummary[] }>(
+    `/v1/topology/lldp-collect/jobs?${p.toString()}`,
+  );
+};
+
+export const fetchLldpCollectJob = (jobId: string) =>
+  apiGet<TopologyDiscoverJob>(`/v1/topology/lldp-collect/jobs/${encodeURIComponent(jobId)}`);
+
+export const createFabricManualEdge = (body: {
+  a_node_id: string;
+  b_node_id: string;
+  a_port?: string;
+  b_port?: string;
+}) => apiPost<{ ok: boolean; action: string; edge: Record<string, unknown> }>("/v1/topology/fabric/edges", body);
+
+/** Back-compat aliases used by older call sites during cutover. */
+export const fetchTopologyMaps = fetchTopologyViews;
+export const createTopologyMap = createTopologyView;
+export const fetchTopologyGraph = fetchTopologyViewGraph;
+export const updateTopologyMap = updateTopologyView;
+export const deleteTopologyMap = deleteTopologyView;
 
 export const fetchConfigSyncDashboard = () =>
   apiGet<ConfigSyncDashboard>("/v1/config-sync/dashboard");

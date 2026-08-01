@@ -49,3 +49,6 @@ WEBCRT_DEVICE_TYPES: tuple[str, ...] = SUPPORTED_DEVICE_TYPES + ("linux", "gener
 
 # ManagedNE.source value for sessions created via WebCRT Quick Connect.
 WEBCRT_NE_SOURCE = "webcrt"
+
+# ManagedNE.source for LLDP-discovered peers not yet in inventory (SSH shell, empty creds).
+LLDP_DISCOVERED_NE_SOURCE = "lldp"

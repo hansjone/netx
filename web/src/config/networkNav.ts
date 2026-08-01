@@ -3,7 +3,7 @@
  * Add leaf items here when extending (devices / topology / alarms / tasks).
  */
 
-export type NetworkNavGroupId = "detail" | "tasks";
+export type NetworkNavGroupId = "detail" | "topologyMgmt" | "tasks";
 
 export type NetworkNavItem = {
   id: string;
@@ -26,6 +26,18 @@ export const NETWORK_NAV: readonly NetworkNavGroup[] = [
       { id: "devices", path: "/network/devices", labelKey: "network.nav.devices", group: "detail" },
       { id: "alarms", path: "/network/alarms", labelKey: "network.nav.alarms", group: "detail" },
       { id: "configs", path: "/network/configs", labelKey: "network.nav.configs", group: "detail" },
+    ],
+  },
+  {
+    id: "topologyMgmt",
+    labelKey: "network.nav.topologyMgmt",
+    items: [
+      {
+        id: "lldp-links",
+        path: "/network/topology/lldp",
+        labelKey: "network.nav.lldpLinks",
+        group: "topologyMgmt",
+      },
     ],
   },
   {

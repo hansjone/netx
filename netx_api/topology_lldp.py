@@ -147,25 +147,19 @@ def lldp_command_for_vendor(vendor: str = "", device_type: str = "") -> str:
 
 
 def cdp_command_for_vendor(vendor: str = "", device_type: str = "") -> str:
+    """Deprecated: CDP is not used for fabric discovery (LLDP only)."""
     return get_vendor_profile(vendor, device_type).cdp_command
 
 
 def pick_neighbor_command(
     *,
-    protocol: str = "auto",
+    protocol: str = "lldp",
     vendor: str = "",
     device_type: str = "",
 ) -> tuple[str, str]:
-    """Return (command, protocol_tag).
-
-    Default/auto uses LLDP for all vendors (multi-vendor fabrics).
-    Pass protocol=\"cdp\" only when explicitly requesting CDP (Cisco).
-    """
-    proto = str(protocol or "auto").strip().lower()
+    """Return (lldp_command, \"lldp\"). Physical discovery is LLDP-only (CDP ignored)."""
+    _ = protocol  # accepted for call-site compat; always LLDP
     profile = get_vendor_profile(vendor, device_type)
-    if proto == "cdp":
-        cmd = profile.cdp_command or "show cdp neighbors detail"
-        return cmd, "cdp"
     return profile.lldp_command, "lldp"
 
 
@@ -274,11 +268,8 @@ def parse_neighbor_output(
     raw = str(text or "")
     if not raw.strip():
         return []
-    proto = str(protocol or "lldp").strip().lower()
+    _ = protocol  # CDP discovery removed; always parse as LLDP
     key = resolve_vendor_key(vendor, device_type)
-
-    if proto == "cdp":
-        return parse_cisco_cdp(raw)
 
     parser = _VENDOR_PARSERS.get(key) or parse_generic_lldp
     hits = parser(raw)

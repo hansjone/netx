@@ -393,54 +393,185 @@ class NeCollectionRun(Base):
     ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
-class TopologyMap(Base):
-    """Named topology canvas (document-style graph)."""
+class TopoFabricNode(Base):
+    """Global topology fabric node (inventory-aligned). Target scale ~50k."""
 
-    __tablename__ = "topology_map"
+    __tablename__ = "topo_fabric_node"
+    __table_args__ = (
+        UniqueConstraint("managed_ne_id", name="uq_topo_fabric_node_managed_ne_id"),
+        UniqueConstraint("ume_ne_id", name="uq_topo_fabric_node_ume_ne_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
+    managed_ne_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    ume_ne_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(256), default="", index=True)
-    remark: Mapped[str] = mapped_column(String(1024), default="")
+    ip: Mapped[str] = mapped_column(String(128), default="", index=True)
+    vendor: Mapped[str] = mapped_column(String(64), default="")
+    device_type: Mapped[str] = mapped_column(String(64), default="")
+    attrs: Mapped[dict] = mapped_column(_JsonType, default=dict)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
 
-class TopologyNode(Base):
-    """Node on a topology map; preferably references an inventory NE."""
+class TopoFabricEdge(Base):
+    """Global fabric link. Target scale ~1M; layer reserved for future BGP/tunnel/l2vpn."""
 
-    __tablename__ = "topology_node"
+    __tablename__ = "topo_fabric_edge"
+    __table_args__ = (
+        UniqueConstraint(
+            "layer",
+            "a_node_id",
+            "b_node_id",
+            "a_port",
+            "b_port",
+            name="uq_topo_fabric_edge_endpoints",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
-    map_id: Mapped[str] = mapped_column(String(64), index=True)
-    managed_ne_id: Mapped[str] = mapped_column(String(64), default="", index=True)
-    ume_ne_id: Mapped[str] = mapped_column(String(128), default="", index=True)
-    label: Mapped[str] = mapped_column(String(256), default="")
-    x: Mapped[float] = mapped_column(Float, default=0.0)
-    y: Mapped[float] = mapped_column(Float, default=0.0)
+    # physical | bgp | tunnel | l2vpn (P1 writes physical only)
+    layer: Mapped[str] = mapped_column(String(32), default="physical", index=True)
+    a_node_id: Mapped[str] = mapped_column(String(64), index=True)
+    b_node_id: Mapped[str] = mapped_column(String(64), index=True)
+    a_port: Mapped[str] = mapped_column(String(128), default="")
+    b_port: Mapped[str] = mapped_column(String(128), default="")
+    # lldp | manual | stale
+    source: Mapped[str] = mapped_column(String(32), default="lldp", index=True)
+    # active | stale
+    status: Mapped[str] = mapped_column(String(32), default="active", index=True)
+    attrs: Mapped[dict] = mapped_column(_JsonType, default=dict)
+    discovered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
-class TopologyEdge(Base):
-    """Link between two topology nodes."""
+class TopoView(Base):
+    """Named topology view (presentation); replaces legacy topology_map."""
 
-    __tablename__ = "topology_edge"
+    __tablename__ = "topo_view"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
-    map_id: Mapped[str] = mapped_column(String(64), index=True)
-    source_node_id: Mapped[str] = mapped_column(String(64), index=True)
-    target_node_id: Mapped[str] = mapped_column(String(64), index=True)
-    source_port: Mapped[str] = mapped_column(String(128), default="")
-    target_port: Mapped[str] = mapped_column(String(128), default="")
-    # manual | lldp | cdp | stale
-    source: Mapped[str] = mapped_column(String(32), default="manual", index=True)
-    # Optional visual overrides; empty / 0 = use provenance defaults.
+    name: Mapped[str] = mapped_column(String(256), default="", index=True)
+    remark: Mapped[str] = mapped_column(String(1024), default="")
+    # { node_ids?: [], layer?: "physical", status?: "active", keyword?: "" }
+    filter: Mapped[dict] = mapped_column(_JsonType, default=dict)
+    viewport: Mapped[dict] = mapped_column(_JsonType, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class TopoViewNode(Base):
+    """Node placement on a view; no link facts."""
+
+    __tablename__ = "topo_view_node"
+    __table_args__ = (UniqueConstraint("view_id", "fabric_node_id", name="uq_topo_view_node"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
+    view_id: Mapped[str] = mapped_column(String(64), index=True)
+    fabric_node_id: Mapped[str] = mapped_column(String(64), index=True)
+    x: Mapped[float] = mapped_column(Float, default=0.0)
+    y: Mapped[float] = mapped_column(Float, default=0.0)
+    label: Mapped[str] = mapped_column(String(256), default="")
+    locked: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class TopoViewEdgeStyle(Base):
+    """Optional per-view edge style override."""
+
+    __tablename__ = "topo_view_edge_style"
+    __table_args__ = (UniqueConstraint("view_id", "fabric_edge_id", name="uq_topo_view_edge_style"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
+    view_id: Mapped[str] = mapped_column(String(64), index=True)
+    fabric_edge_id: Mapped[str] = mapped_column(String(64), index=True)
     stroke_color: Mapped[str] = mapped_column(String(32), default="")
     stroke_width: Mapped[int] = mapped_column(Integer, default=0)
-    # "" | solid | dashed | dotted
     line_style: Mapped[str] = mapped_column(String(16), default="")
-    discovered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class LldpCollectPolicy(Base):
+    """Singleton policy for periodic fabric LLDP collect (id=1)."""
+
+    __tablename__ = "lldp_collect_policy"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    interval_days: Mapped[int] = mapped_column(Integer, default=1)
+    concurrency: Mapped[int] = mapped_column(Integer, default=4)
+    scope_mode: Mapped[str] = mapped_column(String(32), default="all")  # all | selected
+    selected_targets: Mapped[list] = mapped_column(_JsonType, default=list)
+    auto_add_unmatched: Mapped[bool] = mapped_column(Boolean, default=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class TopoDiscoverJob(Base):
+    """Async LLDP discovery job over inventory / NE ids."""
+
+    __tablename__ = "topo_discover_job"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
+    # all_inventory | ne_ids
+    scope: Mapped[str] = mapped_column(String(32), default="ne_ids", index=True)
+    # manual | schedule | topology (ad-hoc from canvas)
+    trigger_mode: Mapped[str] = mapped_column(String(32), default="manual", index=True)
+    ne_ids_json: Mapped[list] = mapped_column(_JsonType, default=list)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    total: Mapped[int] = mapped_column(Integer, default=0)
+    done: Mapped[int] = mapped_column(Integer, default=0)
+    edges_added: Mapped[int] = mapped_column(Integer, default=0)
+    edges_updated: Mapped[int] = mapped_column(Integer, default=0)
+    edges_stale: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str] = mapped_column(String(1024), default="")
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class TopoDiscoverJobItem(Base):
+    """Per-NE result row for a discover job."""
+
+    __tablename__ = "topo_discover_job_item"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
+    job_id: Mapped[str] = mapped_column(String(64), index=True)
+    ne_id: Mapped[str] = mapped_column(String(128), default="", index=True)
+    ume_ne_id: Mapped[str] = mapped_column(String(128), default="")
+    fabric_node_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    ne_name: Mapped[str] = mapped_column(String(256), default="")
+    ne_ip: Mapped[str] = mapped_column(String(128), default="")
+    ok: Mapped[bool] = mapped_column(Boolean, default=False)
+    command: Mapped[str] = mapped_column(String(256), default="")
+    neighbors: Mapped[int] = mapped_column(Integer, default=0)
+    edges_added: Mapped[int] = mapped_column(Integer, default=0)
+    edges_updated: Mapped[int] = mapped_column(Integer, default=0)
+    unmatched_count: Mapped[int] = mapped_column(Integer, default=0)
+    unmatched_json: Mapped[list] = mapped_column(_JsonType, default=list)
+    parser_key: Mapped[str] = mapped_column(String(64), default="")
+    parser_stub: Mapped[bool] = mapped_column(Boolean, default=False)
+    error: Mapped[str] = mapped_column(String(1024), default="")
+    raw_preview: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class TopoFabricStats(Base):
+    """Cached fabric counters for summary (avoid COUNT on 1M edges)."""
+
+    __tablename__ = "topo_fabric_stats"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default="global")
+    node_count: Mapped[int] = mapped_column(Integer, default=0)
+    edge_count: Mapped[int] = mapped_column(Integer, default=0)
+    edge_active: Mapped[int] = mapped_column(Integer, default=0)
+    edge_stale: Mapped[int] = mapped_column(Integer, default=0)
+    last_discover_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

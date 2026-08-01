@@ -119,9 +119,25 @@ export function ConfigSyncPage() {
         history_keep: historyKeep,
         selected_targets: Object.values(selectedMap),
       }),
-    onSuccess: async () => {
+    onSuccess: async (saved) => {
+      // Apply server response immediately — do NOT flip policyHydrated false then
+      // rehydrate from a possibly-stale dashboard cache (checkbox "pops back" bug).
+      setEnabled(Boolean(saved.enabled));
+      setIntervalDays(Number(saved.interval_days || 3));
+      setConcurrency(Number(saved.concurrency || 5));
+      setScopeMode(saved.scope_mode === "selected" ? "selected" : "all");
+      setHistoryKeep(Number(saved.history_keep ?? 3));
+      const map: Record<string, ConfigSyncTargetRef> = {};
+      for (const ref of saved.selected_targets || []) {
+        map[`${ref.source}:${ref.id}`] = { source: ref.source, id: ref.id };
+      }
+      setSelectedMap(map);
+      setPolicyHydrated(true);
+      queryClient.setQueryData(queryKeys.configSyncDashboard, (prev: unknown) => {
+        if (!prev || typeof prev !== "object") return prev;
+        return { ...(prev as object), policy: saved };
+      });
       showOk(t("configSync.policySaved"));
-      setPolicyHydrated(false);
       await refresh();
     },
     onError: (err) => showError(String(err)),

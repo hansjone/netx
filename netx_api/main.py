@@ -31,6 +31,7 @@ from .port_traffic_router import router as port_traffic_router
 from .managed_ne_router import router as managed_ne_router
 from .webcrt_router import router as webcrt_router
 from .topology_router import router as topology_router
+from .lldp_collect_router import router as lldp_collect_router
 from .importer import aggregate_alarms, import_alarm_excel, query_alarms
 from .models import (
     AiAnalyzeHistory,
@@ -139,6 +140,7 @@ app.include_router(config_sync_router)
 app.include_router(port_traffic_router)
 app.include_router(webcrt_router)
 app.include_router(topology_router)
+app.include_router(lldp_collect_router)
 parser_cfg = load_parser_config()
 _UME_CLIENT_SINGLETON = UMEClient(
     token_loader=lambda: load_shared_token(),
@@ -814,10 +816,12 @@ def on_startup() -> None:
             )
             conn.exec_driver_sql("ALTER TABLE api_token ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP")
             from .port_traffic_migrate import ensure_port_traffic_series_schema
+            from .topology_migrate import ensure_topology_schema
 
             ensure_port_traffic_series_schema(conn)
+            ensure_topology_schema(conn)
     except Exception:
-        _schedule_log.exception("startup: auth/port_traffic schema migration failed")
+        _schedule_log.exception("startup: auth/port_traffic/topology schema migration failed")
     _reset_runtime_pause_flags()
     _fail_stale_running_sync_jobs_on_startup()
     if _needs_startup_alarm_sync_before_ws():
@@ -847,6 +851,12 @@ def on_startup() -> None:
         cfg_resumed = recover_config_sync_on_startup(db)
         if cfg_resumed:
             _schedule_log.info("startup: resumed %s config_sync task(s) from interrupted cycle", cfg_resumed)
+        try:
+            from .lldp_collect_service import ensure_policy as ensure_lldp_collect_policy
+
+            ensure_lldp_collect_policy(db)
+        except Exception:
+            _schedule_log.exception("startup: lldp_collect policy ensure failed")
         pt_cleared = recover_port_traffic_on_startup(db)
         if pt_cleared:
             _schedule_log.info("startup: cleared %s port_traffic stuck collect_running flag(s)", pt_cleared)
@@ -866,6 +876,12 @@ def on_startup() -> None:
         start_config_sync_scheduler()
     except Exception:
         _schedule_log.exception("startup: config_sync scheduler init failed")
+    try:
+        from .lldp_collect_scheduler import start_lldp_collect_scheduler
+
+        start_lldp_collect_scheduler()
+    except Exception:
+        _schedule_log.exception("startup: lldp_collect scheduler init failed")
     try:
         from .port_traffic_scheduler import start_port_traffic_scheduler
 

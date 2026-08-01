@@ -1,123 +1,86 @@
-"""Pydantic schemas for topology maps / nodes / edges."""
+"""Pydantic schemas for fabric topology + views (final model)."""
 
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, Field
 
 
-class TopologyMapCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=256)
-    remark: str = Field(default="", max_length=1024)
+# ---------------------------------------------------------------------------
+# Fabric
+# ---------------------------------------------------------------------------
 
 
-class TopologyMapUpdate(BaseModel):
-    name: str | None = Field(default=None, min_length=1, max_length=256)
-    remark: str | None = Field(default=None, max_length=1024)
-
-
-class TopologyMapOut(BaseModel):
+class FabricNodeOut(BaseModel):
     id: str
-    name: str
-    remark: str
+    managed_ne_id: str = ""
+    ume_ne_id: str = ""
+    name: str = ""
+    ip: str = ""
+    vendor: str = ""
+    device_type: str = ""
+    attrs: dict[str, Any] = Field(default_factory=dict)
+    last_seen_at: datetime | None = None
+
+
+class FabricEdgeOut(BaseModel):
+    id: str
+    layer: str = "physical"
+    a_node_id: str
+    b_node_id: str
+    a_port: str = ""
+    b_port: str = ""
+    source: str = "lldp"
+    status: str = "active"
+    attrs: dict[str, Any] = Field(default_factory=dict)
+    discovered_at: datetime | None = None
+    last_seen_at: datetime | None = None
+
+
+class FabricSummaryOut(BaseModel):
     node_count: int = 0
     edge_count: int = 0
-    created_at: datetime | None = None
+    edge_active: int = 0
+    edge_stale: int = 0
+    last_discover_at: datetime | None = None
     updated_at: datetime | None = None
 
 
-class TopologyNodeIn(BaseModel):
-    id: str = Field(min_length=1, max_length=64)
-    managed_ne_id: str = ""
-    ume_ne_id: str = ""
-    label: str = ""
-    x: float = 0.0
-    y: float = 0.0
-    created_at: datetime | None = None
+class FabricNeighborhoodOut(BaseModel):
+    center_node_id: str
+    depth: int = 1
+    nodes: list[FabricNodeOut] = Field(default_factory=list)
+    edges: list[FabricEdgeOut] = Field(default_factory=list)
 
 
-class TopologyEdgeIn(BaseModel):
-    id: str = Field(min_length=1, max_length=64)
-    source_node_id: str = Field(min_length=1, max_length=64)
-    target_node_id: str = Field(min_length=1, max_length=64)
-    source_port: str = ""
-    target_port: str = ""
-    source: str = "manual"
-    stroke_color: str = Field(default="", max_length=32)
-    stroke_width: int = Field(default=0, ge=0, le=12)
-    line_style: str = Field(default="", max_length=16)
-    discovered_at: datetime | None = None
-    created_at: datetime | None = None
+class FabricDiscoverRequest(BaseModel):
+    """Start LLDP discovery into fabric (no CDP)."""
+
+    scope: str = Field(default="ne_ids", description="all_inventory | ne_ids")
+    ne_ids: list[str] = Field(default_factory=list)
+    auto_add_unmatched: bool = Field(
+        default=True,
+        description="Create SSH placeholder ManagedNEs for LLDP neighbors not in inventory",
+    )
+    concurrency: int = Field(default=4, ge=1, le=32)
+    trigger_mode: str = Field(default="manual", description="manual | schedule | topology")
 
 
-class TopologyNodeOut(BaseModel):
-    id: str
-    map_id: str
-    managed_ne_id: str = ""
-    ume_ne_id: str = ""
-    label: str = ""
-    x: float = 0.0
-    y: float = 0.0
-    ne_name: str = ""
-    ne_ip: str = ""
-    vendor: str = ""
-    protocol: str = ""
-    connect_status: str = ""
-
-
-class TopologyEdgeOut(BaseModel):
-    id: str
-    map_id: str
-    source_node_id: str
-    target_node_id: str
-    source_port: str = ""
-    target_port: str = ""
-    source: str = "manual"
-    stroke_color: str = ""
-    stroke_width: int = 0
-    line_style: str = ""
-    discovered_at: datetime | None = None
-
-
-class TopologyGraphOut(BaseModel):
-    map: TopologyMapOut
-    nodes: list[TopologyNodeOut]
-    edges: list[TopologyEdgeOut]
-
-
-class TopologyGraphPut(BaseModel):
-    nodes: list[TopologyNodeIn] = Field(default_factory=list)
-    edges: list[TopologyEdgeIn] = Field(default_factory=list)
-
-
-class TopologyDiscoverRequest(BaseModel):
-    """Run LLDP/CDP discovery for managed NEs currently on the map."""
-
-    protocol: str = Field(default="auto", description="auto | lldp | cdp")
-    ne_ids: list[str] | None = None
-
-
-class TopologyDiscoverUnmatched(BaseModel):
+class FabricDiscoverUnmatched(BaseModel):
     remote_name: str = ""
     remote_ip: str = ""
     local_port: str = ""
     remote_port: str = ""
 
 
-class TopologyDiscoverLink(BaseModel):
-    peer_node_id: str = ""
-    peer_ne_id: str = ""
-    peer_name: str = ""
-    peer_ip: str = ""
-    local_port: str = ""
-    remote_port: str = ""
-    protocol: str = ""
-    action: str = ""  # added | updated | kept_manual
-
-
-class TopologyDiscoverNeResult(BaseModel):
-    ne_id: str
+class FabricDiscoverJobItemOut(BaseModel):
+    id: str
+    job_id: str
+    ne_id: str = ""
+    ume_ne_id: str = ""
+    fabric_node_id: str = ""
     ne_name: str = ""
     ne_ip: str = ""
     ok: bool = False
@@ -126,20 +89,130 @@ class TopologyDiscoverNeResult(BaseModel):
     edges_added: int = 0
     edges_updated: int = 0
     unmatched_count: int = 0
-    unmatched: list[TopologyDiscoverUnmatched] = Field(default_factory=list)
-    links: list[TopologyDiscoverLink] = Field(default_factory=list)
+    unmatched: list[FabricDiscoverUnmatched] = Field(default_factory=list)
     parser_key: str = ""
     parser_stub: bool = False
     error: str = ""
     raw_preview: str = ""
 
 
-class TopologyDiscoverOut(BaseModel):
-    map_id: str
-    protocol: str
-    scanned: int = 0
+class FabricDiscoverJobOut(BaseModel):
+    id: str
+    scope: str
+    trigger_mode: str = "manual"
+    status: str
+    total: int = 0
+    done: int = 0
     edges_added: int = 0
     edges_updated: int = 0
     edges_stale: int = 0
-    results: list[TopologyDiscoverNeResult] = Field(default_factory=list)
-    graph: TopologyGraphOut | None = None
+    error: str = ""
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    items: list[FabricDiscoverJobItemOut] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Views
+# ---------------------------------------------------------------------------
+
+
+class TopologyViewCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=256)
+    remark: str = Field(default="", max_length=1024)
+    filter: dict[str, Any] = Field(default_factory=dict)
+
+
+class TopologyViewUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=256)
+    remark: str | None = Field(default=None, max_length=1024)
+    filter: dict[str, Any] | None = None
+    viewport: dict[str, Any] | None = None
+
+
+class TopologyViewOut(BaseModel):
+    id: str
+    name: str
+    remark: str = ""
+    filter: dict[str, Any] = Field(default_factory=dict)
+    viewport: dict[str, Any] = Field(default_factory=dict)
+    node_count: int = 0
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class ViewNodeIn(BaseModel):
+    fabric_node_id: str = Field(min_length=1, max_length=64)
+    x: float = 0.0
+    y: float = 0.0
+    label: str = ""
+    locked: bool = False
+
+
+class ViewNodeOut(BaseModel):
+    fabric_node_id: str
+    managed_ne_id: str = ""
+    ume_ne_id: str = ""
+    label: str = ""
+    x: float = 0.0
+    y: float = 0.0
+    locked: bool = False
+    name: str = ""
+    ip: str = ""
+    vendor: str = ""
+    device_type: str = ""
+    connect_status: str = ""
+
+
+class ViewEdgeOut(BaseModel):
+    id: str
+    a_node_id: str
+    b_node_id: str
+    a_port: str = ""
+    b_port: str = ""
+    source: str = "lldp"
+    status: str = "active"
+    layer: str = "physical"
+    stroke_color: str = ""
+    stroke_width: int = 0
+    line_style: str = ""
+    discovered_at: datetime | None = None
+
+
+class TopologyViewGraphOut(BaseModel):
+    view: TopologyViewOut
+    nodes: list[ViewNodeOut]
+    edges: list[ViewEdgeOut]
+    truncated: bool = False
+    truncate_reason: str = ""
+
+
+class ViewPositionsPatch(BaseModel):
+    positions: list[ViewNodeIn] = Field(default_factory=list)
+
+
+class ViewNodesAdd(BaseModel):
+    """Add inventory NEs onto a view (creates fabric nodes as needed)."""
+
+    managed_ne_ids: list[str] = Field(default_factory=list)
+    ume_ne_ids: list[str] = Field(default_factory=list)
+    fabric_node_ids: list[str] = Field(
+        default_factory=list,
+        description="Place existing fabric nodes onto the view",
+    )
+    # Optional initial positions keyed by managed/ume id
+    layout: str = Field(default="grid", description="grid | keep")
+
+
+class ViewEdgeStylePatch(BaseModel):
+    fabric_edge_id: str
+    stroke_color: str = ""
+    stroke_width: int = Field(default=0, ge=0, le=12)
+    line_style: str = Field(default="", max_length=16)
+
+
+class FabricManualEdgeIn(BaseModel):
+    a_node_id: str = Field(min_length=1, max_length=64)
+    b_node_id: str = Field(min_length=1, max_length=64)
+    a_port: str = ""
+    b_port: str = ""

@@ -123,19 +123,14 @@ src/
 - 采集日志：`GET /v1/port-traffic/devices/{id}/events`；失败写入 `port_traffic_event`，列表操作可查看
 - 支持拓扑深链：`?ne_id=&source=managed|ume&ifname=` 打开向导并预填网元
 
-## 拓扑管理
+## 拓扑管理（Fabric + View）
 
-- 渲染：`@xyflow/react`；布局：`dagre`（层次）+ 内置力导向/网格/环形
-- 工具模式：选择（框选多选）/ 平移 / 拖动 / 连线；快捷键 `V` `H` `A` `C`
-- 侧栏网元可点击或拖放到画布；发现默认保留节点坐标（「显示 → 发现后自动布局」可选开启并本机记住）
-- 支持对齐、网格吸附、轻量撤销/重做、链路图例
-- 选中链路可手动定制颜色 / 线型（实线·虚线·点线）/ 粗细，保存后持久化；空值回退到来源默认样式（人工灰 / 发现蓝虚线 / 未发现红虚线）
-- 「显示」里可改人工 / 发现 / 未发现三类默认样式（本机记住）；单链路样式与端口在右键菜单中调整；网元可右键重命名
-- 未保存切换地图会确认；Ctrl+S 保存；发现可取消；禁止自环与重复连线；PUT 保留 `discovered_at`；发现边键对端口名做规范化
-- 发现进度主区只显示摘要与入口；点「详情」打开列表弹窗，再点设备打开链路复核弹窗
-- 工具栏可搜索定位并高亮；侧栏已上图网元点击可定位
-- 连线模式画布顶提示；侧栏折叠/编辑/删除使用内联 SVG 图标；名称与 IP/端口间隔统一为 ASCII ` / `（避免 Unicode 损坏）
-- 链路右键可跳转端口流量（`/network/tasks/port-traffic?ne_id=&source=&ifname=`）
+- 事实库：`topo_fabric_node` / `topo_fabric_edge`（按 5 万网元 / 100 万链路设计；物理层仅 LLDP）
+- 视图：`topo_view` + `topo_view_node`（坐标）；旧 `topology_map/node/edge` 已退役
+- API：`/v1/topology/fabric/*`（summary / nodes / edges / neighborhood / discover job）、`/v1/topology/views*`
+- 前端：`@xyflow/react`；侧栏上图、拖拽保存坐标（PATCH positions）、布局（dagre/力导向/网格/环形）、轮询 LLDP job
+- MCP：`getTopologySummary`、`queryTopologyNodes/Edges`、`getTopologyNeighborhood`、`runLldpDiscover`、`getLldpDiscoverJob`、`listTopologyViews`、`getTopologyView`
+- BGP / 隧道 / L2VPN：`layer` 预留，实现 TODO
 
 ## WebCRT
 

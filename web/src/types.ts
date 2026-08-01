@@ -348,49 +348,62 @@ export type UmeTokenStatus = {
   error?: string;
 };
 
-export type TopologyMapItem = {
+export type TopologyViewItem = {
   id: string;
   name: string;
   remark: string;
+  filter?: Record<string, unknown>;
+  viewport?: Record<string, unknown>;
   node_count: number;
-  edge_count: number;
   created_at?: string | null;
   updated_at?: string | null;
 };
 
-export type TopologyNodeItem = {
-  id: string;
-  map_id: string;
+export type TopologyViewNodeItem = {
+  fabric_node_id: string;
   managed_ne_id: string;
   ume_ne_id: string;
   label: string;
   x: number;
   y: number;
-  ne_name: string;
-  ne_ip: string;
+  locked: boolean;
+  name: string;
+  ip: string;
   vendor: string;
-  protocol: string;
+  device_type: string;
   connect_status: string;
 };
 
-export type TopologyEdgeItem = {
+export type TopologyViewEdgeItem = {
   id: string;
-  map_id: string;
-  source_node_id: string;
-  target_node_id: string;
-  source_port: string;
-  target_port: string;
+  a_node_id: string;
+  b_node_id: string;
+  a_port: string;
+  b_port: string;
   source: string;
+  status: string;
+  layer: string;
   stroke_color?: string;
   stroke_width?: number;
   line_style?: string;
   discovered_at?: string | null;
 };
 
-export type TopologyGraph = {
-  map: TopologyMapItem;
-  nodes: TopologyNodeItem[];
-  edges: TopologyEdgeItem[];
+export type TopologyViewGraph = {
+  view: TopologyViewItem;
+  nodes: TopologyViewNodeItem[];
+  edges: TopologyViewEdgeItem[];
+  truncated?: boolean;
+  truncate_reason?: string;
+};
+
+export type FabricSummary = {
+  node_count: number;
+  edge_count: number;
+  edge_active: number;
+  edge_stale: number;
+  last_discover_at?: string | null;
+  updated_at?: string | null;
 };
 
 export type TopologyDiscoverUnmatched = {
@@ -400,19 +413,12 @@ export type TopologyDiscoverUnmatched = {
   remote_port: string;
 };
 
-export type TopologyDiscoverLink = {
-  peer_node_id?: string;
-  peer_ne_id?: string;
-  peer_name?: string;
-  peer_ip?: string;
-  local_port?: string;
-  remote_port?: string;
-  protocol?: string;
-  action?: string;
-};
-
-export type TopologyDiscoverNeResult = {
+export type TopologyDiscoverJobItem = {
+  id: string;
+  job_id: string;
   ne_id: string;
+  ume_ne_id: string;
+  fabric_node_id: string;
   ne_name: string;
   ne_ip: string;
   ok: boolean;
@@ -420,49 +426,96 @@ export type TopologyDiscoverNeResult = {
   neighbors: number;
   edges_added: number;
   edges_updated: number;
-  unmatched_count?: number;
+  unmatched_count: number;
   unmatched?: TopologyDiscoverUnmatched[];
-  links?: TopologyDiscoverLink[];
   parser_key?: string;
   parser_stub?: boolean;
   error: string;
   raw_preview: string;
 };
 
+export type TopologyDiscoverJob = {
+  id: string;
+  scope: string;
+  trigger_mode?: string;
+  status: string;
+  total: number;
+  done: number;
+  edges_added: number;
+  edges_updated: number;
+  edges_stale: number;
+  error: string;
+  started_at?: string | null;
+  ended_at?: string | null;
+  created_at?: string | null;
+  items: TopologyDiscoverJobItem[];
+};
+
+/** @deprecated alias — prefer TopologyViewItem */
+export type TopologyMapItem = TopologyViewItem;
+
+/** UI-compat aliases for restored TopologyPage. */
+export type TopologyNodeItem = TopologyViewNodeItem & { id?: string; map_id?: string; ne_name?: string; ne_ip?: string; protocol?: string };
+export type TopologyEdgeItem = TopologyViewEdgeItem & {
+  source_node_id?: string;
+  target_node_id?: string;
+  map_id?: string;
+};
+export type TopologyDiscoverNeResult = TopologyDiscoverJobItem & {
+  links?: Array<Record<string, unknown>>;
+};
 export type TopologyDiscoverOut = {
-  map_id: string;
-  protocol: string;
+  map_id?: string;
+  protocol?: string;
   scanned: number;
   edges_added: number;
   edges_updated: number;
   edges_stale?: number;
   results: TopologyDiscoverNeResult[];
-  graph: TopologyGraph | null;
-};
-
-export type TopologyDiscoverStreamHandlers = {
-  onStart?: (ev: { map_id: string; protocol: string; total: number }) => void;
-  onNeStart?: (ev: {
-    index: number;
-    total: number;
-    ne_id: string;
-    ne_name: string;
-    ne_ip: string;
-  }) => void;
-  onNeResult?: (ev: {
-    index: number;
-    total: number;
-    result: TopologyDiscoverNeResult;
-    edges_added: number;
-    edges_updated: number;
-  }) => void;
-  onDone?: (report: TopologyDiscoverOut) => void;
-  onError?: (detail: string) => void;
+  graph: TopologyViewGraph | null;
 };
 
 export type ConfigSyncTargetRef = {
   source: "managed" | "ume";
   id: string;
+};
+
+export type LldpCollectPolicy = {
+  enabled: boolean;
+  interval_days: number;
+  concurrency: number;
+  scope_mode: string;
+  selected_targets: ConfigSyncTargetRef[];
+  auto_add_unmatched: boolean;
+  updated_at?: string | null;
+};
+
+export type LldpCollectJobSummary = {
+  id: string;
+  scope: string;
+  trigger_mode: string;
+  status: string;
+  total: number;
+  done: number;
+  edges_added: number;
+  edges_updated: number;
+  edges_stale: number;
+  error: string;
+  started_at?: string | null;
+  ended_at?: string | null;
+  created_at?: string | null;
+};
+
+export type LldpCollectDashboard = {
+  policy: LldpCollectPolicy;
+  fabric_node_count: number;
+  fabric_edge_count: number;
+  fabric_edge_active: number;
+  fabric_edge_stale: number;
+  last_discover_at?: string | null;
+  running_job: LldpCollectJobSummary | null;
+  last_job: LldpCollectJobSummary | null;
+  next_due_at?: string | null;
 };
 
 export type ConfigSyncPolicy = {

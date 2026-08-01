@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+﻿import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ReactFlow,
@@ -23,16 +23,23 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import {
+  addTopologyViewNodes,
+  createFabricManualEdge,
   createTopologyMap,
   deleteTopologyMap,
-  discoverTopologyNeighborsStream,
+  fetchLldpDiscoverJob,
   fetchManagedNe,
   fetchTopologyGraph,
   fetchTopologyMaps,
   fetchUmeNe,
-  putTopologyGraph,
+  patchTopologyEdgeStyle,
+  patchTopologyPositions,
+  projectTopologyNeighbors,
+  removeTopologyViewNodes,
+  startLldpDiscover,
   updateTopologyMap,
 } from "../services/api";
+import type { TopologyDiscoverJob, TopologyViewEdgeItem, TopologyViewGraph, TopologyViewNodeItem } from "../types";
 import { queryKeys } from "../constants/queryKeys";
 import { HelpHint } from "../components/HelpHint";
 import { useI18n } from "../i18n";
@@ -399,27 +406,32 @@ function withEdgeVisual(edge: Edge, defaults: EdgeDefaults): Edge {
   return { ...edge, style, markerEnd: edgeMarker(style.stroke) };
 }
 
-function graphToFlow(nodes: TopologyNodeItem[], edges: TopologyEdgeItem[], defaults: EdgeDefaults) {
+function graphToFlow(
+  nodes: TopologyViewNodeItem[],
+  edges: TopologyViewEdgeItem[],
+  defaults: EdgeDefaults,
+) {
   const rfNodes: Node<NeNodeData>[] = nodes.map((n) => ({
-    id: n.id,
+    id: n.fabric_node_id,
     type: "neNode",
     position: { x: n.x || 0, y: n.y || 0 },
     data: {
-      label: n.label || n.ne_name || n.ne_ip || n.id,
+      label: n.label || n.name || n.ip || n.fabric_node_id,
       managed_ne_id: n.managed_ne_id || "",
       ume_ne_id: n.ume_ne_id || "",
-      ne_ip: n.ne_ip || "",
+      ne_ip: n.ip || "",
       vendor: n.vendor || "",
       connect_status: n.connect_status || "",
     },
   }));
   const rfEdges: Edge[] = edges.map((e) => {
-    const src = e.source || "manual";
-    const label = [e.source_port, e.target_port].filter(Boolean).join(SEP);
+    const src =
+      e.status === "stale" || e.status === "missing" ? "stale" : e.source || "manual";
+    const label = [e.a_port, e.b_port].filter(Boolean).join(SEP);
     const data: EdgeStyleData = {
       source: src,
-      source_port: e.source_port || "",
-      target_port: e.target_port || "",
+      source_port: e.a_port || "",
+      target_port: e.b_port || "",
       stroke_color: e.stroke_color || "",
       stroke_width: Number(e.stroke_width || 0),
       line_style: e.line_style || "",
@@ -428,8 +440,8 @@ function graphToFlow(nodes: TopologyNodeItem[], edges: TopologyEdgeItem[], defau
     return withEdgeVisual(
       {
         id: e.id,
-        source: e.source_node_id,
-        target: e.target_node_id,
+        source: e.a_node_id,
+        target: e.b_node_id,
         type: "straight",
         label: label || undefined,
         animated: false,
@@ -441,32 +453,25 @@ function graphToFlow(nodes: TopologyNodeItem[], edges: TopologyEdgeItem[], defau
   return { rfNodes, rfEdges };
 }
 
-function flowToGraphPayload(nodes: Node<NeNodeData>[], edges: Edge[]) {
-  return {
-    nodes: nodes.map((n) => ({
-      id: n.id,
-      managed_ne_id: n.data.managed_ne_id || "",
-      ume_ne_id: n.data.ume_ne_id || "",
-      label: n.data.label || "",
-      x: n.position.x,
-      y: n.position.y,
-    })),
-    edges: edges.map((e) => {
-      const data = (e.data || {}) as EdgeStyleData;
-      return {
-        id: e.id,
-        source_node_id: e.source,
-        target_node_id: e.target,
-        source_port: String(data.source_port || ""),
-        target_port: String(data.target_port || ""),
-        source: String(data.source || "manual"),
-        stroke_color: String(data.stroke_color || ""),
-        stroke_width: Number(data.stroke_width || 0),
-        line_style: String(data.line_style || ""),
-        discovered_at: data.discovered_at ?? null,
-      };
-    }),
-  };
+function flowToPositions(nodes: Node<NeNodeData>[]) {
+  return nodes.map((n) => ({
+    fabric_node_id: n.id,
+    x: n.position.x,
+    y: n.position.y,
+    label: n.data.label || "",
+  }));
+}
+
+function applyViewGraph(
+  graph: TopologyViewGraph,
+  defaults: EdgeDefaults,
+  setNodes: (ns: Node<NeNodeData>[]) => void,
+  setEdges: (es: Edge[]) => void,
+) {
+  const { rfNodes, rfEdges } = graphToFlow(graph.nodes, graph.edges, defaults);
+  setNodes(rfNodes);
+  setEdges(rfEdges);
+  return { rfNodes, rfEdges };
 }
 
 export function TopologyPage() {
@@ -731,7 +736,7 @@ export function TopologyPage() {
       window.setTimeout(() => rfRef.current?.fitView({ padding: 0.2 }), 40);
       if (opts?.persist && mapId) {
         try {
-          const graph = await putTopologyGraph(mapId, flowToGraphPayload(next, edges));
+          const graph = await patchTopologyPositions(mapId, flowToPositions(next));
           clearDirty();
           queryClient.setQueryData(queryKeys.topologyGraph(mapId), graph);
         } catch (err) {
@@ -804,7 +809,7 @@ export function TopologyPage() {
   });
 
   const saveMut = useMutation({
-    mutationFn: () => putTopologyGraph(mapId, flowToGraphPayload(nodes, edges)),
+    mutationFn: () => patchTopologyPositions(mapId, flowToPositions(nodes)),
     onSuccess: async (graph) => {
       clearDirty();
       queryClient.setQueryData(queryKeys.topologyGraph(mapId), graph);
@@ -817,10 +822,12 @@ export function TopologyPage() {
   const runDiscover = useCallback(
     async (neIds?: string[]) => {
       if (!mapId || discovering) return;
+      // Topology canvas: single-NE (or explicit id list) only — bulk collect lives under Network → LLDP.
       const filterIds = (neIds || []).map((x) => String(x || "").trim()).filter(Boolean);
-      discoverAbortRef.current?.abort();
-      const ac = new AbortController();
-      discoverAbortRef.current = ac;
+      if (!filterIds.length) {
+        showError(t("topology.discoverOneNeedNe"));
+        return;
+      }
       setDiscoverOpen(true);
       setDiscovering(true);
       setDiscoverReport(null);
@@ -830,13 +837,11 @@ export function TopologyPage() {
       setDiscoverDetail(null);
       setDiscoverListOpen(false);
       const scannable = nodes.filter((n) => Boolean(n.data.managed_ne_id || n.data.ume_ne_id));
-      const scoped = filterIds.length
-        ? scannable.filter(
-            (n) =>
-              filterIds.includes(String(n.data.managed_ne_id || "")) ||
-              filterIds.includes(String(n.data.ume_ne_id || "")),
-          )
-        : scannable;
+      const scoped = scannable.filter(
+        (n) =>
+          filterIds.includes(String(n.data.managed_ne_id || "")) ||
+          filterIds.includes(String(n.data.ume_ne_id || "")),
+      );
       setDiscoverProgress({
         index: 0,
         total: scoped.length,
@@ -847,71 +852,76 @@ export function TopologyPage() {
       });
       try {
         if (dirtyRef.current) {
-          await putTopologyGraph(mapId, flowToGraphPayload(nodes, edges));
+          await patchTopologyPositions(mapId, flowToPositions(nodes));
           clearDirty();
         }
-        const out = await discoverTopologyNeighborsStream(
-          mapId,
-          {
-            protocol: "auto",
-            ...(filterIds.length ? { ne_ids: filterIds } : {}),
-          },
-          {
-            onStart: (ev) => {
-              setDiscoverProgress((p) => ({ ...p, total: ev.total, index: 0 }));
-            },
-            onNeStart: (ev) => {
-              setDiscoverProgress((p) => ({
-                ...p,
-                index: ev.index,
-                total: ev.total,
-                neName: ev.ne_name || ev.ne_ip || ev.ne_id,
-                neIp: ev.ne_ip,
-              }));
-            },
-            onNeResult: (ev) => {
-              if (ev.result) {
-                setDiscoverLiveResults((prev) => [...prev, ev.result]);
-              }
-              setDiscoverProgress((p) => ({
-                ...p,
-                index: ev.index,
-                total: ev.total,
-                edgesAdded: ev.edges_added,
-                edgesUpdated: ev.edges_updated,
-              }));
-            },
-          },
-          ac.signal,
-        );
-        if (out.graph) {
-          queryClient.setQueryData(queryKeys.topologyGraph(mapId), out.graph);
-          let { rfNodes, rfEdges } = graphToFlow(out.graph.nodes, out.graph.edges, edgeDefaults);
-          let didAutoLayout = false;
-          if (autoLayoutAfterDiscover && rfNodes.length > 1) {
-            rfNodes = layoutGraph(rfNodes, rfEdges, "hierarchical-tb");
-            didAutoLayout = true;
-            try {
-              const graph = await putTopologyGraph(mapId, flowToGraphPayload(rfNodes, rfEdges));
-              queryClient.setQueryData(queryKeys.topologyGraph(mapId), graph);
-              clearDirty();
-            } catch {
-              markDirty();
-            }
-          } else {
-            clearDirty();
-          }
-          historyLockRef.current = true;
-          setNodes(rfNodes);
-          setEdges(rfEdges);
-          historyLockRef.current = false;
-          // Only refit when layout changed; otherwise keep the user's viewport.
-          if (didAutoLayout) {
-            window.setTimeout(() => rfRef.current?.fitView({ padding: 0.2 }), 50);
-          }
+        const ne_ids = filterIds;
+        if (!scoped.length) {
+          throw new Error(t("topology.discoverOneNeedNe"));
         }
+        const jobStart = await startLldpDiscover({
+          scope: "ne_ids",
+          ne_ids,
+          concurrency: 4,
+          auto_add_unmatched: true,
+          trigger_mode: "topology",
+        });
+        let job: TopologyDiscoverJob = jobStart;
+        for (let i = 0; i < 600; i++) {
+          await new Promise((r) => window.setTimeout(r, 500));
+          job = await fetchLldpDiscoverJob(jobStart.id);
+          setDiscoverProgress((p) => ({
+            ...p,
+            index: job.done,
+            total: job.total || p.total,
+            edgesAdded: job.edges_added,
+            edgesUpdated: job.edges_updated,
+            neName: job.items?.[job.items.length - 1]?.ne_name || p.neName,
+            neIp: job.items?.[job.items.length - 1]?.ne_ip || p.neIp,
+          }));
+          setDiscoverLiveResults((job.items || []) as TopologyDiscoverNeResult[]);
+          if (job.status === "done" || job.status === "failed") break;
+        }
+        if (job.status === "failed") {
+          throw new Error(job.error || "discover_failed");
+        }
+        const projected = await projectTopologyNeighbors(mapId);
+        queryClient.setQueryData(queryKeys.topologyGraph(mapId), projected);
+        let { rfNodes, rfEdges } = graphToFlow(projected.nodes, projected.edges, edgeDefaults);
+        let didAutoLayout = false;
+        if (autoLayoutAfterDiscover && rfNodes.length > 1) {
+          rfNodes = layoutGraph(rfNodes, rfEdges, "hierarchical-tb");
+          didAutoLayout = true;
+          try {
+            const graph = await patchTopologyPositions(mapId, flowToPositions(rfNodes));
+            queryClient.setQueryData(queryKeys.topologyGraph(mapId), graph);
+            clearDirty();
+          } catch {
+            markDirty();
+          }
+        } else {
+          clearDirty();
+        }
+        historyLockRef.current = true;
+        setNodes(rfNodes);
+        setEdges(rfEdges);
+        historyLockRef.current = false;
+        if (didAutoLayout) {
+          window.setTimeout(() => rfRef.current?.fitView({ padding: 0.2 }), 50);
+        }
+        const out: TopologyDiscoverOut = {
+          map_id: mapId,
+          protocol: "lldp",
+          scanned: job.done,
+          edges_added: job.edges_added,
+          edges_updated: job.edges_updated,
+          edges_stale: job.edges_stale,
+          results: (job.items || []) as TopologyDiscoverNeResult[],
+          graph: projected,
+        };
         setDiscoverReport(out);
         await queryClient.invalidateQueries({ queryKey: queryKeys.topologyMaps });
+        await queryClient.invalidateQueries({ queryKey: queryKeys.fabricSummary });
         showOk(
           t("topology.discovered")
             .replace("{{added}}", String(out.edges_added))
@@ -919,15 +929,13 @@ export function TopologyPage() {
             .replace("{{stale}}", String(out.edges_stale || 0)),
         );
       } catch (err) {
-        if (ac.signal.aborted) return;
         setDiscoverError(String(err));
         showError(t("topology.discoverFail").replace("{{detail}}", String(err)));
       } finally {
-        if (discoverAbortRef.current === ac) discoverAbortRef.current = null;
         setDiscovering(false);
       }
     },
-    [mapId, discovering, nodes, edges, queryClient, setNodes, setEdges, showOk, showError, t, autoLayoutAfterDiscover, edgeDefaults],
+    [mapId, discovering, nodes, queryClient, setNodes, setEdges, showOk, showError, t, autoLayoutAfterDiscover, edgeDefaults, clearDirty, markDirty],
   );
 
   const discoverResults = discoverReport?.results?.length
@@ -989,91 +997,84 @@ export function TopologyPage() {
 
   const onConnect = useCallback(
     (connection: Connection) => {
-      if (!isValidConnection(connection)) return;
+      if (!mapId || !isValidConnection(connection)) return;
       pushHistory();
-      markDirty();
       connectClickRef.current = null;
-      const data: EdgeStyleData = {
-        source: "manual",
-        source_port: "",
-        target_port: "",
-        stroke_color: "",
-        stroke_width: 0,
-        line_style: "",
-        discovered_at: null,
-      };
-      setEdges((eds) =>
-        addEdge(
-          withEdgeVisual(
-            {
-              ...connection,
-              id: newId(),
-              type: "straight",
-              data,
-            },
-            edgeDefaults,
-          ),
-          eds,
-        ),
-      );
+      void (async () => {
+        try {
+          await createFabricManualEdge({
+            a_node_id: String(connection.source || ""),
+            b_node_id: String(connection.target || ""),
+            a_port: "",
+            b_port: "",
+          });
+          const graph = await fetchTopologyGraph(mapId);
+          queryClient.setQueryData(queryKeys.topologyGraph(mapId), graph);
+          historyLockRef.current = true;
+          applyViewGraph(graph, edgeDefaults, setNodes, setEdges);
+          historyLockRef.current = false;
+          clearDirty();
+        } catch (err) {
+          showError(String(err));
+        }
+      })();
     },
-    [setEdges, pushHistory, edgeDefaults, markDirty, isValidConnection],
+    [setEdges, setNodes, pushHistory, edgeDefaults, isValidConnection, mapId, queryClient, clearDirty, showError],
   );
 
   const addNodeAt = useCallback(
-    (item: PaletteItem, position: { x: number; y: number }) => {
+    async (item: PaletteItem, position: { x: number; y: number }) => {
       if (!mapId) {
         showError(t("topology.selectMap"));
         return;
       }
-      if (item.source === "managed") {
-        if (nodes.some((n) => n.data.managed_ne_id === item.managed_ne_id)) return;
-        const ne = (neQuery.data?.items || []).find((x) => x.id === item.managed_ne_id);
-        if (!ne) return;
-        pushHistory();
-        markDirty();
-        setNodes((prev) => [
-          ...prev,
-          {
-            id: newId(),
-            type: "neNode",
-            position,
-            data: {
-              label: ne.name || ne.ip_address,
-              managed_ne_id: ne.id,
-              ume_ne_id: "",
-              ne_ip: ne.ip_address,
-              vendor: ne.vendor,
-              connect_status: ne.connect_status,
+      try {
+        if (item.source === "managed") {
+          if (nodes.some((n) => n.data.managed_ne_id === item.managed_ne_id)) return;
+          const graph = await addTopologyViewNodes(mapId, { managed_ne_ids: [item.managed_ne_id] });
+          const added = graph.nodes.find((n) => n.managed_ne_id === item.managed_ne_id);
+          if (added) {
+            await patchTopologyPositions(mapId, [
+              {
+                fabric_node_id: added.fabric_node_id,
+                x: position.x,
+                y: position.y,
+                label: added.label || added.name || "",
+              },
+            ]);
+          }
+          const refreshed = await fetchTopologyGraph(mapId);
+          queryClient.setQueryData(queryKeys.topologyGraph(mapId), refreshed);
+          historyLockRef.current = true;
+          applyViewGraph(refreshed, edgeDefaults, setNodes, setEdges);
+          historyLockRef.current = false;
+          clearDirty();
+          return;
+        }
+        if (nodes.some((n) => n.data.ume_ne_id === item.ume_ne_id)) return;
+        const graph = await addTopologyViewNodes(mapId, { ume_ne_ids: [item.ume_ne_id] });
+        const added = graph.nodes.find((n) => n.ume_ne_id === item.ume_ne_id);
+        if (added) {
+          await patchTopologyPositions(mapId, [
+            {
+              fabric_node_id: added.fabric_node_id,
+              x: position.x,
+              y: position.y,
+              label: added.label || added.name || "",
             },
-          },
-        ]);
-        return;
+          ]);
+        }
+        const refreshed = await fetchTopologyGraph(mapId);
+        queryClient.setQueryData(queryKeys.topologyGraph(mapId), refreshed);
+        historyLockRef.current = true;
+        applyViewGraph(refreshed, edgeDefaults, setNodes, setEdges);
+        historyLockRef.current = false;
+        clearDirty();
+      } catch (err) {
+        showError(String(err));
       }
-      if (nodes.some((n) => n.data.ume_ne_id === item.ume_ne_id)) return;
-      const ne = (umeQuery.data?.items || []).find((x) => x.ne_id === item.ume_ne_id);
-      if (!ne) return;
-      const name = (ne.host_name || ne.ne_name || ne.user_label || ne.ip_address || ne.ne_id).trim();
-      pushHistory();
-      markDirty();
-      setNodes((prev) => [
-        ...prev,
-        {
-          id: newId(),
-          type: "neNode",
-          position,
-          data: {
-            label: name,
-            managed_ne_id: "",
-            ume_ne_id: ne.ne_id,
-            ne_ip: ne.ip_address || "",
-            vendor: "ZTE",
-            connect_status: ne.connection_status || "",
-          },
-        },
-      ]);
     },
-    [mapId, nodes, neQuery.data, umeQuery.data, setNodes, pushHistory, showError, t],
+    [mapId, nodes, setNodes, setEdges, showError, t, queryClient, edgeDefaults, clearDirty],
   );
 
   const addManagedNeToCanvas = (ne: ManagedNeItem) => {
@@ -1161,9 +1162,8 @@ export function TopologyPage() {
       >,
       opts?: { skipHistory?: boolean },
     ) => {
-      if (!selectedEdgeId) return;
+      if (!selectedEdgeId || !mapId) return;
       if (!opts?.skipHistory) pushHistory();
-      markDirty();
       setEdges((eds) =>
         eds.map((e) => {
           if (e.id !== selectedEdgeId) return e;
@@ -1181,8 +1181,17 @@ export function TopologyPage() {
           return withEdgeVisual({ ...e, data, label: portLabel || undefined }, edgeDefaults);
         }),
       );
+      const edge = edges.find((e) => e.id === selectedEdgeId);
+      const prev = (edge?.data || {}) as EdgeStyleData;
+      void patchTopologyEdgeStyle(mapId, {
+        fabric_edge_id: selectedEdgeId,
+        stroke_color: patch.stroke_color !== undefined ? patch.stroke_color : prev.stroke_color || "",
+        stroke_width:
+          patch.stroke_width !== undefined ? Number(patch.stroke_width || 0) : Number(prev.stroke_width || 0),
+        line_style: patch.line_style !== undefined ? patch.line_style : prev.line_style || "",
+      }).catch((err) => showError(String(err)));
     },
-    [selectedEdgeId, setEdges, pushHistory, edgeDefaults, markDirty],
+    [selectedEdgeId, mapId, edges, setEdges, pushHistory, edgeDefaults, showError],
   );
 
   const renameSelectedNode = useCallback(() => {
@@ -1201,13 +1210,6 @@ export function TopologyPage() {
     );
     setCtxMenu(null);
   }, [selectedNode, t, pushHistory, markDirty, setNodes]);
-
-  const staleEdgeCount = useMemo(
-    () =>
-      edges.filter((e) => String((e.data as { source?: string } | undefined)?.source || "") === "stale")
-        .length,
-    [edges],
-  );
 
   const closeCtxMenu = useCallback(() => setCtxMenu(null), []);
 
@@ -1251,19 +1253,29 @@ export function TopologyPage() {
     setEdges((es) => es.map((e) => ({ ...e, selected: false })));
   }, [setNodes, setEdges]);
 
-  const removeSelected = useCallback(() => {
-    const nodeIds = new Set(nodes.filter((n) => n.selected).map((n) => n.id));
+  const removeSelected = useCallback(async () => {
+    if (!mapId) return;
+    const nodeIds = nodes.filter((n) => n.selected).map((n) => n.id);
     const edgeIds = new Set(edges.filter((e) => e.selected).map((e) => e.id));
-    if (nodeIds.size === 0 && edgeIds.size === 0) return;
+    if (!nodeIds.length && !edgeIds.size) return;
     pushHistory();
-    markDirty();
-    setNodes((ns) => ns.filter((n) => !nodeIds.has(n.id)));
-    setEdges((es) =>
-      es.filter((e) => !edgeIds.has(e.id) && !nodeIds.has(e.source) && !nodeIds.has(e.target)),
-    );
-    setSelectedEdgeId(null);
-    closeCtxMenu();
-  }, [nodes, edges, setNodes, setEdges, pushHistory, closeCtxMenu]);
+    try {
+      if (nodeIds.length) {
+        const graph = await removeTopologyViewNodes(mapId, nodeIds);
+        queryClient.setQueryData(queryKeys.topologyGraph(mapId), graph);
+        historyLockRef.current = true;
+        applyViewGraph(graph, edgeDefaults, setNodes, setEdges);
+        historyLockRef.current = false;
+        clearDirty();
+      } else if (edgeIds.size) {
+        setEdges((eds) => eds.filter((e) => !edgeIds.has(e.id)));
+        markDirty();
+      }
+      setSelectedEdgeId(null);
+    } catch (err) {
+      showError(String(err));
+    }
+  }, [mapId, nodes, edges, setNodes, setEdges, pushHistory, queryClient, edgeDefaults, clearDirty, markDirty, showError]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -1348,18 +1360,6 @@ export function TopologyPage() {
     setEdges((es) => es.filter((e) => e.id !== edgeId));
     setSelectedEdgeId((cur) => (cur === edgeId ? null : cur));
     closeCtxMenu();
-  };
-
-  const removeStaleEdges = () => {
-    const n = staleEdgeCount;
-    if (n <= 0) return;
-    pushHistory();
-    markDirty();
-    setEdges((es) =>
-      es.filter((e) => String((e.data as { source?: string } | undefined)?.source || "") !== "stale"),
-    );
-    setSelectedEdgeId(null);
-    showOk(t("topology.staleRemoved").replace("{{count}}", String(n)));
   };
 
   const openWebcrtFor = (node: Node<NeNodeData> | null) => {
@@ -1896,23 +1896,6 @@ export function TopologyPage() {
               </button>
               <button
                 type="button"
-                className="btn btn--sm"
-                disabled={!mapId || discovering}
-                onClick={() => void runDiscover()}
-              >
-                {discovering ? t("topology.discovering") : t("topology.discover")}
-              </button>
-              <button
-                type="button"
-                className="btn btn--sm btn--ghost"
-                disabled={!mapId || discovering || staleEdgeCount <= 0}
-                onClick={removeStaleEdges}
-                title={t("topology.removeStaleHint")}
-              >
-                {t("topology.removeStale").replace("{{count}}", String(staleEdgeCount))}
-              </button>
-              <button
-                type="button"
                 className="btn btn--sm btn--ghost"
                 disabled={!mapId}
                 onClick={() => rfRef.current?.fitView({ padding: 0.2 })}
@@ -2191,8 +2174,7 @@ export function TopologyPage() {
                 className="btn btn--sm btn--ghost"
                 onClick={() => {
                   if (discovering) {
-                    discoverAbortRef.current?.abort();
-                    return;
+                                        return;
                   }
                   setDiscoverOpen(false);
                 }}
@@ -2391,28 +2373,6 @@ export function TopologyPage() {
               <li className="topo-ctx__head" role="presentation">
                 {t("topology.selectionMenu")}
               </li>
-              <li role="none">
-                <button
-                  type="button"
-                  className="topo-ctx__item"
-                  role="menuitem"
-                  disabled={discovering}
-                  onClick={() => {
-                    const ids = selectedNodes
-                      .map((n) => String(n.data.managed_ne_id || n.data.ume_ne_id || "").trim())
-                      .filter(Boolean);
-                    closeCtxMenu();
-                    if (!ids.length) {
-                      showError(t("topology.discoverOneNeedNe"));
-                      return;
-                    }
-                    void runDiscover(ids);
-                  }}
-                >
-                  {t("topology.discoverSelected").replace("{{count}}", String(selectedNodes.length))}
-                </button>
-              </li>
-              <li className="topo-ctx__sep" aria-hidden />
               <li role="none">
                 <button
                   type="button"

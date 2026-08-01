@@ -77,6 +77,11 @@ class Settings(BaseSettings):
     config_sync_scheduler_tick_sec: int = 60
     # After process start / unexpected restart, wait before any scheduled sync.
     config_sync_startup_grace_sec: int = 3600
+    # Fabric LLDP collect (network topology management).
+    # Scheduler thread may run, but policy.enabled defaults False — no collect until operator turns it on.
+    lldp_collect_scheduler_enabled: bool = True
+    lldp_collect_scheduler_tick_sec: int = 60
+    lldp_collect_startup_grace_sec: int = 3600
     # Port traffic monitoring (CLI rate bit/s samples)
     port_traffic_scheduler_enabled: bool = True
     port_traffic_scheduler_tick_sec: int = 15
