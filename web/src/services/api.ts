@@ -572,6 +572,7 @@ export const putTopologyGraph = (
       stroke_color?: string;
       stroke_width?: number;
       line_style?: string;
+      discovered_at?: string | null;
     }>;
   },
 ) => apiPut<TopologyGraph>(`/v1/topology/maps/${encodeURIComponent(mapId)}/graph`, body);

@@ -34,6 +34,7 @@ class TopologyNodeIn(BaseModel):
     label: str = ""
     x: float = 0.0
     y: float = 0.0
+    created_at: datetime | None = None
 
 
 class TopologyEdgeIn(BaseModel):
@@ -46,6 +47,8 @@ class TopologyEdgeIn(BaseModel):
     stroke_color: str = Field(default="", max_length=32)
     stroke_width: int = Field(default=0, ge=0, le=12)
     line_style: str = Field(default="", max_length=16)
+    discovered_at: datetime | None = None
+    created_at: datetime | None = None
 
 
 class TopologyNodeOut(BaseModel):

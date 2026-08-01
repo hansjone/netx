@@ -550,3 +550,51 @@ def _kv(text: str, pattern: str) -> str:
     if not m:
         return ""
     return str(m.group(1) or "").strip()
+
+
+# Long media names → short canonical form (case-insensitive prefix).
+_IFNAME_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("tengigabitethernet", "te"),
+    ("ten-gigabitethernet", "te"),
+    ("gigabitethernet", "gi"),
+    ("fastethernet", "fa"),
+    ("ethernet", "eth"),
+    ("xgigabitethernet", "xge"),
+    ("100ge", "100ge"),
+    ("40ge", "40ge"),
+    ("25ge", "25ge"),
+    ("10ge", "10ge"),
+    ("ge-trunk", "ge-trunk"),
+    ("eth-trunk", "eth-trunk"),
+    ("port-channel", "po"),
+    ("portchannel", "po"),
+    ("loopback", "lo"),
+    ("vlanif", "vlanif"),
+    ("vlan", "vlan"),
+    ("mgmteth", "mgmt"),
+    ("management", "mgmt"),
+    ("hundredgige", "hu"),
+    ("fiftygige", "fi"),
+    ("fortygige", "fo"),
+    ("twentyfivegige", "twe"),
+    ("twogigabitethernet", "tw"),
+)
+
+
+def normalize_ifname(name: str) -> str:
+    """Canonicalize interface names so Gi0/0 and GigabitEthernet0/0 share a key."""
+    raw = str(name or "").strip()
+    if not raw:
+        return ""
+    s = re.sub(r"\s+", "", raw).lower()
+    s = s.replace("_", "/")
+    for long, short in _IFNAME_PREFIXES:
+        if s.startswith(long):
+            rest = s[len(long) :]
+            if rest.startswith((":", "/", "-")) or rest == "" or rest[0].isdigit():
+                if rest.startswith(":"):
+                    rest = rest[1:]
+                return f"{short}{rest}"
+            break
+    # Already-short forms: gi0/0, te1/0/1, xge0/0/1, 10ge1/0/1
+    return s

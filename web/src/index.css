@@ -2578,7 +2578,8 @@ pre {
   border-radius: 2px;
 }
 
-.topo-ctx__style-row select {
+.topo-ctx__style-row select,
+.topo-ctx__style-input {
   flex: 1 1 auto;
   max-width: 108px;
   height: 24px;
@@ -2589,6 +2590,11 @@ pre {
   font-size: 12px;
   line-height: 1.2;
   padding: 0 6px;
+}
+
+.topo-ctx__style-input {
+  max-width: 120px;
+  min-width: 0;
 }
 
 /* Beat .app-main button { color:#1f2937; background:#fff } so hover stays readable. */

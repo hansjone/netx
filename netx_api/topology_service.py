@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from .cli_resolve import get_default_profile, infer_device_type_vendor
 from .models import ManagedNE, TopologyEdge, TopologyMap, TopologyNode, UmeInventoryNE
 from .ne_exec import execute_managed_ne_commands
-from .topology_lldp import NeighborHit, parse_neighbor_output, pick_neighbor_command
+from .topology_lldp import NeighborHit, normalize_ifname, parse_neighbor_output, pick_neighbor_command
 from .topology_schemas import (
     TopologyDiscoverNeResult,
     TopologyDiscoverOut,
@@ -251,6 +251,8 @@ def put_graph(db: Session, map_id: str, body: TopologyGraphPut) -> TopologyGraph
         tid = str(e.target_node_id or "").strip()
         if sid not in node_ids or tid not in node_ids:
             raise HTTPException(status_code=400, detail="edge_endpoint_not_in_nodes")
+        if sid == tid:
+            raise HTTPException(status_code=400, detail="edge_self_loop")
         src = str(e.source or "manual").strip().lower() or "manual"
         if src not in {"manual", "lldp", "cdp", "stale"}:
             raise HTTPException(status_code=400, detail="invalid_edge_source")
@@ -262,27 +264,47 @@ def put_graph(db: Session, map_id: str, body: TopologyGraphPut) -> TopologyGraph
         normalized_edges.append((e, src, color, width, line))
 
     now = _utcnow()
+    prev_nodes = {
+        str(n.id): {"created_at": n.created_at}
+        for n in db.query(TopologyNode).filter(TopologyNode.map_id == row.id).all()
+    }
+    prev_edges = {
+        str(e.id): {"created_at": e.created_at, "discovered_at": e.discovered_at}
+        for e in db.query(TopologyEdge).filter(TopologyEdge.map_id == row.id).all()
+    }
     db.query(TopologyEdge).filter(TopologyEdge.map_id == row.id).delete(synchronize_session=False)
     db.query(TopologyNode).filter(TopologyNode.map_id == row.id).delete(synchronize_session=False)
+    db.expire_all()
 
     for n in nodes_in:
+        nid = str(n.id).strip()
+        prev = prev_nodes.get(nid) or {}
+        created = getattr(n, "created_at", None) or prev.get("created_at") or now
         db.add(
             TopologyNode(
-                id=str(n.id).strip(),
+                id=nid,
                 map_id=row.id,
                 managed_ne_id=str(n.managed_ne_id or "").strip(),
                 ume_ne_id=str(n.ume_ne_id or "").strip(),
                 label=str(n.label or "").strip()[:256],
                 x=float(n.x or 0),
                 y=float(n.y or 0),
-                created_at=now,
+                created_at=created,
                 updated_at=now,
             )
         )
     for e, src, color, width, line in normalized_edges:
+        eid = str(e.id).strip() or uuid4().hex
+        prev = prev_edges.get(eid) or {}
+        created = getattr(e, "created_at", None) or prev.get("created_at") or now
+        client_discovered = getattr(e, "discovered_at", None)
+        if src in {"lldp", "cdp", "stale"}:
+            discovered = client_discovered or prev.get("discovered_at") or now
+        else:
+            discovered = None
         db.add(
             TopologyEdge(
-                id=str(e.id).strip() or uuid4().hex,
+                id=eid,
                 map_id=row.id,
                 source_node_id=str(e.source_node_id).strip(),
                 target_node_id=str(e.target_node_id).strip(),
@@ -292,8 +314,8 @@ def put_graph(db: Session, map_id: str, body: TopologyGraphPut) -> TopologyGraph
                 stroke_color=color,
                 stroke_width=width,
                 line_style=line,
-                discovered_at=now if src in {"lldp", "cdp", "stale"} else None,
-                created_at=now,
+                discovered_at=discovered,
+                created_at=created,
                 updated_at=now,
             )
         )
@@ -345,9 +367,11 @@ def _match_neighbor_to_node(
 
 
 def _edge_pair_key(a: str, b: str, local_port: str, remote_port: str) -> tuple[str, str, str, str]:
+    lp = normalize_ifname(local_port)
+    rp = normalize_ifname(remote_port)
     if a <= b:
-        return (a, b, local_port, remote_port)
-    return (b, a, remote_port, local_port)
+        return (a, b, lp, rp)
+    return (b, a, rp, lp)
 
 
 def _discover_target_for_node(

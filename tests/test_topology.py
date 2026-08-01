@@ -323,6 +323,75 @@ class TopologyServiceTests(unittest.TestCase):
         with self.assertRaises(HTTPException):
             svc.get_graph(self.db, mid)
 
+    def test_put_preserves_discovered_at_and_rejects_self_loop(self) -> None:
+        created = svc.create_map(self.db, TopologyMapCreate(name="Preserve", remark=""))
+        mid = created.id
+        first = svc.put_graph(
+            self.db,
+            mid,
+            TopologyGraphPut(
+                nodes=[
+                    TopologyNodeIn(id="n1", label="A", x=0, y=0),
+                    TopologyNodeIn(id="n2", label="B", x=10, y=0),
+                ],
+                edges=[
+                    TopologyEdgeIn(
+                        id="e1",
+                        source_node_id="n1",
+                        target_node_id="n2",
+                        source="lldp",
+                        source_port="Gi0/0",
+                        target_port="Gi0/1",
+                    )
+                ],
+            ),
+        )
+        discovered = first.edges[0].discovered_at
+        self.assertIsNotNone(discovered)
+
+        second = svc.put_graph(
+            self.db,
+            mid,
+            TopologyGraphPut(
+                nodes=[
+                    TopologyNodeIn(id="n1", label="A", x=1, y=1),
+                    TopologyNodeIn(id="n2", label="B", x=11, y=1),
+                ],
+                edges=[
+                    TopologyEdgeIn(
+                        id="e1",
+                        source_node_id="n1",
+                        target_node_id="n2",
+                        source="lldp",
+                        source_port="Gi0/0",
+                        target_port="Gi0/1",
+                        stroke_color="#0ea5e9",
+                    )
+                ],
+            ),
+        )
+        self.assertEqual(second.edges[0].discovered_at, discovered)
+        self.assertEqual(second.edges[0].stroke_color, "#0ea5e9")
+
+        with self.assertRaises(HTTPException) as ctx:
+            svc.put_graph(
+                self.db,
+                mid,
+                TopologyGraphPut(
+                    nodes=[TopologyNodeIn(id="n1", label="A", x=0, y=0)],
+                    edges=[
+                        TopologyEdgeIn(
+                            id="bad",
+                            source_node_id="n1",
+                            target_node_id="n1",
+                            source="manual",
+                        )
+                    ],
+                ),
+            )
+        self.assertEqual(ctx.exception.detail, "edge_self_loop")
+        svc.delete_map(self.db, mid)
+
     def test_discover_matches_by_name_and_skips_manual(self) -> None:
         suffix = uuid4().hex[:8]
         ne_a_id = f"nea-{suffix}"
@@ -526,6 +595,21 @@ class TopologyServiceTests(unittest.TestCase):
         self.db.delete(ne_a)
         self.db.delete(ne_b)
         self.db.commit()
+
+
+class IfnameNormalizeTests(unittest.TestCase):
+    def test_cisco_huawei_aliases(self) -> None:
+        self.assertEqual(lldp.normalize_ifname("GigabitEthernet0/0"), "gi0/0")
+        self.assertEqual(lldp.normalize_ifname("Gi0/0"), "gi0/0")
+        self.assertEqual(lldp.normalize_ifname("TenGigabitEthernet1/0/1"), "te1/0/1")
+        self.assertEqual(lldp.normalize_ifname("XGigabitEthernet0/0/1"), "xge0/0/1")
+        self.assertEqual(lldp.normalize_ifname("Eth-Trunk1"), "eth-trunk1")
+        self.assertEqual(lldp.normalize_ifname(""), "")
+
+    def test_edge_pair_key_aliases_match(self) -> None:
+        a = svc._edge_pair_key("n1", "n2", "GigabitEthernet0/0", "Gi0/1")
+        b = svc._edge_pair_key("n1", "n2", "Gi0/0", "GigabitEthernet0/1")
+        self.assertEqual(a, b)
 
 
 if __name__ == "__main__":

@@ -184,7 +184,7 @@ function NeNode({ data, selected }: NodeProps<Node<NeNodeData>>) {
         />
         <RouterIcon />
       </div>
-      <div className="topo-node__caption">{bits.join(" · ")}</div>
+      <div className="topo-node__caption">{bits.join(" ? ")}</div>
     </div>
   );
 }
@@ -198,6 +198,7 @@ type EdgeStyleData = {
   stroke_color?: string;
   stroke_width?: number;
   line_style?: string;
+  discovered_at?: string | null;
 };
 
 type EdgeLineStyle = "solid" | "dashed" | "dotted";
@@ -319,7 +320,7 @@ function graphToFlow(nodes: TopologyNodeItem[], edges: TopologyEdgeItem[], defau
   }));
   const rfEdges: Edge[] = edges.map((e) => {
     const src = e.source || "manual";
-    const label = [e.source_port, e.target_port].filter(Boolean).join(" ↔ ");
+    const label = [e.source_port, e.target_port].filter(Boolean).join(" ? ");
     const data: EdgeStyleData = {
       source: src,
       source_port: e.source_port || "",
@@ -327,6 +328,7 @@ function graphToFlow(nodes: TopologyNodeItem[], edges: TopologyEdgeItem[], defau
       stroke_color: e.stroke_color || "",
       stroke_width: Number(e.stroke_width || 0),
       line_style: e.line_style || "",
+      discovered_at: e.discovered_at ?? null,
     };
     return withEdgeVisual(
       {
@@ -366,6 +368,7 @@ function flowToGraphPayload(nodes: Node<NeNodeData>[], edges: Edge[]) {
         stroke_color: String(data.stroke_color || ""),
         stroke_width: Number(data.stroke_width || 0),
         line_style: String(data.line_style || ""),
+        discovered_at: data.discovered_at ?? null,
       };
     }),
   };
@@ -377,6 +380,9 @@ export function TopologyPage() {
   const queryClient = useQueryClient();
   const [mapId, setMapId] = useState<string>("");
   const [keyword, setKeyword] = useState("");
+  const [debouncedKeyword, setDebouncedKeyword] = useState("");
+  const [dirty, setDirty] = useState(false);
+  const [historyTick, setHistoryTick] = useState(0);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [ctxMenu, setCtxMenu] = useState<CtxMenu | null>(null);
   const [hideIp, setHideIp] = useState(true);
@@ -414,6 +420,52 @@ export function TopologyPage() {
   const redoRef = useRef<HistorySnap[]>([]);
   const historyLockRef = useRef(false);
   const connectClickRef = useRef<string | null>(null);
+  const canUndo = historyTick >= 0 && historyRef.current.length > 0;
+  const canRedo = historyTick >= 0 && redoRef.current.length > 0;
+
+  const markDirty = useCallback(() => {
+    dirtyRef.current = true;
+    setDirty(true);
+  }, []);
+
+  const clearDirty = useCallback(() => {
+    dirtyRef.current = false;
+    setDirty(false);
+  }, []);
+
+  const bumpHistory = useCallback(() => {
+    setHistoryTick((n) => n + 1);
+  }, []);
+
+  const confirmDiscardIfDirty = useCallback(() => {
+    if (!dirtyRef.current) return true;
+    return window.confirm(t("topology.unsavedConfirm"));
+  }, [t]);
+
+  const selectMap = useCallback(
+    (id: string) => {
+      if (id === mapId) return;
+      if (!confirmDiscardIfDirty()) return;
+      setMapId(id);
+    },
+    [mapId, confirmDiscardIfDirty],
+  );
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedKeyword(keyword.trim()), 300);
+    return () => window.clearTimeout(timer);
+  }, [keyword]);
+
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (!dirtyRef.current) return;
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, []);
+
   const toolBehavior = useMemo(() => behaviorForMode(toolMode), [toolMode]);
   const displayOpts = useMemo(
     () => ({ hideIp, hideVendor, hidePorts, connectMode: toolMode === "connect" }),
@@ -441,10 +493,10 @@ export function TopologyPage() {
   });
 
   const neQuery = useQuery({
-    queryKey: [...queryKeys.managedNeAll, "topology-palette", keyword],
+    queryKey: [...queryKeys.managedNeAll, "topology-palette", debouncedKeyword],
     queryFn: () =>
       fetchManagedNe({
-        keyword: keyword.trim(),
+        keyword: debouncedKeyword,
         vendor: "",
         connectStatus: "",
         page: 1,
@@ -454,10 +506,10 @@ export function TopologyPage() {
   });
 
   const umeQuery = useQuery({
-    queryKey: ["umeInventoryNe", "topology-palette", keyword],
+    queryKey: ["umeInventoryNe", "topology-palette", debouncedKeyword],
     queryFn: () =>
       fetchUmeNe({
-        keyword: keyword.trim(),
+        keyword: debouncedKeyword,
         page: 1,
         pageSize: 100,
       }),
@@ -478,7 +530,8 @@ export function TopologyPage() {
     setEdges(rfEdges);
     historyRef.current = [];
     redoRef.current = [];
-    dirtyRef.current = false;
+    clearDirty();
+    bumpHistory();
     historyLockRef.current = false;
     window.setTimeout(() => rfRef.current?.fitView({ padding: 0.2 }), 50);
     // edgeDefaults applied separately so changing defaults won't reload the whole graph.
@@ -520,7 +573,8 @@ export function TopologyPage() {
       },
     ];
     redoRef.current = [];
-  }, [nodes, edges]);
+    bumpHistory();
+  }, [nodes, edges, bumpHistory]);
 
   const undo = useCallback(() => {
     const prev = historyRef.current.pop();
@@ -532,9 +586,10 @@ export function TopologyPage() {
     historyLockRef.current = true;
     setNodes(prev.nodes);
     setEdges(prev.edges);
-    dirtyRef.current = true;
+    markDirty();
+    bumpHistory();
     historyLockRef.current = false;
-  }, [nodes, edges, setNodes, setEdges]);
+  }, [nodes, edges, setNodes, setEdges, markDirty, bumpHistory]);
 
   const redo = useCallback(() => {
     const next = redoRef.current.pop();
@@ -546,9 +601,10 @@ export function TopologyPage() {
     historyLockRef.current = true;
     setNodes(next.nodes);
     setEdges(next.edges);
-    dirtyRef.current = true;
+    markDirty();
+    bumpHistory();
     historyLockRef.current = false;
-  }, [nodes, edges, setNodes, setEdges]);
+  }, [nodes, edges, setNodes, setEdges, markDirty, bumpHistory]);
 
   const applyLayout = useCallback(
     async (kind: LayoutKind, opts?: { onlySelected?: boolean; persist?: boolean }) => {
@@ -563,19 +619,19 @@ export function TopologyPage() {
       pushHistory();
       const next = layoutGraph(nodes, edges, kind, { onlyIds });
       setNodes(next);
-      dirtyRef.current = true;
+      markDirty();
       window.setTimeout(() => rfRef.current?.fitView({ padding: 0.2 }), 40);
       if (opts?.persist && mapId) {
         try {
           const graph = await putTopologyGraph(mapId, flowToGraphPayload(next, edges));
-          dirtyRef.current = false;
+          clearDirty();
           queryClient.setQueryData(queryKeys.topologyGraph(mapId), graph);
         } catch (err) {
           showError(String(err));
         }
       }
     },
-    [nodes, edges, setNodes, pushHistory, mapId, queryClient, showError, t],
+    [nodes, edges, setNodes, pushHistory, mapId, queryClient, showError, t, markDirty, clearDirty],
   );
 
   const applyAlign = useCallback(
@@ -587,9 +643,9 @@ export function TopologyPage() {
       }
       pushHistory();
       setNodes(alignNodes(nodes, ids, kind));
-      dirtyRef.current = true;
+      markDirty();
     },
-    [nodes, setNodes, pushHistory, showError, t],
+    [nodes, setNodes, pushHistory, showError, t, markDirty],
   );
   const renameMapMut = useMutation({
     mutationFn: ({ id, name }: { id: string; name: string }) =>
@@ -616,6 +672,7 @@ export function TopologyPage() {
     mutationFn: () => createTopologyMap({ name: t("topology.newMapName") }),
     onSuccess: async (row) => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.topologyMaps });
+      clearDirty();
       setMapId(row.id);
       showOk(t("topology.newMap"));
       // Prompt rename right after create — default name is a placeholder.
@@ -629,6 +686,7 @@ export function TopologyPage() {
     onSuccess: async (_out, id) => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.topologyMaps });
       if (mapId === id) {
+        clearDirty();
         setMapId("");
         setNodes([]);
         setEdges([]);
@@ -640,7 +698,7 @@ export function TopologyPage() {
   const saveMut = useMutation({
     mutationFn: () => putTopologyGraph(mapId, flowToGraphPayload(nodes, edges)),
     onSuccess: async (graph) => {
-      dirtyRef.current = false;
+      clearDirty();
       queryClient.setQueryData(queryKeys.topologyGraph(mapId), graph);
       await queryClient.invalidateQueries({ queryKey: queryKeys.topologyMaps });
       showOk(t("topology.saved"));
@@ -679,7 +737,7 @@ export function TopologyPage() {
       try {
         if (dirtyRef.current) {
           await putTopologyGraph(mapId, flowToGraphPayload(nodes, edges));
-          dirtyRef.current = false;
+          clearDirty();
         }
         const out = await discoverTopologyNeighborsStream(
           mapId,
@@ -723,12 +781,12 @@ export function TopologyPage() {
             try {
               const graph = await putTopologyGraph(mapId, flowToGraphPayload(rfNodes, rfEdges));
               queryClient.setQueryData(queryKeys.topologyGraph(mapId), graph);
-              dirtyRef.current = false;
+              clearDirty();
             } catch {
-              dirtyRef.current = true;
+              markDirty();
             }
           } else {
-            dirtyRef.current = false;
+            clearDirty();
           }
           historyLockRef.current = true;
           setNodes(rfNodes);
@@ -775,10 +833,21 @@ export function TopologyPage() {
         failed: discoverLiveResults.filter((r) => !r.ok).length,
       };
 
+  const isValidConnection = useCallback(
+    (connection: Connection | Edge) => {
+      const source = String(connection.source || "");
+      const target = String(connection.target || "");
+      if (!source || !target || source === target) return false;
+      return !edges.some((e) => e.source === source && e.target === target);
+    },
+    [edges],
+  );
+
   const onConnect = useCallback(
     (connection: Connection) => {
+      if (!isValidConnection(connection)) return;
       pushHistory();
-      dirtyRef.current = true;
+      markDirty();
       connectClickRef.current = null;
       const data: EdgeStyleData = {
         source: "manual",
@@ -787,6 +856,7 @@ export function TopologyPage() {
         stroke_color: "",
         stroke_width: 0,
         line_style: "",
+        discovered_at: null,
       };
       setEdges((eds) =>
         addEdge(
@@ -803,7 +873,7 @@ export function TopologyPage() {
         ),
       );
     },
-    [setEdges, pushHistory, edgeDefaults],
+    [setEdges, pushHistory, edgeDefaults, markDirty, isValidConnection],
   );
 
   const addNodeAt = useCallback(
@@ -817,7 +887,7 @@ export function TopologyPage() {
         const ne = (neQuery.data?.items || []).find((x) => x.id === item.managed_ne_id);
         if (!ne) return;
         pushHistory();
-        dirtyRef.current = true;
+        markDirty();
         setNodes((prev) => [
           ...prev,
           {
@@ -841,7 +911,7 @@ export function TopologyPage() {
       if (!ne) return;
       const name = (ne.host_name || ne.ne_name || ne.user_label || ne.ip_address || ne.ne_id).trim();
       pushHistory();
-      dirtyRef.current = true;
+      markDirty();
       setNodes((prev) => [
         ...prev,
         {
@@ -942,12 +1012,14 @@ export function TopologyPage() {
 
   const patchSelectedEdgeStyle = useCallback(
     (
-      patch: Partial<Pick<EdgeStyleData, "stroke_color" | "stroke_width" | "line_style">>,
+      patch: Partial<
+        Pick<EdgeStyleData, "stroke_color" | "stroke_width" | "line_style" | "source_port" | "target_port">
+      >,
       opts?: { skipHistory?: boolean },
     ) => {
       if (!selectedEdgeId) return;
       if (!opts?.skipHistory) pushHistory();
-      dirtyRef.current = true;
+      markDirty();
       setEdges((eds) =>
         eds.map((e) => {
           if (e.id !== selectedEdgeId) return e;
@@ -958,13 +1030,33 @@ export function TopologyPage() {
             stroke_width:
               patch.stroke_width !== undefined ? Number(patch.stroke_width || 0) : Number(prev.stroke_width || 0),
             line_style: patch.line_style !== undefined ? patch.line_style : prev.line_style || "",
+            source_port: patch.source_port !== undefined ? patch.source_port : prev.source_port || "",
+            target_port: patch.target_port !== undefined ? patch.target_port : prev.target_port || "",
           };
-          return withEdgeVisual({ ...e, data }, edgeDefaults);
+          const portLabel = [data.source_port, data.target_port].filter(Boolean).join(" ? ");
+          return withEdgeVisual({ ...e, data, label: portLabel || undefined }, edgeDefaults);
         }),
       );
     },
-    [selectedEdgeId, setEdges, pushHistory, edgeDefaults],
+    [selectedEdgeId, setEdges, pushHistory, edgeDefaults, markDirty],
   );
+
+  const renameSelectedNode = useCallback(() => {
+    if (!selectedNode) return;
+    const next = window.prompt(t("topology.renameNodePrompt"), selectedNode.data.label || "");
+    if (next == null) return;
+    const label = next.trim();
+    if (!label || label === selectedNode.data.label) {
+      setCtxMenu(null);
+      return;
+    }
+    pushHistory();
+    markDirty();
+    setNodes((ns) =>
+      ns.map((n) => (n.id === selectedNode.id ? { ...n, data: { ...n.data, label } } : n)),
+    );
+    setCtxMenu(null);
+  }, [selectedNode, t, pushHistory, markDirty, setNodes]);
 
   const staleEdgeCount = useMemo(
     () =>
@@ -1020,7 +1112,7 @@ export function TopologyPage() {
     const edgeIds = new Set(edges.filter((e) => e.selected).map((e) => e.id));
     if (nodeIds.size === 0 && edgeIds.size === 0) return;
     pushHistory();
-    dirtyRef.current = true;
+    markDirty();
     setNodes((ns) => ns.filter((n) => !nodeIds.has(n.id)));
     setEdges((es) =>
       es.filter((e) => !edgeIds.has(e.id) && !nodeIds.has(e.source) && !nodeIds.has(e.target)),
@@ -1047,6 +1139,11 @@ export function TopologyPage() {
         connectClickRef.current = null;
         return;
       }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        if (mapId && dirtyRef.current && !saveMut.isPending) saveMut.mutate();
+        return;
+      }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
         e.preventDefault();
         undo();
@@ -1071,18 +1168,27 @@ export function TopologyPage() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [closeCtxMenu, clearSelection, undo, redo, selectAllNodes, removeSelected, nodes, edges]);
+  }, [closeCtxMenu, clearSelection, undo, redo, selectAllNodes, removeSelected, nodes, edges, mapId, saveMut]);
 
   useEffect(() => {
     if (!ctxMenu) return;
     const onScroll = () => closeCtxMenu();
+    const onPointerDown = (e: MouseEvent) => {
+      const el = e.target as HTMLElement | null;
+      if (el?.closest?.(".topo-ctx")) return;
+      closeCtxMenu();
+    };
     window.addEventListener("scroll", onScroll, true);
-    return () => window.removeEventListener("scroll", onScroll, true);
+    window.addEventListener("mousedown", onPointerDown, true);
+    return () => {
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("mousedown", onPointerDown, true);
+    };
   }, [ctxMenu, closeCtxMenu]);
 
   const removeNodeById = (nodeId: string) => {
     pushHistory();
-    dirtyRef.current = true;
+    markDirty();
     setNodes((ns) => ns.filter((n) => n.id !== nodeId));
     setEdges((es) => es.filter((e) => e.source !== nodeId && e.target !== nodeId));
     closeCtxMenu();
@@ -1090,7 +1196,7 @@ export function TopologyPage() {
 
   const removeEdgeById = (edgeId: string) => {
     pushHistory();
-    dirtyRef.current = true;
+    markDirty();
     setEdges((es) => es.filter((e) => e.id !== edgeId));
     setSelectedEdgeId((cur) => (cur === edgeId ? null : cur));
     closeCtxMenu();
@@ -1100,7 +1206,7 @@ export function TopologyPage() {
     const n = staleEdgeCount;
     if (n <= 0) return;
     pushHistory();
-    dirtyRef.current = true;
+    markDirty();
     setEdges((es) =>
       es.filter((e) => String((e.data as { source?: string } | undefined)?.source || "") !== "stale"),
     );
@@ -1237,7 +1343,7 @@ export function TopologyPage() {
           name,
           ip: ne.ip_address || "",
           vendor: "ZTE",
-          meta: `${ne.ip_address || "-"} · ${ne.ne_type || "UME"}`,
+          meta: `${ne.ip_address || "-"} ? ${ne.ne_type || "UME"}`,
           connect_status: ne.connection_status || "",
         };
       });
@@ -1250,7 +1356,7 @@ export function TopologyPage() {
       name: ne.name || ne.ip_address,
       ip: ne.ip_address,
       vendor: ne.vendor,
-      meta: `${ne.ip_address} · ${ne.vendor}`,
+      meta: `${ne.ip_address} ? ${ne.vendor}`,
       connect_status: ne.connect_status,
     }));
   }, [paletteSource, neQuery.data, umeQuery.data]);
@@ -1291,7 +1397,10 @@ export function TopologyPage() {
                   <button
                     type="button"
                     className="btn btn--sm"
-                    onClick={() => createMapMut.mutate()}
+                    onClick={() => {
+                      if (!confirmDiscardIfDirty()) return;
+                      createMapMut.mutate();
+                    }}
                     disabled={createMapMut.isPending}
                   >
                     {t("topology.newMap")}
@@ -1317,11 +1426,14 @@ export function TopologyPage() {
                         <button
                           type="button"
                           className="topo-map-list__item"
-                          onClick={() => setMapId(m.id)}
+                          onClick={() => selectMap(m.id)}
                           onDoubleClick={() => promptRenameMap(m.id, m.name)}
                           title={t("topology.renameHint")}
                         >
-                          <span className="topo-map-list__name">{m.name}</span>
+                          <span className="topo-map-list__name">
+                            {m.name}
+                            {mapId === m.id && dirty ? " *" : ""}
+                          </span>
                           <span className="topo-map-list__meta">
                             {m.node_count}N / {m.edge_count}E
                           </span>
@@ -1428,7 +1540,7 @@ export function TopologyPage() {
                             <span className="topo-palette__name">{item.name}</span>
                             <span className="topo-palette__meta">
                               {item.meta}
-                              {onCanvas ? " ✓" : ""}
+                              {onCanvas ? " ?" : ""}
                             </span>
                           </button>
                         </div>
@@ -1457,19 +1569,36 @@ export function TopologyPage() {
               <HelpHint text={t("topology.canvasHint")} ariaLabel={t("common.help")} />
             </div>
             <div className="topo-toolbar__actions">
-              <button type="button" className="btn btn--sm btn--ghost" disabled={!mapId} onClick={undo} title="Ctrl+Z">
+              <button
+                type="button"
+                className="btn btn--sm btn--ghost"
+                disabled={!mapId || !canUndo}
+                onClick={undo}
+                title="Ctrl+Z"
+              >
                 {t("topology.undo")}
               </button>
-              <button type="button" className="btn btn--sm btn--ghost" disabled={!mapId} onClick={redo} title="Ctrl+Y">
+              <button
+                type="button"
+                className="btn btn--sm btn--ghost"
+                disabled={!mapId || !canRedo}
+                onClick={redo}
+                title="Ctrl+Y"
+              >
                 {t("topology.redo")}
               </button>
               <button
                 type="button"
-                className="btn btn--sm"
-                disabled={!mapId || saveMut.isPending}
+                className={`btn btn--sm${dirty ? "" : " btn--ghost"}`}
+                disabled={!mapId || saveMut.isPending || !dirty}
                 onClick={() => saveMut.mutate()}
+                title="Ctrl+S"
               >
-                {saveMut.isPending ? t("topology.saving") : t("topology.save")}
+                {saveMut.isPending
+                  ? t("topology.saving")
+                  : dirty
+                    ? t("topology.saveDirty")
+                    : t("topology.save")}
               </button>
               <button
                 type="button"
@@ -1686,10 +1815,15 @@ export function TopologyPage() {
               <button
                 type="button"
                 className="btn btn--sm btn--ghost"
-                onClick={() => setDiscoverOpen(false)}
-                disabled={discovering}
+                onClick={() => {
+                  if (discovering) {
+                    discoverAbortRef.current?.abort();
+                    return;
+                  }
+                  setDiscoverOpen(false);
+                }}
               >
-                {t("topology.discoverClose")}
+                {discovering ? t("topology.discoverCancel") : t("topology.discoverClose")}
               </button>
             </div>
             {discovering ? (
@@ -1701,7 +1835,7 @@ export function TopologyPage() {
                       .replace("{{total}}", String(discoverProgress.total))
                       .replace(
                         "{{name}}",
-                        discoverProgress.neName || discoverProgress.neIp || "…",
+                        discoverProgress.neName || discoverProgress.neIp || "?",
                       )}
               </p>
             ) : null}
@@ -1727,7 +1861,7 @@ export function TopologyPage() {
                         <span className="topo-discover__badge">{r.ok ? "OK" : "FAIL"}</span>
                       </div>
                       <div className="topo-discover__item-meta">
-                        {r.ne_ip ? `${r.ne_ip} · ` : ""}
+                        {r.ne_ip ? `${r.ne_ip} ? ` : ""}
                         {r.ok
                           ? t("topology.discoverNeOk")
                               .replace("{{neighbors}}", String(r.neighbors))
@@ -1773,17 +1907,18 @@ export function TopologyPage() {
                 onNodeDragStart={() => pushHistory()}
                 onNodesChange={(changes) => {
                   if (changes.some((c) => c.type === "position" || c.type === "remove" || c.type === "add")) {
-                    dirtyRef.current = true;
+                    markDirty();
                   }
                   onNodesChange(changes);
                 }}
                 onEdgesChange={(changes) => {
                   if (changes.some((c) => c.type !== "select")) {
-                    dirtyRef.current = true;
+                    markDirty();
                   }
                   onEdgesChange(changes);
                 }}
                 onConnect={onConnect}
+                isValidConnection={isValidConnection}
                 onNodeClick={onNodeClick}
                 onEdgeClick={(_e, edge) => {
                   setCtxMenu(null);
@@ -1918,6 +2053,16 @@ export function TopologyPage() {
                   type="button"
                   className="topo-ctx__item"
                   role="menuitem"
+                  onClick={renameSelectedNode}
+                >
+                  {t("topology.renameNode")}
+                </button>
+              </li>
+              <li role="none">
+                <button
+                  type="button"
+                  className="topo-ctx__item"
+                  role="menuitem"
                   disabled={discovering}
                   onClick={() => discoverOneFor(selectedNode)}
                 >
@@ -1963,6 +2108,32 @@ export function TopologyPage() {
                   <div className="topo-ctx__style-title">{t("topology.edgeStyle")}</div>
                   {selectedEdgeResolved ? (
                     <div className="topo-ctx__style-grid">
+                      <label className="topo-ctx__style-row">
+                        <span>{t("topology.sourcePort")}</span>
+                        <input
+                          type="text"
+                          className="topo-ctx__style-input"
+                          value={selectedEdgeData.source_port || ""}
+                          placeholder="?"
+                          onFocus={() => pushHistory()}
+                          onChange={(e) =>
+                            patchSelectedEdgeStyle({ source_port: e.target.value }, { skipHistory: true })
+                          }
+                        />
+                      </label>
+                      <label className="topo-ctx__style-row">
+                        <span>{t("topology.targetPort")}</span>
+                        <input
+                          type="text"
+                          className="topo-ctx__style-input"
+                          value={selectedEdgeData.target_port || ""}
+                          placeholder="?"
+                          onFocus={() => pushHistory()}
+                          onChange={(e) =>
+                            patchSelectedEdgeStyle({ target_port: e.target.value }, { skipHistory: true })
+                          }
+                        />
+                      </label>
                       <label className="topo-ctx__style-row">
                         <span>{t("topology.edgeColor")}</span>
                         <input
