@@ -15,6 +15,7 @@ from netx_api.port_traffic_parsers import (
     parse_interface_detail,
     parse_zte_interface_brief,
     parse_zte_interface_detail,
+    resolve_util_pct,
 )
 
 SAMPLE_DETAIL = """\
@@ -278,6 +279,21 @@ class CommandsTests(unittest.TestCase):
             detail_command(cmds, "GigabitEthernet0/1"),
             "show interfaces GigabitEthernet0/1",
         )
+
+
+class ResolveUtilTests(unittest.TestCase):
+    def test_keeps_vendor_util(self):
+        self.assertEqual(resolve_util_pct(0.01, 0.0, 1_000_000_000), 0.01)
+
+    def test_derives_when_vendor_zero(self):
+        # 98 Kbit/s on 1 Gbit/s ≈ 0.0098%
+        self.assertAlmostEqual(resolve_util_pct(0.0, 98_000.0, 1_000_000_000), 0.0098)
+
+    def test_zero_when_no_traffic(self):
+        self.assertEqual(resolve_util_pct(0.0, 0.0, 1_000_000_000), 0.0)
+
+    def test_zero_when_no_bw(self):
+        self.assertEqual(resolve_util_pct(0.0, 98_000.0, 0), 0.0)
 
 
 if __name__ == "__main__":

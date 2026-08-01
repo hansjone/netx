@@ -42,7 +42,8 @@ src/
 | `/network/topology` | redirect → `/topology` | — |
 | `/network/tasks/collect` | 采集任务 | `network` |
 | `/network/tasks/config-sync` | 配置同步 | `network` |
-| `/network/tasks/port-traffic` | 端口流量监控（任务向导 + 大屏） | `network` |
+| `/network/tasks/port-traffic` | 端口流量监控（设备管理） | `network` |
+| `/network/tasks/port-traffic/wall` | 端口流量大屏 | `network` |
 | `/topology` | 拓扑管理（模式化编辑器：选择/平移/拖动/连线、框选、自动布局、拖放添加） | `topology` |
 | `/webcrt` | WebCRT 终端 | `webcrt` |
 | `/collect` | redirect → `/network/tasks/collect` | — |
@@ -107,15 +108,16 @@ src/
 
 ## 端口流量监控
 
-- API：`/v1/port-traffic/*`（任务 CRUD、discover/ports、samples、compare、dashboard）
-- 接口：大屏与取样均按 `port_traffic_target`（网元 + ifname，含各类接口）；样点按 `target_row_id`
-- 周期对比：`GET /v1/port-traffic/compare?target_id=&range_hours=&baseline=off|shift|day|week|custom`（同一接口时间平移叠图）
-- 手工映射：可选 `baseline_target_id`（可跨任务），基线取自另一个接口；可与周期偏移叠加
-- 厂商：ZTE / 华为 / 思科；解析速率 **bit/s**
-- 调度：`NETX_PORT_TRAFFIC_SCHEDULER_ENABLED`（默认开），tick `NETX_PORT_TRAFFIC_SCHEDULER_TICK_SEC`（默认 15）
-- 单飞：同一任务同时只允许一轮采集；崩溃启动清除 `collect_running`
-- 保留：按任务 `retention_days` 清理过期 sample（周对比建议 ≥8 天）
-- 前端：`/network/tasks/port-traffic`（四步向导 + 任务启停 + uPlot 大屏；接口选择 + 周期对比 + 跨任务映射基线接口）
+- API：`/v1/port-traffic/devices/*`（设备 CRUD、interfaces、samples、compare、dashboard）；`discover/ports` 仍按网元拉取接口
+- **设备中心**：每台网元（`source`+`ne_id`）一份监控配置；周期/保留/启停挂在设备上；接口归属于该设备
+- 唯一性：同一物理口 `(source, ne_id, ifname)` 全局仅允许一个 **active** 监控行，避免重复 CLI 采集
+- 调度：按设备到期；一轮采集对该设备 **登录一次** 后批量 `show interface`
+- 手工映射：大屏可选其它设备接口作基线叠图；可与周期偏移叠加
+- 厂商：ZTE / 华为 / 思科；解析速率 **bit/s**；缺厂商 util 时按 bps/bw 回算
+- 调度开关：`NETX_PORT_TRAFFIC_SCHEDULER_ENABLED`（默认开），tick `NETX_PORT_TRAFFIC_SCHEDULER_TICK_SEC`（默认 15）
+- 保留：按设备 `retention_days` 清理过期 sample（周对比建议 ≥8 天）
+- 前端：`/network/tasks/port-traffic`（设备列表 / 向导 / 编辑 / 采集日志）；`/network/tasks/port-traffic/wall`（独立 uPlot 大屏，支持 `?device_id=&target_id=`）
+- 采集日志：`GET /v1/port-traffic/devices/{id}/events`；失败写入 `port_traffic_event`，列表操作可查看
 - 支持拓扑深链：`?ne_id=&source=managed|ume&ifname=` 打开向导并预填网元
 
 ## 拓扑管理

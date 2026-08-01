@@ -50,6 +50,12 @@ export const NETWORK_NAV: readonly NetworkNavGroup[] = [
         labelKey: "network.nav.portTraffic",
         group: "tasks",
       },
+      {
+        id: "port-traffic-wall",
+        path: "/network/tasks/port-traffic/wall",
+        labelKey: "network.nav.portTrafficWall",
+        group: "tasks",
+      },
     ],
   },
 ] as const;

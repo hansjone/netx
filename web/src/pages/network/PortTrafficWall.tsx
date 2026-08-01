@@ -5,6 +5,8 @@ import type { PortTrafficSamplePoint, PortTrafficTarget } from "../../types";
 import { formatSystemTime, parseApiTime } from "../../utils/time";
 import { useI18n } from "../../i18n";
 
+export type WallYMode = "auto" | "current" | "util";
+
 function formatBps(n: number): string {
   const v = Math.abs(n);
   if (v >= 1e9) return `${(n / 1e9).toFixed(2)} G`;
@@ -18,13 +20,59 @@ function formatBwLabel(bps: number): string {
   return `${formatBps(bps)}bit/s`;
 }
 
+function formatUtilPct(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return "0%";
+  if (n < 0.01) return "<0.01%";
+  if (n < 1) return `${n.toFixed(2)}%`;
+  return `${n.toFixed(1)}%`;
+}
+
+function resolveUtil(vendorUtil: number, bps: number, bw: number): number {
+  if (vendorUtil > 0) return vendorUtil;
+  if (bw > 0 && bps > 0) return (bps / bw) * 100;
+  return vendorUtil || 0;
+}
+
 function formatHoverTime(sec: number): string {
   return formatSystemTime(new Date(sec * 1000));
+}
+
+function yPadRange(min: number, max: number): [number, number] {
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return [0, 1];
+  if (min === max) {
+    const pad = Math.max(max * 0.25 || 0.1, max > 0 && max < 1 ? max * 0.5 : 10);
+    return [Math.max(0, min - pad * 0.1), max + pad];
+  }
+  return [Math.max(0, min * 0.95), max * 1.05];
+}
+
+function finiteMax(vals: number[]): number {
+  let m = Number.NEGATIVE_INFINITY;
+  for (const v of vals) {
+    if (Number.isFinite(v) && v > m) m = v;
+  }
+  return Number.isFinite(m) ? m : 0;
+}
+
+function pointValue(
+  p: PortTrafficSamplePoint,
+  dir: "in" | "out",
+  mode: WallYMode,
+  bwFallback: number,
+): number {
+  const bps = dir === "in" ? Number(p.in_bps) || 0 : Number(p.out_bps) || 0;
+  if (mode !== "util") return bps;
+  const bw = Number(p.bw_bps) || bwFallback || 0;
+  const vendor = dir === "in" ? Number(p.in_util_pct) || 0 : Number(p.out_util_pct) || 0;
+  return resolveUtil(vendor, bps, bw);
 }
 
 function toAlignedSeries(
   current: PortTrafficSamplePoint[],
   baseline: PortTrafficSamplePoint[],
+  mode: WallYMode,
+  bwFallback: number,
+  baseBwFallback: number,
 ): [number[], number[], number[], number[], number[]] {
   type Row = { x: number; inC?: number; outC?: number; inB?: number; outB?: number };
   const map = new Map<number, Row>();
@@ -33,8 +81,8 @@ function toAlignedSeries(
     if (!d) continue;
     const x = Math.floor(d.getTime() / 1000);
     const row = map.get(x) || { x };
-    row.inC = Number(p.in_bps) || 0;
-    row.outC = Number(p.out_bps) || 0;
+    row.inC = pointValue(p, "in", mode, bwFallback);
+    row.outC = pointValue(p, "out", mode, bwFallback);
     map.set(x, row);
   }
   for (const p of baseline) {
@@ -42,8 +90,8 @@ function toAlignedSeries(
     if (!d) continue;
     const x = Math.floor(d.getTime() / 1000);
     const row = map.get(x) || { x };
-    row.inB = Number(p.in_bps) || 0;
-    row.outB = Number(p.out_bps) || 0;
+    row.inB = pointValue(p, "in", mode, baseBwFallback || bwFallback);
+    row.outB = pointValue(p, "out", mode, baseBwFallback || bwFallback);
     map.set(x, row);
   }
   const rows = [...map.values()].sort((a, b) => a.x - b.x);
@@ -61,7 +109,12 @@ function toAlignedSeries(
 
 function chartSize(el: HTMLElement): { width: number; height: number } {
   const width = Math.max(320, el.clientWidth || el.parentElement?.clientWidth || 800);
-  const height = Math.max(260, Math.min(440, Math.floor(width * 0.34)));
+  const parentH = el.clientHeight || el.parentElement?.clientHeight || 0;
+  // Fill staged layout / fullscreen; fall back to aspect ratio in compact panels.
+  const height =
+    parentH >= 180
+      ? Math.max(180, parentH)
+      : Math.max(260, Math.min(440, Math.floor(width * 0.34)));
   return { width, height };
 }
 
@@ -73,6 +126,7 @@ type Props = {
   points: PortTrafficSamplePoint[];
   baselinePoints?: PortTrafficSamplePoint[];
   rangeLabel: string;
+  yMode?: WallYMode;
   loading?: boolean;
   hint?: string;
 };
@@ -83,6 +137,7 @@ export function PortTrafficWall({
   points,
   baselinePoints = EMPTY_POINTS,
   rangeLabel,
+  yMode = "auto",
   loading,
   hint,
 }: Props) {
@@ -92,21 +147,27 @@ export function PortTrafficWall({
   const tipRef = useRef<HTMLDivElement | null>(null);
   const pointsRef = useRef(points);
   const baselineRef = useRef(baselinePoints);
+  const yModeRef = useRef(yMode);
+  const bwRef = useRef(0);
   pointsRef.current = points;
   baselineRef.current = baselinePoints;
+  yModeRef.current = yMode;
 
   const latest = points.length ? points[points.length - 1] : null;
   const kpi = useMemo(() => {
     const bw = latest?.bw_bps || target?.bw_bps || 0;
+    const inBps = latest?.in_bps ?? 0;
+    const outBps = latest?.out_bps ?? 0;
     return {
       bw,
-      inBps: latest?.in_bps ?? 0,
-      outBps: latest?.out_bps ?? 0,
-      inUtil: latest?.in_util_pct ?? 0,
-      outUtil: latest?.out_util_pct ?? 0,
+      inBps,
+      outBps,
+      inUtil: resolveUtil(latest?.in_util_pct ?? 0, inBps, bw),
+      outUtil: resolveUtil(latest?.out_util_pct ?? 0, outBps, bw),
       ts: latest?.ts ?? null,
     };
   }, [latest, target]);
+  bwRef.current = kpi.bw;
 
   useEffect(() => {
     const el = mountRef.current;
@@ -139,16 +200,16 @@ export function PortTrafficWall({
           label: t("portTraffic.seriesCurrentIn"),
           stroke: "#2dd4bf",
           width: 2,
-          fill: "rgba(45, 212, 191, 0.12)",
-          points: { show: true, size: 5, fill: "#2dd4bf" },
+          fill: "rgba(45, 212, 191, 0.08)",
+          points: { show: false },
           spanGaps: false,
         },
         {
           label: t("portTraffic.seriesCurrentOut"),
-          stroke: "#f59e0b",
+          stroke: "#fbbf24",
           width: 2,
-          fill: "rgba(245, 158, 11, 0.10)",
-          points: { show: true, size: 5, fill: "#f59e0b" },
+          fill: "rgba(251, 191, 36, 0.07)",
+          points: { show: false },
           spanGaps: false,
         },
         {
@@ -162,7 +223,7 @@ export function PortTrafficWall({
         },
         {
           label: t("portTraffic.seriesBaselineOut"),
-          stroke: "rgba(245, 158, 11, 0.45)",
+          stroke: "rgba(251, 191, 36, 0.4)",
           width: 1.5,
           dash: [6, 4],
           points: { show: false },
@@ -173,16 +234,20 @@ export function PortTrafficWall({
       axes: [
         {
           stroke: "#94a3b8",
-          grid: { stroke: "rgba(148,163,184,0.18)", width: 1 },
-          ticks: { stroke: "rgba(148,163,184,0.35)" },
+          grid: { show: false },
+          ticks: { stroke: "rgba(148,163,184,0.35)", size: 4 },
+          border: { show: false },
+          gap: 6,
         },
         {
           stroke: "#94a3b8",
           grid: { stroke: "rgba(148,163,184,0.12)", width: 1 },
           ticks: { stroke: "rgba(148,163,184,0.35)" },
-          values: (_u, splits) => splits.map((v) => formatBps(v)),
+          border: { show: false },
+          values: (_u, splits) =>
+            splits.map((v) => (yModeRef.current === "util" ? `${v}` : formatBps(v))),
           size: 64,
-          label: "bit/s",
+          label: yMode === "util" ? "%" : "bit/s",
           labelFont: "12px sans-serif",
           labelSize: 14,
         },
@@ -191,17 +256,19 @@ export function PortTrafficWall({
         x: { time: true },
         y: {
           auto: true,
-          range: (_u, min, max) => {
-            if (!Number.isFinite(min) || !Number.isFinite(max)) return [0, 1];
-            if (min === max) {
-              const pad = Math.max(10, Math.abs(max) * 0.25 || 10);
-              return [Math.max(0, min - pad), max + pad];
+          range: (u, min, max) => {
+            if (yModeRef.current === "current") {
+              const vals = [...(u.data[1] || []), ...(u.data[2] || [])].filter((v) =>
+                Number.isFinite(v),
+              ) as number[];
+              if (!vals.length) return yPadRange(min, max);
+              return yPadRange(0, finiteMax(vals));
             }
-            return [Math.max(0, min * 0.95), max * 1.05];
+            return yPadRange(min, max);
           },
         },
       },
-      legend: { show: true, live: false },
+      legend: { show: false },
       cursor: {
         drag: { x: true, y: false },
         focus: { prox: 32 },
@@ -221,10 +288,6 @@ export function PortTrafficWall({
             }
 
             const tsSec = Number(u.data[0][idx]);
-            const inBps = Number(u.data[1]?.[idx]);
-            const outBps = Number(u.data[2]?.[idx]);
-            const inBase = Number(u.data[3]?.[idx]);
-            const outBase = Number(u.data[4]?.[idx]);
             const sample = pointsRef.current.find((p) => {
               const d = parseApiTime(p.ts);
               return d && Math.floor(d.getTime() / 1000) === tsSec;
@@ -233,26 +296,39 @@ export function PortTrafficWall({
               const d = parseApiTime(p.ts);
               return d && Math.floor(d.getTime() / 1000) === tsSec;
             });
+            const mode = yModeRef.current;
+            const yIn = Number(u.data[1]?.[idx]);
+            const yOut = Number(u.data[2]?.[idx]);
+            const yInB = Number(u.data[3]?.[idx]);
+            const yOutB = Number(u.data[4]?.[idx]);
+            const unit = mode === "util" ? "%" : "bit/s";
+            const fmtY = (v: number) =>
+              mode === "util" ? formatUtilPct(v).replace(/%$/, "") : formatBps(v);
 
             if (!tip) return;
             tip.style.display = "block";
             const rows = [
               `<div class="pt-wall__tip-time">${formatHoverTime(tsSec)}</div>`,
-              Number.isFinite(inBps)
-                ? `<div class="pt-wall__tip-row pt-wall__tip-row--in"><span>In</span><strong>${formatBps(inBps)} bit/s</strong></div>`
+              Number.isFinite(yIn)
+                ? `<div class="pt-wall__tip-row pt-wall__tip-row--in"><span>In</span><strong>${fmtY(yIn)} ${unit}</strong></div>`
                 : "",
-              Number.isFinite(outBps)
-                ? `<div class="pt-wall__tip-row pt-wall__tip-row--out"><span>Out</span><strong>${formatBps(outBps)} bit/s</strong></div>`
-                : "",
-              sample
-                ? `<div class="pt-wall__tip-row"><span>Util</span><strong>${Number(sample.in_util_pct || 0).toFixed(1)}% / ${Number(sample.out_util_pct || 0).toFixed(1)}%</strong></div>`
+              Number.isFinite(yOut)
+                ? `<div class="pt-wall__tip-row pt-wall__tip-row--out"><span>Out</span><strong>${fmtY(yOut)} ${unit}</strong></div>`
                 : "",
             ];
-            if (Number.isFinite(inBase) || Number.isFinite(outBase)) {
+            if (sample) {
+              const bw = Number(sample.bw_bps) || bwRef.current || 0;
+              const inU = resolveUtil(Number(sample.in_util_pct) || 0, Number(sample.in_bps) || 0, bw);
+              const outU = resolveUtil(Number(sample.out_util_pct) || 0, Number(sample.out_bps) || 0, bw);
+              rows.push(
+                `<div class="pt-wall__tip-row"><span>Util</span><strong>${formatUtilPct(inU)} / ${formatUtilPct(outU)}</strong></div>`,
+              );
+            }
+            if (Number.isFinite(yInB) || Number.isFinite(yOutB)) {
               rows.push(
                 `<div class="pt-wall__tip-row"><span>${t("portTraffic.baseline")}</span><strong>${
-                  Number.isFinite(inBase) ? formatBps(inBase) : "—"
-                } / ${Number.isFinite(outBase) ? formatBps(outBase) : "—"} bit/s</strong></div>`,
+                  Number.isFinite(yInB) ? fmtY(yInB) : "—"
+                } / ${Number.isFinite(yOutB) ? fmtY(yOutB) : "—"} ${unit}</strong></div>`,
               );
               if (baseSample?.ts_raw) {
                 rows.push(
@@ -279,8 +355,16 @@ export function PortTrafficWall({
       plotRef.current.setSize(chartSize(mountRef.current));
     };
     window.addEventListener("resize", onResize);
+    const ro =
+      typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(() => onResize())
+        : null;
+    ro?.observe(el);
+    const wrap = el.parentElement;
+    if (wrap) ro?.observe(wrap);
     return () => {
       window.removeEventListener("resize", onResize);
+      ro?.disconnect();
       plotRef.current?.over.removeEventListener("mouseleave", onLeave);
       plotRef.current?.destroy();
       plotRef.current = null;
@@ -291,9 +375,9 @@ export function PortTrafficWall({
   useEffect(() => {
     const plot = plotRef.current;
     if (!plot) return;
-    // Always setData with resetScales; toggling series.show before setData can leave
-    // uPlot stuck on a blank [0,1] y-range until a later update.
-    const data = toAlignedSeries(points, baselinePoints);
+    const bw = kpi.bw || target?.bw_bps || 0;
+    const baseBw = baselineTarget?.bw_bps || bw;
+    const data = toAlignedSeries(points, baselinePoints, yMode, bw, baseBw);
     const showBaseline = baselinePoints.length > 0;
     plot.setData(data, true);
     const s3 = Boolean(plot.series[3]?.show);
@@ -302,15 +386,22 @@ export function PortTrafficWall({
       plot.setSeries(3, { show: showBaseline }, false);
       plot.setSeries(4, { show: showBaseline }, false);
     }
+    const yAxis = plot.axes[1];
+    if (yAxis) {
+      const nextLabel = yMode === "util" ? "%" : "bit/s";
+      if (yAxis.label !== nextLabel) {
+        yAxis.label = nextLabel;
+        plot.redraw(false, false);
+      }
+    }
     const el = mountRef.current;
     if (el) {
-      // Legend show/hide changes layout; size after paint.
       requestAnimationFrame(() => {
         if (!plotRef.current || !mountRef.current) return;
         plotRef.current.setSize(chartSize(mountRef.current));
       });
     }
-  }, [points, baselinePoints]);
+  }, [points, baselinePoints, yMode, kpi.bw, target?.bw_bps, baselineTarget?.bw_bps]);
 
   const empty = points.length === 0 && baselinePoints.length === 0;
   const neLabel = target ? target.ne_name || target.ne_ip || "—" : "—";
@@ -326,7 +417,15 @@ export function PortTrafficWall({
   return (
     <div className="pt-wall">
       <div className="pt-wall__head">
-        <div className="pt-wall__head-title">{t("portTraffic.wallLiveTitle")}</div>
+        <div className="pt-wall__title">
+          <div className="pt-wall__ne">
+            {neLabel}
+            {ipLabel ? ` · ${ipLabel}` : ""}
+          </div>
+          <div className="pt-wall__if" title={ifLabel}>
+            {ifLabel}
+          </div>
+        </div>
         <div className="pt-wall__range">
           {rangeLabel}
           {kpi.ts ? ` · ${t("portTraffic.latestAt")} ${formatSystemTime(kpi.ts)}` : ""}
@@ -334,37 +433,29 @@ export function PortTrafficWall({
       </div>
       <div className="pt-wall__kpis">
         <div className="pt-wall__kpi">
-          <div className="pt-wall__kpi-label">
-            {t("portTraffic.kpiBw")} · {t("portTraffic.kpiLatest")}
-          </div>
+          <div className="pt-wall__kpi-label">{t("portTraffic.kpiBw")}</div>
           <div className="pt-wall__kpi-value">{formatBwLabel(kpi.bw)}</div>
         </div>
         <div className="pt-wall__kpi pt-wall__kpi--in">
-          <div className="pt-wall__kpi-label">
-            In · {t("portTraffic.kpiLatest")}
-          </div>
+          <div className="pt-wall__kpi-label">In</div>
           <div className="pt-wall__kpi-value">
             {formatBps(kpi.inBps)}
             <span className="pt-wall__kpi-unit">bit/s</span>
           </div>
         </div>
         <div className="pt-wall__kpi pt-wall__kpi--out">
-          <div className="pt-wall__kpi-label">
-            Out · {t("portTraffic.kpiLatest")}
-          </div>
+          <div className="pt-wall__kpi-label">Out</div>
           <div className="pt-wall__kpi-value">
             {formatBps(kpi.outBps)}
             <span className="pt-wall__kpi-unit">bit/s</span>
           </div>
         </div>
-        <div className="pt-wall__kpi">
-          <div className="pt-wall__kpi-label">
-            Util · {t("portTraffic.kpiLatest")}
-          </div>
+        <div className="pt-wall__kpi pt-wall__kpi--util">
+          <div className="pt-wall__kpi-label">Util</div>
           <div className="pt-wall__kpi-value">
-            {kpi.inUtil.toFixed(1)}%
+            {formatUtilPct(kpi.inUtil)}
             <span className="pt-wall__kpi-sep">/</span>
-            {kpi.outUtil.toFixed(1)}%
+            {formatUtilPct(kpi.outUtil)}
           </div>
         </div>
       </div>
@@ -378,17 +469,30 @@ export function PortTrafficWall({
         ) : null}
       </div>
       <div className="pt-wall__foot">
-        <div className="pt-wall__foot-ne" title={neLabel}>
-          <span className="pt-wall__foot-label">{t("portTraffic.wallDevice")}</span>
-          <span className="pt-wall__foot-value">{neLabel}</span>
-          {ipLabel ? <span className="pt-wall__foot-ip">{ipLabel}</span> : null}
-        </div>
-        <div className="pt-wall__foot-if" title={ifLabel}>
-          <span className="pt-wall__foot-label">{t("portTraffic.wallPort")}</span>
-          <span className="pt-wall__foot-value pt-wall__foot-value--mono">{ifLabel}</span>
+        <div className="pt-wall__legend" aria-hidden={!points.length && !baselinePoints.length}>
+          <span className="pt-wall__legend-item pt-wall__legend-item--in">
+            <i className="pt-wall__legend-swatch" />
+            {t("portTraffic.seriesCurrentIn")}
+          </span>
+          <span className="pt-wall__legend-item pt-wall__legend-item--out">
+            <i className="pt-wall__legend-swatch" />
+            {t("portTraffic.seriesCurrentOut")}
+          </span>
+          {showBaselineMeta ? (
+            <>
+              <span className="pt-wall__legend-item pt-wall__legend-item--base-in">
+                <i className="pt-wall__legend-swatch" />
+                {t("portTraffic.seriesBaselineIn")}
+              </span>
+              <span className="pt-wall__legend-item pt-wall__legend-item--base-out">
+                <i className="pt-wall__legend-swatch" />
+                {t("portTraffic.seriesBaselineOut")}
+              </span>
+            </>
+          ) : null}
         </div>
         {showBaselineMeta ? (
-          <>
+          <div className="pt-wall__foot-meta">
             <div className="pt-wall__foot-ne" title={baseNeLabel}>
               <span className="pt-wall__foot-label">{t("portTraffic.baselineDevice")}</span>
               <span className="pt-wall__foot-value">{baseNeLabel}</span>
@@ -398,7 +502,7 @@ export function PortTrafficWall({
               <span className="pt-wall__foot-label">{t("portTraffic.baselinePort")}</span>
               <span className="pt-wall__foot-value pt-wall__foot-value--mono">{baseIfLabel}</span>
             </div>
-          </>
+          </div>
         ) : null}
       </div>
     </div>

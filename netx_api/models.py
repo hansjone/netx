@@ -595,17 +595,25 @@ class NeConfigHistory(Base):
     task_id: Mapped[str] = mapped_column(String(64), default="")
 
 
-class PortTrafficTask(Base):
-    """Port traffic monitoring job definition."""
+class PortTrafficDevice(Base):
+    """Per-NE port traffic monitoring config (device-centric)."""
 
-    __tablename__ = "port_traffic_task"
+    __tablename__ = "port_traffic_device"
+    __table_args__ = (
+        UniqueConstraint("source", "ne_id", name="uq_port_traffic_device_ne"),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
-    title: Mapped[str] = mapped_column(String(256), default="")
+    source: Mapped[str] = mapped_column(String(32), default="managed", index=True)
+    ne_id: Mapped[str] = mapped_column(String(128), default="", index=True)
+    ne_name: Mapped[str] = mapped_column(String(256), default="")
+    ne_ip: Mapped[str] = mapped_column(String(128), default="")
+    vendor: Mapped[str] = mapped_column(String(64), default="")
+    note: Mapped[str] = mapped_column(String(256), default="")  # optional remark
     status: Mapped[str] = mapped_column(String(32), default="draft", index=True)  # draft|running|paused|stopped
     interval_sec: Mapped[int] = mapped_column(Integer, default=60)
     retention_days: Mapped[int] = mapped_column(Integer, default=7)
-    concurrency: Mapped[int] = mapped_column(Integer, default=5)
+    concurrency: Mapped[int] = mapped_column(Integer, default=1)
     collect_running: Mapped[bool] = mapped_column(Boolean, default=False)
     last_collect_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_collect_ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -614,32 +622,41 @@ class PortTrafficTask(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+# Back-compat alias while callers migrate.
+PortTrafficTask = PortTrafficDevice
+
+
 class PortTrafficSeries(Base):
     """Logical port (business link) that survives physical NE/if replacement."""
 
     __tablename__ = "port_traffic_series"
-    __table_args__ = (UniqueConstraint("task_id", "title", name="uq_port_traffic_series_title"),)
+    __table_args__ = (UniqueConstraint("device_id", "title", name="uq_port_traffic_series_title"),)
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
-    task_id: Mapped[str] = mapped_column(String(64), index=True)
+    device_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     title: Mapped[str] = mapped_column(String(256), default="")
     status: Mapped[str] = mapped_column(String(32), default="active", index=True)  # active|disabled
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
+    @property
+    def task_id(self) -> str:
+        return str(self.device_id or "")
+
+    @task_id.setter
+    def task_id(self, value: str) -> None:
+        self.device_id = str(value or "")
+
 
 class PortTrafficTarget(Base):
-    """Monitored interface under a port traffic task."""
+    """Monitored interface under a device monitoring config."""
 
     __tablename__ = "port_traffic_target"
-    __table_args__ = (
-        UniqueConstraint("task_id", "source", "target_id", "ifname", name="uq_port_traffic_target_if"),
-    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
-    task_id: Mapped[str] = mapped_column(String(64), index=True)
+    device_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     series_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     source: Mapped[str] = mapped_column(String(32), default="managed", index=True)
-    target_id: Mapped[str] = mapped_column(String(128), index=True)
+    target_id: Mapped[str] = mapped_column(String(128), index=True)  # NE id
     ne_name: Mapped[str] = mapped_column(String(256), default="")
     ne_ip: Mapped[str] = mapped_column(String(128), default="")
     vendor: Mapped[str] = mapped_column(String(64), default="")
@@ -650,6 +667,14 @@ class PortTrafficTarget(Base):
     last_error: Mapped[str] = mapped_column(String(1024), default="")
     last_sample_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    @property
+    def task_id(self) -> str:
+        return str(self.device_id or "")
+
+    @task_id.setter
+    def task_id(self, value: str) -> None:
+        self.device_id = str(value or "")
 
 
 class PortTrafficSample(Base):
@@ -670,3 +695,17 @@ class PortTrafficSample(Base):
     rate_period_sec: Mapped[int] = mapped_column(Integer, default=0)
     raw_ok: Mapped[bool] = mapped_column(Boolean, default=True)
     message: Mapped[str] = mapped_column(String(512), default="")
+
+
+class PortTrafficEvent(Base):
+    """Collect / ops log line for a monitored device (and optional interface)."""
+
+    __tablename__ = "port_traffic_event"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
+    device_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    target_row_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    ifname: Mapped[str] = mapped_column(String(128), default="")
+    level: Mapped[str] = mapped_column(String(16), default="error", index=True)  # info|warn|error
+    message: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)

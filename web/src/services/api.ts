@@ -31,12 +31,14 @@ import type {
   NeConfigSnapshotMeta,
   PortTrafficCompare,
   PortTrafficDashboard,
+  PortTrafficDevice,
   PortTrafficDiscoverResponse,
+  PortTrafficEvent,
+  PortTrafficIfaceIn,
   PortTrafficSamples,
   PortTrafficTarget,
-  PortTrafficTargetIn,
-  PortTrafficTask,
 } from "../types";
+
 
 export const AUTH_TOKEN_KEY = "netx_access_token";
 
@@ -797,45 +799,77 @@ export const downloadNeConfigSnapshot = async (
 export const fetchPortTrafficDashboard = () =>
   apiGet<PortTrafficDashboard>("/v1/port-traffic/dashboard");
 
-export const fetchPortTrafficTasks = (params: { page?: number; pageSize?: number }) => {
+export const fetchPortTrafficDevices = (params: { page?: number; pageSize?: number }) => {
   const p = new URLSearchParams();
   p.set("page", String(Math.max(1, Number(params.page || 1))));
   p.set("page_size", String(Math.max(1, Math.min(100, Number(params.pageSize || 20)))));
-  return apiGet<{ total: number; page: number; page_size: number; items: PortTrafficTask[] }>(
-    `/v1/port-traffic/tasks?${p.toString()}`,
+  return apiGet<{ total: number; page: number; page_size: number; items: PortTrafficDevice[] }>(
+    `/v1/port-traffic/devices?${p.toString()}`,
   );
 };
 
-export const createPortTrafficTask = (body: {
-  title: string;
+/** @deprecated */
+export const fetchPortTrafficTasks = fetchPortTrafficDevices;
+
+export const createPortTrafficDevice = (body: {
+  source: "managed" | "ume";
+  ne_id: string;
+  ne_name?: string;
+  ne_ip?: string;
+  vendor?: string;
+  note?: string;
   interval_sec?: number;
   retention_days?: number;
   concurrency?: number;
-  targets?: PortTrafficTargetIn[];
+  interfaces?: PortTrafficIfaceIn[];
   start_now?: boolean;
-}) => apiPost<PortTrafficTask>("/v1/port-traffic/tasks", body);
+}) => apiPost<PortTrafficDevice>("/v1/port-traffic/devices", body);
 
-export const startPortTrafficTask = (taskId: string) =>
-  apiPost<PortTrafficTask>(`/v1/port-traffic/tasks/${encodeURIComponent(taskId)}/start`, {});
+export const updatePortTrafficDevice = (
+  deviceId: string,
+  body: {
+    note?: string;
+    interval_sec?: number;
+    retention_days?: number;
+    concurrency?: number;
+    ne_name?: string;
+    ne_ip?: string;
+    vendor?: string;
+  },
+) => apiPatch<PortTrafficDevice>(`/v1/port-traffic/devices/${encodeURIComponent(deviceId)}`, body);
 
-export const pausePortTrafficTask = (taskId: string) =>
-  apiPost<PortTrafficTask>(`/v1/port-traffic/tasks/${encodeURIComponent(taskId)}/pause`, {});
+export const startPortTrafficDevice = (deviceId: string) =>
+  apiPost<PortTrafficDevice>(`/v1/port-traffic/devices/${encodeURIComponent(deviceId)}/start`, {});
 
-export const stopPortTrafficTask = (taskId: string) =>
-  apiPost<PortTrafficTask>(`/v1/port-traffic/tasks/${encodeURIComponent(taskId)}/stop`, {});
+export const pausePortTrafficDevice = (deviceId: string) =>
+  apiPost<PortTrafficDevice>(`/v1/port-traffic/devices/${encodeURIComponent(deviceId)}/pause`, {});
 
-export const collectPortTrafficNow = (taskId: string) =>
-  apiPost<PortTrafficTask & { ok: boolean; started: boolean; reason?: string }>(
-    `/v1/port-traffic/tasks/${encodeURIComponent(taskId)}/collect-now`,
+export const stopPortTrafficDevice = (deviceId: string) =>
+  apiPost<PortTrafficDevice>(`/v1/port-traffic/devices/${encodeURIComponent(deviceId)}/stop`, {});
+
+export const collectPortTrafficNow = (deviceId: string) =>
+  apiPost<PortTrafficDevice & { ok: boolean; started: boolean; reason?: string }>(
+    `/v1/port-traffic/devices/${encodeURIComponent(deviceId)}/collect-now`,
     {},
   );
 
-export const deletePortTrafficTask = (taskId: string) =>
-  apiDelete<{ ok: boolean; id: string }>(`/v1/port-traffic/tasks/${encodeURIComponent(taskId)}`);
+export const deletePortTrafficDevice = (deviceId: string) =>
+  apiDelete<{ ok: boolean; id: string }>(`/v1/port-traffic/devices/${encodeURIComponent(deviceId)}`);
 
-export const fetchPortTrafficTargets = (taskId: string) =>
+export const fetchPortTrafficTargets = (deviceId: string) =>
   apiGet<{ items: PortTrafficTarget[] }>(
-    `/v1/port-traffic/tasks/${encodeURIComponent(taskId)}/targets`,
+    `/v1/port-traffic/devices/${encodeURIComponent(deviceId)}/targets`,
+  );
+
+export const fetchPortTrafficEvents = (deviceId: string, limit = 100) =>
+  apiGet<{ items: PortTrafficEvent[]; total: number }>(
+    `/v1/port-traffic/devices/${encodeURIComponent(deviceId)}/events?limit=${limit}`,
+  );
+
+export const putPortTrafficInterfaces = (deviceId: string, interfaces: PortTrafficIfaceIn[]) =>
+  apiPut<{ items: PortTrafficTarget[] }>(
+    `/v1/port-traffic/devices/${encodeURIComponent(deviceId)}/interfaces`,
+    { interfaces },
   );
 
 export const discoverPortTrafficPorts = (body: { source: "managed" | "ume"; id: string }) =>

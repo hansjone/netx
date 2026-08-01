@@ -1,4 +1,4 @@
-"""Port traffic monitoring service: CRUD, discover, samples, dashboard."""
+"""Port traffic monitoring service: device-centric CRUD, discover, samples, dashboard."""
 
 from __future__ import annotations
 
@@ -13,12 +13,12 @@ from sqlalchemy.orm import Session
 
 from .cli_resolve import resolve_cli_target
 from .config import settings
-from .models import PortTrafficSample, PortTrafficSeries, PortTrafficTarget, PortTrafficTask
+from .models import PortTrafficDevice, PortTrafficEvent, PortTrafficSample, PortTrafficSeries, PortTrafficTarget
 from .ne_session_factory import close_netmiko_connection, open_netmiko_connection
 from .ne_netmiko import send_show_command
 from .port_traffic_commands import commands_for_vendor
 from .port_traffic_migrate import default_series_title, unique_series_title
-from .port_traffic_parsers import brief_port_to_dict, parse_interface_brief
+from .port_traffic_parsers import brief_port_to_dict, parse_interface_brief, resolve_util_pct
 from .port_traffic_schemas import (
     DiscoverPortItem,
     DiscoverPortsRequest,
@@ -26,16 +26,18 @@ from .port_traffic_schemas import (
     PortTrafficCompareMeta,
     PortTrafficCompareOut,
     PortTrafficDashboardOut,
+    PortTrafficDeviceCreate,
+    PortTrafficDeviceOut,
+    PortTrafficDeviceUpdate,
+    PortTrafficEventOut,
+    PortTrafficEventsOut,
+    PortTrafficIfaceIn,
+    PortTrafficInterfacesPut,
     PortTrafficReplacePortRequest,
     PortTrafficSamplePoint,
     PortTrafficSamplesOut,
     PortTrafficSeriesOut,
-    PortTrafficTargetIn,
     PortTrafficTargetOut,
-    PortTrafficTargetsPut,
-    PortTrafficTaskCreate,
-    PortTrafficTaskOut,
-    PortTrafficTaskUpdate,
 )
 
 _log = logging.getLogger("netx.port_traffic.service")
@@ -45,36 +47,12 @@ def _utcnow() -> datetime:
     return datetime.utcnow()
 
 
-def _task_out(db: Session, task: PortTrafficTask) -> PortTrafficTaskOut:
-    tid = str(task.id)
-    total = db.query(PortTrafficTarget).filter(PortTrafficTarget.task_id == tid).count()
-    active = (
-        db.query(PortTrafficTarget)
-        .filter(PortTrafficTarget.task_id == tid, PortTrafficTarget.status == "active")
-        .count()
-    )
-    return PortTrafficTaskOut(
-        id=tid,
-        title=str(task.title or ""),
-        status=str(task.status or ""),
-        interval_sec=int(task.interval_sec or 60),
-        retention_days=int(task.retention_days or 7),
-        concurrency=int(task.concurrency or 5),
-        collect_running=bool(task.collect_running),
-        target_count=int(total),
-        active_target_count=int(active),
-        last_collect_started_at=task.last_collect_started_at,
-        last_collect_ended_at=task.last_collect_ended_at,
-        last_error=str(task.last_error or ""),
-        created_at=task.created_at,
-        updated_at=task.updated_at,
-    )
-
-
 def _target_out(row: PortTrafficTarget) -> PortTrafficTargetOut:
+    did = str(row.device_id or "")
     return PortTrafficTargetOut(
         id=str(row.id),
-        task_id=str(row.task_id),
+        device_id=did,
+        task_id=did,
         series_id=str(row.series_id or ""),
         source=str(row.source or ""),
         target_id=str(row.target_id or ""),
@@ -91,19 +69,89 @@ def _target_out(row: PortTrafficTarget) -> PortTrafficTargetOut:
     )
 
 
-def _create_series_and_target(
+def _device_out(db: Session, device: PortTrafficDevice) -> PortTrafficDeviceOut:
+    did = str(device.id)
+    total = db.query(PortTrafficTarget).filter(PortTrafficTarget.device_id == did).count()
+    active = (
+        db.query(PortTrafficTarget)
+        .filter(PortTrafficTarget.device_id == did, PortTrafficTarget.status == "active")
+        .count()
+    )
+    return PortTrafficDeviceOut(
+        id=did,
+        source=str(device.source or ""),
+        ne_id=str(device.ne_id or ""),
+        ne_name=str(device.ne_name or ""),
+        ne_ip=str(device.ne_ip or ""),
+        vendor=str(device.vendor or ""),
+        note=str(device.note or ""),
+        status=str(device.status or ""),
+        interval_sec=int(device.interval_sec or 60),
+        retention_days=int(device.retention_days or 7),
+        concurrency=int(device.concurrency or 1),
+        collect_running=bool(device.collect_running),
+        target_count=int(total),
+        active_target_count=int(active),
+        last_collect_started_at=device.last_collect_started_at,
+        last_collect_ended_at=device.last_collect_ended_at,
+        last_error=str(device.last_error or ""),
+        created_at=device.created_at,
+        updated_at=device.updated_at,
+    )
+
+
+def _assert_vendor(vendor: str, label: str) -> None:
+    cmds = commands_for_vendor(vendor or "", "")
+    if cmds is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"vendor_not_supported_for_port_traffic: {vendor or 'unknown'} ({label})",
+        )
+
+
+def _assert_ifaces_free(
     db: Session,
     *,
-    task_id: str,
-    t: PortTrafficTargetIn,
+    source: str,
+    ne_id: str,
+    ifnames: list[str],
+    exclude_device_id: str | None = None,
+) -> None:
+    names = [str(x).strip() for x in ifnames if str(x).strip()]
+    if not names:
+        return
+    q = db.query(PortTrafficTarget).filter(
+        PortTrafficTarget.source == source,
+        PortTrafficTarget.target_id == ne_id,
+        PortTrafficTarget.ifname.in_(names),
+        PortTrafficTarget.status == "active",
+    )
+    if exclude_device_id:
+        q = q.filter(PortTrafficTarget.device_id != exclude_device_id)
+    hit = q.first()
+    if hit:
+        raise HTTPException(
+            status_code=409,
+            detail=f"interface_already_monitored: {hit.ifname} on device {hit.device_id}",
+        )
+
+
+def _create_iface(
+    db: Session,
+    *,
+    device: PortTrafficDevice,
+    iface: PortTrafficIfaceIn,
     now: datetime,
 ) -> PortTrafficTarget:
-    title = unique_series_title(db, task_id, default_series_title(t.ne_name or "", t.ifname.strip()))
+    ifname = iface.ifname.strip()
+    title = unique_series_title(
+        db, str(device.id), default_series_title(device.ne_name or "", ifname)
+    )
     sid = uuid4().hex
     db.add(
         PortTrafficSeries(
             id=sid,
-            task_id=task_id,
+            device_id=str(device.id),
             title=title,
             status="active",
             created_at=now,
@@ -111,16 +159,16 @@ def _create_series_and_target(
     )
     row = PortTrafficTarget(
         id=uuid4().hex,
-        task_id=task_id,
+        device_id=str(device.id),
         series_id=sid,
-        source=t.source,
-        target_id=t.target_id,
-        ne_name=t.ne_name or "",
-        ne_ip=t.ne_ip or "",
-        vendor=t.vendor or "",
-        ifname=t.ifname.strip(),
-        if_description=t.if_description or "",
-        bw_bps=int(t.bw_bps or 0),
+        source=str(device.source),
+        target_id=str(device.ne_id),
+        ne_name=str(device.ne_name or ""),
+        ne_ip=str(device.ne_ip or ""),
+        vendor=str(device.vendor or ""),
+        ifname=ifname,
+        if_description=iface.if_description or "",
+        bw_bps=int(iface.bw_bps or 0),
         status="active",
         created_at=now,
     )
@@ -128,44 +176,49 @@ def _create_series_and_target(
     return row
 
 
-def _assert_supported_targets(targets: list[PortTrafficTargetIn]) -> None:
-    for t in targets:
-        cmds = commands_for_vendor(t.vendor or "", "")
-        if cmds is None:
-            raise HTTPException(
-                status_code=400,
-                detail=f"vendor_not_supported_for_port_traffic: {t.vendor or 'unknown'} ({t.ne_name or t.target_id})",
-            )
-
-
-def list_tasks(db: Session, *, page: int = 1, page_size: int = 20) -> dict[str, Any]:
-    q = db.query(PortTrafficTask).order_by(PortTrafficTask.created_at.desc())
+def list_devices(db: Session, *, page: int = 1, page_size: int = 20) -> dict[str, Any]:
+    q = db.query(PortTrafficDevice).order_by(PortTrafficDevice.ne_name.asc(), PortTrafficDevice.ne_ip.asc())
     total = q.count()
     rows = q.offset((page - 1) * page_size).limit(page_size).all()
     return {
         "total": total,
         "page": page,
         "page_size": page_size,
-        "items": [_task_out(db, r).model_dump() for r in rows],
+        "items": [_device_out(db, r).model_dump() for r in rows],
     }
 
 
-def get_task(db: Session, task_id: str) -> PortTrafficTaskOut:
-    task = db.get(PortTrafficTask, task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="task_not_found")
-    return _task_out(db, task)
+def get_device(db: Session, device_id: str) -> PortTrafficDeviceOut:
+    device = db.get(PortTrafficDevice, device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="device_not_found")
+    return _device_out(db, device)
 
 
-def create_task(db: Session, body: PortTrafficTaskCreate) -> PortTrafficTaskOut:
-    _assert_supported_targets(body.targets)
+def create_device(db: Session, body: PortTrafficDeviceCreate) -> PortTrafficDeviceOut:
+    source = body.source
+    ne_id = body.ne_id.strip()
+    _assert_vendor(body.vendor, body.ne_name or ne_id)
+    clash = (
+        db.query(PortTrafficDevice)
+        .filter(PortTrafficDevice.source == source, PortTrafficDevice.ne_id == ne_id)
+        .first()
+    )
+    if clash:
+        raise HTTPException(status_code=409, detail="device_already_monitored")
+    ifnames = [i.ifname for i in body.interfaces]
+    _assert_ifaces_free(db, source=source, ne_id=ne_id, ifnames=ifnames)
+
     now = _utcnow()
-    status = "running" if body.start_now and body.targets else "draft"
-    if body.start_now and not body.targets:
-        status = "draft"
-    task = PortTrafficTask(
+    status = "running" if body.start_now and body.interfaces else "draft"
+    device = PortTrafficDevice(
         id=uuid4().hex,
-        title=body.title.strip(),
+        source=source,
+        ne_id=ne_id,
+        ne_name=(body.ne_name or "").strip(),
+        ne_ip=(body.ne_ip or "").strip(),
+        vendor=(body.vendor or "").strip(),
+        note=(body.note or "").strip(),
         status=status,
         interval_sec=int(body.interval_sec),
         retention_days=int(body.retention_days),
@@ -173,134 +226,166 @@ def create_task(db: Session, body: PortTrafficTaskCreate) -> PortTrafficTaskOut:
         created_at=now,
         updated_at=now,
     )
-    db.add(task)
+    db.add(device)
     db.flush()
-    for t in body.targets:
-        _create_series_and_target(db, task_id=task.id, t=t, now=now)
+    for iface in body.interfaces:
+        if not iface.ifname.strip():
+            continue
+        _create_iface(db, device=device, iface=iface, now=now)
     db.commit()
-    db.refresh(task)
-    return _task_out(db, task)
+    db.refresh(device)
+    return _device_out(db, device)
 
 
-def update_task(db: Session, task_id: str, body: PortTrafficTaskUpdate) -> PortTrafficTaskOut:
-    task = db.get(PortTrafficTask, task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="task_not_found")
+def update_device(db: Session, device_id: str, body: PortTrafficDeviceUpdate) -> PortTrafficDeviceOut:
+    device = db.get(PortTrafficDevice, device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="device_not_found")
     data = body.model_dump(exclude_unset=True)
-    if "title" in data and data["title"] is not None:
-        task.title = str(data["title"]).strip()
+    for key in ("note", "ne_name", "ne_ip", "vendor"):
+        if key in data and data[key] is not None:
+            setattr(device, key, str(data[key]).strip())
     if "interval_sec" in data and data["interval_sec"] is not None:
-        task.interval_sec = int(data["interval_sec"])
+        device.interval_sec = int(data["interval_sec"])
     if "retention_days" in data and data["retention_days"] is not None:
-        task.retention_days = int(data["retention_days"])
+        device.retention_days = int(data["retention_days"])
     if "concurrency" in data and data["concurrency"] is not None:
-        task.concurrency = int(data["concurrency"])
-    task.updated_at = _utcnow()
+        device.concurrency = int(data["concurrency"])
+    device.updated_at = _utcnow()
     db.commit()
-    db.refresh(task)
-    return _task_out(db, task)
+    db.refresh(device)
+    return _device_out(db, device)
 
 
-def delete_task(db: Session, task_id: str) -> dict[str, Any]:
-    task = db.get(PortTrafficTask, task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="task_not_found")
-    if bool(task.collect_running):
+def delete_device(db: Session, device_id: str) -> dict[str, Any]:
+    device = db.get(PortTrafficDevice, device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="device_not_found")
+    if bool(device.collect_running):
         raise HTTPException(status_code=409, detail="collect_running")
-    targets = db.query(PortTrafficTarget).filter(PortTrafficTarget.task_id == task_id).all()
+    targets = db.query(PortTrafficTarget).filter(PortTrafficTarget.device_id == device_id).all()
     ids = [str(t.id) for t in targets]
     series_ids = [str(t.series_id) for t in targets if t.series_id]
     if ids:
         db.query(PortTrafficSample).filter(PortTrafficSample.target_row_id.in_(ids)).delete(
             synchronize_session=False
         )
-        db.query(PortTrafficTarget).filter(PortTrafficTarget.task_id == task_id).delete(
+        db.query(PortTrafficTarget).filter(PortTrafficTarget.device_id == device_id).delete(
             synchronize_session=False
         )
+    db.query(PortTrafficEvent).filter(PortTrafficEvent.device_id == device_id).delete(
+        synchronize_session=False
+    )
     if series_ids:
         db.query(PortTrafficSeries).filter(PortTrafficSeries.id.in_(series_ids)).delete(
             synchronize_session=False
         )
     else:
-        db.query(PortTrafficSeries).filter(PortTrafficSeries.task_id == task_id).delete(
+        db.query(PortTrafficSeries).filter(PortTrafficSeries.device_id == device_id).delete(
             synchronize_session=False
         )
-    db.delete(task)
+    db.delete(device)
     db.commit()
-    return {"ok": True, "id": task_id}
+    return {"ok": True, "id": device_id}
 
 
-def set_task_status(db: Session, task_id: str, status: str) -> PortTrafficTaskOut:
-    task = db.get(PortTrafficTask, task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="task_not_found")
+def set_device_status(db: Session, device_id: str, status: str) -> PortTrafficDeviceOut:
+    device = db.get(PortTrafficDevice, device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="device_not_found")
     if status == "running":
         active = (
             db.query(PortTrafficTarget)
-            .filter(PortTrafficTarget.task_id == task_id, PortTrafficTarget.status == "active")
+            .filter(PortTrafficTarget.device_id == device_id, PortTrafficTarget.status == "active")
             .count()
         )
         if active <= 0:
             raise HTTPException(status_code=400, detail="no_active_targets")
-        # Allow scheduler/collect-now to fire immediately after start/resume.
-        task.last_collect_ended_at = None
-    task.status = status
-    task.updated_at = _utcnow()
+        device.last_collect_ended_at = None
+    device.status = status
+    device.updated_at = _utcnow()
     db.commit()
-    db.refresh(task)
-    return _task_out(db, task)
+    db.refresh(device)
+    return _device_out(db, device)
 
 
-def put_targets(db: Session, task_id: str, body: PortTrafficTargetsPut) -> list[PortTrafficTargetOut]:
-    task = db.get(PortTrafficTask, task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="task_not_found")
-    if bool(task.collect_running):
+def put_interfaces(db: Session, device_id: str, body: PortTrafficInterfacesPut) -> list[PortTrafficTargetOut]:
+    device = db.get(PortTrafficDevice, device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="device_not_found")
+    if bool(device.collect_running):
         raise HTTPException(status_code=409, detail="collect_running")
-    _assert_supported_targets(body.targets)
-    old = db.query(PortTrafficTarget).filter(PortTrafficTarget.task_id == task_id).all()
-    old_ids = [str(t.id) for t in old]
-    old_series = list({str(t.series_id) for t in old if t.series_id})
-    if old_ids:
-        db.query(PortTrafficSample).filter(PortTrafficSample.target_row_id.in_(old_ids)).delete(
-            synchronize_session=False
-        )
-        db.query(PortTrafficTarget).filter(PortTrafficTarget.task_id == task_id).delete(
-            synchronize_session=False
-        )
-    if old_series:
-        db.query(PortTrafficSeries).filter(PortTrafficSeries.id.in_(old_series)).delete(
-            synchronize_session=False
-        )
+
+    wanted = {i.ifname.strip(): i for i in body.interfaces if i.ifname.strip()}
+    _assert_ifaces_free(
+        db,
+        source=str(device.source),
+        ne_id=str(device.ne_id),
+        ifnames=list(wanted.keys()),
+        exclude_device_id=device_id,
+    )
+
     now = _utcnow()
-    rows: list[PortTrafficTarget] = []
-    for t in body.targets:
-        rows.append(_create_series_and_target(db, task_id=task_id, t=t, now=now))
-    task.updated_at = now
+    existing = (
+        db.query(PortTrafficTarget)
+        .filter(PortTrafficTarget.device_id == device_id)
+        .all()
+    )
+    by_if = {str(t.ifname): t for t in existing if str(t.status) == "active"}
+
+    for ifname, row in list(by_if.items()):
+        if ifname not in wanted:
+            row.status = "retired"
+
+    for ifname, iface in wanted.items():
+        if ifname in by_if:
+            row = by_if[ifname]
+            row.if_description = iface.if_description or row.if_description
+            if iface.bw_bps:
+                row.bw_bps = int(iface.bw_bps)
+            continue
+        # Reactivate retired same ifname if present
+        retired = next(
+            (
+                t
+                for t in existing
+                if str(t.ifname) == ifname and str(t.status) in ("retired", "disabled")
+            ),
+            None,
+        )
+        if retired:
+            retired.status = "active"
+            retired.if_description = iface.if_description or retired.if_description
+            if iface.bw_bps:
+                retired.bw_bps = int(iface.bw_bps)
+            continue
+        _create_iface(db, device=device, iface=iface, now=now)
+
+    device.updated_at = now
     db.commit()
-    return [_target_out(r) for r in rows]
+    return list_targets(db, device_id)
 
 
-def list_targets(db: Session, task_id: str) -> list[PortTrafficTargetOut]:
-    task = db.get(PortTrafficTask, task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="task_not_found")
+def list_targets(db: Session, device_id: str) -> list[PortTrafficTargetOut]:
+    device = db.get(PortTrafficDevice, device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="device_not_found")
     rows = (
         db.query(PortTrafficTarget)
-        .filter(PortTrafficTarget.task_id == task_id)
-        .order_by(PortTrafficTarget.ne_name, PortTrafficTarget.ifname)
+        .filter(PortTrafficTarget.device_id == device_id)
+        .order_by(PortTrafficTarget.ifname)
         .all()
     )
     return [_target_out(r) for r in rows]
 
 
-def list_series(db: Session, task_id: str) -> list[PortTrafficSeriesOut]:
-    task = db.get(PortTrafficTask, task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="task_not_found")
+def list_series(db: Session, device_id: str) -> list[PortTrafficSeriesOut]:
+    device = db.get(PortTrafficDevice, device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="device_not_found")
     rows = (
         db.query(PortTrafficSeries)
-        .filter(PortTrafficSeries.task_id == task_id)
+        .filter(PortTrafficSeries.device_id == device_id)
         .order_by(PortTrafficSeries.title.asc())
         .all()
     )
@@ -317,10 +402,12 @@ def list_series(db: Session, task_id: str) -> list[PortTrafficSeriesOut]:
             .filter(PortTrafficTarget.series_id == s.id, PortTrafficTarget.status == "retired")
             .count()
         )
+        did = str(s.device_id or "")
         out.append(
             PortTrafficSeriesOut(
                 id=str(s.id),
-                task_id=str(s.task_id),
+                device_id=did,
+                task_id=did,
                 title=str(s.title or ""),
                 status=str(s.status or ""),
                 active_target=_target_out(active) if active else None,
@@ -333,29 +420,26 @@ def list_series(db: Session, task_id: str) -> list[PortTrafficSeriesOut]:
 
 def replace_series_port(
     db: Session,
-    task_id: str,
+    device_id: str,
     series_id: str,
     body: PortTrafficReplacePortRequest,
 ) -> PortTrafficSeriesOut:
-    task = db.get(PortTrafficTask, task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="task_not_found")
-    if bool(task.collect_running):
+    device = db.get(PortTrafficDevice, device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="device_not_found")
+    if bool(device.collect_running):
         raise HTTPException(status_code=409, detail="collect_running")
     series = db.get(PortTrafficSeries, series_id)
-    if not series or str(series.task_id) != task_id:
+    if not series or str(series.device_id) != device_id:
         raise HTTPException(status_code=404, detail="series_not_found")
-    tmp = PortTrafficTargetIn(
-        source=body.source,
-        target_id=body.target_id,
-        ne_name=body.ne_name,
-        ne_ip=body.ne_ip,
-        vendor=body.vendor,
-        ifname=body.ifname,
-        if_description=body.if_description,
-        bw_bps=body.bw_bps,
+    ifname = body.ifname.strip()
+    _assert_ifaces_free(
+        db,
+        source=str(device.source),
+        ne_id=str(device.ne_id),
+        ifnames=[ifname],
+        exclude_device_id=device_id,
     )
-    _assert_supported_targets([tmp])
     now = _utcnow()
     actives = (
         db.query(PortTrafficTarget)
@@ -370,7 +454,7 @@ def replace_series_port(
             clash = (
                 db.query(PortTrafficSeries.id)
                 .filter(
-                    PortTrafficSeries.task_id == task_id,
+                    PortTrafficSeries.device_id == device_id,
                     PortTrafficSeries.title == wanted,
                     PortTrafficSeries.id != series_id,
                 )
@@ -381,24 +465,23 @@ def replace_series_port(
             series.title = wanted
     row = PortTrafficTarget(
         id=uuid4().hex,
-        task_id=task_id,
+        device_id=device_id,
         series_id=series_id,
-        source=body.source,
-        target_id=body.target_id,
-        ne_name=body.ne_name or "",
-        ne_ip=body.ne_ip or "",
-        vendor=body.vendor or "",
-        ifname=body.ifname.strip(),
+        source=str(device.source),
+        target_id=str(device.ne_id),
+        ne_name=str(device.ne_name or ""),
+        ne_ip=str(device.ne_ip or ""),
+        vendor=str(device.vendor or ""),
+        ifname=ifname,
         if_description=body.if_description or "",
         bw_bps=int(body.bw_bps or 0),
         status="active",
         created_at=now,
     )
     db.add(row)
-    task.updated_at = now
+    device.updated_at = now
     db.commit()
-    items = list_series(db, task_id)
-    for item in items:
+    for item in list_series(db, device_id):
         if item.id == series_id:
             return item
     raise HTTPException(status_code=500, detail="series_replace_failed")
@@ -449,7 +532,6 @@ def discover_ports(db: Session, body: DiscoverPortsRequest) -> DiscoverPortsResp
 
 
 def _as_naive_utc(value: datetime | None) -> datetime | None:
-    """Normalize query bounds to naive UTC (DB columns are naive utcnow)."""
     if value is None:
         return None
     if value.tzinfo is None:
@@ -468,15 +550,18 @@ def _sample_points(
         ts = ts_raw
         if align_offset is not None and ts_raw is not None:
             ts = ts_raw + align_offset
+        in_bps = float(r.in_bps or 0)
+        out_bps = float(r.out_bps or 0)
+        bw = int(r.bw_bps or 0)
         points.append(
             PortTrafficSamplePoint(
                 ts=ts,
                 ts_raw=ts_raw if align_offset is not None else None,
-                in_bps=float(r.in_bps or 0),
-                out_bps=float(r.out_bps or 0),
-                in_util_pct=float(r.in_util_pct or 0),
-                out_util_pct=float(r.out_util_pct or 0),
-                bw_bps=int(r.bw_bps or 0),
+                in_bps=in_bps,
+                out_bps=out_bps,
+                in_util_pct=resolve_util_pct(float(r.in_util_pct or 0), in_bps, bw),
+                out_util_pct=resolve_util_pct(float(r.out_util_pct or 0), out_bps, bw),
+                bw_bps=bw,
                 rate_period_sec=int(r.rate_period_sec or 0),
             )
         )
@@ -530,7 +615,6 @@ def compare_targets(
     baseline_target_id: str | None = None,
     to_ts: datetime | None = None,
 ) -> PortTrafficCompareOut:
-    """Compare current interface samples vs period and/or manually mapped interface."""
     target = db.get(PortTrafficTarget, target_row_id)
     if not target:
         raise HTTPException(status_code=404, detail="target_not_found")
@@ -549,27 +633,25 @@ def compare_targets(
     range_h = max(0.25, float(range_hours or 24))
     from_ts = to_ts - timedelta(hours=range_h)
     to_q = to_ts + timedelta(seconds=5)
-    current_rows = _query_target_samples(
-        db, target_row_id=str(target.id), from_ts=from_ts, to_ts=to_q
+    current = _sample_points(
+        _query_target_samples(db, target_row_id=str(target.id), from_ts=from_ts, to_ts=to_q)
     )
-    current = _sample_points(current_rows)
 
     off_h = baseline_offset_hours(baseline, range_h, offset_hours)
     baseline_points: list[PortTrafficSamplePoint] = []
-    # Baseline source: mapped interface if set, else same interface (period compare only).
     base_src = mapped if mapped is not None else target
     want_baseline = off_h is not None or mapped is not None
     if want_baseline:
         if off_h is not None:
             delta = timedelta(hours=off_h)
-            b_from = from_ts - delta
-            b_to = to_q - delta
             base_rows = _query_target_samples(
-                db, target_row_id=str(base_src.id), from_ts=b_from, to_ts=b_to
+                db,
+                target_row_id=str(base_src.id),
+                from_ts=from_ts - delta,
+                to_ts=to_q - delta,
             )
             baseline_points = _sample_points(base_rows, align_offset=delta)
         else:
-            # Mapped port, same window (no time shift) — cross-device overlay.
             base_rows = _query_target_samples(
                 db, target_row_id=str(base_src.id), from_ts=from_ts, to_ts=to_q
             )
@@ -590,7 +672,6 @@ def compare_targets(
     )
 
 
-# Back-compat alias for older imports/tests.
 def compare_series(db: Session, **kwargs: Any) -> PortTrafficCompareOut:
     target_row_id = kwargs.pop("target_row_id", None) or kwargs.pop("target_id", None)
     series_id = kwargs.pop("series_id", None)
@@ -622,15 +703,14 @@ def get_samples(
     now = _utcnow()
     to_ts = _as_naive_utc(to_ts) or now
     from_ts = _as_naive_utc(from_ts) or (to_ts - timedelta(hours=1))
-    # Slight skew so just-written samples are not clipped by client clock.
     to_ts = to_ts + timedelta(seconds=5)
     rows = _query_target_samples(db, target_row_id=target_row_id, from_ts=from_ts, to_ts=to_ts)
     return PortTrafficSamplesOut(target=_target_out(target), points=_sample_points(rows))
 
 
 def dashboard(db: Session) -> PortTrafficDashboardOut:
-    task_count = db.query(PortTrafficTask).count()
-    running = db.query(PortTrafficTask).filter(PortTrafficTask.status == "running").count()
+    device_count = db.query(PortTrafficDevice).count()
+    running = db.query(PortTrafficDevice).filter(PortTrafficDevice.status == "running").count()
     active_targets = db.query(PortTrafficTarget).filter(PortTrafficTarget.status == "active").count()
     since = _utcnow() - timedelta(hours=24)
     sample_count = (
@@ -640,38 +720,130 @@ def dashboard(db: Session) -> PortTrafficDashboardOut:
     )
     last = db.query(func.max(PortTrafficSample.ts)).scalar()
     return PortTrafficDashboardOut(
-        task_count=int(task_count),
-        running_task_count=int(running),
+        device_count=int(device_count),
+        running_device_count=int(running),
         active_target_count=int(active_targets),
         sample_count_24h=int(sample_count),
         last_sample_at=last,
+        task_count=int(device_count),
+        running_task_count=int(running),
+    )
+
+
+def list_device_events(
+    db: Session,
+    device_id: str,
+    *,
+    limit: int = 100,
+) -> PortTrafficEventsOut:
+    device = db.get(PortTrafficDevice, device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="device_not_found")
+    lim = max(1, min(500, int(limit or 100)))
+    q = db.query(PortTrafficEvent).filter(PortTrafficEvent.device_id == device_id)
+    total = q.count()
+    # Seed once from current last_error snapshot so older failures still show in log UI.
+    if total == 0:
+        seeded = False
+        if str(device.last_error or "").strip():
+            append_device_event(
+                db,
+                device_id=device_id,
+                message=str(device.last_error),
+                level="error",
+            )
+            seeded = True
+        for t in (
+            db.query(PortTrafficTarget)
+            .filter(PortTrafficTarget.device_id == device_id)
+            .order_by(PortTrafficTarget.ifname)
+            .all()
+        ):
+            err = str(t.last_error or "").strip()
+            if not err:
+                continue
+            append_device_event(
+                db,
+                device_id=device_id,
+                target_row_id=str(t.id),
+                ifname=str(t.ifname or ""),
+                message=err,
+                level="error",
+            )
+            seeded = True
+        if seeded:
+            db.commit()
+            total = db.query(PortTrafficEvent).filter(PortTrafficEvent.device_id == device_id).count()
+            q = db.query(PortTrafficEvent).filter(PortTrafficEvent.device_id == device_id)
+    rows = q.order_by(PortTrafficEvent.created_at.desc()).limit(lim).all()
+    items = [
+        PortTrafficEventOut(
+            id=str(r.id),
+            device_id=str(r.device_id or ""),
+            target_row_id=str(r.target_row_id or ""),
+            ifname=str(r.ifname or ""),
+            level=str(r.level or "error"),
+            message=str(r.message or ""),
+            created_at=r.created_at,
+        )
+        for r in rows
+    ]
+    return PortTrafficEventsOut(items=items, total=int(total))
+
+
+def append_device_event(
+    db: Session,
+    *,
+    device_id: str,
+    message: str,
+    level: str = "error",
+    target_row_id: str = "",
+    ifname: str = "",
+) -> None:
+    msg = str(message or "").strip()
+    if not msg or not device_id:
+        return
+    db.add(
+        PortTrafficEvent(
+            id=uuid4().hex,
+            device_id=device_id,
+            target_row_id=str(target_row_id or ""),
+            ifname=str(ifname or ""),
+            level=str(level or "error")[:16],
+            message=msg[:4000],
+            created_at=_utcnow(),
+        )
     )
 
 
 def purge_expired_samples(db: Session) -> int:
-    """Delete samples older than each task's retention_days."""
-    tasks = db.query(PortTrafficTask).all()
+    devices = db.query(PortTrafficDevice).all()
     deleted = 0
     now = _utcnow()
-    for task in tasks:
-        days = max(1, int(task.retention_days or 7))
+    for device in devices:
+        days = max(1, int(device.retention_days or 7))
         cutoff = now - timedelta(days=days)
         target_ids = [
             str(t.id)
-            for t in db.query(PortTrafficTarget.id).filter(PortTrafficTarget.task_id == task.id).all()
+            for t in db.query(PortTrafficTarget.id)
+            .filter(PortTrafficTarget.device_id == device.id)
+            .all()
         ]
-        if not target_ids:
-            continue
-        n = (
-            db.query(PortTrafficSample)
-            .filter(
-                PortTrafficSample.target_row_id.in_(target_ids),
-                PortTrafficSample.ts < cutoff,
+        if target_ids:
+            n = (
+                db.query(PortTrafficSample)
+                .filter(
+                    PortTrafficSample.target_row_id.in_(target_ids),
+                    PortTrafficSample.ts < cutoff,
+                )
+                .delete(synchronize_session=False)
             )
-            .delete(synchronize_session=False)
-        )
-        deleted += int(n or 0)
+            deleted += int(n or 0)
+        db.query(PortTrafficEvent).filter(
+            PortTrafficEvent.device_id == device.id,
+            PortTrafficEvent.created_at < cutoff,
+        ).delete(synchronize_session=False)
+    db.commit()
     if deleted:
-        db.commit()
         _log.info("port_traffic retention purged samples=%s", deleted)
     return deleted

@@ -8,7 +8,7 @@ from datetime import datetime
 
 from .config import settings
 from .db import SessionLocal
-from .models import PortTrafficTask
+from .models import PortTrafficDevice
 from .port_traffic_runner import dispatch_collect
 from .port_traffic_service import purge_expired_samples
 
@@ -22,38 +22,45 @@ def _utcnow() -> datetime:
     return datetime.utcnow()
 
 
-def try_dispatch_due_tasks() -> int:
-    """Dispatch collect rounds for due running tasks. Returns number started."""
+def try_dispatch_due_devices() -> int:
+    """Dispatch collect rounds for due running devices. Returns number started."""
     db = SessionLocal()
     try:
-        tasks = (
-            db.query(PortTrafficTask)
-            .filter(PortTrafficTask.status == "running", PortTrafficTask.collect_running.is_(False))
+        devices = (
+            db.query(PortTrafficDevice)
+            .filter(
+                PortTrafficDevice.status == "running",
+                PortTrafficDevice.collect_running.is_(False),
+            )
             .all()
         )
         due_ids: list[str] = []
         now = _utcnow()
-        for task in tasks:
-            interval = max(15, int(task.interval_sec or 60))
-            ended = task.last_collect_ended_at
+        for device in devices:
+            interval = max(15, int(device.interval_sec or 60))
+            ended = device.last_collect_ended_at
             if ended is None:
-                due_ids.append(str(task.id))
+                due_ids.append(str(device.id))
                 continue
             if (now - ended).total_seconds() >= interval:
-                due_ids.append(str(task.id))
+                due_ids.append(str(device.id))
     finally:
         db.close()
 
     started = 0
-    for tid in due_ids:
+    for did in due_ids:
         try:
-            n = dispatch_collect(tid)
+            n = dispatch_collect(did)
             if n:
                 started += 1
-                _log.info("port_traffic collect started task=%s targets=%s", tid, n)
+                _log.info("port_traffic collect started device=%s targets=%s", did, n)
         except Exception:
-            _log.exception("port_traffic dispatch failed task=%s", tid)
+            _log.exception("port_traffic dispatch failed device=%s", did)
     return started
+
+
+def try_dispatch_due_tasks() -> int:
+    return try_dispatch_due_devices()
 
 
 def _loop() -> None:
@@ -63,9 +70,8 @@ def _loop() -> None:
     while not _stop.is_set():
         try:
             if bool(settings.port_traffic_scheduler_enabled):
-                try_dispatch_due_tasks()
+                try_dispatch_due_devices()
                 _purge_counter += 1
-                # Retention purge roughly every ~20 ticks
                 if _purge_counter >= 20:
                     _purge_counter = 0
                     db = SessionLocal()
@@ -89,7 +95,6 @@ def start_port_traffic_scheduler() -> None:
     _stop.clear()
     _thread = threading.Thread(target=_loop, name="port-traffic-scheduler", daemon=True)
     _thread.start()
-    _log.info("started thread %s alive=%s", _thread.name, _thread.is_alive())
 
 
 def stop_port_traffic_scheduler() -> None:

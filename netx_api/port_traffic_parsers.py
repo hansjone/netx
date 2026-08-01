@@ -116,6 +116,18 @@ class DetailRates:
     out_util_pct: float = 0.0
 
 
+def resolve_util_pct(vendor_util: float, bps: float, bw_bps: int) -> float:
+    """Prefer vendor-reported util; derive from rate/BW when util is missing but traffic exists."""
+    u = float(vendor_util or 0.0)
+    if u > 0:
+        return u
+    bw = int(bw_bps or 0)
+    rate = float(bps or 0.0)
+    if bw > 0 and rate > 0:
+        return rate / float(bw) * 100.0
+    return u
+
+
 def parse_bw_to_bps(raw: str) -> int:
     text = (raw or "").strip()
     if not text or text.upper() == "N/A":

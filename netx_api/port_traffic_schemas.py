@@ -1,4 +1,4 @@
-"""Pydantic schemas for port traffic monitoring API."""
+"""Pydantic schemas for port traffic monitoring API (device-centric)."""
 
 from __future__ import annotations
 
@@ -8,17 +8,17 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
-class PortTrafficNeRef(BaseModel):
-    source: Literal["managed", "ume"]
-    id: str
-    ne_name: str = ""
-    ne_ip: str = ""
-    vendor: str = ""
+class PortTrafficIfaceIn(BaseModel):
+    ifname: str
+    if_description: str = ""
+    bw_bps: int = 0
 
 
 class PortTrafficTargetIn(BaseModel):
-    source: Literal["managed", "ume"]
-    target_id: str
+    """Legacy-shaped input; create/device APIs prefer PortTrafficIfaceIn under one NE."""
+
+    source: Literal["managed", "ume"] = "managed"
+    target_id: str = ""
     ne_name: str = ""
     ne_ip: str = ""
     vendor: str = ""
@@ -27,25 +27,38 @@ class PortTrafficTargetIn(BaseModel):
     bw_bps: int = 0
 
 
-class PortTrafficTaskCreate(BaseModel):
-    title: str = Field(min_length=1, max_length=256)
+class PortTrafficDeviceCreate(BaseModel):
+    source: Literal["managed", "ume"]
+    ne_id: str = Field(min_length=1, max_length=128)
+    ne_name: str = ""
+    ne_ip: str = ""
+    vendor: str = ""
+    note: str = Field(default="", max_length=256)
     interval_sec: int = Field(default=60, ge=15, le=3600)
     retention_days: int = Field(default=7, ge=1, le=90)
-    concurrency: int = Field(default=5, ge=1, le=20)
-    targets: list[PortTrafficTargetIn] = Field(default_factory=list)
+    concurrency: int = Field(default=1, ge=1, le=5)
+    interfaces: list[PortTrafficIfaceIn] = Field(default_factory=list)
     start_now: bool = False
 
 
-class PortTrafficTaskUpdate(BaseModel):
-    title: str | None = Field(default=None, min_length=1, max_length=256)
+class PortTrafficDeviceUpdate(BaseModel):
+    note: str | None = Field(default=None, max_length=256)
     interval_sec: int | None = Field(default=None, ge=15, le=3600)
     retention_days: int | None = Field(default=None, ge=1, le=90)
-    concurrency: int | None = Field(default=None, ge=1, le=20)
+    concurrency: int | None = Field(default=None, ge=1, le=5)
+    ne_name: str | None = None
+    ne_ip: str | None = None
+    vendor: str | None = None
 
 
-class PortTrafficTaskOut(BaseModel):
+class PortTrafficDeviceOut(BaseModel):
     id: str
-    title: str
+    source: str
+    ne_id: str
+    ne_name: str
+    ne_ip: str
+    vendor: str
+    note: str = ""
     status: str
     interval_sec: int
     retention_days: int
@@ -62,7 +75,8 @@ class PortTrafficTaskOut(BaseModel):
 
 class PortTrafficTargetOut(BaseModel):
     id: str
-    task_id: str
+    device_id: str
+    task_id: str = ""  # alias of device_id for older clients
     series_id: str = ""
     source: str
     target_id: str
@@ -80,7 +94,8 @@ class PortTrafficTargetOut(BaseModel):
 
 class PortTrafficSeriesOut(BaseModel):
     id: str
-    task_id: str
+    device_id: str
+    task_id: str = ""
     title: str
     status: str
     active_target: PortTrafficTargetOut | None = None
@@ -88,18 +103,13 @@ class PortTrafficSeriesOut(BaseModel):
     created_at: datetime | None = None
 
 
-class PortTrafficTargetsPut(BaseModel):
-    targets: list[PortTrafficTargetIn]
+class PortTrafficInterfacesPut(BaseModel):
+    """Replace active interface set for a device (keeps samples for retired/removed)."""
+
+    interfaces: list[PortTrafficIfaceIn]
 
 
 class PortTrafficReplacePortRequest(BaseModel):
-    """Replace the active interface under a logical series (keeps history)."""
-
-    source: Literal["managed", "ume"]
-    target_id: str
-    ne_name: str = ""
-    ne_ip: str = ""
-    vendor: str = ""
     ifname: str
     if_description: str = ""
     bw_bps: int = 0
@@ -141,7 +151,7 @@ class PortTrafficSamplePoint(BaseModel):
     out_util_pct: float
     bw_bps: int
     rate_period_sec: int = 0
-    ts_raw: datetime | None = None  # baseline original time when aligned
+    ts_raw: datetime | None = None
 
 
 class PortTrafficSamplesOut(BaseModel):
@@ -166,8 +176,26 @@ class PortTrafficCompareOut(BaseModel):
 
 
 class PortTrafficDashboardOut(BaseModel):
-    task_count: int = 0
-    running_task_count: int = 0
+    device_count: int = 0
+    running_device_count: int = 0
     active_target_count: int = 0
     sample_count_24h: int = 0
     last_sample_at: datetime | None = None
+    # Back-compat aliases for older UI
+    task_count: int = 0
+    running_task_count: int = 0
+
+
+class PortTrafficEventOut(BaseModel):
+    id: str
+    device_id: str
+    target_row_id: str = ""
+    ifname: str = ""
+    level: str = "error"
+    message: str = ""
+    created_at: datetime | None = None
+
+
+class PortTrafficEventsOut(BaseModel):
+    items: list[PortTrafficEventOut] = Field(default_factory=list)
+    total: int = 0

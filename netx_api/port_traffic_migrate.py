@@ -1,4 +1,4 @@
-"""Startup migration / backfill for port traffic logical series."""
+"""Startup migration / backfill for port traffic device-centric model."""
 
 from __future__ import annotations
 
@@ -8,38 +8,82 @@ from uuid import uuid4
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from .models import PortTrafficSample, PortTrafficSeries, PortTrafficTarget
+from .models import PortTrafficDevice, PortTrafficSample, PortTrafficSeries, PortTrafficTarget
 
 _log = logging.getLogger("netx.port_traffic.migrate")
 
 
 def ensure_port_traffic_series_schema(conn) -> None:
-    """DDL for series + series_id columns (Postgres IF NOT EXISTS)."""
+    """DDL for device + series + device_id columns (Postgres IF NOT EXISTS)."""
+    conn.exec_driver_sql(
+        """
+        CREATE TABLE IF NOT EXISTS port_traffic_device (
+            id VARCHAR(64) PRIMARY KEY,
+            source VARCHAR(32) DEFAULT 'managed',
+            ne_id VARCHAR(128) DEFAULT '',
+            ne_name VARCHAR(256) DEFAULT '',
+            ne_ip VARCHAR(128) DEFAULT '',
+            vendor VARCHAR(64) DEFAULT '',
+            note VARCHAR(256) DEFAULT '',
+            status VARCHAR(32) DEFAULT 'draft',
+            interval_sec INTEGER DEFAULT 60,
+            retention_days INTEGER DEFAULT 7,
+            concurrency INTEGER DEFAULT 1,
+            collect_running BOOLEAN DEFAULT FALSE,
+            last_collect_started_at TIMESTAMP,
+            last_collect_ended_at TIMESTAMP,
+            last_error VARCHAR(1024) DEFAULT '',
+            created_at TIMESTAMP,
+            updated_at TIMESTAMP
+        )
+        """
+    )
+    conn.exec_driver_sql(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_port_traffic_device_ne ON port_traffic_device (source, ne_id)"
+    )
+    conn.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_port_traffic_device_status ON port_traffic_device (status)"
+    )
+
     conn.exec_driver_sql(
         """
         CREATE TABLE IF NOT EXISTS port_traffic_series (
             id VARCHAR(64) PRIMARY KEY,
-            task_id VARCHAR(64),
+            device_id VARCHAR(64) DEFAULT '',
             title VARCHAR(256) DEFAULT '',
             status VARCHAR(32) DEFAULT 'active',
             created_at TIMESTAMP
         )
         """
     )
+    # Legacy column may still exist as task_id
     conn.exec_driver_sql(
-        "CREATE INDEX IF NOT EXISTS ix_port_traffic_series_task_id ON port_traffic_series (task_id)"
+        "ALTER TABLE port_traffic_series ADD COLUMN IF NOT EXISTS device_id VARCHAR(64) DEFAULT ''"
+    )
+    conn.exec_driver_sql(
+        "ALTER TABLE port_traffic_series ADD COLUMN IF NOT EXISTS task_id VARCHAR(64) DEFAULT ''"
+    )
+    conn.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_port_traffic_series_device_id ON port_traffic_series (device_id)"
     )
     conn.exec_driver_sql(
         "CREATE INDEX IF NOT EXISTS ix_port_traffic_series_status ON port_traffic_series (status)"
     )
-    conn.exec_driver_sql(
-        "CREATE UNIQUE INDEX IF NOT EXISTS uq_port_traffic_series_title ON port_traffic_series (task_id, title)"
-    )
+
     conn.exec_driver_sql(
         "ALTER TABLE port_traffic_target ADD COLUMN IF NOT EXISTS series_id VARCHAR(64) DEFAULT ''"
     )
     conn.exec_driver_sql(
+        "ALTER TABLE port_traffic_target ADD COLUMN IF NOT EXISTS device_id VARCHAR(64) DEFAULT ''"
+    )
+    conn.exec_driver_sql(
+        "ALTER TABLE port_traffic_target ADD COLUMN IF NOT EXISTS task_id VARCHAR(64) DEFAULT ''"
+    )
+    conn.exec_driver_sql(
         "CREATE INDEX IF NOT EXISTS ix_port_traffic_target_series_id ON port_traffic_target (series_id)"
+    )
+    conn.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_port_traffic_target_device_id ON port_traffic_target (device_id)"
     )
     conn.exec_driver_sql(
         "ALTER TABLE port_traffic_sample ADD COLUMN IF NOT EXISTS series_id VARCHAR(64) DEFAULT ''"
@@ -47,10 +91,191 @@ def ensure_port_traffic_series_schema(conn) -> None:
     conn.exec_driver_sql(
         "CREATE INDEX IF NOT EXISTS ix_port_traffic_sample_series_id ON port_traffic_sample (series_id)"
     )
+    # One active interface globally per physical port
+    conn.exec_driver_sql(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_port_traffic_target_active_if
+        ON port_traffic_target (source, target_id, ifname)
+        WHERE status = 'active'
+        """
+    )
+
+    conn.exec_driver_sql(
+        """
+        CREATE TABLE IF NOT EXISTS port_traffic_event (
+            id VARCHAR(64) PRIMARY KEY,
+            device_id VARCHAR(64) DEFAULT '',
+            target_row_id VARCHAR(64) DEFAULT '',
+            ifname VARCHAR(128) DEFAULT '',
+            level VARCHAR(16) DEFAULT 'error',
+            message TEXT DEFAULT '',
+            created_at TIMESTAMP
+        )
+        """
+    )
+    conn.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_port_traffic_event_device_id ON port_traffic_event (device_id)"
+    )
+    conn.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_port_traffic_event_created_at ON port_traffic_event (created_at)"
+    )
+    conn.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_port_traffic_event_level ON port_traffic_event (level)"
+    )
+
+
+def migrate_tasks_to_devices(db: Session) -> int:
+    """Collapse legacy port_traffic_task rows into per-NE devices; reassign targets/series."""
+    # Copy task_id → device_id where missing
+    try:
+        db.execute(
+            text(
+                """
+                UPDATE port_traffic_target
+                SET device_id = task_id
+                WHERE COALESCE(device_id, '') = '' AND COALESCE(task_id, '') <> ''
+                """
+            )
+        )
+        db.execute(
+            text(
+                """
+                UPDATE port_traffic_series
+                SET device_id = task_id
+                WHERE COALESCE(device_id, '') = '' AND COALESCE(task_id, '') <> ''
+                """
+            )
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+
+    # If legacy task table missing, nothing else to do
+    try:
+        db.execute(text("SELECT 1 FROM port_traffic_task LIMIT 1"))
+    except Exception:
+        db.rollback()
+        return 0
+
+    targets = db.query(PortTrafficTarget).all()
+    if not targets:
+        # Still create devices from empty? skip
+        return 0
+
+    # Group active+any targets by (source, ne_id)
+    groups: dict[tuple[str, str], list[PortTrafficTarget]] = {}
+    for t in targets:
+        src = str(t.source or "managed").strip().lower() or "managed"
+        ne = str(t.target_id or "").strip()
+        if not ne:
+            continue
+        groups.setdefault((src, ne), []).append(t)
+
+    created = 0
+    # Load legacy tasks for interval/status
+    legacy: dict[str, dict] = {}
+    try:
+        rows = db.execute(
+            text(
+                """
+                SELECT id, title, status, interval_sec, retention_days, concurrency,
+                       collect_running, last_collect_started_at, last_collect_ended_at,
+                       last_error, created_at, updated_at
+                FROM port_traffic_task
+                """
+            )
+        ).mappings().all()
+        for r in rows:
+            legacy[str(r["id"])] = dict(r)
+    except Exception:
+        db.rollback()
+        legacy = {}
+
+    for (src, ne), members in groups.items():
+        existing = (
+            db.query(PortTrafficDevice)
+            .filter(PortTrafficDevice.source == src, PortTrafficDevice.ne_id == ne)
+            .first()
+        )
+        if existing:
+            device = existing
+        else:
+            # Pick policy from the richest legacy task among members
+            intervals: list[int] = []
+            retentions: list[int] = []
+            statuses: list[str] = []
+            note = ""
+            created_at = None
+            for m in members:
+                tid = str(getattr(m, "device_id", None) or getattr(m, "task_id", None) or "")
+                meta = legacy.get(tid) or {}
+                if meta.get("interval_sec"):
+                    intervals.append(int(meta["interval_sec"]))
+                if meta.get("retention_days"):
+                    retentions.append(int(meta["retention_days"]))
+                if meta.get("status"):
+                    statuses.append(str(meta["status"]))
+                if not note and meta.get("title"):
+                    note = str(meta["title"])[:256]
+                if created_at is None and meta.get("created_at"):
+                    created_at = meta["created_at"]
+            status = "running" if "running" in statuses else (statuses[0] if statuses else "stopped")
+            sample = members[0]
+            device = PortTrafficDevice(
+                id=uuid4().hex,
+                source=src,
+                ne_id=ne,
+                ne_name=str(sample.ne_name or ""),
+                ne_ip=str(sample.ne_ip or ""),
+                vendor=str(sample.vendor or ""),
+                note=note,
+                status=status if status in ("running", "paused", "stopped", "draft") else "stopped",
+                interval_sec=min(intervals) if intervals else 60,
+                retention_days=max(retentions) if retentions else 7,
+                concurrency=1,
+                collect_running=False,
+                created_at=created_at,
+            )
+            db.add(device)
+            db.flush()
+            created += 1
+
+        # Deduplicate active ifnames: keep earliest active, retire the rest
+        seen_active: set[str] = set()
+        for m in sorted(members, key=lambda x: str(x.created_at or "")):
+            m.device_id = str(device.id)
+            if str(m.status) == "active":
+                key = str(m.ifname or "").strip()
+                if key in seen_active:
+                    m.status = "retired"
+                else:
+                    seen_active.add(key)
+            # Keep ne metadata in sync
+            if not device.ne_name and m.ne_name:
+                device.ne_name = str(m.ne_name)
+            if not device.ne_ip and m.ne_ip:
+                device.ne_ip = str(m.ne_ip)
+            if not device.vendor and m.vendor:
+                device.vendor = str(m.vendor)
+
+        # Re-point series
+        series_ids = {str(m.series_id) for m in members if m.series_id}
+        if series_ids:
+            db.query(PortTrafficSeries).filter(PortTrafficSeries.id.in_(list(series_ids))).update(
+                {PortTrafficSeries.device_id: str(device.id)},
+                synchronize_session=False,
+            )
+
+    db.commit()
+    if created:
+        _log.info("port_traffic migrated devices created=%s groups=%s", created, len(groups))
+    return created
 
 
 def backfill_port_traffic_series(db: Session) -> int:
     """Create one series per target missing series_id; stamp samples."""
+    migrate_tasks_to_devices(db)
+
     targets = (
         db.query(PortTrafficTarget)
         .filter((PortTrafficTarget.series_id == None) | (PortTrafficTarget.series_id == ""))  # noqa: E711
@@ -58,13 +283,14 @@ def backfill_port_traffic_series(db: Session) -> int:
     )
     created = 0
     for t in targets:
+        device_id = str(t.device_id or "")
         title = _default_series_title(t.ne_name or "", t.ifname or "")
-        title = _unique_series_title(db, str(t.task_id), title)
+        title = _unique_series_title(db, device_id, title)
         sid = uuid4().hex
         db.add(
             PortTrafficSeries(
                 id=sid,
-                task_id=str(t.task_id),
+                device_id=device_id,
                 title=title,
                 status="active",
             )
@@ -103,8 +329,8 @@ def default_series_title(ne_name: str, ifname: str) -> str:
     return _default_series_title(ne_name, ifname)
 
 
-def unique_series_title(db: Session, task_id: str, base: str) -> str:
-    return _unique_series_title(db, task_id, base)
+def unique_series_title(db: Session, device_id: str, base: str) -> str:
+    return _unique_series_title(db, device_id, base)
 
 
 def _default_series_title(ne_name: str, ifname: str) -> str:
@@ -113,11 +339,11 @@ def _default_series_title(ne_name: str, ifname: str) -> str:
     return f"{ne}:{iface}"[:256]
 
 
-def _unique_series_title(db: Session, task_id: str, base: str) -> str:
+def _unique_series_title(db: Session, device_id: str, base: str) -> str:
     title = base[:256]
     exists = (
         db.query(PortTrafficSeries.id)
-        .filter(PortTrafficSeries.task_id == task_id, PortTrafficSeries.title == title)
+        .filter(PortTrafficSeries.device_id == device_id, PortTrafficSeries.title == title)
         .first()
     )
     if not exists:
@@ -126,7 +352,7 @@ def _unique_series_title(db: Session, task_id: str, base: str) -> str:
         candidate = f"{base[:240]}#{i}"
         exists = (
             db.query(PortTrafficSeries.id)
-            .filter(PortTrafficSeries.task_id == task_id, PortTrafficSeries.title == candidate)
+            .filter(PortTrafficSeries.device_id == device_id, PortTrafficSeries.title == candidate)
             .first()
         )
         if not exists:

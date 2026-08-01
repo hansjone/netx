@@ -104,7 +104,10 @@ export function NetworkLayout() {
                             className={({ isActive }) =>
                               `network-nav__link${isActive ? " is-active" : ""}`
                             }
-                            end={item.path === "/network/devices"}
+                            end={
+                              item.path === "/network/devices" ||
+                              item.path === "/network/tasks/port-traffic"
+                            }
                           >
                             {t(item.labelKey)}
                           </NavLink>
@@ -127,7 +130,10 @@ export function NetworkLayout() {
                   className={({ isActive }) =>
                     `network-nav__rail-link${isActive ? " is-active" : ""}`
                   }
-                  end={item.path === "/network/devices"}
+                  end={
+                    item.path === "/network/devices" ||
+                    item.path === "/network/tasks/port-traffic"
+                  }
                 >
                   {t(item.labelKey).slice(0, 1)}
                 </NavLink>

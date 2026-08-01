@@ -60,9 +60,10 @@ export const queryKeys = {
     ["networkConfigs", page, keyword, source, vendor] as const,
   networkConfigDetail: (source: string, id: string) => ["networkConfigDetail", source, id] as const,
   portTrafficDashboard: ["portTrafficDashboard"] as const,
-  portTrafficTasksAll: ["portTrafficTasks"] as const,
-  portTrafficTasks: (page: number) => ["portTrafficTasks", page] as const,
-  portTrafficTargets: (taskId: string) => ["portTrafficTargets", taskId] as const,
+  portTrafficDevicesAll: ["portTrafficDevices"] as const,
+  portTrafficDevices: (page: number) => ["portTrafficDevices", page] as const,
+  portTrafficTargets: (deviceId: string) => ["portTrafficTargets", deviceId] as const,
+  portTrafficEvents: (deviceId: string) => ["portTrafficEvents", deviceId] as const,
   portTrafficSamples: (targetId: string, rangeHours: number) =>
     ["portTrafficSamples", targetId, rangeHours] as const,
   portTrafficCompare: (

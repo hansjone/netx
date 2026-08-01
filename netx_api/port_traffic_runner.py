@@ -1,4 +1,4 @@
-"""Port traffic collection worker: claim task round, sample interfaces via CLI."""
+"""Port traffic collection worker: claim device round, sample interfaces via one CLI session."""
 
 from __future__ import annotations
 
@@ -15,11 +15,11 @@ from fastapi import HTTPException
 from .cli_resolve import resolve_cli_target
 from .config import settings
 from .db import SessionLocal
-from .models import PortTrafficSample, PortTrafficTarget, PortTrafficTask
+from .models import PortTrafficDevice, PortTrafficEvent, PortTrafficSample, PortTrafficTarget
 from .ne_session_factory import close_netmiko_connection, open_netmiko_connection
 from .ne_netmiko import send_show_command
 from .port_traffic_commands import commands_for_vendor, detail_command
-from .port_traffic_parsers import parse_interface_detail
+from .port_traffic_parsers import parse_interface_detail, resolve_util_pct
 
 _log = logging.getLogger("netx.port_traffic.runner")
 _pools: dict[str, ThreadPoolExecutor] = {}
@@ -34,26 +34,29 @@ def _format_error(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"[:1020]
 
 
-def _pool_for_task(task_id: str, concurrency: int) -> ThreadPoolExecutor:
-    with _pools_lock:
-        pool = _pools.get(task_id)
-        if pool is None:
-            workers = max(1, min(20, int(concurrency or 5)))
-            pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix=f"pt-{task_id[:8]}")
-            _pools[task_id] = pool
-        return pool
-
-
-def _release_pool(task_id: str) -> None:
-    with _pools_lock:
-        pool = _pools.pop(task_id, None)
-    if pool is not None:
-        try:
-            pool.shutdown(wait=False, cancel_futures=False)
-        except TypeError:
-            pool.shutdown(wait=False)
-        except Exception:
-            _log.exception("port_traffic pool shutdown failed task=%s", task_id)
+def _append_event(
+    db,
+    *,
+    device_id: str,
+    message: str,
+    level: str = "error",
+    target_row_id: str = "",
+    ifname: str = "",
+) -> None:
+    msg = str(message or "").strip()
+    if not msg or not device_id:
+        return
+    db.add(
+        PortTrafficEvent(
+            id=uuid4().hex,
+            device_id=device_id,
+            target_row_id=str(target_row_id or ""),
+            ifname=str(ifname or ""),
+            level=str(level or "error")[:16],
+            message=msg[:4000],
+            created_at=_utcnow(),
+        )
+    )
 
 
 def _set_target_error(target_row_id: str, message: str) -> None:
@@ -62,25 +65,72 @@ def _set_target_error(target_row_id: str, message: str) -> None:
         row = db.get(PortTrafficTarget, target_row_id)
         if row:
             row.last_error = message[:1020]
+            _append_event(
+                db,
+                device_id=str(row.device_id or ""),
+                target_row_id=str(row.id),
+                ifname=str(row.ifname or ""),
+                message=message,
+                level="error",
+            )
             db.commit()
     finally:
         db.close()
 
 
-def _claim_collect_round(task_id: str) -> list[str] | None:
-    """Mark task collect_running and return active target row ids, or None if skip."""
+def _finish_collect_round(device_id: str, *, error: str = "") -> None:
+    db = SessionLocal()
+    try:
+        device = db.get(PortTrafficDevice, device_id)
+        if not device:
+            return
+        device.collect_running = False
+        device.last_collect_ended_at = _utcnow()
+        if error:
+            device.last_error = error[:1020]
+            _append_event(db, device_id=device_id, message=error, level="error")
+        device.updated_at = _utcnow()
+        db.commit()
+    finally:
+        db.close()
+    _release_pool(device_id)
+
+
+def _pool_for_device(device_id: str, concurrency: int) -> ThreadPoolExecutor:
+    with _pools_lock:
+        pool = _pools.get(device_id)
+        if pool is None:
+            workers = max(1, min(5, int(concurrency or 1)))
+            pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix=f"pt-{device_id[:8]}")
+            _pools[device_id] = pool
+        return pool
+
+
+def _release_pool(device_id: str) -> None:
+    with _pools_lock:
+        pool = _pools.pop(device_id, None)
+    if pool is not None:
+        try:
+            pool.shutdown(wait=False, cancel_futures=False)
+        except TypeError:
+            pool.shutdown(wait=False)
+        except Exception:
+            _log.exception("port_traffic pool shutdown failed device=%s", device_id)
+
+
+def _claim_collect_round(device_id: str) -> list[str] | None:
     for attempt in range(8):
         db = SessionLocal()
         try:
-            task = db.get(PortTrafficTask, task_id)
-            if not task:
+            device = db.get(PortTrafficDevice, device_id)
+            if not device:
                 return None
-            if str(task.status or "") != "running":
+            if str(device.status or "") != "running":
                 return None
-            if bool(task.collect_running):
+            if bool(device.collect_running):
                 return None
-            ended = task.last_collect_ended_at
-            interval = max(15, int(task.interval_sec or 60))
+            ended = device.last_collect_ended_at
+            interval = max(15, int(device.interval_sec or 60))
             if ended is not None:
                 elapsed = (_utcnow() - ended).total_seconds()
                 if elapsed < interval:
@@ -88,142 +138,69 @@ def _claim_collect_round(task_id: str) -> list[str] | None:
             targets = (
                 db.query(PortTrafficTarget)
                 .filter(
-                    PortTrafficTarget.task_id == task_id,
+                    PortTrafficTarget.device_id == device_id,
                     PortTrafficTarget.status == "active",
                 )
                 .all()
             )
             if not targets:
                 return None
-            task.collect_running = True
-            task.last_collect_started_at = _utcnow()
-            task.last_error = ""
-            task.updated_at = _utcnow()
+            device.collect_running = True
+            device.last_collect_started_at = _utcnow()
+            device.last_error = ""
+            device.updated_at = _utcnow()
             db.commit()
             return [str(t.id) for t in targets]
         except Exception:
             db.rollback()
-            _log.exception("port_traffic claim failed task=%s attempt=%s", task_id, attempt)
+            _log.exception("port_traffic claim failed device=%s attempt=%s", device_id, attempt)
             time.sleep(0.05 * (attempt + 1))
         finally:
             db.close()
     return None
 
 
-def _finish_collect_round(task_id: str, *, error: str = "") -> None:
-    db = SessionLocal()
-    try:
-        task = db.get(PortTrafficTask, task_id)
-        if not task:
-            return
-        task.collect_running = False
-        task.last_collect_ended_at = _utcnow()
-        if error:
-            task.last_error = error[:1020]
-        task.updated_at = _utcnow()
-        db.commit()
-    finally:
-        db.close()
-    _release_pool(task_id)
-
-
-def _run_show(creds: dict[str, Any], command: str, read_timeout: int) -> str:
-    conn = open_netmiko_connection(creds, session_timeout=read_timeout + 60)
-    try:
-        return send_show_command(conn, command, read_timeout=read_timeout)
-    finally:
-        close_netmiko_connection(conn)
-
-
-def _sample_one_target(target_row_id: str) -> None:
-    creds: dict[str, Any] | None = None
-    cmd = ""
-    vendor_key = "zte"
-    per_cmd = int(settings.ne_collect_read_timeout_sec or 120)
-    cap = int(settings.ne_collect_run_timeout_cap_sec or 600)
-
-    db = SessionLocal()
-    try:
-        row = db.get(PortTrafficTarget, target_row_id)
-        if not row or str(row.status or "") != "active":
-            return
-        source = str(row.source or "").strip().lower()
-        target_id = str(row.target_id or "").strip()
-        ifname = str(row.ifname or "").strip()
-        vendor_hint = str(row.vendor or "")
-        try:
-            if source == "managed":
-                creds, device = resolve_cli_target(db, managed_ne_id=target_id)
-            elif source == "ume":
-                creds, device = resolve_cli_target(db, ume_ne_id=target_id)
-            else:
-                row.last_error = "invalid_source"
-                db.commit()
-                return
-        except HTTPException as exc:
-            row.last_error = str(exc.detail or "resolve_failed")[:1020]
-            db.commit()
-            return
-        except Exception as exc:
-            row.last_error = _format_error(exc)
-            db.commit()
-            return
-
-        vendor = str(device.get("vendor") or vendor_hint or "")
-        device_type = str(device.get("device_type") or "")
-        cmds = commands_for_vendor(vendor, device_type)
-        if cmds is None:
-            row.last_error = "unsupported_vendor"
-            db.commit()
-            return
-        vendor_key = cmds.vendor_key
-        cmd = detail_command(cmds, ifname)
-    finally:
-        db.close()
-
-    if not creds or not cmd:
-        return
-
-    budget = min(cap, per_cmd + 90)
-    try:
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            fut = pool.submit(_run_show, creds, cmd, per_cmd)
-            raw = fut.result(timeout=budget)
-    except Exception as exc:
-        _set_target_error(target_row_id, _format_error(exc))
-        return
-
-    parsed = parse_interface_detail(raw, vendor_key)
-    if (
-        parsed.in_bps == 0
-        and parsed.out_bps == 0
-        and parsed.bw_bps == 0
-        and parsed.in_util_pct == 0
-        and parsed.out_util_pct == 0
-        and not parsed.ifname
-    ):
-        _set_target_error(target_row_id, "parse_empty")
-        return
-
+def _save_sample(target_row_id: str, parsed: Any, vendor_hint_bw: int = 0) -> None:
     now = _utcnow()
     db = SessionLocal()
     try:
         row = db.get(PortTrafficTarget, target_row_id)
         if not row:
             return
-        bw = int(parsed.bw_bps or row.bw_bps or 0)
+        bw = int(parsed.bw_bps or row.bw_bps or vendor_hint_bw or 0)
         if bw and not row.bw_bps:
             row.bw_bps = bw
+        in_bps = float(parsed.in_bps)
+        out_bps = float(parsed.out_bps)
+        if (
+            in_bps == 0
+            and out_bps == 0
+            and bw == 0
+            and float(parsed.in_util_pct or 0) == 0
+            and float(parsed.out_util_pct or 0) == 0
+            and not parsed.ifname
+        ):
+            row.last_error = "parse_empty"
+            _append_event(
+                db,
+                device_id=str(row.device_id or ""),
+                target_row_id=str(row.id),
+                ifname=str(row.ifname or ""),
+                message="parse_empty",
+                level="warn",
+            )
+            db.commit()
+            return
         db.add(
             PortTrafficSample(
                 id=uuid4().hex,
                 target_row_id=target_row_id,
                 series_id=str(row.series_id or ""),
                 ts=now,
-                in_bps=float(parsed.in_bps),
-                out_bps=float(parsed.out_bps),
-                in_util_pct=float(parsed.in_util_pct),
-                out_util_pct=float(parsed.out_util_pct),
+                in_bps=in_bps,
+                out_bps=out_bps,
+                in_util_pct=resolve_util_pct(float(parsed.in_util_pct), in_bps, bw),
+                out_util_pct=resolve_util_pct(float(parsed.out_util_pct), out_bps, bw),
                 bw_bps=bw,
                 rate_period_sec=int(parsed.rate_period_sec or 0),
                 raw_ok=True,
@@ -240,30 +217,103 @@ def _sample_one_target(target_row_id: str) -> None:
         db.close()
 
 
-def dispatch_collect(task_id: str) -> int:
-    """Claim and sample all active targets for a running task. Returns target count."""
-    target_ids = _claim_collect_round(task_id)
-    if not target_ids:
-        return 0
+def _sample_targets_shared_session(device_id: str, target_ids: list[str]) -> int:
+    """One CLI login for the device; run show per interface. Returns error count."""
+    per_cmd = int(settings.ne_collect_read_timeout_sec or 120)
+    cap = int(settings.ne_collect_run_timeout_cap_sec or 600)
+    errors = 0
 
     db = SessionLocal()
     try:
-        task = db.get(PortTrafficTask, task_id)
-        concurrency = int(task.concurrency or 5) if task else 5
+        device = db.get(PortTrafficDevice, device_id)
+        if not device:
+            return len(target_ids)
+        source = str(device.source or "").strip().lower()
+        ne_id = str(device.ne_id or "").strip()
+        vendor_hint = str(device.vendor or "")
+        try:
+            if source == "managed":
+                creds, info = resolve_cli_target(db, managed_ne_id=ne_id)
+            elif source == "ume":
+                creds, info = resolve_cli_target(db, ume_ne_id=ne_id)
+            else:
+                for tid in target_ids:
+                    _set_target_error(tid, "invalid_source")
+                return len(target_ids)
+        except HTTPException as exc:
+            msg = str(exc.detail or "resolve_failed")[:1020]
+            for tid in target_ids:
+                _set_target_error(tid, msg)
+            return len(target_ids)
+        except Exception as exc:
+            msg = _format_error(exc)
+            for tid in target_ids:
+                _set_target_error(tid, msg)
+            return len(target_ids)
+
+        vendor = str(info.get("vendor") or vendor_hint or "")
+        device_type = str(info.get("device_type") or "")
+        cmds = commands_for_vendor(vendor, device_type)
+        if cmds is None:
+            for tid in target_ids:
+                _set_target_error(tid, "unsupported_vendor")
+            return len(target_ids)
+        vendor_key = cmds.vendor_key
+
+        targets = (
+            db.query(PortTrafficTarget)
+            .filter(PortTrafficTarget.id.in_(target_ids), PortTrafficTarget.status == "active")
+            .all()
+        )
+        ifaces = [(str(t.id), str(t.ifname or "").strip()) for t in targets if t.ifname]
     finally:
         db.close()
 
-    pool = _pool_for_task(task_id, concurrency)
-    futures = [pool.submit(_sample_one_target, tid) for tid in target_ids]
-    errors = 0
+    if not ifaces:
+        return 0
+
+    budget = min(cap, per_cmd * max(1, len(ifaces)) + 90)
+    conn = None
     try:
-        for fut in as_completed(futures):
+        conn = open_netmiko_connection(creds, session_timeout=budget)
+        for tid, ifname in ifaces:
             try:
-                fut.result()
-            except Exception:
+                cmd = detail_command(cmds, ifname)
+                raw = send_show_command(conn, cmd, read_timeout=per_cmd)
+                parsed = parse_interface_detail(raw, vendor_key)
+                _save_sample(tid, parsed)
+            except Exception as exc:
                 errors += 1
-                _log.exception("port_traffic target worker failed task=%s", task_id)
+                _set_target_error(tid, _format_error(exc))
+                _log.exception("port_traffic iface sample failed device=%s if=%s", device_id, ifname)
+    except Exception as exc:
+        msg = _format_error(exc)
+        for tid, _ in ifaces:
+            _set_target_error(tid, msg)
+        errors = len(ifaces)
+        _log.exception("port_traffic session failed device=%s", device_id)
+    finally:
+        if conn is not None:
+            close_netmiko_connection(conn)
+    return errors
+
+
+def dispatch_collect(device_id: str) -> int:
+    """Claim and sample all active interfaces for a running device. Returns target count."""
+    target_ids = _claim_collect_round(device_id)
+    if not target_ids:
+        return 0
+
+    try:
+        errors = _sample_targets_shared_session(device_id, target_ids)
+    except Exception:
+        errors = len(target_ids)
+        _log.exception("port_traffic collect failed device=%s", device_id)
     finally:
         err_msg = f"{errors}_target_errors" if errors else ""
-        _finish_collect_round(task_id, error=err_msg)
+        _finish_collect_round(device_id, error=err_msg)
     return len(target_ids)
+
+
+# Alias used by older call sites
+dispatch_collect_device = dispatch_collect

@@ -11,7 +11,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from netx_api.db import Base
-from netx_api.models import PortTrafficSample, PortTrafficSeries, PortTrafficTarget, PortTrafficTask
+from netx_api.models import PortTrafficDevice, PortTrafficSample, PortTrafficSeries, PortTrafficTarget
 from netx_api.port_traffic_service import baseline_offset_hours, compare_targets
 
 
@@ -34,16 +34,32 @@ class CompareTargetsTests(unittest.TestCase):
         Base.metadata.create_all(bind=engine)
         self.Session = sessionmaker(bind=engine)
         self.db = self.Session()
-        self.task_id = uuid4().hex
+        self.device_id = uuid4().hex
+        self.device2_id = uuid4().hex
         self.series_id = uuid4().hex
         self.target_id = uuid4().hex
         self.mapped_id = uuid4().hex
         now = datetime(2026, 7, 31, 12, 0, 0)
         self.now = now
         self.db.add(
-            PortTrafficTask(
-                id=self.task_id,
-                title="t1",
+            PortTrafficDevice(
+                id=self.device_id,
+                source="managed",
+                ne_id="ne1",
+                ne_name="R1",
+                vendor="Huawei",
+                status="running",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        self.db.add(
+            PortTrafficDevice(
+                id=self.device2_id,
+                source="managed",
+                ne_id="ne2",
+                ne_name="R2",
+                vendor="ZTE",
                 status="running",
                 created_at=now,
                 updated_at=now,
@@ -52,7 +68,7 @@ class CompareTargetsTests(unittest.TestCase):
         self.db.add(
             PortTrafficSeries(
                 id=self.series_id,
-                task_id=self.task_id,
+                device_id=self.device_id,
                 title="uplink1",
                 status="active",
                 created_at=now,
@@ -61,7 +77,7 @@ class CompareTargetsTests(unittest.TestCase):
         self.db.add(
             PortTrafficTarget(
                 id=self.target_id,
-                task_id=self.task_id,
+                device_id=self.device_id,
                 series_id=self.series_id,
                 source="managed",
                 target_id="ne1",
@@ -75,7 +91,7 @@ class CompareTargetsTests(unittest.TestCase):
         self.db.add(
             PortTrafficTarget(
                 id=self.mapped_id,
-                task_id=self.task_id,
+                device_id=self.device2_id,
                 series_id="",
                 source="managed",
                 target_id="ne2",
@@ -86,7 +102,6 @@ class CompareTargetsTests(unittest.TestCase):
                 created_at=now,
             )
         )
-        # current window points (last 2h) on primary interface
         for i in range(3):
             self.db.add(
                 PortTrafficSample(
@@ -99,7 +114,6 @@ class CompareTargetsTests(unittest.TestCase):
                     raw_ok=True,
                 )
             )
-        # baseline day-1 points on same port
         for i in range(3):
             self.db.add(
                 PortTrafficSample(
@@ -112,7 +126,6 @@ class CompareTargetsTests(unittest.TestCase):
                     raw_ok=True,
                 )
             )
-        # mapped port same-window points
         for i in range(2):
             self.db.add(
                 PortTrafficSample(
@@ -175,7 +188,6 @@ class CompareTargetsTests(unittest.TestCase):
         self.assertIsNone(out.baseline[0].ts_raw)
 
     def test_mapped_port_with_day_offset(self):
-        # day-ago samples on mapped port
         for i in range(2):
             self.db.add(
                 PortTrafficSample(

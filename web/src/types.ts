@@ -533,9 +533,14 @@ export type NeConfigSnapshotDetail = NeConfigSnapshotMeta & {
   config_alt_text: string;
 };
 
-export type PortTrafficTask = {
+export type PortTrafficDevice = {
   id: string;
-  title: string;
+  source: string;
+  ne_id: string;
+  ne_name: string;
+  ne_ip: string;
+  vendor: string;
+  note: string;
   status: string;
   interval_sec: number;
   retention_days: number;
@@ -550,9 +555,13 @@ export type PortTrafficTask = {
   updated_at?: string | null;
 };
 
+/** @deprecated use PortTrafficDevice */
+export type PortTrafficTask = PortTrafficDevice;
+
 export type PortTrafficTarget = {
   id: string;
-  task_id: string;
+  device_id: string;
+  task_id?: string;
   series_id?: string;
   source: string;
   target_id: string;
@@ -568,9 +577,20 @@ export type PortTrafficTarget = {
   created_at?: string | null;
 };
 
+export type PortTrafficEvent = {
+  id: string;
+  device_id: string;
+  target_row_id: string;
+  ifname: string;
+  level: string;
+  message: string;
+  created_at?: string | null;
+};
+
 export type PortTrafficSeries = {
   id: string;
-  task_id: string;
+  device_id: string;
+  task_id?: string;
   title: string;
   status: string;
   active_target: PortTrafficTarget | null;
@@ -578,15 +598,18 @@ export type PortTrafficSeries = {
   created_at?: string | null;
 };
 
-export type PortTrafficTargetIn = {
-  source: "managed" | "ume";
-  target_id: string;
-  ne_name?: string;
-  ne_ip?: string;
-  vendor?: string;
+export type PortTrafficIfaceIn = {
   ifname: string;
   if_description?: string;
   bw_bps?: number;
+};
+
+export type PortTrafficTargetIn = PortTrafficIfaceIn & {
+  source?: "managed" | "ume";
+  target_id?: string;
+  ne_name?: string;
+  ne_ip?: string;
+  vendor?: string;
 };
 
 export type PortTrafficDiscoverPort = {
@@ -642,10 +665,12 @@ export type PortTrafficCompare = {
 };
 
 export type PortTrafficDashboard = {
-  task_count: number;
-  running_task_count: number;
+  device_count: number;
+  running_device_count: number;
   active_target_count: number;
   sample_count_24h: number;
   last_sample_at?: string | null;
+  task_count?: number;
+  running_task_count?: number;
 };
 
