@@ -1025,6 +1025,7 @@ const zh = {
     removeStale: "清除未发现 ({{count}})",
     removeStaleHint: "删除红色标记的未发现链路",
     staleRemoved: "已删除 {{count}} 条未发现链路",
+    connectHint: "连线模式：依次点击源节点 → 目标节点（Esc 或切回选择退出）",
   },
 };
 

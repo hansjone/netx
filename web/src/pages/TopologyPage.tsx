@@ -74,6 +74,43 @@ function FullscreenIcon({ exit }: { exit?: boolean }) {
   );
 }
 
+/** ASCII-safe separators ? avoid Unicode middots that corrupt on some editors. */
+const SEP = " / ";
+
+function ChevronIcon({ dir }: { dir: "left" | "right" }) {
+  const d = dir === "left" ? "M15 6l-6 6 6 6" : "M9 6l6 6-6 6";
+  return (
+    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" className="topo-svg-icon">
+      <path fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" d={d} />
+    </svg>
+  );
+}
+
+function PencilIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" className="topo-svg-icon">
+      <path
+        fill="currentColor"
+        d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"
+      />
+    </svg>
+  );
+}
+
+function CloseIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" className="topo-svg-icon">
+      <path
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.2"
+        strokeLinecap="round"
+        d="M6 6l12 12M18 6L6 18"
+      />
+    </svg>
+  );
+}
+
 type NeNodeData = {
   label: string;
   managed_ne_id: string;
@@ -193,15 +230,10 @@ function NeNode({ data, selected }: NodeProps<Node<NeNodeData>>) {
   const { hideIp, hideVendor, connectMode } = useContext(TopoDisplayContext);
   const tone = vendorTone(data.vendor);
   const name = data.label || (!hideIp ? data.ne_ip : "") || "NE";
-  const bits = [
-    name,
-    hideIp ? "" : data.ne_ip,
-    hideVendor ? "" : data.vendor,
-  ].filter((x, i, arr) => {
-    const s = String(x || "").trim();
-    if (!s) return false;
-    return arr.findIndex((y) => String(y || "").trim() === s) === i;
-  });
+  const secondary = [
+    hideIp || !data.ne_ip || data.ne_ip === name ? "" : data.ne_ip,
+    hideVendor || !data.vendor ? "" : data.vendor,
+  ].filter(Boolean);
   return (
     <div
       className={`topo-node topo-node--${tone}${selected ? " is-selected" : ""}${
@@ -223,7 +255,12 @@ function NeNode({ data, selected }: NodeProps<Node<NeNodeData>>) {
         />
         <RouterIcon />
       </div>
-      <div className="topo-node__caption">{bits.join(" ? ")}</div>
+      <div className="topo-node__caption">
+        <span className="topo-node__caption-name">{name}</span>
+        {secondary.length ? (
+          <span className="topo-node__caption-meta">{secondary.join(SEP)}</span>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -359,7 +396,7 @@ function graphToFlow(nodes: TopologyNodeItem[], edges: TopologyEdgeItem[], defau
   }));
   const rfEdges: Edge[] = edges.map((e) => {
     const src = e.source || "manual";
-    const label = [e.source_port, e.target_port].filter(Boolean).join(" ? ");
+    const label = [e.source_port, e.target_port].filter(Boolean).join(SEP);
     const data: EdgeStyleData = {
       source: src,
       source_port: e.source_port || "",
@@ -1115,7 +1152,7 @@ export function TopologyPage() {
             source_port: patch.source_port !== undefined ? patch.source_port : prev.source_port || "",
             target_port: patch.target_port !== undefined ? patch.target_port : prev.target_port || "",
           };
-          const portLabel = [data.source_port, data.target_port].filter(Boolean).join(" ? ");
+          const portLabel = [data.source_port, data.target_port].filter(Boolean).join(SEP);
           return withEdgeVisual({ ...e, data, label: portLabel || undefined }, edgeDefaults);
         }),
       );
@@ -1212,6 +1249,8 @@ export function TopologyPage() {
       if (e.key === "Escape") {
         closeCtxMenu();
         clearSelection();
+        connectClickRef.current = null;
+        setToolMode((m) => (m === "connect" ? "select" : m));
         return;
       }
       const mode = toolModeFromKey(e.key);
@@ -1541,7 +1580,7 @@ export function TopologyPage() {
           name,
           ip: ne.ip_address || "",
           vendor: "ZTE",
-          meta: `${ne.ip_address || "-"} ? ${ne.ne_type || "UME"}`,
+          meta: `${ne.ip_address || "-"}${SEP}${ne.ne_type || "UME"}`,
           connect_status: ne.connection_status || "",
         };
       });
@@ -1554,7 +1593,7 @@ export function TopologyPage() {
       name: ne.name || ne.ip_address,
       ip: ne.ip_address,
       vendor: ne.vendor,
-      meta: `${ne.ip_address} · ${ne.vendor}`,
+      meta: `${ne.ip_address}${SEP}${ne.vendor}`,
       connect_status: ne.connect_status,
     }));
   }, [paletteSource, neQuery.data, umeQuery.data]);
@@ -1594,7 +1633,7 @@ export function TopologyPage() {
             onClick={() => setSidebarCollapsed(false)}
           >
             <span className="topo-sidebar__rail-icon" aria-hidden="true">
-              ?
+              <ChevronIcon dir="right" />
             </span>
             <span className="topo-sidebar__rail-label">{t("topology.maps")}</span>
           </button>
@@ -1617,12 +1656,12 @@ export function TopologyPage() {
                   </button>
                   <button
                     type="button"
-                    className="btn btn--sm btn--ghost"
+                    className="btn btn--sm btn--ghost topo-icon-btn"
                     title={t("topology.collapseSidebar")}
                     aria-label={t("topology.collapseSidebar")}
                     onClick={() => setSidebarCollapsed(true)}
                   >
-                    ?
+                    <ChevronIcon dir="left" />
                   </button>
                 </div>
               </div>
@@ -1656,7 +1695,7 @@ export function TopologyPage() {
                             disabled={renameMapMut.isPending}
                             onClick={() => promptRenameMap(m.id, m.name)}
                           >
-                            ?
+                            <PencilIcon />
                           </button>
                           <button
                             type="button"
@@ -1667,7 +1706,7 @@ export function TopologyPage() {
                               if (window.confirm(msg)) deleteMapMut.mutate(m.id);
                             }}
                           >
-                            ?
+                            <CloseIcon />
                           </button>
                         </div>
                       </div>
@@ -1777,7 +1816,10 @@ export function TopologyPage() {
         <div className="topo-toolbar">
           <div className="topo-toolbar__row">
             <div className="topo-toolbar__title">
-              <strong>{maps.find((m) => m.id === mapId)?.name || t("topology.selectMap")}</strong>
+              <strong>
+                {maps.find((m) => m.id === mapId)?.name || t("topology.selectMap")}
+                {mapId && dirty ? " *" : ""}
+              </strong>
               {selectedNodes.length > 0 || selectedEdgeId ? (
                 <span className="topo-toolbar__meta">
                   {selectedNodes.length > 0
@@ -1868,7 +1910,8 @@ export function TopologyPage() {
                       connectClickRef.current = null;
                     }}
                   >
-                    {label}
+                    <span className="topo-tools__label">{label}</span>
+                    <kbd className="topo-tools__key">{key}</kbd>
                   </button>
                 ))}
               </div>
@@ -2085,7 +2128,7 @@ export function TopologyPage() {
                       >
                         <span className="topo-find-suggest__name">{n.data.label || n.id}</span>
                         <span className="topo-find-suggest__meta">
-                          {[n.data.ne_ip, n.data.vendor].filter(Boolean).join(" ? ")}
+                          {[n.data.ne_ip, n.data.vendor].filter(Boolean).join(SEP)}
                         </span>
                       </button>
                     ))
@@ -2100,6 +2143,7 @@ export function TopologyPage() {
             </div>
           </div>
         </div>
+
 
         {discoverOpen ? (
           <div className="topo-discover">
@@ -2272,7 +2316,12 @@ export function TopologyPage() {
                 deleteKeyCode={null}
                 edgesFocusable
               >
-                <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="#cbd5e1" />
+                <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="#d8dee8" />
+                {toolMode === "connect" ? (
+                  <div className="topo-mode-hint" role="status">
+                    {t("topology.connectHint")}
+                  </div>
+                ) : null}
                 <Controls showInteractive>
                   <ControlButton
                     className="topo-fs-control"
@@ -2680,7 +2729,7 @@ export function TopologyPage() {
                   {discoverDetail.ne_name || discoverDetail.ne_ip || discoverDetail.ne_id}
                 </h3>
                 <p className="topo-discover-modal__sub">
-                  {[discoverDetail.ne_ip, discoverDetail.command].filter(Boolean).join(" ? ")}
+                  {[discoverDetail.ne_ip, discoverDetail.command].filter(Boolean).join(SEP)}
                 </p>
               </div>
               <span

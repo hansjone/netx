@@ -1029,6 +1029,7 @@ const en = {
     removeStale: "Clear missing ({{count}})",
     removeStaleHint: "Delete red-marked missing edges",
     staleRemoved: "Removed {{count}} missing edge(s)",
+    connectHint: "Connect mode: click source node, then target (Esc or Select to exit)",
   },
 };
 
