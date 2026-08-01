@@ -2257,12 +2257,31 @@ pre {
 }
 
 .topo-toolbar__group + .topo-toolbar__group,
-.topo-tools + .topo-toolbar__group,
-.topo-toolbar__group + .topo-toolbar__display,
-.topo-tools + .topo-toolbar__display {
+.topo-toolbar__panel + .topo-toolbar__group,
+.topo-toolbar__group + .topo-toolbar__group--find,
+.topo-toolbar__panel + .topo-toolbar__group--find {
   margin-left: 2px;
   padding-left: 10px;
   border-left: 1px solid #e2e8f0;
+}
+
+.topo-toolbar__panel {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 4px 8px;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+}
+
+.topo-toolbar__panel .topo-tools {
+  background: #e2e8f0;
+}
+
+.topo-toolbar__panel .topo-toolbar__display > summary {
+  background: #fff;
 }
 
 .topo-toolbar__group--find {
@@ -2271,12 +2290,14 @@ pre {
   align-items: center;
   gap: 6px;
   min-width: 0;
+  margin-left: auto;
 }
 
 .topo-find-suggest {
   position: absolute;
   top: calc(100% + 4px);
-  left: 0;
+  right: 0;
+  left: auto;
   z-index: 30;
   width: min(320px, 70vw);
   max-height: 280px;
