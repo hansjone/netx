@@ -389,6 +389,24 @@ export type TopologyGraph = {
   edges: TopologyEdgeItem[];
 };
 
+export type TopologyDiscoverUnmatched = {
+  remote_name: string;
+  remote_ip: string;
+  local_port: string;
+  remote_port: string;
+};
+
+export type TopologyDiscoverLink = {
+  peer_node_id?: string;
+  peer_ne_id?: string;
+  peer_name?: string;
+  peer_ip?: string;
+  local_port?: string;
+  remote_port?: string;
+  protocol?: string;
+  action?: string;
+};
+
 export type TopologyDiscoverNeResult = {
   ne_id: string;
   ne_name: string;
@@ -398,6 +416,11 @@ export type TopologyDiscoverNeResult = {
   neighbors: number;
   edges_added: number;
   edges_updated: number;
+  unmatched_count?: number;
+  unmatched?: TopologyDiscoverUnmatched[];
+  links?: TopologyDiscoverLink[];
+  parser_key?: string;
+  parser_stub?: boolean;
   error: string;
   raw_preview: string;
 };

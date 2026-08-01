@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
+import { useSearchParams } from "react-router-dom";
 import {
   collectPortTrafficNow,
   createPortTrafficTask,
@@ -48,6 +49,8 @@ export function PortTrafficPage() {
   const { t } = useI18n();
   const { showOk, showError } = useToast();
   const queryClient = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const deepLinkAppliedRef = useRef(false);
 
   const [view, setView] = useState<"list" | "wizard" | "wall">("list");
   const [taskPage, setTaskPage] = useState(1);
@@ -73,6 +76,9 @@ export function PortTrafficPage() {
     Record<string, { loading?: boolean; error?: string; ports: PortTrafficDiscoverPort[]; meta?: { ne_name: string; ne_ip: string; vendor: string } }>
   >({});
   const [pickedPorts, setPickedPorts] = useState<Record<string, PortPick>>({});
+  const [deepLinkHint, setDeepLinkHint] = useState("");
+  const [deepLinkSource, setDeepLinkSource] = useState<"managed" | "ume" | "">("");
+  const [deepLinkNeId, setDeepLinkNeId] = useState("");
 
   const dashQuery = useQuery({
     queryKey: queryKeys.portTrafficDashboard,
@@ -150,6 +156,44 @@ export function PortTrafficPage() {
       ? EMPTY_COMPARE_POINTS
       : (compareQuery.data?.baseline ?? EMPTY_COMPARE_POINTS);
 
+  useEffect(() => {
+    if (deepLinkAppliedRef.current) return;
+    const neId = (searchParams.get("ne_id") || "").trim();
+    if (!neId) return;
+    deepLinkAppliedRef.current = true;
+    const source = searchParams.get("source") === "ume" ? "ume" : "managed";
+    const ifname = (searchParams.get("ifname") || "").trim();
+    setDeepLinkNeId(neId);
+    setDeepLinkSource(source);
+    setView("wizard");
+    setStep(2);
+    setNeKeyword(neId);
+    setNePage(1);
+    setDeepLinkHint(
+      t("portTraffic.deepLinkHint")
+        .replace("{{ne}}", neId)
+        .replace(
+          "{{ifname}}",
+          ifname ? t("portTraffic.deepLinkIfname").replace("{{ifname}}", ifname) : "",
+        ),
+    );
+    setSearchParams({}, { replace: true });
+  }, [searchParams, setSearchParams, t]);
+
+  useEffect(() => {
+    if (!deepLinkNeId || view !== "wizard" || step !== 2) return;
+    const items = nesQuery.data?.items || [];
+    const hit = items.find((row) => {
+      const src = row.source === "ume" ? "ume" : "managed";
+      if (deepLinkSource && src !== deepLinkSource) return false;
+      return row.id === deepLinkNeId;
+    });
+    if (!hit) return;
+    const k = neKey(hit.source, hit.id);
+    setSelectedNes((prev) => (prev[k] ? prev : { ...prev, [k]: hit }));
+    setDeepLinkNeId("");
+  }, [deepLinkNeId, deepLinkSource, nesQuery.data, view, step]);
+
   const invalidateAll = () => {
     void queryClient.invalidateQueries({ queryKey: queryKeys.portTrafficTasksAll });
     void queryClient.invalidateQueries({ queryKey: queryKeys.portTrafficDashboard });
@@ -221,6 +265,9 @@ export function PortTrafficPage() {
     setPickedPorts({});
     setNeKeyword("");
     setNePage(1);
+    setDeepLinkHint("");
+    setDeepLinkSource("");
+    setDeepLinkNeId("");
   };
 
   const openWizard = () => {
@@ -542,6 +589,7 @@ export function PortTrafficPage() {
 
           {step === 2 ? (
             <>
+              {deepLinkHint ? <p className="panel__hint panel__hint--live">{deepLinkHint}</p> : null}
               <div className="filter-inline">
                 <input
                   value={neKeyword}

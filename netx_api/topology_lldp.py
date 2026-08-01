@@ -253,6 +253,15 @@ _VENDOR_PARSERS: dict[str, ParserFn] = {
     "generic": parse_generic_lldp,
 }
 
+# Parsers that intentionally return [] until lab samples are added.
+STUB_PARSER_KEYS = frozenset({"h3c", "juniper", "nokia", "ericsson"})
+
+
+def parser_meta(*, vendor: str = "", device_type: str = "") -> tuple[str, bool]:
+    """Return (parser_key, is_stub)."""
+    key = resolve_vendor_key(vendor, device_type)
+    return key, key in STUB_PARSER_KEYS
+
 
 def parse_neighbor_output(
     text: str,

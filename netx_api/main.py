@@ -1945,12 +1945,13 @@ def ume_list_ne(
     stmt = db.query(UmeInventoryNE)
     kw = str(keyword or "").strip()
     if kw:
+        like = f"%{kw}%"
         stmt = stmt.filter(
-            UmeInventoryNE.ne_id.contains(kw)
-            | UmeInventoryNE.ne_name.contains(kw)
-            | UmeInventoryNE.user_label.contains(kw)
-            | UmeInventoryNE.ip_address.contains(kw)
-            | UmeInventoryNE.host_name.contains(kw)
+            UmeInventoryNE.ne_id.ilike(like)
+            | UmeInventoryNE.ne_name.ilike(like)
+            | UmeInventoryNE.user_label.ilike(like)
+            | UmeInventoryNE.ip_address.ilike(like)
+            | UmeInventoryNE.host_name.ilike(like)
         )
     total = int(stmt.count())
     rows = stmt.order_by(UmeInventoryNE.ne_id.asc()).offset((page - 1) * page_size).limit(page_size).all()

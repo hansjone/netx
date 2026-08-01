@@ -474,6 +474,7 @@ class TopologyServiceTests(unittest.TestCase):
                 self.db, mid, TopologyDiscoverRequest(protocol="cdp", ne_ids=[ne_a_id])
             )
         self.assertGreaterEqual(out2.edges_added, 1)
+        self.assertTrue(out2.results and any(l.action == "added" for l in (out2.results[0].links or [])))
         graph2 = svc.get_graph(self.db, mid)
         self.assertTrue(any(e.source == "cdp" for e in graph2.edges))
 
@@ -596,6 +597,49 @@ class TopologyServiceTests(unittest.TestCase):
         self.db.delete(ne_b)
         self.db.commit()
 
+    def test_discover_reports_unmatched_neighbors(self) -> None:
+        suffix = uuid4().hex[:8]
+        ne_a_id = f"nea-{suffix}"
+        ip_a = f"203.0.113.{(int(suffix[:2], 16) % 100) + 1}"
+        ne_a = ManagedNE(
+            id=ne_a_id,
+            name="R2",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address=ip_a,
+            connect_status="pass",
+        )
+        self.db.add(ne_a)
+        self.db.commit()
+        created = svc.create_map(self.db, TopologyMapCreate(name=f"Unmatch-{suffix}"))
+        mid = created.id
+        svc.put_graph(
+            self.db,
+            mid,
+            TopologyGraphPut(
+                nodes=[TopologyNodeIn(id="n1", managed_ne_id=ne_a_id, label="R2", x=0, y=0)],
+                edges=[],
+            ),
+        )
+        fake_exec = {
+            "ok": True,
+            "output": CISCO_CDP_DETAIL,
+            "commands": ["show cdp neighbors detail"],
+        }
+        with patch.object(svc, "execute_managed_ne_commands", return_value=fake_exec):
+            out = svc.discover_neighbors(
+                self.db, mid, TopologyDiscoverRequest(protocol="cdp", ne_ids=[ne_a_id])
+            )
+        self.assertEqual(len(out.results), 1)
+        r = out.results[0]
+        self.assertTrue(r.ok)
+        self.assertGreaterEqual(r.unmatched_count, 1)
+        self.assertTrue(any((u.remote_name or "").upper().startswith("R1") for u in r.unmatched))
+        self.assertEqual(r.links, [])
+        svc.delete_map(self.db, mid)
+        self.db.delete(ne_a)
+        self.db.commit()
+
 
 class IfnameNormalizeTests(unittest.TestCase):
     def test_cisco_huawei_aliases(self) -> None:
@@ -610,6 +654,14 @@ class IfnameNormalizeTests(unittest.TestCase):
         a = svc._edge_pair_key("n1", "n2", "GigabitEthernet0/0", "Gi0/1")
         b = svc._edge_pair_key("n1", "n2", "Gi0/0", "GigabitEthernet0/1")
         self.assertEqual(a, b)
+
+    def test_parser_meta_marks_stubs(self) -> None:
+        key, stub = lldp.parser_meta(vendor="H3C", device_type="hp_comware")
+        self.assertEqual(key, "h3c")
+        self.assertTrue(stub)
+        key2, stub2 = lldp.parser_meta(vendor="Cisco", device_type="cisco_ios")
+        self.assertEqual(key2, "cisco")
+        self.assertFalse(stub2)
 
 
 if __name__ == "__main__":

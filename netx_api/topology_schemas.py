@@ -98,6 +98,24 @@ class TopologyDiscoverRequest(BaseModel):
     ne_ids: list[str] | None = None
 
 
+class TopologyDiscoverUnmatched(BaseModel):
+    remote_name: str = ""
+    remote_ip: str = ""
+    local_port: str = ""
+    remote_port: str = ""
+
+
+class TopologyDiscoverLink(BaseModel):
+    peer_node_id: str = ""
+    peer_ne_id: str = ""
+    peer_name: str = ""
+    peer_ip: str = ""
+    local_port: str = ""
+    remote_port: str = ""
+    protocol: str = ""
+    action: str = ""  # added | updated | kept_manual
+
+
 class TopologyDiscoverNeResult(BaseModel):
     ne_id: str
     ne_name: str = ""
@@ -107,6 +125,11 @@ class TopologyDiscoverNeResult(BaseModel):
     neighbors: int = 0
     edges_added: int = 0
     edges_updated: int = 0
+    unmatched_count: int = 0
+    unmatched: list[TopologyDiscoverUnmatched] = Field(default_factory=list)
+    links: list[TopologyDiscoverLink] = Field(default_factory=list)
+    parser_key: str = ""
+    parser_stub: bool = False
     error: str = ""
     raw_preview: str = ""
 

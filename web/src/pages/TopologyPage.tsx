@@ -137,6 +137,45 @@ function vendorTone(vendor: string): string {
   return "other";
 }
 
+function discoverResultKind(r: TopologyDiscoverNeResult): "ok" | "warn" | "fail" {
+  if (!r.ok) return "fail";
+  const unmatchedCount = r.unmatched_count ?? (r.unmatched?.length || 0);
+  if (r.parser_stub || unmatchedCount > 0) return "warn";
+  return "ok";
+}
+
+function normalizeSearchText(s: string): string {
+  return String(s || "")
+    .toLowerCase()
+    .replace(/[\s_\-./]+/g, "");
+}
+
+/** Case-insensitive substring + loose subsequence (e.g. r1 ? router-1). */
+function fuzzyIncludes(haystack: string, needle: string): boolean {
+  const h = normalizeSearchText(haystack);
+  const n = normalizeSearchText(needle);
+  if (!n) return true;
+  if (!h) return false;
+  if (h.includes(n)) return true;
+  let i = 0;
+  for (const ch of h) {
+    if (ch === n[i]) i += 1;
+    if (i >= n.length) return true;
+  }
+  return false;
+}
+
+function nodeMatchesQuery(n: Node<NeNodeData>, query: string): boolean {
+  const tokens = String(query || "")
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (!tokens.length) return false;
+  const bits = [n.data.label, n.data.ne_ip, n.data.vendor, n.data.managed_ne_id, n.data.ume_ne_id];
+  return tokens.every((tok) => bits.some((b) => fuzzyIncludes(String(b || ""), tok)));
+}
+
 /** Asset: /topo/ne-router.png (default blue = ZTE); other vendors tint via CSS. */
 function RouterIcon() {
   return (
@@ -410,7 +449,18 @@ export function TopologyPage() {
   });
   const [discoverError, setDiscoverError] = useState("");
   const [fullscreen, setFullscreen] = useState(false);
+  const [canvasQuery, setCanvasQuery] = useState("");
+  const [searchHitIds, setSearchHitIds] = useState<string[]>([]);
+  const [findOpen, setFindOpen] = useState(false);
+  const [findActiveIdx, setFindActiveIdx] = useState(0);
+  const [discoverFilter, setDiscoverFilter] = useState<"issues" | "fail" | "warn" | "ok" | "all">(
+    "issues",
+  );
+  const [discoverDetail, setDiscoverDetail] = useState<TopologyDiscoverNeResult | null>(null);
+  const [discoverListOpen, setDiscoverListOpen] = useState(false);
   const discoverAbortRef = useRef<AbortController | null>(null);
+  const searchHitTimerRef = useRef<number | null>(null);
+  const findBoxRef = useRef<HTMLDivElement | null>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<NeNodeData>>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const rfRef = useRef<ReactFlowInstance<Node<NeNodeData>, Edge> | null>(null);
@@ -452,7 +502,7 @@ export function TopologyPage() {
   );
 
   useEffect(() => {
-    const timer = window.setTimeout(() => setDebouncedKeyword(keyword.trim()), 300);
+    const timer = window.setTimeout(() => setDebouncedKeyword(keyword.trim()), 150);
     return () => window.clearTimeout(timer);
   }, [keyword]);
 
@@ -675,7 +725,7 @@ export function TopologyPage() {
       clearDirty();
       setMapId(row.id);
       showOk(t("topology.newMap"));
-      // Prompt rename right after create — default name is a placeholder.
+      // Prompt rename right after create ? default name is a placeholder.
       window.setTimeout(() => promptRenameMap(row.id, row.name), 0);
     },
     onError: (err) => showError(String(err)),
@@ -718,6 +768,9 @@ export function TopologyPage() {
       setDiscoverReport(null);
       setDiscoverLiveResults([]);
       setDiscoverError("");
+      setDiscoverFilter("issues");
+      setDiscoverDetail(null);
+      setDiscoverListOpen(false);
       const scannable = nodes.filter((n) => Boolean(n.data.managed_ne_id || n.data.ume_ne_id));
       const scoped = filterIds.length
         ? scannable.filter(
@@ -817,21 +870,49 @@ export function TopologyPage() {
   const discoverResults = discoverReport?.results?.length
     ? discoverReport.results
     : discoverLiveResults;
+  const discoverCounts = useMemo(() => {
+    let ok = 0;
+    let warn = 0;
+    let fail = 0;
+    for (const r of discoverResults) {
+      const k = discoverResultKind(r);
+      if (k === "fail") fail += 1;
+      else if (k === "warn") warn += 1;
+      else ok += 1;
+    }
+    return { ok, warn, fail, issues: warn + fail };
+  }, [discoverResults]);
   const discoverSummary = discoverReport
     ? {
         scanned: discoverReport.scanned,
         added: discoverReport.edges_added,
         updated: discoverReport.edges_updated,
         stale: discoverReport.edges_stale || 0,
-        failed: discoverReport.results.filter((r) => !r.ok).length,
+        failed: discoverCounts.fail,
       }
     : {
         scanned: discoverLiveResults.length,
         added: discoverProgress.edgesAdded,
         updated: discoverProgress.edgesUpdated,
         stale: 0,
-        failed: discoverLiveResults.filter((r) => !r.ok).length,
+        failed: discoverCounts.fail,
       };
+  const discoverFiltered = useMemo(() => {
+    return discoverResults.filter((r) => {
+      const k = discoverResultKind(r);
+      if (discoverFilter === "all") return true;
+      if (discoverFilter === "issues") return k === "fail" || k === "warn";
+      return k === discoverFilter;
+    });
+  }, [discoverResults, discoverFilter]);
+  const DISCOVER_LIST_CAP = 200;
+  const discoverVisible = discoverFiltered.slice(0, DISCOVER_LIST_CAP);
+  const discoverPct =
+    discovering && discoverProgress.total > 0
+      ? Math.min(100, Math.round((discoverProgress.index / discoverProgress.total) * 100))
+      : discoverReport
+        ? 100
+        : 0;
 
   const isValidConnection = useCallback(
     (connection: Connection | Edge) => {
@@ -1256,6 +1337,38 @@ export function TopologyPage() {
     showError(t("topology.noNeLink"));
   };
 
+  const openPortTrafficForEdge = (edge: Edge | null) => {
+    closeCtxMenu();
+    if (!edge) {
+      showError(t("topology.noNeLink"));
+      return;
+    }
+    const srcNode = nodes.find((n) => n.id === edge.source);
+    const data = (edge.data || {}) as EdgeStyleData;
+    const ifname = String(data.source_port || "").trim();
+    const managedId = String(srcNode?.data.managed_ne_id || "").trim();
+    const umeId = String(srcNode?.data.ume_ne_id || "").trim();
+    if (managedId) {
+      const q = new URLSearchParams({ ne_id: managedId, source: "managed" });
+      if (ifname) q.set("ifname", ifname);
+      openOrFocusModule({
+        moduleId: "network",
+        path: `/network/tasks/port-traffic?${q.toString()}`,
+      });
+      return;
+    }
+    if (umeId) {
+      const q = new URLSearchParams({ ne_id: umeId, source: "ume" });
+      if (ifname) q.set("ifname", ifname);
+      openOrFocusModule({
+        moduleId: "network",
+        path: `/network/tasks/port-traffic?${q.toString()}`,
+      });
+      return;
+    }
+    showError(t("topology.noNeLink"));
+  };
+
   const discoverOneFor = (node: Node<NeNodeData> | null) => {
     closeCtxMenu();
     const id = String(node?.data.managed_ne_id || node?.data.ume_ne_id || "").trim();
@@ -1290,6 +1403,83 @@ export function TopologyPage() {
       setEdges((es) => es.map((e) => ({ ...e, selected: false })));
     },
     [setNodes, setEdges],
+  );
+
+  const locateNode = useCallback(
+    (nodeId: string) => {
+      focusNode(nodeId, false);
+      setSearchHitIds([nodeId]);
+      if (searchHitTimerRef.current) window.clearTimeout(searchHitTimerRef.current);
+      window.setTimeout(() => {
+        rfRef.current?.fitView({ nodes: [{ id: nodeId }], padding: 0.45, duration: 280 });
+      }, 30);
+      searchHitTimerRef.current = window.setTimeout(() => {
+        setSearchHitIds((cur) => (cur.length === 1 && cur[0] === nodeId ? [] : cur));
+        searchHitTimerRef.current = null;
+      }, 2200);
+    },
+    [focusNode],
+  );
+
+  const canvasHits = useMemo(() => {
+    const q = canvasQuery.trim();
+    if (!q) return [];
+    return nodes.filter((n) => nodeMatchesQuery(n, q));
+  }, [canvasQuery, nodes]);
+
+  useEffect(() => {
+    const q = canvasQuery.trim();
+    if (!q) {
+      setSearchHitIds([]);
+      setFindActiveIdx(0);
+      setFindOpen(false);
+      return;
+    }
+    setFindOpen(true);
+    setSearchHitIds(canvasHits.map((n) => n.id));
+    setFindActiveIdx((idx) => (canvasHits.length ? Math.min(idx, canvasHits.length - 1) : 0));
+  }, [canvasQuery, canvasHits]);
+
+  const findOnCanvas = useCallback(
+    (nodeId?: string) => {
+      const q = canvasQuery.trim();
+      if (!q) return;
+      if (!canvasHits.length) {
+        showError(t("topology.findNoMatch"));
+        return;
+      }
+      const id =
+        nodeId ||
+        canvasHits[Math.max(0, Math.min(findActiveIdx, canvasHits.length - 1))]?.id ||
+        canvasHits[0].id;
+      setFindOpen(false);
+      locateNode(id);
+    },
+    [canvasQuery, canvasHits, findActiveIdx, locateNode, showError, t],
+  );
+
+  useEffect(() => {
+    const onDoc = (e: MouseEvent) => {
+      if (!findBoxRef.current) return;
+      if (!findBoxRef.current.contains(e.target as HTMLElement)) setFindOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, []);
+  const locatePaletteItem = useCallback(
+    (item: PaletteItem) => {
+      const node = nodes.find((n) =>
+        item.source === "managed"
+          ? n.data.managed_ne_id === item.managed_ne_id
+          : n.data.ume_ne_id === item.ume_ne_id,
+      );
+      if (!node) {
+        showError(t("topology.findNoMatch"));
+        return;
+      }
+      locateNode(node.id);
+    },
+    [nodes, locateNode, showError, t],
   );
 
   const focusEdge = useCallback(
@@ -1343,7 +1533,7 @@ export function TopologyPage() {
           name,
           ip: ne.ip_address || "",
           vendor: "ZTE",
-          meta: `${ne.ip_address || "-"} ? ${ne.ne_type || "UME"}`,
+          meta: `${ne.ip_address || "-"} � ${ne.ne_type || "UME"}`,
           connect_status: ne.connection_status || "",
         };
       });
@@ -1356,18 +1546,30 @@ export function TopologyPage() {
       name: ne.name || ne.ip_address,
       ip: ne.ip_address,
       vendor: ne.vendor,
-      meta: `${ne.ip_address} ? ${ne.vendor}`,
+      meta: `${ne.ip_address} � ${ne.vendor}`,
       connect_status: ne.connect_status,
     }));
   }, [paletteSource, neQuery.data, umeQuery.data]);
   const paletteVisible = useMemo(() => {
-    if (!hideAddedNes) return palette;
-    return palette.filter((item) =>
+    const tokens = keyword
+      .trim()
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(Boolean);
+    let list = palette;
+    if (tokens.length) {
+      list = list.filter((item) => {
+        const bits = [item.name, item.ip, item.vendor, item.managed_ne_id, item.ume_ne_id, item.meta];
+        return tokens.every((tok) => bits.some((b) => fuzzyIncludes(String(b || ""), tok)));
+      });
+    }
+    if (!hideAddedNes) return list;
+    return list.filter((item) =>
       item.source === "managed"
         ? !onCanvasManagedIds.has(item.managed_ne_id)
         : !onCanvasUmeIds.has(item.ume_ne_id),
     );
-  }, [palette, hideAddedNes, onCanvasManagedIds, onCanvasUmeIds]);
+  }, [palette, hideAddedNes, onCanvasManagedIds, onCanvasUmeIds, keyword]);
   const paletteLoading =
     (paletteSource === "managed" && neQuery.isLoading) ||
     (paletteSource === "ume" && umeQuery.isLoading);
@@ -1384,7 +1586,7 @@ export function TopologyPage() {
             onClick={() => setSidebarCollapsed(false)}
           >
             <span className="topo-sidebar__rail-icon" aria-hidden="true">
-              ›
+              ?
             </span>
             <span className="topo-sidebar__rail-label">{t("topology.maps")}</span>
           </button>
@@ -1412,7 +1614,7 @@ export function TopologyPage() {
                     aria-label={t("topology.collapseSidebar")}
                     onClick={() => setSidebarCollapsed(true)}
                   >
-                    ‹
+                    ?
                   </button>
                 </div>
               </div>
@@ -1446,7 +1648,7 @@ export function TopologyPage() {
                             disabled={renameMapMut.isPending}
                             onClick={() => promptRenameMap(m.id, m.name)}
                           >
-                            ✎
+                            ?
                           </button>
                           <button
                             type="button"
@@ -1457,7 +1659,7 @@ export function TopologyPage() {
                               if (window.confirm(msg)) deleteMapMut.mutate(m.id);
                             }}
                           >
-                            ×
+                            ?
                           </button>
                         </div>
                       </div>
@@ -1531,11 +1733,20 @@ export function TopologyPage() {
                           <button
                             type="button"
                             className="topo-palette__item"
-                            disabled={!mapId || onCanvas}
+                            disabled={!mapId}
                             draggable={Boolean(mapId) && !onCanvas}
-                            onDragStart={(e) => onPaletteDragStart(e, item)}
-                            onClick={() => addPaletteItem(item)}
-                            title={`${item.name}\n${item.ip}`}
+                            onDragStart={(e) => {
+                              if (onCanvas) {
+                                e.preventDefault();
+                                return;
+                              }
+                              onPaletteDragStart(e, item);
+                            }}
+                            onClick={() => {
+                              if (onCanvas) locatePaletteItem(item);
+                              else addPaletteItem(item);
+                            }}
+                            title={`${item.name}\n${item.ip}${onCanvas ? `\n${t("topology.locateOnCanvas")}` : ""}`}
                           >
                             <span className="topo-palette__name">{item.name}</span>
                             <span className="topo-palette__meta">
@@ -1651,6 +1862,86 @@ export function TopologyPage() {
                   {label}
                 </button>
               ))}
+            </div>
+            <div
+              className="topo-toolbar__group topo-toolbar__group--find"
+              aria-label={t("topology.findNode")}
+              ref={findBoxRef}
+            >
+              <input
+                className="topo-toolbar__find"
+                value={canvasQuery}
+                onChange={(e) => setCanvasQuery(e.target.value)}
+                onFocus={() => {
+                  if (canvasQuery.trim()) setFindOpen(true);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "ArrowDown") {
+                    e.preventDefault();
+                    if (!canvasHits.length) return;
+                    setFindOpen(true);
+                    setFindActiveIdx((i) => (i + 1) % canvasHits.length);
+                    return;
+                  }
+                  if (e.key === "ArrowUp") {
+                    e.preventDefault();
+                    if (!canvasHits.length) return;
+                    setFindOpen(true);
+                    setFindActiveIdx((i) => (i - 1 + canvasHits.length) % canvasHits.length);
+                    return;
+                  }
+                  if (e.key === "Escape") {
+                    setFindOpen(false);
+                    return;
+                  }
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    findOnCanvas();
+                  }
+                }}
+                placeholder={t("topology.findNodePh")}
+                disabled={!mapId || nodes.length === 0}
+                aria-label={t("topology.findNode")}
+                aria-autocomplete="list"
+                aria-expanded={findOpen}
+              />
+              <button
+                type="button"
+                className="btn btn--sm btn--ghost"
+                disabled={!mapId || nodes.length === 0 || !canvasQuery.trim()}
+                onClick={() => findOnCanvas()}
+              >
+                {t("topology.findNode")}
+              </button>
+              {findOpen && canvasQuery.trim() ? (
+                <div className="topo-find-suggest" role="listbox">
+                  {canvasHits.length === 0 ? (
+                    <div className="topo-find-suggest__empty">{t("topology.findNoMatch")}</div>
+                  ) : (
+                    canvasHits.slice(0, 12).map((n, idx) => (
+                      <button
+                        key={n.id}
+                        type="button"
+                        role="option"
+                        aria-selected={idx === findActiveIdx}
+                        className={`topo-find-suggest__item${idx === findActiveIdx ? " is-active" : ""}`}
+                        onMouseEnter={() => setFindActiveIdx(idx)}
+                        onClick={() => findOnCanvas(n.id)}
+                      >
+                        <span className="topo-find-suggest__name">{n.data.label || n.id}</span>
+                        <span className="topo-find-suggest__meta">
+                          {[n.data.ne_ip, n.data.vendor].filter(Boolean).join(" ? ")}
+                        </span>
+                      </button>
+                    ))
+                  )}
+                  {canvasHits.length > 12 ? (
+                    <div className="topo-find-suggest__more">
+                      {t("topology.findMore").replace("{{count}}", String(canvasHits.length - 12))}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
             <div className="topo-toolbar__group" aria-label={t("topology.layout")}>
               <select
@@ -1826,18 +2117,27 @@ export function TopologyPage() {
                 {discovering ? t("topology.discoverCancel") : t("topology.discoverClose")}
               </button>
             </div>
-            {discovering ? (
-              <p className="panel__hint panel__hint--live">
-                {discoverProgress.total <= 0
-                  ? t("topology.discoverNoTargets")
-                  : t("topology.discoverProgressLive")
+            {discovering && discoverProgress.total > 0 ? (
+              <div className="topo-discover__progress" aria-live="polite">
+                <div className="topo-discover__bar">
+                  <div className="topo-discover__bar-fill" style={{ width: `${discoverPct}%` }} />
+                </div>
+                <div className="topo-discover__progress-meta">
+                  <span>
+                    {t("topology.discoverProgressLive")
                       .replace("{{index}}", String(discoverProgress.index))
                       .replace("{{total}}", String(discoverProgress.total))
                       .replace(
                         "{{name}}",
                         discoverProgress.neName || discoverProgress.neIp || "?",
                       )}
-              </p>
+                  </span>
+                  <span>{discoverPct}%</span>
+                </div>
+              </div>
+            ) : null}
+            {discovering && discoverProgress.total <= 0 ? (
+              <p className="panel__hint panel__hint--live">{t("topology.discoverNoTargets")}</p>
             ) : null}
             {!discovering && discoverReport && discoverReport.scanned === 0 ? (
               <p className="panel__hint">{t("topology.discoverNoTargets")}</p>
@@ -1853,28 +2153,40 @@ export function TopologyPage() {
                     .replace("{{stale}}", String(discoverSummary.stale))
                     .replace("{{failed}}", String(discoverSummary.failed))}
                 </p>
-                <ul className="topo-discover__list">
-                  {discoverResults.map((r) => (
-                    <li key={r.ne_id} className={r.ok ? "is-ok" : "is-fail"}>
-                      <div className="topo-discover__item-title">
-                        <span>{r.ne_name || r.ne_ip || r.ne_id}</span>
-                        <span className="topo-discover__badge">{r.ok ? "OK" : "FAIL"}</span>
-                      </div>
-                      <div className="topo-discover__item-meta">
-                        {r.ne_ip ? `${r.ne_ip} ? ` : ""}
-                        {r.ok
-                          ? t("topology.discoverNeOk")
-                              .replace("{{neighbors}}", String(r.neighbors))
-                              .replace("{{added}}", String(r.edges_added))
-                              .replace("{{updated}}", String(r.edges_updated))
-                          : r.error || t("topology.discoverNeFail")}
-                      </div>
-                      {r.command ? (
-                        <div className="topo-discover__item-cmd">{r.command}</div>
-                      ) : null}
-                    </li>
+                <div className="topo-discover__filters" role="group" aria-label={t("topology.discoverFilter")}>
+                  {(
+                    [
+                      ["issues", t("topology.discoverFilterIssues"), discoverCounts.issues],
+                      ["fail", t("topology.discoverFilterFail"), discoverCounts.fail],
+                      ["warn", t("topology.discoverFilterWarn"), discoverCounts.warn],
+                      ["ok", t("topology.discoverFilterOk"), discoverCounts.ok],
+                    ] as const
+                  ).map(([key, label, count]) => (
+                    <button
+                      key={key}
+                      type="button"
+                      className="topo-discover__filter"
+                      onClick={() => {
+                        setDiscoverFilter(key);
+                        setDiscoverListOpen(true);
+                      }}
+                    >
+                      {label}
+                      <span className="topo-discover__filter-count">{count}</span>
+                    </button>
                   ))}
-                </ul>
+                  <button
+                    type="button"
+                    className="topo-discover__filter topo-discover__filter--primary"
+                    onClick={() => {
+                      setDiscoverFilter("all");
+                      setDiscoverListOpen(true);
+                    }}
+                  >
+                    {t("topology.discoverFilterDetail")}
+                    <span className="topo-discover__filter-count">{discoverResults.length}</span>
+                  </button>
+                </div>
               </>
             ) : null}
           </div>
@@ -1889,7 +2201,11 @@ export function TopologyPage() {
           {mapId ? (
             <TopoDisplayContext.Provider value={displayOpts}>
               <ReactFlow
-                nodes={nodes}
+                nodes={nodes.map((n) =>
+                  searchHitIds.includes(n.id)
+                    ? { ...n, className: "is-search-hit" }
+                    : { ...n, className: undefined },
+                )}
                 edges={displayEdges}
                 nodeTypes={nodeTypes}
                 connectionMode={ConnectionMode.Loose}
@@ -2188,6 +2504,16 @@ export function TopologyPage() {
                   type="button"
                   className="topo-ctx__item"
                   role="menuitem"
+                  onClick={() => openPortTrafficForEdge(selectedEdge)}
+                >
+                  {t("topology.openPortTraffic")}
+                </button>
+              </li>
+              <li role="none">
+                <button
+                  type="button"
+                  className="topo-ctx__item"
+                  role="menuitem"
                   onClick={() =>
                     patchSelectedEdgeStyle({ stroke_color: "", stroke_width: 0, line_style: "" })
                   }
@@ -2209,6 +2535,319 @@ export function TopologyPage() {
           )}
         </ul>
       ) : null}
+
+
+      {discoverListOpen ? (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={() => setDiscoverListOpen(false)}
+        >
+          <div
+            className="modal modal--wide topo-discover-modal topo-discover-list-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="topo-discover-list-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="topo-discover-modal__head">
+              <div>
+                <h3 id="topo-discover-list-title">{t("topology.discoverListTitle")}</h3>
+                <p className="topo-discover-modal__sub">
+                  {t("topology.discoverSummary")
+                    .replace("{{scanned}}", String(discoverSummary.scanned))
+                    .replace("{{added}}", String(discoverSummary.added))
+                    .replace("{{updated}}", String(discoverSummary.updated))
+                    .replace("{{stale}}", String(discoverSummary.stale))
+                    .replace("{{failed}}", String(discoverSummary.failed))}
+                </p>
+              </div>
+              <button
+                type="button"
+                className="btn btn--sm btn--ghost"
+                onClick={() => setDiscoverListOpen(false)}
+              >
+                {t("topology.discoverClose")}
+              </button>
+            </div>
+
+            <div className="topo-discover__filters" role="tablist" aria-label={t("topology.discoverFilter")}>
+              {(
+                [
+                  ["issues", t("topology.discoverFilterIssues"), discoverCounts.issues],
+                  ["fail", t("topology.discoverFilterFail"), discoverCounts.fail],
+                  ["warn", t("topology.discoverFilterWarn"), discoverCounts.warn],
+                  ["ok", t("topology.discoverFilterOk"), discoverCounts.ok],
+                  ["all", t("topology.discoverFilterAll"), discoverResults.length],
+                ] as const
+              ).map(([key, label, count]) => (
+                <button
+                  key={key}
+                  type="button"
+                  role="tab"
+                  aria-selected={discoverFilter === key}
+                  className={`topo-discover__filter${discoverFilter === key ? " is-active" : ""}`}
+                  onClick={() => setDiscoverFilter(key)}
+                >
+                  {label}
+                  <span className="topo-discover__filter-count">{count}</span>
+                </button>
+              ))}
+            </div>
+
+            {discoverVisible.length === 0 ? (
+              <p className="panel__hint">{t("topology.discoverListEmpty")}</p>
+            ) : (
+              <ul className="topo-discover__list topo-discover__list--modal">
+                {discoverVisible.map((r) => {
+                  const unmatchedCount = r.unmatched_count ?? (r.unmatched?.length || 0);
+                  const kind = discoverResultKind(r);
+                  const title = r.ne_name || r.ne_ip || r.ne_id;
+                  const linkCount = r.links?.length || 0;
+                  return (
+                    <li key={r.ne_id} className={`is-${kind}`}>
+                      <button
+                        type="button"
+                        className="topo-discover__row"
+                        onClick={() => setDiscoverDetail(r)}
+                      >
+                        <span className="topo-discover__row-main">
+                          <span className="topo-discover__row-name">{title}</span>
+                          {r.ne_ip ? <span className="topo-discover__row-ip">{r.ne_ip}</span> : null}
+                          <span className="topo-discover__row-meta">
+                            {r.ok
+                              ? t("topology.discoverNeOk")
+                                  .replace("{{neighbors}}", String(r.neighbors))
+                                  .replace("{{added}}", String(r.edges_added))
+                                  .replace("{{updated}}", String(r.edges_updated))
+                              : r.error || t("topology.discoverNeFail")}
+                            {linkCount > 0
+                              ? ` ? ${t("topology.discoverLinkCount").replace("{{count}}", String(linkCount))}`
+                              : ""}
+                            {r.ok && unmatchedCount > 0
+                              ? ` ? ${t("topology.discoverUnmatched").replace("{{count}}", String(unmatchedCount))}`
+                              : ""}
+                          </span>
+                        </span>
+                        <span className="topo-discover__row-actions">
+                          <span className="topo-discover__badge">
+                            {kind === "fail"
+                              ? "FAIL"
+                              : kind === "warn"
+                                ? r.parser_stub
+                                  ? "STUB"
+                                  : "WARN"
+                                : "OK"}
+                          </span>
+                          <span className="topo-discover__detail-btn">{t("topology.discoverViewDetail")}</span>
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+            {discoverFiltered.length > DISCOVER_LIST_CAP ? (
+              <p className="topo-discover__cap">
+                {t("topology.discoverShowLimited")
+                  .replace("{{shown}}", String(DISCOVER_LIST_CAP))
+                  .replace("{{total}}", String(discoverFiltered.length))}
+              </p>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
+
+      {discoverDetail ? (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={() => setDiscoverDetail(null)}
+        >
+          <div
+            className="modal modal--wide topo-discover-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="topo-discover-detail-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="topo-discover-modal__head">
+              <div>
+                <h3 id="topo-discover-detail-title">
+                  {discoverDetail.ne_name || discoverDetail.ne_ip || discoverDetail.ne_id}
+                </h3>
+                <p className="topo-discover-modal__sub">
+                  {[discoverDetail.ne_ip, discoverDetail.command].filter(Boolean).join(" ? ")}
+                </p>
+              </div>
+              <span
+                className={`topo-discover__badge topo-discover__badge--lg is-${discoverResultKind(discoverDetail)}`}
+              >
+                {discoverResultKind(discoverDetail) === "fail"
+                  ? "FAIL"
+                  : discoverResultKind(discoverDetail) === "warn"
+                    ? discoverDetail.parser_stub
+                      ? "STUB"
+                      : "WARN"
+                    : "OK"}
+              </span>
+            </div>
+
+            {!discoverDetail.ok ? (
+              <p className="topo-discover__error">
+                {discoverDetail.error || t("topology.discoverNeFail")}
+              </p>
+            ) : null}
+            {discoverDetail.parser_stub ? (
+              <p className="topo-discover__item-warn">
+                {t("topology.discoverParserStub").replace(
+                  "{{parser}}",
+                  discoverDetail.parser_key || "unknown",
+                )}
+              </p>
+            ) : null}
+
+            <div className="topo-discover-modal__stats">
+              <span>
+                {t("topology.discoverNeOk")
+                  .replace("{{neighbors}}", String(discoverDetail.neighbors || 0))
+                  .replace("{{added}}", String(discoverDetail.edges_added || 0))
+                  .replace("{{updated}}", String(discoverDetail.edges_updated || 0))}
+              </span>
+            </div>
+
+            <h4 className="topo-discover-modal__section">
+              {t("topology.discoverLinksTitle").replace(
+                "{{count}}",
+                String(discoverDetail.links?.length || 0),
+              )}
+            </h4>
+            {(discoverDetail.links || []).length === 0 ? (
+              <p className="panel__hint">{t("topology.discoverLinksEmpty")}</p>
+            ) : (
+              <div className="topo-discover-modal__table-wrap">
+                <table className="topo-discover-modal__table">
+                  <thead>
+                    <tr>
+                      <th>{t("topology.discoverColPeer")}</th>
+                      <th>{t("topology.discoverColLocalPort")}</th>
+                      <th>{t("topology.discoverColRemotePort")}</th>
+                      <th>{t("topology.discoverColProtocol")}</th>
+                      <th>{t("topology.discoverColAction")}</th>
+                      <th />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(discoverDetail.links || []).map((link, idx) => (
+                      <tr key={`${discoverDetail.ne_id}-l-${idx}`}>
+                        <td>
+                          <div className="topo-discover-modal__peer">
+                            <strong>{link.peer_name || link.peer_ip || link.peer_ne_id || "?"}</strong>
+                            {link.peer_ip ? <span>{link.peer_ip}</span> : null}
+                          </div>
+                        </td>
+                        <td>{link.local_port || "?"}</td>
+                        <td>{link.remote_port || "?"}</td>
+                        <td>{(link.protocol || "?").toUpperCase()}</td>
+                        <td>
+                          <span className={`topo-discover-action is-${link.action || ""}`}>
+                            {link.action === "added"
+                              ? t("topology.discoverLinkAdded")
+                              : link.action === "updated"
+                                ? t("topology.discoverLinkUpdated")
+                                : link.action === "kept_manual"
+                                  ? t("topology.discoverLinkKeptManual")
+                                  : link.action || "?"}
+                          </span>
+                        </td>
+                        <td>
+                          {link.peer_node_id ? (
+                            <button
+                              type="button"
+                              className="btn btn--sm btn--ghost"
+                              onClick={() => {
+                                const nid = String(link.peer_node_id || "");
+                                setDiscoverDetail(null);
+                                locateNode(nid);
+                              }}
+                            >
+                              {t("topology.discoverLocatePeer")}
+                            </button>
+                          ) : null}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            <h4 className="topo-discover-modal__section">
+              {t("topology.discoverUnmatchedTitle").replace(
+                "{{count}}",
+                String(discoverDetail.unmatched_count ?? discoverDetail.unmatched?.length ?? 0),
+              )}
+            </h4>
+            {(discoverDetail.unmatched || []).length === 0 ? (
+              <p className="panel__hint">{t("topology.discoverUnmatchedEmpty")}</p>
+            ) : (
+              <div className="topo-discover-modal__table-wrap">
+                <table className="topo-discover-modal__table">
+                  <thead>
+                    <tr>
+                      <th>{t("topology.discoverColRemote")}</th>
+                      <th>{t("topology.discoverColLocalPort")}</th>
+                      <th>{t("topology.discoverColRemotePort")}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(discoverDetail.unmatched || []).map((u, idx) => (
+                      <tr key={`${discoverDetail.ne_id}-u-${idx}`}>
+                        <td>
+                          {(u.remote_name || u.remote_ip || "?").trim()}
+                          {u.remote_ip && u.remote_name ? ` (${u.remote_ip})` : ""}
+                        </td>
+                        <td>{u.local_port || "?"}</td>
+                        <td>{u.remote_port || "?"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {discoverDetail.raw_preview ? (
+              <>
+                <h4 className="topo-discover-modal__section">{t("topology.discoverRawPreview")}</h4>
+                <pre className="topo-discover-modal__raw">{discoverDetail.raw_preview}</pre>
+              </>
+            ) : null}
+
+            <div className="modal__actions">
+              <button
+                type="button"
+                className="btn btn--sm btn--ghost"
+                onClick={() => {
+                  const id = String(discoverDetail.ne_id || "");
+                  const node = nodes.find(
+                    (n) => n.data.managed_ne_id === id || n.data.ume_ne_id === id,
+                  );
+                  setDiscoverDetail(null);
+                  if (node) locateNode(node.id);
+                  else showError(t("topology.findNoMatch"));
+                }}
+              >
+                {t("topology.discoverLocateNe")}
+              </button>
+              <button type="button" className="btn btn--sm" onClick={() => setDiscoverDetail(null)}>
+                {t("topology.discoverClose")}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
     </div>
   );
 }

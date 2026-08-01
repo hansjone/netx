@@ -13,11 +13,19 @@ from sqlalchemy.orm import Session
 from .cli_resolve import get_default_profile, infer_device_type_vendor
 from .models import ManagedNE, TopologyEdge, TopologyMap, TopologyNode, UmeInventoryNE
 from .ne_exec import execute_managed_ne_commands
-from .topology_lldp import NeighborHit, normalize_ifname, parse_neighbor_output, pick_neighbor_command
+from .topology_lldp import (
+    NeighborHit,
+    normalize_ifname,
+    parse_neighbor_output,
+    parser_meta,
+    pick_neighbor_command,
+)
 from .topology_schemas import (
+    TopologyDiscoverLink,
     TopologyDiscoverNeResult,
     TopologyDiscoverOut,
     TopologyDiscoverRequest,
+    TopologyDiscoverUnmatched,
     TopologyEdgeIn,
     TopologyEdgeOut,
     TopologyGraphOut,
@@ -334,6 +342,24 @@ def re_sub_host(s: str) -> str:
     return t.rstrip(".,;:")
 
 
+def _peer_display(
+    peer: TopologyNode,
+    nes: dict[str, ManagedNE],
+    umes: dict[str, UmeInventoryNE],
+) -> tuple[str, str, str]:
+    """Return (peer_ne_id, peer_name, peer_ip)."""
+    mid = str(peer.managed_ne_id or "").strip()
+    uid = str(peer.ume_ne_id or "").strip()
+    if mid and mid in nes:
+        ne = nes[mid]
+        return mid, (ne.name or peer.label or mid)[:256], str(ne.ip_address or "")
+    if uid and uid in umes:
+        ume = umes[uid]
+        name = (ume.host_name or ume.ne_name or ume.user_label or peer.label or uid).strip()
+        return uid, name[:256], str(ume.ip_address or "")
+    return "", (peer.label or peer.id)[:256], ""
+
+
 def _match_neighbor_to_node(
     hit: NeighborHit,
     *,
@@ -372,6 +398,17 @@ def _edge_pair_key(a: str, b: str, local_port: str, remote_port: str) -> tuple[s
     if a <= b:
         return (a, b, lp, rp)
     return (b, a, rp, lp)
+
+
+_RAW_PREVIEW_MAX = 12_000
+
+
+def _raw_preview(raw: str, *, limit: int = _RAW_PREVIEW_MAX) -> str:
+    """UI preview only; discovery parsing always uses the full command output."""
+    text = str(raw or "")
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}\n...[truncated preview {limit}/{len(text)} chars]"
 
 
 def _discover_target_for_node(
@@ -548,6 +585,7 @@ def iter_discover_neighbors(
 
         scanned_ok_node_ids.add(n.id)
         raw = str(exec_out.get("output") or "")
+        pkey, is_stub = parser_meta(vendor=target["vendor"], device_type=target["device_type"])
         hits = parse_neighbor_output(
             raw,
             protocol=proto_tag,
@@ -556,19 +594,42 @@ def iter_discover_neighbors(
         )
         ne_added = 0
         ne_updated = 0
+        unmatched: list[TopologyDiscoverUnmatched] = []
+        links: list[TopologyDiscoverLink] = []
         for hit in hits:
             peer = _match_neighbor_to_node(
                 hit, nodes=nodes, nes=nes, umes=umes, self_node_id=n.id
             )
             if peer is None:
+                unmatched.append(
+                    TopologyDiscoverUnmatched(
+                        remote_name=(hit.remote_name or "").strip()[:256],
+                        remote_ip=(hit.remote_ip or "").strip()[:128],
+                        local_port=(hit.local_port or "").strip()[:128],
+                        remote_port=(hit.remote_port or "").strip()[:128],
+                    )
+                )
                 continue
             local_port = (hit.local_port or "").strip()[:128]
             remote_port = (hit.remote_port or "").strip()[:128]
             key = _edge_pair_key(n.id, peer.id, local_port, remote_port)
             edge_proto = hit.protocol if hit.protocol in {"lldp", "cdp"} else proto_tag
+            peer_ne_id, peer_name, peer_ip = _peer_display(peer, nes, umes)
             cur = existing.get(key)
             if cur is not None:
                 if (cur.source or "manual") == "manual":
+                    links.append(
+                        TopologyDiscoverLink(
+                            peer_node_id=peer.id,
+                            peer_ne_id=peer_ne_id,
+                            peer_name=peer_name,
+                            peer_ip=peer_ip,
+                            local_port=local_port,
+                            remote_port=remote_port,
+                            protocol=edge_proto,
+                            action="kept_manual",
+                        )
+                    )
                     continue
                 cur.source = edge_proto
                 cur.source_port = local_port if cur.source_node_id == n.id else remote_port
@@ -578,6 +639,18 @@ def iter_discover_neighbors(
                 touched_edge_ids.add(cur.id)
                 ne_updated += 1
                 updated += 1
+                links.append(
+                    TopologyDiscoverLink(
+                        peer_node_id=peer.id,
+                        peer_ne_id=peer_ne_id,
+                        peer_name=peer_name,
+                        peer_ip=peer_ip,
+                        local_port=local_port,
+                        remote_port=remote_port,
+                        protocol=edge_proto,
+                        action="updated",
+                    )
+                )
                 continue
             new_edge = TopologyEdge(
                 id=uuid4().hex,
@@ -596,7 +669,20 @@ def iter_discover_neighbors(
             touched_edge_ids.add(new_edge.id)
             ne_added += 1
             added += 1
+            links.append(
+                TopologyDiscoverLink(
+                    peer_node_id=peer.id,
+                    peer_ne_id=peer_ne_id,
+                    peer_name=peer_name,
+                    peer_ip=peer_ip,
+                    local_port=local_port,
+                    remote_port=remote_port,
+                    protocol=edge_proto,
+                    action="added",
+                )
+            )
 
+        stub_flag = bool(is_stub and raw.strip() and not hits)
         result = TopologyDiscoverNeResult(
             ne_id=target["ne_id"],
             ne_name=target["ne_name"],
@@ -606,7 +692,13 @@ def iter_discover_neighbors(
             neighbors=len(hits),
             edges_added=ne_added,
             edges_updated=ne_updated,
-            raw_preview=raw[:800],
+            unmatched_count=len(unmatched),
+            unmatched=unmatched[:40],
+            links=links[:80],
+            parser_key=pkey,
+            parser_stub=stub_flag,
+            raw_preview=_raw_preview(raw),
+            error="parser_stub" if stub_flag else "",
         )
         results.append(result)
         yield {
