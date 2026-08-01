@@ -101,6 +101,9 @@ class Settings(BaseSettings):
     webcrt_session_log_enabled: bool = True
     # Reader: short blocking wait instead of fixed 40ms spin (seconds).
     webcrt_reader_poll_sec: float = 0.01
+    # WebCRT SFTP transfer limits (streamed; default 512 MiB per file).
+    webcrt_sftp_max_file_bytes: int = 512 * 1024 * 1024
+    webcrt_sftp_chunk_bytes: int = 64 * 1024
     # Local app login / audit (lab defaults; override in production)
     auth_enabled: bool = True
     # Stable default so JWT survives restarts without .env. Override in production.

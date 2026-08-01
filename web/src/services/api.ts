@@ -568,11 +568,19 @@ export type WebcrtSftpListResult = {
 export const webcrtSftpList = (body: { ne_id?: string; ume_ne_id?: string; path?: string }) =>
   apiPost<WebcrtSftpListResult>("/v1/webcrt/sftp/list", body);
 
-export async function webcrtSftpDownload(body: {
-  ne_id?: string;
-  ume_ne_id?: string;
-  path: string;
-}): Promise<Blob> {
+export type WebcrtSftpTransferProgress = {
+  loaded: number;
+  total: number;
+};
+
+export async function webcrtSftpDownload(
+  body: {
+    ne_id?: string;
+    ume_ne_id?: string;
+    path: string;
+  },
+  onProgress?: (p: WebcrtSftpTransferProgress) => void,
+): Promise<Blob> {
   const path = "/v1/webcrt/sftp/download";
   const res = await fetch(path, {
     method: "POST",
@@ -587,35 +595,76 @@ export async function webcrtSftpDownload(body: {
     const text = await res.text();
     throw new Error(text || `HTTP ${res.status}`);
   }
-  return res.blob();
+  const total = Number(res.headers.get("content-length") || 0);
+  if (!res.body) {
+    const blob = await res.blob();
+    onProgress?.({ loaded: blob.size, total: total || blob.size });
+    return blob;
+  }
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let loaded = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value) {
+      chunks.push(value);
+      loaded += value.byteLength;
+      onProgress?.({ loaded, total });
+    }
+  }
+  return new Blob(chunks as BlobPart[], { type: "application/octet-stream" });
 }
 
-export async function webcrtSftpUpload(body: {
-  ne_id?: string;
-  ume_ne_id?: string;
-  remote_path: string;
-  file: File;
-}): Promise<{ ok: boolean; path: string; size: number }> {
+export function webcrtSftpUpload(
+  body: {
+    ne_id?: string;
+    ume_ne_id?: string;
+    remote_path: string;
+    file: File;
+  },
+  onProgress?: (p: WebcrtSftpTransferProgress) => void,
+): Promise<{ ok: boolean; path: string; size: number }> {
   const path = "/v1/webcrt/sftp/upload";
   const fd = new FormData();
   if (body.ne_id) fd.append("ne_id", body.ne_id);
   if (body.ume_ne_id) fd.append("ume_ne_id", body.ume_ne_id);
   fd.append("remote_path", body.remote_path);
   fd.append("file", body.file);
-  const res = await fetch(path, {
-    method: "POST",
-    headers: authHeaders(),
-    body: fd,
+
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", path);
+    const tok = getAuthToken();
+    if (tok) xhr.setRequestHeader("Authorization", `Bearer ${tok}`);
+    xhr.responseType = "text";
+    xhr.upload.onprogress = (ev) => {
+      if (!onProgress) return;
+      onProgress({
+        loaded: Number(ev.loaded || 0),
+        total: ev.lengthComputable ? Number(ev.total || 0) : body.file.size || 0,
+      });
+    };
+    xhr.onload = () => {
+      if (xhr.status === 401) {
+        handleUnauthorized(path);
+        reject(new Error("401 unauthorized"));
+        return;
+      }
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(new Error(xhr.responseText || `HTTP ${xhr.status}`));
+        return;
+      }
+      try {
+        resolve(JSON.parse(xhr.responseText || "{}") as { ok: boolean; path: string; size: number });
+      } catch {
+        reject(new Error("invalid_upload_response"));
+      }
+    };
+    xhr.onerror = () => reject(new Error("network_error"));
+    xhr.onabort = () => reject(new Error("aborted"));
+    xhr.send(fd);
   });
-  if (res.status === 401) {
-    handleUnauthorized(path);
-    throw new Error("401 unauthorized");
-  }
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `HTTP ${res.status}`);
-  }
-  return (await res.json()) as { ok: boolean; path: string; size: number };
 }
 
 export const webcrtWsUrl = (sessionId: string): string => {

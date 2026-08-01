@@ -3083,6 +3083,28 @@ pre {
   cursor: progress;
 }
 
+.webcrt-sftp.is-drop-target {
+  outline: 1px solid #0ea5e9;
+  outline-offset: -1px;
+}
+
+.webcrt-sftp__drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: #e0f2fe;
+  background: rgba(14, 165, 233, 0.18);
+  border: 1px dashed #38bdf8;
+  pointer-events: none;
+}
+
 .webcrt-sftp__bar {
   display: flex;
   align-items: center;
@@ -3151,7 +3173,6 @@ pre {
 }
 
 .webcrt-sftp__table {
-  width: 100%;
   border-collapse: collapse;
   table-layout: fixed;
   font-size: 11px;
@@ -3170,10 +3191,44 @@ pre {
   text-align: left;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  padding: 4px 6px;
+  padding: 4px 8px 4px 6px;
   border-bottom: 1px solid #334155;
   white-space: nowrap;
   user-select: none;
+  overflow: hidden;
+}
+
+.webcrt-sftp__th-label {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding-right: 4px;
+}
+
+.webcrt-sftp__col-resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 5px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 2;
+}
+
+.webcrt-sftp__col-resizer::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  right: 1px;
+  width: 1px;
+  background: transparent;
+}
+
+.webcrt-sftp__col-resizer:hover::after,
+.webcrt-sftp__col-resizer:active::after {
+  background: #0ea5e9;
 }
 
 .webcrt-sftp__table tbody tr {
@@ -3200,12 +3255,10 @@ pre {
 }
 
 .webcrt-sftp__col-name {
-  width: 34%;
   color: #e2e8f0;
 }
 
 .webcrt-sftp__col-size {
-  width: 12%;
   text-align: right;
   font-variant-numeric: tabular-nums;
   color: #64748b;
@@ -3216,19 +3269,16 @@ pre {
 }
 
 .webcrt-sftp__col-mtime {
-  width: 22%;
   font-variant-numeric: tabular-nums;
   color: #64748b;
 }
 
 .webcrt-sftp__col-owner,
 .webcrt-sftp__col-group {
-  width: 10%;
   color: #64748b;
 }
 
 .webcrt-sftp__col-mode {
-  width: 12%;
   font-family: Consolas, "Courier New", monospace;
   font-size: 10px;
   color: #475569;

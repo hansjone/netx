@@ -748,6 +748,41 @@ class WebcrtServiceTests(unittest.TestCase):
         owner2, group2 = _owner_group(SimpleNamespace(longname="", st_uid=0, st_gid=1))
         self.assertEqual((owner2, group2), ("0", "1"))
 
+    def test_sftp_mkdir_p(self) -> None:
+        from netx_api.webcrt_sftp import _mkdir_p
+
+        class _FakeSftp:
+            def __init__(self) -> None:
+                self.dirs: set[str] = {"/"}
+                self.mkdir_calls: list[str] = []
+
+            def stat(self, path: str) -> object:
+                if path in self.dirs or path == "/":
+                    return type("St", (), {"st_mode": 0o040755})()
+                raise FileNotFoundError(path)
+
+            def mkdir(self, path: str) -> None:
+                self.mkdir_calls.append(path)
+                self.dirs.add(path)
+
+        sftp = _FakeSftp()
+        _mkdir_p(sftp, "/a/b/c")
+        self.assertEqual(sftp.mkdir_calls, ["/a", "/a/b", "/a/b/c"])
+        _mkdir_p(sftp, "/a/b/c")  # idempotent
+        self.assertEqual(sftp.mkdir_calls, ["/a", "/a/b", "/a/b/c"])
+
+    def test_sftp_transfer_helpers(self) -> None:
+        from netx_api import config as cfg
+        from netx_api.webcrt_sftp import _content_disposition, _sftp_chunk_bytes, _sftp_max_file_bytes
+
+        self.assertGreaterEqual(_sftp_max_file_bytes(), 8 * 1024 * 1024)
+        self.assertGreaterEqual(_sftp_chunk_bytes(), 4 * 1024)
+        dispo = _content_disposition('报告"A".bin')
+        self.assertIn("filename=", dispo)
+        self.assertIn("filename*=UTF-8''", dispo)
+        self.assertNotIn("\n", dispo)
+        self.assertEqual(int(cfg.settings.webcrt_sftp_max_file_bytes), 512 * 1024 * 1024)
+
     @patch.object(svc, "_audit")
     def test_find_ssh_session_for_ne_prefers_attached(self, _mock_audit: MagicMock) -> None:
         conn = _FakeConn()

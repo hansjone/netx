@@ -213,19 +213,26 @@ def api_sftp_list(body: WebcrtSftpListBody, db: Session = Depends(get_db)) -> di
 
 @router.post("/sftp/download")
 def api_sftp_download(body: WebcrtSftpDownloadBody, db: Session = Depends(get_db)) -> Any:
-    from fastapi.responses import Response
+    from fastapi.responses import StreamingResponse
 
-    from .webcrt_sftp import sftp_download
+    from .webcrt_sftp import SftpDownloadStream
 
     mid = str(body.ne_id or "").strip()
     uid = str(body.ume_ne_id or "").strip()
     if bool(mid) == bool(uid):
         raise HTTPException(status_code=400, detail="exactly_one_of_ne_id_or_ume_ne_id_required")
-    data, filename = sftp_download(db, managed_ne_id=mid or None, ume_ne_id=uid or None, path=body.path)
-    return Response(
-        content=data,
+    stream = SftpDownloadStream(
+        db, managed_ne_id=mid or None, ume_ne_id=uid or None, path=body.path
+    ).open()
+    headers = {
+        "Content-Disposition": stream.content_disposition(),
+        "Content-Length": str(int(stream.size)),
+        "Cache-Control": "no-store",
+    }
+    return StreamingResponse(
+        stream,
         media_type="application/octet-stream",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers=headers,
     )
 
 
@@ -237,22 +244,31 @@ async def api_sftp_upload(
     remote_path: str = Form(...),
     file: UploadFile = File(...),
 ) -> dict[str, Any]:
-    from .webcrt_sftp import sftp_upload
+    from starlette.concurrency import run_in_threadpool
+
+    from .config import settings
+    from .webcrt_sftp import sftp_upload_stream
 
     mid = str(ne_id or "").strip()
     uid = str(ume_ne_id or "").strip()
     if bool(mid) == bool(uid):
         raise HTTPException(status_code=400, detail="exactly_one_of_ne_id_or_ume_ne_id_required")
-    content = await file.read()
-    if len(content) > 8 * 1024 * 1024:
+    max_bytes = max(1, int(settings.webcrt_sftp_max_file_bytes or (512 * 1024 * 1024)))
+    expected = getattr(file, "size", None)
+    if expected is not None and int(expected) > max_bytes:
         raise HTTPException(status_code=413, detail="sftp_file_too_large")
-    return sftp_upload(
-        db,
-        managed_ne_id=mid or None,
-        ume_ne_id=uid or None,
-        remote_path=remote_path,
-        data=content,
-    )
+
+    def _upload() -> dict[str, Any]:
+        return sftp_upload_stream(
+            db,
+            managed_ne_id=mid or None,
+            ume_ne_id=uid or None,
+            remote_path=remote_path,
+            reader=file.file,
+            expected_size=int(expected) if expected is not None else None,
+        )
+
+    return await run_in_threadpool(_upload)
 
 
 @router.websocket("/sessions/{session_id}/ws")

@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type DragEvent as ReactDragEvent,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+} from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { WebTerminal, type WebTerminalHandle } from "../components/WebTerminal";
@@ -36,6 +44,28 @@ const LEGACY_TERM_PREFS_KEY = "netx.webcrt.termPrefs";
 const SFTP_WIDTH_KEY = "netx.webcrt.sftpWidth";
 const SFTP_WIDTH_DEFAULT = 480;
 const SFTP_WIDTH_MIN = 280;
+const SFTP_COL_WIDTHS_KEY = "netx.webcrt.sftpColWidths";
+
+type SftpColKey = "name" | "size" | "mtime" | "owner" | "group" | "mode";
+type SftpColWidths = Record<SftpColKey, number>;
+
+const SFTP_COL_KEYS: SftpColKey[] = ["name", "size", "mtime", "owner", "group", "mode"];
+const SFTP_COL_WIDTH_DEFAULTS: SftpColWidths = {
+  name: 220,
+  size: 72,
+  mtime: 140,
+  owner: 72,
+  group: 72,
+  mode: 88,
+};
+const SFTP_COL_WIDTH_MIN: SftpColWidths = {
+  name: 120,
+  size: 48,
+  mtime: 96,
+  owner: 48,
+  group: 48,
+  mode: 64,
+};
 const ENCODING_OPTIONS = ["utf-8", "gbk", "gb2312", "gb18030"] as const;
 const FONT_SIZE_OPTIONS = [12, 13, 14, 16, 18, 20] as const;
 const PASTE_DELAY_OPTIONS = [0, 20, 40, 60, 100, 150] as const;
@@ -400,6 +430,48 @@ function saveSftpWidth(width: number): void {
   }
 }
 
+function clampSftpColWidth(key: SftpColKey, width: number): number {
+  const min = SFTP_COL_WIDTH_MIN[key];
+  const n = Math.round(Number(width) || 0);
+  if (!Number.isFinite(n)) return SFTP_COL_WIDTH_DEFAULTS[key];
+  return Math.max(min, Math.min(n, 640));
+}
+
+function normalizeSftpColWidths(raw: unknown): SftpColWidths {
+  const base = { ...SFTP_COL_WIDTH_DEFAULTS };
+  if (!raw || typeof raw !== "object") return base;
+  const obj = raw as Record<string, unknown>;
+  for (const key of SFTP_COL_KEYS) {
+    const v = obj[key];
+    if (typeof v === "number" || typeof v === "string") {
+      base[key] = clampSftpColWidth(key, Number(v));
+    }
+  }
+  return base;
+}
+
+function loadSftpColWidths(): SftpColWidths {
+  try {
+    const raw = localStorage.getItem(SFTP_COL_WIDTHS_KEY);
+    if (!raw) return { ...SFTP_COL_WIDTH_DEFAULTS };
+    return normalizeSftpColWidths(JSON.parse(raw));
+  } catch {
+    return { ...SFTP_COL_WIDTH_DEFAULTS };
+  }
+}
+
+function saveSftpColWidths(widths: SftpColWidths): void {
+  try {
+    localStorage.setItem(SFTP_COL_WIDTHS_KEY, JSON.stringify(widths));
+  } catch {
+    /* ignore */
+  }
+}
+
+function sumSftpColWidths(widths: SftpColWidths): number {
+  return SFTP_COL_KEYS.reduce((acc, key) => acc + widths[key], 0);
+}
+
 function formatSftpSizeKb(bytes: number, isDir: boolean): string {
   if (isDir) return "";
   const kb = Number(bytes || 0) / 1024;
@@ -415,6 +487,80 @@ function formatSftpMtime(sec: number): string {
   if (Number.isNaN(d.getTime())) return "";
   const pad = (x: number) => String(x).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function formatSftpTransferPct(loaded: number, total: number): string {
+  const t = Number(total || 0);
+  if (!Number.isFinite(t) || t <= 0) return "";
+  const pct = Math.min(100, Math.max(0, Math.round((Number(loaded || 0) / t) * 100)));
+  return `${pct}%`;
+}
+
+type SftpUploadItem = { file: File; relativePath: string };
+
+type FsEntryLike = {
+  isFile: boolean;
+  isDirectory: boolean;
+  name: string;
+  file: (ok: (f: File) => void, err?: (e: DOMException) => void) => void;
+  createReader: () => {
+    readEntries: (ok: (entries: FsEntryLike[]) => void, err?: (e: DOMException) => void) => void;
+  };
+};
+
+async function readAllDirectoryEntries(
+  reader: ReturnType<FsEntryLike["createReader"]>,
+): Promise<FsEntryLike[]> {
+  const all: FsEntryLike[] = [];
+  for (;;) {
+    const batch = await new Promise<FsEntryLike[]>((resolve, reject) => {
+      reader.readEntries(resolve, reject);
+    });
+    if (!batch.length) break;
+    all.push(...batch);
+  }
+  return all;
+}
+
+async function walkFsEntry(entry: FsEntryLike, prefix: string, out: SftpUploadItem[]): Promise<void> {
+  if (entry.isFile) {
+    const file = await new Promise<File>((resolve, reject) => {
+      entry.file(resolve, reject);
+    });
+    const relativePath = (prefix ? `${prefix}/${entry.name}` : entry.name).replace(/\\/g, "/");
+    out.push({ file, relativePath });
+    return;
+  }
+  if (!entry.isDirectory) return;
+  const nextPrefix = prefix ? `${prefix}/${entry.name}` : entry.name;
+  const children = await readAllDirectoryEntries(entry.createReader());
+  for (const child of children) {
+    await walkFsEntry(child, nextPrefix, out);
+  }
+}
+
+async function collectDroppedSftpUploads(dt: DataTransfer): Promise<SftpUploadItem[]> {
+  const out: SftpUploadItem[] = [];
+  const items = Array.from(dt.items || []);
+  const entries = items
+    .map((it) => {
+      const getter = (it as DataTransferItem & { webkitGetAsEntry?: () => FileSystemEntry | null }).webkitGetAsEntry;
+      return typeof getter === "function" ? (getter.call(it) as FsEntryLike | null) : null;
+    })
+    .filter((e): e is FsEntryLike => Boolean(e));
+  if (entries.length) {
+    for (const entry of entries) {
+      await walkFsEntry(entry, "", out);
+    }
+    return out;
+  }
+  for (const file of Array.from(dt.files || [])) {
+    const rel = String((file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name)
+      .replace(/\\/g, "/")
+      .replace(/^\/+/, "");
+    out.push({ file, relativePath: rel || file.name });
+  }
+  return out;
 }
 
 function connectFailedNe(err: unknown): ManagedNeItem | null {
@@ -445,6 +591,7 @@ function webcrtErrorMessage(err: unknown, t: (key: string, vars?: Record<string,
   }
   if (raw.includes("sftp_hop_not_supported")) return t("webcrt.err.sftpHop");
   if (raw.includes("sftp_requires_ssh")) return t("webcrt.err.sftpSsh");
+  if (raw.includes("sftp_file_too_large")) return t("webcrt.err.sftpTooLarge");
   if (raw.includes("websocket_error")) return t("webcrt.err.websocket");
   return raw;
 }
@@ -495,9 +642,14 @@ export function WebcrtPage() {
   const [sftpItems, setSftpItems] = useState<WebcrtSftpItem[]>([]);
   const [sftpWidth, setSftpWidth] = useState(() => loadSftpWidth());
   const [sftpResizing, setSftpResizing] = useState(false);
+  const [sftpColWidths, setSftpColWidths] = useState<SftpColWidths>(() => loadSftpColWidths());
+  const [sftpDragOver, setSftpDragOver] = useState(false);
+  const [sftpStatus, setSftpStatus] = useState("");
   const sftpPathRef = useRef(".");
   const sftpBodyRef = useRef<HTMLDivElement | null>(null);
   const sftpDragRef = useRef<{ startX: number; startW: number } | null>(null);
+  const sftpColDragRef = useRef<{ key: SftpColKey; startX: number; startW: number } | null>(null);
+  const sftpDragDepthRef = useRef(0);
   sftpPathRef.current = sftpPath;
   const [sessionOpts, setSessionOpts] = useState<SessionOptions>(() => loadSessionOptions());
   const [optionsMenuOpen, setOptionsMenuOpen] = useState(false);
@@ -1163,6 +1315,118 @@ export function WebcrtPage() {
     [refreshSftp],
   );
 
+  const uploadSftpItems = useCallback(
+    async (items: SftpUploadItem[]) => {
+      const tab = tabsRef.current.find((x) => x.key === activeTabKey);
+      if (!tab || !items.length) return;
+      setSftpBusy(true);
+      setSftpDragOver(false);
+      sftpDragDepthRef.current = 0;
+      let done = 0;
+      let failed = 0;
+      try {
+        for (const item of items) {
+          done += 1;
+          const shortName = String(item.relativePath || item.file.name).split("/").pop() || item.file.name;
+          setSftpStatus(
+            t("webcrt.sftp.uploading", { done, total: items.length, name: shortName, pct: "0%" }),
+          );
+          const rel = String(item.relativePath || item.file.name)
+            .replace(/\\/g, "/")
+            .replace(/^\/+/, "")
+            .replace(/\/+/g, "/");
+          if (!rel || rel.includes("..")) {
+            failed += 1;
+            continue;
+          }
+          const remote = joinSftpPath(sftpPathRef.current, rel);
+          try {
+            const body =
+              tab.target.source === "ume"
+                ? {
+                    ume_ne_id: tab.target.ume_ne_id || tab.target.id,
+                    remote_path: remote,
+                    file: item.file,
+                  }
+                : { ne_id: tab.target.id, remote_path: remote, file: item.file };
+            await webcrtSftpUpload(body, (p) => {
+              const pct = formatSftpTransferPct(p.loaded, p.total || item.file.size);
+              setSftpStatus(
+                t("webcrt.sftp.uploading", {
+                  done,
+                  total: items.length,
+                  name: shortName,
+                  pct: pct || "…",
+                }),
+              );
+            });
+          } catch (err) {
+            failed += 1;
+            if (items.length === 1) throw err;
+          }
+        }
+        await refreshSftp(sftpPathRef.current);
+        if (failed > 0) {
+          showError(t("webcrt.sftp.uploadPartial", { ok: items.length - failed, failed }));
+        } else {
+          showOk(t("webcrt.sftp.uploaded"));
+        }
+      } catch (err) {
+        showError(webcrtErrorMessage(err, t));
+      } finally {
+        setSftpBusy(false);
+        setSftpStatus("");
+      }
+    },
+    [activeTabKey, refreshSftp, showError, showOk, t],
+  );
+
+  const onSftpDragEnter = useCallback((e: ReactDragEvent<HTMLElement>) => {
+    if (![...e.dataTransfer.types].includes("Files")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    sftpDragDepthRef.current += 1;
+    setSftpDragOver(true);
+  }, []);
+
+  const onSftpDragOver = useCallback((e: ReactDragEvent<HTMLElement>) => {
+    if (![...e.dataTransfer.types].includes("Files")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = "copy";
+  }, []);
+
+  const onSftpDragLeave = useCallback((e: ReactDragEvent<HTMLElement>) => {
+    if (![...e.dataTransfer.types].includes("Files")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    sftpDragDepthRef.current = Math.max(0, sftpDragDepthRef.current - 1);
+    if (sftpDragDepthRef.current === 0) setSftpDragOver(false);
+  }, []);
+
+  const onSftpDrop = useCallback(
+    (e: ReactDragEvent<HTMLElement>) => {
+      e.preventDefault();
+      e.stopPropagation();
+      sftpDragDepthRef.current = 0;
+      setSftpDragOver(false);
+      if (sftpBusy) return;
+      void (async () => {
+        try {
+          const items = await collectDroppedSftpUploads(e.dataTransfer);
+          if (!items.length) {
+            showError(t("webcrt.sftp.dropEmpty"));
+            return;
+          }
+          await uploadSftpItems(items);
+        } catch (err) {
+          showError(webcrtErrorMessage(err, t));
+        }
+      })();
+    },
+    [showError, sftpBusy, t, uploadSftpItems],
+  );
+
   const onSftpSplitDown = useCallback((e: ReactMouseEvent<HTMLDivElement>) => {
     e.preventDefault();
     sftpDragRef.current = { startX: e.clientX, startW: sftpWidth };
@@ -1192,6 +1456,33 @@ export function WebcrtPage() {
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
   }, [sftpWidth]);
+
+  const onSftpColResizeDown = useCallback((key: SftpColKey, e: ReactMouseEvent<HTMLSpanElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    sftpColDragRef.current = { key, startX: e.clientX, startW: sftpColWidths[key] };
+    const onMove = (ev: MouseEvent) => {
+      const drag = sftpColDragRef.current;
+      if (!drag) return;
+      const next = clampSftpColWidth(drag.key, drag.startW + (ev.clientX - drag.startX));
+      setSftpColWidths((prev) => (prev[drag.key] === next ? prev : { ...prev, [drag.key]: next }));
+    };
+    const onUp = () => {
+      sftpColDragRef.current = null;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      setSftpColWidths((prev) => {
+        saveSftpColWidths(prev);
+        return prev;
+      });
+    };
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, [sftpColWidths]);
 
   // Auto-connect from /webcrt?ne_id=...
   useEffect(() => {
@@ -1744,8 +2035,12 @@ export function WebcrtPage() {
                     onMouseDown={onSftpSplitDown}
                   />
                   <aside
-                    className={`webcrt-sftp${sftpBusy ? " is-busy" : ""}`}
+                    className={`webcrt-sftp${sftpBusy ? " is-busy" : ""}${sftpDragOver ? " is-drop-target" : ""}`}
                     style={{ width: sftpWidth }}
+                    onDragEnter={onSftpDragEnter}
+                    onDragOver={onSftpDragOver}
+                    onDragLeave={onSftpDragLeave}
+                    onDrop={onSftpDrop}
                   >
                     <div className="webcrt-sftp__bar">
                       <button
@@ -1779,51 +2074,65 @@ export function WebcrtPage() {
                         <input
                           type="file"
                           hidden
+                          multiple
                           disabled={sftpBusy}
                           onChange={(e) => {
-                            const file = e.target.files?.[0];
-                            if (!file || !activeTab || sftpBusy) return;
-                            const remote = joinSftpPath(sftpPathRef.current, file.name);
-                            void (async () => {
-                              setSftpBusy(true);
-                              try {
-                                const body =
-                                  activeTab.target.source === "ume"
-                                    ? {
-                                        ume_ne_id: activeTab.target.ume_ne_id || activeTab.target.id,
-                                        remote_path: remote,
-                                        file,
-                                      }
-                                    : { ne_id: activeTab.target.id, remote_path: remote, file };
-                                await webcrtSftpUpload(body);
-                                showOk(t("webcrt.sftp.uploaded"));
-                                await refreshSftp(sftpPathRef.current);
-                              } catch (err) {
-                                showError(webcrtErrorMessage(err, t));
-                              } finally {
-                                setSftpBusy(false);
-                              }
-                            })();
+                            const files = Array.from(e.target.files || []);
                             e.target.value = "";
+                            if (!files.length || sftpBusy) return;
+                            void uploadSftpItems(files.map((file) => ({ file, relativePath: file.name })));
                           }}
                         />
                       </label>
                     </div>
-                    {sftpBusy ? (
+                    {sftpBusy || sftpStatus ? (
                       <div className="webcrt-sftp__status" role="status">
-                        {t("webcrt.sftp.loading")}
+                        {sftpStatus || t("webcrt.sftp.loading")}
+                      </div>
+                    ) : null}
+                    {sftpDragOver ? (
+                      <div className="webcrt-sftp__drop-overlay" aria-hidden>
+                        {t("webcrt.sftp.dropHint")}
                       </div>
                     ) : null}
                     <div className="webcrt-sftp__table-wrap">
-                      <table className="webcrt-sftp__table">
+                      <table
+                        className="webcrt-sftp__table"
+                        style={{
+                          width: sumSftpColWidths(sftpColWidths),
+                          minWidth: sumSftpColWidths(sftpColWidths),
+                        }}
+                      >
+                        <colgroup>
+                          {SFTP_COL_KEYS.map((key) => (
+                            <col key={key} style={{ width: sftpColWidths[key] }} />
+                          ))}
+                        </colgroup>
                         <thead>
                           <tr>
-                            <th className="webcrt-sftp__col-name">{t("webcrt.sftp.colName")}</th>
-                            <th className="webcrt-sftp__col-size">{t("webcrt.sftp.colSize")}</th>
-                            <th className="webcrt-sftp__col-mtime">{t("webcrt.sftp.colMtime")}</th>
-                            <th className="webcrt-sftp__col-owner">{t("webcrt.sftp.colOwner")}</th>
-                            <th className="webcrt-sftp__col-group">{t("webcrt.sftp.colGroup")}</th>
-                            <th className="webcrt-sftp__col-mode">{t("webcrt.sftp.colMode")}</th>
+                            {(
+                              [
+                                ["name", "webcrt.sftp.colName"],
+                                ["size", "webcrt.sftp.colSize"],
+                                ["mtime", "webcrt.sftp.colMtime"],
+                                ["owner", "webcrt.sftp.colOwner"],
+                                ["group", "webcrt.sftp.colGroup"],
+                                ["mode", "webcrt.sftp.colMode"],
+                              ] as const
+                            ).map(([key, labelKey]) => (
+                              <th
+                                key={key}
+                                className={`webcrt-sftp__col-${key}`}
+                                style={{ width: sftpColWidths[key] }}
+                              >
+                                <span className="webcrt-sftp__th-label">{t(labelKey)}</span>
+                                <span
+                                  className="webcrt-sftp__col-resizer"
+                                  title={t("webcrt.sftp.colResizeHint")}
+                                  onMouseDown={(e) => onSftpColResizeDown(key, e)}
+                                />
+                              </th>
+                            ))}
                           </tr>
                         </thead>
                         <tbody>
@@ -1837,6 +2146,9 @@ export function WebcrtPage() {
                                 const remote = joinSftpPath(sftpPathRef.current, it.name);
                                 void (async () => {
                                   setSftpBusy(true);
+                                  setSftpStatus(
+                                    t("webcrt.sftp.downloading", { name: it.name, pct: "0%" }),
+                                  );
                                   try {
                                     const body =
                                       activeTab.target.source === "ume"
@@ -1845,7 +2157,15 @@ export function WebcrtPage() {
                                             path: remote,
                                           }
                                         : { ne_id: activeTab.target.id, path: remote };
-                                    const blob = await webcrtSftpDownload(body);
+                                    const blob = await webcrtSftpDownload(body, (p) => {
+                                      const pct = formatSftpTransferPct(p.loaded, p.total || it.size);
+                                      setSftpStatus(
+                                        t("webcrt.sftp.downloading", {
+                                          name: it.name,
+                                          pct: pct || "…",
+                                        }),
+                                      );
+                                    });
                                     const url = URL.createObjectURL(blob);
                                     const a = document.createElement("a");
                                     a.href = url;
@@ -1856,6 +2176,7 @@ export function WebcrtPage() {
                                     showError(webcrtErrorMessage(err, t));
                                   } finally {
                                     setSftpBusy(false);
+                                    setSftpStatus("");
                                   }
                                 })();
                               }}
@@ -1864,7 +2185,7 @@ export function WebcrtPage() {
                                 navigateSftp(joinSftpPath(sftpPathRef.current, it.name));
                               }}
                             >
-                              <td className="webcrt-sftp__col-name">
+                              <td className="webcrt-sftp__col-name" style={{ width: sftpColWidths.name }}>
                                 <span className="webcrt-sftp__name-cell">
                                   <span className={`webcrt-sftp__icon${it.is_dir ? " is-dir" : ""}`}>
                                     {it.is_dir ? <FolderIcon /> : <FileIcon />}
@@ -1872,13 +2193,21 @@ export function WebcrtPage() {
                                   <span className="webcrt-sftp__name">{it.name}</span>
                                 </span>
                               </td>
-                              <td className="webcrt-sftp__col-size">
+                              <td className="webcrt-sftp__col-size" style={{ width: sftpColWidths.size }}>
                                 {formatSftpSizeKb(it.size, it.is_dir)}
                               </td>
-                              <td className="webcrt-sftp__col-mtime">{formatSftpMtime(it.mtime)}</td>
-                              <td className="webcrt-sftp__col-owner">{it.owner || ""}</td>
-                              <td className="webcrt-sftp__col-group">{it.group || ""}</td>
-                              <td className="webcrt-sftp__col-mode">{it.mode || ""}</td>
+                              <td className="webcrt-sftp__col-mtime" style={{ width: sftpColWidths.mtime }}>
+                                {formatSftpMtime(it.mtime)}
+                              </td>
+                              <td className="webcrt-sftp__col-owner" style={{ width: sftpColWidths.owner }}>
+                                {it.owner || ""}
+                              </td>
+                              <td className="webcrt-sftp__col-group" style={{ width: sftpColWidths.group }}>
+                                {it.group || ""}
+                              </td>
+                              <td className="webcrt-sftp__col-mode" style={{ width: sftpColWidths.mode }}>
+                                {it.mode || ""}
+                              </td>
                             </tr>
                           ))}
                         </tbody>

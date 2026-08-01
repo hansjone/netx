@@ -7,9 +7,10 @@ import posixpath
 import stat as statmod
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Iterator
+from typing import Any, BinaryIO, Iterator
+from urllib.parse import quote
 
 import paramiko
 from fastapi import HTTPException
@@ -201,6 +202,43 @@ def _owner_group(attr: Any) -> tuple[str, str]:
     return ("" if uid is None else str(uid), "" if gid is None else str(gid))
 
 
+def _mkdir_p(sftp: Any, remote: str) -> None:
+    """Create remote directory and parents (like mkdir -p)."""
+    path = _normalize_remote(remote, allow_dot=False)
+    if not path or path in (".", "/"):
+        return
+    to_create: list[str] = []
+    cur = path
+    while cur and cur not in (".", "/"):
+        to_create.append(cur)
+        parent = posixpath.dirname(cur)
+        if parent == cur:
+            break
+        cur = parent
+    for candidate in reversed(to_create):
+        try:
+            st = sftp.stat(candidate)
+            mode = int(getattr(st, "st_mode", 0) or 0)
+            if not statmod.S_ISDIR(mode):
+                raise HTTPException(status_code=400, detail=f"sftp_not_a_directory:{candidate}")
+            continue
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+        try:
+            sftp.mkdir(candidate)
+        except Exception as exc:
+            # Race: another client created it; accept if it is now a directory.
+            try:
+                st = sftp.stat(candidate)
+                if statmod.S_ISDIR(int(getattr(st, "st_mode", 0) or 0)):
+                    continue
+            except Exception:
+                pass
+            raise HTTPException(status_code=502, detail=f"sftp_mkdir_failed:{candidate}:{exc}") from exc
+
+
 def sftp_list(
     db: Session,
     *,
@@ -244,27 +282,148 @@ def sftp_list(
         raise HTTPException(status_code=502, detail=f"sftp_list_failed:{exc}") from exc
 
 
-def sftp_download(
+def _sftp_max_file_bytes() -> int:
+    return max(1, int(settings.webcrt_sftp_max_file_bytes or (512 * 1024 * 1024)))
+
+
+def _sftp_chunk_bytes() -> int:
+    return max(4 * 1024, int(settings.webcrt_sftp_chunk_bytes or (64 * 1024)))
+
+
+def _content_disposition(filename: str) -> str:
+    name = str(filename or "download.bin").replace('"', "").replace("\r", "").replace("\n", "")
+    if not name:
+        name = "download.bin"
+    ascii_name = name.encode("ascii", "replace").decode("ascii") or "download.bin"
+    return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(name)}"
+
+
+class SftpDownloadStream:
+    """Hold the SFTP channel open while StreamingResponse consumes chunks."""
+
+    def __init__(
+        self,
+        db: Session,
+        *,
+        managed_ne_id: str | None,
+        ume_ne_id: str | None,
+        path: str,
+    ) -> None:
+        self._db = db
+        self._managed_ne_id = managed_ne_id
+        self._ume_ne_id = ume_ne_id
+        self.remote = _normalize_remote(path, allow_dot=False)
+        self.filename = "download.bin"
+        self.size = 0
+        self._stack: ExitStack | None = None
+        self._fh: Any = None
+        self._chunk = _sftp_chunk_bytes()
+
+    def open(self) -> "SftpDownloadStream":
+        if not self.remote or self.remote.endswith("/"):
+            raise HTTPException(status_code=400, detail="sftp_path_required")
+        stack = ExitStack()
+        try:
+            sftp, _device = stack.enter_context(
+                _sftp_client(self._db, managed_ne_id=self._managed_ne_id, ume_ne_id=self._ume_ne_id)
+            )
+            try:
+                st = sftp.stat(self.remote)
+            except Exception as exc:
+                raise HTTPException(status_code=502, detail=f"sftp_download_failed:{exc}") from exc
+            mode = int(getattr(st, "st_mode", 0) or 0)
+            if statmod.S_ISDIR(mode):
+                raise HTTPException(status_code=400, detail="sftp_path_is_directory")
+            size = int(getattr(st, "st_size", 0) or 0)
+            if size > _sftp_max_file_bytes():
+                raise HTTPException(status_code=413, detail="sftp_file_too_large")
+            self.size = max(0, size)
+            self.filename = posixpath.basename(self.remote) or "download.bin"
+            try:
+                self._fh = stack.enter_context(sftp.open(self.remote, "rb"))
+            except Exception as exc:
+                raise HTTPException(status_code=502, detail=f"sftp_download_failed:{exc}") from exc
+        except Exception:
+            stack.close()
+            raise
+        self._stack = stack
+        return self
+
+    def __iter__(self) -> Iterator[bytes]:
+        fh = self._fh
+        if fh is None:
+            return
+        try:
+            while True:
+                chunk = fh.read(self._chunk)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            self.close()
+
+    def close(self) -> None:
+        stack = self._stack
+        self._stack = None
+        self._fh = None
+        if stack is not None:
+            try:
+                stack.close()
+            except Exception:
+                pass
+
+    def content_disposition(self) -> str:
+        return _content_disposition(self.filename)
+
+
+def sftp_upload_stream(
     db: Session,
     *,
     managed_ne_id: str | None,
     ume_ne_id: str | None,
-    path: str,
-) -> tuple[bytes, str]:
-    remote = _normalize_remote(path, allow_dot=False)
-    if not remote or remote.endswith("/"):
+    remote_path: str,
+    reader: BinaryIO,
+    expected_size: int | None = None,
+) -> dict[str, Any]:
+    remote = _normalize_remote(remote_path, allow_dot=False)
+    if not remote:
         raise HTTPException(status_code=400, detail="sftp_path_required")
+    max_bytes = _sftp_max_file_bytes()
+    if expected_size is not None and int(expected_size) > max_bytes:
+        raise HTTPException(status_code=413, detail="sftp_file_too_large")
+    chunk_size = _sftp_chunk_bytes()
     try:
-        with _sftp_client(db, managed_ne_id=managed_ne_id, ume_ne_id=ume_ne_id) as (sftp, _device):
-            with sftp.open(remote, "rb") as fh:
-                data = fh.read(8 * 1024 * 1024 + 1)
-        if len(data) > 8 * 1024 * 1024:
-            raise HTTPException(status_code=413, detail="sftp_file_too_large")
-        return data, posixpath.basename(remote) or "download.bin"
+        with _sftp_client(db, managed_ne_id=managed_ne_id, ume_ne_id=ume_ne_id) as (sftp, device):
+            parent = posixpath.dirname(remote)
+            if parent and parent not in (".", "/"):
+                _mkdir_p(sftp, parent)
+            written = 0
+            try:
+                with sftp.open(remote, "wb") as fh:
+                    while True:
+                        buf = reader.read(chunk_size)
+                        if not buf:
+                            break
+                        written += len(buf)
+                        if written > max_bytes:
+                            raise HTTPException(status_code=413, detail="sftp_file_too_large")
+                        fh.write(buf)
+            except HTTPException:
+                try:
+                    sftp.remove(remote)
+                except Exception:
+                    pass
+                raise
+            return {
+                "ok": True,
+                "ne_id": str(device.get("id") or ""),
+                "path": remote,
+                "size": written,
+            }
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"sftp_download_failed:{exc}") from exc
+        raise HTTPException(status_code=502, detail=f"sftp_upload_failed:{exc}") from exc
 
 
 def sftp_upload(
@@ -275,20 +434,14 @@ def sftp_upload(
     remote_path: str,
     data: bytes,
 ) -> dict[str, Any]:
-    remote = _normalize_remote(remote_path, allow_dot=False)
-    if not remote:
-        raise HTTPException(status_code=400, detail="sftp_path_required")
-    try:
-        with _sftp_client(db, managed_ne_id=managed_ne_id, ume_ne_id=ume_ne_id) as (sftp, device):
-            with sftp.open(remote, "wb") as fh:
-                fh.write(data)
-            return {
-                "ok": True,
-                "ne_id": str(device.get("id") or ""),
-                "path": remote,
-                "size": len(data),
-            }
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"sftp_upload_failed:{exc}") from exc
+    """Compatibility helper for tests — wraps streamed upload over an in-memory buffer."""
+    import io
+
+    return sftp_upload_stream(
+        db,
+        managed_ne_id=managed_ne_id,
+        ume_ne_id=ume_ne_id,
+        remote_path=remote_path,
+        reader=io.BytesIO(data or b""),
+        expected_size=len(data or b""),
+    )
