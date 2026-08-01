@@ -491,6 +491,38 @@ class WebcrtServiceTests(unittest.TestCase):
         svc.close_session("race", reason="test")
 
     @patch.object(svc, "_audit")
+    def test_detach_grace_keeps_session_until_deadline(self, _mock_audit: MagicMock) -> None:
+        conn = _FakeConn()
+        sess = svc.WebcrtSession(
+            session_id="grace",
+            ne_id="ne1",
+            ne_name="lab",
+            ne_ip="1.2.3.4",
+            protocol="ssh",
+            cols=80,
+            rows=24,
+            conn=conn,  # type: ignore[arg-type]
+        )
+        sess.attached = True
+        with svc._sessions_lock:
+            svc._sessions["grace"] = sess
+        svc.detach_session("grace", grace_sec=120.0, attach_gen=0)
+        self.assertIsNotNone(svc.get_session("grace"))
+        self.assertFalse(sess.attached)
+        self.assertIsNotNone(sess.detach_deadline)
+        # Still within grace — reaper must not close.
+        with patch.object(svc.settings, "webcrt_attach_timeout_sec", 99999):
+            with patch.object(svc.settings, "webcrt_idle_timeout_sec", 99999):
+                svc._reap_sessions()
+        self.assertIsNotNone(svc.get_session("grace"))
+        # Expire grace.
+        sess.detach_deadline = time.time() - 1
+        with patch.object(svc.settings, "webcrt_attach_timeout_sec", 99999):
+            with patch.object(svc.settings, "webcrt_idle_timeout_sec", 99999):
+                svc._reap_sessions()
+        self.assertIsNone(svc.get_session("grace"))
+
+    @patch.object(svc, "_audit")
     def test_attach_timeout_reaper(self, _mock_audit: MagicMock) -> None:
         conn = _FakeConn()
         sess = svc.WebcrtSession(
@@ -510,6 +542,47 @@ class WebcrtServiceTests(unittest.TestCase):
             with patch.object(svc.settings, "webcrt_idle_timeout_sec", 99999):
                 svc._reap_sessions()
         self.assertIsNone(svc.get_session("stale"))
+
+    @patch.object(svc, "_audit")
+    def test_attach_timeout_uses_connect_finished_at(self, _mock_audit: MagicMock) -> None:
+        """Slow connect should not burn the attach window from HTTP create time."""
+        conn = _FakeConn()
+        sess = svc.WebcrtSession(
+            session_id="late",
+            ne_id="ne1",
+            ne_name="lab",
+            ne_ip="1.2.3.4",
+            protocol="ssh",
+            cols=80,
+            rows=24,
+            conn=conn,  # type: ignore[arg-type]
+        )
+        sess.state = "ready"
+        sess.created_at = time.time() - 120
+        sess.connect_finished_at = time.time() - 5
+        with svc._sessions_lock:
+            svc._sessions["late"] = sess
+        with patch.object(svc.settings, "webcrt_attach_timeout_sec", 30):
+            with patch.object(svc.settings, "webcrt_idle_timeout_sec", 99999):
+                svc._reap_sessions()
+        self.assertIsNotNone(svc.get_session("late"))
+        svc.close_session("late", reason="test")
+
+    def test_session_log_tail_strips_header(self) -> None:
+        sid = "tailtest"
+        path = svc._session_log_path(sid)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# session=tailtest ne=x ip=1.2.3.4 ts=now\nR2#\nshow ver\n", encoding="utf-8")
+        try:
+            text = svc.read_session_log_tail(sid, max_bytes=4096)
+            self.assertNotIn("# session=", text)
+            self.assertIn("R2#", text)
+            self.assertIn("show ver", text)
+        finally:
+            try:
+                path.unlink()
+            except OSError:
+                pass
 
     @patch.object(svc, "_audit")
     def test_idle_timeout_reaper(self, _mock_audit: MagicMock) -> None:
@@ -615,11 +688,76 @@ class WebcrtServiceTests(unittest.TestCase):
         self.assertGreaterEqual(q.dropped, 2)
         first = q.get_nowait()
         self.assertEqual(first, b"2")
+        delta = q.take_drop_delta()
+        self.assertGreaterEqual(delta, 2)
+        self.assertEqual(q.take_drop_delta(), 0)
+        # Further drops report only the new delta.
+        for i in range(20):
+            q.put(str(i).encode())
+        self.assertGreater(q.take_drop_delta(), 0)
+        self.assertEqual(q.take_drop_delta(), 0)
+
+    def test_bounded_queue_blocking_get(self) -> None:
+        import threading
+
+        q = svc._BoundedByteQueue(maxsize=8)
+        box: dict[str, bytes | None] = {"v": None}
+
+        def _reader() -> None:
+            box["v"] = q.get(timeout=1.0)
+
+        t = threading.Thread(target=_reader, daemon=True)
+        t.start()
+        time.sleep(0.05)
+        q.put(b"wake")
+        t.join(timeout=1.0)
+        self.assertEqual(box["v"], b"wake")
 
     def test_normalize_encoding(self) -> None:
         self.assertEqual(svc._normalize_encoding("GBK"), "gbk")
         self.assertEqual(svc._normalize_encoding("utf8"), "utf-8")
         self.assertEqual(svc._encode_text("测", "gbk")[:1], b"\xb2")
+
+    def test_sftp_requires_direct_ssh(self) -> None:
+        from netx_api.webcrt_sftp import _require_ssh_direct
+
+        with self.assertRaises(HTTPException) as telnet_cm:
+            _require_ssh_direct({"protocol": "telnet"}, {"protocol": "telnet"})
+        self.assertEqual(telnet_cm.exception.status_code, 400)
+        self.assertEqual(telnet_cm.exception.detail, "sftp_requires_ssh")
+
+        with self.assertRaises(HTTPException) as hop_cm:
+            _require_ssh_direct({"protocol": "ssh", "hop_enabled": True}, {"protocol": "ssh"})
+        self.assertEqual(hop_cm.exception.status_code, 400)
+        self.assertEqual(hop_cm.exception.detail, "sftp_hop_not_supported")
+
+        # Direct SSH is allowed (no raise).
+        _require_ssh_direct({"protocol": "ssh", "hop_enabled": False}, {"protocol": "ssh"})
+
+    @patch.object(svc, "_audit")
+    def test_reattach_clears_detach_deadline(self, _mock_audit: MagicMock) -> None:
+        conn = _FakeConn()
+        sess = svc.WebcrtSession(
+            session_id="rejoin",
+            ne_id="ne1",
+            ne_name="lab",
+            ne_ip="1.2.3.4",
+            protocol="ssh",
+            cols=80,
+            rows=24,
+            conn=conn,  # type: ignore[arg-type]
+        )
+        with svc._sessions_lock:
+            svc._sessions["rejoin"] = sess
+        _, gen1 = svc.mark_attached("rejoin")
+        out = svc.detach_session("rejoin", grace_sec=120.0, attach_gen=gen1)
+        self.assertTrue(out.get("detached"))
+        self.assertIsNotNone(sess.detach_deadline)
+        _, gen2 = svc.mark_attached("rejoin")
+        self.assertEqual(gen2, gen1 + 1)
+        self.assertTrue(sess.attached)
+        self.assertIsNone(sess.detach_deadline)
+        svc.close_session("rejoin", reason="test")
 
     def test_linux_telnet_maps_to_generic_telnet(self) -> None:
         from netx_api.ne_netmiko import normalize_netmiko_device_type

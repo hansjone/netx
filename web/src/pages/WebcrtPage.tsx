@@ -36,6 +36,9 @@ const ENCODING_OPTIONS = ["utf-8", "gbk", "gb2312", "gb18030"] as const;
 const FONT_SIZE_OPTIONS = [12, 13, 14, 16, 18, 20] as const;
 const PASTE_DELAY_OPTIONS = [0, 20, 40, 60, 100, 150] as const;
 const KEEPALIVE_OPTIONS = [0, 15, 30, 60, 120] as const;
+/** Compact recording chunks before they grow unbounded (join + trim). */
+const LOG_COMPACT_CHUNKS = 1500;
+const LOG_MAX_CHARS = 8 * 1024 * 1024;
 
 type ColorSchemeId = "dark" | "blackWhite" | "whiteBlack" | "greenBlack" | "amberBlack" | "custom";
 
@@ -109,6 +112,8 @@ type TermTab = {
   errorMessage?: string;
   recording: boolean;
   encoding: string;
+  /** From session create — nested CLI hop cannot use SFTP. */
+  cliHop?: boolean;
 };
 
 type TabMenuState = { key: string; x: number; y: number };
@@ -282,6 +287,58 @@ function isSshAuthFailure(err: unknown): boolean {
   );
 }
 
+/** Inventory SSH (managed / webcrt Quick Connect). UME uses shared CLI profile — no per-NE popup. */
+function isInventorySsh(target: Pick<CliTargetItem, "source" | "protocol">): boolean {
+  const src = String(target.source || "").toLowerCase();
+  if (src !== "webcrt" && src !== "managed") return false;
+  return String(target.protocol || "ssh").toLowerCase() !== "telnet";
+}
+
+function isSessionGoneError(err: unknown): boolean {
+  const raw = String(err).toLowerCase();
+  return (
+    raw.includes("webcrt_session_not_found") ||
+    raw.includes("session_not_found") ||
+    raw.includes("4404")
+  );
+}
+
+function isDeviceClosedMessage(err: unknown): boolean {
+  const raw = String(err).toLowerCase();
+  return (
+    raw.includes("device_closed") ||
+    raw.includes("client_close") ||
+    raw.includes("client_delete") ||
+    raw.includes("cli_hop_return") ||
+    raw.includes("idle_timeout") ||
+    raw.includes("detach_timeout") ||
+    raw.includes("attach_timeout") ||
+    raw.includes("session closed")
+  );
+}
+
+/** SFTP is direct SSH only; returns i18n key when unavailable. */
+function sftpUnavailableReason(
+  tab: Pick<TermTab, "target" | "cliHop">,
+): "webcrt.err.sftpSsh" | "webcrt.err.sftpHop" | "webcrt.err.sftpNeedPassword" | null {
+  const proto = String(tab.target.protocol || "ssh").toLowerCase();
+  if (proto === "telnet") return "webcrt.err.sftpSsh";
+  if (tab.cliHop || tab.target.hop_enabled) return "webcrt.err.sftpHop";
+  // Inventory/quick-connect SFTP opens a fresh Paramiko session from saved DB creds.
+  if (tab.target.source !== "ume" && !tab.target.has_password) return "webcrt.err.sftpNeedPassword";
+  return null;
+}
+
+function sftpParentPath(path: string): string {
+  const cur = String(path || ".").replace(/\\/g, "/").replace(/\/+$/, "") || ".";
+  if (cur === "." || cur === "/") return cur === "/" ? "/" : ".";
+  const parts = cur.split("/").filter((p, i) => p || i === 0);
+  if (parts.length <= 1) return cur.startsWith("/") ? "/" : ".";
+  parts.pop();
+  const parent = parts.join("/") || (cur.startsWith("/") ? "/" : ".");
+  return parent || ".";
+}
+
 function connectFailedNe(err: unknown): ManagedNeItem | null {
   if (!(err instanceof ApiRequestError)) return null;
   const detail = err.detail;
@@ -310,6 +367,7 @@ function webcrtErrorMessage(err: unknown, t: (key: string, vars?: Record<string,
   }
   if (raw.includes("sftp_hop_not_supported")) return t("webcrt.err.sftpHop");
   if (raw.includes("sftp_requires_ssh")) return t("webcrt.err.sftpSsh");
+  if (raw.includes("websocket_error")) return t("webcrt.err.websocket");
   return raw;
 }
 
@@ -380,7 +438,9 @@ export function WebcrtPage() {
   const tabsRef = useRef<TermTab[]>([]);
   tabsRef.current = tabs;
   const termRefs = useRef<Map<string, WebTerminalHandle>>(new Map());
-  const logBuffersRef = useRef<Map<string, string>>(new Map());
+  /** Chunk lists avoid O(n²) string append while recording. */
+  const logBuffersRef = useRef<Map<string, string[]>>(new Map());
+  const lastQueueDropToastAtRef = useRef(0);
   const optionsMenuRef = useRef<HTMLDivElement | null>(null);
   const tabMenuRef = useRef<HTMLDivElement | null>(null);
   const treeMenuRef = useRef<HTMLDivElement | null>(null);
@@ -467,7 +527,7 @@ export function WebcrtPage() {
   }, []);
 
   const attachSessionResult = useCallback(
-    (target: CliTargetItem, sessionId: string, encoding: string) => {
+    (target: CliTargetItem, sessionId: string, encoding: string, cliHop?: boolean) => {
       const key = targetKey(target);
       const existing = tabsRef.current.find((tab) => tab.key === key);
       const pending: TermTab = {
@@ -481,6 +541,7 @@ export function WebcrtPage() {
         recording: existing?.recording || false,
         encoding,
         errorMessage: undefined,
+        cliHop: Boolean(cliHop),
       };
       setTabs((prev) => {
         const without = prev.filter((x) => x.key !== key);
@@ -520,19 +581,19 @@ export function WebcrtPage() {
       }
       if (connectingKeysRef.current.has(key)) return;
 
-      // WebCRT SSH without saved password → credential popup.
-      const isWebcrtSsh =
-        target.source === "webcrt" && String(target.protocol || "ssh").toLowerCase() !== "telnet";
-      if (isWebcrtSsh && !target.has_password && !opts?.force) {
+      // Managed / WebCRT SSH without saved password → credential popup (UME uses shared profile).
+      if (isInventorySsh(target) && !target.has_password && !opts?.force) {
         openAuthForTarget(target);
         return;
       }
 
       connectingKeysRef.current.add(key);
 
-      if (opts?.force && existing?.sessionId) {
+      // force = brand-new device session; drop any prior PTY first.
+      const prior = tabsRef.current.find((tab) => tab.key === key);
+      if (opts?.force && prior?.sessionId) {
         try {
-          await closeWebcrtSession(existing.sessionId);
+          await closeWebcrtSession(prior.sessionId);
         } catch {
           /* ignore */
         }
@@ -545,11 +606,11 @@ export function WebcrtPage() {
         key,
         sessionId: "",
         wsUrl: "",
-        termEpoch: (existing?.termEpoch || 0) + (opts?.force ? 1 : 0),
+        termEpoch: (prior?.termEpoch || existing?.termEpoch || 0) + (opts?.force ? 1 : 0),
         target,
         status: "connecting",
         connectPhase: "creating",
-        recording: existing?.recording || false,
+        recording: prior?.recording || existing?.recording || false,
         encoding,
         errorMessage: undefined,
       };
@@ -588,13 +649,13 @@ export function WebcrtPage() {
           status: "connecting",
           connectPhase: "authenticating",
           termEpoch: pending.termEpoch + 1,
+          cliHop: Boolean(sess.cli_hop),
         });
         showOk(t("webcrt.opened", { name: deviceLabel(target) }));
       } catch (err) {
         const message = webcrtErrorMessage(err, t);
         const needAuth =
-          target.source === "webcrt" &&
-          String(target.protocol || "ssh").toLowerCase() !== "telnet" &&
+          isInventorySsh(target) &&
           (String(err).includes("credentials_incomplete") ||
             String(err).includes("connect_failed") ||
             isSshAuthFailure(err));
@@ -609,6 +670,23 @@ export function WebcrtPage() {
       }
     },
     [openAuthForTarget, showOk, showError, t, updateTab],
+  );
+
+  /** Re-open WS to an existing backend session (within detach grace). */
+  const reattachTab = useCallback(
+    (tab: TermTab) => {
+      if (!tab.sessionId) return false;
+      updateTab(tab.key, {
+        status: "connecting",
+        connectPhase: "authenticating",
+        termEpoch: tab.termEpoch + 1,
+        wsUrl: webcrtWsUrl(tab.sessionId),
+        errorMessage: undefined,
+      });
+      setActiveTabKey(tab.key);
+      return true;
+    },
+    [updateTab],
   );
 
   const openTargetRef = useRef(openTarget);
@@ -667,7 +745,7 @@ export function WebcrtPage() {
             connect_status: result.ne.connect_status || "unknown",
             cli_profile_ready: true,
           };
-          attachSessionResult(target, result.session_id, dims.encoding);
+          attachSessionResult(target, result.session_id, dims.encoding, Boolean(result.cli_hop));
           setHostDialogOpen(false);
           setHostForm(emptyHostForm());
           setSource(listSource === "managed" ? "managed" : "webcrt");
@@ -703,7 +781,8 @@ export function WebcrtPage() {
     try {
       if (authDialog.mode === "retry" && authDialog.target) {
         const existing = authDialog.target;
-        if (authForm.savePassword && existing.source === "webcrt") {
+        // Persist to ManagedNE for inventory + Quick Connect; UME never uses this dialog.
+        if (authForm.savePassword && existing.source !== "ume") {
           try {
             await updateManagedNe(existing.id, { username, password: authForm.password });
           } catch {
@@ -728,6 +807,7 @@ export function WebcrtPage() {
           },
           sess.session_id,
           dims.encoding,
+          Boolean(sess.cli_hop),
         );
         setAuthDialog(null);
         setAuthForm(emptyAuthForm());
@@ -762,7 +842,7 @@ export function WebcrtPage() {
         connect_status: result.ne.connect_status || "unknown",
         cli_profile_ready: true,
       };
-      attachSessionResult(target, result.session_id, dims.encoding);
+      attachSessionResult(target, result.session_id, dims.encoding, Boolean(result.cli_hop));
       setAuthDialog(null);
       setAuthForm(emptyAuthForm());
       setSource("webcrt");
@@ -881,11 +961,24 @@ export function WebcrtPage() {
     [showError, showOk, t],
   );
 
+  const reconnectTab = useCallback(
+    async (tab: TermTab) => {
+      // Prefer re-attach while the device PTY may still be in detach grace.
+      const canReattach =
+        Boolean(tab.sessionId) &&
+        !isDeviceClosedMessage(tab.errorMessage) &&
+        !isSshAuthFailure(tab.errorMessage);
+      if (canReattach && reattachTab(tab)) return;
+      await openTarget(tab.target, { force: true });
+    },
+    [openTarget, reattachTab],
+  );
+
   const reconnectActive = useCallback(async () => {
     const tab = tabsRef.current.find((x) => x.key === activeTabKey);
     if (!tab) return;
-    await openTarget(tab.target, { force: true });
-  }, [activeTabKey, openTarget]);
+    await reconnectTab(tab);
+  }, [activeTabKey, reconnectTab]);
 
   const toggleRecording = useCallback(() => {
     const tab = tabsRef.current.find((x) => x.key === activeTabKey);
@@ -893,10 +986,13 @@ export function WebcrtPage() {
     const next = !tab.recording;
     if (next) {
       const seed = termRefs.current.get(tab.key)?.getText() || "";
-      logBuffersRef.current.set(tab.key, seed ? `${seed}\n` : "");
+      logBuffersRef.current.set(tab.key, seed ? [`${seed}\n`] : []);
       showOk(t("webcrt.actions.recordingOn"));
     } else {
-      const body = logBuffersRef.current.get(tab.key) || termRefs.current.get(tab.key)?.getText() || "";
+      const chunks = logBuffersRef.current.get(tab.key);
+      const body = chunks?.length
+        ? chunks.join("")
+        : termRefs.current.get(tab.key)?.getText() || "";
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
       const name = `${deviceLabel(tab.target) || "session"}-${stamp}.log`;
       downloadText(name, body);
@@ -997,6 +1093,12 @@ export function WebcrtPage() {
   }, [presetNeId, presetSource, showError, t, setSearchParams]);
 
   const activeTab = tabs.find((x) => x.key === activeTabKey) || null;
+  const sftpBlockedKey = activeTab ? sftpUnavailableReason(activeTab) : "webcrt.err.sftpSsh";
+  const sftpAllowed = Boolean(activeTab && !sftpBlockedKey);
+
+  useEffect(() => {
+    if (sftpOpen && !sftpAllowed) setSftpOpen(false);
+  }, [sftpOpen, sftpAllowed]);
 
   const renameWebcrtSession = useCallback(
     async (target: CliTargetItem, nextName: string) => {
@@ -1271,21 +1373,31 @@ export function WebcrtPage() {
                 <button
                   type="button"
                   className={`webcrt-action-btn${sftpOpen ? " is-active" : ""}`}
+                  disabled={!sftpAllowed}
+                  title={sftpAllowed ? t("webcrt.sftp.title") : t(sftpBlockedKey || "webcrt.err.sftpSsh")}
                   onClick={() => {
+                    if (!sftpAllowed) {
+                      showError(t(sftpBlockedKey || "webcrt.err.sftpSsh"));
+                      return;
+                    }
                     setSftpOpen((v) => !v);
                     if (!sftpOpen) void refreshSftp();
                   }}
                 >
-                  SFTP
+                  {t("webcrt.sftp.title")}
                 </button>
               </div>
             ) : null}
             <div className="webcrt-main__body">
-              {tabs.map((tab) => (
+              {tabs.map((tab) => {
+                const isActive = activeTabKey === tab.key;
+                // Only the active tab mounts xterm + WS; background tabs detach and re-attach on focus.
+                const mountTerminal = Boolean(isActive && tab.wsUrl);
+                return (
                 <div
-                  key={`${tab.key}:${tab.termEpoch}`}
+                  key={tab.key}
                   className="webcrt-main__pane"
-                  hidden={activeTabKey !== tab.key}
+                  hidden={!isActive}
                 >
                   {tab.status === "connecting" && !tab.wsUrl ? (
                     <div className="webcrt-main__placeholder">
@@ -1297,7 +1409,7 @@ export function WebcrtPage() {
                     <div className="webcrt-main__placeholder webcrt-main__placeholder--error">
                       <div>{t("webcrt.status.error")}</div>
                       {tab.errorMessage ? <pre className="webcrt-error-detail">{tab.errorMessage}</pre> : null}
-                      <button type="button" className="webcrt-action-btn is-warn" onClick={() => void openTarget(tab.target, { force: true })}>
+                      <button type="button" className="webcrt-action-btn is-warn" onClick={() => void reconnectTab(tab)}>
                         {t("webcrt.actions.reconnect")}
                       </button>
                     </div>
@@ -1325,13 +1437,15 @@ export function WebcrtPage() {
                           <button
                             type="button"
                             className="webcrt-action-btn is-warn"
-                            onClick={() => void openTarget(tab.target, { force: true })}
+                            onClick={() => void reconnectTab(tab)}
                           >
                             {t("webcrt.actions.reconnect")}
                           </button>
                         </div>
                       ) : null}
+                      {mountTerminal ? (
                       <WebTerminal
+                        key={`${tab.key}:${tab.termEpoch}`}
                         ref={(handle) => {
                           if (handle) termRefs.current.set(tab.key, handle);
                           else termRefs.current.delete(tab.key);
@@ -1348,10 +1462,22 @@ export function WebcrtPage() {
                         copyOnSelect={sessionOpts.copyOnSelect}
                         pasteDelayMs={sessionOpts.pasteDelayMs}
                         keywordHighlight={keywordHl}
-                        autoFocus={activeTabKey === tab.key && tab.status === "connected"}
+                        autoFocus={tab.status === "connected"}
                         onStdout={(chunk) => {
-                          const prev = logBuffersRef.current.get(tab.key) || "";
-                          logBuffersRef.current.set(tab.key, prev + chunk);
+                          if (!chunk) return;
+                          let parts = logBuffersRef.current.get(tab.key);
+                          if (!parts) {
+                            parts = [];
+                            logBuffersRef.current.set(tab.key, parts);
+                          }
+                          parts.push(chunk);
+                          if (parts.length >= LOG_COMPACT_CHUNKS) {
+                            const joined = parts.join("");
+                            logBuffersRef.current.set(
+                              tab.key,
+                              [joined.length > LOG_MAX_CHARS ? joined.slice(-LOG_MAX_CHARS) : joined],
+                            );
+                          }
                         }}
                         onReady={() => {
                           window.setTimeout(() => termRefs.current.get(tab.key)?.focus(), 40);
@@ -1363,9 +1489,7 @@ export function WebcrtPage() {
                               connectPhase: undefined,
                               errorMessage: undefined,
                             });
-                            if (activeTabKey === tab.key) {
-                              window.setTimeout(() => termRefs.current.get(tab.key)?.focus(), 40);
-                            }
+                            window.setTimeout(() => termRefs.current.get(tab.key)?.focus(), 40);
                           } else if (state === "open" || state === "connecting") {
                             const nextPhase: ConnectPhase =
                               phase === "waiting_prompt" || message === "waiting_prompt"
@@ -1375,44 +1499,90 @@ export function WebcrtPage() {
                               status: "connecting",
                               connectPhase: nextPhase,
                             });
+                          } else if (state === "warning") {
+                            const m = String(message || "");
+                            const dropMatch = /^queue_dropped:(\d+)/i.exec(m);
+                            if (dropMatch) {
+                              const now = Date.now();
+                              if (now - lastQueueDropToastAtRef.current > 3000) {
+                                lastQueueDropToastAtRef.current = now;
+                                showError(
+                                  t("webcrt.err.queueDropped", {
+                                    count: Number(dropMatch[1]) || dropMatch[1],
+                                  }),
+                                );
+                              }
+                            }
                           } else if (state === "error") {
                             const errMsg = message || t("webcrt.disconnectBannerError");
                             const sid = tab.sessionId;
+                            // Re-attach missed the grace window → create a fresh session.
+                            if (sid && isSessionGoneError(errMsg)) {
+                              updateTab(tab.key, {
+                                status: "connecting",
+                                sessionId: "",
+                                wsUrl: "",
+                                connectPhase: "creating",
+                                errorMessage: undefined,
+                              });
+                              void openTarget(tab.target, { force: true });
+                              return;
+                            }
                             updateTab(tab.key, {
                               status: "error",
                               sessionId: "",
                               wsUrl: "",
                               connectPhase: undefined,
-                              errorMessage: errMsg,
+                              errorMessage: webcrtErrorMessage(errMsg, t),
                             });
                             if (sid) {
                               void closeWebcrtSession(sid).catch(() => undefined);
                             }
-                            const tgt = tab.target;
-                            const isWebcrtSsh =
-                              tgt.source === "webcrt" &&
-                              String(tgt.protocol || "ssh").toLowerCase() !== "telnet";
-                            if (isWebcrtSsh && isSshAuthFailure(errMsg)) {
-                              openAuthForTarget(tgt, webcrtErrorMessage(errMsg, t));
+                            if (isInventorySsh(tab.target) && isSshAuthFailure(errMsg)) {
+                              openAuthForTarget(tab.target, webcrtErrorMessage(errMsg, t));
                             }
                           } else if (state === "closed") {
-                            // Ignore local socket teardown noise; real device closes send session closed.
-                            if (String(message || "").startsWith("websocket_closed:")) return;
+                            const msg = String(message || "");
+                            // Local WS drop: keep session_id so reconnect / tab-focus can re-attach.
+                            if (msg.startsWith("websocket_closed:")) {
+                              updateTab(tab.key, {
+                                status: "closed",
+                                connectPhase: undefined,
+                                errorMessage: t("webcrt.disconnectBanner"),
+                              });
+                              return;
+                            }
+                            const deviceGone = isDeviceClosedMessage(msg);
                             updateTab(tab.key, {
                               status: "closed",
+                              sessionId: deviceGone ? "" : tab.sessionId,
+                              wsUrl: deviceGone ? "" : tab.wsUrl,
                               connectPhase: undefined,
-                              errorMessage: message || t("webcrt.disconnectBanner"),
+                              errorMessage: msg || t("webcrt.disconnectBanner"),
                             });
                           }
                         }}
                       />
+                      ) : null}
                     </>
                   ) : null}
                 </div>
-              ))}
-              {sftpOpen && activeTab ? (
+                );
+              })}
+              {sftpOpen && activeTab && sftpAllowed ? (
                 <div className="webcrt-sftp">
                   <div className="webcrt-sftp__bar">
+                    <button
+                      type="button"
+                      title={t("webcrt.sftp.up")}
+                      onClick={() => {
+                        const parent = sftpParentPath(sftpPath);
+                        setSftpPath(parent);
+                        window.setTimeout(() => void refreshSftp(), 0);
+                      }}
+                    >
+                      {t("webcrt.sftp.up")}
+                    </button>
                     <input value={sftpPath} onChange={(e) => setSftpPath(e.target.value)} />
                     <button type="button" onClick={() => void refreshSftp()}>
                       {t("webcrt.sftp.refresh")}
@@ -1485,7 +1655,8 @@ export function WebcrtPage() {
                             })();
                           }}
                         >
-                          {it.is_dir ? "📁" : "📄"} {it.name}
+                          {it.is_dir ? `[${t("webcrt.sftp.dir")}] ` : ""}
+                          {it.name}
                           {!it.is_dir ? ` (${it.size})` : ""}
                         </button>
                       </li>

@@ -260,6 +260,7 @@ export type CliTargetItem = {
   protocol?: string;
   username?: string;
   has_password?: boolean;
+  hop_enabled?: boolean;
   connect_status: string;
   cli_profile_ready?: boolean;
 };

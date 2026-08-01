@@ -269,6 +269,10 @@ def list_cli_targets(
     offset = (page - 1) * page_size
     kw = str(keyword or "").strip()
 
+    default_profile = get_default_profile(db)
+    default_hop = bool(getattr(default_profile, "hop_enabled", False)) if default_profile else False
+    default_proto = str(getattr(default_profile, "protocol", "") or "ssh") if default_profile else "ssh"
+
     def _managed_item(row: Any, *, list_source: str = "managed") -> dict[str, Any]:
         return CliTargetOut(
             source=list_source,
@@ -281,11 +285,20 @@ def list_cli_targets(
             protocol=str(getattr(row, "protocol", "") or ""),
             username=str(getattr(row, "username", "") or ""),
             has_password=bool(str(getattr(row, "password_enc", "") or "").strip()),
+            hop_enabled=bool(getattr(row, "hop_enabled", False)),
             connect_status=str(row.connect_status),
             cli_profile_ready=True,
         ).model_dump()
 
     def _ume_item(inv: UmeInventoryNE, ov: UmeCliOverride | None) -> dict[str, Any]:
+        # UME hop/protocol come from the selected/default CLI profile (SFTP gating).
+        hop = default_hop
+        proto = default_proto
+        if ov and ov.profile_id:
+            pref = db.get(CliConnectProfile, str(ov.profile_id))
+            if pref is not None:
+                hop = bool(pref.hop_enabled)
+                proto = str(pref.protocol or proto or "ssh")
         return CliTargetOut(
             source="ume",
             id=str(inv.ne_id),
@@ -294,6 +307,8 @@ def list_cli_targets(
             ip_address=str(inv.ip_address or ""),
             ne_type=str(inv.ne_type or ""),
             vendor=str(inv.vendor or ""),
+            protocol=proto,
+            hop_enabled=hop,
             connect_status=str(ov.connect_status if ov else "unknown"),
             cli_profile_ready=ready,
         ).model_dump()

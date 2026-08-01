@@ -87,6 +87,8 @@ class Settings(BaseSettings):
     webcrt_idle_timeout_sec: int = 1800
     webcrt_connect_timeout_sec: int = 90
     webcrt_attach_timeout_sec: int = 60
+    # Keep device PTY after WS drop so the UI can re-attach (reconnect / remount).
+    webcrt_detach_grace_sec: int = 120
     webcrt_data_dir: str = "data/webcrt"
     # SSH transport keepalive interval (seconds); 0 disables (default off).
     webcrt_keepalive_sec: int = 0

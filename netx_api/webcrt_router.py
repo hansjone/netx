@@ -22,8 +22,10 @@ from .webcrt_service import (
     get_session,
     list_sessions,
     mark_attached,
+    read_session_log_tail,
     wait_session_ready,
     _decode_bytes,
+    _encode_text,
     _normalize_encoding,
 )
 
@@ -378,20 +380,32 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
         }
     )
 
-    # Replay full login transcript (kept for StrictMode remount / brief reconnect).
-    bootstrap = bytes(sess.bootstrap_output or b"")
-    if bootstrap:
-        try:
+    # First attach: login bootstrap. Later attaches (tab focus / StrictMode): session log tail.
+    first_attach = not bool(sess.bootstrap_replayed)
+    replay_bytes = b""
+    replay_text = ""
+    if first_attach:
+        raw_boot = bytes(sess.bootstrap_output or b"")
+        if raw_boot:
             if _normalize_encoding(sess.encoding) != "utf-8":
-                bootstrap = _decode_bytes(bootstrap, sess.encoding).encode("utf-8", errors="replace")
-            await websocket.send_bytes(bootstrap)
+                replay_text = _decode_bytes(raw_boot, sess.encoding)
+                replay_bytes = replay_text.encode("utf-8", errors="replace")
+            else:
+                replay_bytes = raw_boot
+                replay_text = _decode_bytes(raw_boot, "utf-8")
+        sess.bootstrap_replayed = True
+    else:
+        replay_text = read_session_log_tail(session_id, max_bytes=49152)
+        if replay_text:
+            replay_bytes = _encode_text(replay_text, "utf-8")
+    if replay_bytes:
+        try:
+            await websocket.send_bytes(replay_bytes)
         except Exception:
             try:
-                await websocket.send_json(
-                    {"type": "stdout", "data": _decode_bytes(bytes(sess.bootstrap_output or b""), sess.encoding)}
-                )
+                await websocket.send_json({"type": "stdout", "data": replay_text or ""})
             except Exception:
-                _log.debug("webcrt bootstrap send failed session=%s", session_id, exc_info=True)
+                _log.debug("webcrt bootstrap/replay send failed session=%s", session_id, exc_info=True)
 
     stop = asyncio.Event()
     stdin_buf: list[str] = []
@@ -438,9 +452,29 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
             except Exception:
                 return False
 
+        async def _notify_queue_drops() -> None:
+            try:
+                delta = int(sess.out_queue.take_drop_delta() or 0)
+            except Exception:
+                delta = 0
+            if delta <= 0:
+                return
+            try:
+                await websocket.send_json(
+                    {
+                        "type": "status",
+                        "state": "warning",
+                        "message": f"queue_dropped:{delta}",
+                        "dropped": delta,
+                    }
+                )
+            except Exception:
+                pass
+
         while not stop.is_set():
+            # Longer block is cheap now (Condition wait); cuts executor churn when idle.
             chunk = await loop.run_in_executor(
-                None, lambda: sess.take_stdout(attach_gen, timeout=0.05)
+                None, lambda: sess.take_stdout(attach_gen, timeout=0.2)
             )
             if chunk == "stale":
                 break
@@ -449,9 +483,11 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
                     if not await _flush_pending():
                         stop.set()
                         break
+                await _notify_queue_drops()
                 continue
             if chunk is None:
                 await _flush_pending()
+                await _notify_queue_drops()
                 stop.set()
                 try:
                     await websocket.send_json(
@@ -469,6 +505,7 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
                 if not await _flush_pending():
                     stop.set()
                     break
+                await _notify_queue_drops()
 
     reader_task = asyncio.create_task(pump_stdout())
     if sess.needs_live_prompt:
@@ -552,11 +589,12 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
             await reader_task
         except Exception:
             pass
-        # Keep device session briefly so React remount / blip can re-attach.
+        # Keep device session so UI reconnect / remount can re-attach.
         if get_session(session_id) is not None:
+            grace = float(getattr(settings, "webcrt_detach_grace_sec", 120) or 120)
             detach_session(
                 session_id,
-                grace_sec=8.0,
+                grace_sec=max(8.0, grace),
                 client=_client_label(websocket=websocket),
                 attach_gen=attach_gen,
             )

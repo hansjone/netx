@@ -2,6 +2,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "re
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
+import { useI18n } from "../i18n";
 import {
   applyKeywordHighlight,
   type KeywordHighlightConfig,
@@ -84,6 +85,28 @@ function serializeTerminal(term: Terminal): string {
   return lines.join("\n").replace(/\s+$/g, "");
 }
 
+/** Line-wise search — avoids serializing the full 10k scrollback on every Find. */
+function findBufferLine(
+  term: Terminal,
+  query: string,
+  startLine: number,
+  direction: 1 | -1,
+): number {
+  const needle = String(query || "").toLowerCase();
+  if (!needle) return -1;
+  const buf = term.buffer.active;
+  const len = buf.length;
+  if (len <= 0) return -1;
+  const start = ((Math.trunc(startLine) % len) + len) % len;
+  for (let step = 0; step < len; step += 1) {
+    const i = direction > 0 ? (start + step) % len : (start - step + len) % len;
+    const line = buf.getLine(i);
+    if (!line) continue;
+    if (line.translateToString(true).toLowerCase().includes(needle)) return i;
+  }
+  return -1;
+}
+
 function isSidebarSearchTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT") {
@@ -159,6 +182,9 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
   },
   ref,
 ) {
+  const { t } = useI18n();
+  const tRef = useRef(t);
+  tRef.current = t;
   const resolvedColors: TermColors = termColors ||
     (themeName === "light"
       ? { background: "#ffffff", foreground: "#000000" }
@@ -167,7 +193,7 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
-  const findIndexRef = useRef(0);
+  const findLineRef = useRef(-1);
   const onStatusRef = useRef(onStatus);
   const onReadyRef = useRef(onReady);
   const onStdoutRef = useRef(onStdout);
@@ -346,29 +372,19 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
     findNext: (q: string) => {
       const term = termRef.current;
       if (!term || !q) return;
-      const text = serializeTerminal(term).toLowerCase();
-      const needle = q.toLowerCase();
-      let idx = text.indexOf(needle, findIndexRef.current + 1);
-      if (idx < 0) idx = text.indexOf(needle);
-      if (idx >= 0) {
-        findIndexRef.current = idx;
-        // Approximate scroll: each buffer line ~1 row.
-        const line = text.slice(0, idx).split("\n").length - 1;
-        term.scrollToLine(Math.max(0, line - 2));
+      const hit = findBufferLine(term, q, findLineRef.current + 1, 1);
+      if (hit >= 0) {
+        findLineRef.current = hit;
+        term.scrollToLine(Math.max(0, hit - 2));
       }
     },
     findPrevious: (q: string) => {
       const term = termRef.current;
       if (!term || !q) return;
-      const text = serializeTerminal(term).toLowerCase();
-      const needle = q.toLowerCase();
-      const before = text.slice(0, Math.max(0, findIndexRef.current));
-      let idx = before.lastIndexOf(needle);
-      if (idx < 0) idx = text.lastIndexOf(needle);
-      if (idx >= 0) {
-        findIndexRef.current = idx;
-        const line = text.slice(0, idx).split("\n").length - 1;
-        term.scrollToLine(Math.max(0, line - 2));
+      const hit = findBufferLine(term, q, Math.max(0, findLineRef.current) - 1, -1);
+      if (hit >= 0) {
+        findLineRef.current = hit;
+        term.scrollToLine(Math.max(0, hit - 2));
       }
     },
   }));
@@ -479,9 +495,24 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
             maybeFocus();
             return;
           }
+          if (msg.state === "warning") {
+            const m = String(msg.message || "");
+            const dropMatch = /^queue_dropped:(\d+)/i.exec(m);
+            if (dropMatch) {
+              term.writeln(
+                `\r\n\x1b[33m${tRef.current("webcrt.term.outputTruncated", { count: dropMatch[1] })}\x1b[0m`,
+              );
+            }
+            return;
+          }
           if (msg.state === "closed" || msg.state === "error") {
             const detail = msg.message ? `: ${msg.message}` : "";
-            term.writeln(`\r\n\x1b[33m[session ${msg.state}${detail}]\x1b[0m`);
+            term.writeln(
+              `\r\n\x1b[33m${tRef.current("webcrt.term.sessionStatus", {
+                state: String(msg.state || ""),
+                detail,
+              })}\x1b[0m`,
+            );
           }
           return;
         }
@@ -494,7 +525,7 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
     ws.onerror = () => {
       if (!isActiveSocket()) return;
       onStatusRef.current?.("error", "websocket_error");
-      term.writeln("\r\n\x1b[31m[websocket error]\x1b[0m");
+      term.writeln(`\r\n\x1b[31m${tRef.current("webcrt.term.wsError")}\x1b[0m`);
     };
 
     ws.onclose = (ev) => {
@@ -502,7 +533,9 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
       if (!isActiveSocket()) return;
       onStatusRef.current?.("closed", `websocket_closed:${ev.code}`);
       if (!ev.wasClean) {
-        term.writeln(`\r\n\x1b[33m[websocket closed code=${ev.code}]\x1b[0m`);
+        term.writeln(
+          `\r\n\x1b[33m${tRef.current("webcrt.term.wsClosed", { code: ev.code })}\x1b[0m`,
+        );
       }
     };
 
@@ -637,7 +670,7 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
     <div className="webcrt-term-wrap">
       {pasteStatus ? (
         <div className="webcrt-paste-status" role="status" aria-live="polite">
-          粘贴中 {pasteStatus.done}/{pasteStatus.total} 行…
+          {t("webcrt.term.pasting", { done: pasteStatus.done, total: pasteStatus.total })}
         </div>
       ) : null}
       {findOpen ? (
@@ -646,30 +679,26 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
             ref={findInputRef}
             type="search"
             value={findQuery}
-            placeholder="Find…"
-            onChange={(e) => setFindQuery(e.target.value)}
+            placeholder={t("webcrt.term.findPh")}
+            aria-label={t("webcrt.term.findPh")}
+            onChange={(e) => {
+              setFindQuery(e.target.value);
+              findLineRef.current = -1;
+            }}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
                 e.preventDefault();
                 const term = termRef.current;
                 if (!term || !findQuery) return;
-                const text = serializeTerminal(term).toLowerCase();
-                const needle = findQuery.toLowerCase();
-                if (e.shiftKey) {
-                  const before = text.slice(0, Math.max(0, findIndexRef.current));
-                  let idx = before.lastIndexOf(needle);
-                  if (idx < 0) idx = text.lastIndexOf(needle);
-                  if (idx >= 0) {
-                    findIndexRef.current = idx;
-                    term.scrollToLine(Math.max(0, text.slice(0, idx).split("\n").length - 3));
-                  }
-                } else {
-                  let idx = text.indexOf(needle, findIndexRef.current + 1);
-                  if (idx < 0) idx = text.indexOf(needle);
-                  if (idx >= 0) {
-                    findIndexRef.current = idx;
-                    term.scrollToLine(Math.max(0, text.slice(0, idx).split("\n").length - 3));
-                  }
+                const hit = findBufferLine(
+                  term,
+                  findQuery,
+                  e.shiftKey ? Math.max(0, findLineRef.current) - 1 : findLineRef.current + 1,
+                  e.shiftKey ? -1 : 1,
+                );
+                if (hit >= 0) {
+                  findLineRef.current = hit;
+                  term.scrollToLine(Math.max(0, hit - 2));
                 }
               } else if (e.key === "Escape") {
                 setFindOpen(false);
@@ -679,17 +708,15 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
           />
           <button
             type="button"
+            aria-label={t("webcrt.term.findPrev")}
+            title={t("webcrt.term.findPrev")}
             onClick={() => {
               const term = termRef.current;
               if (!term || !findQuery) return;
-              const text = serializeTerminal(term).toLowerCase();
-              const needle = findQuery.toLowerCase();
-              const before = text.slice(0, Math.max(0, findIndexRef.current));
-              let idx = before.lastIndexOf(needle);
-              if (idx < 0) idx = text.lastIndexOf(needle);
-              if (idx >= 0) {
-                findIndexRef.current = idx;
-                term.scrollToLine(Math.max(0, text.slice(0, idx).split("\n").length - 3));
+              const hit = findBufferLine(term, findQuery, Math.max(0, findLineRef.current) - 1, -1);
+              if (hit >= 0) {
+                findLineRef.current = hit;
+                term.scrollToLine(Math.max(0, hit - 2));
               }
             }}
           >
@@ -697,16 +724,15 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
           </button>
           <button
             type="button"
+            aria-label={t("webcrt.term.findNext")}
+            title={t("webcrt.term.findNext")}
             onClick={() => {
               const term = termRef.current;
               if (!term || !findQuery) return;
-              const text = serializeTerminal(term).toLowerCase();
-              const needle = findQuery.toLowerCase();
-              let idx = text.indexOf(needle, findIndexRef.current + 1);
-              if (idx < 0) idx = text.indexOf(needle);
-              if (idx >= 0) {
-                findIndexRef.current = idx;
-                term.scrollToLine(Math.max(0, text.slice(0, idx).split("\n").length - 3));
+              const hit = findBufferLine(term, findQuery, findLineRef.current + 1, 1);
+              if (hit >= 0) {
+                findLineRef.current = hit;
+                term.scrollToLine(Math.max(0, hit - 2));
               }
             }}
           >
@@ -714,6 +740,8 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
           </button>
           <button
             type="button"
+            aria-label={t("webcrt.term.findClose")}
+            title={t("webcrt.term.findClose")}
             onClick={() => {
               setFindOpen(false);
               focusTerminal();
@@ -738,10 +766,10 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
           onMouseDown={(e) => e.stopPropagation()}
         >
           <button type="button" onClick={() => void copySelection()}>
-            Copy
+            {t("webcrt.term.copy")}
           </button>
           <button type="button" onClick={() => void pasteFromClipboard()}>
-            Paste
+            {t("webcrt.term.paste")}
           </button>
           <button
             type="button"
@@ -751,7 +779,7 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
               setCtxMenu(null);
             }}
           >
-            Clear
+            {t("webcrt.term.clear")}
           </button>
         </div>
       ) : null}

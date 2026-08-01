@@ -34,8 +34,6 @@ _log = logging.getLogger("netx.webcrt")
 _sessions_lock = threading.Lock()
 _sessions: dict[str, "WebcrtSession"] = {}
 _reaper_started = False
-# Sentinel for take_stdout timeout (distinct from device EOF None).
-_STDOUT_MISSING = object()
 
 # Network device CLI key rewrites (SecureCRT-like).
 # - Backspace: DEL(0x7f) -> BS(0x08)
@@ -347,11 +345,12 @@ class _BoundedByteQueue:
     def __init__(self, maxsize: int = 2000) -> None:
         self._q: queue.Queue[bytes | None] = queue.Queue()
         self._max = max(8, int(maxsize or 2000))
-        self._lock = threading.Lock()
+        self._cond = threading.Condition()
         self.dropped = 0
+        self._reported = 0
 
     def put(self, item: bytes | None) -> None:
-        with self._lock:
+        with self._cond:
             while self._q.qsize() >= self._max:
                 try:
                     self._q.get_nowait()
@@ -359,15 +358,38 @@ class _BoundedByteQueue:
                 except queue.Empty:
                     break
             self._q.put(item)
+            self._cond.notify()
 
     def put_nowait(self, item: bytes | None) -> None:
         self.put(item)
 
     def get_nowait(self) -> bytes | None:
-        return self._q.get_nowait()
+        with self._cond:
+            return self._q.get_nowait()
+
+    def get(self, timeout: float = 0.25) -> bytes | None:
+        """Block until a chunk is available or timeout (raises queue.Empty)."""
+        deadline = time.time() + max(0.0, float(timeout))
+        with self._cond:
+            while self._q.empty():
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    raise queue.Empty
+                self._cond.wait(timeout=remaining)
+            return self._q.get_nowait()
 
     def qsize(self) -> int:
-        return self._q.qsize()
+        with self._cond:
+            return self._q.qsize()
+
+    def take_drop_delta(self) -> int:
+        """Return newly dropped chunk count since last call (for client notice)."""
+        with self._cond:
+            delta = int(self.dropped) - int(self._reported)
+            if delta <= 0:
+                return 0
+            self._reported = int(self.dropped)
+            return delta
 
 
 def _utc_now() -> datetime:
@@ -388,6 +410,33 @@ def _session_log_path(session_id: str) -> Path:
     folder = webcrt_data_root() / "sessions"
     folder.mkdir(parents=True, exist_ok=True)
     return folder / f"{session_id}.log"
+
+
+def read_session_log_tail(session_id: str, *, max_bytes: int = 49152) -> str:
+    """Best-effort UTF-8 tail of the on-disk session transcript (for WS re-attach)."""
+    path = _session_log_path(session_id)
+    try:
+        if not path.is_file():
+            return ""
+        size = path.stat().st_size
+        take = max(1024, min(int(max_bytes or 49152), 256 * 1024))
+        with path.open("rb") as fh:
+            if size > take:
+                fh.seek(size - take)
+                raw = fh.read()
+                # Drop partial first line after seek.
+                nl = raw.find(b"\n")
+                if 0 <= nl < len(raw) - 1:
+                    raw = raw[nl + 1 :]
+            else:
+                raw = fh.read()
+        text = raw.decode("utf-8", errors="replace")
+        # Strip header comment lines from the visible replay.
+        lines = [ln for ln in text.splitlines(keepends=True) if not ln.startswith("# session=")]
+        return "".join(lines)
+    except Exception:
+        _log.debug("webcrt session log tail failed session=%s", session_id, exc_info=True)
+        return ""
 
 
 def _audit(event: str, **fields: Any) -> None:
@@ -428,6 +477,8 @@ class WebcrtSession:
     connect_started_at: float = field(default_factory=time.time)
     connect_finished_at: float | None = None
     bootstrap_output: bytes = b""
+    # First WS attach gets login bootstrap; later attaches prefer session-log tail.
+    bootstrap_replayed: bool = False
     needs_live_prompt: bool = True
     # React StrictMode remounts open a second WS before the first fully tears down.
     # Only the newest attach_gen may consume out_queue / mark detach.
@@ -499,19 +550,20 @@ class WebcrtSession:
             with self._stdout_lock:
                 if attach_gen != self.attach_gen:
                     return "stale"
-                try:
-                    chunk = self.out_queue.get_nowait()
-                except queue.Empty:
-                    chunk = _STDOUT_MISSING
-                if chunk is not _STDOUT_MISSING:
-                    if attach_gen != self.attach_gen:
-                        # Put back including EOF sentinel so the new owner still sees close.
-                        self.out_queue.put(chunk)
-                        return "stale"
-                    return chunk  # bytes | None
-            if time.time() >= deadline:
+            remaining = deadline - time.time()
+            if remaining <= 0:
                 return "empty"
-            time.sleep(0.005)
+            # Slice waits so we can notice attach_gen bumps without busy-spinning.
+            try:
+                chunk = self.out_queue.get(timeout=min(0.05, remaining))
+            except queue.Empty:
+                continue
+            with self._stdout_lock:
+                if attach_gen != self.attach_gen:
+                    # Put back including EOF sentinel so the new owner still sees close.
+                    self.out_queue.put(chunk)
+                    return "stale"
+                return chunk  # bytes | None
 
     def write_stdin(self, data: str) -> None:
         if self.closed or self.conn is None:
@@ -803,10 +855,14 @@ def _reap_sessions() -> None:
             if sess.detach_deadline is not None:
                 if now >= sess.detach_deadline:
                     to_close.append((sess, "detach_timeout"))
-            elif (now - sess.created_at) > attach:
-                to_close.append((sess, "attach_timeout"))
-            elif (now - sess.last_activity) > idle:
-                to_close.append((sess, "idle_timeout"))
+            else:
+                # Start attach clock after connect finishes (not HTTP create time),
+                # so slow auth + UI mount does not race attach_timeout.
+                anchor = float(sess.connect_finished_at or sess.created_at or now)
+                if (now - anchor) > attach:
+                    to_close.append((sess, "attach_timeout"))
+                elif (now - sess.last_activity) > idle:
+                    to_close.append((sess, "idle_timeout"))
     for sess in to_nudge:
         try:
             # Touch without changing visible prompt when payload is empty/null-ish.

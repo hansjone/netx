@@ -436,11 +436,15 @@ class WebcrtUpsertAndTargetsTests(unittest.TestCase):
         self.assertEqual(webcrt["items"][0]["source"], "webcrt")
         self.assertEqual(webcrt["items"][0]["ip_address"], "10.7.7.7")
         self.assertTrue(webcrt["items"][0]["has_password"])
+        self.assertIn("hop_enabled", webcrt["items"][0])
+        self.assertFalse(webcrt["items"][0]["hop_enabled"])
 
         managed = list_cli_targets(self.db, source="managed", page=1, page_size=50)
         ips = {x["ip_address"] for x in managed["items"]}
         self.assertIn("10.7.7.8", ips)
         self.assertNotIn("10.7.7.7", ips)
+        zte = next(x for x in managed["items"] if x["ip_address"] == "10.7.7.8")
+        self.assertIn("hop_enabled", zte)
 
     def test_upsert_session_host_telnet_no_password(self):
         out, action = upsert_webcrt_session_host(

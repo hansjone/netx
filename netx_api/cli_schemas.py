@@ -121,5 +121,6 @@ class CliTargetOut(BaseModel):
     protocol: str = ""
     username: str = ""
     has_password: bool = False
+    hop_enabled: bool = False
     connect_status: str = "unknown"
     cli_profile_ready: bool = False
