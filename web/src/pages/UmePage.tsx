@@ -430,10 +430,12 @@ export function UmePage() {
 
   return (
     <>
-      <div className="page-stack">
-      <section className="cards">
-        <article className="card card--full">
-          <h3>{t("ume.token.title")}</h3>
+      <div className="page-stack ume-page">
+      <section className="cards ume-cards">
+        <article className="panel">
+          <div className="panel__toolbar">
+            <h2>{t("ume.token.title")}</h2>
+          </div>
           <div className="actions-row actions-row--inline">
             <span
               className={`conn-pill conn-pill--${!hasToken ? "down" : tokenNeedsRenewal ? "warn" : "up"}`}
@@ -510,17 +512,25 @@ export function UmePage() {
           )}
         </article>
 
-        <article className="card card--full">
-          <h3>{t("ume.tasks.currentTitle")}</h3>
-          <div className="actions-row actions-row--inline">
-            <span className={`conn-pill conn-pill--${runningTasks.length > 0 ? "unknown" : "up"}`}>
-              {t("ume.tasks.running")}: {runningTasks.length}
-            </span>
-            <button onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeSyncStatusAll })} disabled={syncStatusQuery.isFetching}>
-              {t("common.refresh")}
-            </button>
+        <article className="panel">
+          <div className="panel__toolbar">
+            <h2>{t("ume.tasks.currentTitle")}</h2>
+            <div className="panel__toolbar-end">
+              <span className={`conn-pill conn-pill--${runningTasks.length > 0 ? "unknown" : "up"}`}>
+                {t("ume.tasks.running")}: {runningTasks.length}
+              </span>
+              <button
+                type="button"
+                onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeSyncStatusAll })}
+                disabled={syncStatusQuery.isFetching}
+              >
+                {t("common.refresh")}
+              </button>
+            </div>
           </div>
-          <table>
+          <div className="pt-list">
+          <div className="pt-list-table-wrap">
+<table className="data-table pt-list-table">
             <thead>
               <tr>
                 <th>ID</th>
@@ -549,6 +559,7 @@ export function UmePage() {
               )}
             </tbody>
           </table>
+</div>
 
           <h3 className="card__section-title">{t("ume.tasks.runtimeTitle")}</h3>
           {runtimeTaskError ? (
@@ -556,7 +567,8 @@ export function UmePage() {
               {t("ume.tasks.runtimeOpFailed")}: {runtimeTaskError}
             </div>
           ) : null}
-          <table>
+          <div className="pt-list-table-wrap">
+<table className="data-table pt-list-table">
             <thead>
               <tr>
                 <th>task</th>
@@ -607,13 +619,17 @@ export function UmePage() {
               )}
             </tbody>
           </table>
+</div>
+          </div>
         </article>
 
-        <article className="card card--full">
-          <h3 className="card-title-with-hint">
-            {t("ume.subscription.title")}
-            <HelpHint text={t("ume.subscription.help")} ariaLabel={t("common.help")} />
-          </h3>
+        <article className="panel">
+          <div className="panel__toolbar">
+            <h2 className="card-title-with-hint">
+              {t("ume.subscription.title")}
+              <HelpHint text={t("ume.subscription.help")} ariaLabel={t("common.help")} />
+            </h2>
+          </div>
           <div className="actions-row actions-row--inline">
             <span className={`conn-pill conn-pill--${subscriptionActive ? "up" : "down"}`}>
               {t("ume.subscription.sub")}: {subscriptionActive ? t("ume.subscription.subActive") : t("ume.subscription.subInactive")}
@@ -757,12 +773,12 @@ export function UmePage() {
           </div>
         </article>
 
-        <article className="card card--full">
-          <div className="panel__toolbar" style={{ marginBottom: cliPanelOpen ? 12 : 0 }}>
-            <h3 className="card-title-with-hint">
+        <article className="panel">
+          <div className="panel__toolbar">
+            <h2 className="card-title-with-hint">
               {t("ume.cli.title")}
               <HelpHint text={t("ume.cli.hint")} ariaLabel={t("common.help")} />
-            </h3>
+            </h2>
             <button type="button" className="link-btn" onClick={() => setCliPanelOpen((x) => !x)}>
               {cliPanelOpen ? t("ume.cli.hidePanel") : t("ume.cli.showPanel")}
             </button>
@@ -770,12 +786,12 @@ export function UmePage() {
           {cliPanelOpen ? <UmeCliConnectPanel embedded enabled /> : null}
         </article>
 
-        <article className="card card--full">
-          <div className="panel__toolbar" style={{ marginBottom: keyAlertPanelOpen ? 12 : 0 }}>
-            <h3 className="card-title-with-hint">
+        <article className="panel">
+          <div className="panel__toolbar">
+            <h2 className="card-title-with-hint">
               {t("ume.keyAlert.title")}
               <HelpHint text={t("ume.keyAlert.help")} ariaLabel={t("common.help")} />
-            </h3>
+            </h2>
             <button type="button" className="link-btn" onClick={() => setKeyAlertPanelOpen((x) => !x)}>
               {keyAlertPanelOpen ? t("ume.keyAlert.hidePanel") : t("ume.keyAlert.showPanel")}
             </button>
@@ -974,7 +990,7 @@ export function UmePage() {
               {t("common.opFailed")}: {keyAlertOpError}
             </div>
           ) : null}
-          <div className="actions-row actions-row--inline" style={{ marginTop: 12, flexWrap: "wrap", gap: 8 }}>
+          <div className="filter-inline" style={{ marginTop: 12 }}>
             <input
               type="search"
               placeholder={t("ume.keyAlert.filterKeywordPh")}
@@ -1007,7 +1023,8 @@ export function UmePage() {
               <option value="false">{t("ume.keyAlert.filterEnabledOff")}</option>
             </select>
           </div>
-          <table style={{ marginTop: 12 }}>
+          <div className="pt-list-table-wrap">
+<table className="data-table pt-list-table">
             <thead>
               <tr>
                 <th>{t("ume.keyAlert.colMonitor")}</th>
@@ -1093,11 +1110,12 @@ export function UmePage() {
               ) : null}
             </tbody>
           </table>
-          <div className="pager">
-            <div className="pager__meta">
+</div>
+          <div className="pager pt-list-pager">
+            <div className="muted">
               {t("common.pagerMeta", { total: keyAlertTotal, page: keyAlertPage, pages: keyAlertPages })}
             </div>
-            <div className="pager__controls">
+            <div className="btn-row">
               <button
                 className="pager__btn"
                 onClick={() => setKeyAlertPage(Math.max(1, keyAlertPage - 1))}
@@ -1139,13 +1157,14 @@ export function UmePage() {
           </button>
         </div>
         {syncStatusPanelOpen ? (
-        <>
+        <div className="pt-list">
         <div className="actions-row actions-row--inline">
-          <button onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeSyncStatusAll })} disabled={syncStatusQuery.isFetching}>
+          <button type="button" onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeSyncStatusAll })} disabled={syncStatusQuery.isFetching}>
             {t("common.refresh")}
           </button>
         </div>
-        <table>
+        <div className="pt-list-table-wrap">
+<table className="data-table pt-list-table">
           <thead>
             <tr>
               <th>ID</th>
@@ -1182,9 +1201,10 @@ export function UmePage() {
             )}
           </tbody>
         </table>
-        <div className="pager">
-          <div className="pager__meta">{t("common.pagerMeta", { total: syncTotal, page: syncPage, pages: syncPages })}</div>
-          <div className="pager__controls">
+</div>
+        <div className="pager pt-list-pager">
+          <div className="muted">{t("common.pagerMeta", { total: syncTotal, page: syncPage, pages: syncPages })}</div>
+          <div className="btn-row">
             <button className="pager__btn" onClick={() => setSyncPage(Math.max(1, syncPage - 1))} disabled={syncPage <= 1}>
               {t("common.prevPage")}
             </button>
@@ -1206,7 +1226,7 @@ export function UmePage() {
             </select>
           </div>
         </div>
-        </>
+        </div>
         ) : null}
       </section>
 
@@ -1218,7 +1238,7 @@ export function UmePage() {
           </button>
         </div>
         {nePanelOpen ? (
-          <>
+          <div className="pt-list">
         <div className="filter-inline">
           <input value={neKeyword} placeholder={t("ume.ne.keywordPh")} onChange={(e) => setNeKeyword(e.target.value)} />
           <button type="button" onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeNEAll })}>
@@ -1236,7 +1256,8 @@ export function UmePage() {
             {t("common.clearFilters")}
           </button>
         </div>
-        <table>
+        <div className="pt-list-table-wrap">
+<table className="data-table pt-list-table">
           <thead>
             <tr>
               <th>ne_id</th>
@@ -1296,9 +1317,10 @@ export function UmePage() {
             ))}
           </tbody>
         </table>
-        <div className="pager">
-          <div className="pager__meta">{t("common.pagerMeta", { total: neTotal, page: nePage, pages: nePages })}</div>
-          <div className="pager__controls">
+</div>
+        <div className="pager pt-list-pager">
+          <div className="muted">{t("common.pagerMeta", { total: neTotal, page: nePage, pages: nePages })}</div>
+          <div className="btn-row">
             <button className="pager__btn" onClick={() => setNePage(Math.max(1, nePage - 1))} disabled={nePage <= 1}>
               {t("common.prevPage")}
             </button>
@@ -1321,7 +1343,7 @@ export function UmePage() {
             </select>
           </div>
         </div>
-          </>
+          </div>
         ) : null}
       </section>
 

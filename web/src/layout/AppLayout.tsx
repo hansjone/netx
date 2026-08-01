@@ -77,32 +77,42 @@ export function AppLayout({ connections, children }: Props) {
           ) : null}
         </div>
         <div className="app-brand__actions">
-          <span className={`conn-pill conn-pill--on-brand conn-pill--${connections.netxApi}`}>
-            {t("layout.netxApi")}: {connections.netxApi}
-            {netxSuffix}
-          </span>
-          <span
-            className={`conn-pill conn-pill--on-brand conn-pill--${connections.oclawBridge}`}
-            title={oclawTitle}
-          >
-            {t("layout.oclawBridge")}: {connections.oclawBridge}
-            {oclawSuffix}
-          </span>
-          {user ? (
-            <span className="conn-pill conn-pill--on-brand conn-pill--up" title={user.role}>
-              {user.username}
+          <div className="app-brand__actions-group">
+            <span className={`conn-pill conn-pill--on-brand conn-pill--${connections.netxApi}`}>
+              {t("layout.netxApi")}: {connections.netxApi}
+              {netxSuffix}
             </span>
-          ) : null}
-          {user ? (
-            <button
-              type="button"
-              className="header-menu__trigger header-menu__trigger--on-brand"
-              onClick={() => void logout()}
+            <span
+              className={`conn-pill conn-pill--on-brand conn-pill--${connections.oclawBridge}`}
+              title={oclawTitle}
             >
-              {t("auth.logout")}
-            </button>
-          ) : null}
-          <HeaderMenu />
+              {t("layout.oclawBridge")}: {connections.oclawBridge}
+              {oclawSuffix}
+            </span>
+          </div>
+          {user ? (
+            <>
+              <span className="app-brand__actions-sep" aria-hidden />
+              <div className="app-brand__actions-group">
+                <span
+                  className="conn-pill conn-pill--on-brand conn-pill--user"
+                  title={user.role}
+                >
+                  {user.username}
+                </span>
+                <button
+                  type="button"
+                  className="header-menu__trigger header-menu__trigger--on-brand"
+                  onClick={() => void logout()}
+                >
+                  {t("auth.logout")}
+                </button>
+                <HeaderMenu />
+              </div>
+            </>
+          ) : (
+            <HeaderMenu />
+          )}
         </div>
       </header>
 

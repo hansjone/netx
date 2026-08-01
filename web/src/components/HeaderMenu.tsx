@@ -31,7 +31,7 @@ export function HeaderMenu() {
     <div className="header-menu header-menu--on-brand" ref={rootRef}>
       <button
         type="button"
-        className="header-menu__trigger header-menu__trigger--on-brand"
+        className="header-menu__trigger header-menu__trigger--on-brand header-menu__trigger--icon"
         aria-label={t("layout.moreMenu")}
         aria-haspopup="menu"
         aria-expanded={open}

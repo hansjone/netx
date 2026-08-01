@@ -4,6 +4,7 @@ import { useAuth } from "../auth/AuthContext";
 import { useI18n } from "../i18n";
 import { useToast } from "../hooks/useToast";
 import { apiDelete, apiGet, apiPost } from "../services/api";
+import { formatSystemTime } from "../utils/time";
 
 type TokenRow = {
   id: string;
@@ -32,6 +33,12 @@ const EXPIRY_OPTIONS = [
   { value: 365, labelKey: "auth.expire365d" },
   { value: 0, labelKey: "auth.expireNever" },
 ] as const;
+
+function tokenStatusClass(row: TokenRow): string {
+  if (row.revoked) return "pt-list-status--failed";
+  if (row.expired) return "pt-list-status--warning";
+  return "pt-list-status--ok";
+}
 
 export function ApiTokensPage() {
   const { t } = useI18n();
@@ -98,102 +105,130 @@ export function ApiTokensPage() {
   };
 
   return (
-    <div className="panel">
-      <h2 className="panel__title">{t("auth.apiKeysTitle")}</h2>
-      <p className="panel__hint">{t("auth.apiKeysHint")}</p>
+    <div className="page-stack system-page">
+      <section className="panel">
+        <div className="panel__toolbar">
+          <h2>{t("auth.apiKeysTitle")}</h2>
+        </div>
+        <p className="panel__hint">{t("auth.apiKeysHint")}</p>
 
-      <form className="form-row" onSubmit={onCreate} style={{ gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
-        <input
-          placeholder={t("auth.tokenName")}
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          required
-        />
-        <select
-          value={expiresInDays}
-          onChange={(e) => setExpiresInDays(Number(e.target.value))}
-          aria-label={t("auth.expiresIn")}
-        >
-          {EXPIRY_OPTIONS.map((opt) => (
-            <option key={opt.value} value={opt.value}>
-              {t(opt.labelKey)}
-            </option>
-          ))}
-        </select>
-        {isAdmin ? (
-          <select
-            value={ownerUserId}
-            onChange={(e) => setOwnerUserId(e.target.value)}
-            aria-label={t("auth.tokenOwner")}
-          >
-            <option value="">{t("auth.tokenOwnerSelf", { user: user?.username || "" })}</option>
-            {users
-              .filter((u) => u.is_active)
-              .map((u) => (
-                <option key={u.id} value={u.id}>
-                  {u.username} ({u.role})
+        <div className="pt-list">
+          <form className="filter-inline" onSubmit={onCreate}>
+            <input
+              placeholder={t("auth.tokenName")}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              required
+            />
+            <select
+              value={expiresInDays}
+              onChange={(e) => setExpiresInDays(Number(e.target.value))}
+              aria-label={t("auth.expiresIn")}
+            >
+              {EXPIRY_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {t(opt.labelKey)}
                 </option>
               ))}
-          </select>
-        ) : null}
-        <button type="submit" disabled={createMut.isPending}>
-          {t("auth.createToken")}
-        </button>
-      </form>
+            </select>
+            {isAdmin ? (
+              <select
+                value={ownerUserId}
+                onChange={(e) => setOwnerUserId(e.target.value)}
+                aria-label={t("auth.tokenOwner")}
+              >
+                <option value="">{t("auth.tokenOwnerSelf", { user: user?.username || "" })}</option>
+                {users
+                  .filter((u) => u.is_active)
+                  .map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.username} ({u.role})
+                    </option>
+                  ))}
+              </select>
+            ) : null}
+            <button type="submit" disabled={createMut.isPending}>
+              {t("auth.createToken")}
+            </button>
+          </form>
 
-      {createdPlain ? (
-        <div className="panel" style={{ marginBottom: 16, background: "#f8fafc" }}>
-          <div className="panel__hint">{t("auth.tokenOnceHint")}</div>
-          <code style={{ wordBreak: "break-all", display: "block", margin: "8px 0" }}>{createdPlain}</code>
-          <button type="button" onClick={() => void copyToken()}>
-            {t("auth.copyToken")}
-          </button>
+          {createdPlain ? (
+            <div className="token-once">
+              <div className="panel__hint" style={{ margin: 0 }}>
+                {t("auth.tokenOnceHint")}
+              </div>
+              <code>{createdPlain}</code>
+              <button type="button" onClick={() => void copyToken()}>
+                {t("auth.copyToken")}
+              </button>
+            </div>
+          ) : null}
+
+          {tokensQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
+
+          {!items.length && !tokensQuery.isLoading ? (
+            <div className="pt-list-empty">
+              <p>{t("common.empty")}</p>
+            </div>
+          ) : (
+            <div className="pt-list-table-wrap">
+              <table className="data-table pt-list-table">
+                <thead>
+                  <tr>
+                    <th>{t("auth.tokenName")}</th>
+                    <th>{t("auth.tokenOwner")}</th>
+                    <th>{t("auth.colTime")}</th>
+                    <th>{t("auth.expiresAt")}</th>
+                    <th>{t("auth.lastUsed")}</th>
+                    <th>{t("auth.status")}</th>
+                    <th>{t("auth.actions")}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {items.map((row) => (
+                    <tr key={row.id}>
+                      <td className="pt-list-task-name">{row.name}</td>
+                      <td>{row.username || row.user_id}</td>
+                      <td className="pt-list-time">
+                        {row.created_at ? formatSystemTime(row.created_at) : t("common.empty")}
+                      </td>
+                      <td className="pt-list-time">
+                        {row.expires_at ? formatSystemTime(row.expires_at) : t("auth.expireNever")}
+                      </td>
+                      <td className="pt-list-time">
+                        {row.last_used_at ? formatSystemTime(row.last_used_at) : t("common.empty")}
+                      </td>
+                      <td>
+                        <span className={`pt-list-status ${tokenStatusClass(row)}`}>
+                          {row.revoked
+                            ? t("auth.tokenStatusRevoked")
+                            : row.expired
+                              ? t("auth.tokenStatusExpired")
+                              : t("auth.tokenStatusActive")}
+                        </span>
+                      </td>
+                      <td>
+                        <div className="btn-row pt-list-actions table-actions">
+                          <button
+                            type="button"
+                            className="btn--danger"
+                            disabled={row.revoked || revokeMut.isPending}
+                            onClick={() => {
+                              if (window.confirm(t("auth.revokeConfirm"))) revokeMut.mutate(row.id);
+                            }}
+                          >
+                            {t("auth.revokeToken")}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
-      ) : null}
-
-      {tokensQuery.isLoading ? <div>{t("common.refreshing")}</div> : null}
-      <table className="data-table">
-        <thead>
-          <tr>
-            <th>{t("auth.tokenName")}</th>
-            <th>{t("auth.tokenOwner")}</th>
-            <th>{t("auth.colTime")}</th>
-            <th>{t("auth.expiresAt")}</th>
-            <th>{t("auth.lastUsed")}</th>
-            <th>{t("auth.status")}</th>
-            <th>{t("auth.actions")}</th>
-          </tr>
-        </thead>
-        <tbody>
-          {items.map((row) => (
-            <tr key={row.id}>
-              <td>{row.name}</td>
-              <td>{row.username || row.user_id}</td>
-              <td>{row.created_at || "-"}</td>
-              <td>{row.expires_at || t("auth.expireNever")}</td>
-              <td>{row.last_used_at || "-"}</td>
-              <td>
-                {row.revoked
-                  ? t("auth.tokenStatusRevoked")
-                  : row.expired
-                    ? t("auth.tokenStatusExpired")
-                    : t("auth.tokenStatusActive")}
-              </td>
-              <td>
-                <button
-                  type="button"
-                  disabled={row.revoked || revokeMut.isPending}
-                  onClick={() => {
-                    if (window.confirm(t("auth.revokeConfirm"))) revokeMut.mutate(row.id);
-                  }}
-                >
-                  {t("auth.revokeToken")}
-                </button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      </section>
     </div>
   );
 }

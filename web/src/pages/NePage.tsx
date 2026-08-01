@@ -111,11 +111,11 @@ function FormLabel({ children, required }: { children: ReactNode; required?: boo
   );
 }
 
-function connectPillLevel(status: string): "up" | "down" | "unknown" | "warn" {
-  if (status === "pass") return "up";
-  if (status === "fail") return "down";
-  if (status === "testing") return "warn";
-  return "unknown";
+function connectStatusClass(status: string): string {
+  if (status === "pass") return "pt-list-status--ok";
+  if (status === "fail") return "pt-list-status--failed";
+  if (status === "testing") return "pt-list-status--running";
+  return "pt-list-status--unknown";
 }
 
 export function NePage() {
@@ -491,53 +491,55 @@ export function NePage() {
     return items;
   }, [stats, perTag, t]);
 
+  const listItems = listQuery.data?.items || [];
+  const hasFilters = Boolean(keyword || vendorFilter || statusFilter);
+
   return (
-    <div className="page-stack">
+    <div className="page-stack ne-page">
       {!credsOk ? (
         <section className="panel panel--warn">
           <p>{t("managedNe.credsNotConfigured")}</p>
         </section>
       ) : null}
 
-      {/* ── statistics card ── */}
-      <section className="card ne-stats-card">
-        <div className="ne-stats-card__header">
-          <div className="ne-stats-card__header-left">
-            <span className="ne-stats-card__title">{t("managedNe.stats.title")}</span>
-          </div>
-          <div className="ne-stats-card__header-actions">
-            <button
-              type="button"
-              disabled={bulkByTagMutation.isPending}
-              onClick={() => {
-                setBulkTagAction("proxy");
-                setBulkHop(emptyHopProxyFields());
-                setBulkTagModalOpen(true);
-              }}
-            >
-              {t("managedNe.stats.batchProxy")}
-            </button>
-            <button
-              type="button"
-              disabled={bulkByTagMutation.isPending}
-              onClick={() => {
-                setBulkTagAction("account");
-                setBulkAccount(emptyAccount());
-                setBulkTagModalOpen(true);
-              }}
-            >
-              {t("managedNe.account.batchByTag")}
-            </button>
-            <button
-              type="button"
-              disabled={bulkByTagMutation.isPending}
-              onClick={() => {
-                setBulkTagAction("test");
-                setBulkTagModalOpen(true);
-              }}
-            >
-              {t("managedNe.stats.batchTest")}
-            </button>
+      <section className="panel ne-stats-panel">
+        <div className="panel__toolbar">
+          <h2>{t("managedNe.stats.title")}</h2>
+          <div className="panel__toolbar-end">
+            <div className="panel__actions">
+              <button
+                type="button"
+                disabled={bulkByTagMutation.isPending}
+                onClick={() => {
+                  setBulkTagAction("proxy");
+                  setBulkHop(emptyHopProxyFields());
+                  setBulkTagModalOpen(true);
+                }}
+              >
+                {t("managedNe.stats.batchProxy")}
+              </button>
+              <button
+                type="button"
+                disabled={bulkByTagMutation.isPending}
+                onClick={() => {
+                  setBulkTagAction("account");
+                  setBulkAccount(emptyAccount());
+                  setBulkTagModalOpen(true);
+                }}
+              >
+                {t("managedNe.account.batchByTag")}
+              </button>
+              <button
+                type="button"
+                disabled={bulkByTagMutation.isPending}
+                onClick={() => {
+                  setBulkTagAction("test");
+                  setBulkTagModalOpen(true);
+                }}
+              >
+                {t("managedNe.stats.batchTest")}
+              </button>
+            </div>
           </div>
         </div>
         {stats ? (
@@ -548,7 +550,7 @@ export function NePage() {
                 <div className="ne-tag-card__total">{t("managedNe.stats.total", { n: x.total })}</div>
                 <div className="ne-tag-card__pills">
                   {(["pass", "fail", "testing", "unknown"] as const).map((s) => (
-                    <span key={s} className={`ne-stats-pill ne-stats-pill--${s}`}>
+                    <span key={s} className={`pt-list-status ${connectStatusClass(s)}`}>
                       {t(`managedNe.stats.${s}`)} {x.by_status[s] ?? 0}
                     </span>
                   ))}
@@ -671,170 +673,205 @@ export function NePage() {
           </div>
         </div>
 
-        <div className="filter-inline">
-          <input
-            value={keyword}
-            placeholder={t("managedNe.keywordPh")}
-            onChange={(e) => setKeyword(e.target.value)}
-          />
-          <select value={vendorFilter} onChange={(e) => setVendorFilter(e.target.value)}>
-            <option value="">{t("managedNe.allVendors")}</option>
-            {vendors.map((v) => (
-              <option key={v} value={v}>
-                {v}
-              </option>
-            ))}
-          </select>
-          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
-            <option value="">{t("managedNe.allConnectStatus")}</option>
-            <option value="unknown">unknown</option>
-            <option value="testing">testing</option>
-            <option value="pass">pass</option>
-            <option value="fail">fail</option>
-          </select>
-          <button type="button" onClick={() => setPage(1)}>
-            {t("common.query")}
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setKeyword("");
-              setVendorFilter("");
-              setStatusFilter("");
-              setPage(1);
-            }}
-          >
-            {t("common.clearFilters")}
-          </button>
-        </div>
-
-        <table>
-          <thead>
-            <tr>
-              <th>
-                <input type="checkbox" checked={allSelected} onChange={toggleSelectAll} aria-label="select all" />
-              </th>
-              <th>{t("managedNe.col.name")}</th>
-              <th>{t("managedNe.col.vendor")}</th>
-              <th>{t("managedNe.col.deviceType")}</th>
-              <th>{t("managedNe.col.tags")}</th>
-              <th>{t("managedNe.col.ip")}</th>
-              <th>{t("managedNe.col.user")}</th>
-              <th>{t("managedNe.col.connect")}</th>
-              <th>{t("managedNe.col.testedAt")}</th>
-              <th>{t("managedNe.col.actions")}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(listQuery.data?.items || []).map((row) => (
-              <tr key={row.id}>
-                <td>
-                  <input
-                    type="checkbox"
-                    checked={selected.includes(row.id)}
-                    onChange={() => toggleSelect(row.id)}
-                  />
-                </td>
-                <td>{row.name || row.ip_address}</td>
-                <td>{row.vendor}</td>
-                <td>{row.device_type}</td>
-                <td>
-                  {row.tags
-                    ? row.tags.split(/\s+/).map((tag) => (
-                        <span key={tag} className="table-tag">
-                          {tag}
-                        </span>
-                      ))
-                    : t("common.empty")}
-                </td>
-                <td>
-                  {row.ip_address}:{row.port}/{row.protocol}
-                  {row.hop_enabled ? (
-                    <span
-                      className="table-tag"
-                      title={`${row.hop_host}:${row.hop_port} (${row.hop_vendor})`}
-                    >
-                      {t(
-                        `managedNe.hop.badge.${["linux", "huawei", "cisco", "zte", "bastion"].includes(row.hop_vendor) ? row.hop_vendor : "zte"}`,
-                      )}
-                    </span>
-                  ) : null}
-                </td>
-                <td>{row.username}</td>
-                <td>
-                  <span
-                    className={`conn-pill conn-pill--${connectPillLevel(row.connect_status)}`}
-                    title={row.connect_message || undefined}
-                  >
-                    {row.connect_status}
-                  </span>
-                </td>
-                <td>
-                  {row.connect_tested_at
-                    ? formatSystemTime(row.connect_tested_at, { assumeUtcNaive: true })
-                    : t("common.empty")}
-                </td>
-                <td className="table-actions">
-                  <button
-                    type="button"
-                    className="link-btn"
-                    onClick={() =>
-                      openOrFocusModule({
-                        moduleId: "webcrt",
-                        path: `/webcrt?ne_id=${encodeURIComponent(row.id)}`,
-                      })
-                    }
-                    title={t("managedNe.openTerminal")}
-                  >
-                    {t("managedNe.openTerminal")}
-                  </button>
-                  <button
-                    type="button"
-                    className="link-btn"
-                    onClick={() => setConnectDetailRow(row)}
-                    disabled={!row.connect_tested_at && !row.connect_message && !row.connect_detail}
-                  >
-                    {t("managedNe.connectDetail")}
-                  </button>
-                  <button type="button" className="link-btn" onClick={() => openEdit(row)}>
-                    {t("managedNe.edit")}
-                  </button>
-                  <button
-                    type="button"
-                    className="link-btn link-btn--danger"
-                    onClick={() => {
-                      if (window.confirm(t("managedNe.confirmDelete"))) deleteMutation.mutate(row.id);
-                    }}
-                  >
-                    {t("managedNe.delete")}
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-
-        <div className="pager">
-          <div className="pager__meta">{t("common.pagerMeta", { total, page, pages })}</div>
-          <div className="pager__controls">
-            <button className="pager__btn" onClick={() => setPage(Math.max(1, page - 1))} disabled={page <= 1}>
-              {t("common.prevPage")}
-            </button>
-            <button className="pager__btn" onClick={() => setPage(page + 1)} disabled={page >= pages}>
-              {t("common.nextPage")}
-            </button>
-            <select
-              className="pager__size"
-              value={String(pageSize)}
+        <div className="pt-list">
+          <div className="filter-inline">
+            <input
+              value={keyword}
+              placeholder={t("managedNe.keywordPh")}
               onChange={(e) => {
-                setPageSize(Number(e.target.value) || 50);
+                setKeyword(e.target.value);
+                setPage(1);
+              }}
+            />
+            <select
+              value={vendorFilter}
+              onChange={(e) => {
+                setVendorFilter(e.target.value);
                 setPage(1);
               }}
             >
-              <option value="20">{perPage(20)}</option>
-              <option value="50">{perPage(50)}</option>
-              <option value="100">{perPage(100)}</option>
+              <option value="">{t("managedNe.allVendors")}</option>
+              {vendors.map((v) => (
+                <option key={v} value={v}>
+                  {v}
+                </option>
+              ))}
             </select>
+            <select
+              value={statusFilter}
+              onChange={(e) => {
+                setStatusFilter(e.target.value);
+                setPage(1);
+              }}
+            >
+              <option value="">{t("managedNe.allConnectStatus")}</option>
+              <option value="unknown">unknown</option>
+              <option value="testing">testing</option>
+              <option value="pass">pass</option>
+              <option value="fail">fail</option>
+            </select>
+            <button
+              type="button"
+              disabled={!hasFilters}
+              onClick={() => {
+                setKeyword("");
+                setVendorFilter("");
+                setStatusFilter("");
+                setPage(1);
+              }}
+            >
+              {t("common.clearFilters")}
+            </button>
+          </div>
+
+          {listQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
+
+          {!listItems.length && !listQuery.isLoading ? (
+            <div className="pt-list-empty">
+              <p>{t("common.empty")}</p>
+            </div>
+          ) : (
+            <div className="pt-list-table-wrap">
+              <table className="data-table pt-list-table">
+                <thead>
+                  <tr>
+                    <th>
+                      <input
+                        type="checkbox"
+                        checked={allSelected}
+                        onChange={toggleSelectAll}
+                        aria-label="select all"
+                      />
+                    </th>
+                    <th>{t("managedNe.col.name")}</th>
+                    <th>{t("managedNe.col.vendor")}</th>
+                    <th>{t("managedNe.col.deviceType")}</th>
+                    <th>{t("managedNe.col.tags")}</th>
+                    <th>{t("managedNe.col.ip")}</th>
+                    <th>{t("managedNe.col.user")}</th>
+                    <th>{t("managedNe.col.connect")}</th>
+                    <th>{t("managedNe.col.testedAt")}</th>
+                    <th>{t("managedNe.col.actions")}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {listItems.map((row) => (
+                    <tr key={row.id}>
+                      <td>
+                        <input
+                          type="checkbox"
+                          checked={selected.includes(row.id)}
+                          onChange={() => toggleSelect(row.id)}
+                        />
+                      </td>
+                      <td className="pt-list-task-name">{row.name || row.ip_address}</td>
+                      <td>{row.vendor}</td>
+                      <td>{row.device_type}</td>
+                      <td>
+                        {row.tags
+                          ? row.tags.split(/\s+/).map((tag) => (
+                              <span key={tag} className="table-tag">
+                                {tag}
+                              </span>
+                            ))
+                          : t("common.empty")}
+                      </td>
+                      <td className="pt-list-num">
+                        {row.ip_address}:{row.port}/{row.protocol}
+                        {row.hop_enabled ? (
+                          <span
+                            className="table-tag"
+                            title={`${row.hop_host}:${row.hop_port} (${row.hop_vendor})`}
+                          >
+                            {t(
+                              `managedNe.hop.badge.${["linux", "huawei", "cisco", "zte", "bastion"].includes(row.hop_vendor) ? row.hop_vendor : "zte"}`,
+                            )}
+                          </span>
+                        ) : null}
+                      </td>
+                      <td>{row.username}</td>
+                      <td>
+                        <span
+                          className={`pt-list-status ${connectStatusClass(row.connect_status)}`}
+                          title={row.connect_message || undefined}
+                        >
+                          {row.connect_status}
+                        </span>
+                      </td>
+                      <td className="pt-list-time">
+                        {row.connect_tested_at
+                          ? formatSystemTime(row.connect_tested_at, { assumeUtcNaive: true })
+                          : t("common.empty")}
+                      </td>
+                      <td>
+                        <div className="btn-row pt-list-actions table-actions">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              openOrFocusModule({
+                                moduleId: "webcrt",
+                                path: `/webcrt?ne_id=${encodeURIComponent(row.id)}`,
+                              })
+                            }
+                            title={t("managedNe.openTerminal")}
+                          >
+                            {t("managedNe.openTerminal")}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setConnectDetailRow(row)}
+                            disabled={!row.connect_tested_at && !row.connect_message && !row.connect_detail}
+                          >
+                            {t("managedNe.connectDetail")}
+                          </button>
+                          <button type="button" onClick={() => openEdit(row)}>
+                            {t("managedNe.edit")}
+                          </button>
+                          <button
+                            type="button"
+                            className="btn--danger"
+                            onClick={() => {
+                              if (window.confirm(t("managedNe.confirmDelete"))) deleteMutation.mutate(row.id);
+                            }}
+                          >
+                            {t("managedNe.delete")}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <div className="pager pt-list-pager">
+            <span className="muted">
+              {t("common.pagerMeta", {
+                total: String(total),
+                page: String(page),
+                pages: String(pages),
+              })}
+            </span>
+            <div className="btn-row">
+              <button type="button" disabled={page <= 1} onClick={() => setPage(Math.max(1, page - 1))}>
+                {t("common.prevPage")}
+              </button>
+              <button type="button" disabled={page >= pages} onClick={() => setPage(page + 1)}>
+                {t("common.nextPage")}
+              </button>
+              <select
+                value={String(pageSize)}
+                onChange={(e) => {
+                  setPageSize(Number(e.target.value) || 50);
+                  setPage(1);
+                }}
+              >
+                <option value="20">{perPage(20)}</option>
+                <option value="50">{perPage(50)}</option>
+                <option value="100">{perPage(100)}</option>
+              </select>
+            </div>
           </div>
         </div>
       </section>

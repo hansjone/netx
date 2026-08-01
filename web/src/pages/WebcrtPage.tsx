@@ -35,6 +35,14 @@ function deviceLabel(t: Pick<CliTargetItem, "name" | "ip_address">): string {
   return String(t.name || t.ip_address || "").trim() || "-";
 }
 
+function ComputerIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden>
+      <path d="M4 3h16a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1h-5v2h2v2H7v-2h2v-2H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zm1 2v9h14V5H5z" />
+    </svg>
+  );
+}
+
 function webcrtErrorMessage(err: unknown, t: (key: string, vars?: Record<string, string | number>) => string): string {
   const raw = String(err);
   if (raw.includes("webcrt_session_limit")) return t("webcrt.err.sessionLimit");
@@ -336,7 +344,7 @@ export function WebcrtPage() {
                     title={`${deviceLabel(row)}\n${row.ip_address}\n${row.source}`}
                   >
                     <span className="webcrt-tree__icon" aria-hidden>
-                      ▣
+                      <ComputerIcon />
                     </span>
                     <span className="webcrt-tree__label">
                       <span className="webcrt-tree__name">{deviceLabel(row)}</span>

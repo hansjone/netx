@@ -62,91 +62,118 @@ export function UsersPage() {
   };
 
   return (
-    <div className="panel">
-      <h2 className="panel__title">{t("auth.usersTitle")}</h2>
-      <p className="panel__hint">{t("auth.usersHint")}</p>
+    <div className="page-stack system-page">
+      <section className="panel">
+        <div className="panel__toolbar">
+          <h2>{t("auth.usersTitle")}</h2>
+        </div>
+        <p className="panel__hint">{t("auth.usersHint")}</p>
 
-      <form className="form-row" onSubmit={onCreate} style={{ gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
-        <input
-          placeholder={t("auth.username")}
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
-          required
-        />
-        <input
-          type="password"
-          placeholder={t("auth.password")}
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          required
-          minLength={6}
-        />
-        <select value={role} onChange={(e) => setRole(e.target.value)}>
-          <option value="user">{t("auth.roleUser")}</option>
-          <option value="admin">{t("auth.roleAdmin")}</option>
-        </select>
-        <button type="submit" disabled={createMut.isPending}>
-          {t("auth.addUser")}
-        </button>
-      </form>
+        <div className="pt-list">
+          <form className="filter-inline" onSubmit={onCreate}>
+            <input
+              placeholder={t("auth.username")}
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              required
+            />
+            <input
+              type="password"
+              placeholder={t("auth.password")}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+              minLength={6}
+            />
+            <select value={role} onChange={(e) => setRole(e.target.value)}>
+              <option value="user">{t("auth.roleUser")}</option>
+              <option value="admin">{t("auth.roleAdmin")}</option>
+            </select>
+            <button type="submit" disabled={createMut.isPending}>
+              {t("auth.addUser")}
+            </button>
+          </form>
 
-      {usersQuery.isLoading ? <div>{t("common.refreshing")}</div> : null}
-      <table className="data-table">
-        <thead>
-          <tr>
-            <th>{t("auth.username")}</th>
-            <th>{t("auth.role")}</th>
-            <th>{t("auth.status")}</th>
-            <th>{t("auth.actions")}</th>
-          </tr>
-        </thead>
-        <tbody>
-          {items.map((u) => (
-            <tr key={u.id}>
-              <td>{u.username}</td>
-              <td>{u.role === "admin" ? t("auth.roleAdmin") : t("auth.roleUser")}</td>
-              <td>{u.is_active ? t("auth.active") : t("auth.disabled")}</td>
-              <td>
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      patchMut.mutate({ id: u.id, body: { is_active: !u.is_active } })
-                    }
-                  >
-                    {u.is_active ? t("auth.disable") : t("auth.enable")}
-                  </button>
-                  <select
-                    value={u.role}
-                    onChange={(e) => patchMut.mutate({ id: u.id, body: { role: e.target.value } })}
-                  >
-                    <option value="user">{t("auth.roleUser")}</option>
-                    <option value="admin">{t("auth.roleAdmin")}</option>
-                  </select>
-                  <input
-                    type="password"
-                    placeholder={t("auth.newPassword")}
-                    value={resetPwd[u.id] || ""}
-                    onChange={(e) => setResetPwd((m) => ({ ...m, [u.id]: e.target.value }))}
-                    style={{ width: 140 }}
-                  />
-                  <button
-                    type="button"
-                    disabled={!resetPwd[u.id] || resetPwd[u.id].length < 6}
-                    onClick={() => {
-                      const pwd = resetPwd[u.id];
-                      patchMut.mutate({ id: u.id, body: { password: pwd } });
-                      setResetPwd((m) => ({ ...m, [u.id]: "" }));
-                    }}
-                  >
-                    {t("auth.resetPassword")}
-                  </button>
-                </div>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+          {usersQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
+
+          {!items.length && !usersQuery.isLoading ? (
+            <div className="pt-list-empty">
+              <p>{t("common.empty")}</p>
+            </div>
+          ) : (
+            <div className="pt-list-table-wrap">
+              <table className="data-table pt-list-table">
+                <thead>
+                  <tr>
+                    <th>{t("auth.username")}</th>
+                    <th>{t("auth.role")}</th>
+                    <th>{t("auth.status")}</th>
+                    <th>{t("auth.actions")}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {items.map((u) => (
+                    <tr key={u.id}>
+                      <td className="pt-list-task-name">{u.username}</td>
+                      <td>{u.role === "admin" ? t("auth.roleAdmin") : t("auth.roleUser")}</td>
+                      <td>
+                        <span
+                          className={`pt-list-status ${
+                            u.is_active ? "pt-list-status--ok" : "pt-list-status--other"
+                          }`}
+                        >
+                          {u.is_active ? t("auth.active") : t("auth.disabled")}
+                        </span>
+                      </td>
+                      <td>
+                        <div className="btn-row pt-list-actions table-actions">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              patchMut.mutate({ id: u.id, body: { is_active: !u.is_active } })
+                            }
+                          >
+                            {u.is_active ? t("auth.disable") : t("auth.enable")}
+                          </button>
+                          <select
+                            value={u.role}
+                            onChange={(e) =>
+                              patchMut.mutate({ id: u.id, body: { role: e.target.value } })
+                            }
+                          >
+                            <option value="user">{t("auth.roleUser")}</option>
+                            <option value="admin">{t("auth.roleAdmin")}</option>
+                          </select>
+                          <input
+                            type="password"
+                            placeholder={t("auth.newPassword")}
+                            value={resetPwd[u.id] || ""}
+                            onChange={(e) =>
+                              setResetPwd((m) => ({ ...m, [u.id]: e.target.value }))
+                            }
+                            style={{ width: 140, minWidth: 140, flex: "0 0 auto" }}
+                          />
+                          <button
+                            type="button"
+                            disabled={!resetPwd[u.id] || resetPwd[u.id].length < 6}
+                            onClick={() => {
+                              const pwd = resetPwd[u.id];
+                              patchMut.mutate({ id: u.id, body: { password: pwd } });
+                              setResetPwd((m) => ({ ...m, [u.id]: "" }));
+                            }}
+                          >
+                            {t("auth.resetPassword")}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </section>
     </div>
   );
 }
