@@ -114,6 +114,8 @@ const zh = {
     offsetHours: "偏移（小时）",
     baseline: "基线",
     baselineAt: "基线原时刻",
+    baselineDevice: "基线网元",
+    baselinePort: "基线接口",
     seriesCurrentIn: "当前 In",
     seriesCurrentOut: "当前 Out",
     seriesBaselineIn: "基线 In",

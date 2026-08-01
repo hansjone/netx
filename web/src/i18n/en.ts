@@ -114,6 +114,8 @@ const en = {
     offsetHours: "Offset (hours)",
     baseline: "Baseline",
     baselineAt: "Baseline time",
+    baselineDevice: "Baseline device",
+    baselinePort: "Baseline interface",
     seriesCurrentIn: "Current In",
     seriesCurrentOut: "Current Out",
     seriesBaselineIn: "Baseline In",

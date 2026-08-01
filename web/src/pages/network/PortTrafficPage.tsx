@@ -796,6 +796,10 @@ export function PortTrafficPage() {
           ) : null}
           <PortTrafficWall
             target={selectedWallTarget}
+            baselineTarget={
+              compareQuery.data?.meta?.baseline_target ||
+              (baseline !== "off" && wallBaselinePoints.length ? selectedWallTarget : null)
+            }
             points={wallPoints}
             baselinePoints={wallBaselinePoints}
             rangeLabel={`${rangeHours}h${

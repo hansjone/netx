@@ -69,6 +69,7 @@ const EMPTY_POINTS: PortTrafficSamplePoint[] = [];
 
 type Props = {
   target: PortTrafficTarget | null;
+  baselineTarget?: PortTrafficTarget | null;
   points: PortTrafficSamplePoint[];
   baselinePoints?: PortTrafficSamplePoint[];
   rangeLabel: string;
@@ -78,6 +79,7 @@ type Props = {
 
 export function PortTrafficWall({
   target,
+  baselineTarget = null,
   points,
   baselinePoints = EMPTY_POINTS,
   rangeLabel,
@@ -314,6 +316,12 @@ export function PortTrafficWall({
   const neLabel = target ? target.ne_name || target.ne_ip || "—" : "—";
   const ifLabel = target?.ifname || "—";
   const ipLabel = target?.ne_ip || "";
+  const showBaselineMeta = Boolean(baselineTarget) && baselinePoints.length > 0;
+  const baseNeLabel = baselineTarget
+    ? baselineTarget.ne_name || baselineTarget.ne_ip || "—"
+    : "—";
+  const baseIfLabel = baselineTarget?.ifname || "—";
+  const baseIpLabel = baselineTarget?.ne_ip || "";
 
   return (
     <div className="pt-wall">
@@ -379,6 +387,19 @@ export function PortTrafficWall({
           <span className="pt-wall__foot-label">{t("portTraffic.wallPort")}</span>
           <span className="pt-wall__foot-value pt-wall__foot-value--mono">{ifLabel}</span>
         </div>
+        {showBaselineMeta ? (
+          <>
+            <div className="pt-wall__foot-ne" title={baseNeLabel}>
+              <span className="pt-wall__foot-label">{t("portTraffic.baselineDevice")}</span>
+              <span className="pt-wall__foot-value">{baseNeLabel}</span>
+              {baseIpLabel ? <span className="pt-wall__foot-ip">{baseIpLabel}</span> : null}
+            </div>
+            <div className="pt-wall__foot-if" title={baseIfLabel}>
+              <span className="pt-wall__foot-label">{t("portTraffic.baselinePort")}</span>
+              <span className="pt-wall__foot-value pt-wall__foot-value--mono">{baseIfLabel}</span>
+            </div>
+          </>
+        ) : null}
       </div>
     </div>
   );
