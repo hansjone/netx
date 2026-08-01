@@ -1043,6 +1043,9 @@ const zh = {
       upload: "上传",
       uploaded: "上传成功",
       dir: "目录",
+      loading: "正在加载…",
+      enterHint: "双击进入目录",
+      downloadHint: "单击下载文件",
     },
     term: {
       findPh: "查找…",
@@ -1070,6 +1073,7 @@ const zh = {
       sftpHop: "SFTP 暂不支持跳板设备，请使用直连 SSH",
       sftpSsh: "SFTP 仅支持 SSH 协议",
       sftpNeedPassword: "SFTP 需要已保存的 SSH 密码（会话弹窗密码不会用于文件传输）",
+      sftpUnsupported: "当前 SSH 会话未提供 SFTP（设备可能未开启）",
       queueDropped: "终端输出过快，已丢弃约 {{count}} 段，内容可能不完整",
       websocket: "WebSocket 连接失败",
     },

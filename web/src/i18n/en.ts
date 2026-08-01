@@ -1046,6 +1046,9 @@ const en = {
       upload: "Upload",
       uploaded: "Upload complete",
       dir: "dir",
+      loading: "Loading…",
+      enterHint: "Double-click to open folder",
+      downloadHint: "Click to download",
     },
     term: {
       findPh: "Find…",
@@ -1073,6 +1076,7 @@ const en = {
       sftpHop: "SFTP does not support hop devices yet (direct SSH only)",
       sftpSsh: "SFTP requires SSH",
       sftpNeedPassword: "SFTP needs a saved SSH password (one-shot dialog passwords are not reused for files)",
+      sftpUnsupported: "This SSH session has no SFTP channel (device may not offer it)",
       queueDropped: "Terminal output too fast; about {{count}} chunk(s) dropped — transcript may be incomplete",
       websocket: "WebSocket connection failed",
     },

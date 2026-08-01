@@ -69,7 +69,12 @@ type Props = {
   pasteDelayMs?: number;
   copyOnSelect?: boolean;
   keywordHighlight?: KeywordHighlightConfig;
-  onStatus?: (state: string, message?: string, phase?: string) => void;
+  onStatus?: (
+    state: string,
+    message?: string,
+    phase?: string,
+    meta?: { sftpReady?: boolean; cliHop?: boolean },
+  ) => void;
   onReady?: () => void;
   onStdout?: (data: string) => void;
 };
@@ -481,6 +486,8 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
           state?: string;
           message?: string;
           phase?: string;
+          sftp_ready?: boolean;
+          cli_hop?: boolean;
         };
         if (msg.type === "stdout" && typeof msg.data === "string") {
           writeStdout(msg.data);
@@ -490,7 +497,14 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
         if (msg.type === "status") {
           if (!isActiveSocket()) return;
           const phase = typeof msg.phase === "string" ? msg.phase : undefined;
-          onStatusRef.current?.(String(msg.state || ""), msg.message, phase);
+          const meta =
+            typeof msg.sftp_ready === "boolean" || typeof msg.cli_hop === "boolean"
+              ? {
+                  sftpReady: typeof msg.sftp_ready === "boolean" ? msg.sftp_ready : undefined,
+                  cliHop: typeof msg.cli_hop === "boolean" ? msg.cli_hop : undefined,
+                }
+              : undefined;
+          onStatusRef.current?.(String(msg.state || ""), msg.message, phase, meta);
           if (msg.state === "connected" || msg.state === "connecting") {
             maybeFocus();
             return;

@@ -298,6 +298,7 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
             "device_type": sess.device_type,
             "vendor": sess.vendor,
             "cli_hop": bool(sess.cli_hop_guard),
+            "sftp_ready": bool(sess.sftp_ready),
         }
     )
 
@@ -372,6 +373,7 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
             "device_type": sess.device_type,
             "vendor": sess.vendor,
             "cli_hop": bool(sess.cli_hop_guard),
+            "sftp_ready": bool(sess.sftp_ready),
             "connect_ms": (
                 int((sess.connect_finished_at - sess.connect_started_at) * 1000)
                 if sess.connect_finished_at

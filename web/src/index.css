@@ -3046,6 +3046,10 @@ pre {
   flex-direction: column;
 }
 
+.webcrt-sftp.is-busy {
+  cursor: progress;
+}
+
 .webcrt-sftp__bar {
   display: flex;
   gap: 4px;
@@ -3073,6 +3077,19 @@ pre {
   cursor: pointer;
 }
 
+.webcrt-sftp__bar button:disabled,
+.webcrt-sftp__upload.is-disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.webcrt-sftp__status {
+  padding: 4px 10px;
+  font-size: 11px;
+  color: #94a3b8;
+  border-bottom: 1px solid #1e293b;
+}
+
 .webcrt-sftp__list {
   list-style: none;
   margin: 0;
@@ -3083,6 +3100,9 @@ pre {
 
 .webcrt-sftp__list button {
   width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   text-align: left;
   background: transparent;
   border: 0;
@@ -3091,10 +3111,41 @@ pre {
   padding: 6px 10px;
   font-size: 12px;
   cursor: pointer;
+  user-select: none;
 }
 
-.webcrt-sftp__list button:hover {
+.webcrt-sftp__icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: #94a3b8;
+  line-height: 1;
+}
+
+.webcrt-sftp__icon.is-dir {
+  color: #fbbf24;
+}
+
+.webcrt-sftp__name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.webcrt-sftp__size {
+  flex-shrink: 0;
+  color: #64748b;
+  font-variant-numeric: tabular-nums;
+}
+
+.webcrt-sftp__list button:hover:not(:disabled) {
   background: #1e293b;
+}
+
+.webcrt-sftp__list button:disabled {
+  opacity: 0.7;
+  cursor: progress;
 }
 
 @media (max-width: 900px) {

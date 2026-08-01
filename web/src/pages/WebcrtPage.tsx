@@ -114,6 +114,8 @@ type TermTab = {
   encoding: string;
   /** From session create — nested CLI hop cannot use SFTP. */
   cliHop?: boolean;
+  /** SFTP channel attached on the live SSH transport after connect. */
+  sftpReady?: boolean;
 };
 
 type TabMenuState = { key: string; x: number; y: number };
@@ -274,6 +276,22 @@ function ComputerIcon() {
   );
 }
 
+function FolderIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden>
+      <path d="M3 6a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6z" />
+    </svg>
+  );
+}
+
+function FileIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden>
+      <path d="M6 2h8l4 4v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2zm7 1.5V8h4.5L13 3.5z" />
+    </svg>
+  );
+}
+
 function isSshAuthFailure(err: unknown): boolean {
   const raw = String(err).toLowerCase();
   return (
@@ -319,24 +337,45 @@ function isDeviceClosedMessage(err: unknown): boolean {
 
 /** SFTP is direct SSH only; returns i18n key when unavailable. */
 function sftpUnavailableReason(
-  tab: Pick<TermTab, "target" | "cliHop">,
-): "webcrt.err.sftpSsh" | "webcrt.err.sftpHop" | "webcrt.err.sftpNeedPassword" | null {
+  tab: Pick<TermTab, "target" | "cliHop" | "sftpReady" | "status">,
+):
+  | "webcrt.err.sftpSsh"
+  | "webcrt.err.sftpHop"
+  | "webcrt.err.sftpNeedPassword"
+  | "webcrt.err.sftpUnsupported"
+  | null {
   const proto = String(tab.target.protocol || "ssh").toLowerCase();
   if (proto === "telnet") return "webcrt.err.sftpSsh";
   if (tab.cliHop || tab.target.hop_enabled) return "webcrt.err.sftpHop";
-  // Inventory/quick-connect SFTP opens a fresh Paramiko session from saved DB creds.
-  if (tab.target.source !== "ume" && !tab.target.has_password) return "webcrt.err.sftpNeedPassword";
+  // Prefer the live SSH session channel; inventory still needs saved password for pool fallback.
+  if (tab.target.source !== "ume" && !tab.target.has_password && tab.sftpReady !== true) {
+    return "webcrt.err.sftpNeedPassword";
+  }
+  if (tab.status === "connected" && tab.sftpReady === false) return "webcrt.err.sftpUnsupported";
   return null;
 }
 
 function sftpParentPath(path: string): string {
   const cur = String(path || ".").replace(/\\/g, "/").replace(/\/+$/, "") || ".";
   if (cur === "." || cur === "/") return cur === "/" ? "/" : ".";
-  const parts = cur.split("/").filter((p, i) => p || i === 0);
+  const parts = cur.split("/").filter((p, i) => (i === 0 && cur.startsWith("/")) || Boolean(p));
   if (parts.length <= 1) return cur.startsWith("/") ? "/" : ".";
   parts.pop();
-  const parent = parts.join("/") || (cur.startsWith("/") ? "/" : ".");
+  if (cur.startsWith("/")) {
+    return parts.length <= 1 ? "/" : parts.join("/");
+  }
+  const parent = parts.join("/");
   return parent || ".";
+}
+
+function joinSftpPath(base: string, name: string): string {
+  const n = String(name || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+  if (!n || n === ".") return String(base || ".") || ".";
+  if (n === "..") return sftpParentPath(base);
+  const b = String(base || ".").replace(/\\/g, "/").replace(/\/+$/, "") || ".";
+  if (b === "." || b === "") return n;
+  if (b === "/") return `/${n}`;
+  return `${b}/${n}`;
 }
 
 function connectFailedNe(err: unknown): ManagedNeItem | null {
@@ -413,7 +452,10 @@ export function WebcrtPage() {
   const [activeTabKey, setActiveTabKey] = useState("");
   const [sftpOpen, setSftpOpen] = useState(false);
   const [sftpPath, setSftpPath] = useState(".");
+  const [sftpBusy, setSftpBusy] = useState(false);
   const [sftpItems, setSftpItems] = useState<Array<{ name: string; size: number; mtime: number; is_dir: boolean }>>([]);
+  const sftpPathRef = useRef(".");
+  sftpPathRef.current = sftpPath;
   const [sessionOpts, setSessionOpts] = useState<SessionOptions>(() => loadSessionOptions());
   const [optionsMenuOpen, setOptionsMenuOpen] = useState(false);
   const [sessionOptsModalOpen, setSessionOptsModalOpen] = useState(false);
@@ -527,7 +569,13 @@ export function WebcrtPage() {
   }, []);
 
   const attachSessionResult = useCallback(
-    (target: CliTargetItem, sessionId: string, encoding: string, cliHop?: boolean) => {
+    (
+      target: CliTargetItem,
+      sessionId: string,
+      encoding: string,
+      cliHop?: boolean,
+      sftpReady?: boolean,
+    ) => {
       const key = targetKey(target);
       const existing = tabsRef.current.find((tab) => tab.key === key);
       const pending: TermTab = {
@@ -542,6 +590,7 @@ export function WebcrtPage() {
         encoding,
         errorMessage: undefined,
         cliHop: Boolean(cliHop),
+        sftpReady: sftpReady === true ? true : sftpReady === false ? false : existing?.sftpReady,
       };
       setTabs((prev) => {
         const without = prev.filter((x) => x.key !== key);
@@ -650,6 +699,7 @@ export function WebcrtPage() {
           connectPhase: "authenticating",
           termEpoch: pending.termEpoch + 1,
           cliHop: Boolean(sess.cli_hop),
+          sftpReady: typeof sess.sftp_ready === "boolean" ? sess.sftp_ready : undefined,
         });
         showOk(t("webcrt.opened", { name: deviceLabel(target) }));
       } catch (err) {
@@ -745,7 +795,13 @@ export function WebcrtPage() {
             connect_status: result.ne.connect_status || "unknown",
             cli_profile_ready: true,
           };
-          attachSessionResult(target, result.session_id, dims.encoding, Boolean(result.cli_hop));
+          attachSessionResult(
+            target,
+            result.session_id,
+            dims.encoding,
+            Boolean(result.cli_hop),
+            result.sftp_ready,
+          );
           setHostDialogOpen(false);
           setHostForm(emptyHostForm());
           setSource(listSource === "managed" ? "managed" : "webcrt");
@@ -808,6 +864,7 @@ export function WebcrtPage() {
           sess.session_id,
           dims.encoding,
           Boolean(sess.cli_hop),
+          sess.sftp_ready,
         );
         setAuthDialog(null);
         setAuthForm(emptyAuthForm());
@@ -842,7 +899,13 @@ export function WebcrtPage() {
         connect_status: result.ne.connect_status || "unknown",
         cli_profile_ready: true,
       };
-      attachSessionResult(target, result.session_id, dims.encoding, Boolean(result.cli_hop));
+      attachSessionResult(
+        target,
+        result.session_id,
+        dims.encoding,
+        Boolean(result.cli_hop),
+        result.sftp_ready,
+      );
       setAuthDialog(null);
       setAuthForm(emptyAuthForm());
       setSource("webcrt");
@@ -1022,21 +1085,40 @@ export function WebcrtPage() {
     }
   }, [activeTabKey, showOk, showError, t]);
 
-  const refreshSftp = useCallback(async () => {
-    const tab = tabsRef.current.find((x) => x.key === activeTabKey);
-    if (!tab) return;
-    try {
-      const body =
-        tab.target.source === "ume"
-          ? { ume_ne_id: tab.target.ume_ne_id || tab.target.id, path: sftpPath }
-          : { ne_id: tab.target.id, path: sftpPath };
-      const res = await webcrtSftpList(body);
-      setSftpItems(res.items || []);
-      setSftpPath(res.path || sftpPath);
-    } catch (err) {
-      showError(webcrtErrorMessage(err, t));
-    }
-  }, [activeTabKey, showError, sftpPath, t]);
+  const refreshSftp = useCallback(
+    async (pathOverride?: string) => {
+      const tab = tabsRef.current.find((x) => x.key === activeTabKey);
+      if (!tab) return;
+      const path = String(pathOverride ?? sftpPathRef.current ?? ".").trim() || ".";
+      setSftpBusy(true);
+      try {
+        const body =
+          tab.target.source === "ume"
+            ? { ume_ne_id: tab.target.ume_ne_id || tab.target.id, path }
+            : { ne_id: tab.target.id, path };
+        const res = await webcrtSftpList(body);
+        setSftpItems(res.items || []);
+        const nextPath = String(res.path || path).trim() || path;
+        sftpPathRef.current = nextPath;
+        setSftpPath(nextPath);
+      } catch (err) {
+        showError(webcrtErrorMessage(err, t));
+      } finally {
+        setSftpBusy(false);
+      }
+    },
+    [activeTabKey, showError, t],
+  );
+
+  const navigateSftp = useCallback(
+    (nextPath: string) => {
+      const path = String(nextPath || ".").trim() || ".";
+      sftpPathRef.current = path;
+      setSftpPath(path);
+      void refreshSftp(path);
+    },
+    [refreshSftp],
+  );
 
   // Auto-connect from /webcrt?ne_id=...
   useEffect(() => {
@@ -1482,12 +1564,14 @@ export function WebcrtPage() {
                         onReady={() => {
                           window.setTimeout(() => termRefs.current.get(tab.key)?.focus(), 40);
                         }}
-                        onStatus={(state, message, phase) => {
+                        onStatus={(state, message, phase, meta) => {
                           if (state === "connected") {
                             updateTab(tab.key, {
                               status: "connected",
                               connectPhase: undefined,
                               errorMessage: undefined,
+                              ...(typeof meta?.sftpReady === "boolean" ? { sftpReady: meta.sftpReady } : {}),
+                              ...(typeof meta?.cliHop === "boolean" ? { cliHop: meta.cliHop } : {}),
                             });
                             window.setTimeout(() => termRefs.current.get(tab.key)?.focus(), 40);
                           } else if (state === "open" || state === "connecting") {
@@ -1498,6 +1582,8 @@ export function WebcrtPage() {
                             updateTab(tab.key, {
                               status: "connecting",
                               connectPhase: nextPhase,
+                              ...(typeof meta?.sftpReady === "boolean" ? { sftpReady: meta.sftpReady } : {}),
+                              ...(typeof meta?.cliHop === "boolean" ? { cliHop: meta.cliHop } : {}),
                             });
                           } else if (state === "warning") {
                             const m = String(message || "");
@@ -1570,33 +1656,46 @@ export function WebcrtPage() {
                 );
               })}
               {sftpOpen && activeTab && sftpAllowed ? (
-                <div className="webcrt-sftp">
+                <div className={`webcrt-sftp${sftpBusy ? " is-busy" : ""}`}>
                   <div className="webcrt-sftp__bar">
                     <button
                       type="button"
                       title={t("webcrt.sftp.up")}
-                      onClick={() => {
-                        const parent = sftpParentPath(sftpPath);
-                        setSftpPath(parent);
-                        window.setTimeout(() => void refreshSftp(), 0);
-                      }}
+                      disabled={sftpBusy}
+                      onClick={() => navigateSftp(sftpParentPath(sftpPathRef.current))}
                     >
                       {t("webcrt.sftp.up")}
                     </button>
-                    <input value={sftpPath} onChange={(e) => setSftpPath(e.target.value)} />
-                    <button type="button" onClick={() => void refreshSftp()}>
+                    <input
+                      value={sftpPath}
+                      disabled={sftpBusy}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        sftpPathRef.current = v;
+                        setSftpPath(v);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          void refreshSftp(sftpPathRef.current);
+                        }
+                      }}
+                    />
+                    <button type="button" disabled={sftpBusy} onClick={() => void refreshSftp()}>
                       {t("webcrt.sftp.refresh")}
                     </button>
-                    <label className="webcrt-sftp__upload">
+                    <label className={`webcrt-sftp__upload${sftpBusy ? " is-disabled" : ""}`}>
                       {t("webcrt.sftp.upload")}
                       <input
                         type="file"
                         hidden
+                        disabled={sftpBusy}
                         onChange={(e) => {
                           const file = e.target.files?.[0];
-                          if (!file || !activeTab) return;
-                          const remote = `${sftpPath.replace(/\/$/, "")}/${file.name}`.replace(/^\.\//, "");
+                          if (!file || !activeTab || sftpBusy) return;
+                          const remote = joinSftpPath(sftpPathRef.current, file.name);
                           void (async () => {
+                            setSftpBusy(true);
                             try {
                               const body =
                                 activeTab.target.source === "ume"
@@ -1608,9 +1707,11 @@ export function WebcrtPage() {
                                   : { ne_id: activeTab.target.id, remote_path: remote, file };
                               await webcrtSftpUpload(body);
                               showOk(t("webcrt.sftp.uploaded"));
-                              await refreshSftp();
+                              await refreshSftp(sftpPathRef.current);
                             } catch (err) {
                               showError(webcrtErrorMessage(err, t));
+                            } finally {
+                              setSftpBusy(false);
                             }
                           })();
                           e.target.value = "";
@@ -1618,30 +1719,31 @@ export function WebcrtPage() {
                       />
                     </label>
                   </div>
+                  {sftpBusy ? (
+                    <div className="webcrt-sftp__status" role="status">
+                      {t("webcrt.sftp.loading")}
+                    </div>
+                  ) : null}
                   <ul className="webcrt-sftp__list">
                     {sftpItems.map((it) => (
-                      <li key={it.name}>
+                      <li key={`${sftpPath}:${it.is_dir ? "d" : "f"}:${it.name}`}>
                         <button
                           type="button"
+                          disabled={sftpBusy}
+                          title={it.is_dir ? t("webcrt.sftp.enterHint") : t("webcrt.sftp.downloadHint")}
                           onClick={() => {
-                            if (it.is_dir) {
-                              const next = `${sftpPath.replace(/\/$/, "")}/${it.name}`.replace(/^\.\//, "");
-                              setSftpPath(next);
-                              window.setTimeout(() => void refreshSftp(), 0);
-                              return;
-                            }
+                            if (it.is_dir || sftpBusy) return;
+                            const remote = joinSftpPath(sftpPathRef.current, it.name);
                             void (async () => {
+                              setSftpBusy(true);
                               try {
                                 const body =
                                   activeTab.target.source === "ume"
                                     ? {
                                         ume_ne_id: activeTab.target.ume_ne_id || activeTab.target.id,
-                                        path: `${sftpPath.replace(/\/$/, "")}/${it.name}`,
+                                        path: remote,
                                       }
-                                    : {
-                                        ne_id: activeTab.target.id,
-                                        path: `${sftpPath.replace(/\/$/, "")}/${it.name}`,
-                                      };
+                                    : { ne_id: activeTab.target.id, path: remote };
                                 const blob = await webcrtSftpDownload(body);
                                 const url = URL.createObjectURL(blob);
                                 const a = document.createElement("a");
@@ -1651,13 +1753,21 @@ export function WebcrtPage() {
                                 URL.revokeObjectURL(url);
                               } catch (err) {
                                 showError(webcrtErrorMessage(err, t));
+                              } finally {
+                                setSftpBusy(false);
                               }
                             })();
                           }}
+                          onDoubleClick={() => {
+                            if (!it.is_dir || sftpBusy) return;
+                            navigateSftp(joinSftpPath(sftpPathRef.current, it.name));
+                          }}
                         >
-                          {it.is_dir ? `[${t("webcrt.sftp.dir")}] ` : ""}
-                          {it.name}
-                          {!it.is_dir ? ` (${it.size})` : ""}
+                          <span className={`webcrt-sftp__icon${it.is_dir ? " is-dir" : ""}`}>
+                            {it.is_dir ? <FolderIcon /> : <FileIcon />}
+                          </span>
+                          <span className="webcrt-sftp__name">{it.name}</span>
+                          {!it.is_dir ? <span className="webcrt-sftp__size">({it.size})</span> : null}
                         </button>
                       </li>
                     ))}

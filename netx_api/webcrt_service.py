@@ -499,9 +499,84 @@ class WebcrtSession:
     _cli_hop_seen_other_prompt: bool = field(default=False, repr=False)
     _log_fh: Any = field(default=None, repr=False)
     _ready_event: threading.Event = field(default_factory=threading.Event, repr=False)
+    # SFTP channel on the same SSH transport as the interactive shell (direct SSH only).
+    sftp_ready: bool = False
+    _sftp: Any = field(default=None, repr=False)
+    _sftp_lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
     def touch(self) -> None:
         self.last_activity = time.time()
+
+    def close_sftp(self) -> None:
+        with self._sftp_lock:
+            sftp = self._sftp
+            self._sftp = None
+            self.sftp_ready = False
+        if sftp is None:
+            return
+        try:
+            sftp.close()
+        except Exception:
+            pass
+
+    def _ensure_sftp_unlocked(self) -> Any:
+        """Caller must hold ``_sftp_lock``."""
+        import paramiko
+
+        if self.closed or self.conn is None:
+            raise RuntimeError("session_closed")
+        if str(self.protocol or "ssh").lower() != "ssh":
+            raise RuntimeError("sftp_requires_ssh")
+        if self.cli_hop_guard:
+            raise RuntimeError("sftp_hop_not_supported")
+        if self._sftp is not None:
+            sock = getattr(self._sftp, "sock", None)
+            if sock is not None and not bool(getattr(sock, "closed", False)):
+                return self._sftp
+            try:
+                self._sftp.close()
+            except Exception:
+                pass
+            self._sftp = None
+        channel = getattr(self.conn, "remote_conn", None)
+        transport = None
+        if channel is not None and hasattr(channel, "get_transport"):
+            try:
+                transport = channel.get_transport()
+            except Exception:
+                transport = None
+        if transport is None or not bool(getattr(transport, "is_active", lambda: False)()):
+            raise RuntimeError("ssh_transport_unavailable")
+        self._sftp = paramiko.SFTPClient.from_transport(transport)
+        if self._sftp is None:
+            raise RuntimeError("sftp_open_failed")
+        self.sftp_ready = True
+        return self._sftp
+
+    def open_sftp(self) -> Any:
+        """Open/reuse an SFTP client on this session's SSH transport."""
+        with self._sftp_lock:
+            return self._ensure_sftp_unlocked()
+
+    def run_sftp(self, fn: Any) -> Any:
+        """Run ``fn(sftp)`` while holding the session SFTP lock."""
+        with self._sftp_lock:
+            sftp = self._ensure_sftp_unlocked()
+            return fn(sftp)
+
+    def try_attach_sftp(self) -> bool:
+        """Best-effort SFTP channel open after SSH login (does not fail the shell)."""
+        if str(self.protocol or "ssh").lower() != "ssh" or self.cli_hop_guard:
+            self.sftp_ready = False
+            return False
+        try:
+            self.open_sftp()
+            self.sftp_ready = True
+            return True
+        except Exception:
+            self.sftp_ready = False
+            _log.debug("webcrt sftp attach skipped session=%s", self.session_id, exc_info=True)
+            return False
 
     def open_session_log(self) -> None:
         if not bool(getattr(settings, "webcrt_session_log_enabled", True)):
@@ -790,6 +865,7 @@ class WebcrtSession:
         self.state = "closed"
         self.close_reason = reason or "closed"
         self._ready_event.set()
+        self.close_sftp()
         try:
             close_netmiko_connection(self.conn)
         except Exception:
@@ -890,6 +966,29 @@ def get_session(session_id: str) -> WebcrtSession | None:
         if sess is None or sess.closed:
             return None
         return sess
+
+
+def find_ssh_session_for_ne(ne_id: str) -> WebcrtSession | None:
+    """Prefer a ready/attached interactive SSH session for SFTP channel reuse."""
+    nid = str(ne_id or "").strip()
+    if not nid:
+        return None
+    with _sessions_lock:
+        candidates = [
+            s
+            for s in _sessions.values()
+            if (not s.closed)
+            and str(s.ne_id) == nid
+            and str(s.protocol or "ssh").lower() == "ssh"
+            and s.conn is not None
+            and s.state in ("ready", "connecting")
+            and not s.cli_hop_guard
+        ]
+    if not candidates:
+        return None
+    # Prefer attached + ready sessions.
+    candidates.sort(key=lambda s: (0 if s.attached and s.state == "ready" else 1, -s.last_activity))
+    return candidates[0]
 
 
 def wait_session_ready(session_id: str, *, timeout: float = 120.0) -> WebcrtSession:
@@ -1067,6 +1166,8 @@ def _finish_connect(
         sess.run_post_login_commands()
     except Exception:
         _log.debug("post_login failed session=%s", sess.session_id, exc_info=True)
+    # Same SSH transport: open SFTP channel when the device supports it.
+    sftp_ok = sess.try_attach_sftp()
     sess.state = "ready"
     sess.connect_finished_at = time.time()
     sess._ready_event.set()
@@ -1084,6 +1185,7 @@ def _finish_connect(
         hop_vendor=str(creds.get("hop_vendor") or "") if creds.get("hop_enabled") else "",
         cli_hop_guard=bool(hop_guard),
         cli_hop_prompt=str((hop_guard or {}).get("hop_prompt") or ""),
+        sftp_ready=bool(sftp_ok),
         client=client or "",
         connect_ms=elapsed_ms,
         active=active_session_count(),
@@ -1226,6 +1328,7 @@ def create_session(
         "state": sess.state,
         "ws_path": f"/v1/webcrt/sessions/{session_id}/ws",
         "cli_hop": bool(sess.cli_hop_guard),
+        "sftp_ready": bool(sess.sftp_ready),
     }
 
 

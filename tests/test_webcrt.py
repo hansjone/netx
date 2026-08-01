@@ -735,6 +735,28 @@ class WebcrtServiceTests(unittest.TestCase):
         _require_ssh_direct({"protocol": "ssh", "hop_enabled": False}, {"protocol": "ssh"})
 
     @patch.object(svc, "_audit")
+    def test_find_ssh_session_for_ne_prefers_attached(self, _mock_audit: MagicMock) -> None:
+        conn = _FakeConn()
+        sess = svc.WebcrtSession(
+            session_id="sftpne",
+            ne_id="ne-sftp",
+            ne_name="lab",
+            ne_ip="1.2.3.4",
+            protocol="ssh",
+            cols=80,
+            rows=24,
+            conn=conn,  # type: ignore[arg-type]
+        )
+        sess.state = "ready"
+        sess.attached = True
+        with svc._sessions_lock:
+            svc._sessions["sftpne"] = sess
+        found = svc.find_ssh_session_for_ne("ne-sftp")
+        self.assertIs(found, sess)
+        self.assertIsNone(svc.find_ssh_session_for_ne("other"))
+        svc.close_session("sftpne", reason="test")
+
+    @patch.object(svc, "_audit")
     def test_reattach_clears_detach_deadline(self, _mock_audit: MagicMock) -> None:
         conn = _FakeConn()
         sess = svc.WebcrtSession(

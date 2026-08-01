@@ -503,6 +503,8 @@ export type WebcrtSessionCreateResult = {
   state?: string;
   /** True when session used a vendor CLI hop (nested stelnet/telnet). */
   cli_hop?: boolean;
+  /** True when SFTP channel opened on the same SSH transport. */
+  sftp_ready?: boolean;
 };
 
 export const createWebcrtSession = (body: {
