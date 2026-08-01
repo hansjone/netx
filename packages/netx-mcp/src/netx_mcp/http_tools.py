@@ -285,79 +285,59 @@ def _list_cli_targets(args: dict[str, Any]) -> dict[str, Any]:
     return http_json("GET", "/v1/cli/targets", params=params)
 
 
-def _get_topology_summary(args: dict[str, Any]) -> dict[str, Any]:
-    _ = args
-    return http_json("GET", "/v1/topology/fabric/summary", params=None)
-
-
-def _query_topology_nodes(args: dict[str, Any]) -> dict[str, Any]:
-    page = max(1, int(args.get("page") or 1))
-    page_size = min(500, max(1, int(args.get("page_size") or 50)))
-    params: dict[str, Any] = {"page": page, "page_size": page_size}
-    if str(args.get("keyword") or "").strip():
-        params["keyword"] = str(args.get("keyword")).strip()
-    return http_json("GET", "/v1/topology/fabric/nodes", params=params)
-
-
 def _query_topology_edges(args: dict[str, Any]) -> dict[str, Any]:
+    """List fabric edges; with node_id, also summarize unique peer NEs (interconnect count)."""
     page = max(1, int(args.get("page") or 1))
     page_size = min(500, max(1, int(args.get("page_size") or 50)))
+    node_id = str(args.get("node_id") or "").strip()
     params: dict[str, Any] = {
         "page": page,
         "page_size": page_size,
         "layer": str(args.get("layer") or "physical").strip() or "physical",
     }
-    if str(args.get("node_id") or "").strip():
-        params["node_id"] = str(args.get("node_id")).strip()
+    if node_id:
+        params["node_id"] = node_id
     if str(args.get("status") or "").strip():
         params["status"] = str(args.get("status")).strip()
     if str(args.get("source") or "").strip():
-        params["source"] = str(args.get("source")).strip()
-    return http_json("GET", "/v1/topology/fabric/edges", params=params)
-
-
-def _get_topology_neighborhood(args: dict[str, Any]) -> dict[str, Any]:
-    node_id = str(args.get("node_id") or "").strip()
-    if not node_id:
-        return {"ok": False, "error": "node_id_required", "error_code": "node_id_required"}
-    params: dict[str, Any] = {
-        "node_id": node_id,
-        "depth": max(1, min(3, int(args.get("depth") or 1))),
-        "layer": str(args.get("layer") or "physical").strip() or "physical",
-    }
-    return http_json("GET", "/v1/topology/fabric/neighborhood", params=params)
-
-
-def _run_lldp_discover(args: dict[str, Any]) -> dict[str, Any]:
-    scope = str(args.get("scope") or "ne_ids").strip() or "ne_ids"
-    body: dict[str, Any] = {
-        "scope": scope,
-        "auto_add_unmatched": bool(args.get("auto_add_unmatched") or False),
-        "concurrency": max(1, min(32, int(args.get("concurrency") or 4))),
-    }
-    ne_ids = args.get("ne_ids")
-    if isinstance(ne_ids, list):
-        body["ne_ids"] = [str(x).strip() for x in ne_ids if str(x).strip()]
-    return http_post_json("/v1/topology/fabric/discover", body, timeout=60.0)
-
-
-def _get_lldp_discover_job(args: dict[str, Any]) -> dict[str, Any]:
-    job_id = str(args.get("job_id") or "").strip()
-    if not job_id:
-        return {"ok": False, "error": "job_id_required", "error_code": "job_id_required"}
-    return http_json("GET", f"/v1/topology/fabric/discover/{job_id}", params=None)
-
-
-def _list_topology_views(args: dict[str, Any]) -> dict[str, Any]:
-    _ = args
-    return http_json("GET", "/v1/topology/views", params=None)
-
-
-def _get_topology_view(args: dict[str, Any]) -> dict[str, Any]:
-    view_id = str(args.get("view_id") or "").strip()
-    if not view_id:
-        return {"ok": False, "error": "view_id_required", "error_code": "view_id_required"}
-    return http_json("GET", f"/v1/topology/views/{view_id}", params=None)
+        src = str(args.get("source")).strip().lower()
+        if src == "stale":
+            src = "lldp"
+        params["source"] = src
+    if str(args.get("keyword") or "").strip():
+        params["keyword"] = str(args.get("keyword")).strip()
+    out = http_json("GET", "/v1/topology/fabric/edges", params=params)
+    if not isinstance(out, dict):
+        return out
+    items = out.get("items") if isinstance(out.get("items"), list) else []
+    # When scoping to one NE: unique peers on this page (+ total edges from API).
+    if node_id and items:
+        peers: set[str] = set()
+        peer_labels: list[dict[str, str]] = []
+        seen_label: set[str] = set()
+        for e in items:
+            if not isinstance(e, dict):
+                continue
+            a_id = str(e.get("a_node_id") or "")
+            b_id = str(e.get("b_node_id") or "")
+            if a_id == node_id:
+                peer_id, pname, pip = b_id, str(e.get("b_name") or ""), str(e.get("b_ip") or "")
+            elif b_id == node_id:
+                peer_id, pname, pip = a_id, str(e.get("a_name") or ""), str(e.get("a_ip") or "")
+            else:
+                continue
+            if not peer_id or peer_id in peers:
+                continue
+            peers.add(peer_id)
+            if peer_id not in seen_label:
+                seen_label.add(peer_id)
+                peer_labels.append({"node_id": peer_id, "name": pname, "ip": pip})
+        out["peer_count"] = len(peers)
+        out["peers"] = peer_labels
+        out["edge_total"] = int(out.get("total") or len(items))
+        # Incomplete if caller didn't fetch all pages.
+        out["peers_complete"] = int(out.get("total") or 0) <= len(items)
+    return out
 
 
 HTTP_MCP_TOOLS: list[dict[str, Any]] = [
@@ -545,92 +525,30 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "getTopologySummary",
-        "description": "Fabric topology summary: node/edge counts (active/stale) and last LLDP discover time.",
-        "inputSchema": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
-    },
-    {
-        "name": "queryTopologyNodes",
-        "description": "Page fabric topology nodes (keyword optional). Never dumps full fabric.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "keyword": {"type": "string"},
-                "page": {"type": "integer", "minimum": 1, "default": 1},
-                "page_size": {"type": "integer", "minimum": 1, "maximum": 500, "default": 50},
-            },
-            "required": [],
-            "additionalProperties": False,
-        },
-    },
-    {
         "name": "queryTopologyEdges",
-        "description": "Page fabric edges (physical layer by default); filter by node_id/status/source.",
+        "description": (
+            "Query fabric LLDP/manual links. Pass node_id to list edges of NE A and get peer_count "
+            "(how many distinct NEs A interconnects with). Optional keyword filters by endpoint name/IP; "
+            "status=active|missing. Raise page_size if peers_complete is false."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "node_id": {"type": "string"},
+                "node_id": {
+                    "type": "string",
+                    "description": "Fabric node id of NE A — returns its edges + peer_count/peers summary",
+                },
+                "keyword": {
+                    "type": "string",
+                    "description": "Filter edges whose endpoint name/IP contains this text",
+                },
                 "layer": {"type": "string", "default": "physical"},
-                "status": {"type": "string", "enum": ["active", "stale"]},
-                "source": {"type": "string", "enum": ["lldp", "manual", "stale"]},
+                "status": {"type": "string", "enum": ["active", "missing", "stale"]},
+                "source": {"type": "string", "enum": ["lldp", "manual"]},
                 "page": {"type": "integer", "minimum": 1, "default": 1},
-                "page_size": {"type": "integer", "minimum": 1, "maximum": 500, "default": 50},
+                "page_size": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100},
             },
             "required": [],
-            "additionalProperties": False,
-        },
-    },
-    {
-        "name": "getTopologyNeighborhood",
-        "description": "Get fabric neighborhood around a node (depth 1-3).",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "node_id": {"type": "string"},
-                "depth": {"type": "integer", "minimum": 1, "maximum": 3, "default": 1},
-                "layer": {"type": "string", "default": "physical"},
-            },
-            "required": ["node_id"],
-            "additionalProperties": False,
-        },
-    },
-    {
-        "name": "runLldpDiscover",
-        "description": "Start async LLDP discovery into fabric (scope=ne_ids|all_inventory). Poll with getLldpDiscoverJob.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "scope": {"type": "string", "enum": ["ne_ids", "all_inventory"], "default": "ne_ids"},
-                "ne_ids": {"type": "array", "items": {"type": "string"}},
-                "auto_add_unmatched": {"type": "boolean", "default": False},
-                "concurrency": {"type": "integer", "minimum": 1, "maximum": 32, "default": 4},
-            },
-            "required": [],
-            "additionalProperties": False,
-        },
-    },
-    {
-        "name": "getLldpDiscoverJob",
-        "description": "Get LLDP discover job status, counters, and per-NE items/unmatched.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"job_id": {"type": "string"}},
-            "required": ["job_id"],
-            "additionalProperties": False,
-        },
-    },
-    {
-        "name": "listTopologyViews",
-        "description": "List topology views (presentation canvases over fabric).",
-        "inputSchema": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
-    },
-    {
-        "name": "getTopologyView",
-        "description": "Get a topology view graph (nodes with positions + fabric edges between them).",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"view_id": {"type": "string"}},
-            "required": ["view_id"],
             "additionalProperties": False,
         },
     },
@@ -650,14 +568,7 @@ _HANDLERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "getManagedNe": _get_managed_ne,
     "execManagedNe": _exec_managed_ne,
     "listCliTargets": _list_cli_targets,
-    "getTopologySummary": _get_topology_summary,
-    "queryTopologyNodes": _query_topology_nodes,
     "queryTopologyEdges": _query_topology_edges,
-    "getTopologyNeighborhood": _get_topology_neighborhood,
-    "runLldpDiscover": _run_lldp_discover,
-    "getLldpDiscoverJob": _get_lldp_discover_job,
-    "listTopologyViews": _list_topology_views,
-    "getTopologyView": _get_topology_view,
 }
 
 

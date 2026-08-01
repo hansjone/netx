@@ -36,13 +36,13 @@ python -m netx_mcp
 
 [`mcp.json`](./mcp.json) — `command: python`，`args: ["-m", "netx_mcp"]`，`env` 见文件。
 
-## 工具（21）
+## 工具（14）
 
 UME：`queryUmeAlarms`, `aggregateUmeAlarms`, `runUmeDiagnostics`, `queryUmeNeInventory`, `getUmeNe`, `queryUmeAlarmsRaw`, `aggregateUmeAlarmsRaw`, `listUmeAlarmFields`, `sqlQueryUme`
 
 托管网元：`listManagedNe`, `getManagedNe`, `execManagedNe`, `listCliTargets`
 
-拓扑 Fabric：`getTopologySummary`, `queryTopologyNodes`, `queryTopologyEdges`, `getTopologyNeighborhood`, `runLldpDiscover`, `getLldpDiscoverJob`, `listTopologyViews`, `getTopologyView`
+拓扑 Fabric：`queryTopologyEdges`（可按 `node_id` 查 A 与多少网元互联，返回 `peer_count`）
 
 ## 兼容
 

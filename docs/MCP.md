@@ -113,7 +113,7 @@ pip install "git+https://github.com/hansjone/netx.git#subdirectory=packages/netx
 
 1. 完成上文 **§1**（用 **oclaw 同机同一个 `python`** 安装 `netx-mcp`）。
 2. Admin → MCP → 粘贴 `mcp.json` 全文 → 点击 **Install from JSON**（安装状态在下方一行小字）。
-3. **Health** → **Sync Tools**（应看到 **12** 个工具）。
+3. **Health** → **Sync Tools**（应看到 **14** 个工具）。
 4. 在 **MCP 专家绑定** 中为 ops 专家勾选 `server_id=netx`。
 
 更细的 oclaw 说明（双轨内置工具、锚点注入等）见 oclaw 仓库：  
@@ -131,7 +131,7 @@ pip install "git+https://github.com/hansjone/netx.git#subdirectory=packages/netx
 | UME 网元 | `queryUmeNeInventory`, `getUmeNe` |
 | UME 原始/SQL | `queryUmeAlarmsRaw`, `aggregateUmeAlarmsRaw`, `listUmeAlarmFields`, `sqlQueryUme` |
 | 托管网元 CLI | `listManagedNe`, `getManagedNe`, `execManagedNe`, `listCliTargets` |
-| 拓扑 Fabric | `getTopologySummary`, `queryTopologyNodes`, `queryTopologyEdges`, `getTopologyNeighborhood`, `runLldpDiscover`, `getLldpDiscoverJob`, `listTopologyViews`, `getTopologyView` |
+| 拓扑 Fabric | `queryTopologyEdges`（`node_id` → A 的链路与 `peer_count` 互联网元数） |
 
 物理拓扑仅 LLDP；分页查询，勿默认拉全图。oclaw 中名称带前缀：`mcp__netx__<toolName>`。
 
