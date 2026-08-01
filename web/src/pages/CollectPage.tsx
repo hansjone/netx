@@ -445,46 +445,62 @@ export function CollectPage() {
             {jobsQuery.isFetching ? t("common.refreshing") : t("common.refresh")}
           </button>
         </div>
-        <table>
-          <thead>
-            <tr>
-              <th>{t("collect.jobs.col.title")}</th>
-              <th>{t("collect.jobs.col.status")}</th>
-              <th>{t("collect.jobs.col.progress")}</th>
-              <th>{t("collect.jobs.col.created")}</th>
-              <th>{t("collect.jobs.col.lastRun")}</th>
-              <th>{t("collect.jobs.col.actions")}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(jobsQuery.data?.items ?? []).map((job) => (
-              <JobRow
-                key={job.id}
-                job={job}
-                expanded={expandedJobId === job.id}
-                detail={expandedJobId === job.id ? detailQuery.data : undefined}
-                onToggle={() => setExpandedJobId(expandedJobId === job.id ? "" : job.id)}
-                onPause={() => pauseMutation.mutate(job.id)}
-                onStart={() => startJobMutation.mutate(job.id)}
-                onRetryFailed={() => retryFailedMutation.mutate(job.id)}
-                onDelete={() => {
-                  if (window.confirm(t("collect.confirmDelete"))) deleteMutation.mutate(job.id);
-                }}
-                actionPending={actionPending}
-                startPending={startJobMutation.isPending}
-              />
-            ))}
-          </tbody>
-        </table>
-        <div className="pager">
-          <div className="pager__meta">{t("common.pagerMeta", { total: jobTotal, page: jobPage, pages: jobPages })}</div>
-          <div className="pager__controls">
-            <button className="pager__btn" disabled={jobPage <= 1} onClick={() => setJobPage(jobPage - 1)}>
-              {t("common.prevPage")}
-            </button>
-            <button className="pager__btn" disabled={jobPage >= jobPages} onClick={() => setJobPage(jobPage + 1)}>
-              {t("common.nextPage")}
-            </button>
+        <div className="pt-list">
+          {!(jobsQuery.data?.items ?? []).length && !jobsQuery.isLoading ? (
+            <div className="pt-list-empty">
+              <p>{t("common.empty")}</p>
+            </div>
+          ) : (
+            <div className="pt-list-table-wrap">
+              <table className="data-table pt-list-table">
+                <thead>
+                  <tr>
+                    <th>{t("collect.jobs.col.title")}</th>
+                    <th>{t("collect.jobs.col.status")}</th>
+                    <th>{t("collect.jobs.col.progress")}</th>
+                    <th>{t("collect.jobs.col.created")}</th>
+                    <th>{t("collect.jobs.col.lastRun")}</th>
+                    <th>{t("collect.jobs.col.actions")}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(jobsQuery.data?.items ?? []).map((job) => (
+                    <JobRow
+                      key={job.id}
+                      job={job}
+                      expanded={expandedJobId === job.id}
+                      detail={expandedJobId === job.id ? detailQuery.data : undefined}
+                      onToggle={() => setExpandedJobId(expandedJobId === job.id ? "" : job.id)}
+                      onPause={() => pauseMutation.mutate(job.id)}
+                      onStart={() => startJobMutation.mutate(job.id)}
+                      onRetryFailed={() => retryFailedMutation.mutate(job.id)}
+                      onDelete={() => {
+                        if (window.confirm(t("collect.confirmDelete"))) deleteMutation.mutate(job.id);
+                      }}
+                      actionPending={actionPending}
+                      startPending={startJobMutation.isPending}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <div className="pager pt-list-pager">
+            <div className="pager__meta muted">
+              {t("common.pagerMeta", {
+                total: String(jobTotal),
+                page: String(jobPage),
+                pages: String(jobPages),
+              })}
+            </div>
+            <div className="pager__controls btn-row">
+              <button className="pager__btn" disabled={jobPage <= 1} onClick={() => setJobPage(jobPage - 1)}>
+                {t("common.prevPage")}
+              </button>
+              <button className="pager__btn" disabled={jobPage >= jobPages} onClick={() => setJobPage(jobPage + 1)}>
+                {t("common.nextPage")}
+              </button>
+            </div>
           </div>
         </div>
       </section>

@@ -229,30 +229,34 @@ export function ConfigSyncPage() {
         </div>
       </div>
 
-      <div className="stat-grid" style={{ marginBottom: 16 }}>
-        <div className="stat-card">
-          <div className="muted">{t("configSync.kpi.snapshots")}</div>
-          <strong>{dash?.snapshot_count ?? "-"}</strong>
-        </div>
-        <div className="stat-card">
-          <div className="muted">{t("configSync.kpi.running")}</div>
-          <strong>
-            {running
-              ? `${running.status} · ${running.success_count}/${running.planned_count}`
-              : t("configSync.kpi.idle")}
-          </strong>
-        </div>
-        <div className="stat-card">
-          <div className="muted">{t("configSync.kpi.last")}</div>
-          <strong>
-            {last
-              ? `${last.status} · ok ${last.success_count} / fail ${last.fail_count}`
-              : t("common.empty")}
-          </strong>
-        </div>
-        <div className="stat-card">
-          <div className="muted">{t("configSync.kpi.nextDue")}</div>
-          <strong>{dash?.next_due_at ? formatSystemTime(dash.next_due_at) : t("common.empty")}</strong>
+      <div className="pt-list" style={{ marginBottom: 16 }}>
+        <div className="pt-list-kpis">
+          <div className="pt-list-kpi">
+            <div className="pt-list-kpi__label">{t("configSync.kpi.snapshots")}</div>
+            <div className="pt-list-kpi__value">{dash?.snapshot_count ?? "—"}</div>
+          </div>
+          <div className={`pt-list-kpi${running ? " pt-list-kpi--live" : ""}`}>
+            <div className="pt-list-kpi__label">{t("configSync.kpi.running")}</div>
+            <div className="pt-list-kpi__value" style={{ fontSize: running ? 15 : 22 }}>
+              {running
+                ? `${running.status} · ${running.success_count}/${running.planned_count}`
+                : t("configSync.kpi.idle")}
+            </div>
+          </div>
+          <div className="pt-list-kpi">
+            <div className="pt-list-kpi__label">{t("configSync.kpi.last")}</div>
+            <div className="pt-list-kpi__value" style={{ fontSize: 15 }}>
+              {last
+                ? `${last.status} · ok ${last.success_count} / fail ${last.fail_count}`
+                : t("common.empty")}
+            </div>
+          </div>
+          <div className="pt-list-kpi">
+            <div className="pt-list-kpi__label">{t("configSync.kpi.nextDue")}</div>
+            <div className="pt-list-kpi__value" style={{ fontSize: 15 }}>
+              {dash?.next_due_at ? formatSystemTime(dash.next_due_at) : t("common.empty")}
+            </div>
+          </div>
         </div>
       </div>
 
@@ -382,7 +386,8 @@ export function ConfigSyncPage() {
       </div>
 
       <h3>{t("configSync.cyclesTitle")}</h3>
-      <table className="data-table">
+      <div className="pt-list-table-wrap">
+      <table className="data-table pt-list-table">
         <thead>
           <tr>
             <th />
@@ -409,9 +414,25 @@ export function ConfigSyncPage() {
                   {expandedCycleId === c.id ? t("configSync.collapse") : t("configSync.expand")}
                 </button>
               </td>
-              <td title={c.id}>{c.id.slice(0, 8)}</td>
+              <td title={c.id} className="pt-list-num">{c.id.slice(0, 8)}</td>
               <td>{c.trigger_mode}</td>
-              <td>{c.status}</td>
+              <td>
+                <span
+                  className={`pt-list-status ${
+                    c.status === "running" || c.status === "pending"
+                      ? "pt-list-status--running"
+                      : c.status === "paused"
+                        ? "pt-list-status--paused"
+                        : c.status === "failed"
+                          ? "pt-list-status--failed"
+                          : c.status === "success" || c.status === "completed"
+                            ? "pt-list-status--ok"
+                            : "pt-list-status--other"
+                  }`}
+                >
+                  {c.status}
+                </span>
+              </td>
               <td>
                 {c.success_count}/{c.planned_count} · fail {c.fail_count}
               </td>
@@ -453,16 +474,23 @@ export function ConfigSyncPage() {
           ) : null}
         </tbody>
       </table>
-      <div className="pager">
+      </div>
+      <div className="pager pt-list-pager">
+        <span className="muted">
+          {t("common.pagerMeta", {
+            total: String(cycleTotal),
+            page: String(cyclePage),
+            pages: String(cyclePages),
+          })}
+        </span>
+        <div className="btn-row">
         <button type="button" disabled={cyclePage <= 1} onClick={() => setCyclePage((p) => p - 1)}>
           {t("common.prevPage")}
         </button>
-        <span className="muted">
-          {t("common.pagerMeta", { total: String(cycleTotal), page: String(cyclePage), pages: String(cyclePages) })}
-        </span>
         <button type="button" disabled={cyclePage >= cyclePages} onClick={() => setCyclePage((p) => p + 1)}>
           {t("common.nextPage")}
         </button>
+        </div>
       </div>
 
       {expandedCycleId ? (

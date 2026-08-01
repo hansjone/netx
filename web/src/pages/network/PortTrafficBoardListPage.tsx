@@ -62,9 +62,6 @@ export function PortTrafficBoardListPage() {
           </button>
         </div>
       </div>
-      <p className="muted" style={{ marginTop: 0 }}>
-        {t("portTraffic.boardListHint")}
-      </p>
 
       <div className="pt-list">
       {boardsQuery.isLoading ? (
