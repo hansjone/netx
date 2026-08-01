@@ -14,6 +14,7 @@ import { NetworkDevicesPage } from "./pages/network/NetworkDevicesPage";
 import { NetworkAlarmsPage } from "./pages/network/NetworkAlarmsPage";
 import { NetworkConfigsPage } from "./pages/network/NetworkConfigsPage";
 import { PortTrafficPage } from "./pages/network/PortTrafficPage";
+import { PortTrafficBoardListPage } from "./pages/network/PortTrafficBoardListPage";
 import { PortTrafficWallPage } from "./pages/network/PortTrafficWallPage";
 import { LoginPage } from "./pages/LoginPage";
 import { UsersPage } from "./pages/UsersPage";
@@ -27,6 +28,16 @@ import { useAuth } from "./auth/AuthContext";
 function NetworkWebcrtRedirect() {
   const { search } = useLocation();
   return <Navigate to={`/webcrt${search}`} replace />;
+}
+
+/** Legacy `?board_id=` under network wall → dedicated board tab route. */
+function LegacyPortTrafficWallRedirect() {
+  const { search } = useLocation();
+  const boardId = new URLSearchParams(search).get("board_id")?.trim() || "";
+  if (boardId) {
+    return <Navigate to={`/port-traffic/wall/${encodeURIComponent(boardId)}`} replace />;
+  }
+  return <PortTrafficBoardListPage />;
 }
 
 function ProtectedApp() {
@@ -87,6 +98,7 @@ function ProtectedApp() {
         <Route path="/ne" element={<NePage />} />
         <Route path="/topology" element={<TopologyPage />} />
         <Route path="/webcrt" element={<WebcrtPage />} />
+        <Route path="/port-traffic/wall/:boardId" element={<PortTrafficWallPage />} />
         <Route path="/network" element={<NetworkLayout />}>
           <Route index element={<Navigate to="devices" replace />} />
           <Route path="devices" element={<NetworkDevicesPage />} />
@@ -96,7 +108,7 @@ function ProtectedApp() {
           <Route path="webcrt" element={<NetworkWebcrtRedirect />} />
           <Route path="tasks/collect" element={<CollectPage />} />
           <Route path="tasks/config-sync" element={<ConfigSyncPage />} />
-          <Route path="tasks/port-traffic/wall" element={<PortTrafficWallPage />} />
+          <Route path="tasks/port-traffic/wall" element={<LegacyPortTrafficWallRedirect />} />
           <Route path="tasks/port-traffic" element={<PortTrafficPage />} />
         </Route>
         <Route path="/collect" element={<Navigate to="/network/tasks/collect" replace />} />

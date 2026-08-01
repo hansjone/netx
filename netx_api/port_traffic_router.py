@@ -12,10 +12,21 @@ from .db import get_db
 from .models import PortTrafficDevice
 from .port_traffic_schemas import (
     DiscoverPortsRequest,
+    PortTrafficBoardCreate,
+    PortTrafficBoardPanelsPut,
+    PortTrafficBoardUpdate,
     PortTrafficDeviceCreate,
     PortTrafficDeviceUpdate,
     PortTrafficInterfacesPut,
     PortTrafficReplacePortRequest,
+)
+from .port_traffic_board_service import (
+    create_board,
+    delete_board,
+    get_board,
+    list_boards,
+    put_board_panels,
+    update_board,
 )
 from .port_traffic_service import (
     compare_targets,
@@ -48,6 +59,102 @@ def _actor(request: Request) -> tuple[str, str]:
 @router.get("/dashboard")
 def api_dashboard(db: Session = Depends(get_db)):
     return dashboard(db).model_dump()
+
+
+@router.get("/boards")
+def api_list_boards(db: Session = Depends(get_db)):
+    return {"items": [b.model_dump() for b in list_boards(db)]}
+
+
+@router.post("/boards")
+def api_create_board(
+    body: PortTrafficBoardCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    uid, uname = _actor(request)
+    out = create_board(db, body, actor_user_id=uid)
+    write_audit(
+        db,
+        action="port_traffic.board.create",
+        actor_user_id=uid,
+        actor_username=uname,
+        method="POST",
+        path="/v1/port-traffic/boards",
+        status_code=200,
+        detail={"id": out.id, "name": out.name},
+    )
+    return out.model_dump()
+
+
+@router.get("/boards/{board_id}")
+def api_get_board(board_id: str, db: Session = Depends(get_db)):
+    return get_board(db, board_id).model_dump()
+
+
+@router.patch("/boards/{board_id}")
+def api_update_board(
+    board_id: str,
+    body: PortTrafficBoardUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    uid, uname = _actor(request)
+    out = update_board(db, board_id, body, actor_user_id=uid)
+    write_audit(
+        db,
+        action="port_traffic.board.update",
+        actor_user_id=uid,
+        actor_username=uname,
+        method="PATCH",
+        path=f"/v1/port-traffic/boards/{board_id}",
+        status_code=200,
+        detail={"id": board_id},
+    )
+    return out.model_dump()
+
+
+@router.put("/boards/{board_id}/panels")
+def api_put_board_panels(
+    board_id: str,
+    body: PortTrafficBoardPanelsPut,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    uid, uname = _actor(request)
+    out = put_board_panels(db, board_id, body, actor_user_id=uid)
+    write_audit(
+        db,
+        action="port_traffic.board.panels_put",
+        actor_user_id=uid,
+        actor_username=uname,
+        method="PUT",
+        path=f"/v1/port-traffic/boards/{board_id}/panels",
+        status_code=200,
+        detail={"id": board_id, "count": len(out.panels)},
+    )
+    return out.model_dump()
+
+
+@router.delete("/boards/{board_id}")
+def api_delete_board(
+    board_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    uid, uname = _actor(request)
+    out = delete_board(db, board_id)
+    write_audit(
+        db,
+        action="port_traffic.board.delete",
+        actor_user_id=uid,
+        actor_username=uname,
+        method="DELETE",
+        path=f"/v1/port-traffic/boards/{board_id}",
+        status_code=200,
+        detail={"id": board_id},
+    )
+    return out
 
 
 @router.get("/devices")

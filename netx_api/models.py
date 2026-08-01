@@ -709,3 +709,39 @@ class PortTrafficEvent(Base):
     level: Mapped[str] = mapped_column(String(16), default="error", index=True)  # info|warn|error
     message: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class PortTrafficBoard(Base):
+    """Named multi-panel traffic ops wall (cutover / duty view)."""
+
+    __tablename__ = "port_traffic_board"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
+    name: Mapped[str] = mapped_column(String(256), default="", index=True)
+    remark: Mapped[str] = mapped_column(String(1024), default="")
+    cols: Mapped[int] = mapped_column(Integer, default=2)
+    created_by: Mapped[str] = mapped_column(String(64), default="")
+    updated_by: Mapped[str] = mapped_column(String(64), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class PortTrafficPanel(Base):
+    """One chart cell on a traffic board."""
+
+    __tablename__ = "port_traffic_panel"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
+    board_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    title: Mapped[str] = mapped_column(String(256), default="")
+    target_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    range_hours: Mapped[int] = mapped_column(Integer, default=24)
+    baseline: Mapped[str] = mapped_column(String(16), default="off")  # off|day|week|shift|custom
+    offset_hours: Mapped[int] = mapped_column(Integer, default=0)
+    baseline_target_id: Mapped[str] = mapped_column(String(64), default="")
+    y_mode: Mapped[str] = mapped_column(String(16), default="auto")  # auto|current|util
+    ord: Mapped[int] = mapped_column(Integer, default=0)
+    col_span: Mapped[int] = mapped_column(Integer, default=1)
+    row_span: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

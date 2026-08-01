@@ -14,6 +14,8 @@ export type ModuleDefinition = {
   iconTone: ModuleIconTone;
   titleKey: string;
   adminOnly?: boolean;
+  /** Hide from workbench launcher; still used for module window registration. */
+  workbenchHidden?: boolean;
 };
 
 export const MODULES: readonly ModuleDefinition[] = [
@@ -63,6 +65,16 @@ export const MODULES: readonly ModuleDefinition[] = [
     titleKey: "layout.titleWebcrt",
   },
   {
+    moduleId: "port-traffic-wall",
+    path: "/port-traffic/wall",
+    section: "operations",
+    labelKey: "workbench.cards.portTrafficWall",
+    descKey: "workbench.cards.portTrafficWallDesc",
+    iconTone: "amber",
+    titleKey: "layout.titlePortTrafficWall",
+    workbenchHidden: true,
+  },
+  {
     moduleId: "users",
     path: "/users",
     section: "system",
@@ -97,7 +109,9 @@ export function getModuleById(moduleId: string): ModuleDefinition | undefined {
 }
 
 export function moduleIdFromPath(pathname: string): string | null {
-  for (const m of MODULES) {
+  // Longer paths first so /port-traffic/wall wins over shorter prefixes if added later.
+  const ordered = [...MODULES].sort((a, b) => b.path.length - a.path.length);
+  for (const m of ordered) {
     if (pathname === m.path || pathname.startsWith(`${m.path}/`)) return m.moduleId;
   }
   return null;

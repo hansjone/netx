@@ -256,8 +256,8 @@ export function PortTrafficPage() {
     setView("wizard");
   };
 
-  const openWall = (deviceId: string) => {
-    navigate(`/network/tasks/port-traffic/wall?device_id=${encodeURIComponent(deviceId)}`);
+  const openWallList = () => {
+    navigate("/network/tasks/port-traffic/wall");
   };
 
   const openEdit = (row: PortTrafficDevice) => {
@@ -523,7 +523,7 @@ export function PortTrafficPage() {
                               <button
                                 type="button"
                                 className="btn-primary"
-                                onClick={() => openWall(row.id)}
+                                onClick={() => openWallList()}
                               >
                                 {t("portTraffic.wall")}
                               </button>

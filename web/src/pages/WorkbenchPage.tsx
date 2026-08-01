@@ -17,6 +17,7 @@ export function WorkbenchPage() {
           <h2 className="wb-section__title">{t(`workbench.${section}`)}</h2>
           <div className="wb-grid">
             {modulesInSection(section)
+              .filter((mod) => !mod.workbenchHidden)
               .filter((mod) => !mod.adminOnly || isAdmin)
               .map((mod) => (
               <button

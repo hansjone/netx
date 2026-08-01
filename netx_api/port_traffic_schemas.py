@@ -199,3 +199,70 @@ class PortTrafficEventOut(BaseModel):
 class PortTrafficEventsOut(BaseModel):
     items: list[PortTrafficEventOut] = Field(default_factory=list)
     total: int = 0
+
+
+class PortTrafficPanelIn(BaseModel):
+    id: str | None = None
+    title: str = ""
+    target_id: str = Field(min_length=1, max_length=64)
+    range_hours: int = Field(default=24, ge=1, le=24 * 90)
+    baseline: Literal["off", "day", "week", "shift", "custom"] = "off"
+    offset_hours: int = Field(default=0, ge=0, le=24 * 90)
+    baseline_target_id: str = ""
+    y_mode: Literal["auto", "current", "util"] = "auto"
+    ord: int = 0
+    col_span: int = Field(default=1, ge=1, le=4)
+    row_span: int = Field(default=1, ge=1, le=4)
+
+
+class PortTrafficPanelOut(BaseModel):
+    id: str
+    board_id: str
+    title: str = ""
+    target_id: str
+    range_hours: int = 24
+    baseline: str = "off"
+    offset_hours: int = 0
+    baseline_target_id: str = ""
+    y_mode: str = "auto"
+    ord: int = 0
+    col_span: int = 1
+    row_span: int = 1
+    stale: bool = False
+    target: PortTrafficTargetOut | None = None
+    baseline_target: PortTrafficTargetOut | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class PortTrafficBoardCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=256)
+    remark: str = Field(default="", max_length=1024)
+    cols: int = Field(default=2, ge=1, le=4)
+    panels: list[PortTrafficPanelIn] = Field(default_factory=list)
+
+
+class PortTrafficBoardUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=256)
+    remark: str | None = Field(default=None, max_length=1024)
+    cols: int | None = Field(default=None, ge=1, le=4)
+
+
+class PortTrafficBoardSummaryOut(BaseModel):
+    id: str
+    name: str
+    remark: str = ""
+    cols: int = 2
+    panel_count: int = 0
+    created_by: str = ""
+    updated_by: str = ""
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class PortTrafficBoardOut(PortTrafficBoardSummaryOut):
+    panels: list[PortTrafficPanelOut] = Field(default_factory=list)
+
+
+class PortTrafficBoardPanelsPut(BaseModel):
+    panels: list[PortTrafficPanelIn] = Field(default_factory=list)

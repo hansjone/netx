@@ -43,7 +43,8 @@ src/
 | `/network/tasks/collect` | 采集任务 | `network` |
 | `/network/tasks/config-sync` | 配置同步 | `network` |
 | `/network/tasks/port-traffic` | 端口流量监控（设备管理） | `network` |
-| `/network/tasks/port-traffic/wall` | 端口流量大屏 | `network` |
+| `/network/tasks/port-traffic/wall` | 流量大屏列表（打开独立页签） | `network` |
+| `/port-traffic/wall/:boardId` | 流量大屏专有页签（无网络侧栏） | `port-traffic-wall` |
 | `/topology` | 拓扑管理（模式化编辑器：选择/平移/拖动/连线、框选、自动布局、拖放添加） | `topology` |
 | `/webcrt` | WebCRT 终端 | `webcrt` |
 | `/collect` | redirect → `/network/tasks/collect` | — |
@@ -65,6 +66,7 @@ src/
 
 - **工作台 → 模块**：`openOrFocusModule`（同 `moduleId` 仅一个标签，已打开则聚焦）
 - **模块 → 工作台**：顶栏四格图标，`returnToWorkbench`（聚焦原工作台标签；已关闭则新开）
+- **流量大屏**：列表在网络管理内；打开单板用 `openNewModuleWindow`（`/port-traffic/wall/:boardId`），与 `network` 单例页签隔离
 - 实现：`utils/tabChannel.ts` + 命名窗口 `netx-module-{id}` / `netx-workbench`
 
 ## i18n
@@ -116,7 +118,8 @@ src/
 - 厂商：ZTE / 华为 / 思科；解析速率 **bit/s**；缺厂商 util 时按 bps/bw 回算
 - 调度开关：`NETX_PORT_TRAFFIC_SCHEDULER_ENABLED`（默认开），tick `NETX_PORT_TRAFFIC_SCHEDULER_TICK_SEC`（默认 15）
 - 保留：按设备 `retention_days` 清理过期 sample（周对比建议 ≥8 天）
-- 前端：`/network/tasks/port-traffic`（设备列表 / 向导 / 编辑 / 采集日志）；`/network/tasks/port-traffic/wall`（独立 uPlot 大屏，支持 `?device_id=&target_id=`）
+- 前端：`/network/tasks/port-traffic`（设备列表 / 向导 / 编辑 / 采集日志）；`/network/tasks/port-traffic/wall`（大屏列表）；`/port-traffic/wall/:boardId`（独立大屏页签，`openNewModuleWindow`，与网络管理页签互不影响）
+- 定制大屏：`/v1/port-traffic/boards*`（Board + Panel）；整板 PUT panels 保存；刷新/换页不丢；图数据仍走 compare
 - 采集日志：`GET /v1/port-traffic/devices/{id}/events`；失败写入 `port_traffic_event`，列表操作可查看
 - 支持拓扑深链：`?ne_id=&source=managed|ume&ifname=` 打开向导并预填网元
 

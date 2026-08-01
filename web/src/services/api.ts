@@ -34,6 +34,9 @@ import type {
   PortTrafficDevice,
   PortTrafficDiscoverResponse,
   PortTrafficEvent,
+  PortTrafficBoard,
+  PortTrafficBoardPanelIn,
+  PortTrafficBoardSummary,
   PortTrafficIfaceIn,
   PortTrafficSamples,
   PortTrafficTarget,
@@ -904,3 +907,31 @@ export const fetchPortTrafficCompare = (params: {
   if (params.to) p.set("to", params.to);
   return apiGet<PortTrafficCompare>(`/v1/port-traffic/compare?${p.toString()}`);
 };
+
+export const fetchPortTrafficBoards = () =>
+  apiGet<{ items: PortTrafficBoardSummary[] }>("/v1/port-traffic/boards");
+
+export const fetchPortTrafficBoard = (boardId: string) =>
+  apiGet<PortTrafficBoard>(`/v1/port-traffic/boards/${encodeURIComponent(boardId)}`);
+
+export const createPortTrafficBoard = (body: {
+  name: string;
+  remark?: string;
+  cols?: number;
+  panels?: PortTrafficBoardPanelIn[];
+}) => apiPost<PortTrafficBoard>("/v1/port-traffic/boards", body);
+
+export const updatePortTrafficBoard = (
+  boardId: string,
+  body: { name?: string; remark?: string; cols?: number },
+) => apiPatch<PortTrafficBoard>(`/v1/port-traffic/boards/${encodeURIComponent(boardId)}`, body);
+
+export const putPortTrafficBoardPanels = (boardId: string, panels: PortTrafficBoardPanelIn[]) =>
+  apiPut<PortTrafficBoard>(`/v1/port-traffic/boards/${encodeURIComponent(boardId)}/panels`, {
+    panels,
+  });
+
+export const deletePortTrafficBoard = (boardId: string) =>
+  apiDelete<{ ok: boolean; id: string }>(
+    `/v1/port-traffic/boards/${encodeURIComponent(boardId)}`,
+  );

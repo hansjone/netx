@@ -267,6 +267,9 @@ def delete_device(db: Session, device_id: str) -> dict[str, Any]:
     ids = [str(t.id) for t in targets]
     series_ids = [str(t.series_id) for t in targets if t.series_id]
     if ids:
+        from .port_traffic_board_service import delete_panels_for_targets
+
+        delete_panels_for_targets(db, ids)
         db.query(PortTrafficSample).filter(PortTrafficSample.target_row_id.in_(ids)).delete(
             synchronize_session=False
         )

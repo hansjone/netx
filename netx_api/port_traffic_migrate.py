@@ -123,6 +123,54 @@ def ensure_port_traffic_series_schema(conn) -> None:
         "CREATE INDEX IF NOT EXISTS ix_port_traffic_event_level ON port_traffic_event (level)"
     )
 
+    conn.exec_driver_sql(
+        """
+        CREATE TABLE IF NOT EXISTS port_traffic_board (
+            id VARCHAR(64) PRIMARY KEY,
+            name VARCHAR(256) DEFAULT '',
+            remark VARCHAR(1024) DEFAULT '',
+            cols INTEGER DEFAULT 2,
+            created_by VARCHAR(64) DEFAULT '',
+            updated_by VARCHAR(64) DEFAULT '',
+            created_at TIMESTAMP,
+            updated_at TIMESTAMP
+        )
+        """
+    )
+    conn.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_port_traffic_board_name ON port_traffic_board (name)"
+    )
+    conn.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_port_traffic_board_updated_at ON port_traffic_board (updated_at)"
+    )
+
+    conn.exec_driver_sql(
+        """
+        CREATE TABLE IF NOT EXISTS port_traffic_panel (
+            id VARCHAR(64) PRIMARY KEY,
+            board_id VARCHAR(64) DEFAULT '',
+            title VARCHAR(256) DEFAULT '',
+            target_id VARCHAR(64) DEFAULT '',
+            range_hours INTEGER DEFAULT 24,
+            baseline VARCHAR(16) DEFAULT 'off',
+            offset_hours INTEGER DEFAULT 0,
+            baseline_target_id VARCHAR(64) DEFAULT '',
+            y_mode VARCHAR(16) DEFAULT 'auto',
+            ord INTEGER DEFAULT 0,
+            col_span INTEGER DEFAULT 1,
+            row_span INTEGER DEFAULT 1,
+            created_at TIMESTAMP,
+            updated_at TIMESTAMP
+        )
+        """
+    )
+    conn.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_port_traffic_panel_board_id ON port_traffic_panel (board_id)"
+    )
+    conn.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_port_traffic_panel_target_id ON port_traffic_panel (target_id)"
+    )
+
 
 def migrate_tasks_to_devices(db: Session) -> int:
     """Collapse legacy port_traffic_task rows into per-NE devices; reassign targets/series."""

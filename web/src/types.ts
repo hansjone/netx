@@ -587,6 +587,56 @@ export type PortTrafficEvent = {
   created_at?: string | null;
 };
 
+export type PortTrafficBoardPanel = {
+  id: string;
+  board_id: string;
+  title: string;
+  target_id: string;
+  range_hours: number;
+  baseline: "off" | "day" | "week" | "shift" | "custom" | string;
+  offset_hours: number;
+  baseline_target_id: string;
+  y_mode: "auto" | "current" | "util" | string;
+  ord: number;
+  col_span: number;
+  row_span: number;
+  stale: boolean;
+  target: PortTrafficTarget | null;
+  baseline_target: PortTrafficTarget | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type PortTrafficBoardPanelIn = {
+  id?: string;
+  title?: string;
+  target_id: string;
+  range_hours?: number;
+  baseline?: string;
+  offset_hours?: number;
+  baseline_target_id?: string;
+  y_mode?: string;
+  ord?: number;
+  col_span?: number;
+  row_span?: number;
+};
+
+export type PortTrafficBoardSummary = {
+  id: string;
+  name: string;
+  remark: string;
+  cols: number;
+  panel_count: number;
+  created_by: string;
+  updated_by: string;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type PortTrafficBoard = PortTrafficBoardSummary & {
+  panels: PortTrafficBoardPanel[];
+};
+
 export type PortTrafficSeries = {
   id: string;
   device_id: string;

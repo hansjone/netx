@@ -12,6 +12,7 @@ function formatBps(n: number): string {
   if (v >= 1e9) return `${(n / 1e9).toFixed(2)} G`;
   if (v >= 1e6) return `${(n / 1e6).toFixed(2)} M`;
   if (v >= 1e3) return `${(n / 1e3).toFixed(1)} K`;
+  if (v > 0 && v < 1) return n.toFixed(2);
   return `${Math.round(n)}`;
 }
 
@@ -75,6 +76,8 @@ function toAlignedSeries(
   baseBwFallback: number,
 ): [number[], number[], number[], number[], number[]] {
   type Row = { x: number; inC?: number; outC?: number; inB?: number; outB?: number };
+  // Shared X = union of both timelines; each series only has values at its own samples.
+  // Gaps stay NaN; series use spanGaps so each line connects on its own cadence.
   const map = new Map<number, Row>();
   for (const p of current) {
     const d = parseApiTime(p.ts);
@@ -108,14 +111,13 @@ function toAlignedSeries(
 }
 
 function chartSize(el: HTMLElement): { width: number; height: number } {
-  const width = Math.max(320, el.clientWidth || el.parentElement?.clientWidth || 800);
+  const width = Math.max(120, el.clientWidth || el.parentElement?.clientWidth || 800);
   const parentH = el.clientHeight || el.parentElement?.clientHeight || 0;
-  // Fill staged layout / fullscreen; fall back to aspect ratio in compact panels.
-  const height =
-    parentH >= 180
-      ? Math.max(180, parentH)
-      : Math.max(260, Math.min(440, Math.floor(width * 0.34)));
-  return { width, height };
+  // Follow container height in board/fullscreen panels (may be well under 180px).
+  if (parentH > 0) {
+    return { width, height: Math.max(64, parentH) };
+  }
+  return { width, height: Math.max(220, Math.min(440, Math.floor(width * 0.34))) };
 }
 
 const EMPTY_POINTS: PortTrafficSamplePoint[] = [];
@@ -129,6 +131,8 @@ type Props = {
   yMode?: WallYMode;
   loading?: boolean;
   hint?: string;
+  /** Board fullscreen: denser chrome, no per-panel legend. */
+  dense?: boolean;
 };
 
 export function PortTrafficWall({
@@ -140,6 +144,7 @@ export function PortTrafficWall({
   yMode = "auto",
   loading,
   hint,
+  dense = false,
 }: Props) {
   const { t } = useI18n();
   const mountRef = useRef<HTMLDivElement | null>(null);
@@ -202,7 +207,7 @@ export function PortTrafficWall({
           width: 2,
           fill: "rgba(45, 212, 191, 0.08)",
           points: { show: false },
-          spanGaps: false,
+          spanGaps: true,
         },
         {
           label: t("portTraffic.seriesCurrentOut"),
@@ -210,7 +215,7 @@ export function PortTrafficWall({
           width: 2,
           fill: "rgba(251, 191, 36, 0.07)",
           points: { show: false },
-          spanGaps: false,
+          spanGaps: true,
         },
         {
           label: t("portTraffic.seriesBaselineIn"),
@@ -218,7 +223,7 @@ export function PortTrafficWall({
           width: 1.5,
           dash: [6, 4],
           points: { show: false },
-          spanGaps: false,
+          spanGaps: true,
           show: false,
         },
         {
@@ -227,7 +232,7 @@ export function PortTrafficWall({
           width: 1.5,
           dash: [6, 4],
           points: { show: false },
-          spanGaps: false,
+          spanGaps: true,
           show: false,
         },
       ],
@@ -257,13 +262,18 @@ export function PortTrafficWall({
         y: {
           auto: true,
           range: (u, min, max) => {
-            if (yModeRef.current === "current") {
-              const vals = [...(u.data[1] || []), ...(u.data[2] || [])].filter((v) =>
-                Number.isFinite(v),
-              ) as number[];
-              if (!vals.length) return yPadRange(min, max);
-              return yPadRange(0, finiteMax(vals));
+            const mode = yModeRef.current;
+            // "current": scale to live series only. "auto"/util: include baseline too,
+            // otherwise a near-zero current + busy mapped baseline clips baseline off-chart.
+            const seriesIdxs =
+              mode === "current" ? [1, 2] : mode === "util" ? [1, 2, 3, 4] : [1, 2, 3, 4];
+            const vals: number[] = [];
+            for (const i of seriesIdxs) {
+              for (const v of u.data[i] || []) {
+                if (Number.isFinite(v)) vals.push(v as number);
+              }
             }
+            if (vals.length) return yPadRange(0, finiteMax(vals));
             return yPadRange(min, max);
           },
         },
@@ -355,6 +365,7 @@ export function PortTrafficWall({
       plotRef.current.setSize(chartSize(mountRef.current));
     };
     window.addEventListener("resize", onResize);
+    document.addEventListener("fullscreenchange", onResize);
     const ro =
       typeof ResizeObserver !== "undefined"
         ? new ResizeObserver(() => onResize())
@@ -362,8 +373,15 @@ export function PortTrafficWall({
     ro?.observe(el);
     const wrap = el.parentElement;
     if (wrap) ro?.observe(wrap);
+    // Observe panel / stage ancestors so fullscreen grid row shrinks resize plots.
+    let node: HTMLElement | null = wrap?.parentElement ?? null;
+    for (let i = 0; i < 4 && node; i += 1) {
+      ro?.observe(node);
+      node = node.parentElement;
+    }
     return () => {
       window.removeEventListener("resize", onResize);
+      document.removeEventListener("fullscreenchange", onResize);
       ro?.disconnect();
       plotRef.current?.over.removeEventListener("mouseleave", onLeave);
       plotRef.current?.destroy();
@@ -415,12 +433,18 @@ export function PortTrafficWall({
   const baseIpLabel = baselineTarget?.ne_ip || "";
 
   return (
-    <div className="pt-wall">
+    <div className={`pt-wall${dense ? " pt-wall--dense" : ""}`}>
       <div className="pt-wall__head">
         <div className="pt-wall__title">
           <div className="pt-wall__ne">
             {neLabel}
             {ipLabel ? ` · ${ipLabel}` : ""}
+            {dense && showBaselineMeta ? (
+              <span className="pt-wall__ne-base" title={`${baseNeLabel} · ${baseIfLabel}`}>
+                {" · "}
+                {t("portTraffic.baseline")}: {baseNeLabel} · {baseIfLabel}
+              </span>
+            ) : null}
           </div>
           <div className="pt-wall__if" title={ifLabel}>
             {ifLabel}
@@ -428,7 +452,7 @@ export function PortTrafficWall({
         </div>
         <div className="pt-wall__range">
           {rangeLabel}
-          {kpi.ts ? ` · ${t("portTraffic.latestAt")} ${formatSystemTime(kpi.ts)}` : ""}
+          {kpi.ts ? ` · ${formatSystemTime(kpi.ts)}` : ""}
         </div>
       </div>
       <div className="pt-wall__kpis">
@@ -468,43 +492,45 @@ export function PortTrafficWall({
           </div>
         ) : null}
       </div>
-      <div className="pt-wall__foot">
-        <div className="pt-wall__legend" aria-hidden={!points.length && !baselinePoints.length}>
-          <span className="pt-wall__legend-item pt-wall__legend-item--in">
-            <i className="pt-wall__legend-swatch" />
-            {t("portTraffic.seriesCurrentIn")}
-          </span>
-          <span className="pt-wall__legend-item pt-wall__legend-item--out">
-            <i className="pt-wall__legend-swatch" />
-            {t("portTraffic.seriesCurrentOut")}
-          </span>
+      {!dense ? (
+        <div className="pt-wall__foot">
+          <div className="pt-wall__legend" aria-hidden={!points.length && !baselinePoints.length}>
+            <span className="pt-wall__legend-item pt-wall__legend-item--in">
+              <i className="pt-wall__legend-swatch" />
+              {t("portTraffic.seriesCurrentIn")}
+            </span>
+            <span className="pt-wall__legend-item pt-wall__legend-item--out">
+              <i className="pt-wall__legend-swatch" />
+              {t("portTraffic.seriesCurrentOut")}
+            </span>
+            {showBaselineMeta ? (
+              <>
+                <span className="pt-wall__legend-item pt-wall__legend-item--base-in">
+                  <i className="pt-wall__legend-swatch" />
+                  {t("portTraffic.seriesBaselineIn")}
+                </span>
+                <span className="pt-wall__legend-item pt-wall__legend-item--base-out">
+                  <i className="pt-wall__legend-swatch" />
+                  {t("portTraffic.seriesBaselineOut")}
+                </span>
+              </>
+            ) : null}
+          </div>
           {showBaselineMeta ? (
-            <>
-              <span className="pt-wall__legend-item pt-wall__legend-item--base-in">
-                <i className="pt-wall__legend-swatch" />
-                {t("portTraffic.seriesBaselineIn")}
-              </span>
-              <span className="pt-wall__legend-item pt-wall__legend-item--base-out">
-                <i className="pt-wall__legend-swatch" />
-                {t("portTraffic.seriesBaselineOut")}
-              </span>
-            </>
+            <div className="pt-wall__foot-meta">
+              <div className="pt-wall__foot-ne" title={baseNeLabel}>
+                <span className="pt-wall__foot-label">{t("portTraffic.baselineDevice")}</span>
+                <span className="pt-wall__foot-value">{baseNeLabel}</span>
+                {baseIpLabel ? <span className="pt-wall__foot-ip">{baseIpLabel}</span> : null}
+              </div>
+              <div className="pt-wall__foot-if" title={baseIfLabel}>
+                <span className="pt-wall__foot-label">{t("portTraffic.baselinePort")}</span>
+                <span className="pt-wall__foot-value pt-wall__foot-value--mono">{baseIfLabel}</span>
+              </div>
+            </div>
           ) : null}
         </div>
-        {showBaselineMeta ? (
-          <div className="pt-wall__foot-meta">
-            <div className="pt-wall__foot-ne" title={baseNeLabel}>
-              <span className="pt-wall__foot-label">{t("portTraffic.baselineDevice")}</span>
-              <span className="pt-wall__foot-value">{baseNeLabel}</span>
-              {baseIpLabel ? <span className="pt-wall__foot-ip">{baseIpLabel}</span> : null}
-            </div>
-            <div className="pt-wall__foot-if" title={baseIfLabel}>
-              <span className="pt-wall__foot-label">{t("portTraffic.baselinePort")}</span>
-              <span className="pt-wall__foot-value pt-wall__foot-value--mono">{baseIfLabel}</span>
-            </div>
-          </div>
-        ) : null}
-      </div>
+      ) : null}
     </div>
   );
 }
