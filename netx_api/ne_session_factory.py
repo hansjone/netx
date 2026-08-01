@@ -311,6 +311,7 @@ def _netmiko_over_ssh_client(
     session_timeout: int | None,
     session_log: Any = None,
     interactive: bool = False,
+    keepalive: int | None = None,
 ) -> ConnectHandler:
     """Netmiko session over an already-authenticated SSH client (bastion protocol proxy)."""
     base_cls = _netmiko_driver_class(device_type)
@@ -340,6 +341,7 @@ def _netmiko_over_ssh_client(
         enable_secret=enable_secret,
         session_timeout=session_timeout,
         session_log=session_log,
+        keepalive=keepalive,
     )
     return _PreauthSession(**dev)
 
@@ -354,6 +356,7 @@ def _base_connect_kwargs(
     enable_secret: str,
     session_timeout: int | None = None,
     session_log: Any = None,
+    keepalive: int | None = None,
 ) -> dict[str, Any]:
     timeout = int(settings.ne_connect_timeout_sec or 30)
     dev: dict[str, Any] = {
@@ -368,6 +371,9 @@ def _base_connect_kwargs(
     }
     if session_timeout is not None:
         dev["session_timeout"] = session_timeout
+    if keepalive is not None and int(keepalive) > 0:
+        # Paramiko/Netmiko SSH transport keepalive (seconds between null packets).
+        dev["keepalive"] = int(keepalive)
     secret = str(enable_secret or "").strip()
     if secret:
         dev["secret"] = secret
@@ -382,6 +388,7 @@ def _connect_direct(
     session_timeout: int | None = None,
     session_log: Any = None,
     interactive: bool = False,
+    keepalive: int | None = None,
 ) -> ConnectHandler:
     device_type = normalize_netmiko_device_type(creds["device_type"], creds["protocol"])
     dev = _base_connect_kwargs(
@@ -393,6 +400,7 @@ def _connect_direct(
         enable_secret=str(creds.get("enable_secret") or ""),
         session_timeout=session_timeout,
         session_log=session_log,
+        keepalive=keepalive,
     )
     return _build_netmiko_connection(dev, interactive=interactive)
 
@@ -602,6 +610,7 @@ def _connect_via_cli_hop(
     cols: int | None = None,
     rows: int | None = None,
     interactive: bool = False,
+    keepalive: int | None = None,
 ) -> ConnectHandler:
     """Login to ZTE/Huawei/Cisco hop NE, run CLI jump command, then target secondary auth."""
     hop_host = str(creds.get("hop_host") or "").strip()
@@ -621,6 +630,7 @@ def _connect_via_cli_hop(
         enable_secret="",
         session_timeout=session_timeout or 180,
         session_log=session_log,
+        keepalive=keepalive,
     )
     conn = _build_netmiko_connection(hop_dev, interactive=interactive)
     try:
@@ -674,6 +684,7 @@ def _connect_via_bastion(
     session_timeout: int | None = None,
     session_log: Any = None,
     interactive: bool = False,
+    keepalive: int | None = None,
 ) -> ConnectHandler:
     """SSH to bastion with composite username; bastion proxies to target (protocol proxy)."""
     hop_host = str(creds.get("hop_host") or "").strip()
@@ -707,6 +718,7 @@ def _connect_via_bastion(
             session_timeout=session_timeout or 180,
             session_log=session_log,
             interactive=interactive,
+            keepalive=keepalive,
         )
     except Exception:
         if ssh_client is not None:
@@ -738,6 +750,7 @@ def _connect_via_linux_hop(
     session_timeout: int | None = None,
     session_log: Any = None,
     interactive: bool = False,
+    keepalive: int | None = None,
 ) -> ConnectHandler:
     """SSH to Linux bastion, then direct-tcpip tunnel to target (classic ProxyJump-style)."""
     hop_host = str(creds.get("hop_host") or "").strip()
@@ -791,6 +804,7 @@ def _connect_via_linux_hop(
         enable_secret=str(creds.get("enable_secret") or ""),
         session_timeout=session_timeout,
         session_log=session_log,
+        keepalive=keepalive,
     )
     dev["sock"] = channel
     conn = _build_netmiko_connection(dev, interactive=interactive)
@@ -822,12 +836,16 @@ def open_netmiko_connection(
     cols: int | None = None,
     rows: int | None = None,
     interactive: bool = False,
+    keepalive: int | None = None,
 ) -> ConnectHandler:
     """Open a Netmiko connection to the target NE (direct or via configured hop).
 
     ``interactive=True`` (WebCRT) skips Netmiko's automatic ``terminal length`` /
     ``terminal width`` (and vendor equivalents). Collection / MCP keep the default.
     """
+    ka = keepalive
+    if ka is None and interactive:
+        ka = int(getattr(settings, "webcrt_keepalive_sec", 0) or 0) or None
     if creds.get("hop_enabled"):
         vendor = _hop_vendor(creds)
         if vendor == "linux":
@@ -836,6 +854,7 @@ def open_netmiko_connection(
                 session_timeout=session_timeout,
                 session_log=session_log,
                 interactive=interactive,
+                keepalive=ka,
             )
         if vendor == "bastion":
             return _connect_via_bastion(
@@ -843,6 +862,7 @@ def open_netmiko_connection(
                 session_timeout=session_timeout,
                 session_log=session_log,
                 interactive=interactive,
+                keepalive=ka,
             )
         return _connect_via_cli_hop(
             creds,
@@ -851,10 +871,12 @@ def open_netmiko_connection(
             cols=cols,
             rows=rows,
             interactive=interactive,
+            keepalive=ka,
         )
     return _connect_direct(
         creds,
         session_timeout=session_timeout,
         session_log=session_log,
         interactive=interactive,
+        keepalive=ka,
     )

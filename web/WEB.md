@@ -139,12 +139,14 @@ src/
 
 ## WebCRT
 
-- API：`POST /v1/webcrt/sessions`（`ne_id` 或 `ume_ne_id`）、`WS /v1/webcrt/sessions/{id}/ws`、`DELETE /v1/webcrt/sessions/{id}`
+- API：`POST /v1/webcrt/sessions`（`ne_id` 或 `ume_ne_id`；可选 `encoding`/`post_login_commands`/`async_connect`）、`WS /v1/webcrt/sessions/{id}/ws`、`DELETE /v1/webcrt/sessions/{id}`
+- SFTP（直连 SSH）：`POST /v1/webcrt/sftp/list|download|upload`
 - 目标列表复用 `/v1/cli/targets`（托管 + UME，搜索分页；`source=all|managed|ume`）
 - 凭据：托管走网元自身账号；UME 走 CLI 连接模板（`resolve_cli_target`）
-- 前端：CRT 风格左右分栏（会话管理 + 多标签终端）
-- 审计：`NETX_WEBCRT_DATA_DIR`（默认 `data/webcrt/audit.jsonl`）
-- 限流：`NETX_WEBCRT_MAX_SESSIONS`、`NETX_WEBCRT_IDLE_TIMEOUT_SEC`
+- 前端：CRT 风格左右分栏（收藏/最近 + 多标签终端）；粘贴节流、选区复制、Break、Ctrl+F、Button Bar、广播、编码/字号
+- WS：stdout 二进制帧合批；stdin 短合批；建连可异步（POST 立即返回，进度经 WS `connecting`→`connected`）
+- 审计 / 会话日志：`NETX_WEBCRT_DATA_DIR`（`audit.jsonl` + `sessions/*.log`）
+- 限流 / 保活：`NETX_WEBCRT_MAX_SESSIONS`、`NETX_WEBCRT_IDLE_TIMEOUT_SEC`、`NETX_WEBCRT_KEEPALIVE_SEC`、`NETX_WEBCRT_ANTI_IDLE_SEC`
 
 ## Toast
 

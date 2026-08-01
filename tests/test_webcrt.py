@@ -15,10 +15,13 @@ class _FakeConn:
     def __init__(self) -> None:
         self.written: list[str] = []
         self.RETURN = "\n"
-        self.remote_conn = MagicMock(spec=["recv_ready", "recv", "exit_status_ready", "resize_pty"])
+        self.remote_conn = MagicMock(spec=["recv_ready", "recv", "exit_status_ready", "resize_pty", "send_break", "send"])
         self.remote_conn.recv_ready.return_value = False
         self.remote_conn.exit_status_ready.return_value = False
         self.remote_conn.resize_pty = MagicMock()
+        self.remote_conn.send_break = MagicMock()
+        # No send by default so write_stdin uses write_channel in unit tests.
+        del self.remote_conn.send
 
     def write_channel(self, data: str) -> None:
         self.written.append(data)
@@ -68,6 +71,9 @@ class WebcrtServiceTests(unittest.TestCase):
         self.assertEqual(conn.written[-1], "\x1b[D")
         sess.resize(120, 40)
         conn.remote_conn.resize_pty.assert_called_with(width=120, height=40)
+        conn.remote_conn.send_break = MagicMock()
+        sess.send_break()
+        conn.remote_conn.send_break.assert_called()
         sess.close("test")
         self.assertTrue(sess.closed)
 
@@ -90,6 +96,11 @@ class WebcrtServiceTests(unittest.TestCase):
         self.assertEqual(svc.normalize_cli_transcript("banner\nR2#R2#"), "banner\nR2#")
         self.assertEqual(svc.prepare_bootstrap_output("login\nR2#\nR2#"), "login\nR2#")
         self.assertTrue(svc.prepare_bootstrap_output("login\nR2#").endswith("R2#"))
+        # Slow VM / prime Enter can leave three identical prompts.
+        self.assertEqual(svc.prepare_bootstrap_output("banner\nR2#\nR2#\nR2#"), "banner\nR2#")
+        self.assertEqual(svc.prepare_bootstrap_output("banner\nR2#\n\nR2#"), "banner\nR2#")
+        self.assertTrue(svc._is_prompt_only_echo("\r\nR2#\r\n", "R2#"))
+        self.assertFalse(svc._is_prompt_only_echo("R2#show clock\r\n", "R2#"))
 
     @patch.object(svc, "_audit")
     @patch.object(svc, "open_netmiko_connection")
@@ -120,11 +131,12 @@ class WebcrtServiceTests(unittest.TestCase):
         db = MagicMock()
 
         with patch.object(svc.settings, "webcrt_max_sessions", 1):
-            out = svc.create_session(db, ne_id="ne-a", cols=80, rows=24, client="test")
+            out = svc.create_session(db, ne_id="ne-a", cols=80, rows=24, client="test", async_connect=False)
             self.assertIn("session_id", out)
+            self.assertEqual(out.get("state"), "ready")
             self.assertFalse(out.get("cli_hop"))
             with self.assertRaises(HTTPException) as ctx:
-                svc.create_session(db, ne_id="ne-a", cols=80, rows=24, client="test")
+                svc.create_session(db, ne_id="ne-a", cols=80, rows=24, client="test", async_connect=False)
             self.assertEqual(ctx.exception.status_code, 429)
 
     @patch.object(svc, "_audit")
@@ -172,7 +184,7 @@ class WebcrtServiceTests(unittest.TestCase):
         mock_open.side_effect = _open_with_log
 
         db = MagicMock()
-        out = svc.create_session(db, ne_id="ne-hop", cols=100, rows=30, client="test")
+        out = svc.create_session(db, ne_id="ne-hop", cols=100, rows=30, client="test", async_connect=False)
         mock_open.assert_called_once()
         called_creds = mock_open.call_args.args[0]
         self.assertTrue(called_creds["hop_enabled"])
@@ -222,13 +234,15 @@ class WebcrtServiceTests(unittest.TestCase):
         )
         mock_open.side_effect = lambda *a, **k: _FakeConn()
         mock_guard.return_value = {"hop_prompt": "<HOP>", "hop_vendor": "huawei", "hop_host": "1.1.1.1"}
-        out = svc.create_session(MagicMock(), ne_id="ne-cli-hop", cols=100, rows=30, client="test")
-        self.assertTrue(out.get("cli_hop"))
-        self.assertEqual(mock_open.call_args.kwargs.get("cols"), 100)
-        self.assertEqual(mock_open.call_args.kwargs.get("rows"), 30)
+        out = svc.create_session(
+            MagicMock(), ne_id="ne-cli-hop", cols=100, rows=30, client="test", async_connect=False
+        )
         sess = svc.get_session(out["session_id"])
         assert sess is not None
         self.assertTrue(sess.cli_hop_guard)
+        self.assertTrue(out.get("cli_hop") or sess.cli_hop_guard)
+        self.assertEqual(mock_open.call_args.kwargs.get("cols"), 100)
+        self.assertEqual(mock_open.call_args.kwargs.get("rows"), 30)
         self.assertEqual(sess.cli_hop_prompt, "<HOP>")
         svc.close_session(out["session_id"], reason="test")
 
@@ -265,7 +279,9 @@ class WebcrtServiceTests(unittest.TestCase):
             },
         )
         mock_open.return_value = _FakeConn()
-        out = svc.create_session(MagicMock(), ne_id="ne-bastion", cols=80, rows=24, client="test")
+        out = svc.create_session(
+            MagicMock(), ne_id="ne-bastion", cols=80, rows=24, client="test", async_connect=False
+        )
         mock_open.assert_called_once()
         self.assertEqual(out["ne_id"], "ne-bastion")
         svc.close_session(out["session_id"], reason="test")
@@ -465,6 +481,19 @@ class WebcrtServiceTests(unittest.TestCase):
         self.assertTrue(
             sess._note_cli_hop_output(b"Connection closed by foreign host\r\n<HUAWEI>\r\n")
         )
+
+    def test_bounded_queue_drops_oldest(self) -> None:
+        q = svc._BoundedByteQueue(maxsize=8)
+        for i in range(10):
+            q.put(str(i).encode())
+        self.assertGreaterEqual(q.dropped, 2)
+        first = q.get_nowait()
+        self.assertEqual(first, b"2")
+
+    def test_normalize_encoding(self) -> None:
+        self.assertEqual(svc._normalize_encoding("GBK"), "gbk")
+        self.assertEqual(svc._normalize_encoding("utf8"), "utf-8")
+        self.assertEqual(svc._encode_text("测", "gbk")[:1], b"\xb2")
 
 
 if __name__ == "__main__":

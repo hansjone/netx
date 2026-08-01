@@ -88,6 +88,17 @@ class Settings(BaseSettings):
     webcrt_connect_timeout_sec: int = 90
     webcrt_attach_timeout_sec: int = 60
     webcrt_data_dir: str = "data/webcrt"
+    # SSH transport keepalive interval (seconds); 0 disables.
+    webcrt_keepalive_sec: int = 30
+    # Device anti-idle CLI nudge (0 = off). Keep off: NEs close idle VTY themselves.
+    webcrt_anti_idle_sec: int = 0
+    webcrt_anti_idle_payload: str = " "
+    # Cap stdout queue depth (drop oldest when full) to protect memory.
+    webcrt_out_queue_max: int = 2000
+    # Persist per-session transcripts under webcrt_data_dir/sessions/.
+    webcrt_session_log_enabled: bool = True
+    # Reader: short blocking wait instead of fixed 40ms spin (seconds).
+    webcrt_reader_poll_sec: float = 0.01
     # Local app login / audit (lab defaults; override in production)
     auth_enabled: bool = True
     # Stable default so JWT survives restarts without .env. Override in production.

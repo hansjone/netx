@@ -459,6 +459,8 @@ export type WebcrtSessionCreateResult = {
   cols: number;
   rows: number;
   ws_path: string;
+  encoding?: string;
+  state?: string;
   /** True when session used a vendor CLI hop (nested stelnet/telnet). */
   cli_hop?: boolean;
 };
@@ -468,12 +470,75 @@ export const createWebcrtSession = (body: {
   ume_ne_id?: string;
   cols?: number;
   rows?: number;
+  encoding?: string;
+  post_login_commands?: string[];
+  async_connect?: boolean;
 }) => apiPost<WebcrtSessionCreateResult>("/v1/webcrt/sessions", body);
 
 export const closeWebcrtSession = (sessionId: string) =>
   apiDelete<{ ok: boolean; session_id: string; closed: boolean }>(
     `/v1/webcrt/sessions/${encodeURIComponent(sessionId)}`,
   );
+
+export type WebcrtSftpListResult = {
+  ne_id: string;
+  ne_name: string;
+  path: string;
+  items: Array<{ name: string; size: number; mtime: number; is_dir: boolean }>;
+};
+
+export const webcrtSftpList = (body: { ne_id?: string; ume_ne_id?: string; path?: string }) =>
+  apiPost<WebcrtSftpListResult>("/v1/webcrt/sftp/list", body);
+
+export async function webcrtSftpDownload(body: {
+  ne_id?: string;
+  ume_ne_id?: string;
+  path: string;
+}): Promise<Blob> {
+  const path = "/v1/webcrt/sftp/download";
+  const res = await fetch(path, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(body),
+  });
+  if (res.status === 401) {
+    handleUnauthorized(path);
+    throw new Error("401 unauthorized");
+  }
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `HTTP ${res.status}`);
+  }
+  return res.blob();
+}
+
+export async function webcrtSftpUpload(body: {
+  ne_id?: string;
+  ume_ne_id?: string;
+  remote_path: string;
+  file: File;
+}): Promise<{ ok: boolean; path: string; size: number }> {
+  const path = "/v1/webcrt/sftp/upload";
+  const fd = new FormData();
+  if (body.ne_id) fd.append("ne_id", body.ne_id);
+  if (body.ume_ne_id) fd.append("ume_ne_id", body.ume_ne_id);
+  fd.append("remote_path", body.remote_path);
+  fd.append("file", body.file);
+  const res = await fetch(path, {
+    method: "POST",
+    headers: authHeaders(),
+    body: fd,
+  });
+  if (res.status === 401) {
+    handleUnauthorized(path);
+    throw new Error("401 unauthorized");
+  }
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `HTTP ${res.status}`);
+  }
+  return (await res.json()) as { ok: boolean; path: string; size: number };
+}
 
 export const webcrtWsUrl = (sessionId: string): string => {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";

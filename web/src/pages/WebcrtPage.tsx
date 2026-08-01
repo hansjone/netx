@@ -9,6 +9,9 @@ import {
   createWebcrtSession,
   fetchCliTargets,
   fetchManagedNeById,
+  webcrtSftpDownload,
+  webcrtSftpList,
+  webcrtSftpUpload,
   webcrtWsUrl,
 } from "../services/api";
 import { pageCount } from "../utils/display";
@@ -50,6 +53,8 @@ function webcrtErrorMessage(err: unknown, t: (key: string, vars?: Record<string,
   if (raw.includes("credentials_incomplete") || raw.includes("cli_username_required")) return t("webcrt.err.credsIncomplete");
   if (raw.includes("cli_connect_profile_not_configured")) return t("webcrt.err.cliProfile");
   if (raw.includes("connect_failed")) return t("webcrt.err.connectFailed", { detail: raw.replace(/^.*connect_failed:/, "") });
+  if (raw.includes("sftp_hop_not_supported")) return t("webcrt.err.sftpHop");
+  if (raw.includes("sftp_requires_ssh")) return t("webcrt.err.sftpSsh");
   return raw;
 }
 
@@ -76,6 +81,9 @@ export function WebcrtPage() {
   const [page, setPage] = useState(1);
   const [tabs, setTabs] = useState<TermTab[]>([]);
   const [activeTabKey, setActiveTabKey] = useState("");
+  const [sftpOpen, setSftpOpen] = useState(false);
+  const [sftpPath, setSftpPath] = useState(".");
+  const [sftpItems, setSftpItems] = useState<Array<{ name: string; size: number; mtime: number; is_dir: boolean }>>([]);
   const connectingKeysRef = useRef<Set<string>>(new Set());
   const tabsRef = useRef<TermTab[]>([]);
   tabsRef.current = tabs;
@@ -145,8 +153,18 @@ export function WebcrtPage() {
         const rows = Math.max(24, Math.floor((window.innerHeight - 180) / 18));
         const body =
           target.source === "ume"
-            ? { ume_ne_id: target.ume_ne_id || target.id, cols, rows }
-            : { ne_id: target.id, cols, rows };
+            ? {
+                ume_ne_id: target.ume_ne_id || target.id,
+                cols,
+                rows,
+                async_connect: true,
+              }
+            : {
+                ne_id: target.id,
+                cols,
+                rows,
+                async_connect: true,
+              };
         const sess = await createWebcrtSession(body);
         const wsUrl = webcrtWsUrl(sess.session_id);
         updateTab(key, {
@@ -228,13 +246,31 @@ export function WebcrtPage() {
     const tab = tabsRef.current.find((x) => x.key === activeTabKey);
     if (!tab) return;
     try {
-      const text = await termRefs.current.get(tab.key)?.copyAll();
+      const handle = termRefs.current.get(tab.key);
+      const sel = await handle?.copySelection();
+      const text = sel || (await handle?.copyAll());
       if (text) showOk(t("webcrt.actions.copied"));
       else showError(t("webcrt.actions.copyEmpty"));
     } catch {
       showError(t("webcrt.actions.copyFailed"));
     }
   }, [activeTabKey, showOk, showError, t]);
+
+  const refreshSftp = useCallback(async () => {
+    const tab = tabsRef.current.find((x) => x.key === activeTabKey);
+    if (!tab) return;
+    try {
+      const body =
+        tab.target.source === "ume"
+          ? { ume_ne_id: tab.target.ume_ne_id || tab.target.id, path: sftpPath }
+          : { ne_id: tab.target.id, path: sftpPath };
+      const res = await webcrtSftpList(body);
+      setSftpItems(res.items || []);
+      setSftpPath(res.path || sftpPath);
+    } catch (err) {
+      showError(webcrtErrorMessage(err, t));
+    }
+  }, [activeTabKey, showError, sftpPath, t]);
 
   // Auto-connect from /webcrt?ne_id=...
   useEffect(() => {
@@ -292,6 +328,35 @@ export function WebcrtPage() {
 
   const activeTab = tabs.find((x) => x.key === activeTabKey) || null;
 
+  const renderDeviceRow = (row: CliTargetItem) => {
+    const key = targetKey(row);
+    const tab = tabs.find((x) => x.key === key);
+    const isConnecting = tab?.status === "connecting" || connectingKeysRef.current.has(key);
+    return (
+      <li key={key}>
+        <button
+          type="button"
+          className={`webcrt-tree__item${activeTabKey === key ? " is-active" : ""}`}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => void openTarget(row)}
+          title={`${deviceLabel(row)}\n${row.ip_address}\n${row.source}`}
+        >
+          <span className="webcrt-tree__icon" aria-hidden>
+            <ComputerIcon />
+          </span>
+          <span className="webcrt-tree__label">
+            <span className="webcrt-tree__name">{deviceLabel(row)}</span>
+            <span className="webcrt-tree__meta">
+              {row.ip_address || row.source}
+              {isConnecting ? ` · ${t("webcrt.status.connecting")}` : ""}
+              {tab?.status === "connected" ? ` · ${t("webcrt.status.connected")}` : ""}
+            </span>
+          </span>
+        </button>
+      </li>
+    );
+  };
+
   return (
     <div className="webcrt-shell">
       <aside className="webcrt-sidebar">
@@ -326,39 +391,7 @@ export function WebcrtPage() {
           {!targetsQuery.isLoading && items.length === 0 ? (
             <div className="webcrt-tree__empty">{t("webcrt.empty")}</div>
           ) : null}
-          <ul className="webcrt-tree__list">
-            {items.map((row) => {
-              const key = targetKey(row);
-              const tab = tabs.find((x) => x.key === key);
-              const isConnecting = tab?.status === "connecting" || connectingKeysRef.current.has(key);
-              return (
-                <li key={key}>
-                  <button
-                    type="button"
-                    className={`webcrt-tree__item${activeTabKey === key ? " is-active" : ""}`}
-                    onMouseDown={(e) => {
-                      // Keep focus off the list button so Enter/Backspace go to the CRT.
-                      e.preventDefault();
-                    }}
-                    onClick={() => void openTarget(row)}
-                    title={`${deviceLabel(row)}\n${row.ip_address}\n${row.source}`}
-                  >
-                    <span className="webcrt-tree__icon" aria-hidden>
-                      <ComputerIcon />
-                    </span>
-                    <span className="webcrt-tree__label">
-                      <span className="webcrt-tree__name">{deviceLabel(row)}</span>
-                      <span className="webcrt-tree__meta">
-                        {row.ip_address || row.source}
-                        {isConnecting ? ` · ${t("webcrt.status.connecting")}` : ""}
-                        {tab?.status === "connected" ? ` · ${t("webcrt.status.connected")}` : ""}
-                      </span>
-                    </span>
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
+          <ul className="webcrt-tree__list">{items.map((row) => renderDeviceRow(row))}</ul>
         </div>
         <div className="webcrt-sidebar__pager">
           <span>{t("common.pagerMeta", { total, page, pages })}</span>
@@ -435,6 +468,16 @@ export function WebcrtPage() {
                   <span aria-hidden>⧉</span>
                   {t("webcrt.actions.copy")}
                 </button>
+                <button
+                  type="button"
+                  className={`webcrt-action-btn${sftpOpen ? " is-active" : ""}`}
+                  onClick={() => {
+                    setSftpOpen((v) => !v);
+                    if (!sftpOpen) void refreshSftp();
+                  }}
+                >
+                  SFTP
+                </button>
               </div>
             ) : null}
             <div className="webcrt-main__body">
@@ -476,6 +519,8 @@ export function WebcrtPage() {
                           if (activeTabKey === tab.key) {
                             window.setTimeout(() => termRefs.current.get(tab.key)?.focus(), 40);
                           }
+                        } else if (state === "connecting") {
+                          updateTab(tab.key, { status: "connecting" });
                         } else if (state === "error") updateTab(tab.key, { status: "error" });
                         else if (state === "closed") updateTab(tab.key, { status: "closed" });
                       }}
@@ -483,6 +528,89 @@ export function WebcrtPage() {
                   ) : null}
                 </div>
               ))}
+              {sftpOpen && activeTab ? (
+                <div className="webcrt-sftp">
+                  <div className="webcrt-sftp__bar">
+                    <input value={sftpPath} onChange={(e) => setSftpPath(e.target.value)} />
+                    <button type="button" onClick={() => void refreshSftp()}>
+                      {t("webcrt.sftp.refresh")}
+                    </button>
+                    <label className="webcrt-sftp__upload">
+                      {t("webcrt.sftp.upload")}
+                      <input
+                        type="file"
+                        hidden
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (!file || !activeTab) return;
+                          const remote = `${sftpPath.replace(/\/$/, "")}/${file.name}`.replace(/^\.\//, "");
+                          void (async () => {
+                            try {
+                              const body =
+                                activeTab.target.source === "ume"
+                                  ? {
+                                      ume_ne_id: activeTab.target.ume_ne_id || activeTab.target.id,
+                                      remote_path: remote,
+                                      file,
+                                    }
+                                  : { ne_id: activeTab.target.id, remote_path: remote, file };
+                              await webcrtSftpUpload(body);
+                              showOk(t("webcrt.sftp.uploaded"));
+                              await refreshSftp();
+                            } catch (err) {
+                              showError(webcrtErrorMessage(err, t));
+                            }
+                          })();
+                          e.target.value = "";
+                        }}
+                      />
+                    </label>
+                  </div>
+                  <ul className="webcrt-sftp__list">
+                    {sftpItems.map((it) => (
+                      <li key={it.name}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (it.is_dir) {
+                              const next = `${sftpPath.replace(/\/$/, "")}/${it.name}`.replace(/^\.\//, "");
+                              setSftpPath(next);
+                              window.setTimeout(() => void refreshSftp(), 0);
+                              return;
+                            }
+                            void (async () => {
+                              try {
+                                const body =
+                                  activeTab.target.source === "ume"
+                                    ? {
+                                        ume_ne_id: activeTab.target.ume_ne_id || activeTab.target.id,
+                                        path: `${sftpPath.replace(/\/$/, "")}/${it.name}`,
+                                      }
+                                    : {
+                                        ne_id: activeTab.target.id,
+                                        path: `${sftpPath.replace(/\/$/, "")}/${it.name}`,
+                                      };
+                                const blob = await webcrtSftpDownload(body);
+                                const url = URL.createObjectURL(blob);
+                                const a = document.createElement("a");
+                                a.href = url;
+                                a.download = it.name;
+                                a.click();
+                                URL.revokeObjectURL(url);
+                              } catch (err) {
+                                showError(webcrtErrorMessage(err, t));
+                              }
+                            })();
+                          }}
+                        >
+                          {it.is_dir ? "📁" : "📄"} {it.name}
+                          {!it.is_dir ? ` (${it.size})` : ""}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
             </div>
           </>
         ) : (
