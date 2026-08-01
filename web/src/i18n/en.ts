@@ -1049,6 +1049,13 @@ const en = {
       loading: "Loading…",
       enterHint: "Double-click to open folder",
       downloadHint: "Click to download",
+      colName: "Name",
+      colSize: "Size (KB)",
+      colMtime: "Last modified",
+      colOwner: "Owner",
+      colGroup: "Group",
+      colMode: "Access",
+      resizeHint: "Drag to resize SFTP / terminal",
     },
     term: {
       findPh: "Find…",

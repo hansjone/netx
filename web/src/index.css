@@ -2728,6 +2728,16 @@ pre {
   min-height: 0;
   position: relative;
   background: #0b1220;
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+}
+
+.webcrt-main__terms {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
 }
 
 .webcrt-main__pane {
@@ -3033,17 +3043,40 @@ pre {
   padding: 6px;
 }
 
-.webcrt-sftp {
-  position: absolute;
-  right: 0;
-  top: 0;
-  bottom: 0;
-  width: min(320px, 40%);
-  background: #0f172a;
+.webcrt-sftp-split {
+  flex: 0 0 5px;
+  width: 5px;
+  cursor: col-resize;
+  background: #1e293b;
   border-left: 1px solid #334155;
+  border-right: 1px solid #334155;
+  z-index: 4;
+  position: relative;
+}
+
+.webcrt-sftp-split:hover,
+.webcrt-sftp-split.is-dragging {
+  background: #0ea5e9;
+}
+
+.webcrt-sftp-split::after {
+  content: "";
+  position: absolute;
+  inset: 0 -3px;
+}
+
+.webcrt-sftp {
+  position: relative;
+  flex: 0 0 auto;
+  width: 420px;
+  max-width: 75%;
+  min-width: 280px;
+  background: #0f172a;
+  border-left: 0;
   z-index: 3;
   display: flex;
   flex-direction: column;
+  min-height: 0;
 }
 
 .webcrt-sftp.is-busy {
@@ -3055,6 +3088,7 @@ pre {
   gap: 4px;
   padding: 6px;
   border-bottom: 1px solid #334155;
+  flex-shrink: 0;
 }
 
 .webcrt-sftp__bar input {
@@ -3088,30 +3122,95 @@ pre {
   font-size: 11px;
   color: #94a3b8;
   border-bottom: 1px solid #1e293b;
+  flex-shrink: 0;
 }
 
-.webcrt-sftp__list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  overflow: auto;
+.webcrt-sftp__table-wrap {
   flex: 1;
+  min-height: 0;
+  overflow: auto;
 }
 
-.webcrt-sftp__list button {
+.webcrt-sftp__table {
   width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 12px;
+  color: #e2e8f0;
+}
+
+.webcrt-sftp__table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #1e293b;
+  color: #94a3b8;
+  font-weight: 600;
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid #334155;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.webcrt-sftp__table tbody tr {
+  cursor: pointer;
+  user-select: none;
+}
+
+.webcrt-sftp__table tbody tr:hover {
+  background: #1e293b;
+}
+
+.webcrt-sftp__table tbody tr.is-busy {
+  opacity: 0.7;
+  cursor: progress;
+}
+
+.webcrt-sftp__table td {
+  padding: 5px 8px;
+  border-bottom: 1px solid #1e293b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.webcrt-sftp__col-name {
+  width: 36%;
+}
+
+.webcrt-sftp__col-size {
+  width: 12%;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: #94a3b8;
+}
+
+.webcrt-sftp__col-mtime {
+  width: 20%;
+  font-variant-numeric: tabular-nums;
+  color: #94a3b8;
+}
+
+.webcrt-sftp__col-owner,
+.webcrt-sftp__col-group {
+  width: 10%;
+  color: #94a3b8;
+}
+
+.webcrt-sftp__col-mode {
+  width: 12%;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 11px;
+  color: #64748b;
+}
+
+.webcrt-sftp__name-cell {
   display: flex;
   align-items: center;
   gap: 8px;
-  text-align: left;
-  background: transparent;
-  border: 0;
-  border-bottom: 1px solid #1e293b;
-  color: #e2e8f0;
-  padding: 6px 10px;
-  font-size: 12px;
-  cursor: pointer;
-  user-select: none;
+  min-width: 0;
 }
 
 .webcrt-sftp__icon {
@@ -3127,25 +3226,9 @@ pre {
 
 .webcrt-sftp__name {
   min-width: 0;
-  flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.webcrt-sftp__size {
-  flex-shrink: 0;
-  color: #64748b;
-  font-variant-numeric: tabular-nums;
-}
-
-.webcrt-sftp__list button:hover:not(:disabled) {
-  background: #1e293b;
-}
-
-.webcrt-sftp__list button:disabled {
-  opacity: 0.7;
-  cursor: progress;
 }
 
 @media (max-width: 900px) {

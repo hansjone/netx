@@ -1046,6 +1046,13 @@ const zh = {
       loading: "正在加载…",
       enterHint: "双击进入目录",
       downloadHint: "单击下载文件",
+      colName: "名称",
+      colSize: "大小 (KB)",
+      colMtime: "修改时间",
+      colOwner: "所有者",
+      colGroup: "组",
+      colMode: "权限",
+      resizeHint: "拖动调整 SFTP / 终端宽度",
     },
     term: {
       findPh: "查找…",

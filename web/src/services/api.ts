@@ -546,11 +546,23 @@ export const closeWebcrtSession = (sessionId: string) =>
     `/v1/webcrt/sessions/${encodeURIComponent(sessionId)}`,
   );
 
+export type WebcrtSftpItem = {
+  name: string;
+  size: number;
+  mtime: number;
+  is_dir: boolean;
+  mode?: string;
+  owner?: string;
+  group?: string;
+  uid?: number;
+  gid?: number;
+};
+
 export type WebcrtSftpListResult = {
   ne_id: string;
   ne_name: string;
   path: string;
-  items: Array<{ name: string; size: number; mtime: number; is_dir: boolean }>;
+  items: WebcrtSftpItem[];
 };
 
 export const webcrtSftpList = (body: { ne_id?: string; ume_ne_id?: string; path?: string }) =>

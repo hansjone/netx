@@ -734,6 +734,20 @@ class WebcrtServiceTests(unittest.TestCase):
         # Direct SSH is allowed (no raise).
         _require_ssh_direct({"protocol": "ssh", "hop_enabled": False}, {"protocol": "ssh"})
 
+    def test_sftp_list_metadata_helpers(self) -> None:
+        from types import SimpleNamespace
+
+        from netx_api.webcrt_sftp import _filemode, _owner_group
+
+        self.assertEqual(_filemode(0o100644), "-rw-r--r--")
+        self.assertEqual(_filemode(0o040755), "drwxr-xr-x")
+        owner, group = _owner_group(
+            SimpleNamespace(longname="-rw------- 1 alice eng 12 Jan 1 00:00 a", st_uid=1000, st_gid=100)
+        )
+        self.assertEqual((owner, group), ("alice", "eng"))
+        owner2, group2 = _owner_group(SimpleNamespace(longname="", st_uid=0, st_gid=1))
+        self.assertEqual((owner2, group2), ("0", "1"))
+
     @patch.object(svc, "_audit")
     def test_find_ssh_session_for_ne_prefers_attached(self, _mock_audit: MagicMock) -> None:
         conn = _FakeConn()

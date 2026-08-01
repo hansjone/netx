@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { WebTerminal, type WebTerminalHandle } from "../components/WebTerminal";
@@ -17,6 +17,7 @@ import {
   webcrtSftpList,
   webcrtSftpUpload,
   webcrtWsUrl,
+  type WebcrtSftpItem,
 } from "../services/api";
 import { pageCount } from "../utils/display";
 import type { CliTargetItem, ManagedNeItem } from "../types";
@@ -32,6 +33,9 @@ import {
 const PAGE_SIZE = 50;
 const SESSION_OPTS_KEY = "netx.webcrt.sessionOptions";
 const LEGACY_TERM_PREFS_KEY = "netx.webcrt.termPrefs";
+const SFTP_WIDTH_KEY = "netx.webcrt.sftpWidth";
+const SFTP_WIDTH_DEFAULT = 480;
+const SFTP_WIDTH_MIN = 280;
 const ENCODING_OPTIONS = ["utf-8", "gbk", "gb2312", "gb18030"] as const;
 const FONT_SIZE_OPTIONS = [12, 13, 14, 16, 18, 20] as const;
 const PASTE_DELAY_OPTIONS = [0, 20, 40, 60, 100, 150] as const;
@@ -378,6 +382,41 @@ function joinSftpPath(base: string, name: string): string {
   return `${b}/${n}`;
 }
 
+function loadSftpWidth(): number {
+  try {
+    const n = Number(localStorage.getItem(SFTP_WIDTH_KEY));
+    if (Number.isFinite(n) && n >= SFTP_WIDTH_MIN) return Math.min(Math.round(n), 1200);
+  } catch {
+    /* ignore */
+  }
+  return SFTP_WIDTH_DEFAULT;
+}
+
+function saveSftpWidth(width: number): void {
+  try {
+    localStorage.setItem(SFTP_WIDTH_KEY, String(Math.round(width)));
+  } catch {
+    /* ignore */
+  }
+}
+
+function formatSftpSizeKb(bytes: number, isDir: boolean): string {
+  if (isDir) return "";
+  const kb = Number(bytes || 0) / 1024;
+  if (!Number.isFinite(kb) || kb <= 0) return "0";
+  if (kb < 10) return kb.toFixed(1);
+  return String(Math.round(kb));
+}
+
+function formatSftpMtime(sec: number): string {
+  const n = Number(sec || 0);
+  if (!Number.isFinite(n) || n <= 0) return "";
+  const d = new Date(n * 1000);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (x: number) => String(x).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
 function connectFailedNe(err: unknown): ManagedNeItem | null {
   if (!(err instanceof ApiRequestError)) return null;
   const detail = err.detail;
@@ -453,8 +492,12 @@ export function WebcrtPage() {
   const [sftpOpen, setSftpOpen] = useState(false);
   const [sftpPath, setSftpPath] = useState(".");
   const [sftpBusy, setSftpBusy] = useState(false);
-  const [sftpItems, setSftpItems] = useState<Array<{ name: string; size: number; mtime: number; is_dir: boolean }>>([]);
+  const [sftpItems, setSftpItems] = useState<WebcrtSftpItem[]>([]);
+  const [sftpWidth, setSftpWidth] = useState(() => loadSftpWidth());
+  const [sftpResizing, setSftpResizing] = useState(false);
   const sftpPathRef = useRef(".");
+  const sftpBodyRef = useRef<HTMLDivElement | null>(null);
+  const sftpDragRef = useRef<{ startX: number; startW: number } | null>(null);
   sftpPathRef.current = sftpPath;
   const [sessionOpts, setSessionOpts] = useState<SessionOptions>(() => loadSessionOptions());
   const [optionsMenuOpen, setOptionsMenuOpen] = useState(false);
@@ -1120,6 +1163,36 @@ export function WebcrtPage() {
     [refreshSftp],
   );
 
+  const onSftpSplitDown = useCallback((e: ReactMouseEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    sftpDragRef.current = { startX: e.clientX, startW: sftpWidth };
+    setSftpResizing(true);
+    const onMove = (ev: MouseEvent) => {
+      const drag = sftpDragRef.current;
+      if (!drag) return;
+      const bodyW = sftpBodyRef.current?.clientWidth || window.innerWidth;
+      const maxW = Math.max(SFTP_WIDTH_MIN, Math.floor(bodyW * 0.75));
+      const next = Math.max(SFTP_WIDTH_MIN, Math.min(maxW, drag.startW + (drag.startX - ev.clientX)));
+      setSftpWidth(next);
+    };
+    const onUp = () => {
+      sftpDragRef.current = null;
+      setSftpResizing(false);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      setSftpWidth((w) => {
+        saveSftpWidth(w);
+        return w;
+      });
+    };
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, [sftpWidth]);
+
   // Auto-connect from /webcrt?ne_id=...
   useEffect(() => {
     if (!presetNeId) return;
@@ -1470,7 +1543,11 @@ export function WebcrtPage() {
                 </button>
               </div>
             ) : null}
-            <div className="webcrt-main__body">
+            <div
+              ref={sftpBodyRef}
+              className={`webcrt-main__body${sftpOpen && activeTab && sftpAllowed ? " has-sftp" : ""}`}
+            >
+              <div className="webcrt-main__terms">
               {tabs.map((tab) => {
                 const isActive = activeTabKey === tab.key;
                 // Only the active tab mounts xterm + WS; background tabs detach and re-attach on focus.
@@ -1655,85 +1732,58 @@ export function WebcrtPage() {
                 </div>
                 );
               })}
+              </div>
               {sftpOpen && activeTab && sftpAllowed ? (
-                <div className={`webcrt-sftp${sftpBusy ? " is-busy" : ""}`}>
-                  <div className="webcrt-sftp__bar">
-                    <button
-                      type="button"
-                      title={t("webcrt.sftp.up")}
-                      disabled={sftpBusy}
-                      onClick={() => navigateSftp(sftpParentPath(sftpPathRef.current))}
-                    >
-                      {t("webcrt.sftp.up")}
-                    </button>
-                    <input
-                      value={sftpPath}
-                      disabled={sftpBusy}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        sftpPathRef.current = v;
-                        setSftpPath(v);
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          e.preventDefault();
-                          void refreshSftp(sftpPathRef.current);
-                        }
-                      }}
-                    />
-                    <button type="button" disabled={sftpBusy} onClick={() => void refreshSftp()}>
-                      {t("webcrt.sftp.refresh")}
-                    </button>
-                    <label className={`webcrt-sftp__upload${sftpBusy ? " is-disabled" : ""}`}>
-                      {t("webcrt.sftp.upload")}
+                <>
+                  <div
+                    className={`webcrt-sftp-split${sftpResizing ? " is-dragging" : ""}`}
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-label={t("webcrt.sftp.resizeHint")}
+                    title={t("webcrt.sftp.resizeHint")}
+                    onMouseDown={onSftpSplitDown}
+                  />
+                  <aside
+                    className={`webcrt-sftp${sftpBusy ? " is-busy" : ""}`}
+                    style={{ width: sftpWidth }}
+                  >
+                    <div className="webcrt-sftp__bar">
+                      <button
+                        type="button"
+                        title={t("webcrt.sftp.up")}
+                        disabled={sftpBusy}
+                        onClick={() => navigateSftp(sftpParentPath(sftpPathRef.current))}
+                      >
+                        {t("webcrt.sftp.up")}
+                      </button>
                       <input
-                        type="file"
-                        hidden
+                        value={sftpPath}
                         disabled={sftpBusy}
                         onChange={(e) => {
-                          const file = e.target.files?.[0];
-                          if (!file || !activeTab || sftpBusy) return;
-                          const remote = joinSftpPath(sftpPathRef.current, file.name);
-                          void (async () => {
-                            setSftpBusy(true);
-                            try {
-                              const body =
-                                activeTab.target.source === "ume"
-                                  ? {
-                                      ume_ne_id: activeTab.target.ume_ne_id || activeTab.target.id,
-                                      remote_path: remote,
-                                      file,
-                                    }
-                                  : { ne_id: activeTab.target.id, remote_path: remote, file };
-                              await webcrtSftpUpload(body);
-                              showOk(t("webcrt.sftp.uploaded"));
-                              await refreshSftp(sftpPathRef.current);
-                            } catch (err) {
-                              showError(webcrtErrorMessage(err, t));
-                            } finally {
-                              setSftpBusy(false);
-                            }
-                          })();
-                          e.target.value = "";
+                          const v = e.target.value;
+                          sftpPathRef.current = v;
+                          setSftpPath(v);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            void refreshSftp(sftpPathRef.current);
+                          }
                         }}
                       />
-                    </label>
-                  </div>
-                  {sftpBusy ? (
-                    <div className="webcrt-sftp__status" role="status">
-                      {t("webcrt.sftp.loading")}
-                    </div>
-                  ) : null}
-                  <ul className="webcrt-sftp__list">
-                    {sftpItems.map((it) => (
-                      <li key={`${sftpPath}:${it.is_dir ? "d" : "f"}:${it.name}`}>
-                        <button
-                          type="button"
+                      <button type="button" disabled={sftpBusy} onClick={() => void refreshSftp()}>
+                        {t("webcrt.sftp.refresh")}
+                      </button>
+                      <label className={`webcrt-sftp__upload${sftpBusy ? " is-disabled" : ""}`}>
+                        {t("webcrt.sftp.upload")}
+                        <input
+                          type="file"
+                          hidden
                           disabled={sftpBusy}
-                          title={it.is_dir ? t("webcrt.sftp.enterHint") : t("webcrt.sftp.downloadHint")}
-                          onClick={() => {
-                            if (it.is_dir || sftpBusy) return;
-                            const remote = joinSftpPath(sftpPathRef.current, it.name);
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (!file || !activeTab || sftpBusy) return;
+                            const remote = joinSftpPath(sftpPathRef.current, file.name);
                             void (async () => {
                               setSftpBusy(true);
                               try {
@@ -1741,38 +1791,101 @@ export function WebcrtPage() {
                                   activeTab.target.source === "ume"
                                     ? {
                                         ume_ne_id: activeTab.target.ume_ne_id || activeTab.target.id,
-                                        path: remote,
+                                        remote_path: remote,
+                                        file,
                                       }
-                                    : { ne_id: activeTab.target.id, path: remote };
-                                const blob = await webcrtSftpDownload(body);
-                                const url = URL.createObjectURL(blob);
-                                const a = document.createElement("a");
-                                a.href = url;
-                                a.download = it.name;
-                                a.click();
-                                URL.revokeObjectURL(url);
+                                    : { ne_id: activeTab.target.id, remote_path: remote, file };
+                                await webcrtSftpUpload(body);
+                                showOk(t("webcrt.sftp.uploaded"));
+                                await refreshSftp(sftpPathRef.current);
                               } catch (err) {
                                 showError(webcrtErrorMessage(err, t));
                               } finally {
                                 setSftpBusy(false);
                               }
                             })();
+                            e.target.value = "";
                           }}
-                          onDoubleClick={() => {
-                            if (!it.is_dir || sftpBusy) return;
-                            navigateSftp(joinSftpPath(sftpPathRef.current, it.name));
-                          }}
-                        >
-                          <span className={`webcrt-sftp__icon${it.is_dir ? " is-dir" : ""}`}>
-                            {it.is_dir ? <FolderIcon /> : <FileIcon />}
-                          </span>
-                          <span className="webcrt-sftp__name">{it.name}</span>
-                          {!it.is_dir ? <span className="webcrt-sftp__size">({it.size})</span> : null}
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
+                        />
+                      </label>
+                    </div>
+                    {sftpBusy ? (
+                      <div className="webcrt-sftp__status" role="status">
+                        {t("webcrt.sftp.loading")}
+                      </div>
+                    ) : null}
+                    <div className="webcrt-sftp__table-wrap">
+                      <table className="webcrt-sftp__table">
+                        <thead>
+                          <tr>
+                            <th className="webcrt-sftp__col-name">{t("webcrt.sftp.colName")}</th>
+                            <th className="webcrt-sftp__col-size">{t("webcrt.sftp.colSize")}</th>
+                            <th className="webcrt-sftp__col-mtime">{t("webcrt.sftp.colMtime")}</th>
+                            <th className="webcrt-sftp__col-owner">{t("webcrt.sftp.colOwner")}</th>
+                            <th className="webcrt-sftp__col-group">{t("webcrt.sftp.colGroup")}</th>
+                            <th className="webcrt-sftp__col-mode">{t("webcrt.sftp.colMode")}</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {sftpItems.map((it) => (
+                            <tr
+                              key={`${sftpPath}:${it.is_dir ? "d" : "f"}:${it.name}`}
+                              className={sftpBusy ? "is-busy" : undefined}
+                              title={it.is_dir ? t("webcrt.sftp.enterHint") : t("webcrt.sftp.downloadHint")}
+                              onClick={() => {
+                                if (it.is_dir || sftpBusy) return;
+                                const remote = joinSftpPath(sftpPathRef.current, it.name);
+                                void (async () => {
+                                  setSftpBusy(true);
+                                  try {
+                                    const body =
+                                      activeTab.target.source === "ume"
+                                        ? {
+                                            ume_ne_id: activeTab.target.ume_ne_id || activeTab.target.id,
+                                            path: remote,
+                                          }
+                                        : { ne_id: activeTab.target.id, path: remote };
+                                    const blob = await webcrtSftpDownload(body);
+                                    const url = URL.createObjectURL(blob);
+                                    const a = document.createElement("a");
+                                    a.href = url;
+                                    a.download = it.name;
+                                    a.click();
+                                    URL.revokeObjectURL(url);
+                                  } catch (err) {
+                                    showError(webcrtErrorMessage(err, t));
+                                  } finally {
+                                    setSftpBusy(false);
+                                  }
+                                })();
+                              }}
+                              onDoubleClick={() => {
+                                if (!it.is_dir || sftpBusy) return;
+                                navigateSftp(joinSftpPath(sftpPathRef.current, it.name));
+                              }}
+                            >
+                              <td className="webcrt-sftp__col-name">
+                                <span className="webcrt-sftp__name-cell">
+                                  <span className={`webcrt-sftp__icon${it.is_dir ? " is-dir" : ""}`}>
+                                    {it.is_dir ? <FolderIcon /> : <FileIcon />}
+                                  </span>
+                                  <span className="webcrt-sftp__name">{it.name}</span>
+                                </span>
+                              </td>
+                              <td className="webcrt-sftp__col-size">
+                                {formatSftpSizeKb(it.size, it.is_dir)}
+                              </td>
+                              <td className="webcrt-sftp__col-mtime">{formatSftpMtime(it.mtime)}</td>
+                              <td className="webcrt-sftp__col-owner">{it.owner || ""}</td>
+                              <td className="webcrt-sftp__col-group">{it.group || ""}</td>
+                              <td className="webcrt-sftp__col-mode">{it.mode || ""}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </aside>
+                </>
               ) : null}
             </div>
           </>

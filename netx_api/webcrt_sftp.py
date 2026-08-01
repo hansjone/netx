@@ -184,6 +184,23 @@ def _sftp_client(
             raise
 
 
+def _filemode(mode: int) -> str:
+    try:
+        return str(statmod.filemode(int(mode)))
+    except Exception:
+        return ""
+
+
+def _owner_group(attr: Any) -> tuple[str, str]:
+    longname = str(getattr(attr, "longname", "") or "").strip()
+    parts = longname.split()
+    if len(parts) >= 4 and parts[0][:1] in ("-", "d", "l", "c", "b", "p", "s"):
+        return str(parts[2]), str(parts[3])
+    uid = getattr(attr, "st_uid", None)
+    gid = getattr(attr, "st_gid", None)
+    return ("" if uid is None else str(uid), "" if gid is None else str(gid))
+
+
 def sftp_list(
     db: Session,
     *,
@@ -200,12 +217,18 @@ def sftp_list(
                 name = str(attr.filename or "")
                 if not name or name in (".", ".."):
                     continue
+                owner, group = _owner_group(attr)
                 entries.append(
                     {
                         "name": name,
                         "size": int(getattr(attr, "st_size", 0) or 0),
                         "mtime": int(getattr(attr, "st_mtime", 0) or 0),
                         "is_dir": bool(statmod.S_ISDIR(mode)),
+                        "mode": _filemode(mode),
+                        "owner": owner,
+                        "group": group,
+                        "uid": int(getattr(attr, "st_uid", 0) or 0),
+                        "gid": int(getattr(attr, "st_gid", 0) or 0),
                     }
                 )
             entries.sort(key=lambda x: (not x["is_dir"], str(x["name"]).lower()))
