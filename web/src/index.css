@@ -2800,14 +2800,17 @@ pre {
   color: #5b6b7c;
 }
 
+.app-main .topo-toolbar__find,
 .topo-toolbar__find {
   width: 190px;
   max-width: 36vw;
-  height: 28px;
+  height: 30px;
+  box-sizing: border-box;
   padding: 0 8px;
   border: 1px solid #b8c4d2;
   border-radius: 6px;
   font-size: 12px;
+  line-height: 1.2;
   background: #fff;
 }
 
@@ -2903,26 +2906,27 @@ pre {
   line-height: 1;
 }
 
+.app-main .topo-toolbar__select,
 .topo-toolbar__select {
   min-width: 88px;
-  height: 28px;
+  height: 30px;
+  box-sizing: border-box;
   border: 1px solid #b8c4d2;
   border-radius: 6px;
   background: #fff;
   color: #0f2744;
   font-size: 12px;
+  line-height: 1.2;
   padding: 0 8px;
+  vertical-align: middle;
 }
 
-.topo-toolbar__display {
-  position: relative;
-}
-
+.app-main .topo-toolbar__display > summary,
 .topo-toolbar__display > summary {
   list-style: none;
   cursor: pointer;
   user-select: none;
-  height: 28px;
+  height: 30px;
   padding: 0 10px;
   border: 1px solid #b8c4d2;
   border-radius: 6px;
@@ -2930,8 +2934,13 @@ pre {
   color: #0f2744;
   font-size: 12px;
   font-weight: 600;
+  line-height: 1.2;
   display: inline-flex;
   align-items: center;
+}
+
+.topo-toolbar__display {
+  position: relative;
 }
 
 .topo-toolbar__display > summary::-webkit-details-marker {

@@ -2293,6 +2293,7 @@ export function TopologyPage() {
                 nodeTypes={nodeTypes}
                 connectionMode={ConnectionMode.Loose}
                 defaultEdgeOptions={{ type: "straight" }}
+                proOptions={{ hideAttribution: true }}
                 nodesDraggable={toolBehavior.nodesDraggable}
                 nodesConnectable={toolBehavior.nodesConnectable}
                 elementsSelectable={toolBehavior.elementsSelectable}
@@ -2370,30 +2371,6 @@ export function TopologyPage() {
                   </ControlButton>
                 </Controls>
                 <MiniMap pannable zoomable />
-                <div className="topo-legend" aria-hidden="true">
-                  {(
-                    [
-                      ["manual", t("topology.edgeManual")],
-                      ["discovered", t("topology.edgeDiscovered")],
-                      ["stale", t("topology.edgeStale")],
-                    ] as const
-                  ).map(([kind, label]) => {
-                    const d = edgeDefaults[kind];
-                    return (
-                      <span key={kind} className="topo-legend__item">
-                        <span
-                          className="topo-legend__swatch"
-                          style={{
-                            borderTopColor: d.stroke_color,
-                            borderTopWidth: Math.max(1, Math.min(4, d.stroke_width)),
-                            borderTopStyle: d.line_style === "solid" ? "solid" : "dashed",
-                          }}
-                        />
-                        {label}
-                      </span>
-                    );
-                  })}
-                </div>
               </ReactFlow>
             </TopoDisplayContext.Provider>
           ) : (
