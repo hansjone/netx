@@ -77,6 +77,7 @@ class ManagedNeApiTests(unittest.TestCase):
         )
         ManagedNE.__table__.create(bind=self.engine, checkfirst=True)
         UmeInventoryNE.__table__.create(bind=self.engine, checkfirst=True)
+        Base.metadata.create_all(bind=self.engine)
         self.Session = sessionmaker(bind=self.engine, autoflush=False, autocommit=False)
 
         def override_get_db():
@@ -89,9 +90,17 @@ class ManagedNeApiTests(unittest.TestCase):
         app.dependency_overrides[get_db] = override_get_db
         self._session_patch = patch("netx_api.ne_connect.SessionLocal", self.Session)
         self._session_patch.start()
+        self._auth_patches = [
+            patch("netx_api.auth_middleware.settings.auth_enabled", False),
+            patch("netx_api.auth_deps.settings.auth_enabled", False),
+        ]
+        for p in self._auth_patches:
+            p.start()
         self.client = TestClient(app)
 
     def tearDown(self):
+        for p in getattr(self, "_auth_patches", []):
+            p.stop()
         app.dependency_overrides.clear()
         self._session_patch.stop()
         settings.credential_secret_key = self._orig_key

@@ -249,7 +249,7 @@ def get_ws_connection_status() -> dict[str, Any]:
         detail = str(_ws_connection_detail or "")
     return {
         "state": state,
-        "label": f"ws:{state}",
+        "label": _WS_CONNECTION_LABELS.get(state, state),
         "detail": detail,
     }
 
