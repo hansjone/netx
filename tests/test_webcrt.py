@@ -867,8 +867,8 @@ class WebcrtServiceTests(unittest.TestCase):
         self.assertIn("filename=", dispo)
         self.assertIn("filename*=UTF-8''", dispo)
         self.assertNotIn("\n", dispo)
-        self.assertEqual(int(cfg.settings.webcrt_sftp_max_file_bytes), 256 * 1024 * 1024)
-        self.assertEqual(int(cfg.settings.webcrt_sftp_list_max_entries), 2000)
+        self.assertEqual(int(cfg.settings.webcrt_sftp_max_file_bytes), 512 * 1024 * 1024)
+        self.assertEqual(int(cfg.settings.webcrt_sftp_list_max_entries), 5000)
 
     def test_sftp_rename_rejects_bad_paths(self) -> None:
         from unittest.mock import MagicMock

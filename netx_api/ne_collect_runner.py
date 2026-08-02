@@ -29,7 +29,7 @@ _executor: ThreadPoolExecutor | None = None
 def _executor_pool() -> ThreadPoolExecutor:
     global _executor
     if _executor is None:
-        workers = clamp_cli_workers(int(settings.ne_collect_max_workers or 4))
+        workers = clamp_cli_workers(int(settings.ne_collect_max_workers or 8))
         _executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ne-collect")
     return _executor
 

@@ -17,7 +17,7 @@ _in_use_lock = threading.Lock()
 def _ensure_sem() -> threading.BoundedSemaphore:
     global _sem, _limit
     with _lock:
-        want = max(1, int(getattr(settings, "cli_max_concurrent", 12) or 12))
+        want = max(1, int(getattr(settings, "cli_max_concurrent", 24) or 24))
         if _sem is None or want != _limit:
             _sem = threading.BoundedSemaphore(want)
             _limit = want
@@ -34,18 +34,18 @@ def cli_budget_status() -> dict[str, int]:
 
 def clamp_cli_workers(requested: int, *, hard_cap: int | None = None) -> int:
     """Clamp a feature concurrency against the global CLI budget and a hard cap."""
-    budget = max(1, int(getattr(settings, "cli_max_concurrent", 12) or 12))
+    budget = max(1, int(getattr(settings, "cli_max_concurrent", 24) or 24))
     feature_cap = int(
         hard_cap
         if hard_cap is not None
-        else (getattr(settings, "cli_feature_hard_cap", 16) or 16)
+        else (getattr(settings, "cli_feature_hard_cap", 32) or 32)
     )
     feature_cap = max(1, feature_cap)
     return max(1, min(int(feature_cap), int(requested or 1), budget))
 
 
 def feature_hard_cap() -> int:
-    return max(1, int(getattr(settings, "cli_feature_hard_cap", 16) or 16))
+    return max(1, int(getattr(settings, "cli_feature_hard_cap", 32) or 32))
 
 
 @contextmanager

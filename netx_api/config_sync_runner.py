@@ -462,7 +462,7 @@ def dispatch_cycle(cycle_id: str) -> int:
             .all()
         )
         task_ids = [str(t.id) for t in pending]
-        concurrency = max(1, min(16, int(cycle.concurrency or 5)))
+        concurrency = max(1, min(32, int(cycle.concurrency or 5)))
     finally:
         db.close()
     return schedule_cycle_tasks(cycle_id, task_ids, concurrency)

@@ -84,7 +84,7 @@ def policy_to_out(row: ConfigSyncPolicy) -> ConfigSyncPolicyOut:
     return ConfigSyncPolicyOut(
         enabled=bool(row.enabled),
         interval_days=max(1, int(row.interval_days or 3)),
-        concurrency=max(1, min(16, int(row.concurrency or 5))),
+        concurrency=max(1, min(32, int(row.concurrency or 5))),
         scope_mode=str(row.scope_mode or "all"),
         selected_targets=_targets_from_json(row.selected_targets),
         history_keep=max(0, min(30, int(row.history_keep if row.history_keep is not None else 3))),

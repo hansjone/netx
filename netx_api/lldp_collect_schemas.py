@@ -29,7 +29,7 @@ class LldpCollectPolicyUpdate(BaseModel):
     enabled: bool | None = None
     interval_days: int | None = Field(default=None, ge=1, le=365)
     interval_hours: int | None = Field(default=None, ge=1, le=8760)
-    concurrency: int | None = Field(default=None, ge=1, le=16)
+    concurrency: int | None = Field(default=None, ge=1, le=32)
     scope_mode: str | None = None
     selected_targets: list[LldpCollectTargetRef] | None = None
     auto_add_unmatched: bool | None = None
