@@ -670,6 +670,7 @@ export type ConfigSyncPolicy = {
   scope_mode: string;
   selected_targets: ConfigSyncTargetRef[];
   history_keep: number;
+  cycle_keep: number;
   updated_at?: string | null;
 };
 

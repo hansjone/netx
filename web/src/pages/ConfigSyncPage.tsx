@@ -37,6 +37,7 @@ export function ConfigSyncPage() {
   const [concurrency, setConcurrency] = useState(5);
   const [scopeMode, setScopeMode] = useState<"all" | "selected">("all");
   const [historyKeep, setHistoryKeep] = useState(3);
+  const [cycleKeep, setCycleKeep] = useState(30);
   const [selectedMap, setSelectedMap] = useState<Record<string, ConfigSyncTargetRef>>({});
   const [policyHydrated, setPolicyHydrated] = useState(false);
 
@@ -63,6 +64,7 @@ export function ConfigSyncPage() {
     setConcurrency(Number(p.concurrency || 5));
     setScopeMode(p.scope_mode === "selected" ? "selected" : "all");
     setHistoryKeep(Number(p.history_keep ?? 3));
+    setCycleKeep(Math.max(0, Math.min(200, Number(p.cycle_keep ?? 30))));
     const map: Record<string, ConfigSyncTargetRef> = {};
     for (const ref of p.selected_targets || []) {
       map[`${ref.source}:${ref.id}`] = { source: ref.source, id: ref.id };
@@ -117,6 +119,7 @@ export function ConfigSyncPage() {
         concurrency,
         scope_mode: scopeMode,
         history_keep: historyKeep,
+        cycle_keep: cycleKeep,
         selected_targets: Object.values(selectedMap),
       }),
     onSuccess: async (saved) => {
@@ -127,6 +130,7 @@ export function ConfigSyncPage() {
       setConcurrency(Number(saved.concurrency || 5));
       setScopeMode(saved.scope_mode === "selected" ? "selected" : "all");
       setHistoryKeep(Number(saved.history_keep ?? 3));
+      setCycleKeep(Math.max(0, Math.min(200, Number(saved.cycle_keep ?? 30))));
       const map: Record<string, ConfigSyncTargetRef> = {};
       for (const ref of saved.selected_targets || []) {
         map[`${ref.source}:${ref.id}`] = { source: ref.source, id: ref.id };
@@ -311,6 +315,16 @@ export function ConfigSyncPage() {
               max={30}
               value={historyKeep}
               onChange={(e) => setHistoryKeep(Math.max(0, Math.min(30, Number(e.target.value) || 0)))}
+            />
+          </label>
+          <label className="config-sync-policy-field">
+            <span>{t("configSync.cycleKeep")}</span>
+            <input
+              type="number"
+              min={0}
+              max={200}
+              value={cycleKeep}
+              onChange={(e) => setCycleKeep(Math.max(0, Math.min(200, Number(e.target.value) || 0)))}
             />
           </label>
           <label className="config-sync-policy-field">

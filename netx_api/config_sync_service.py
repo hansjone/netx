@@ -47,6 +47,9 @@ def _utcnow() -> datetime:
     return datetime.utcnow()
 
 
+DEFAULT_CYCLE_KEEP = 30
+
+
 def ensure_policy(db: Session) -> ConfigSyncPolicy:
     row = db.get(ConfigSyncPolicy, POLICY_ID)
     if row is None:
@@ -55,6 +58,35 @@ def ensure_policy(db: Session) -> ConfigSyncPolicy:
         db.commit()
         db.refresh(row)
     return row
+
+
+def prune_config_sync_cycles(db: Session, *, keep: int = DEFAULT_CYCLE_KEEP) -> int:
+    """Delete finished cycles beyond ``keep`` (newest kept). Active cycles always retained."""
+    keep = max(0, min(200, int(keep)))
+    finished = (
+        db.query(ConfigSyncCycle)
+        .filter(ConfigSyncCycle.status.in_(("success", "fail", "cancelled")))
+        .order_by(ConfigSyncCycle.created_at.desc())
+        .all()
+    )
+    to_drop = finished if keep == 0 else finished[keep:]
+    if not to_drop:
+        return 0
+    dropped = 0
+    for cycle in to_drop:
+        cid = str(cycle.id)
+        db.query(ConfigSyncTask).filter(ConfigSyncTask.cycle_id == cid).delete(
+            synchronize_session=False
+        )
+        db.delete(cycle)
+        dropped += 1
+    if dropped:
+        db.commit()
+    return dropped
+
+
+def _cycle_keep_value(row: ConfigSyncPolicy) -> int:
+    return max(0, min(200, int(getattr(row, "cycle_keep", None) or DEFAULT_CYCLE_KEEP)))
 
 
 def _targets_from_json(raw: Any) -> list[ConfigSyncTargetRef]:
@@ -80,6 +112,7 @@ def policy_to_out(row: ConfigSyncPolicy) -> ConfigSyncPolicyOut:
         scope_mode=str(row.scope_mode or "all"),
         selected_targets=_targets_from_json(row.selected_targets),
         history_keep=max(0, min(30, int(row.history_keep if row.history_keep is not None else 3))),
+        cycle_keep=_cycle_keep_value(row),
         updated_at=row.updated_at,
     )
 
@@ -107,9 +140,12 @@ def update_policy(db: Session, body: ConfigSyncPolicyUpdate) -> ConfigSyncPolicy
         ]
     if "history_keep" in data and data["history_keep"] is not None:
         row.history_keep = max(0, min(30, int(data["history_keep"])))
+    if "cycle_keep" in data and data["cycle_keep"] is not None:
+        row.cycle_keep = max(0, min(200, int(data["cycle_keep"])))
     row.updated_at = _utcnow()
     db.commit()
     db.refresh(row)
+    prune_config_sync_cycles(db, keep=_cycle_keep_value(row))
     return policy_to_out(row)
 
 
@@ -443,7 +479,12 @@ def stop_cycle(db: Session, cycle_id: str) -> ConfigSyncCycleOut:
         _release_pool(cycle_id)
     except Exception:
         pass
-    return cycle_to_out(row)
+    out = cycle_to_out(row)
+    try:
+        prune_config_sync_cycles(db, keep=_cycle_keep_value(ensure_policy(db)))
+    except Exception:
+        _log.exception("prune_config_sync_cycles after stop failed")
+    return out
 
 
 def dashboard(db: Session) -> ConfigSyncDashboardOut:
@@ -690,3 +731,7 @@ def finalize_cycle(db: Session, cycle_id: str) -> None:
         cycle.error_message = ""
     cycle.ended_at = _utcnow()
     db.commit()
+    try:
+        prune_config_sync_cycles(db, keep=_cycle_keep_value(ensure_policy(db)))
+    except Exception:
+        _log.exception("prune_config_sync_cycles after finish failed")

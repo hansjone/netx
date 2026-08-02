@@ -8,7 +8,14 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from .config_sync_runner import dispatch_cycle
-from .config_sync_service import finalize_cycle, sync_cycle_progress
+from .config_sync_service import (
+    DEFAULT_CYCLE_KEEP,
+    _cycle_keep_value,
+    ensure_policy,
+    finalize_cycle,
+    prune_config_sync_cycles,
+    sync_cycle_progress,
+)
 from .models import ConfigSyncCycle, ConfigSyncTask
 
 _log = logging.getLogger("netx.config_sync.recovery")
@@ -57,7 +64,18 @@ def recover_config_sync_on_startup(db: Session) -> int:
         .all()
     )
     cycles = sorted(cycles, key=lambda c: c.created_at or datetime.min)
+    def _prune() -> None:
+        try:
+            keep = _cycle_keep_value(ensure_policy(db))
+        except Exception:
+            keep = DEFAULT_CYCLE_KEEP
+        try:
+            prune_config_sync_cycles(db, keep=keep)
+        except Exception:
+            _log.exception("config_sync recovery prune failed")
+
     if not cycles:
+        _prune()
         return 0
 
     # Single-flight hygiene: keep newest, close older interrupted cycles.
@@ -69,6 +87,7 @@ def recover_config_sync_on_startup(db: Session) -> int:
             primary.id,
         )
         _close_cycle(db, stale, reason="superseded_active_cycle")
+    _prune()
 
     cycle_id = str(primary.id)
     orphans = (

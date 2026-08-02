@@ -829,6 +829,9 @@ def on_startup() -> None:
                 )
             except Exception:
                 pass
+            conn.exec_driver_sql(
+                "ALTER TABLE config_sync_policy ADD COLUMN IF NOT EXISTS cycle_keep INTEGER DEFAULT 30"
+            )
     except Exception:
         _schedule_log.exception("startup: auth/port_traffic/topology schema migration failed")
     _reset_runtime_pause_flags()

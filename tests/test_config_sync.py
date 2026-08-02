@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
+from uuid import uuid4
 
 from netx_api.config_sync_codec import compress_text, decompress_text
 from netx_api.config_sync_commands import command_list, commands_for_vendor, normalize_vendor_key
 from netx_api.config_sync_recovery import recover_config_sync_on_startup
 from netx_api.config_sync_runner import _claim_task, _save_success_snapshot
+from netx_api.config_sync_service import prune_config_sync_cycles
+from netx_api.db import Base, SessionLocal, engine
+from netx_api.models import ConfigSyncCycle, ConfigSyncTask
 
 
 class ConfigSyncCommandsTests(unittest.TestCase):
@@ -208,10 +212,11 @@ class ConfigSyncClaimTests(unittest.TestCase):
 
 
 class ConfigSyncRecoveryTests(unittest.TestCase):
+    @patch("netx_api.config_sync_recovery.prune_config_sync_cycles")
     @patch("netx_api.config_sync_recovery.dispatch_cycle", return_value=2)
     @patch("netx_api.config_sync_recovery.finalize_cycle")
     @patch("netx_api.config_sync_recovery.sync_cycle_progress")
-    def test_requeues_orphans_and_resumes(self, _sync, _fin, dispatch):
+    def test_requeues_orphans_and_resumes(self, _sync, _fin, dispatch, _prune):
         cycle = MagicMock()
         cycle.id = "c1"
         cycle.status = "running"
@@ -250,10 +255,11 @@ class ConfigSyncRecoveryTests(unittest.TestCase):
         self.assertEqual(resumed, 2)
         dispatch.assert_called_once_with("c1")
 
+    @patch("netx_api.config_sync_recovery.prune_config_sync_cycles")
     @patch("netx_api.config_sync_recovery.dispatch_cycle")
     @patch("netx_api.config_sync_recovery.finalize_cycle")
     @patch("netx_api.config_sync_recovery.sync_cycle_progress")
-    def test_closes_older_active_keeps_newest(self, _sync, _fin, dispatch):
+    def test_closes_older_active_keeps_newest(self, _sync, _fin, dispatch, _prune):
         old = MagicMock()
         old.id = "old"
         old.status = "running"
@@ -285,6 +291,67 @@ class ConfigSyncRecoveryTests(unittest.TestCase):
         self.assertEqual(old.error_message, "superseded_active_cycle")
         _fin.assert_called()
         dispatch.assert_not_called()
+
+
+class ConfigSyncCyclePruneTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        Base.metadata.create_all(bind=engine)
+        with engine.begin() as conn:
+            try:
+                conn.exec_driver_sql(
+                    "ALTER TABLE config_sync_policy ADD COLUMN IF NOT EXISTS cycle_keep INTEGER DEFAULT 30"
+                )
+            except Exception:
+                pass
+
+    def setUp(self) -> None:
+        self.db = SessionLocal()
+        self.db.query(ConfigSyncTask).delete()
+        self.db.query(ConfigSyncCycle).delete()
+        self.db.commit()
+
+    def tearDown(self) -> None:
+        self.db.close()
+
+    def test_prune_cycles_keeps_newest_and_active(self) -> None:
+        now = datetime.utcnow()
+        for i in range(5):
+            cid = uuid4().hex
+            self.db.add(
+                ConfigSyncCycle(
+                    id=cid,
+                    trigger_mode="manual",
+                    status="success",
+                    created_at=now - timedelta(minutes=5 - i),
+                    ended_at=now - timedelta(minutes=5 - i),
+                )
+            )
+            self.db.add(
+                ConfigSyncTask(
+                    id=uuid4().hex,
+                    cycle_id=cid,
+                    source="managed",
+                    target_id=f"ne-{i}",
+                    status="success",
+                )
+            )
+        open_id = uuid4().hex
+        self.db.add(
+            ConfigSyncCycle(
+                id=open_id,
+                trigger_mode="manual",
+                status="running",
+                created_at=now,
+            )
+        )
+        self.db.commit()
+        dropped = prune_config_sync_cycles(self.db, keep=2)
+        self.assertEqual(dropped, 3)
+        left = {r.id for r in self.db.query(ConfigSyncCycle).all()}
+        self.assertIn(open_id, left)
+        self.assertEqual(len(left), 3)
+        self.assertEqual(self.db.query(ConfigSyncTask).count(), 2)
 
 
 if __name__ == "__main__":

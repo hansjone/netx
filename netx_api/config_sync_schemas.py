@@ -20,6 +20,7 @@ class ConfigSyncPolicyOut(BaseModel):
     scope_mode: str
     selected_targets: list[ConfigSyncTargetRef] = Field(default_factory=list)
     history_keep: int
+    cycle_keep: int = 30
     updated_at: datetime | None = None
 
 
@@ -30,6 +31,7 @@ class ConfigSyncPolicyUpdate(BaseModel):
     scope_mode: Literal["all", "selected"] | None = None
     selected_targets: list[ConfigSyncTargetRef] | None = None
     history_keep: int | None = Field(default=None, ge=0, le=30)
+    cycle_keep: int | None = Field(default=None, ge=0, le=200)
 
 
 class ConfigSyncCycleCreate(BaseModel):
