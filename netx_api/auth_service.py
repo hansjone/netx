@@ -21,6 +21,7 @@ from .auth_scopes import (
 from .auth_tokens import hash_api_token, issue_access_token, new_api_token_plaintext
 from .config import settings
 from .models import ApiToken, AppUser, AuditLog
+from .timeutil import utcnow_naive
 
 _log = logging.getLogger("netx.auth")
 
@@ -117,7 +118,7 @@ def flag_default_password_users(db: Session) -> None:
             continue
         if verify_password(default_pwd, user.password_hash):
             user.must_change_password = True
-            user.updated_at = datetime.utcnow()
+            user.updated_at = utcnow_naive()
             changed += 1
     if changed:
         db.commit()
@@ -336,7 +337,7 @@ def update_user(
         user.must_change_password = True
     if scopes is not None:
         user.scopes = normalize_scopes(scopes)
-    user.updated_at = datetime.utcnow()
+    user.updated_at = utcnow_naive()
     db.commit()
     db.refresh(user)
     return user
@@ -354,7 +355,7 @@ def change_password(db: Session, *, user: AppUser, old_password: str, new_passwo
         raise HTTPException(status_code=400, detail="password_must_differ_from_default")
     row.password_hash = hash_password(pwd)
     row.must_change_password = False
-    row.updated_at = datetime.utcnow()
+    row.updated_at = utcnow_naive()
     db.commit()
 
 
@@ -371,7 +372,7 @@ def create_api_token(
         raise HTTPException(status_code=400, detail="token_name_too_long")
     expires_at: datetime | None = None
     if expires_in_days is not None and int(expires_in_days) > 0:
-        expires_at = datetime.utcnow() + timedelta(days=int(expires_in_days))
+        expires_at = utcnow_naive() + timedelta(days=int(expires_in_days))
     plaintext = new_api_token_plaintext()
     scope_list = normalize_scopes(scopes) if scopes is not None else []
     # Cap token scopes to owner's effective scopes.
@@ -393,7 +394,7 @@ def create_api_token(
 
 def _token_public(db: Session, r: ApiToken) -> dict[str, Any]:
     owner = get_user_by_id(db, r.user_id)
-    now = datetime.utcnow()
+    now = utcnow_naive()
     expired = bool(r.expires_at and r.expires_at <= now)
     return {
         "id": r.id,
@@ -426,7 +427,7 @@ def revoke_api_token(db: Session, *, token_id: str, actor: AppUser) -> ApiToken:
     if actor.role != "admin" and row.user_id != actor.id:
         raise HTTPException(status_code=403, detail="forbidden")
     if row.revoked_at is None:
-        row.revoked_at = datetime.utcnow()
+        row.revoked_at = utcnow_naive()
         db.commit()
         db.refresh(row)
     return row
@@ -441,12 +442,12 @@ def resolve_api_token_row(db: Session, plaintext: str) -> ApiToken | None:
     )
     if row is None:
         return None
-    if row.expires_at is not None and row.expires_at <= datetime.utcnow():
+    if row.expires_at is not None and row.expires_at <= utcnow_naive():
         return None
     user = get_user_by_id(db, row.user_id)
     if user is None or not user.is_active:
         return None
-    row.last_used_at = datetime.utcnow()
+    row.last_used_at = utcnow_naive()
     try:
         db.commit()
     except Exception:

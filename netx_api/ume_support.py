@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from .config import settings
 from .db import SessionLocal
 from .models import UmeAlarmCurrent, UmeInventoryNE, UmeSyncJob
+from .timeutil import utcnow_naive
 from .runtime_task_messages import (
     RT_ALARMS_SYNC_IN_PROGRESS_SKIP,
     RT_KEEPALIVE_FAILED,
@@ -240,7 +241,7 @@ def _fail_stale_running_sync_jobs_on_startup() -> None:
         )
         if not rows:
             return
-        now_naive = datetime.utcnow()
+        now_naive = utcnow_naive()
         for row in rows:
             row.status = "failed"
             row.ended_at = now_naive

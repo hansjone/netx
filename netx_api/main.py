@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import time
+from contextlib import asynccontextmanager
+from typing import AsyncIterator
 
 import uvicorn
 from fastapi import FastAPI
@@ -42,12 +44,28 @@ from .webcrt_router import router as webcrt_router
 _schedule_log = logging.getLogger("netx.ume.schedule")
 _BOOT_MONO = time.monotonic()
 
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    from .app_startup import run_api_startup
+
+    run_api_startup()
+    try:
+        yield
+    finally:
+        shutdown_oclaw_alarm_forwarder()
+        if ume_support._UME_WS_STOP_EVENT is not None:
+            ume_support._UME_WS_STOP_EVENT.set()
+        shutdown_ws_consumer()
+
+
 app = FastAPI(
     title="netx ops tool",
     version="0.1.0",
     docs_url="/docs" if bool(settings.docs_enabled) else None,
     redoc_url="/redoc" if bool(settings.docs_enabled) else None,
     openapi_url="/openapi.json" if bool(settings.docs_enabled) else None,
+    lifespan=lifespan,
 )
 app.add_middleware(AuthAuditMiddleware)
 app.include_router(auth_router)
@@ -65,21 +83,6 @@ app.include_router(integrations_router)
 app.include_router(ume_router)
 app.include_router(alarms_router)
 parser_cfg = load_parser_config()
-
-
-@app.on_event("startup")
-def on_startup() -> None:
-    from .app_startup import run_api_startup
-
-    run_api_startup()
-
-
-@app.on_event("shutdown")
-def on_shutdown() -> None:
-    shutdown_oclaw_alarm_forwarder()
-    if ume_support._UME_WS_STOP_EVENT is not None:
-        ume_support._UME_WS_STOP_EVENT.set()
-    shutdown_ws_consumer()
 
 
 @app.get("/health", status_code=200)

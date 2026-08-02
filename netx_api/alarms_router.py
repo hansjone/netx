@@ -17,6 +17,7 @@ from .db import get_db
 from .importer import aggregate_alarms, import_alarm_excel, query_alarms
 from .models import AiAnalyzeHistory, AlarmBatch, AlarmNorm, ImportErrorRow, ImportJob
 from .parser_config import load_parser_config
+from .timeutil import utcnow_naive
 from .schemas import (
     AiAnalyzeHistoryItem,
     AiAnalyzeHistoryResponse,
@@ -276,7 +277,7 @@ def ap_analyze(payload: dict, db: Session = Depends(get_db)) -> dict:
             answer=answer,
             error=err,
             evidence_json=json.dumps(diag or {}, ensure_ascii=False),
-            created_at=datetime.utcnow(),
+            created_at=utcnow_naive(),
         )
         db.add(row)
         db.commit()

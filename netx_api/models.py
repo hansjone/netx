@@ -9,6 +9,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
 
 from .db import Base
+from .timeutil import utcnow_naive
 
 # JSONB on Postgres; plain JSON elsewhere (unit tests / sqlite).
 _JsonType = JSON().with_variant(JSONB(), "postgresql")
@@ -25,7 +26,7 @@ class AlarmBatch(Base):
     success_rows: Mapped[int] = mapped_column(Integer, default=0)
     failed_rows: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(32), default="done")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
 
     alarms: Mapped[list["AlarmNorm"]] = relationship(back_populates="batch")
     errors: Mapped[list["ImportErrorRow"]] = relationship(back_populates="batch")
@@ -88,7 +89,7 @@ class ImportJob(Base):
     batch_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     ok: Mapped[int] = mapped_column(Integer, default=1)  # 1 ok, 0 error
     summary: Mapped[str] = mapped_column(String(1024), default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
 
 
 class AiAnalyzeHistory(Base):
@@ -103,7 +104,7 @@ class AiAnalyzeHistory(Base):
     answer: Mapped[str] = mapped_column(Text, default="")
     error: Mapped[str] = mapped_column(Text, default="")
     evidence_json: Mapped[str] = mapped_column(Text, default="{}")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
 
 
 class UmeSyncJob(Base):
@@ -113,7 +114,7 @@ class UmeSyncJob(Base):
     domain: Mapped[str] = mapped_column(String(32), index=True, default="inventory")
     status: Mapped[str] = mapped_column(String(32), index=True, default="running")
     trigger_mode: Mapped[str] = mapped_column(String(32), default="manual")
-    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     pulled_count: Mapped[int] = mapped_column(Integer, default=0)
     inserted_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -131,7 +132,7 @@ class UmeAlarmBatch(Base):
     total_rows: Mapped[int] = mapped_column(Integer, default=0)
     success_rows: Mapped[int] = mapped_column(Integer, default=0)
     failed_rows: Mapped[int] = mapped_column(Integer, default=0)
-    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     error_message: Mapped[str] = mapped_column(String(1024), default="")
     raw_json: Mapped[str] = mapped_column(Text, default="{}")
@@ -163,8 +164,8 @@ class UmeInventoryNE(Base):
     creator: Mapped[str] = mapped_column(String(128), default="")
     vendor: Mapped[str] = mapped_column(String(64), default="ZTE", comment="网元提供商")
     source_type: Mapped[str] = mapped_column(String(64), default="ume_restconf")
-    first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
     raw_json: Mapped[str] = mapped_column(Text, default="{}")
 
 
@@ -182,8 +183,8 @@ class UmeAlarmCurrent(Base):
     time_created: Mapped[str] = mapped_column(Text, default="", index=True)
     root_cause_alarm_indication: Mapped[str] = mapped_column(Text, default="")
     notification_id: Mapped[str] = mapped_column(String(128), default="", index=True)
-    first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
     raw_json: Mapped[str] = mapped_column(Text, default="{}")
 
 
@@ -201,8 +202,8 @@ class UmeAlarmHistory(Base):
     time_created: Mapped[str] = mapped_column(Text, default="", index=True)
     root_cause_alarm_indication: Mapped[str] = mapped_column(Text, default="")
     notification_id: Mapped[str] = mapped_column(String(128), default="", index=True)
-    first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
     raw_json: Mapped[str] = mapped_column(Text, default="{}")
 
 
@@ -213,7 +214,7 @@ class UmeKeyAlertMonitorConfig(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     forward_on_clear: Mapped[int] = mapped_column(Integer, default=0)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
 
 
 class UmeKeyAlertRule(Base):
@@ -228,8 +229,8 @@ class UmeKeyAlertRule(Base):
     forward_on_clear: Mapped[int] = mapped_column(Integer, default=0)
     label: Mapped[str] = mapped_column(String(256), default="")
     ne_types: Mapped[str] = mapped_column(Text, default="[]")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
 
 
 class UmeKeyAlertForwardLog(Base):
@@ -240,7 +241,7 @@ class UmeKeyAlertForwardLog(Base):
     action: Mapped[str] = mapped_column(String(32), default="", index=True)
     rule_key: Mapped[str] = mapped_column(String(128), default="", index=True)
     notification_id: Mapped[str] = mapped_column(String(128), default="", index=True)
-    forwarded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    forwarded_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
     oclaw_ok: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[str] = mapped_column(String(512), default="")
 
@@ -254,8 +255,8 @@ class UmeAlarmSubscription(Base):
     subscription_id: Mapped[str] = mapped_column(String(128), default="", index=True)
     wss_uri: Mapped[str] = mapped_column(Text, default="")
     topic: Mapped[str] = mapped_column(String(64), default="ALARM")
-    established_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    established_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
 
 
 class UmeTokenCache(Base):
@@ -266,7 +267,7 @@ class UmeTokenCache(Base):
     expires_at_epoch_s: Mapped[int] = mapped_column(Integer, default=0)
     lock_owner: Mapped[str] = mapped_column(String(128), default="", index=True)
     lock_expires_at_epoch_s: Mapped[int] = mapped_column(Integer, default=0, index=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
 
 
 class ManagedNE(Base):
@@ -305,8 +306,8 @@ class ManagedNE(Base):
     hop_command_template: Mapped[str] = mapped_column(Text, default="")
     hop_vrf: Mapped[str] = mapped_column(String(128), default="")
     hop_target_auth_mode: Mapped[str] = mapped_column(String(32), default="bastion_managed")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
 
 
 class CliConnectProfile(Base):
@@ -334,8 +335,8 @@ class CliConnectProfile(Base):
     hop_command_template: Mapped[str] = mapped_column(Text, default="")
     hop_vrf: Mapped[str] = mapped_column(String(128), default="")
     hop_target_auth_mode: Mapped[str] = mapped_column(String(32), default="bastion_managed")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
 
 
 class UmeCliOverride(Base):
@@ -354,7 +355,7 @@ class UmeCliOverride(Base):
     connect_message: Mapped[str] = mapped_column(String(512), default="")
     connect_detail: Mapped[str] = mapped_column(Text, default="")
     connect_tested_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
 
 
 class NeCollectionJob(Base):
@@ -370,7 +371,7 @@ class NeCollectionJob(Base):
     success_count: Mapped[int] = mapped_column(Integer, default=0)
     fail_count: Mapped[int] = mapped_column(Integer, default=0)
     error_message: Mapped[str] = mapped_column(String(1024), default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
@@ -420,8 +421,8 @@ class TopoFabricNode(Base):
     region_source: Mapped[str] = mapped_column(String(16), default="")
     attrs: Mapped[dict] = mapped_column(_JsonType, default=dict)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
 
 
 class TopoClassifyRule(Base):
@@ -441,8 +442,8 @@ class TopoClassifyRule(Base):
     # role: {role}; region: {folder_id} or {region_name_from_group}
     payload: Mapped[dict] = mapped_column(_JsonType, default=dict)
     remark: Mapped[str] = mapped_column(String(512), default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
 
 
 class TopoFabricEdge(Base):
@@ -474,8 +475,8 @@ class TopoFabricEdge(Base):
     attrs: Mapped[dict] = mapped_column(_JsonType, default=dict)
     discovered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
 
 
 class TopoFolder(Base):
@@ -490,8 +491,8 @@ class TopoFolder(Base):
     name: Mapped[str] = mapped_column(String(256), default="", index=True)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     is_system: Mapped[bool] = mapped_column(Boolean, default=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
 
 
 class TopoView(Base):
@@ -513,8 +514,8 @@ class TopoView(Base):
     # { layer?, status?, membership?: {...} }
     filter: Mapped[dict] = mapped_column(_JsonType, default=dict)
     viewport: Mapped[dict] = mapped_column(_JsonType, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
 
 
 class TopoViewNode(Base):
@@ -530,8 +531,8 @@ class TopoViewNode(Base):
     y: Mapped[float] = mapped_column(Float, default=0.0)
     label: Mapped[str] = mapped_column(String(256), default="")
     locked: Mapped[bool] = mapped_column(Boolean, default=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
 
 
 class TopoViewEdgeStyle(Base):
@@ -546,8 +547,8 @@ class TopoViewEdgeStyle(Base):
     stroke_color: Mapped[str] = mapped_column(String(32), default="")
     stroke_width: Mapped[int] = mapped_column(Integer, default=0)
     line_style: Mapped[str] = mapped_column(String(16), default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
 
 
 class LldpCollectPolicy(Base):
@@ -565,7 +566,7 @@ class LldpCollectPolicy(Base):
     auto_add_unmatched: Mapped[bool] = mapped_column(Boolean, default=True)
     # Keep N finished discover jobs (items + raw_preview); 0 = keep none finished.
     history_keep: Mapped[int] = mapped_column(Integer, default=30)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
 
 
 class TopoDiscoverJob(Base):
@@ -588,8 +589,8 @@ class TopoDiscoverJob(Base):
     error: Mapped[str] = mapped_column(String(1024), default="")
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
 
 
 class TopoDiscoverJobItem(Base):
@@ -615,7 +616,7 @@ class TopoDiscoverJobItem(Base):
     parser_stub: Mapped[bool] = mapped_column(Boolean, default=False)
     error: Mapped[str] = mapped_column(String(1024), default="")
     raw_preview: Mapped[str] = mapped_column(Text, default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
 
 
 class TopoFabricStats(Base):
@@ -629,7 +630,7 @@ class TopoFabricStats(Base):
     edge_active: Mapped[int] = mapped_column(Integer, default=0)
     edge_stale: Mapped[int] = mapped_column(Integer, default=0)
     last_discover_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
 
 
 class AppUser(Base):
@@ -646,8 +647,8 @@ class AppUser(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
     created_by: Mapped[str] = mapped_column(String(64), default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
 
 
 class AuditLog(Base):
@@ -656,7 +657,7 @@ class AuditLog(Base):
     __tablename__ = "audit_log"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
-    ts: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    ts: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
     actor_user_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     actor_username: Mapped[str] = mapped_column(String(128), default="", index=True)
     action: Mapped[str] = mapped_column(String(128), default="", index=True)
@@ -679,7 +680,7 @@ class ApiToken(Base):
     user_id: Mapped[str] = mapped_column(String(64), index=True)
     # Capability subset; empty inherits owner user scopes (then intersected).
     scopes: Mapped[list] = mapped_column(_JsonType, default=list)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -699,7 +700,7 @@ class ConfigSyncPolicy(Base):
     history_keep: Mapped[int] = mapped_column(Integer, default=3)
     # Finished sync cycles to retain (newest kept); active cycles always kept.
     cycle_keep: Mapped[int] = mapped_column(Integer, default=30)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
 
 
 class ConfigSyncCycle(Base):
@@ -718,7 +719,7 @@ class ConfigSyncCycle(Base):
     error_message: Mapped[str] = mapped_column(String(1024), default="")
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
 
 
 class ConfigSyncTask(Base):
@@ -760,7 +761,7 @@ class NeConfigSnapshot(Base):
     zlib_size: Mapped[int] = mapped_column(Integer, default=0)
     zlib_alt_size: Mapped[int] = mapped_column(Integer, default=0)
     commands_json: Mapped[list] = mapped_column(_JsonType, default=list)
-    collected_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    collected_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
     last_cycle_id: Mapped[str] = mapped_column(String(64), default="")
     last_task_id: Mapped[str] = mapped_column(String(64), default="")
 
@@ -786,7 +787,7 @@ class NeConfigHistory(Base):
     zlib_size: Mapped[int] = mapped_column(Integer, default=0)
     zlib_alt_size: Mapped[int] = mapped_column(Integer, default=0)
     commands_json: Mapped[list] = mapped_column(_JsonType, default=list)
-    collected_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    collected_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
     cycle_id: Mapped[str] = mapped_column(String(64), default="")
     task_id: Mapped[str] = mapped_column(String(64), default="")
 
@@ -814,8 +815,8 @@ class PortTrafficDevice(Base):
     last_collect_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_collect_ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_error: Mapped[str] = mapped_column(String(1024), default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
 
 
 # Back-compat alias while callers migrate.
@@ -832,7 +833,7 @@ class PortTrafficSeries(Base):
     device_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     title: Mapped[str] = mapped_column(String(256), default="")
     status: Mapped[str] = mapped_column(String(32), default="active", index=True)  # active|disabled
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
 
     @property
     def task_id(self) -> str:
@@ -862,7 +863,7 @@ class PortTrafficTarget(Base):
     status: Mapped[str] = mapped_column(String(32), default="active", index=True)  # active|disabled|retired
     last_error: Mapped[str] = mapped_column(String(1024), default="")
     last_sample_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
 
     @property
     def task_id(self) -> str:
@@ -882,7 +883,7 @@ class PortTrafficSample(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
     target_row_id: Mapped[str] = mapped_column(String(64), index=True)
     series_id: Mapped[str] = mapped_column(String(64), default="", index=True)
-    ts: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    ts: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
     in_bps: Mapped[float] = mapped_column(Float, default=0.0)
     out_bps: Mapped[float] = mapped_column(Float, default=0.0)
     in_util_pct: Mapped[float] = mapped_column(Float, default=0.0)
@@ -904,7 +905,7 @@ class PortTrafficEvent(Base):
     ifname: Mapped[str] = mapped_column(String(128), default="")
     level: Mapped[str] = mapped_column(String(16), default="error", index=True)  # info|warn|error
     message: Mapped[str] = mapped_column(Text, default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
 
 
 class PortTrafficBoard(Base):
@@ -918,8 +919,8 @@ class PortTrafficBoard(Base):
     cols: Mapped[int] = mapped_column(Integer, default=2)
     created_by: Mapped[str] = mapped_column(String(64), default="")
     updated_by: Mapped[str] = mapped_column(String(64), default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
 
 
 class PortTrafficPanel(Base):
@@ -940,5 +941,5 @@ class PortTrafficPanel(Base):
     ord: Mapped[int] = mapped_column(Integer, default=0)
     col_span: Mapped[int] = mapped_column(Integer, default=1)
     row_span: Mapped[int] = mapped_column(Integer, default=1)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)

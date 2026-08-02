@@ -12,6 +12,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from .models import TopoFabricEdge, TopoViewEdgeStyle
+from .timeutil import utcnow_naive
 
 ROOT_FOLDER_NAME = "Network"
 PHYSICAL_VIEW_NAME = "Physical topology"
@@ -92,7 +93,7 @@ def _purge_edge_if_due(db: Session, e: TopoFabricEdge) -> bool:
 
 
 def _utcnow() -> datetime:
-    return datetime.utcnow()
+    return utcnow_naive()
 
 
 def _norm_host(s: str) -> str:

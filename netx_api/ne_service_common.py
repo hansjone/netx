@@ -19,6 +19,7 @@ from .models import ManagedNE
 from .ne_crypto import CredentialCryptoError, credentials_configured, decrypt_secret, encrypt_secret
 from .ne_schemas import ManagedNeCreate, ManagedNeOut, ManagedNeUpdate
 from .ne_session_factory import default_bastion_username_template, default_hop_command_template
+from .timeutil import utcnow_naive
 
 IMPORT_COLUMNS = (
     "device_type",
@@ -45,7 +46,7 @@ _BUILTIN_NE_TYPE_RULES: list[tuple[re.Pattern[str], str, str]] = [
 ]
 
 def _now() -> datetime:
-    return datetime.utcnow()
+    return utcnow_naive()
 
 
 def _require_crypto() -> None:
