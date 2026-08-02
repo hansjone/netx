@@ -45,8 +45,13 @@ def _safe_filename_part(text: str) -> str:
     return s[:80] or "device"
 
 
-def _collect_on_device(creds: dict[str, Any], commands: list[str]) -> str:
-    per_cmd = int(settings.ne_collect_read_timeout_sec or 120)
+def _collect_on_device(
+    creds: dict[str, Any],
+    commands: list[str],
+    *,
+    read_timeout_sec: int | None = None,
+) -> str:
+    per_cmd = int(read_timeout_sec if read_timeout_sec is not None else (settings.ne_collect_read_timeout_sec or 120))
     session_timeout = per_cmd * max(1, len(commands)) + 60
     conn = open_netmiko_connection(creds, session_timeout=session_timeout)
     try:
@@ -63,12 +68,17 @@ def _collect_on_device(creds: dict[str, Any], commands: list[str]) -> str:
         close_netmiko_connection(conn)
 
 
-def _collect_with_timeout(creds: dict[str, Any], commands: list[str]) -> str:
-    per_cmd = int(settings.ne_collect_read_timeout_sec or 120)
+def _collect_with_timeout(
+    creds: dict[str, Any],
+    commands: list[str],
+    *,
+    read_timeout_sec: int | None = None,
+) -> str:
+    per_cmd = int(read_timeout_sec if read_timeout_sec is not None else (settings.ne_collect_read_timeout_sec or 120))
     cap = int(settings.ne_collect_run_timeout_cap_sec or 600)
     budget = min(cap, per_cmd * max(1, len(commands)) + 90)
     with ThreadPoolExecutor(max_workers=1) as pool:
-        fut = pool.submit(_collect_on_device, creds, commands)
+        fut = pool.submit(_collect_on_device, creds, commands, read_timeout_sec=per_cmd)
         try:
             return fut.result(timeout=budget)
         except FuturesTimeout as exc:

@@ -571,6 +571,40 @@ _HANDLERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "queryTopologyEdges": _query_topology_edges,
 }
 
+# Minimum scope required to advertise / invoke each tool (matches netx API RBAC).
+TOOL_REQUIRED_SCOPE: dict[str, str] = {
+    "queryUmeAlarms": "alarms:read",
+    "aggregateUmeAlarms": "alarms:read",
+    "runUmeDiagnostics": "alarms:read",
+    "queryUmeNeInventory": "ne:read",
+    "getUmeNe": "ne:read",
+    "queryUmeAlarmsRaw": "alarms:read",
+    "aggregateUmeAlarmsRaw": "alarms:read",
+    "listUmeAlarmFields": "alarms:read",
+    "sqlQueryUme": "sql:query",
+    "listManagedNe": "ne:read",
+    "getManagedNe": "ne:read",
+    "execManagedNe": "ne:exec",
+    "listCliTargets": "ne:read",
+    "queryTopologyEdges": "ne:read",
+}
+
+
+def tools_for_scopes(scopes: list[str] | set[str] | frozenset[str] | None) -> list[dict[str, Any]]:
+    """Filter MCP tool list by granted scopes. Empty/None => return all (offline / unauthenticated listing)."""
+    if scopes is None:
+        return list(HTTP_MCP_TOOLS)
+    granted = {str(s).strip().lower() for s in scopes if str(s).strip()}
+    if not granted:
+        return []
+    out: list[dict[str, Any]] = []
+    for tool in HTTP_MCP_TOOLS:
+        name = str(tool.get("name") or "")
+        need = TOOL_REQUIRED_SCOPE.get(name)
+        if need is None or need in granted:
+            out.append(tool)
+    return out
+
 
 def call_http_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
     fn = _HANDLERS.get(str(name or "").strip())

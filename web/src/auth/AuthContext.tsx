@@ -20,6 +20,7 @@ export type AuthUser = {
   id: string;
   username: string;
   role: string;
+  scopes?: string[];
   is_active: boolean;
   must_change_password?: boolean;
   created_by?: string;
@@ -31,10 +32,12 @@ type AuthState = {
   ready: boolean;
   token: string | null;
   user: AuthUser | null;
+  scopes: string[];
   login: (username: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   refreshMe: () => Promise<void>;
   isAdmin: boolean;
+  hasScope: (scope: string) => boolean;
 };
 
 const AuthContext = createContext<AuthState | null>(null);
@@ -43,22 +46,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
   const [token, setToken] = useState<string | null>(() => getAuthToken());
   const [user, setUser] = useState<AuthUser | null>(null);
+  const [scopes, setScopes] = useState<string[]>([]);
 
   const refreshMe = useCallback(async () => {
     const tok = getAuthToken();
     if (!tok) {
       setToken(null);
       setUser(null);
+      setScopes([]);
       return;
     }
     try {
-      const data = await apiGet<{ user: AuthUser }>("/v1/auth/me");
+      const data = await apiGet<{ user: AuthUser; scopes?: string[] }>("/v1/auth/me");
       setToken(tok);
       setUser(data.user);
+      setScopes(data.scopes || data.user.scopes || []);
     } catch {
       clearAuthToken();
       setToken(null);
       setUser(null);
+      setScopes([]);
     }
   }, []);
 
@@ -78,6 +85,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (ev.key === null || ev.newValue == null || ev.newValue === "") {
         setToken(null);
         setUser(null);
+        setScopes([]);
         return;
       }
       void refreshMe();
@@ -94,6 +102,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setAuthToken(data.access_token);
     setToken(data.access_token);
     setUser(data.user);
+    setScopes(data.user.scopes || []);
   }, []);
 
   const logout = useCallback(async () => {
@@ -107,6 +116,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     clearAuthToken();
     setToken(null);
     setUser(null);
+    setScopes([]);
   }, []);
 
   const value = useMemo<AuthState>(
@@ -114,12 +124,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       ready,
       token,
       user,
+      scopes,
       login,
       logout,
       refreshMe,
       isAdmin: user?.role === "admin",
+      hasScope: (scope: string) => scopes.includes(scope) || user?.role === "admin",
     }),
-    [ready, token, user, login, logout, refreshMe],
+    [ready, token, user, scopes, login, logout, refreshMe],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

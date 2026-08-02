@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     ume_base_url: str = ""
     ume_username: str = ""
     ume_password: str = ""
-    ume_verify_tls: bool = False
+    ume_verify_tls: bool = True
     ume_timeout_s: float = 20.0
     ume_page_size: int = 1000
     ume_max_pages: int = 2000
@@ -117,13 +117,28 @@ class Settings(BaseSettings):
     webcrt_sftp_list_timeout_sec: float = 30.0
     # Local app login / audit (lab defaults; override in production)
     auth_enabled: bool = True
-    # Stable default so JWT survives restarts without .env. Override in production.
-    auth_secret: str = "netx-dev-auth-secret-change-me-in-production-32b"
+    # Empty = auto-generate & persist to auth_secret_file (recommended).
+    # Set explicitly only when you want a shared/ops-managed secret.
+    auth_secret: str = ""
+    auth_secret_file: str = "data/auth/jwt_secret"
     auth_token_ttl_sec: int = 86400
     bootstrap_admin_username: str = "admin"
     bootstrap_admin_password: str = "admin123"
     # Written on first boot for MCP; path relative to cwd / absolute
     auth_mcp_token_file: str = "data/auth/mcp_token"
+    # Expose /docs /redoc /openapi.json without auth when true (lab only).
+    docs_enabled: bool = False
+    # Refuse start when bind host is non-loopback and insecure defaults remain.
+    allow_insecure_defaults: bool = False
+    # Async audit writer; sample_n>1 keeps 1/N of generic http.* events.
+    audit_async: bool = True
+    audit_sample_n: int = 1
+    # Prefer Alembic; when true, skip ad-hoc ALTER TABLE on startup (create_all still runs).
+    skip_legacy_startup_ddl: bool = False
+    # Optional dedicated SQLAlchemy URL for /v1/sql/* (read-only DB role recommended).
+    sql_readonly_database_url: str = ""
+    # When false, API skips config_sync / lldp / port_traffic schedulers (run `python -m netx_api.worker`).
+    run_inline_schedulers: bool = True
 
 
 settings = Settings()

@@ -12,7 +12,8 @@ import json
 import sys
 from typing import Any
 
-from netx_mcp.http_tools import HTTP_MCP_TOOLS, call_http_tool
+from netx_mcp.http_client import http_json
+from netx_mcp.http_tools import TOOL_REQUIRED_SCOPE, call_http_tool, tools_for_scopes
 
 
 def _ensure_utf8_stdio() -> None:
@@ -39,7 +40,30 @@ def _err(rid: Any, code: int, message: str) -> None:
     sys.stdout.flush()
 
 
+def _fetch_scopes() -> list[str] | None:
+    """Return granted scopes from /v1/auth/me, or None if the call fails (show all tools)."""
+    try:
+        data = http_json("GET", "/v1/auth/me")
+        scopes = data.get("scopes") if isinstance(data, dict) else None
+        if isinstance(scopes, list):
+            return [str(s) for s in scopes]
+        user = data.get("user") if isinstance(data, dict) else None
+        if isinstance(user, dict) and isinstance(user.get("scopes"), list):
+            return [str(s) for s in user["scopes"]]
+    except Exception:
+        return None
+    return None
+
+
 def run_stdio_loop() -> None:
+    cached_scopes: list[str] | None | object = object()
+
+    def scopes() -> list[str] | None:
+        nonlocal cached_scopes
+        if cached_scopes is object():
+            cached_scopes = _fetch_scopes()
+        return cached_scopes  # type: ignore[return-value]
+
     for line in sys.stdin:
         raw = line.strip()
         if not raw:
@@ -59,17 +83,22 @@ def run_stdio_loop() -> None:
                     {
                         "protocolVersion": "2024-11-05",
                         "capabilities": {"tools": {}},
-                        "serverInfo": {"name": "netx-mcp", "version": "0.2.0", "mode": "http"},
+                        "serverInfo": {"name": "netx-mcp", "version": "0.2.1", "mode": "http"},
                     },
                 )
                 continue
             if method == "notifications/initialized":
                 continue
             if method == "tools/list":
-                _ok(rid, {"tools": HTTP_MCP_TOOLS})
+                _ok(rid, {"tools": tools_for_scopes(scopes())})
                 continue
             if method == "tools/call":
                 name = str(params.get("name") or "")
+                need = TOOL_REQUIRED_SCOPE.get(name)
+                granted = scopes()
+                if need and granted is not None and need not in {str(s).lower() for s in granted}:
+                    _err(rid, -32001, f"insufficient_scope:{need}")
+                    continue
                 args = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
                 _ok(rid, call_http_tool(name, args))
                 continue

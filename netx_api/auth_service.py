@@ -13,6 +13,11 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .auth_passwords import hash_password, verify_password
+from .auth_scopes import (
+    MCP_DEFAULT_SCOPES,
+    effective_user_scopes,
+    normalize_scopes,
+)
 from .auth_tokens import hash_api_token, issue_access_token, new_api_token_plaintext
 from .config import settings
 from .models import ApiToken, AppUser, AuditLog
@@ -36,10 +41,15 @@ _SECRET_KEYS = frozenset(
 
 
 def user_public(user: AppUser) -> dict[str, Any]:
+    scopes = sorted(
+        effective_user_scopes(role=str(user.role or "user"), override=getattr(user, "scopes", None) or [])
+    )
     return {
         "id": user.id,
         "username": user.username,
         "role": user.role,
+        "scopes": scopes,
+        "scopes_override": normalize_scopes(getattr(user, "scopes", None) or []),
         "is_active": bool(user.is_active),
         "must_change_password": bool(getattr(user, "must_change_password", False)),
         "created_by": user.created_by or "",
@@ -177,6 +187,15 @@ def ensure_default_mcp_token(db: Session, user: AppUser | None = None) -> str | 
                     .one_or_none()
                 )
                 if row is not None:
+                    # Ensure MCP bootstrap token stays within MCP_DEFAULT_SCOPES.
+                    desired = normalize_scopes(MCP_DEFAULT_SCOPES)
+                    current = normalize_scopes(getattr(row, "scopes", None) or [])
+                    if current != desired:
+                        row.scopes = desired
+                        try:
+                            db.commit()
+                        except Exception:
+                            db.rollback()
                     return existing
     except Exception:
         _log.exception("read mcp token file failed path=%s", path)
@@ -192,7 +211,13 @@ def ensure_default_mcp_token(db: Session, user: AppUser | None = None) -> str | 
     if admin is None:
         return None
     try:
-        row, plaintext = create_api_token(db, user=admin, name="mcp-default", expires_in_days=0)
+        row, plaintext = create_api_token(
+            db,
+            user=admin,
+            name="mcp-default",
+            expires_in_days=0,
+            scopes=list(MCP_DEFAULT_SCOPES),
+        )
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(plaintext + "\n", encoding="utf-8")
         try:
@@ -251,6 +276,7 @@ def create_user(
     password: str,
     role: str,
     actor: AppUser,
+    scopes: list[str] | None = None,
 ) -> AppUser:
     name = str(username or "").strip()
     if not _USERNAME_RE.match(name):
@@ -263,10 +289,12 @@ def create_user(
         raise HTTPException(status_code=400, detail="invalid_role")
     if get_user_by_username(db, name) is not None:
         raise HTTPException(status_code=409, detail="username_exists")
+    scope_list = normalize_scopes(scopes) if scopes is not None else []
     user = AppUser(
         username=name,
         password_hash=hash_password(pwd),
         role=role_n,
+        scopes=scope_list,
         is_active=True,
         created_by=actor.id,
     )
@@ -284,6 +312,7 @@ def update_user(
     is_active: bool | None = None,
     role: str | None = None,
     password: str | None = None,
+    scopes: list[str] | None = None,
 ) -> AppUser:
     user = get_user_by_id(db, user_id)
     if user is None:
@@ -305,6 +334,8 @@ def update_user(
             raise HTTPException(status_code=400, detail="password_too_short")
         user.password_hash = hash_password(pwd)
         user.must_change_password = True
+    if scopes is not None:
+        user.scopes = normalize_scopes(scopes)
     user.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(user)
@@ -312,7 +343,8 @@ def update_user(
 
 
 def change_password(db: Session, *, user: AppUser, old_password: str, new_password: str) -> None:
-    if not verify_password(old_password, user.password_hash):
+    row = get_user_by_id(db, str(user.id)) or user
+    if not verify_password(old_password, row.password_hash):
         raise HTTPException(status_code=400, detail="old_password_incorrect")
     pwd = str(new_password or "")
     if len(pwd) < 6:
@@ -320,9 +352,9 @@ def change_password(db: Session, *, user: AppUser, old_password: str, new_passwo
     default_pwd = str(settings.bootstrap_admin_password or "admin123").strip() or "admin123"
     if pwd == default_pwd or pwd == old_password:
         raise HTTPException(status_code=400, detail="password_must_differ_from_default")
-    user.password_hash = hash_password(pwd)
-    user.must_change_password = False
-    user.updated_at = datetime.utcnow()
+    row.password_hash = hash_password(pwd)
+    row.must_change_password = False
+    row.updated_at = datetime.utcnow()
     db.commit()
 
 
@@ -332,6 +364,7 @@ def create_api_token(
     user: AppUser,
     name: str,
     expires_in_days: int | None = None,
+    scopes: list[str] | None = None,
 ) -> tuple[ApiToken, str]:
     label = str(name or "").strip() or "default"
     if len(label) > 128:
@@ -340,10 +373,16 @@ def create_api_token(
     if expires_in_days is not None and int(expires_in_days) > 0:
         expires_at = datetime.utcnow() + timedelta(days=int(expires_in_days))
     plaintext = new_api_token_plaintext()
+    scope_list = normalize_scopes(scopes) if scopes is not None else []
+    # Cap token scopes to owner's effective scopes.
+    owner_scopes = effective_user_scopes(role=str(user.role or "user"), override=getattr(user, "scopes", None) or [])
+    if scope_list:
+        scope_list = sorted(frozenset(scope_list) & owner_scopes)
     row = ApiToken(
         name=label,
         token_hash=hash_api_token(plaintext),
         user_id=user.id,
+        scopes=scope_list,
         expires_at=expires_at,
     )
     db.add(row)
@@ -361,6 +400,7 @@ def _token_public(db: Session, r: ApiToken) -> dict[str, Any]:
         "name": r.name,
         "user_id": r.user_id,
         "username": owner.username if owner else "",
+        "scopes": normalize_scopes(getattr(r, "scopes", None) or []),
         "created_at": r.created_at.isoformat() if r.created_at else None,
         "expires_at": r.expires_at.isoformat() if r.expires_at else None,
         "last_used_at": r.last_used_at.isoformat() if r.last_used_at else None,
@@ -392,7 +432,7 @@ def revoke_api_token(db: Session, *, token_id: str, actor: AppUser) -> ApiToken:
     return row
 
 
-def resolve_api_token_user(db: Session, plaintext: str) -> AppUser | None:
+def resolve_api_token_row(db: Session, plaintext: str) -> ApiToken | None:
     th = hash_api_token(plaintext)
     row = (
         db.query(ApiToken)
@@ -411,7 +451,14 @@ def resolve_api_token_user(db: Session, plaintext: str) -> AppUser | None:
         db.commit()
     except Exception:
         db.rollback()
-    return user
+    return row
+
+
+def resolve_api_token_user(db: Session, plaintext: str) -> AppUser | None:
+    row = resolve_api_token_row(db, plaintext)
+    if row is None:
+        return None
+    return get_user_by_id(db, row.user_id)
 
 
 def list_audit_logs(

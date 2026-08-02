@@ -110,10 +110,8 @@ def execute_managed_ne_commands(
     creds, device = resolve_cli_target(db, managed_ne_id=mid or None, ume_ne_id=uid or None)
     read_timeout = _normalize_read_timeout(read_timeout_sec)
 
-    prev_collect_timeout = int(settings.ne_collect_read_timeout_sec or 120)
     try:
-        settings.ne_collect_read_timeout_sec = read_timeout
-        output = _collect_on_device(creds, cmds)
+        output = _collect_on_device(creds, cmds, read_timeout_sec=read_timeout)
     except Exception as exc:
         return {
             "ok": False,
@@ -123,8 +121,6 @@ def execute_managed_ne_commands(
             "error": type(exc).__name__,
             "detail": str(exc)[:2000],
         }
-    finally:
-        settings.ne_collect_read_timeout_sec = prev_collect_timeout
 
     if len(output) > _EXEC_MAX_OUTPUT:
         output = output[:_EXEC_MAX_OUTPUT] + "\n...[truncated]"

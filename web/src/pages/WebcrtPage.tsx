@@ -817,7 +817,7 @@ export function WebcrtPage() {
       const pending: TermTab = {
         key,
         sessionId,
-        wsUrl: webcrtWsUrl(sessionId),
+        wsUrl: "",
         termEpoch: (existing?.termEpoch || 0) + 1,
         target,
         status: "connecting",
@@ -833,9 +833,12 @@ export function WebcrtPage() {
         return [...without, pending];
       });
       setActiveTabKey(key);
+      void webcrtWsUrl(sessionId).then((wsUrl) => {
+        updateTab(key, { wsUrl });
+      });
       showOk(t("webcrt.opened", { name: deviceLabel(target) }));
     },
-    [showOk, t],
+    [showOk, t, updateTab],
   );
 
   const openAuthForTarget = useCallback((target: CliTargetItem, errorHint?: string) => {
@@ -927,7 +930,7 @@ export function WebcrtPage() {
                 async_connect: true,
               };
         const sess = await createWebcrtSession(body);
-        const wsUrl = webcrtWsUrl(sess.session_id);
+        const wsUrl = await webcrtWsUrl(sess.session_id);
         updateTab(key, {
           sessionId: sess.session_id,
           wsUrl,
@@ -966,8 +969,11 @@ export function WebcrtPage() {
         status: "connecting",
         connectPhase: "authenticating",
         termEpoch: tab.termEpoch + 1,
-        wsUrl: webcrtWsUrl(tab.sessionId),
+        wsUrl: "",
         errorMessage: undefined,
+      });
+      void webcrtWsUrl(tab.sessionId).then((wsUrl) => {
+        updateTab(tab.key, { wsUrl });
       });
       setActiveTabKey(tab.key);
       return true;

@@ -641,6 +641,8 @@ class AppUser(Base):
     username: Mapped[str] = mapped_column(String(128), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255), default="")
     role: Mapped[str] = mapped_column(String(32), default="user", index=True)  # admin | user
+    # Optional capability override; empty => role defaults (see auth_scopes).
+    scopes: Mapped[list] = mapped_column(_JsonType, default=list)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
     created_by: Mapped[str] = mapped_column(String(64), default="")
@@ -675,6 +677,8 @@ class ApiToken(Base):
     name: Mapped[str] = mapped_column(String(128), default="")
     token_hash: Mapped[str] = mapped_column(String(128), unique=True, index=True)
     user_id: Mapped[str] = mapped_column(String(64), index=True)
+    # Capability subset; empty inherits owner user scopes (then intersected).
+    scopes: Mapped[list] = mapped_column(_JsonType, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

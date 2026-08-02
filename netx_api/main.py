@@ -33,6 +33,11 @@ from .webcrt_router import router as webcrt_router
 from .topology_router import router as topology_router
 from .lldp_collect_router import router as lldp_collect_router
 from .ops_router import router as ops_router
+from .sql_router import router as sql_router
+from .sql_router import sql_query, sql_ume_query  # noqa: F401 — tests import from main
+from .security_bootstrap import assert_secure_defaults_or_exit
+from .integrations_router import router as integrations_router
+from .ume_runtime import start_device_schedulers
 from .importer import aggregate_alarms, import_alarm_excel, query_alarms
 from .models import (
     AiAnalyzeHistory,
@@ -131,7 +136,13 @@ from .schemas import (
     ImportJobListResponse,
 )
 
-app = FastAPI(title="netx ops tool", version="0.1.0")
+app = FastAPI(
+    title="netx ops tool",
+    version="0.1.0",
+    docs_url="/docs" if bool(settings.docs_enabled) else None,
+    redoc_url="/redoc" if bool(settings.docs_enabled) else None,
+    openapi_url="/openapi.json" if bool(settings.docs_enabled) else None,
+)
 app.add_middleware(AuthAuditMiddleware)
 app.include_router(auth_router)
 app.include_router(managed_ne_router)
@@ -143,6 +154,8 @@ app.include_router(webcrt_router)
 app.include_router(topology_router)
 app.include_router(lldp_collect_router)
 app.include_router(ops_router)
+app.include_router(sql_router)
+app.include_router(integrations_router)
 parser_cfg = load_parser_config()
 _UME_CLIENT_SINGLETON = UMEClient(
     token_loader=lambda: load_shared_token(),
@@ -621,115 +634,6 @@ def _ume_error_kind(err: str) -> str:
     return "other"
 
 
-@app.post("/v1/sql/query")
-def sql_query(payload: dict[str, Any] | None = None, db: Session = Depends(get_db)) -> dict:
-    """
-    Read-only SQL query endpoint for AI power users.
-
-    Safety constraints:
-    - SELECT only, single statement (no ';')
-    - forbid DDL/DML keywords
-    - enforce max rows (server-side LIMIT wrapper)
-    - require batch_id param and require SQL contains ':batch_id'
-    """
-    payload = payload or {}
-    sql = str(payload.get("sql") or "").strip()
-    batch_id = str(payload.get("batch_id") or "").strip()
-    limit = int(payload.get("limit") or 200)
-    limit = max(1, min(limit, 2000))
-    if not sql:
-        raise HTTPException(status_code=400, detail="sql_required")
-    if ";" in sql:
-        raise HTTPException(status_code=400, detail="single_statement_only")
-    low = sql.lower().lstrip()
-    if not low.startswith("select"):
-        raise HTTPException(status_code=400, detail="select_only")
-    if _SQL_FORBIDDEN_RE.search(sql):
-        raise HTTPException(status_code=400, detail="forbidden_keyword")
-    if not batch_id:
-        raise HTTPException(status_code=400, detail="batch_id_required")
-    if ":batch_id" not in sql:
-        raise HTTPException(status_code=400, detail="batch_id_param_required(:batch_id)")
-    wrapped = f"select * from ({sql}) as q limit {limit}"
-    try:
-        res = db.execute(sql_text(wrapped), {"batch_id": batch_id})
-        cols = list(res.keys())
-        raw_rows = res.fetchall()
-        rows: list[list[Any]] = []
-        for r in raw_rows:
-            out_row: list[Any] = []
-            for v in list(r):
-                if isinstance(v, datetime):
-                    out_row.append(((_ensure_utc(v) or v).isoformat().replace("+00:00", "Z")))
-                else:
-                    out_row.append(v)
-            rows.append(out_row)
-        return {"ok": True, "columns": cols, "rows": rows, "limit": limit}
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"sql_failed:{str(exc)[:240]}") from exc
-
-
-@app.post("/v1/sql/ume_query")
-def sql_ume_query(payload: dict[str, Any] | None = None, db: Session = Depends(get_db)) -> dict:
-    """
-    Read-only SQL query endpoint for UME current alarms/inventory.
-
-    Safety constraints:
-    - SELECT only, single statement (no ';')
-    - forbid DDL/DML keywords
-    - enforce max rows (server-side LIMIT wrapper)
-    - only allow FROM/JOIN on ume_alarms_current and ume_inventory_ne
-    """
-    payload = payload or {}
-    sql = str(payload.get("sql") or "").strip()
-    limit = int(payload.get("limit") or 200)
-    limit = max(1, min(limit, 2000))
-    statement_timeout_ms = int(payload.get("statement_timeout_ms") or 0)
-    statement_timeout_ms = max(0, min(statement_timeout_ms, 30000))
-    if not sql:
-        raise HTTPException(status_code=400, detail="sql_required")
-    if ";" in sql:
-        raise HTTPException(status_code=400, detail="single_statement_only")
-    low = sql.lower().lstrip()
-    if not low.startswith("select"):
-        raise HTTPException(status_code=400, detail="select_only")
-    if _SQL_FORBIDDEN_RE.search(sql):
-        raise HTTPException(status_code=400, detail="forbidden_keyword")
-
-    allowed_tables = {"ume_alarms_current", "ume_inventory_ne"}
-    refs = re.findall(r"\b(?:from|join)\s+([a-zA-Z0-9_\"\.]+)", sql, flags=re.IGNORECASE)
-    for ref in refs:
-        normalized = str(ref).strip().strip('"')
-        if "." in normalized:
-            normalized = normalized.split(".")[-1]
-        if normalized.lower() not in allowed_tables:
-            raise HTTPException(status_code=400, detail=f"ume_table_not_allowed:{normalized}")
-
-    wrapped = f"select * from ({sql}) as q limit {limit}"
-    try:
-        if statement_timeout_ms > 0:
-            try:
-                if str(getattr(getattr(db, "bind", None), "dialect", None).name).lower().startswith("postgres"):
-                    db.execute(sql_text("SET LOCAL statement_timeout = :ms"), {"ms": int(statement_timeout_ms)})
-            except Exception:
-                pass
-        res = db.execute(sql_text(wrapped))
-        cols = list(res.keys())
-        raw_rows = res.fetchall()
-        rows: list[list[Any]] = []
-        for r in raw_rows:
-            out_row: list[Any] = []
-            for v in list(r):
-                if isinstance(v, datetime):
-                    out_row.append(((_ensure_utc(v) or v).isoformat().replace("+00:00", "Z")))
-                else:
-                    out_row.append(v)
-            rows.append(out_row)
-        return {"ok": True, "columns": cols, "rows": rows, "limit": limit}
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"sql_failed:{str(exc)[:240]}") from exc
-
-
 def _configure_ume_diag_logging() -> None:
     """Emit netx.ume.* INFO to stderr so background scripts/.run/*.log and consoles show scheduler lines."""
     fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -807,33 +711,50 @@ def _migrate_key_alert_rule_schema() -> None:
 
 @app.on_event("startup")
 def on_startup() -> None:
+    assert_secure_defaults_or_exit()
     _configure_ume_diag_logging()
     Base.metadata.create_all(bind=engine)
-    _migrate_key_alert_rule_schema()
+    skip_ddl = bool(getattr(settings, "skip_legacy_startup_ddl", False))
+    if not skip_ddl:
+        _migrate_key_alert_rule_schema()
     # Auth columns must exist before bootstrap / flag_default_password_users.
     try:
         with engine.begin() as conn:
             conn.exec_driver_sql(
                 "ALTER TABLE app_user ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN DEFAULT FALSE"
             )
-            conn.exec_driver_sql("ALTER TABLE api_token ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP")
-            from .port_traffic_migrate import ensure_port_traffic_series_schema
-            from .topology_migrate import ensure_topology_schema
-
-            ensure_port_traffic_series_schema(conn)
-            ensure_topology_schema(conn)
-            conn.exec_driver_sql(
-                "ALTER TABLE ne_collection_run ADD COLUMN IF NOT EXISTS ne_source VARCHAR(16) DEFAULT 'managed'"
-            )
+            # JSON works on Postgres/SQLite; create_all also defines ORM column.
             try:
                 conn.exec_driver_sql(
-                    "ALTER TABLE ne_collection_run ALTER COLUMN ne_id TYPE VARCHAR(128)"
+                    "ALTER TABLE app_user ADD COLUMN IF NOT EXISTS scopes JSON DEFAULT '[]'"
                 )
             except Exception:
                 pass
-            conn.exec_driver_sql(
-                "ALTER TABLE config_sync_policy ADD COLUMN IF NOT EXISTS cycle_keep INTEGER DEFAULT 30"
-            )
+            conn.exec_driver_sql("ALTER TABLE api_token ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP")
+            try:
+                conn.exec_driver_sql(
+                    "ALTER TABLE api_token ADD COLUMN IF NOT EXISTS scopes JSON DEFAULT '[]'"
+                )
+            except Exception:
+                pass
+            if not skip_ddl:
+                from .port_traffic_migrate import ensure_port_traffic_series_schema
+                from .topology_migrate import ensure_topology_schema
+
+                ensure_port_traffic_series_schema(conn)
+                ensure_topology_schema(conn)
+                conn.exec_driver_sql(
+                    "ALTER TABLE ne_collection_run ADD COLUMN IF NOT EXISTS ne_source VARCHAR(16) DEFAULT 'managed'"
+                )
+                try:
+                    conn.exec_driver_sql(
+                        "ALTER TABLE ne_collection_run ALTER COLUMN ne_id TYPE VARCHAR(128)"
+                    )
+                except Exception:
+                    pass
+                conn.exec_driver_sql(
+                    "ALTER TABLE config_sync_policy ADD COLUMN IF NOT EXISTS cycle_keep INTEGER DEFAULT 30"
+                )
     except Exception:
         _schedule_log.exception("startup: auth/port_traffic/topology schema migration failed")
     _reset_runtime_pause_flags()
@@ -899,232 +820,228 @@ def on_startup() -> None:
         _schedule_log.exception("startup: ne collection / config_sync recovery failed")
     finally:
         db.close()
-    try:
-        from .config_sync_scheduler import start_config_sync_scheduler
-
-        start_config_sync_scheduler()
-    except Exception:
-        _schedule_log.exception("startup: config_sync scheduler init failed")
-    try:
-        from .lldp_collect_scheduler import start_lldp_collect_scheduler
-
-        start_lldp_collect_scheduler()
-    except Exception:
-        _schedule_log.exception("startup: lldp_collect scheduler init failed")
-    try:
-        from .port_traffic_scheduler import start_port_traffic_scheduler
-
-        start_port_traffic_scheduler()
-    except Exception:
-        _schedule_log.exception("startup: port_traffic scheduler init failed")
+    if bool(getattr(settings, "run_inline_schedulers", True)):
+        try:
+            start_device_schedulers()
+        except Exception:
+            _schedule_log.exception("startup: device schedulers init failed")
+    else:
+        _schedule_log.info(
+            "startup: inline schedulers disabled — run `python -m netx_api.worker` for "
+            "config_sync / lldp_collect / port_traffic"
+        )
     # Best-effort schema evolution for new columns (no migrations framework).
     # Safe for Postgres (IF NOT EXISTS); ignored on failure.
-    try:
-        with engine.begin() as conn:
-            # Removed from ORM: drop legacy holder table if present (was optional nested UME data).
-            conn.exec_driver_sql("DROP TABLE IF EXISTS ume_inventory_equipment_holder")
-            conn.exec_driver_sql("ALTER TABLE alarms_norm ADD COLUMN IF NOT EXISTS relevancy VARCHAR(128) DEFAULT ''")
-            conn.exec_driver_sql("ALTER TABLE alarms_norm ADD COLUMN IF NOT EXISTS l3vpn_peer_ne VARCHAR(256) DEFAULT ''")
-            conn.exec_driver_sql("ALTER TABLE alarms_norm ADD COLUMN IF NOT EXISTS service VARCHAR(256) DEFAULT ''")
-            conn.exec_driver_sql(
-                "ALTER TABLE alarms_norm ADD COLUMN IF NOT EXISTS affected_client_service_number INTEGER DEFAULT 0"
-            )
-            conn.exec_driver_sql("ALTER TABLE alarms_norm ADD COLUMN IF NOT EXISTS intermittence_count INTEGER DEFAULT 0")
-            conn.exec_driver_sql("ALTER TABLE alarms_norm ADD COLUMN IF NOT EXISTS me_level VARCHAR(128) DEFAULT ''")
-            conn.exec_driver_sql("ALTER TABLE ume_token_cache ADD COLUMN IF NOT EXISTS lock_owner VARCHAR(128) DEFAULT ''")
-            conn.exec_driver_sql("ALTER TABLE ume_token_cache ADD COLUMN IF NOT EXISTS lock_expires_at_epoch_s INTEGER DEFAULT 0")
-            conn.exec_driver_sql("ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS device_level VARCHAR(64) DEFAULT ''")
-            conn.exec_driver_sql("ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS host_name VARCHAR(256) DEFAULT ''")
-            conn.exec_driver_sql("ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS location VARCHAR(512) DEFAULT ''")
-            conn.exec_driver_sql("ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS ipv6_address VARCHAR(128) DEFAULT ''")
-            conn.exec_driver_sql(
-                "ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS hardware_version VARCHAR(128) DEFAULT ''"
-            )
-            conn.exec_driver_sql("ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS loopback VARCHAR(128) DEFAULT ''")
-            conn.exec_driver_sql(
-                "ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS consistent_state VARCHAR(64) DEFAULT ''"
-            )
-            conn.exec_driver_sql(
-                "ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS interface_version VARCHAR(128) DEFAULT ''"
-            )
-            conn.exec_driver_sql("ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS mac VARCHAR(128) DEFAULT ''")
-            conn.exec_driver_sql("ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS admin_status VARCHAR(64) DEFAULT ''")
-            conn.exec_driver_sql("ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS address_type VARCHAR(64) DEFAULT ''")
-            conn.exec_driver_sql(
-                "ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS connection_status VARCHAR(64) DEFAULT ''"
-            )
-            conn.exec_driver_sql(
-                "ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS maintain_status VARCHAR(64) DEFAULT ''"
-            )
-            conn.exec_driver_sql("ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS net_mask VARCHAR(128) DEFAULT ''")
-            conn.exec_driver_sql("ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS create_time VARCHAR(64) DEFAULT ''")
-            conn.exec_driver_sql("ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS creator VARCHAR(128) DEFAULT ''")
-            # Allow long UME alarm fields; avoid StringDataRightTruncation on large payloads.
-            conn.exec_driver_sql("ALTER TABLE ume_alarms_current ALTER COLUMN alarm_key TYPE TEXT")
-            conn.exec_driver_sql("ALTER TABLE ume_alarms_current ALTER COLUMN object_name TYPE TEXT")
-            conn.exec_driver_sql("ALTER TABLE ume_alarms_current ALTER COLUMN event_type TYPE TEXT")
-            conn.exec_driver_sql("ALTER TABLE ume_alarms_current ALTER COLUMN native_probable_cause TYPE TEXT")
-            conn.exec_driver_sql("ALTER TABLE ume_alarms_current ALTER COLUMN perceived_severity TYPE TEXT")
-            conn.exec_driver_sql("ALTER TABLE ume_alarms_current ALTER COLUMN is_cleared TYPE TEXT")
-            conn.exec_driver_sql("ALTER TABLE ume_alarms_current ALTER COLUMN time_created TYPE TEXT")
-            conn.exec_driver_sql("ALTER TABLE ume_alarms_current ALTER COLUMN root_cause_alarm_indication TYPE TEXT")
-            conn.exec_driver_sql("ALTER TABLE ume_alarms_current ADD COLUMN IF NOT EXISTS host_name VARCHAR(256) DEFAULT ''")
-            conn.exec_driver_sql("ALTER TABLE ume_alarms_history ADD COLUMN IF NOT EXISTS host_name VARCHAR(256) DEFAULT ''")
-            conn.exec_driver_sql(
-                "ALTER TABLE ume_alarms_current ADD COLUMN IF NOT EXISTS notification_id VARCHAR(128) DEFAULT ''"
-            )
-            conn.exec_driver_sql(
-                "ALTER TABLE ume_alarms_history ADD COLUMN IF NOT EXISTS notification_id VARCHAR(128) DEFAULT ''"
-            )
-            conn.exec_driver_sql(
-                "CREATE INDEX IF NOT EXISTS ix_ume_alarms_current_notification_id ON ume_alarms_current (notification_id)"
-            )
-            conn.exec_driver_sql(
-                "CREATE INDEX IF NOT EXISTS ix_ume_alarms_history_notification_id ON ume_alarms_history (notification_id)"
-            )
-            conn.exec_driver_sql(
-                "CREATE INDEX IF NOT EXISTS ix_ume_alarms_current_host_name ON ume_alarms_current (host_name)"
-            )
-            conn.exec_driver_sql(
-                "CREATE INDEX IF NOT EXISTS ix_ume_alarms_history_host_name ON ume_alarms_history (host_name)"
-            )
-            conn.exec_driver_sql("ALTER TABLE ume_alarms_history ALTER COLUMN alarm_key TYPE TEXT")
-            conn.exec_driver_sql("ALTER TABLE ume_alarms_history ALTER COLUMN object_name TYPE TEXT")
-            conn.exec_driver_sql("ALTER TABLE ume_alarms_history ALTER COLUMN event_type TYPE TEXT")
-            conn.exec_driver_sql("ALTER TABLE ume_alarms_history ALTER COLUMN native_probable_cause TYPE TEXT")
-            conn.exec_driver_sql("ALTER TABLE ume_alarms_history ALTER COLUMN perceived_severity TYPE TEXT")
-            conn.exec_driver_sql("ALTER TABLE ume_alarms_history ALTER COLUMN is_cleared TYPE TEXT")
-            conn.exec_driver_sql("ALTER TABLE ume_alarms_history ALTER COLUMN time_created TYPE TEXT")
-            conn.exec_driver_sql("ALTER TABLE ume_alarms_history ALTER COLUMN root_cause_alarm_indication TYPE TEXT")
-            # Simplify alarm tables: display fields come from runtime join with inventory table.
-            conn.exec_driver_sql("ALTER TABLE ume_alarms_current DROP COLUMN IF EXISTS ne_name")
-            conn.exec_driver_sql("ALTER TABLE ume_alarms_current DROP COLUMN IF EXISTS user_label")
-            conn.exec_driver_sql("ALTER TABLE ume_alarms_history DROP COLUMN IF EXISTS ne_name")
-            conn.exec_driver_sql("ALTER TABLE ume_alarms_history DROP COLUMN IF EXISTS user_label")
-            conn.exec_driver_sql("ALTER TABLE api_token ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP")
-            conn.exec_driver_sql(
-                "ALTER TABLE app_user ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN DEFAULT FALSE"
-            )
-            conn.exec_driver_sql("ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS hop_enabled BOOLEAN DEFAULT FALSE")
-            conn.exec_driver_sql("ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS hop_vendor VARCHAR(32) DEFAULT 'zte'")
-            conn.exec_driver_sql("ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS hop_host VARCHAR(128) DEFAULT ''")
-            conn.exec_driver_sql("ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS hop_port INTEGER DEFAULT 22")
-            conn.exec_driver_sql("ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS hop_protocol VARCHAR(16) DEFAULT 'ssh'")
-            conn.exec_driver_sql("ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS hop_username VARCHAR(128) DEFAULT ''")
-            conn.exec_driver_sql("ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS hop_password_enc TEXT DEFAULT ''")
-            conn.exec_driver_sql("ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS hop_command_template TEXT DEFAULT ''")
-            conn.exec_driver_sql("ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS hop_vrf VARCHAR(128) DEFAULT ''")
-            conn.exec_driver_sql(
-                "ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS hop_target_auth_mode VARCHAR(32) DEFAULT 'bastion_managed'"
-            )
-            conn.exec_driver_sql("ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS source VARCHAR(64) DEFAULT ''")
-            conn.exec_driver_sql("ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS source_ref VARCHAR(128) DEFAULT ''")
-            conn.exec_driver_sql("ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS connect_detail TEXT DEFAULT ''")
-            # WebCRT sessions may share a host IP; uniqueness is enforced in ne_service for inventory only.
-            for stmt in (
-                "ALTER TABLE managed_ne DROP CONSTRAINT IF EXISTS managed_ne_ip_address_key",
-                "DROP INDEX IF EXISTS managed_ne_ip_address_key",
-                "DROP INDEX IF EXISTS ix_managed_ne_ip_address",
-                "DROP INDEX IF EXISTS sqlite_autoindex_managed_ne_1",
-            ):
+    # When NETX_SKIP_LEGACY_STARTUP_DDL=1, rely on Alembic instead.
+    if bool(getattr(settings, "skip_legacy_startup_ddl", False)):
+        _schedule_log.info("startup: skipping legacy ALTER TABLE DDL (Alembic mode)")
+    else:
+        try:
+            with engine.begin() as conn:
+                # Removed from ORM: drop legacy holder table if present (was optional nested UME data).
+                conn.exec_driver_sql("DROP TABLE IF EXISTS ume_inventory_equipment_holder")
+                conn.exec_driver_sql("ALTER TABLE alarms_norm ADD COLUMN IF NOT EXISTS relevancy VARCHAR(128) DEFAULT ''")
+                conn.exec_driver_sql("ALTER TABLE alarms_norm ADD COLUMN IF NOT EXISTS l3vpn_peer_ne VARCHAR(256) DEFAULT ''")
+                conn.exec_driver_sql("ALTER TABLE alarms_norm ADD COLUMN IF NOT EXISTS service VARCHAR(256) DEFAULT ''")
+                conn.exec_driver_sql(
+                    "ALTER TABLE alarms_norm ADD COLUMN IF NOT EXISTS affected_client_service_number INTEGER DEFAULT 0"
+                )
+                conn.exec_driver_sql("ALTER TABLE alarms_norm ADD COLUMN IF NOT EXISTS intermittence_count INTEGER DEFAULT 0")
+                conn.exec_driver_sql("ALTER TABLE alarms_norm ADD COLUMN IF NOT EXISTS me_level VARCHAR(128) DEFAULT ''")
+                conn.exec_driver_sql("ALTER TABLE ume_token_cache ADD COLUMN IF NOT EXISTS lock_owner VARCHAR(128) DEFAULT ''")
+                conn.exec_driver_sql("ALTER TABLE ume_token_cache ADD COLUMN IF NOT EXISTS lock_expires_at_epoch_s INTEGER DEFAULT 0")
+                conn.exec_driver_sql("ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS device_level VARCHAR(64) DEFAULT ''")
+                conn.exec_driver_sql("ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS host_name VARCHAR(256) DEFAULT ''")
+                conn.exec_driver_sql("ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS location VARCHAR(512) DEFAULT ''")
+                conn.exec_driver_sql("ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS ipv6_address VARCHAR(128) DEFAULT ''")
+                conn.exec_driver_sql(
+                    "ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS hardware_version VARCHAR(128) DEFAULT ''"
+                )
+                conn.exec_driver_sql("ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS loopback VARCHAR(128) DEFAULT ''")
+                conn.exec_driver_sql(
+                    "ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS consistent_state VARCHAR(64) DEFAULT ''"
+                )
+                conn.exec_driver_sql(
+                    "ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS interface_version VARCHAR(128) DEFAULT ''"
+                )
+                conn.exec_driver_sql("ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS mac VARCHAR(128) DEFAULT ''")
+                conn.exec_driver_sql("ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS admin_status VARCHAR(64) DEFAULT ''")
+                conn.exec_driver_sql("ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS address_type VARCHAR(64) DEFAULT ''")
+                conn.exec_driver_sql(
+                    "ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS connection_status VARCHAR(64) DEFAULT ''"
+                )
+                conn.exec_driver_sql(
+                    "ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS maintain_status VARCHAR(64) DEFAULT ''"
+                )
+                conn.exec_driver_sql("ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS net_mask VARCHAR(128) DEFAULT ''")
+                conn.exec_driver_sql("ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS create_time VARCHAR(64) DEFAULT ''")
+                conn.exec_driver_sql("ALTER TABLE ume_inventory_ne ADD COLUMN IF NOT EXISTS creator VARCHAR(128) DEFAULT ''")
+                # Allow long UME alarm fields; avoid StringDataRightTruncation on large payloads.
+                conn.exec_driver_sql("ALTER TABLE ume_alarms_current ALTER COLUMN alarm_key TYPE TEXT")
+                conn.exec_driver_sql("ALTER TABLE ume_alarms_current ALTER COLUMN object_name TYPE TEXT")
+                conn.exec_driver_sql("ALTER TABLE ume_alarms_current ALTER COLUMN event_type TYPE TEXT")
+                conn.exec_driver_sql("ALTER TABLE ume_alarms_current ALTER COLUMN native_probable_cause TYPE TEXT")
+                conn.exec_driver_sql("ALTER TABLE ume_alarms_current ALTER COLUMN perceived_severity TYPE TEXT")
+                conn.exec_driver_sql("ALTER TABLE ume_alarms_current ALTER COLUMN is_cleared TYPE TEXT")
+                conn.exec_driver_sql("ALTER TABLE ume_alarms_current ALTER COLUMN time_created TYPE TEXT")
+                conn.exec_driver_sql("ALTER TABLE ume_alarms_current ALTER COLUMN root_cause_alarm_indication TYPE TEXT")
+                conn.exec_driver_sql("ALTER TABLE ume_alarms_current ADD COLUMN IF NOT EXISTS host_name VARCHAR(256) DEFAULT ''")
+                conn.exec_driver_sql("ALTER TABLE ume_alarms_history ADD COLUMN IF NOT EXISTS host_name VARCHAR(256) DEFAULT ''")
+                conn.exec_driver_sql(
+                    "ALTER TABLE ume_alarms_current ADD COLUMN IF NOT EXISTS notification_id VARCHAR(128) DEFAULT ''"
+                )
+                conn.exec_driver_sql(
+                    "ALTER TABLE ume_alarms_history ADD COLUMN IF NOT EXISTS notification_id VARCHAR(128) DEFAULT ''"
+                )
+                conn.exec_driver_sql(
+                    "CREATE INDEX IF NOT EXISTS ix_ume_alarms_current_notification_id ON ume_alarms_current (notification_id)"
+                )
+                conn.exec_driver_sql(
+                    "CREATE INDEX IF NOT EXISTS ix_ume_alarms_history_notification_id ON ume_alarms_history (notification_id)"
+                )
+                conn.exec_driver_sql(
+                    "CREATE INDEX IF NOT EXISTS ix_ume_alarms_current_host_name ON ume_alarms_current (host_name)"
+                )
+                conn.exec_driver_sql(
+                    "CREATE INDEX IF NOT EXISTS ix_ume_alarms_history_host_name ON ume_alarms_history (host_name)"
+                )
+                conn.exec_driver_sql("ALTER TABLE ume_alarms_history ALTER COLUMN alarm_key TYPE TEXT")
+                conn.exec_driver_sql("ALTER TABLE ume_alarms_history ALTER COLUMN object_name TYPE TEXT")
+                conn.exec_driver_sql("ALTER TABLE ume_alarms_history ALTER COLUMN event_type TYPE TEXT")
+                conn.exec_driver_sql("ALTER TABLE ume_alarms_history ALTER COLUMN native_probable_cause TYPE TEXT")
+                conn.exec_driver_sql("ALTER TABLE ume_alarms_history ALTER COLUMN perceived_severity TYPE TEXT")
+                conn.exec_driver_sql("ALTER TABLE ume_alarms_history ALTER COLUMN is_cleared TYPE TEXT")
+                conn.exec_driver_sql("ALTER TABLE ume_alarms_history ALTER COLUMN time_created TYPE TEXT")
+                conn.exec_driver_sql("ALTER TABLE ume_alarms_history ALTER COLUMN root_cause_alarm_indication TYPE TEXT")
+                # Simplify alarm tables: display fields come from runtime join with inventory table.
+                conn.exec_driver_sql("ALTER TABLE ume_alarms_current DROP COLUMN IF EXISTS ne_name")
+                conn.exec_driver_sql("ALTER TABLE ume_alarms_current DROP COLUMN IF EXISTS user_label")
+                conn.exec_driver_sql("ALTER TABLE ume_alarms_history DROP COLUMN IF EXISTS ne_name")
+                conn.exec_driver_sql("ALTER TABLE ume_alarms_history DROP COLUMN IF EXISTS user_label")
+                conn.exec_driver_sql("ALTER TABLE api_token ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP")
+                conn.exec_driver_sql(
+                    "ALTER TABLE app_user ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN DEFAULT FALSE"
+                )
+                conn.exec_driver_sql("ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS hop_enabled BOOLEAN DEFAULT FALSE")
+                conn.exec_driver_sql("ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS hop_vendor VARCHAR(32) DEFAULT 'zte'")
+                conn.exec_driver_sql("ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS hop_host VARCHAR(128) DEFAULT ''")
+                conn.exec_driver_sql("ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS hop_port INTEGER DEFAULT 22")
+                conn.exec_driver_sql("ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS hop_protocol VARCHAR(16) DEFAULT 'ssh'")
+                conn.exec_driver_sql("ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS hop_username VARCHAR(128) DEFAULT ''")
+                conn.exec_driver_sql("ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS hop_password_enc TEXT DEFAULT ''")
+                conn.exec_driver_sql("ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS hop_command_template TEXT DEFAULT ''")
+                conn.exec_driver_sql("ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS hop_vrf VARCHAR(128) DEFAULT ''")
+                conn.exec_driver_sql(
+                    "ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS hop_target_auth_mode VARCHAR(32) DEFAULT 'bastion_managed'"
+                )
+                conn.exec_driver_sql("ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS source VARCHAR(64) DEFAULT ''")
+                conn.exec_driver_sql("ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS source_ref VARCHAR(128) DEFAULT ''")
+                conn.exec_driver_sql("ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS connect_detail TEXT DEFAULT ''")
+                # WebCRT sessions may share a host IP; uniqueness is enforced in ne_service for inventory only.
+                for stmt in (
+                    "ALTER TABLE managed_ne DROP CONSTRAINT IF EXISTS managed_ne_ip_address_key",
+                    "DROP INDEX IF EXISTS managed_ne_ip_address_key",
+                    "DROP INDEX IF EXISTS ix_managed_ne_ip_address",
+                    "DROP INDEX IF EXISTS sqlite_autoindex_managed_ne_1",
+                ):
+                    try:
+                        conn.exec_driver_sql(stmt)
+                    except Exception:
+                        pass
                 try:
-                    conn.exec_driver_sql(stmt)
+                    conn.exec_driver_sql(
+                        "CREATE INDEX IF NOT EXISTS ix_managed_ne_ip_address ON managed_ne (ip_address)"
+                    )
                 except Exception:
                     pass
-            try:
                 conn.exec_driver_sql(
-                    "CREATE INDEX IF NOT EXISTS ix_managed_ne_ip_address ON managed_ne (ip_address)"
+                    "ALTER TABLE ne_collection_job ADD COLUMN IF NOT EXISTS last_run_at TIMESTAMP"
                 )
-            except Exception:
-                pass
-            conn.exec_driver_sql(
-                "ALTER TABLE ne_collection_job ADD COLUMN IF NOT EXISTS last_run_at TIMESTAMP"
-            )
-            conn.exec_driver_sql(
-                "UPDATE ne_collection_job SET last_run_at = COALESCE(ended_at, started_at, created_at) "
-                "WHERE last_run_at IS NULL"
-            )
-            conn.exec_driver_sql(
-                """
-                CREATE TABLE IF NOT EXISTS cli_connect_profile (
-                    id VARCHAR(64) PRIMARY KEY,
-                    name VARCHAR(256) DEFAULT '',
-                    is_default BOOLEAN DEFAULT FALSE,
-                    username VARCHAR(128) DEFAULT '',
-                    password_enc TEXT DEFAULT '',
-                    port INTEGER DEFAULT 22,
-                    protocol VARCHAR(16) DEFAULT 'ssh',
-                    device_type_default VARCHAR(128) DEFAULT 'zte_zxros',
-                    vendor_default VARCHAR(64) DEFAULT 'ZTE',
-                    ne_type_rules TEXT DEFAULT '',
-                    hop_enabled BOOLEAN DEFAULT FALSE,
-                    hop_vendor VARCHAR(32) DEFAULT 'zte',
-                    hop_host VARCHAR(128) DEFAULT '',
-                    hop_port INTEGER DEFAULT 22,
-                    hop_protocol VARCHAR(16) DEFAULT 'ssh',
-                    hop_username VARCHAR(128) DEFAULT '',
-                    hop_password_enc TEXT DEFAULT '',
-                    hop_command_template TEXT DEFAULT '',
-                    hop_vrf VARCHAR(128) DEFAULT '',
-                    hop_target_auth_mode VARCHAR(32) DEFAULT 'bastion_managed',
-                    created_at TIMESTAMP,
-                    updated_at TIMESTAMP
+                conn.exec_driver_sql(
+                    "UPDATE ne_collection_job SET last_run_at = COALESCE(ended_at, started_at, created_at) "
+                    "WHERE last_run_at IS NULL"
                 )
-                """
-            )
-            conn.exec_driver_sql(
-                "CREATE INDEX IF NOT EXISTS ix_cli_connect_profile_is_default ON cli_connect_profile (is_default)"
-            )
-            conn.exec_driver_sql(
-                """
-                CREATE TABLE IF NOT EXISTS ume_cli_override (
-                    ume_ne_id VARCHAR(128) PRIMARY KEY,
-                    profile_id VARCHAR(64),
-                    username_override VARCHAR(128) DEFAULT '',
-                    device_type_override VARCHAR(128) DEFAULT '',
-                    vendor_override VARCHAR(64) DEFAULT '',
-                    connect_status VARCHAR(32) DEFAULT 'unknown',
-                    connect_message VARCHAR(512) DEFAULT '',
-                    connect_detail TEXT DEFAULT '',
-                    connect_tested_at TIMESTAMP,
-                    updated_at TIMESTAMP
+                conn.exec_driver_sql(
+                    """
+                    CREATE TABLE IF NOT EXISTS cli_connect_profile (
+                        id VARCHAR(64) PRIMARY KEY,
+                        name VARCHAR(256) DEFAULT '',
+                        is_default BOOLEAN DEFAULT FALSE,
+                        username VARCHAR(128) DEFAULT '',
+                        password_enc TEXT DEFAULT '',
+                        port INTEGER DEFAULT 22,
+                        protocol VARCHAR(16) DEFAULT 'ssh',
+                        device_type_default VARCHAR(128) DEFAULT 'zte_zxros',
+                        vendor_default VARCHAR(64) DEFAULT 'ZTE',
+                        ne_type_rules TEXT DEFAULT '',
+                        hop_enabled BOOLEAN DEFAULT FALSE,
+                        hop_vendor VARCHAR(32) DEFAULT 'zte',
+                        hop_host VARCHAR(128) DEFAULT '',
+                        hop_port INTEGER DEFAULT 22,
+                        hop_protocol VARCHAR(16) DEFAULT 'ssh',
+                        hop_username VARCHAR(128) DEFAULT '',
+                        hop_password_enc TEXT DEFAULT '',
+                        hop_command_template TEXT DEFAULT '',
+                        hop_vrf VARCHAR(128) DEFAULT '',
+                        hop_target_auth_mode VARCHAR(32) DEFAULT 'bastion_managed',
+                        created_at TIMESTAMP,
+                        updated_at TIMESTAMP
+                    )
+                    """
                 )
-                """
-            )
-            conn.exec_driver_sql(
-                "CREATE INDEX IF NOT EXISTS ix_ume_cli_override_connect_status ON ume_cli_override (connect_status)"
-            )
-            conn.exec_driver_sql("COMMENT ON TABLE ume_inventory_ne IS '网元对象详细信息'")
-            conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.ne_id IS '网元uuid'")
-            conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.ne_name IS '资源名称'")
-            conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.ne_type IS '网元类型'")
-            conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.user_label IS '用户标签'")
-            conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.address_type IS '管理地址类型(1:IPv4,2:IPv6)'")
-            conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.ip_address IS '网元IPv4地址'")
-            conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.net_mask IS '管理IPv4掩码(点分十进制)'")
-            conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.ipv6_address IS 'IPv6地址'")
-            conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.admin_status IS '管理状态(0-离线,1-在线)'")
-            conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.connection_status IS '连接状态(0-断链,1-正常)'")
-            conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.consistent_state IS '数据一致性状态(1一致,2不一致,3冲突)'")
-            conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.maintain_status IS '工程状态(0普通,1调测,2新建)'")
-            conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.vendor IS '网元提供商'")
-            conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.interface_version IS '网元接口版本号'")
-            conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.hardware_version IS '硬件版本'")
-            conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.mac IS '设备机架MAC地址'")
-            conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.loopback IS '业务环回IP(IPv4)'")
-            conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.device_level IS '网元层次'")
-            conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.host_name IS '主机名称'")
-            conn.exec_driver_sql(
-                "ALTER TABLE topology_edge ADD COLUMN IF NOT EXISTS stroke_color VARCHAR(32) DEFAULT ''"
-            )
-            conn.exec_driver_sql(
-                "ALTER TABLE topology_edge ADD COLUMN IF NOT EXISTS stroke_width INTEGER DEFAULT 0"
-            )
-            conn.exec_driver_sql(
-                "ALTER TABLE topology_edge ADD COLUMN IF NOT EXISTS line_style VARCHAR(16) DEFAULT ''"
-            )
-    except Exception:
-        pass
+                conn.exec_driver_sql(
+                    "CREATE INDEX IF NOT EXISTS ix_cli_connect_profile_is_default ON cli_connect_profile (is_default)"
+                )
+                conn.exec_driver_sql(
+                    """
+                    CREATE TABLE IF NOT EXISTS ume_cli_override (
+                        ume_ne_id VARCHAR(128) PRIMARY KEY,
+                        profile_id VARCHAR(64),
+                        username_override VARCHAR(128) DEFAULT '',
+                        device_type_override VARCHAR(128) DEFAULT '',
+                        vendor_override VARCHAR(64) DEFAULT '',
+                        connect_status VARCHAR(32) DEFAULT 'unknown',
+                        connect_message VARCHAR(512) DEFAULT '',
+                        connect_detail TEXT DEFAULT '',
+                        connect_tested_at TIMESTAMP,
+                        updated_at TIMESTAMP
+                    )
+                    """
+                )
+                conn.exec_driver_sql(
+                    "CREATE INDEX IF NOT EXISTS ix_ume_cli_override_connect_status ON ume_cli_override (connect_status)"
+                )
+                conn.exec_driver_sql("COMMENT ON TABLE ume_inventory_ne IS '网元对象详细信息'")
+                conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.ne_id IS '网元uuid'")
+                conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.ne_name IS '资源名称'")
+                conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.ne_type IS '网元类型'")
+                conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.user_label IS '用户标签'")
+                conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.address_type IS '管理地址类型(1:IPv4,2:IPv6)'")
+                conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.ip_address IS '网元IPv4地址'")
+                conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.net_mask IS '管理IPv4掩码(点分十进制)'")
+                conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.ipv6_address IS 'IPv6地址'")
+                conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.admin_status IS '管理状态(0-离线,1-在线)'")
+                conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.connection_status IS '连接状态(0-断链,1-正常)'")
+                conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.consistent_state IS '数据一致性状态(1一致,2不一致,3冲突)'")
+                conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.maintain_status IS '工程状态(0普通,1调测,2新建)'")
+                conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.vendor IS '网元提供商'")
+                conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.interface_version IS '网元接口版本号'")
+                conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.hardware_version IS '硬件版本'")
+                conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.mac IS '设备机架MAC地址'")
+                conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.loopback IS '业务环回IP(IPv4)'")
+                conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.device_level IS '网元层次'")
+                conn.exec_driver_sql("COMMENT ON COLUMN ume_inventory_ne.host_name IS '主机名称'")
+                conn.exec_driver_sql(
+                    "ALTER TABLE topology_edge ADD COLUMN IF NOT EXISTS stroke_color VARCHAR(32) DEFAULT ''"
+                )
+                conn.exec_driver_sql(
+                    "ALTER TABLE topology_edge ADD COLUMN IF NOT EXISTS stroke_width INTEGER DEFAULT 0"
+                )
+                conn.exec_driver_sql(
+                    "ALTER TABLE topology_edge ADD COLUMN IF NOT EXISTS line_style VARCHAR(16) DEFAULT ''"
+                )
+        except Exception:
+            pass
     try:
         if bool(getattr(settings, "ume_keepalive_enabled", True)):
             interval_keepalive_s = int(getattr(settings, "ume_keepalive_interval_s", 600) or 600)
@@ -1433,6 +1350,7 @@ def on_shutdown() -> None:
 @app.get("/health", status_code=200)
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
 
 
 @app.get("/v1/ume/token/status")

@@ -817,11 +817,18 @@ export function webcrtSftpUpload(
   return withSftpRetries(() => webcrtSftpUploadOnce(body, opts), opts);
 }
 
-export const webcrtWsUrl = (sessionId: string): string => {
+export async function webcrtWsUrl(sessionId: string): Promise<string> {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
   const path = `/v1/webcrt/sessions/${encodeURIComponent(sessionId)}/ws`;
-  const tok = getAuthToken();
-  const qs = tok ? `?access_token=${encodeURIComponent(tok)}` : "";
+  let qs = "";
+  try {
+    const ticketResp = await apiPost<{ ticket: string; expires_in: number }>("/v1/webcrt/ws-ticket", {});
+    if (ticketResp?.ticket) {
+      qs = `?ws_ticket=${encodeURIComponent(ticketResp.ticket)}`;
+    }
+  } catch {
+    qs = "";
+  }
   // Optional override, e.g. ws://127.0.0.1:8890
   const override = String((import.meta as ImportMeta & { env?: Record<string, string> }).env?.VITE_NETX_WS_BASE || "").trim();
   if (override) {
@@ -834,7 +841,7 @@ export const webcrtWsUrl = (sessionId: string): string => {
     return `${proto}//${apiHost}:8890${path}${qs}`;
   }
   return `${proto}//${window.location.host}${path}${qs}`;
-};
+}
 
 export const fetchCliMeta = () => apiGet<CliMeta>("/v1/cli/meta");
 

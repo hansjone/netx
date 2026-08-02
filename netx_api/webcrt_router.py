@@ -13,8 +13,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from .db import SessionLocal, get_db
-from .auth_deps import resolve_user_from_token
+from .auth_deps import AuthContext, require_user, resolve_user_from_token
+from .auth_scopes import SCOPE_WEBCRT, has_scope
 from .config import settings
+from .webcrt_tickets import consume_ws_ticket, issue_ws_ticket
 from .webcrt_service import (
     close_session,
     create_session,
@@ -32,6 +34,18 @@ from .webcrt_service import (
 _log = logging.getLogger("netx.webcrt.router")
 
 router = APIRouter(prefix="/v1/webcrt", tags=["webcrt"])
+
+
+@router.post("/ws-ticket")
+def api_ws_ticket(ctx: AuthContext = Depends(require_user)) -> dict[str, Any]:
+    """Mint a one-time short-lived ticket for WebSocket connect (Authorization header required)."""
+    if bool(settings.auth_enabled) and not has_scope(ctx.scopes, SCOPE_WEBCRT):
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "insufficient_scope", "required": [SCOPE_WEBCRT], "granted": sorted(ctx.scopes)},
+        )
+    ticket, ttl = issue_ws_ticket(user_id=str(ctx.user.id), scopes=ctx.scopes)
+    return {"ticket": ticket, "expires_in": ttl}
 
 
 class WebcrtSessionCreate(BaseModel):
@@ -342,19 +356,34 @@ async def api_sftp_upload(
 @router.websocket("/sessions/{session_id}/ws")
 async def websocket_session(websocket: WebSocket, session_id: str) -> None:
     if bool(settings.auth_enabled):
-        token = str(websocket.query_params.get("access_token") or "").strip()
-        if not token:
+        # Prefer one-time ws_ticket (query). Bearer header also accepted (non-browser clients).
+        # Long-lived access_token in query is rejected.
+        ticket = str(websocket.query_params.get("ws_ticket") or "").strip()
+        if ticket:
+            info = consume_ws_ticket(ticket)
+            if info is None or not has_scope(info.scopes, SCOPE_WEBCRT):
+                await websocket.close(code=4403 if info is not None else 4401)
+                return
+        else:
+            if str(websocket.query_params.get("access_token") or "").strip():
+                await websocket.close(code=4401)
+                return
+            token = ""
             auth = str(websocket.headers.get("authorization") or "").strip()
             if auth.lower().startswith("bearer "):
                 token = auth[7:].strip()
-        db = SessionLocal()
-        try:
-            resolved = resolve_user_from_token(db, token) if token else None
-        finally:
-            db.close()
-        if resolved is None:
-            await websocket.close(code=4401)
-            return
+            db = SessionLocal()
+            try:
+                resolved = resolve_user_from_token(db, token) if token else None
+            finally:
+                db.close()
+            if resolved is None:
+                await websocket.close(code=4401)
+                return
+            _user, _via, scopes, _tid = resolved
+            if not has_scope(scopes, SCOPE_WEBCRT):
+                await websocket.close(code=4403)
+                return
 
     await websocket.accept()
     attach_gen = 0

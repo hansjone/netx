@@ -1,14 +1,22 @@
-"""FastAPI dependencies for authenticated / admin-only routes."""
+"""FastAPI dependencies for authenticated / admin-only / scope-gated routes."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Annotated
+from dataclasses import dataclass, field
+from typing import Annotated, Callable
 
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
-from .auth_service import get_user_by_id, resolve_api_token_user
+from .auth_scopes import (
+    ALL_SCOPES,
+    effective_token_scopes,
+    effective_user_scopes,
+    has_all_scopes,
+    has_scope,
+    normalize_scopes,
+)
+from .auth_service import get_user_by_id, resolve_api_token_row
 from .auth_tokens import decode_access_token
 from .config import settings
 from .db import get_db
@@ -19,26 +27,40 @@ from .models import AppUser
 class AuthContext:
     user: AppUser
     auth_via: str  # jwt | api_token | disabled
+    scopes: frozenset[str] = field(default_factory=frozenset)
+    api_token_id: str = ""
 
 
 def _extract_bearer(request: Request) -> str:
     auth = str(request.headers.get("authorization") or "").strip()
     if auth.lower().startswith("bearer "):
         return auth[7:].strip()
-    # WebCRT / tools may pass access_token query
+    # Prefer Header; query access_token is deprecated (WebSocket may still use short-lived tickets).
     q = request.query_params.get("access_token")
     return str(q or "").strip()
 
 
-def resolve_user_from_token(db: Session, token: str) -> tuple[AppUser, str] | None:
+def user_scopes(user: AppUser) -> frozenset[str]:
+    return effective_user_scopes(role=str(user.role or "user"), override=getattr(user, "scopes", None) or [])
+
+
+def resolve_user_from_token(db: Session, token: str) -> tuple[AppUser, str, frozenset[str], str] | None:
+    """Return (user, via, scopes, api_token_id) or None."""
     raw = str(token or "").strip()
     if not raw:
         return None
     if raw.startswith("nxt_"):
-        user = resolve_api_token_user(db, raw)
-        if user is None:
+        row = resolve_api_token_row(db, raw)
+        if row is None:
             return None
-        return user, "api_token"
+        user = get_user_by_id(db, row.user_id)
+        if user is None or not user.is_active:
+            return None
+        scopes = effective_token_scopes(
+            user_scopes=user_scopes(user),
+            token_scopes=getattr(row, "scopes", None) or [],
+        )
+        return user, "api_token", scopes, str(row.id)
     try:
         payload = decode_access_token(raw)
     except Exception:
@@ -48,7 +70,7 @@ def resolve_user_from_token(db: Session, token: str) -> tuple[AppUser, str] | No
     user = get_user_by_id(db, str(payload.get("sub") or ""))
     if user is None or not user.is_active:
         return None
-    return user, "jwt"
+    return user, "jwt", user_scopes(user), ""
 
 
 def get_optional_user(
@@ -57,21 +79,26 @@ def get_optional_user(
 ) -> AuthContext | None:
     if not bool(settings.auth_enabled):
         return None
+    cached = getattr(request.state, "auth_user", None)
+    if isinstance(cached, AppUser):
+        via = str(getattr(request.state, "auth_via", "") or "jwt")
+        scopes = getattr(request.state, "auth_scopes", None)
+        if not isinstance(scopes, frozenset):
+            scopes = user_scopes(cached)
+        token_id = str(getattr(request.state, "auth_api_token_id", "") or "")
+        return AuthContext(user=cached, auth_via=via, scopes=scopes, api_token_id=token_id)
     token = _extract_bearer(request)
     if not token:
-        # Middleware may have already attached user
-        cached = getattr(request.state, "auth_user", None)
-        if isinstance(cached, AppUser):
-            via = str(getattr(request.state, "auth_via", "") or "jwt")
-            return AuthContext(user=cached, auth_via=via)
         return None
     resolved = resolve_user_from_token(db, token)
     if resolved is None:
         return None
-    user, via = resolved
+    user, via, scopes, token_id = resolved
     request.state.auth_user = user
     request.state.auth_via = via
-    return AuthContext(user=user, auth_via=via)
+    request.state.auth_scopes = scopes
+    request.state.auth_api_token_id = token_id
+    return AuthContext(user=user, auth_via=via, scopes=scopes, api_token_id=token_id)
 
 
 def require_user(
@@ -79,7 +106,6 @@ def require_user(
     db: Session = Depends(get_db),
 ) -> AuthContext:
     if not bool(settings.auth_enabled):
-        # Auth disabled: synthesize a system principal for Depends callers.
         fake = AppUser(
             id="system",
             username="system",
@@ -88,7 +114,7 @@ def require_user(
             is_active=True,
             created_by="auth_disabled",
         )
-        return AuthContext(user=fake, auth_via="disabled")
+        return AuthContext(user=fake, auth_via="disabled", scopes=ALL_SCOPES)
     ctx = get_optional_user(request, db)
     if ctx is None:
         raise HTTPException(status_code=401, detail="unauthorized")
@@ -96,6 +122,20 @@ def require_user(
 
 
 def require_admin(ctx: Annotated[AuthContext, Depends(require_user)]) -> AuthContext:
-    if ctx.user.role != "admin":
+    if ctx.user.role != "admin" and not has_scope(ctx.scopes, "admin:users"):
         raise HTTPException(status_code=403, detail="admin_required")
     return ctx
+
+
+def require_scopes(*needed: str) -> Callable[..., AuthContext]:
+    required = normalize_scopes(needed)
+
+    def _dep(ctx: Annotated[AuthContext, Depends(require_user)]) -> AuthContext:
+        if not has_all_scopes(ctx.scopes, required):
+            raise HTTPException(
+                status_code=403,
+                detail={"error": "insufficient_scope", "required": required, "granted": sorted(ctx.scopes)},
+            )
+        return ctx
+
+    return _dep

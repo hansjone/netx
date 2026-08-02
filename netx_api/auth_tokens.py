@@ -6,6 +6,7 @@ import hashlib
 import logging
 import secrets
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import jwt
@@ -14,20 +15,70 @@ from .config import settings
 
 _log = logging.getLogger("netx.auth")
 
-_DEFAULT_DEV_SECRET = "netx-dev-auth-secret-change-me-in-production-32b"
-_warned_default_secret = False
+# Legacy hard-coded value (pre auto-file). Treated as insecure if still set via env.
+_LEGACY_INSECURE_SECRET = "netx-dev-auth-secret-change-me-in-production-32b"
+_cached_secret: str | None = None
+
+
+def auth_secret_file_path() -> Path:
+    raw = str(getattr(settings, "auth_secret_file", None) or "data/auth/jwt_secret").strip()
+    path = Path(raw)
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    return path
+
+
+def is_legacy_insecure_secret(value: str) -> bool:
+    return str(value or "").strip() == _LEGACY_INSECURE_SECRET
+
+
+def ensure_auth_secret() -> str:
+    """Resolve JWT signing secret: explicit env > persisted file > generate once.
+
+    Empty / legacy built-in ``NETX_AUTH_SECRET`` falls through to a per-install
+    file under ``data/auth/jwt_secret`` (same idea as ``mcp_token``).
+    """
+    global _cached_secret
+    configured = str(settings.auth_secret or "").strip()
+    if configured and not is_legacy_insecure_secret(configured):
+        return configured
+    if configured and is_legacy_insecure_secret(configured):
+        _log.warning(
+            "NETX_AUTH_SECRET is the legacy shared default; ignoring it and using "
+            "per-install file %s (existing JWTs will need re-login)",
+            auth_secret_file_path(),
+        )
+    if _cached_secret:
+        return _cached_secret
+
+    path = auth_secret_file_path()
+    try:
+        if path.is_file():
+            existing = path.read_text(encoding="utf-8").strip()
+            if len(existing) >= 32 and not is_legacy_insecure_secret(existing):
+                _cached_secret = existing
+                return _cached_secret
+    except Exception:
+        _log.exception("read auth secret file failed path=%s", path)
+
+    generated = secrets.token_urlsafe(48)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(generated + "\n", encoding="utf-8")
+        try:
+            path.chmod(0o600)
+        except Exception:
+            pass
+        _log.info("wrote per-install JWT secret to %s", path)
+    except Exception:
+        _log.exception("write auth secret file failed path=%s; using in-memory secret only", path)
+    _cached_secret = generated
+    return _cached_secret
 
 
 def auth_secret() -> str:
-    """Return configured secret (lab default is set in Settings)."""
-    global _warned_default_secret
-    configured = str(settings.auth_secret or "").strip() or _DEFAULT_DEV_SECRET
-    if configured == _DEFAULT_DEV_SECRET and not _warned_default_secret:
-        _warned_default_secret = True
-        _log.warning(
-            "using default NETX_AUTH_SECRET; set a unique secret for production deployments"
-        )
-    return configured
+    """Return JWT HMAC secret (ensures file exists on first use)."""
+    return ensure_auth_secret()
 
 
 def issue_access_token(*, user_id: str, username: str, role: str) -> str:

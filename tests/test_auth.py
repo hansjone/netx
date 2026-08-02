@@ -68,6 +68,7 @@ class AuthApiTests(unittest.TestCase):
         self._sess_patch.start()
         self._settings_patches = [
             patch("netx_api.auth_middleware.settings.auth_enabled", True),
+            patch("netx_api.audit_async.settings.audit_async", False),
             patch("netx_api.auth_tokens.settings.auth_secret", "unit-test-auth-secret-32bytes!!"),
             patch("netx_api.auth_tokens.settings.auth_token_ttl_sec", 3600),
             patch("netx_api.auth_service.settings.bootstrap_admin_username", "admin"),

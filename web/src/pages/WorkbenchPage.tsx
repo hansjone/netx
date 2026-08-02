@@ -8,7 +8,7 @@ const SECTIONS: WorkbenchSection[] = ["monitoring", "operations", "system"];
 
 export function WorkbenchPage() {
   const { t } = useI18n();
-  const { isAdmin } = useAuth();
+  const { isAdmin, hasScope } = useAuth();
 
   return (
     <div className="workbench">
@@ -19,6 +19,7 @@ export function WorkbenchPage() {
             {modulesInSection(section)
               .filter((mod) => !mod.workbenchHidden)
               .filter((mod) => !mod.adminOnly || isAdmin)
+              .filter((mod) => !mod.requiredScope || hasScope(mod.requiredScope) || isAdmin)
               .map((mod) => (
               <button
                 key={mod.moduleId}

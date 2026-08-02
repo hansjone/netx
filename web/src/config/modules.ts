@@ -13,6 +13,8 @@ export type ModuleDefinition = {
   descKey?: string;
   iconTone: ModuleIconTone;
   titleKey: string;
+  /** Required capability scope to show in workbench (admin bypasses). */
+  requiredScope?: string;
   adminOnly?: boolean;
   /** Hide from workbench launcher; still used for module window registration. */
   workbenchHidden?: boolean;
@@ -63,6 +65,7 @@ export const MODULES: readonly ModuleDefinition[] = [
     descKey: "workbench.cards.webcrtDesc",
     iconTone: "slate",
     titleKey: "layout.titleWebcrt",
+    requiredScope: "webcrt:session",
   },
   {
     moduleId: "port-traffic-wall",

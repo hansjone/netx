@@ -99,7 +99,14 @@ def api_logout(
 
 @router.get("/v1/auth/me")
 def api_me(ctx: Annotated[AuthContext, Depends(require_user)]) -> dict[str, Any]:
-    return {"user": user_public(ctx.user), "auth_via": ctx.auth_via}
+    from .auth_scopes import ALL_SCOPES
+
+    return {
+        "user": user_public(ctx.user),
+        "auth_via": ctx.auth_via,
+        "scopes": sorted(ctx.scopes),
+        "all_scopes": sorted(ALL_SCOPES),
+    }
 
 
 @router.post("/v1/auth/change-password")
@@ -145,6 +152,7 @@ def api_create_user(
         password=body.password,
         role=body.role,
         actor=ctx.user,
+        scopes=body.scopes,
     )
     ip, ua = _client_meta(request)
     write_audit(
@@ -177,6 +185,7 @@ def api_update_user(
         is_active=body.is_active,
         role=body.role,
         password=body.password,
+        scopes=body.scopes,
     )
     ip, ua = _client_meta(request)
     write_audit(
@@ -258,6 +267,7 @@ def api_create_token(
         user=target,
         name=body.name,
         expires_in_days=expires_in_days,
+        scopes=body.scopes,
     )
     ip, ua = _client_meta(request)
     write_audit(
@@ -275,6 +285,7 @@ def api_create_token(
             "name": row.name,
             "owner_user_id": target.id,
             "owner_username": target.username,
+            "scopes": getattr(row, "scopes", None) or [],
             "expires_at": row.expires_at.isoformat() if row.expires_at else None,
         },
     )
@@ -284,6 +295,7 @@ def api_create_token(
             "name": row.name,
             "user_id": row.user_id,
             "username": target.username,
+            "scopes": getattr(row, "scopes", None) or [],
             "created_at": row.created_at.isoformat() if row.created_at else None,
             "expires_at": row.expires_at.isoformat() if row.expires_at else None,
             "token": plaintext,

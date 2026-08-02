@@ -19,12 +19,14 @@ class UserCreateRequest(BaseModel):
     username: str = Field(min_length=2, max_length=64)
     password: str = Field(min_length=6, max_length=256)
     role: str = Field(default="user")
+    scopes: list[str] | None = None
 
 
 class UserUpdateRequest(BaseModel):
     is_active: bool | None = None
     role: str | None = None
     password: str | None = Field(default=None, min_length=6, max_length=256)
+    scopes: list[str] | None = None
 
 
 class ApiTokenCreateRequest(BaseModel):
@@ -33,3 +35,5 @@ class ApiTokenCreateRequest(BaseModel):
     expires_in_days: int | None = Field(default=90, ge=0, le=3650)
     # Admin may create a token for another user; others ignored / forced to self.
     user_id: str | None = None
+    # Capability subset; empty inherits owner scopes.
+    scopes: list[str] | None = None
