@@ -90,7 +90,7 @@ function serializeTerminal(term: Terminal): string {
   return lines.join("\n").replace(/\s+$/g, "");
 }
 
-/** Line-wise search — avoids serializing the full 10k scrollback on every Find. */
+/** Line-wise search — avoids serializing the full scrollback on every Find. */
 function findBufferLine(
   term: Terminal,
   query: string,
@@ -402,7 +402,8 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
       cursorBlink: true,
       fontSize: fontSizeRef.current,
       fontFamily: 'Consolas, "Courier New", monospace',
-      scrollback: 10000,
+      // Lower than CRT-style 10k: remounts + multi-tab stay lighter; server replays log tail on attach.
+      scrollback: 4000,
       theme: xtermThemeFromColors(termColorsRef.current),
       convertEol: true,
     });
@@ -443,11 +444,32 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
 
     const isActiveSocket = () => !cancelled && wsRef.current === ws;
 
+    // Coalesce high-rate stdout into one paint frame to cut xterm write churn.
+    let writeBuf = "";
+    let writeRaf = 0;
+    const flushWriteBuf = () => {
+      writeRaf = 0;
+      const chunk = writeBuf;
+      writeBuf = "";
+      if (!chunk || cancelled) return;
+      term.write(applyKeywordHighlight(chunk, keywordHighlightRef.current));
+    };
     const writeStdout = (raw: string) => {
       if (!raw || !isActiveSocket()) return;
       lastStdoutAtRef.current = performance.now();
       if (recordingRef.current) onStdoutRef.current?.(raw);
-      term.write(applyKeywordHighlight(raw, keywordHighlightRef.current));
+      writeBuf += raw;
+      if (writeBuf.length >= 16384) {
+        if (writeRaf) {
+          cancelAnimationFrame(writeRaf);
+          writeRaf = 0;
+        }
+        flushWriteBuf();
+        return;
+      }
+      if (!writeRaf) {
+        writeRaf = requestAnimationFrame(flushWriteBuf);
+      }
     };
 
     const sendResize = () => {
@@ -640,6 +662,11 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
 
     return () => {
       cancelled = true;
+      if (writeRaf) {
+        cancelAnimationFrame(writeRaf);
+        writeRaf = 0;
+      }
+      writeBuf = "";
       window.clearInterval(pingTimer);
       window.removeEventListener("resize", onWinResize);
       window.removeEventListener("keydown", onKeyDownCapture, true);

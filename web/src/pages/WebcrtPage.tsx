@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type DragEvent as ReactDragEvent,
@@ -77,6 +78,8 @@ const KEEPALIVE_OPTIONS = [0, 15, 30, 60, 120] as const;
 /** Compact recording chunks before they grow unbounded (join + trim). */
 const LOG_COMPACT_CHUNKS = 1500;
 const LOG_MAX_CHARS = 8 * 1024 * 1024;
+/** Keep active + (N-1) recent tabs mounted; colder tabs detach WS/xterm until focused. */
+const WARM_TAB_LIMIT = 2;
 
 type ColorSchemeId = "dark" | "blackWhite" | "whiteBlack" | "greenBlack" | "amberBlack" | "custom";
 
@@ -343,11 +346,10 @@ function isSshAuthFailure(err: unknown): boolean {
   );
 }
 
-/** Inventory SSH (managed / webcrt Quick Connect). UME uses shared CLI profile — no per-NE popup. */
-function isInventorySsh(target: Pick<CliTargetItem, "source" | "protocol">): boolean {
+/** Inventory managed / Quick Connect. UME uses shared CLI profile — no per-NE popup. */
+function isInventoryTarget(target: Pick<CliTargetItem, "source" | "protocol">): boolean {
   const src = String(target.source || "").toLowerCase();
-  if (src !== "webcrt" && src !== "managed") return false;
-  return String(target.protocol || "ssh").toLowerCase() !== "telnet";
+  return src === "webcrt" || src === "managed";
 }
 
 function isSessionGoneError(err: unknown): boolean {
@@ -667,6 +669,8 @@ export function WebcrtPage() {
   const [page, setPage] = useState(1);
   const [tabs, setTabs] = useState<TermTab[]>([]);
   const [activeTabKey, setActiveTabKey] = useState("");
+  /** MRU tab keys for warm-mount (active always mounts via isActive even before this updates). */
+  const [warmOrder, setWarmOrder] = useState<string[]>([]);
   const [sftpOpen, setSftpOpen] = useState(false);
   const [sftpPath, setSftpPath] = useState(".");
   const [sftpBusy, setSftpBusy] = useState(false);
@@ -724,6 +728,13 @@ export function WebcrtPage() {
   const treeMenuRef = useRef<HTMLDivElement | null>(null);
   const sessionOptsRef = useRef(sessionOpts);
   sessionOptsRef.current = sessionOpts;
+
+  useEffect(() => {
+    if (!activeTabKey) return;
+    setWarmOrder((prev) => [activeTabKey, ...prev.filter((k) => k !== activeTabKey)].slice(0, 16));
+  }, [activeTabKey]);
+
+  const warmTabKeys = useMemo(() => new Set(warmOrder.slice(0, WARM_TAB_LIMIT)), [warmOrder]);
 
   useEffect(() => {
     if (!optionsMenuOpen) return;
@@ -869,8 +880,8 @@ export function WebcrtPage() {
       }
       if (connectingKeysRef.current.has(key)) return;
 
-      // Managed / WebCRT SSH without saved password → credential popup (UME uses shared profile).
-      if (isInventorySsh(target) && !target.has_password && !opts?.force) {
+      // Managed / WebCRT without saved password → credential popup (UME uses shared profile).
+      if (isInventoryTarget(target) && !target.has_password && !opts?.force) {
         openAuthForTarget(target);
         return;
       }
@@ -944,7 +955,7 @@ export function WebcrtPage() {
       } catch (err) {
         const message = webcrtErrorMessage(err, t);
         const needAuth =
-          isInventorySsh(target) &&
+          isInventoryTarget(target) &&
           (String(err).includes("credentials_incomplete") ||
             String(err).includes("connect_failed") ||
             isSshAuthFailure(err));
@@ -2188,8 +2199,9 @@ export function WebcrtPage() {
               <div className="webcrt-main__terms">
               {tabs.map((tab) => {
                 const isActive = activeTabKey === tab.key;
-                // Only the active tab mounts xterm + WS; background tabs detach and re-attach on focus.
-                const mountTerminal = Boolean(isActive && tab.wsUrl);
+                // Cap concurrent xterm+WS: active always mounts; keep one recent background warm.
+                // Colder tabs detach (server grace) and re-attach on focus via the same session_id.
+                const mountTerminal = Boolean(tab.wsUrl && (isActive || warmTabKeys.has(tab.key)));
                 return (
                 <div
                   key={tab.key}
@@ -2339,7 +2351,7 @@ export function WebcrtPage() {
                             if (sid) {
                               void closeWebcrtSession(sid).catch(() => undefined);
                             }
-                            if (isInventorySsh(tab.target) && isSshAuthFailure(errMsg)) {
+                            if (isInventoryTarget(tab.target) && isSshAuthFailure(errMsg)) {
                               openAuthForTarget(tab.target, webcrtErrorMessage(errMsg, t));
                             }
                           } else if (state === "closed") {
