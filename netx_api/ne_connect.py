@@ -32,7 +32,7 @@ def _executor_pool() -> ThreadPoolExecutor:
     if _executor is None:
         from .cli_budget import clamp_cli_workers
 
-        workers = clamp_cli_workers(int(settings.ne_connect_max_workers or 5), hard_cap=32)
+        workers = clamp_cli_workers(int(settings.ne_connect_max_workers or 4))
         _executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ne-connect")
     return _executor
 

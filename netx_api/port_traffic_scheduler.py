@@ -33,8 +33,7 @@ def _dispatch_pool_get() -> ThreadPoolExecutor:
     with _pool_lock:
         if _dispatch_pool is None:
             workers = clamp_cli_workers(
-                int(getattr(settings, "port_traffic_dispatch_workers", 4) or 4),
-                hard_cap=16,
+                int(getattr(settings, "port_traffic_dispatch_workers", 3) or 3),
             )
             _dispatch_pool = ThreadPoolExecutor(
                 max_workers=workers, thread_name_prefix="pt-dispatch"

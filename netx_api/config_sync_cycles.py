@@ -50,7 +50,7 @@ def update_policy(db: Session, body: ConfigSyncPolicyUpdate) -> ConfigSyncPolicy
     if "interval_days" in data and data["interval_days"] is not None:
         row.interval_days = int(data["interval_days"])
     if "concurrency" in data and data["concurrency"] is not None:
-        row.concurrency = max(1, min(30, int(data["concurrency"])))
+        row.concurrency = max(1, min(16, int(data["concurrency"])))
     if "scope_mode" in data and data["scope_mode"] is not None:
         row.scope_mode = str(data["scope_mode"])
     if "selected_targets" in data and data["selected_targets"] is not None:
@@ -183,7 +183,7 @@ def create_cycle(db: Session, body: ConfigSyncCycleCreate) -> ConfigSyncCycleOut
     policy = ensure_policy(db)
     mode = str(body.mode or "full").strip().lower()
     trigger = "retry_failed" if mode == "retry_failed" else "manual"
-    concurrency = max(1, min(30, int(policy.concurrency or 5)))
+    concurrency = max(1, min(16, int(policy.concurrency or 5)))
 
     targets: list[dict[str, str]] = []
     if mode == "retry_failed":

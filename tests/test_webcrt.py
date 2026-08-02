@@ -304,8 +304,8 @@ class WebcrtServiceTests(unittest.TestCase):
         self.assertTrue(called_creds["hop_enabled"])
         self.assertEqual(called_creds["hop_vendor"], "bastion")
         self.assertIn("session_log", mock_open.call_args.kwargs)
-        self.assertEqual(mock_open.call_args.kwargs.get("keepalive"), 0)
-        self.assertEqual(out.get("keepalive_sec"), 0)
+        self.assertEqual(mock_open.call_args.kwargs.get("keepalive"), 30)
+        self.assertEqual(out.get("keepalive_sec"), 30)
         fake.remote_conn.resize_pty.assert_called()
         self.assertEqual(out["ne_id"], "ne-hop")
         self.assertFalse(out.get("cli_hop"))  # bastion hop is not vendor CLI hop guard
@@ -867,8 +867,8 @@ class WebcrtServiceTests(unittest.TestCase):
         self.assertIn("filename=", dispo)
         self.assertIn("filename*=UTF-8''", dispo)
         self.assertNotIn("\n", dispo)
-        self.assertEqual(int(cfg.settings.webcrt_sftp_max_file_bytes), 512 * 1024 * 1024)
-        self.assertEqual(int(cfg.settings.webcrt_sftp_list_max_entries), 5000)
+        self.assertEqual(int(cfg.settings.webcrt_sftp_max_file_bytes), 256 * 1024 * 1024)
+        self.assertEqual(int(cfg.settings.webcrt_sftp_list_max_entries), 2000)
 
     def test_sftp_rename_rejects_bad_paths(self) -> None:
         from unittest.mock import MagicMock

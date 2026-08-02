@@ -39,6 +39,12 @@ def main() -> None:
     from .ume_runtime import start_device_schedulers
 
     start_device_schedulers()
+    try:
+        from .runtime_budget import log_runtime_budget
+
+        log_runtime_budget(role="worker")
+    except Exception:
+        _log.exception("worker runtime budget log failed")
     _log.info("netx worker schedulers started (config_sync, lldp_collect, port_traffic)")
 
     while not stop.is_set():

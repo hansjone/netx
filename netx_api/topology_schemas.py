@@ -85,7 +85,7 @@ class FabricDiscoverRequest(BaseModel):
         default=True,
         description="Create SSH placeholder ManagedNEs for LLDP neighbors not in inventory",
     )
-    concurrency: int = Field(default=4, ge=1, le=32)
+    concurrency: int = Field(default=4, ge=1, le=16)
     trigger_mode: str = Field(default="manual", description="manual | schedule | topology")
 
 

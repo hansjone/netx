@@ -59,7 +59,7 @@ def _run_discover_job(job_id: str, body: FabricDiscoverRequest) -> None:
 
         from .cli_budget import clamp_cli_workers
 
-        concurrency = clamp_cli_workers(int(body.concurrency or 4), hard_cap=32)
+        concurrency = clamp_cli_workers(int(body.concurrency or 4))
         added = 0
         updated = 0
         stale = 0

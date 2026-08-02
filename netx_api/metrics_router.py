@@ -83,6 +83,9 @@ def _prom_lines(metrics: dict[str, Any]) -> str:
         ("queue_size", "netx_oclaw_forwarder_queue_size"),
         ("published_ok", "netx_oclaw_forwarder_published_ok"),
         ("published_fail", "netx_oclaw_forwarder_published_fail"),
+        ("dropped", "netx_oclaw_forwarder_dropped"),
+        ("requeued", "netx_oclaw_forwarder_requeued"),
+        ("retry_exhausted", "netx_oclaw_forwarder_retry_exhausted"),
     ):
         if key in fwd:
             lines.append(f"{prom} {int(fwd.get(key) or 0)}")

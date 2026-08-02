@@ -142,3 +142,9 @@ def run_api_startup() -> None:
         )
 
     start_api_sideband_threads()
+    try:
+        from .runtime_budget import log_runtime_budget
+
+        log_runtime_budget(role="api")
+    except Exception:
+        _log.exception("startup: runtime budget log failed")

@@ -43,7 +43,7 @@ def _pool_for_cycle(cycle_id: str, concurrency: int) -> ThreadPoolExecutor:
     with _pools_lock:
         pool = _pools.get(cycle_id)
         if pool is None:
-            workers = clamp_cli_workers(int(concurrency or 5), hard_cap=30)
+            workers = clamp_cli_workers(int(concurrency or 5))
             pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix=f"cfg-sync-{cycle_id[:8]}")
             _pools[cycle_id] = pool
         return pool
@@ -462,7 +462,7 @@ def dispatch_cycle(cycle_id: str) -> int:
             .all()
         )
         task_ids = [str(t.id) for t in pending]
-        concurrency = max(1, min(30, int(cycle.concurrency or 5)))
+        concurrency = max(1, min(16, int(cycle.concurrency or 5)))
     finally:
         db.close()
     return schedule_cycle_tasks(cycle_id, task_ids, concurrency)

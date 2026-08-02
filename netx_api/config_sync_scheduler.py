@@ -74,7 +74,7 @@ def try_start_scheduled_cycle() -> str | None:
         if not targets:
             _log.info("config_sync schedule skip: no targets")
             return None
-        concurrency = max(1, min(30, int(policy.concurrency or 5)))
+        concurrency = max(1, min(16, int(policy.concurrency or 5)))
         cycle = ConfigSyncCycle(
             id=uuid4().hex,
             trigger_mode="schedule",

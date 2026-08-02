@@ -113,7 +113,7 @@ def update_policy(db: Session, body: LldpCollectPolicyUpdate) -> LldpCollectPoli
         row.interval_days = days
         row.interval_hours = days * 24
     if "concurrency" in data and data["concurrency"] is not None:
-        row.concurrency = max(1, min(32, int(data["concurrency"])))
+        row.concurrency = max(1, min(16, int(data["concurrency"])))
     if "scope_mode" in data and data["scope_mode"] is not None:
         mode = str(data["scope_mode"] or "").strip().lower()
         if mode not in {"all", "selected"}:
@@ -208,7 +208,7 @@ def next_due_at(db: Session, policy: LldpCollectPolicy) -> datetime | None:
 
 
 def build_discover_request(policy: LldpCollectPolicy) -> FabricDiscoverRequest:
-    concurrency = max(1, min(32, int(policy.concurrency or 4)))
+    concurrency = max(1, min(16, int(policy.concurrency or 4)))
     auto_add = bool(policy.auto_add_unmatched)
     if str(policy.scope_mode or "") == "selected":
         managed_ids: list[str] = []

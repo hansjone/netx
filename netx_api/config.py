@@ -64,13 +64,14 @@ class Settings(BaseSettings):
     ume_sync_alarms_history_every_hours: int = 24
     # Managed NE credentials (Fernet key; generate with cryptography.fernet.Fernet.generate_key())
     credential_secret_key: str = ""
-    ne_connect_max_workers: int = 5
+    # Production-oriented worker caps (raise only when bastion/DB capacity allows).
+    ne_connect_max_workers: int = 4
     ne_connect_timeout_sec: int = 30
-    ne_collect_max_workers: int = 5
+    ne_collect_max_workers: int = 4
     ne_collect_read_timeout_sec: int = 120
     ne_collect_stale_run_sec: int = 900
     ne_collect_pending_stale_sec: int = 180
-    ne_collect_run_timeout_cap_sec: int = 600
+    ne_collect_run_timeout_cap_sec: int = 480
     ne_collection_data_dir: str = "data/ne_collections"
     # Config sync (periodic running-config backup into DB)
     config_sync_scheduler_enabled: bool = True
@@ -91,29 +92,29 @@ class Settings(BaseSettings):
     # Managed NE exec: max CLI commands per request (lab can raise; hard-capped in ne_exec).
     ne_exec_max_commands: int = 5
     # WebCRT interactive terminal sessions
-    webcrt_max_sessions: int = 20
+    webcrt_max_sessions: int = 12
     webcrt_idle_timeout_sec: int = 1800
     webcrt_connect_timeout_sec: int = 90
     webcrt_attach_timeout_sec: int = 60
     # Keep device PTY after WS drop so the UI can re-attach (reconnect / remount).
     webcrt_detach_grace_sec: int = 120
     webcrt_data_dir: str = "data/webcrt"
-    # SSH transport keepalive interval (seconds); 0 disables (default off).
-    webcrt_keepalive_sec: int = 0
+    # SSH transport keepalive (seconds); 30s recommended behind NAT/firewall.
+    webcrt_keepalive_sec: int = 30
     # Device anti-idle CLI nudge (0 = off). Keep off: NEs close idle VTY themselves.
     webcrt_anti_idle_sec: int = 0
     webcrt_anti_idle_payload: str = " "
     # Cap stdout queue depth (drop oldest when full) to protect memory.
-    webcrt_out_queue_max: int = 2000
+    webcrt_out_queue_max: int = 1500
     # Persist per-session transcripts under webcrt_data_dir/sessions/.
     webcrt_session_log_enabled: bool = True
     # Reader: short blocking wait instead of fixed 40ms spin (seconds).
     webcrt_reader_poll_sec: float = 0.01
-    # WebCRT SFTP transfer limits (streamed; default 512 MiB per file).
-    webcrt_sftp_max_file_bytes: int = 512 * 1024 * 1024
+    # WebCRT SFTP transfer limits (streamed; default 256 MiB per file).
+    webcrt_sftp_max_file_bytes: int = 256 * 1024 * 1024
     webcrt_sftp_chunk_bytes: int = 64 * 1024
     # Cap directory listings so huge folders cannot pin the API/UI.
-    webcrt_sftp_list_max_entries: int = 5000
+    webcrt_sftp_list_max_entries: int = 2000
     webcrt_sftp_list_timeout_sec: float = 30.0
     # Local app login / audit (lab defaults; override in production)
     auth_enabled: bool = True
@@ -132,7 +133,7 @@ class Settings(BaseSettings):
     allow_insecure_defaults: bool = False
     # Async audit writer; sample_n>1 keeps 1/N of generic http.* events.
     audit_async: bool = True
-    audit_sample_n: int = 1
+    audit_sample_n: int = 10
     # Prefer Alembic on API start; brownfield patches live in schema_patches + revisions.
     # Auth column ensures still run as a safety net before bootstrap.
     skip_legacy_startup_ddl: bool = True
@@ -145,22 +146,27 @@ class Settings(BaseSettings):
     run_inline_schedulers: bool = True
     # SQLAlchemy QueuePool (API + background workers share one engine).
     # Rule of thumb: pool_size + max_overflow >= HTTP peak + cli_max_concurrent + UME WS burst.
-    db_pool_size: int = 20
-    db_max_overflow: int = 20
+    db_pool_size: int = 25
+    db_max_overflow: int = 15
     db_pool_recycle_sec: int = 1800
     db_pool_timeout_sec: int = 30
     # Global Netmiko/SSH concurrency across discover / collect / config_sync / port_traffic.
-    cli_max_concurrent: int = 20
+    cli_max_concurrent: int = 12
+    # Per-feature concurrency hard ceiling (API body / policy cannot exceed this).
+    cli_feature_hard_cap: int = 16
     # Shared timeout watchdog pool (not per-task executors).
-    cli_timeout_pool_workers: int = 16
+    cli_timeout_pool_workers: int = 12
     # Port-traffic: how many devices may collect in parallel on the scheduler tick.
-    port_traffic_dispatch_workers: int = 4
+    port_traffic_dispatch_workers: int = 3
     # Bound async audit queue; drop oldest when full to protect RSS.
-    audit_queue_max: int = 5000
+    audit_queue_max: int = 2000
     # Cap NE collection output files (bytes); 0 = unlimited (not recommended).
-    ne_collect_max_output_bytes: int = 8 * 1024 * 1024
+    ne_collect_max_output_bytes: int = 4 * 1024 * 1024
     # WebCRT session transcript rotate size (bytes); 0 disables rotate.
-    webcrt_session_log_max_bytes: int = 4 * 1024 * 1024
+    webcrt_session_log_max_bytes: int = 2 * 1024 * 1024
+    # oclaw alarm forwarder: requeue attempts before drop on send failure.
+    oclaw_forward_max_retries: int = 3
+    oclaw_forward_queue_max: int = 2000
 
 
 settings = Settings()

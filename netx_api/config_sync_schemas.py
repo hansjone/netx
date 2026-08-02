@@ -27,7 +27,7 @@ class ConfigSyncPolicyOut(BaseModel):
 class ConfigSyncPolicyUpdate(BaseModel):
     enabled: bool | None = None
     interval_days: int | None = Field(default=None, ge=1, le=365)
-    concurrency: int | None = Field(default=None, ge=1, le=30)
+    concurrency: int | None = Field(default=None, ge=1, le=16)
     scope_mode: Literal["all", "selected"] | None = None
     selected_targets: list[ConfigSyncTargetRef] | None = None
     history_keep: int | None = Field(default=None, ge=0, le=30)

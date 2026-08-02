@@ -15,7 +15,8 @@ from .config import settings
 
 _log = logging.getLogger("netx.oclaw.alarm_forwarder")
 
-_OUTBOUND_Q: "queue.Queue[dict[str, Any]]" = queue.Queue(maxsize=5000)
+_OUTBOUND_Q: "queue.Queue[dict[str, Any]] | None" = None
+_Q_LOCK = threading.Lock()
 _STOP_EVENT = threading.Event()
 _THREAD: threading.Thread | None = None
 _CONN_LOCK = threading.Lock()
@@ -28,7 +29,19 @@ _STATS: dict[str, int] = {
     "published_ok": 0,
     "published_fail": 0,
     "queued": 0,
+    "dropped": 0,
+    "requeued": 0,
+    "retry_exhausted": 0,
 }
+
+
+def _outbound_q() -> "queue.Queue[dict[str, Any]]":
+    global _OUTBOUND_Q
+    with _Q_LOCK:
+        if _OUTBOUND_Q is None:
+            maxsize = max(100, int(getattr(settings, "oclaw_forward_queue_max", 2000) or 2000))
+            _OUTBOUND_Q = queue.Queue(maxsize=maxsize)
+        return _OUTBOUND_Q
 
 
 def _utc_now_iso() -> str:
@@ -95,13 +108,44 @@ def enqueue_alarm_forward(payload: dict[str, Any]) -> bool:
     if not is_forwarder_operational():
         return False
     try:
-        _OUTBOUND_Q.put_nowait(dict(payload))
+        _outbound_q().put_nowait(dict(payload))
         with _STATS_LOCK:
             _STATS["queued"] = int(_STATS.get("queued", 0)) + 1
         return True
     except queue.Full:
+        with _STATS_LOCK:
+            _STATS["dropped"] = int(_STATS.get("dropped", 0)) + 1
         _log.warning("oclaw alarm forward queue full; dropping alarm_key=%s", payload.get("alarm_key"))
         return False
+
+
+def _requeue_or_drop(payload: dict[str, Any], *, reason: str) -> None:
+    max_retries = max(0, int(getattr(settings, "oclaw_forward_max_retries", 3) or 3))
+    item = dict(payload)
+    attempts = int(item.get("_fwd_attempts") or 0) + 1
+    item["_fwd_attempts"] = attempts
+    if attempts > max_retries:
+        with _STATS_LOCK:
+            _STATS["retry_exhausted"] = int(_STATS.get("retry_exhausted", 0)) + 1
+            _STATS["dropped"] = int(_STATS.get("dropped", 0)) + 1
+        _log.warning(
+            "oclaw forward drop after retries alarm_key=%s attempts=%s reason=%s",
+            item.get("alarm_key"),
+            attempts,
+            reason[:80],
+        )
+        return
+    try:
+        _outbound_q().put_nowait(item)
+        with _STATS_LOCK:
+            _STATS["requeued"] = int(_STATS.get("requeued", 0)) + 1
+    except queue.Full:
+        with _STATS_LOCK:
+            _STATS["dropped"] = int(_STATS.get("dropped", 0)) + 1
+        _log.warning(
+            "oclaw forward requeue full; dropping alarm_key=%s",
+            item.get("alarm_key"),
+        )
 
 
 def _send_auth(ws: Any) -> bool:
@@ -187,7 +231,7 @@ def _run_loop() -> None:
                     _notify_status("fwd:disabled")
                     raise RuntimeError("forwarder disabled")
                 try:
-                    payload = _OUTBOUND_Q.get(timeout=1.0)
+                    payload = _outbound_q().get(timeout=1.0)
                 except queue.Empty:
                     try:
                         ws.send(json.dumps({"type": "ping", "ts": _utc_now_iso()}, ensure_ascii=False))
@@ -221,15 +265,13 @@ def _run_loop() -> None:
                             payload.get("alarm_key"),
                             str(ack.get("error") or "")[:120],
                         )
+                        # Soft ack failure: do not infinite-requeue; count as fail only.
                 except Exception as exc:
                     _log.warning("oclaw forward failed alarm_key=%s err=%s", payload.get("alarm_key"), str(exc)[:120])
-                    try:
-                        _OUTBOUND_Q.put_nowait(payload)
-                    except queue.Full:
-                        pass
+                    _requeue_or_drop(payload, reason=str(exc)[:120])
                     raise
                 finally:
-                    _OUTBOUND_Q.task_done()
+                    _outbound_q().task_done()
         except Exception as exc:
             _CONNECTED.clear()
             err = str(exc)[:200]
@@ -272,9 +314,13 @@ def forwarder_status() -> dict[str, Any]:
         "operational": bool(enabled and not paused),
         "paused": paused,
         "connected": _CONNECTED.is_set(),
-        "queue_size": int(_OUTBOUND_Q.qsize()),
+        "queue_size": int(_outbound_q().qsize()),
+        "queue_max": max(100, int(getattr(settings, "oclaw_forward_queue_max", 2000) or 2000)),
         "url": _bridge_url(),
         "published_ok": int(stats.get("published_ok", 0)),
         "published_fail": int(stats.get("published_fail", 0)),
         "queued_total": int(stats.get("queued", 0)),
+        "dropped": int(stats.get("dropped", 0)),
+        "requeued": int(stats.get("requeued", 0)),
+        "retry_exhausted": int(stats.get("retry_exhausted", 0)),
     }
