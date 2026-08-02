@@ -158,7 +158,8 @@ def find_ssh_session_for_ne(ne_id: str) -> WebcrtSession | None:
 
 def wait_session_ready(session_id: str, *, timeout: float = 120.0) -> WebcrtSession:
     """Block until async connect finishes (ready or error). Used by tests and WS."""
-    deadline = time.time() + max(1.0, float(timeout))
+    # Honor short slice timeouts from the WS wait loop (do not clamp to 1s).
+    deadline = time.time() + max(0.05, float(timeout))
     while time.time() < deadline:
         sess = get_session(session_id)
         if sess is None:
@@ -167,7 +168,9 @@ def wait_session_ready(session_id: str, *, timeout: float = 120.0) -> WebcrtSess
             return sess
         if sess.state == "error":
             raise HTTPException(status_code=502, detail=sess.connect_error or "connect_failed")
-        sess._ready_event.wait(timeout=0.25)
+        if sess.closed or sess.state == "closed":
+            raise HTTPException(status_code=404, detail="webcrt_session_not_found")
+        sess._ready_event.wait(timeout=min(0.25, max(0.01, deadline - time.time())))
     raise HTTPException(status_code=504, detail="connect_timeout")
 
 

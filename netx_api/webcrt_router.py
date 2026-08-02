@@ -440,7 +440,8 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
                     }
                 )
             except Exception:
-                break
+                # Client dropped during connect wait (StrictMode remount etc.) — keep PTY.
+                return
             remaining = deadline - time.time()
             if remaining <= 0:
                 await websocket.send_json(
@@ -455,11 +456,19 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
                     lambda t=slice_timeout: wait_session_ready(session_id, timeout=t),
                 )
                 sess = get_session(session_id) or cur
+                if sess is None or sess.closed or sess.state == "closed":
+                    return
+                if sess.state == "connecting":
+                    # wait_session_ready should not return while still connecting.
+                    continue
                 break
             except HTTPException as exc:
                 if exc.status_code == 504:
                     # Slice timeout while still connecting — keep polling with progress.
                     continue
+                if exc.status_code == 404:
+                    # Session deleted while waiting.
+                    return
                 await websocket.send_json(
                     {"type": "status", "state": "error", "message": str(exc.detail)}
                 )
@@ -471,6 +480,21 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
                 )
                 await websocket.close(code=4502)
                 return
+
+    # Session may have been deleted while the previous wait loop was exiting.
+    if get_session(session_id) is None or sess.closed or sess.state in {"closed", "error"}:
+        if sess.state == "error":
+            try:
+                await websocket.send_json(
+                    {
+                        "type": "status",
+                        "state": "error",
+                        "message": sess.connect_error or "connect_failed",
+                    }
+                )
+            except Exception:
+                pass
+        return
 
     await websocket.send_json(
         {

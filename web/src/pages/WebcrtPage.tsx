@@ -2341,14 +2341,19 @@ export function WebcrtPage() {
                               void openTarget(tab.target, { force: true });
                               return;
                             }
+                            // Transient browser WS failures (StrictMode remount / ticket race) must
+                            // NOT delete the device PTY — keep session_id for reconnect/reattach.
+                            const transientWs =
+                              /^(websocket_error|websocket_closed)/i.test(String(message || "")) ||
+                              String(message || "").toLowerCase().includes("websocket");
                             updateTab(tab.key, {
-                              status: "error",
-                              sessionId: "",
-                              wsUrl: "",
+                              status: transientWs ? "closed" : "error",
+                              sessionId: transientWs ? tab.sessionId : "",
+                              wsUrl: transientWs ? tab.wsUrl : "",
                               connectPhase: undefined,
                               errorMessage: webcrtErrorMessage(errMsg, t),
                             });
-                            if (sid) {
+                            if (sid && !transientWs) {
                               void closeWebcrtSession(sid).catch(() => undefined);
                             }
                             if (isInventoryTarget(tab.target) && isSshAuthFailure(errMsg)) {
