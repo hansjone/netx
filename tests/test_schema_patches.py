@@ -42,7 +42,7 @@ class SchemaPatchesTests(unittest.TestCase):
         from netx_api.config import Settings
 
         s = Settings(_env_file=None)
-        self.assertFalse(s.run_inline_schedulers)
+        self.assertTrue(s.run_inline_schedulers)
         self.assertTrue(s.alembic_upgrade_on_start)
 
         versions = Path(__file__).resolve().parents[1] / "alembic" / "versions"

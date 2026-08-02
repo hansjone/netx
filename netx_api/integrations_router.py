@@ -36,7 +36,7 @@ def health_ready(db: Session = Depends(get_db)) -> dict[str, Any]:
             "db": "down",
             "error": str(exc)[:240],
         }
-    inline = bool(getattr(settings, "run_inline_schedulers", False))
+    inline = bool(getattr(settings, "run_inline_schedulers", True))
     out["schedulers"] = {
         "inline": inline,
         "mode": "inline" if inline else "external_worker",

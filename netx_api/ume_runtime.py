@@ -1,7 +1,8 @@
 """UME / long-task runtime helpers shared by API and optional worker process.
 
 Device collectors (config_sync / LLDP / port_traffic) run via ``start_device_schedulers``
-(API inline when ``NETX_RUN_INLINE_SCHEDULERS=true``, otherwise ``python -m netx_api.worker``).
+(API inline by default; set ``NETX_RUN_INLINE_SCHEDULERS=false`` and run
+``python -m netx_api.worker`` for a split process).
 API process also owns UME keepalive, alarm WSS, current-alarm/inventory sync loops,
 and oclaw forwarder via ``start_api_sideband_threads``.
 """

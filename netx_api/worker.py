@@ -1,12 +1,12 @@
 """Background worker process for long-running schedulers.
 
-Default deployment: API has ``NETX_RUN_INLINE_SCHEDULERS=false``; run this
-alongside the API:
+Optional when ``NETX_RUN_INLINE_SCHEDULERS=false`` (API does not start collectors):
 
     python -m netx_api.worker
 
 Starts: config_sync, lldp_collect, port_traffic tick loops.
 UME WS / keepalive remain in the API process (token + alarm coordination).
+By default the API runs collectors inline — no separate worker needed.
 """
 
 from __future__ import annotations

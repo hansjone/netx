@@ -130,7 +130,7 @@ def run_api_startup() -> None:
     finally:
         db.close()
 
-    if bool(getattr(settings, "run_inline_schedulers", False)):
+    if bool(getattr(settings, "run_inline_schedulers", True)):
         try:
             start_device_schedulers()
         except Exception:
