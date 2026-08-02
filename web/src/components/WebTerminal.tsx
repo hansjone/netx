@@ -3,6 +3,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { useI18n } from "../i18n";
+import { webcrtWsUrl } from "../services/api";
 import {
   applyKeywordHighlight,
   type KeywordHighlightConfig,
@@ -56,7 +57,10 @@ function xtermThemeFromColors(colors: TermColors) {
 }
 
 type Props = {
-  wsUrl: string;
+  /** Mint a fresh ws_ticket on every mount when set (preferred). */
+  sessionId?: string;
+  /** Fallback URL; prefer sessionId so tab focus does not reuse a spent ticket. */
+  wsUrl?: string;
   title?: string;
   recording?: boolean;
   autoFocus?: boolean;
@@ -171,6 +175,7 @@ function loadPrefs(): { copyOnSelect: boolean; pasteDelayMs: number } {
 export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerminal(
   {
     wsUrl,
+    sessionId,
     title,
     recording,
     autoFocus = true,
@@ -397,6 +402,7 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
+    if (!sessionId && !wsUrl) return;
 
     const term = new Terminal({
       cursorBlink: true,
@@ -437,12 +443,10 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
     // Guard against React StrictMode remount: the first WS teardown must not
     // report closed/error after a newer socket owns the terminal.
     let cancelled = false;
-    const ws = new WebSocket(wsUrl);
-    ws.binaryType = "arraybuffer";
-    wsRef.current = ws;
+    let ws: WebSocket | null = null;
     onStatusRef.current?.("connecting");
 
-    const isActiveSocket = () => !cancelled && wsRef.current === ws;
+    const isActiveSocket = () => !cancelled && !!ws && wsRef.current === ws;
 
     // Coalesce high-rate stdout into one paint frame to cut xterm write churn.
     let writeBuf = "";
@@ -478,102 +482,128 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
       sendJson({ type: "resize", cols: term.cols, rows: term.rows });
     };
 
-    ws.onopen = () => {
-      if (!isActiveSocket()) return;
-      onStatusRef.current?.("open");
-      sendResize();
-      onReadyRef.current?.();
-      window.setTimeout(maybeFocus, 30);
-    };
+    const attachHandlers = (socket: WebSocket) => {
+      socket.onopen = () => {
+        if (!isActiveSocket()) return;
+        onStatusRef.current?.("open");
+        sendResize();
+        onReadyRef.current?.();
+        window.setTimeout(maybeFocus, 30);
+      };
 
-    ws.onmessage = (ev) => {
-      if (!isActiveSocket()) return;
-      if (ev.data instanceof ArrayBuffer) {
-        writeStdout(decodeBytes(ev.data, encodingRef.current));
-        maybeFocus();
-        return;
-      }
-      if (typeof Blob !== "undefined" && ev.data instanceof Blob) {
-        void ev.data.arrayBuffer().then((buf) => {
-          if (!isActiveSocket()) return;
-          writeStdout(decodeBytes(buf, encodingRef.current));
-          maybeFocus();
-        });
-        return;
-      }
-      try {
-        const msg = JSON.parse(String(ev.data || "{}")) as {
-          type?: string;
-          data?: string;
-          state?: string;
-          message?: string;
-          phase?: string;
-          sftp_ready?: boolean;
-          cli_hop?: boolean;
-        };
-        if (msg.type === "stdout" && typeof msg.data === "string") {
-          writeStdout(msg.data);
+      socket.onmessage = (ev) => {
+        if (!isActiveSocket()) return;
+        if (ev.data instanceof ArrayBuffer) {
+          writeStdout(decodeBytes(ev.data, encodingRef.current));
           maybeFocus();
           return;
         }
-        if (msg.type === "status") {
-          if (!isActiveSocket()) return;
-          const phase = typeof msg.phase === "string" ? msg.phase : undefined;
-          const meta =
-            typeof msg.sftp_ready === "boolean" || typeof msg.cli_hop === "boolean"
-              ? {
-                  sftpReady: typeof msg.sftp_ready === "boolean" ? msg.sftp_ready : undefined,
-                  cliHop: typeof msg.cli_hop === "boolean" ? msg.cli_hop : undefined,
-                }
-              : undefined;
-          onStatusRef.current?.(String(msg.state || ""), msg.message, phase, meta);
-          if (msg.state === "connected" || msg.state === "connecting") {
+        if (typeof Blob !== "undefined" && ev.data instanceof Blob) {
+          void ev.data.arrayBuffer().then((buf) => {
+            if (!isActiveSocket()) return;
+            writeStdout(decodeBytes(buf, encodingRef.current));
+            maybeFocus();
+          });
+          return;
+        }
+        try {
+          const msg = JSON.parse(String(ev.data || "{}")) as {
+            type?: string;
+            data?: string;
+            state?: string;
+            message?: string;
+            phase?: string;
+            sftp_ready?: boolean;
+            cli_hop?: boolean;
+          };
+          if (msg.type === "stdout" && typeof msg.data === "string") {
+            writeStdout(msg.data);
             maybeFocus();
             return;
           }
-          if (msg.state === "warning") {
-            const m = String(msg.message || "");
-            const dropMatch = /^queue_dropped:(\d+)/i.exec(m);
-            if (dropMatch) {
+          if (msg.type === "status") {
+            if (!isActiveSocket()) return;
+            const phase = typeof msg.phase === "string" ? msg.phase : undefined;
+            const meta =
+              typeof msg.sftp_ready === "boolean" || typeof msg.cli_hop === "boolean"
+                ? {
+                    sftpReady: typeof msg.sftp_ready === "boolean" ? msg.sftp_ready : undefined,
+                    cliHop: typeof msg.cli_hop === "boolean" ? msg.cli_hop : undefined,
+                  }
+                : undefined;
+            onStatusRef.current?.(String(msg.state || ""), msg.message, phase, meta);
+            if (msg.state === "connected" || msg.state === "connecting") {
+              maybeFocus();
+              return;
+            }
+            if (msg.state === "warning") {
+              const m = String(msg.message || "");
+              const dropMatch = /^queue_dropped:(\d+)/i.exec(m);
+              if (dropMatch) {
+                term.writeln(
+                  `\r\n\x1b[33m${tRef.current("webcrt.term.outputTruncated", { count: dropMatch[1] })}\x1b[0m`,
+                );
+              }
+              return;
+            }
+            if (msg.state === "closed" || msg.state === "error") {
+              const detail = msg.message ? `: ${msg.message}` : "";
               term.writeln(
-                `\r\n\x1b[33m${tRef.current("webcrt.term.outputTruncated", { count: dropMatch[1] })}\x1b[0m`,
+                `\r\n\x1b[33m${tRef.current("webcrt.term.sessionStatus", {
+                  state: String(msg.state || ""),
+                  detail,
+                })}\x1b[0m`,
               );
             }
             return;
           }
-          if (msg.state === "closed" || msg.state === "error") {
-            const detail = msg.message ? `: ${msg.message}` : "";
-            term.writeln(
-              `\r\n\x1b[33m${tRef.current("webcrt.term.sessionStatus", {
-                state: String(msg.state || ""),
-                detail,
-              })}\x1b[0m`,
-            );
-          }
+          if (msg.type === "pong") return;
+        } catch {
+          writeStdout(String(ev.data || ""));
+        }
+      };
+
+      socket.onerror = () => {
+        if (!isActiveSocket()) return;
+        onStatusRef.current?.("error", "websocket_error");
+      };
+
+      socket.onclose = (ev) => {
+        // Intentional unmount/remount closes the socket; do not flip UI to "closed".
+        if (!isActiveSocket()) return;
+        onStatusRef.current?.("closed", `websocket_closed:${ev.code}`);
+      };
+
+    };
+
+    void (async () => {
+      let url = String(wsUrl || "").trim();
+      if (sessionId) {
+        try {
+          url = await webcrtWsUrl(sessionId);
+        } catch {
+          if (!cancelled) onStatusRef.current?.("error", "websocket_error");
           return;
         }
-        if (msg.type === "pong") return;
-      } catch {
-        writeStdout(String(ev.data || ""));
       }
-    };
-
-    ws.onerror = () => {
-      if (!isActiveSocket()) return;
-      onStatusRef.current?.("error", "websocket_error");
-      term.writeln(`\r\n\x1b[31m${tRef.current("webcrt.term.wsError")}\x1b[0m`);
-    };
-
-    ws.onclose = (ev) => {
-      // Intentional unmount/remount closes the socket; do not flip UI to "closed".
-      if (!isActiveSocket()) return;
-      onStatusRef.current?.("closed", `websocket_closed:${ev.code}`);
-      if (!ev.wasClean) {
-        term.writeln(
-          `\r\n\x1b[33m${tRef.current("webcrt.term.wsClosed", { code: ev.code })}\x1b[0m`,
-        );
+      if (cancelled || !url) {
+        if (!cancelled) onStatusRef.current?.("error", "websocket_error");
+        return;
       }
-    };
+      const socket = new WebSocket(url);
+      socket.binaryType = "arraybuffer";
+      if (cancelled) {
+        try {
+          socket.close();
+        } catch {
+          /* ignore */
+        }
+        return;
+      }
+      ws = socket;
+      wsRef.current = socket;
+      attachHandlers(socket);
+    })();
 
     const dataDisposable = term.onData((data) => {
       const normalized = data.replace(/\x7f/g, "\x08");
@@ -677,7 +707,7 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
       selDisposable.dispose();
       if (wsRef.current === ws) wsRef.current = null;
       try {
-        ws.close();
+        ws?.close();
       } catch {
         /* ignore */
       }
@@ -685,8 +715,8 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
       termRef.current = null;
       fitRef.current = null;
     };
-    // title is display-only; remounting on title change tears down a live WS.
-  }, [wsUrl]);
+    // Fresh ticket per mount when sessionId is set; wsUrl is fallback only.
+  }, [wsUrl, sessionId]);
 
   const pasteFromClipboard = async () => {
     try {
