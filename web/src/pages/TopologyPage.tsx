@@ -51,7 +51,6 @@ import { useToast } from "../hooks/useToast";
 import { openOrFocusModule } from "../utils/moduleWindows";
 import type {
   FabricNodeSearchHit,
-  ManagedNeItem,
   TopologyDiscoverJob,
   TopologyDiscoverNeResult,
   TopologyDiscoverOut,
@@ -64,7 +63,6 @@ import type {
   TopologyViewNodeItem,
   TopologyViewKind,
   TopologyViewRole,
-  UmeNeItem,
 } from "../types";
 import { alignNodes, layoutGraph, type LayoutKind } from "./topology/layoutGraph";
 import { behaviorForMode, toolModeFromKey, type ToolMode } from "./topology/toolMode";
@@ -641,6 +639,8 @@ export function TopologyPage() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [addNeOpen, setAddNeOpen] = useState(false);
   const [paletteSource, setPaletteSource] = useState<PaletteSource>("managed");
+  const [paletteSelectedKeys, setPaletteSelectedKeys] = useState<string[]>([]);
+  const [paletteAdding, setPaletteAdding] = useState(false);
   const [discoverOpen, setDiscoverOpen] = useState(false);
   const [discovering, setDiscovering] = useState(false);
   const [discoverReport, setDiscoverReport] = useState<TopologyDiscoverOut | null>(null);
@@ -1136,7 +1136,19 @@ export function TopologyPage() {
   );
 
   const saveMut = useMutation({
-    mutationFn: () => patchTopologyPositions(mapId, flowToPositions(nodes)),
+    mutationFn: async () => {
+      if (!mapId) throw new Error(t("topology.selectMap"));
+      // Positions patch only updates listed nodes; sync canvas removals first.
+      const serverIds = (graphQuery.data?.nodes || [])
+        .map((n) => n.fabric_node_id)
+        .filter(Boolean);
+      const localIds = new Set(nodes.map((n) => n.id));
+      const toRemove = serverIds.filter((id) => !localIds.has(id));
+      if (toRemove.length) {
+        await removeTopologyViewNodes(mapId, toRemove);
+      }
+      return patchTopologyPositions(mapId, flowToPositions(nodes));
+    },
     onSuccess: async (graph) => {
       clearDirty();
       queryClient.setQueryData(queryKeys.topologyGraph(mapId), graph);
@@ -1336,47 +1348,60 @@ export function TopologyPage() {
     [setEdges, setNodes, pushHistory, edgeDefaults, isValidConnection, mapId, queryClient, clearDirty, showError],
   );
 
-  const addNodeAt = useCallback(
-    async (item: PaletteItem, position: { x: number; y: number }) => {
+  const addPaletteItems = useCallback(
+    async (items: PaletteItem[], origin?: { x: number; y: number }): Promise<boolean> => {
       if (!mapId) {
         showError(t("topology.selectMap"));
-        return;
+        return false;
       }
+      if (items.length === 0 || paletteAdding) return false;
+
+      const onCanvasManaged = new Set(nodes.map((n) => n.data.managed_ne_id).filter(Boolean));
+      const onCanvasUme = new Set(nodes.map((n) => n.data.ume_ne_id).filter(Boolean));
+      const managedIds = [
+        ...new Set(
+          items
+            .filter((item) => item.source === "managed")
+            .map((item) => item.managed_ne_id)
+            .filter((id) => id && !onCanvasManaged.has(id)),
+        ),
+      ];
+      const umeIds = [
+        ...new Set(
+          items
+            .filter((item) => item.source === "ume")
+            .map((item) => item.ume_ne_id)
+            .filter((id) => id && !onCanvasUme.has(id)),
+        ),
+      ];
+      if (managedIds.length === 0 && umeIds.length === 0) return false;
+
+      setPaletteAdding(true);
       try {
-        if (item.source === "managed") {
-          if (nodes.some((n) => n.data.managed_ne_id === item.managed_ne_id)) return;
-          const graph = await addTopologyViewNodes(mapId, { managed_ne_ids: [item.managed_ne_id] });
-          const added = graph.nodes.find((n) => n.managed_ne_id === item.managed_ne_id);
-          if (added) {
-            await patchTopologyPositions(mapId, [
-              {
-                fabric_node_id: added.fabric_node_id,
-                x: position.x,
-                y: position.y,
-                label: added.label || added.name || "",
-              },
-            ]);
-          }
-          const refreshed = await fetchTopologyGraph(mapId);
-          queryClient.setQueryData(queryKeys.topologyGraph(mapId), refreshed);
-          historyLockRef.current = true;
-          applyViewGraph(refreshed, edgeDefaults, setNodes, setEdges);
-          historyLockRef.current = false;
-          clearDirty();
-          return;
-        }
-        if (nodes.some((n) => n.data.ume_ne_id === item.ume_ne_id)) return;
-        const graph = await addTopologyViewNodes(mapId, { ume_ne_ids: [item.ume_ne_id] });
-        const added = graph.nodes.find((n) => n.ume_ne_id === item.ume_ne_id);
-        if (added) {
-          await patchTopologyPositions(mapId, [
-            {
-              fabric_node_id: added.fabric_node_id,
-              x: position.x,
-              y: position.y,
-              label: added.label || added.name || "",
-            },
-          ]);
+        const graph = await addTopologyViewNodes(mapId, {
+          managed_ne_ids: managedIds,
+          ume_ne_ids: umeIds,
+          layout: "grid",
+        });
+        const managedSet = new Set(managedIds);
+        const umeSet = new Set(umeIds);
+        const added = graph.nodes.filter(
+          (n) =>
+            (n.managed_ne_id && managedSet.has(n.managed_ne_id)) ||
+            (n.ume_ne_id && umeSet.has(n.ume_ne_id)),
+        );
+        if (added.length > 0) {
+          const start = origin || { x: 80 + nodes.length * 24, y: 80 + nodes.length * 24 };
+          const cols = Math.max(1, Math.ceil(Math.sqrt(added.length)));
+          await patchTopologyPositions(
+            mapId,
+            added.map((n, i) => ({
+              fabric_node_id: n.fabric_node_id,
+              x: start.x + (i % cols) * 180,
+              y: start.y + Math.floor(i / cols) * 120,
+              label: n.label || n.name || "",
+            })),
+          );
         }
         const refreshed = await fetchTopologyGraph(mapId);
         queryClient.setQueryData(queryKeys.topologyGraph(mapId), refreshed);
@@ -1384,57 +1409,37 @@ export function TopologyPage() {
         applyViewGraph(refreshed, edgeDefaults, setNodes, setEdges);
         historyLockRef.current = false;
         clearDirty();
+        const count = added.length || managedIds.length + umeIds.length;
+        showOk(t("topology.addSelectedDone").replace("{{count}}", String(count)));
+        return count > 0;
       } catch (err) {
         showError(String(err));
+        return false;
+      } finally {
+        setPaletteAdding(false);
       }
     },
-    [mapId, nodes, setNodes, setEdges, showError, t, queryClient, edgeDefaults, clearDirty],
+    [
+      mapId,
+      nodes,
+      paletteAdding,
+      setNodes,
+      setEdges,
+      showError,
+      showOk,
+      t,
+      queryClient,
+      edgeDefaults,
+      clearDirty,
+    ],
   );
 
-  const addManagedNeToCanvas = (ne: ManagedNeItem) => {
-    addNodeAt(
-      {
-        key: `managed:${ne.id}`,
-        source: "managed",
-        managed_ne_id: ne.id,
-        ume_ne_id: "",
-        name: ne.name || ne.ip_address,
-        ip: ne.ip_address,
-        vendor: ne.vendor,
-        meta: "",
-        connect_status: ne.connect_status,
-      },
-      { x: 80 + nodes.length * 24, y: 80 + nodes.length * 24 },
-    );
-  };
-
-  const addUmeNeToCanvas = (ne: UmeNeItem) => {
-    const name = (ne.host_name || ne.ne_name || ne.user_label || ne.ip_address || ne.ne_id).trim();
-    addNodeAt(
-      {
-        key: `ume:${ne.ne_id}`,
-        source: "ume",
-        managed_ne_id: "",
-        ume_ne_id: ne.ne_id,
-        name,
-        ip: ne.ip_address || "",
-        vendor: "ZTE",
-        meta: "",
-        connect_status: ne.connection_status || "",
-      },
-      { x: 80 + nodes.length * 24, y: 80 + nodes.length * 24 },
-    );
-  };
-
-  const addPaletteItem = (item: PaletteItem) => {
-    if (item.source === "managed") {
-      const ne = (neQuery.data?.items || []).find((x) => x.id === item.managed_ne_id);
-      if (ne) addManagedNeToCanvas(ne);
-      return;
-    }
-    const ne = (umeQuery.data?.items || []).find((x) => x.ne_id === item.ume_ne_id);
-    if (ne) addUmeNeToCanvas(ne);
-  };
+  const addNodeAt = useCallback(
+    async (item: PaletteItem, position: { x: number; y: number }) => {
+      await addPaletteItems([item], position);
+    },
+    [addPaletteItems],
+  );
 
   const onPaletteDragStart = (e: React.DragEvent, item: PaletteItem) => {
     e.dataTransfer.setData(PALETTE_DND, JSON.stringify(item));
@@ -1660,12 +1665,20 @@ export function TopologyPage() {
     };
   }, [ctxMenu, closeCtxMenu]);
 
-  const removeNodeById = (nodeId: string) => {
+  const removeNodeById = async (nodeId: string) => {
+    if (!mapId) return;
     pushHistory();
-    markDirty();
-    setNodes((ns) => ns.filter((n) => n.id !== nodeId));
-    setEdges((es) => es.filter((e) => e.source !== nodeId && e.target !== nodeId));
     closeCtxMenu();
+    try {
+      const graph = await removeTopologyViewNodes(mapId, [nodeId]);
+      queryClient.setQueryData(queryKeys.topologyGraph(mapId), graph);
+      historyLockRef.current = true;
+      applyViewGraph(graph, edgeDefaults, setNodes, setEdges);
+      historyLockRef.current = false;
+      clearDirty();
+    } catch (err) {
+      showError(String(err));
+    }
   };
 
   const removeEdgeById = (edgeId: string) => {
@@ -2403,6 +2416,7 @@ export function TopologyPage() {
                 className="btn btn--sm"
                 onClick={() => {
                   setKeyword("");
+                  setPaletteSelectedKeys([]);
                   setAddNeOpen(true);
                 }}
               >
@@ -3049,23 +3063,38 @@ export function TopologyPage() {
       </main>
 
       {addNeOpen && canvasMode ? (
-
         <div className="topo-modal" role="dialog" aria-modal="true" aria-label={t("topology.addNe")}>
-          <div className="topo-modal__backdrop" onClick={() => setAddNeOpen(false)} />
+          <div
+            className="topo-modal__backdrop"
+            onClick={() => {
+              if (paletteAdding) return;
+              setAddNeOpen(false);
+            }}
+          />
           <div className="topo-modal__panel">
             <div className="topo-modal__head">
               <strong>{t("topology.addNe")}</strong>
-              <button type="button" className="btn btn--sm btn--ghost" onClick={() => setAddNeOpen(false)}>
+              <button
+                type="button"
+                className="btn btn--sm btn--ghost"
+                disabled={paletteAdding}
+                onClick={() => setAddNeOpen(false)}
+              >
                 {t("topology.discoverClose")}
               </button>
             </div>
+            <p className="panel__hint topo-modal__hint">{t("topology.paletteHint")}</p>
             <div className="topo-palette-source" role="tablist">
               <button
                 type="button"
                 role="tab"
                 aria-selected={paletteSource === "managed"}
                 className={`topo-palette-source__btn${paletteSource === "managed" ? " is-active" : ""}`}
-                onClick={() => setPaletteSource("managed")}
+                disabled={paletteAdding}
+                onClick={() => {
+                  setPaletteSource("managed");
+                  setPaletteSelectedKeys([]);
+                }}
               >
                 {t("topology.paletteManaged")}
               </button>
@@ -3074,7 +3103,11 @@ export function TopologyPage() {
                 role="tab"
                 aria-selected={paletteSource === "ume"}
                 className={`topo-palette-source__btn${paletteSource === "ume" ? " is-active" : ""}`}
-                onClick={() => setPaletteSource("ume")}
+                disabled={paletteAdding}
+                onClick={() => {
+                  setPaletteSource("ume");
+                  setPaletteSelectedKeys([]);
+                }}
               >
                 {t("topology.paletteUme")}
               </button>
@@ -3082,10 +3115,40 @@ export function TopologyPage() {
             <input
               className="input"
               value={keyword}
-              onChange={(e) => setKeyword(e.target.value)}
+              onChange={(e) => {
+                setKeyword(e.target.value);
+                setPaletteSelectedKeys([]);
+              }}
               placeholder={t("topology.filterPh")}
+              disabled={paletteAdding}
               autoFocus
             />
+            {paletteVisible.length > 0 ? (
+              <div className="topo-modal__selectbar">
+                <label className="topo-modal__selectall">
+                  <input
+                    type="checkbox"
+                    checked={
+                      paletteVisible.length > 0 &&
+                      paletteVisible.every((item) => paletteSelectedKeys.includes(item.key))
+                    }
+                    disabled={paletteAdding}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        setPaletteSelectedKeys(paletteVisible.map((item) => item.key));
+                        return;
+                      }
+                      setPaletteSelectedKeys([]);
+                    }}
+                    aria-label={t("topology.selectAllVisible")}
+                  />
+                  <span>{t("topology.selectAllVisible")}</span>
+                </label>
+                <span className="panel__hint">
+                  {t("topology.selectedCount").replace("{{count}}", String(paletteSelectedKeys.length))}
+                </span>
+              </div>
+            ) : null}
             <ul className="topo-palette topo-modal__list">
               {paletteLoading ? (
                 <li className="topo-palette__empty">
@@ -3096,23 +3159,77 @@ export function TopologyPage() {
                   <span className="panel__hint">{t("topology.paletteEmpty")}</span>
                 </li>
               ) : (
-                paletteVisible.map((item) => (
-                  <li key={item.key}>
-                    <button
-                      type="button"
-                      className="topo-palette__item"
-                      onClick={() => {
-                        addPaletteItem(item);
-                        setAddNeOpen(false);
-                      }}
-                    >
-                      <span className="topo-palette__name">{item.name}</span>
-                      <span className="topo-palette__meta">{item.meta}</span>
-                    </button>
-                  </li>
-                ))
+                paletteVisible.map((item) => {
+                  const checked = paletteSelectedKeys.includes(item.key);
+                  return (
+                    <li key={item.key}>
+                      <div className={`topo-palette__row${checked ? " is-selected" : ""}`}>
+                        <label className="topo-palette__check">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            disabled={paletteAdding}
+                            onChange={(e) => {
+                              setPaletteSelectedKeys((prev) =>
+                                e.target.checked
+                                  ? [...new Set([...prev, item.key])]
+                                  : prev.filter((key) => key !== item.key),
+                              );
+                            }}
+                            aria-label={item.name}
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          className="topo-palette__item"
+                          draggable={!paletteAdding}
+                          disabled={paletteAdding}
+                          onClick={() => {
+                            setPaletteSelectedKeys((prev) =>
+                              prev.includes(item.key)
+                                ? prev.filter((key) => key !== item.key)
+                                : [...prev, item.key],
+                            );
+                          }}
+                          onDragStart={(e) => onPaletteDragStart(e, item)}
+                          title={t("topology.paletteDragHint")}
+                        >
+                          <span className="topo-palette__name">{item.name}</span>
+                          <span className="topo-palette__meta">{item.meta}</span>
+                        </button>
+                      </div>
+                    </li>
+                  );
+                })
               )}
             </ul>
+            <div className="topo-modal__foot">
+              <button
+                type="button"
+                className="btn btn--sm btn--ghost"
+                disabled={paletteAdding}
+                onClick={() => setAddNeOpen(false)}
+              >
+                {t("topology.discoverClose")}
+              </button>
+              <button
+                type="button"
+                className="btn btn--sm"
+                disabled={paletteSelectedKeys.length === 0 || paletteAdding}
+                onClick={async () => {
+                  const selected = paletteVisible.filter((item) => paletteSelectedKeys.includes(item.key));
+                  if (selected.length === 0) return;
+                  const ok = await addPaletteItems(selected);
+                  if (!ok) return;
+                  setPaletteSelectedKeys([]);
+                  setAddNeOpen(false);
+                }}
+              >
+                {paletteAdding
+                  ? t("topology.addingNe")
+                  : t("topology.addSelected").replace("{{count}}", String(paletteSelectedKeys.length))}
+              </button>
+            </div>
           </div>
         </div>
       ) : null}

@@ -1,10 +1,13 @@
 import { Link, useLocation } from "react-router-dom";
 import type { ReactNode } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { AppsGridIcon } from "../components/AppsGridIcon";
 import { HeaderMenu } from "../components/HeaderMenu";
 import { getPageTitleKey, isWorkbenchPath } from "../config/modules";
 import { useAppWindowRegistration } from "../hooks/useAppWindowRegistration";
 import { useI18n } from "../i18n";
+import { fetchOpsTasks } from "../services/api";
+import { openOrFocusModule } from "../utils/moduleWindows";
 import { returnToWorkbench } from "../utils/workbench";
 import { useAuth } from "../auth/AuthContext";
 
@@ -30,6 +33,14 @@ export function AppLayout({ connections, children }: Props) {
   const { user, logout } = useAuth();
   const onWorkbench = isWorkbenchPath(pathname);
   const pageTitle = t(getPageTitleKey(pathname));
+  const opsTasksQuery = useQuery({
+    queryKey: ["opsTasks"],
+    queryFn: fetchOpsTasks,
+    enabled: Boolean(user),
+    refetchInterval: 4000,
+    staleTime: 1500,
+  });
+  const activeTasks = opsTasksQuery.data?.active ?? 0;
   const netxSuffix =
     typeof connections.netxApiLatencyMs === "number" ? ` (${connections.netxApiLatencyMs}ms)` : "";
   const oclawSuffix =
@@ -55,10 +66,10 @@ export function AppLayout({ connections, children }: Props) {
         <div className="app-brand__start">
           {onWorkbench ? (
             <Link to="/" className="app-brand__logo">
-              NetX
+              NETX
             </Link>
           ) : (
-            <span className="app-brand__logo app-brand__logo--static">NetX</span>
+            <span className="app-brand__logo app-brand__logo--static">NETX</span>
           )}
           {!onWorkbench ? (
             <>
@@ -94,6 +105,14 @@ export function AppLayout({ connections, children }: Props) {
             <>
               <span className="app-brand__actions-sep" aria-hidden />
               <div className="app-brand__actions-group">
+                <button
+                  type="button"
+                  className={`conn-pill conn-pill--on-brand conn-pill--tasks conn-pill--${activeTasks > 0 ? "up" : "unknown"}`}
+                  title={t("layout.activeTasksHint")}
+                  onClick={() => openOrFocusModule({ moduleId: "audit", path: "/audit/tasks" })}
+                >
+                  {t("layout.activeTasks", { count: activeTasks })}
+                </button>
                 <span
                   className="conn-pill conn-pill--on-brand conn-pill--user"
                   title={user.role}

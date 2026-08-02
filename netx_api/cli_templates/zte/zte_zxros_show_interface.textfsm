@@ -1,0 +1,30 @@
+Value Filldown IFNAME (\S+)
+Value Filldown ADMIN_OPER (up|down)
+Value Filldown DESCRIPTION (.+?)
+Value Filldown BW_RAW (\d+(?:\.\d+)?\s*[kKmMgGtT]?\s*(?:G?bit|bit)/s(?:ec)?)
+Value Filldown RATE_PERIOD (\d+)
+Value Filldown INPUT_BPS ([\d.]+)
+Value Filldown OUTPUT_BPS ([\d.]+)
+Value IN_UTIL ([\d.]+)
+Value OUT_UTIL ([\d.]+)
+
+Start
+  ^${IFNAME}\s+is\s+${ADMIN_OPER}\b
+  ^\s*Description:\s*${DESCRIPTION}\s*$$
+  ^\s*BW\s+${BW_RAW}
+  ^\s*Rate\s+period\s*:\s*${RATE_PERIOD}\s*s -> Rates
+  ^\s*$$
+  ^.* -> Start
+
+Rates
+  ^\s*Input\s*:\s*${INPUT_BPS}\s*bit/s
+  ^\s*Output\s*:\s*${OUTPUT_BPS}\s*bit/s
+  ^\s*Peak\s+rate: -> AfterPeak
+  ^\s*Intf\s+utilization:\s*input\s*${IN_UTIL}%\s+output\s*${OUT_UTIL}% -> Record
+  ^\s*$$
+  ^.* -> Rates
+
+AfterPeak
+  ^\s*Intf\s+utilization:\s*input\s*${IN_UTIL}%\s+output\s*${OUT_UTIL}% -> Record
+  ^\s*$$
+  ^.* -> AfterPeak

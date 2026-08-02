@@ -33,7 +33,7 @@ export function LoginPage() {
   return (
     <div className="login-page">
       <form className="login-card" onSubmit={(e) => void onSubmit(e)}>
-        <div className="login-card__brand">NetX</div>
+        <div className="login-card__brand">NETX</div>
         <h1 className="login-card__title">{t("auth.loginTitle")}</h1>
         <p className="login-card__hint">{t("auth.loginHint")}</p>
         <label className="login-card__label">

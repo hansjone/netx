@@ -132,7 +132,7 @@ src/
 - 拓扑图：`topo_view.kind=physical|custom`（同站点下平级；建站自动建物理拓扑）+ `topo_view_node`
 - 边界：图 `filter.membership`（max_nodes / expand_hops / frozen）；`project-neighbors` / `populate` 不得无界灌全网
 - API：`/v1/topology/tree`、`/folders*`、`/fabric/*`、`/views*`（含 `populate`、`kind`）
-- 前端：左侧站点→物理/自定义图；右侧目录浏览，打开本图进设备画布；「添加网元」上图
+- 前端：左侧站点→物理/自定义图；右侧目录浏览，打开本图进设备画布；「添加网元」支持勾选批量上图（也可拖放单台）
 - MCP：以 `queryTopologyEdges` 为主查询 Fabric；画布编辑走 Web
 - BGP / 隧道 / L2VPN：`layer` 预留，实现 TODO
 

@@ -258,7 +258,6 @@ class CommandsTests(unittest.TestCase):
         assert cmds is not None
         self.assertEqual(cmds.brief, "show interface brief")
         self.assertEqual(detail_command(cmds, "xgei-1/1/0/1"), "show interface xgei-1/1/0/1")
-        self.assertIsNone(commands_for_vendor("Nokia", "sros"))
 
     def test_huawei_matrix(self):
         cmds = commands_for_vendor("Huawei", "huawei_vrp")
@@ -279,6 +278,32 @@ class CommandsTests(unittest.TestCase):
             detail_command(cmds, "GigabitEthernet0/1"),
             "show interfaces GigabitEthernet0/1",
         )
+
+    def test_h3c_juniper_nokia_mikrotik_matrix(self):
+        h3c = commands_for_vendor("H3C", "hp_comware")
+        assert h3c is not None
+        self.assertEqual(h3c.vendor_key, "h3c")
+        self.assertEqual(h3c.brief, "display interface brief")
+        self.assertEqual(detail_command(h3c, "GE1/0/1"), "display interface GE1/0/1")
+
+        junos = commands_for_vendor("Juniper", "juniper_junos")
+        assert junos is not None
+        self.assertEqual(junos.vendor_key, "juniper")
+        self.assertEqual(junos.brief, "show interfaces")
+        self.assertEqual(detail_command(junos, "ge-0/0/0"), "show interfaces ge-0/0/0")
+
+        nokia = commands_for_vendor("Nokia", "nokia_sros")
+        assert nokia is not None
+        self.assertEqual(nokia.vendor_key, "nokia")
+        self.assertEqual(nokia.brief, "show port")
+        self.assertEqual(detail_command(nokia, "1/1/1"), "show port 1/1/1")
+
+        mikrotik = commands_for_vendor("MikroTik", "mikrotik_routeros")
+        assert mikrotik is not None
+        self.assertEqual(mikrotik.vendor_key, "mikrotik")
+        self.assertTrue(mikrotik.brief.startswith("/interface"))
+
+        self.assertIsNone(commands_for_vendor("Ericsson", "ericsson_ipos"))
 
 
 class ResolveUtilTests(unittest.TestCase):

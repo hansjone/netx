@@ -83,7 +83,7 @@ class LldpParserTests(unittest.TestCase):
         self.assertEqual(hits[0].local_port, "Gi0/1")
         self.assertEqual(hits[0].remote_port, "Ethernet1/0/1")
 
-    def test_cisco_detail_fallback(self) -> None:
+    def test_cisco_detail(self) -> None:
         hits = lldp.parse_cisco_lldp(CISCO_LLDP_DETAIL)
         self.assertEqual(len(hits), 1)
         self.assertEqual(hits[0].remote_name.lower(), "r1")
@@ -93,11 +93,36 @@ class LldpParserTests(unittest.TestCase):
         hits = lldp.parse_huawei_lldp(HUAWEI_LLDP)
         self.assertGreaterEqual(len(hits), 1)
         self.assertEqual(hits[0].remote_name.lower(), "r1")
+        self.assertEqual(hits[0].local_port, "GigabitEthernet0/0/1")
+
+    def test_zte_brief(self) -> None:
+        hits = lldp.parse_zte_lldp(ZTE_LLDP_BRIEF)
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0].remote_name, "R1")
 
     def test_pick_command_lldp_only(self) -> None:
         cmd, tag = lldp.pick_neighbor_command(protocol="cdp", vendor="Cisco", device_type="cisco_ios")
         self.assertEqual(tag, "lldp")
         self.assertEqual(cmd, "show lldp neighbors detail")
+
+    def test_pick_command_community_vendors(self) -> None:
+        self.assertEqual(
+            lldp.pick_neighbor_command(vendor="H3C", device_type="hp_comware")[0],
+            "display lldp neighbor-information list",
+        )
+        self.assertEqual(
+            lldp.pick_neighbor_command(vendor="Juniper", device_type="juniper_junos")[0],
+            "show lldp neighbors",
+        )
+        self.assertEqual(
+            lldp.pick_neighbor_command(vendor="Nokia", device_type="alcatel_aos")[0],
+            "show lldp remote-system",
+        )
+        key, stub = lldp.parser_meta(vendor="H3C", device_type="hp_comware")
+        self.assertEqual(key, "h3c")
+        self.assertFalse(stub)
+        key, stub = lldp.parser_meta(vendor="Ericsson", device_type="ericsson_ipos")
+        self.assertTrue(stub)
 
 
 class DeadlockHelperTests(unittest.TestCase):

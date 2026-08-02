@@ -41,6 +41,42 @@ function statusTone(status: string): "running" | "paused" | "stopped" | "other" 
   return "other";
 }
 
+function upDownPillClass(value: string): string {
+  const v = String(value || "").trim().toLowerCase();
+  if (v === "up") return "conn-pill conn-pill--up";
+  if (v === "down") return "conn-pill conn-pill--down";
+  return "conn-pill conn-pill--unknown";
+}
+
+function PortUpDownCell({
+  admin,
+  phy,
+  prot,
+  labels,
+}: {
+  admin?: string;
+  phy?: string;
+  prot?: string;
+  labels: { admin: string; phy: string; prot: string };
+}) {
+  const a = String(admin || "").trim() || "—";
+  const p = String(phy || "").trim() || "—";
+  const r = String(prot || "").trim() || "—";
+  return (
+    <span className="pt-port-updown" title={`${labels.admin}/${labels.phy}/${labels.prot}`}>
+      <span className={upDownPillClass(a)} title={labels.admin}>
+        {a}
+      </span>
+      <span className={upDownPillClass(p)} title={labels.phy}>
+        {p}
+      </span>
+      <span className={upDownPillClass(r)} title={labels.prot}>
+        {r}
+      </span>
+    </span>
+  );
+}
+
 function formatPortTrafficLogMessage(
   raw: string,
   t: (key: string, vars?: Record<string, string | number>) => string,
@@ -442,6 +478,15 @@ export function PortTrafficPage() {
   };
 
   const pickedList = useMemo(() => Object.values(pickedIfnames), [pickedIfnames]);
+  const discoveredByIfname = useMemo(
+    () => Object.fromEntries(ports.map((p) => [p.ifname, p])),
+    [ports],
+  );
+  const upDownLabels = {
+    admin: t("portTraffic.col.admin"),
+    phy: t("portTraffic.col.phy"),
+    prot: t("portTraffic.col.prot"),
+  };
 
   const submitWizard = () => {
     if (!selectedNe) {
@@ -801,10 +846,10 @@ export function PortTrafficPage() {
                       <thead>
                         <tr>
                           <th />
-                          <th>Interface</th>
-                          <th>BW</th>
-                          <th>Admin/Phy/Prot</th>
-                          <th>Description</th>
+                          <th>{t("portTraffic.col.ifname")}</th>
+                          <th>{t("portTraffic.col.bw")}</th>
+                          <th>{t("portTraffic.col.upDown")}</th>
+                          <th>{t("portTraffic.col.description")}</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -820,7 +865,12 @@ export function PortTrafficPage() {
                             <td>{p.ifname}</td>
                             <td>{p.bw_raw || formatBw(p.bw_bps)}</td>
                             <td>
-                              {p.admin}/{p.phy}/{p.prot}
+                              <PortUpDownCell
+                                admin={p.admin}
+                                phy={p.phy}
+                                prot={p.prot}
+                                labels={upDownLabels}
+                              />
                             </td>
                             <td>{p.description || "—"}</td>
                           </tr>
@@ -887,11 +937,24 @@ export function PortTrafficPage() {
               </p>
               <p>{t("portTraffic.selectedPorts", { count: String(pickedList.length) })}</p>
               <ul className="pt-wizard__confirm-list">
-                {pickedList.slice(0, 40).map((p) => (
-                  <li key={p.ifname}>
-                    {p.ifname} ({formatBw(p.bw_bps || 0)})
-                  </li>
-                ))}
+                {pickedList.slice(0, 40).map((p) => {
+                  const disc = discoveredByIfname[p.ifname];
+                  return (
+                    <li key={p.ifname} className="pt-wizard__confirm-port">
+                      <span>
+                        {p.ifname} ({formatBw(p.bw_bps || 0)})
+                      </span>
+                      {disc ? (
+                        <PortUpDownCell
+                          admin={disc.admin}
+                          phy={disc.phy}
+                          prot={disc.prot}
+                          labels={upDownLabels}
+                        />
+                      ) : null}
+                    </li>
+                  );
+                })}
                 {pickedList.length > 40 ? <li>… +{pickedList.length - 40}</li> : null}
               </ul>
               <button type="button" className="btn-primary" disabled={createMut.isPending} onClick={submitWizard}>
@@ -982,9 +1045,10 @@ export function PortTrafficPage() {
               <thead>
                 <tr>
                   <th />
-                  <th>Interface</th>
-                  <th>BW</th>
-                  <th>Description</th>
+                  <th>{t("portTraffic.col.ifname")}</th>
+                  <th>{t("portTraffic.col.bw")}</th>
+                  <th>{t("portTraffic.col.upDown")}</th>
+                  <th>{t("portTraffic.col.description")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -999,6 +1063,14 @@ export function PortTrafficPage() {
                     </td>
                     <td>{p.ifname}</td>
                     <td>{p.bw_raw || formatBw(p.bw_bps)}</td>
+                    <td>
+                      <PortUpDownCell
+                        admin={p.admin}
+                        phy={p.phy}
+                        prot={p.prot}
+                        labels={upDownLabels}
+                      />
+                    </td>
                     <td>{p.description || "—"}</td>
                   </tr>
                 ))}

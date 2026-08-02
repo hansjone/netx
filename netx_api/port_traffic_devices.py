@@ -490,7 +490,12 @@ def discover_ports(db: Session, body: DiscoverPortsRequest) -> DiscoverPortsResp
 
     ports = [
         DiscoverPortItem(**brief_port_to_dict(p))
-        for p in parse_interface_brief(raw, cmds.vendor_key)
+        for p in parse_interface_brief(
+            raw,
+            cmds.vendor_key,
+            command=cmds.brief,
+            device_type=device_type,
+        )
     ]
     return DiscoverPortsResponse(
         source=body.source,

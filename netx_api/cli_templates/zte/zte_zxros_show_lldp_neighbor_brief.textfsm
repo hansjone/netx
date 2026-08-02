@@ -1,0 +1,15 @@
+Value LOCAL_INTERFACE (\S+)
+Value CHASSIS_ID (\S+)
+Value NEIGHBOR_PORT_ID (\S+)
+Value NEIGHBOR_NAME (\S+.*)
+
+Start
+  ^Local\s+Interface\s+Chassis\s+ID -> Neighbors
+  ^\s*$$
+  ^.* -> Start
+
+Neighbors
+  ^${LOCAL_INTERFACE}\s+${CHASSIS_ID}\s+${NEIGHBOR_PORT_ID}\s+${NEIGHBOR_NAME}\s*$$ -> Record
+  ^\s*$$
+  ^Local\s+Interface -> Neighbors
+  ^.* -> Start

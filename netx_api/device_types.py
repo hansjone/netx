@@ -39,6 +39,7 @@ SUPPORTED_VENDORS: tuple[str, ...] = (
     "ZTE",
     "Huawei",
     "Cisco",
+    "H3C",
     "Juniper",
     "Nokia",
     "Other",

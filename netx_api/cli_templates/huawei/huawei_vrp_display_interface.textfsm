@@ -1,0 +1,20 @@
+Value Filldown INTERFACE (\S+)
+Value Filldown ADMIN_OPER (UP|DOWN|Administratively\s+DOWN)
+Value Filldown DESCRIPTION (.*)
+Value Filldown RATE_PERIOD (\d+)
+Value Filldown INPUT_BPS ([\d.]+)
+Value Filldown OUTPUT_BPS ([\d.]+)
+Value Filldown IN_UTIL ([\d.]+)
+Value OUT_UTIL ([\d.]+)
+
+Start
+  ^${INTERFACE}\s+current\s+state\s*:\s*${ADMIN_OPER}
+  ^Description:\s*${DESCRIPTION}\s*$$
+  ^\s*Last\s+${RATE_PERIOD}\s+seconds\s+input\s+rate:\s*${INPUT_BPS}\s*bits/sec
+  ^\s*Last\s+\d+\s+seconds\s+output\s+rate:\s*${OUTPUT_BPS}\s*bits/sec
+  ^\s*Last\s+\d+\s+seconds\s+input\s+utility\s+rate:\s*${IN_UTIL}\s*%
+  ^\s*Last\s+\d+\s+seconds\s+output\s+utility\s+rate:\s*${OUT_UTIL}\s*% -> Record
+  ^\s*$$
+  ^\s*<.*>\s*$$
+  ^.*#\s*$$
+  ^.* -> Start

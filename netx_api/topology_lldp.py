@@ -1,18 +1,18 @@
-"""LLDP/CDP neighbor command templates and output parsers (per vendor).
+"""LLDP neighbor command profiles and TextFSM parsers (per vendor).
 
 Multi-vendor fabrics default to LLDP. Resolve profile primarily from Netmiko
 ``device_type`` (managed NE / UME already store it), then fall back to vendor label.
 
-Each vendor has:
-  - a show/display command
-  - a dedicated parse_* stub (fill with real lab echoes later)
+Parsing is TextFSM-only via ``ntc_parse`` (custom ``cli_templates/`` then community).
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
+
+from .ntc_parse import parse_cli, resolve_cli_platform, row_get
 
 
 @dataclass
@@ -33,12 +33,6 @@ class VendorLldpProfile:
     cdp_command: str = ""
     notes: str = ""
 
-
-ParserFn = Callable[[str], list[NeighborHit]]
-
-_IPV4_RE = re.compile(
-    r"(?<![\d.])(?:(?:25[0-5]|2[0-4]\d|[01]?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d?\d)(?![\d.])"
-)
 
 # device_type (Netmiko) -> profile key. Prefer inventory device_type over fuzzy text.
 # Keep aligned with netx_api.device_types.SUPPORTED_DEVICE_TYPES families.
@@ -68,10 +62,6 @@ _VENDOR_LABEL_TO_KEY: dict[str, str] = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Vendor registry — command templates (edit / refine with lab echoes)
-# ---------------------------------------------------------------------------
-
 VENDOR_LLDP_PROFILES: dict[str, VendorLldpProfile] = {
     "cisco": VendorLldpProfile(
         key="cisco",
@@ -87,27 +77,27 @@ VENDOR_LLDP_PROFILES: dict[str, VendorLldpProfile] = {
     "h3c": VendorLldpProfile(
         key="h3c",
         lldp_command="display lldp neighbor-information list",
-        notes="Placeholder Comware command; confirm on lab.",
+        notes="Community hp_comware TextFSM (list; verbose also available).",
     ),
     "zte": VendorLldpProfile(
         key="zte",
         lldp_command="show lldp neighbor brief",
-        notes="device_type zte_*; ZXROS brief table (Local Interface / Port ID / System Name).",
+        notes="device_type zte_*; NetX custom TextFSM.",
     ),
     "juniper": VendorLldpProfile(
         key="juniper",
         lldp_command="show lldp neighbors",
-        notes="device_type juniper*; detail form TBD.",
+        notes="Community juniper_junos TextFSM.",
     ),
     "nokia": VendorLldpProfile(
         key="nokia",
         lldp_command="show system lldp neighbor",
-        notes="device_type nokia_* / alcatel_*; SRL may differ.",
+        notes="SROS: no community LLDP template yet. alcatel_aos uses show lldp remote-system.",
     ),
     "ericsson": VendorLldpProfile(
         key="ericsson",
         lldp_command="show lldp neighbors",
-        notes="device_type ericsson_*; confirm IPOS/SEOS on lab.",
+        notes="No community ericsson_ipos LLDP TextFSM yet.",
     ),
     "generic": VendorLldpProfile(
         key="generic",
@@ -115,6 +105,9 @@ VENDOR_LLDP_PROFILES: dict[str, VendorLldpProfile] = {
         notes="Fallback when device_type/vendor unknown.",
     ),
 }
+
+# Vendors without a working TextFSM path yet (custom or community).
+STUB_PARSER_KEYS = frozenset({"nokia", "ericsson", "generic"})
 
 
 def resolve_vendor_key(vendor: str = "", device_type: str = "") -> str:
@@ -143,6 +136,10 @@ def get_vendor_profile(vendor: str = "", device_type: str = "") -> VendorLldpPro
 
 
 def lldp_command_for_vendor(vendor: str = "", device_type: str = "") -> str:
+    dtype = str(device_type or "").strip().lower()
+    # AOS has a community template; SROS profile command differs.
+    if dtype.startswith("alcatel_aos"):
+        return "show lldp remote-system"
     return get_vendor_profile(vendor, device_type).lldp_command
 
 
@@ -159,102 +156,65 @@ def pick_neighbor_command(
 ) -> tuple[str, str]:
     """Return (lldp_command, \"lldp\"). Physical discovery is LLDP-only (CDP ignored)."""
     _ = protocol  # accepted for call-site compat; always LLDP
-    profile = get_vendor_profile(vendor, device_type)
-    return profile.lldp_command, "lldp"
-
-
-# ---------------------------------------------------------------------------
-# Parsers — keep working ones; stubs return [] until lab echoes are added
-# ---------------------------------------------------------------------------
-
-
-def parse_cisco_lldp(text: str) -> list[NeighborHit]:
-    """Cisco `show lldp neighbors detail` (preferred); brief table as fallback."""
-    hits = _parse_cisco_lldp_detail(text)
-    if hits:
-        return hits
-    return _parse_lldp_brief_table(text)
-
-
-def parse_cisco_cdp(text: str) -> list[NeighborHit]:
-    """Cisco `show cdp neighbors detail`."""
-    return _parse_cdp_detail(text)
-
-
-def parse_huawei_lldp(text: str) -> list[NeighborHit]:
-    """Huawei `display lldp neighbor`."""
-    hits = _parse_huawei_lldp_neighbor(text)
-    if hits:
-        return hits
-    return _parse_lldp_brief_table(text)
-
-
-def parse_h3c_lldp(text: str) -> list[NeighborHit]:
-    """H3C Comware LLDP — placeholder until lab echo is captured."""
-    # TODO: replace with Comware-specific parser using real `display lldp ...` output.
-    _ = text
-    return []
-
-
-def parse_zte_lldp(text: str) -> list[NeighborHit]:
-    """ZTE ZXROS `show lldp neighbor brief` table."""
-    hits = _parse_zte_lldp_brief(text)
-    if hits:
-        return hits
-    return _parse_lldp_brief_table(text)
-
-
-def parse_juniper_lldp(text: str) -> list[NeighborHit]:
-    """Juniper Junos LLDP — placeholder until lab echo is captured."""
-    # TODO: parse `show lldp neighbors` / detail from Junos sample.
-    _ = text
-    return []
-
-
-def parse_nokia_lldp(text: str) -> list[NeighborHit]:
-    """Nokia SROS/SRL LLDP — placeholder until lab echo is captured."""
-    # TODO: parse `show system lldp neighbor` (SROS) / SRL equivalent.
-    _ = text
-    return []
-
-
-def parse_ericsson_lldp(text: str) -> list[NeighborHit]:
-    """Ericsson IPOS/SEOS LLDP — placeholder until lab echo is captured."""
-    # TODO: parse vendor show output from lab.
-    _ = text
-    return []
-
-
-def parse_generic_lldp(text: str) -> list[NeighborHit]:
-    """Best-effort fallback when vendor is unknown."""
-    hits = _parse_cisco_lldp_detail(text)
-    if hits:
-        return hits
-    hits = _parse_huawei_lldp_neighbor(text)
-    if hits:
-        return hits
-    return _parse_lldp_brief_table(text)
-
-
-_VENDOR_PARSERS: dict[str, ParserFn] = {
-    "cisco": parse_cisco_lldp,
-    "huawei": parse_huawei_lldp,
-    "h3c": parse_h3c_lldp,
-    "zte": parse_zte_lldp,
-    "juniper": parse_juniper_lldp,
-    "nokia": parse_nokia_lldp,
-    "ericsson": parse_ericsson_lldp,
-    "generic": parse_generic_lldp,
-}
-
-# Parsers that intentionally return [] until lab samples are added.
-STUB_PARSER_KEYS = frozenset({"h3c", "juniper", "nokia", "ericsson"})
+    return lldp_command_for_vendor(vendor, device_type), "lldp"
 
 
 def parser_meta(*, vendor: str = "", device_type: str = "") -> tuple[str, bool]:
     """Return (parser_key, is_stub)."""
     key = resolve_vendor_key(vendor, device_type)
+    dtype = str(device_type or "").strip().lower()
+    if dtype.startswith("alcatel_aos"):
+        return key, False
     return key, key in STUB_PARSER_KEYS
+
+
+def _map_lldp_rows(rows: list[dict[str, Any]]) -> list[NeighborHit]:
+    hits: list[NeighborHit] = []
+    for row in rows:
+        local_port = row_get(row, "local_interface", "local_intf", "local_port")
+        remote_name = row_get(row, "neighbor_name", "system_name", "neighbor", "device_id")
+        remote_port = row_get(
+            row,
+            "neighbor_interface",
+            "neighbor_port_id",
+            "port_id",
+            "neighbor_port",
+            "remote_port",
+        )
+        remote_ip = row_get(
+            row, "mgmt_address", "management_address", "management_ip", "neighbor_ip"
+        )
+        name = remote_name.strip()
+        if name.lower() in {"", "-", "not advertised"}:
+            name = ""
+        # Require a remote identity; skip filldown-only leftovers.
+        if not name and not remote_port and not remote_ip:
+            continue
+        hits.append(
+            NeighborHit(
+                remote_name=name,
+                remote_ip=remote_ip,
+                local_port=local_port,
+                remote_port=remote_port,
+                protocol="lldp",
+            )
+        )
+    return hits
+
+
+def _parse_lldp_via_ntc(
+    text: str,
+    *,
+    vendor: str = "",
+    device_type: str = "",
+    command: str = "",
+) -> list[NeighborHit]:
+    plat = resolve_cli_platform(vendor=vendor, device_type=device_type)
+    cmd = (command or "").strip() or lldp_command_for_vendor(vendor, device_type)
+    if not plat or not cmd:
+        return []
+    rows = parse_cli(platform=plat, command=cmd, text=text)
+    return _map_lldp_rows(rows)
 
 
 def parse_neighbor_output(
@@ -263,293 +223,87 @@ def parse_neighbor_output(
     protocol: str = "lldp",
     vendor: str = "",
     device_type: str = "",
+    command: str = "",
 ) -> list[NeighborHit]:
-    """Parse neighbor CLI output using the device_type/vendor-specific parser."""
+    """Parse neighbor CLI via TextFSM only (custom then community)."""
     raw = str(text or "")
     if not raw.strip():
         return []
     _ = protocol  # CDP discovery removed; always parse as LLDP
-    key = resolve_vendor_key(vendor, device_type)
+    return _parse_lldp_via_ntc(
+        raw,
+        vendor=vendor,
+        device_type=device_type,
+        command=command or lldp_command_for_vendor(vendor, device_type),
+    )
 
-    parser = _VENDOR_PARSERS.get(key) or parse_generic_lldp
-    hits = parser(raw)
-    if hits:
-        return hits
 
-    # Soft fallbacks so an early/wrong tag still yields something useful.
-    if key != "cisco":
-        hits = parse_cisco_lldp(raw)
-        if hits:
-            return hits
-    if key != "huawei":
-        hits = parse_huawei_lldp(raw)
+def parse_cisco_lldp(text: str) -> list[NeighborHit]:
+    """Cisco LLDP: try detail command mapping first, then brief table."""
+    for cmd in ("show lldp neighbors detail", "show lldp neighbors"):
+        hits = _parse_lldp_via_ntc(
+            text, vendor="cisco", device_type="cisco_ios", command=cmd
+        )
         if hits:
             return hits
     return []
 
 
-# ---------------------------------------------------------------------------
-# Shared low-level helpers
-# ---------------------------------------------------------------------------
+def parse_cisco_cdp(text: str) -> list[NeighborHit]:
+    """CDP discovery disabled; kept for API compat."""
+    _ = text
+    return []
 
 
-def _parse_cisco_lldp_detail(text: str) -> list[NeighborHit]:
-    """Cisco IOS `show lldp neighbors detail` blocks starting at Local Intf."""
-    raw = str(text or "")
-    if not re.search(r"(?i)Local\s+Intf\s*:", raw):
-        return []
-    chunks = re.split(r"(?i)(?=Local\s+Intf\s*:)", raw)
-    hits: list[NeighborHit] = []
-    for chunk in chunks:
-        if not re.search(r"(?i)Local\s+Intf\s*:", chunk):
-            continue
-        local_port = _kv(chunk, r"Local\s+Intf\s*:\s*(.+)")
-        remote_port = _kv(chunk, r"Port\s+id\s*:\s*(.+)")
-        sys_name = _kv(chunk, r"System\s+Name\s*:\s*(.+)")
-        # Prefer IPv4 under Management Addresses; skip OID / MAC "Other:" lines.
-        ip = ""
-        m = re.search(
-            r"(?is)Management\s+Addresses?\s*:(.*?)(?:\n\s*\n|Auto Negotiation|Total entries|$)",
-            chunk,
-        )
-        if m:
-            mgmt_lines = []
-            for ln in (m.group(1) or "").splitlines():
-                low = ln.lower()
-                if "oid" in low or re.search(r"(?i)^\s*other\s*:", ln):
-                    continue
-                mgmt_lines.append(ln)
-            ip_m = _IPV4_RE.search("\n".join(mgmt_lines))
-            if ip_m:
-                ip = ip_m.group(0)
-        if not sys_name and not remote_port and not local_port:
-            continue
-        # Skip empty / not-advertised system names
-        name = (sys_name or "").strip()
-        if name.lower() in {"", "-", "not advertised"}:
-            name = ""
-        hits.append(
-            NeighborHit(
-                remote_name=name,
-                remote_ip=ip,
-                local_port=(local_port or "").strip(),
-                remote_port=(remote_port or "").strip(),
-                protocol="lldp",
-            )
-        )
-    return hits
-
-
-def _parse_zte_lldp_brief(text: str) -> list[NeighborHit]:
-    """ZTE ZXROS `show lldp neighbor brief`.
-
-    Columns: Local Interface | Scope | Chassis ID | Port ID | Holdtime | System Name
-    Example:
-      cgei-1/1/0/34  NB  744a.a42d.8970  cgei-1/1/0/36  91  KND-VKAU-EN1-Z20HS
-    """
-    raw = str(text or "")
-    if not re.search(r"(?i)Local\s+Interface", raw) or not re.search(r"(?i)System\s+Name", raw):
-        return []
-
-    # Scope codes seen on ZXROS: NB / NC / NTPMR (and possibly others).
-    row_re = re.compile(
-        r"^(?P<local>\S+)\s+"
-        r"(?P<scope>[A-Za-z]{2,8})\s+"
-        r"(?P<chassis>\S+)\s+"
-        r"(?P<port>\S+)\s+"
-        r"(?P<hold>\d+)\s+"
-        r"(?P<name>\S.*?)\s*$"
+def parse_huawei_lldp(text: str) -> list[NeighborHit]:
+    return _parse_lldp_via_ntc(
+        text, vendor="huawei", device_type="huawei", command="display lldp neighbor"
     )
-    hits: list[NeighborHit] = []
-    for ln in raw.splitlines():
-        s = ln.strip()
-        if not s or set(s) <= {"-", "="}:
-            continue
-        low = s.lower()
-        if "local interface" in low or low.startswith(("total", "scope", "capability", "---")):
-            continue
-        if s.endswith("#") or "show lldp" in low:
-            continue
-        m = row_re.match(s)
-        if not m:
-            continue
-        scope = m.group("scope").upper()
-        # Reject rows that clearly aren't neighbor entries (e.g. mis-split header leftovers).
-        if scope in {"INTERFACE", "CHASSIS", "PORT", "HOLDTIME", "SYSTEM"}:
-            continue
-        name = (m.group("name") or "").strip()
-        local_port = (m.group("local") or "").strip()
-        remote_port = (m.group("port") or "").strip()
-        if not name and not remote_port and not local_port:
-            continue
-        hits.append(
-            NeighborHit(
-                remote_name=name,
-                local_port=local_port,
-                remote_port=remote_port,
-                protocol="lldp",
-            )
+
+
+def parse_h3c_lldp(text: str) -> list[NeighborHit]:
+    for cmd in (
+        "display lldp neighbor-information list",
+        "display lldp neighbor-information verbose",
+    ):
+        hits = _parse_lldp_via_ntc(
+            text, vendor="h3c", device_type="hp_comware", command=cmd
         )
-    return hits
+        if hits:
+            return hits
+    return []
 
 
-def _parse_lldp_brief_table(text: str) -> list[NeighborHit]:
-    """Cisco/ZTE-style brief table: Device ID / Local Intf / ... / Port ID."""
-    lines = [ln.rstrip() for ln in str(text or "").splitlines()]
-    start = -1
-    for i, ln in enumerate(lines):
-        low = ln.lower()
-        if "device id" in low and ("local" in low or "intf" in low or "port" in low):
-            start = i + 1
-            break
-        if "system name" in low and "local" in low:
-            start = i + 1
-            break
-    if start < 0:
-        return []
-    hits: list[NeighborHit] = []
-    for ln in lines[start:]:
-        s = ln.strip()
-        if not s or set(s) <= {"-", "="}:
-            continue
-        if s.lower().startswith(("total", "capability", "---")):
-            continue
-        parts = s.split()
-        if len(parts) < 2:
-            continue
-        remote = parts[0]
-        local_port = parts[1] if len(parts) >= 2 else ""
-        remote_port = parts[-1] if len(parts) >= 4 else ""
-        if remote.lower() in {"device", "system", "chassis"}:
-            continue
-        hits.append(
-            NeighborHit(
-                remote_name=remote,
-                local_port=local_port,
-                remote_port=remote_port,
-                protocol="lldp",
-            )
-        )
-    return hits
-
-
-def _parse_huawei_lldp_neighbor(text: str) -> list[NeighborHit]:
-    """Huawei VRP `display lldp neighbor` — per-interface sections."""
-    raw = str(text or "")
-    # Split on "<ifname> has N neighbor(s):"
-    header_re = re.compile(
-        r"(?im)^(\S+)\s+has\s+(\d+)\s+neighbor\(s\)\s*:\s*$"
+def parse_zte_lldp(text: str) -> list[NeighborHit]:
+    return _parse_lldp_via_ntc(
+        text, vendor="zte", device_type="zte_zxros", command="show lldp neighbor brief"
     )
-    hits: list[NeighborHit] = []
-    matches = list(header_re.finditer(raw))
-    if not matches:
-        # Older compact sample with Local Interface: field
-        return _parse_huawei_lldp_blocks_legacy(raw)
-
-    for i, m in enumerate(matches):
-        local_if = m.group(1).strip()
-        count = int(m.group(2))
-        if count <= 0:
-            continue
-        start = m.end()
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(raw)
-        section = raw[start:end]
-        # One section may contain multiple neighbors; split on Neighbor index
-        sub_chunks = re.split(r"(?im)(?=^Neighbor\s+index\s*:)", section)
-        for chunk in sub_chunks:
-            if not re.search(r"(?i)Neighbor\s+index\s*:", chunk):
-                # Sometimes fields appear without explicit index; still try once.
-                if not re.search(r"(?i)System\s+name\s*:", chunk):
-                    continue
-            sys_name = _kv(chunk, r"System\s+name\s*:\s*(.+)")
-            port_id = _kv(chunk, r"Port\s+ID\s*:\s*(.+)")
-            mgmt = _kv(chunk, r"Management\s+address\s*:\s*(.+)")
-            ip = ""
-            if mgmt:
-                ip_m = _IPV4_RE.search(mgmt)
-                if ip_m:
-                    ip = ip_m.group(0)
-            name = (sys_name or "").strip()
-            # Hostname may be FQDN — keep as-is; matcher strips domain.
-            if not name and not port_id and not ip:
-                continue
-            hits.append(
-                NeighborHit(
-                    remote_name=name,
-                    remote_ip=ip,
-                    local_port=local_if,
-                    remote_port=(port_id or "").strip(),
-                    protocol="lldp",
-                )
-            )
-    return hits
 
 
-def _parse_huawei_lldp_blocks_legacy(text: str) -> list[NeighborHit]:
-    """Older/compact Huawei block with Local Interface field."""
-    hits: list[NeighborHit] = []
-    blocks = re.split(r"\n\s*\n", str(text or ""))
-    for block in blocks:
-        if not block.strip():
-            continue
-        sys_name = _kv(block, r"System\s+name\s*[:=]\s*(.+)")
-        local_if = _kv(block, r"Local\s+(?:Interface|Port)\s*[:=]\s*(.+)")
-        port_id = _kv(block, r"Port\s+ID\s*[:=]\s*(.+)")
-        mgmt = _kv(block, r"Management\s+address\s*[:=]\s*(.+)")
-        if not sys_name and not port_id:
-            continue
-        ip = ""
-        if mgmt:
-            m = _IPV4_RE.search(mgmt)
-            if m:
-                ip = m.group(0)
-        hits.append(
-            NeighborHit(
-                remote_name=(sys_name or "").strip(),
-                remote_ip=ip,
-                local_port=(local_if or "").strip(),
-                remote_port=(port_id or "").strip(),
-                protocol="lldp",
-            )
-        )
-    return hits
+def parse_juniper_lldp(text: str) -> list[NeighborHit]:
+    return _parse_lldp_via_ntc(
+        text,
+        vendor="juniper",
+        device_type="juniper_junos",
+        command="show lldp neighbors",
+    )
 
 
-def _parse_cdp_detail(text: str) -> list[NeighborHit]:
-    """Cisco `show cdp neighbors detail`."""
-    hits: list[NeighborHit] = []
-    chunks = re.split(r"(?i)\n(?=Device ID\s*:)", str(text or ""))
-    for chunk in chunks:
-        if not re.search(r"(?i)Device\s+ID\s*:", chunk):
-            continue
-        device_id = _kv(chunk, r"Device\s+ID\s*:\s*(.+)")
-        ip = ""
-        ip_line = _kv(chunk, r"IP(?:v4)?\s+address\s*:\s*(.+)")
-        if ip_line:
-            m = _IPV4_RE.search(ip_line)
-            if m:
-                ip = m.group(0)
-        local_port = _kv(chunk, r"Interface\s*:\s*([^,\n]+)")
-        remote_port = _kv(chunk, r"Port ID\s*(?:\(outgoing port\))?\s*:\s*(.+)")
-        if not device_id and not ip:
-            continue
-        hits.append(
-            NeighborHit(
-                remote_name=(device_id or "").strip(),
-                remote_ip=ip,
-                local_port=(local_port or "").strip().rstrip(","),
-                remote_port=(remote_port or "").strip(),
-                protocol="cdp",
-            )
-        )
-    return hits
+def parse_nokia_lldp(text: str, *, device_type: str = "") -> list[NeighborHit]:
+    dtype = str(device_type or "").strip() or "nokia_sros"
+    cmd = lldp_command_for_vendor(vendor="nokia", device_type=dtype)
+    return _parse_lldp_via_ntc(text, vendor="nokia", device_type=dtype, command=cmd)
 
 
-def _kv(text: str, pattern: str) -> str:
-    m = re.search(pattern, text, flags=re.IGNORECASE | re.MULTILINE)
-    if not m:
-        return ""
-    return str(m.group(1) or "").strip()
+def parse_ericsson_lldp(text: str) -> list[NeighborHit]:
+    _ = text
+    return []
+
+
+def parse_generic_lldp(text: str) -> list[NeighborHit]:
+    """Unknown vendor: no heuristic regex; require an explicit platform template."""
+    _ = text
+    return []
 
 
 # Long media names → short canonical form (case-insensitive prefix).
@@ -596,5 +350,4 @@ def normalize_ifname(name: str) -> str:
                     rest = rest[1:]
                 return f"{short}{rest}"
             break
-    # Already-short forms: gi0/0, te1/0/1, xge0/0/1, 10ge1/0/1
     return s

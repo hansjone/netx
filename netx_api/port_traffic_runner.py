@@ -263,7 +263,12 @@ def _sample_targets_shared_session(device_id: str, target_ids: list[str]) -> tup
                 try:
                     cmd = detail_command(cmds, ifname)
                     raw = send_show_command(conn, cmd, read_timeout=per_cmd)
-                    parsed = parse_interface_detail(raw, vendor_key)
+                    parsed = parse_interface_detail(
+                        raw,
+                        vendor_key,
+                        command=cmd,
+                        ifname=ifname,
+                    )
                     _save_sample(tid, parsed)
                 except Exception as exc:
                     local_errors += 1

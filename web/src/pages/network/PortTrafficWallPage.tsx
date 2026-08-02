@@ -149,7 +149,7 @@ export function PortTrafficWallPage() {
   useEffect(() => {
     if (!board?.name) return;
     try {
-      document.title = "NetX";
+      document.title = "NETX";
     } catch {
       /* ignore */
     }

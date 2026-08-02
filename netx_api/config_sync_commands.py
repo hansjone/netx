@@ -28,6 +28,8 @@ def normalize_vendor_key(vendor: str, device_type: str = "") -> str:
         return "h3c"
     if "zte" in blob or "zxros" in blob:
         return "zte"
+    if "mikrotik" in blob or "routeros" in blob or "switchos" in blob:
+        return "mikrotik"
     if "cisco" in blob or "ios" in blob or "nx-os" in blob or "xr" in blob:
         return "cisco"
     return "other"

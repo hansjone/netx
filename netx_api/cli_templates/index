@@ -1,0 +1,25 @@
+# NetX custom TextFSM index (checked before community ntc-templates).
+# Templates live under vendor folders; paths are relative to this directory.
+Template, Hostname, Platform, Command
+
+# --- zte ---
+zte/zte_zxros_show_lldp_neighbor_brief.textfsm, .*, zte_zxros, sh[[ow]] lld[[p]] nei[[ghbor]] br[[ief]]
+zte/zte_zxros_show_interface_brief.textfsm, .*, zte_zxros, sh[[ow]] int[[erface]] br[[ief]]
+zte/zte_zxros_show_interface.textfsm, .*, zte_zxros, sh[[ow]] int[[erface]] .+
+
+# --- cisco ---
+cisco/cisco_ios_show_interfaces.textfsm, .*, cisco_ios, sh[[ow]] int[[erfaces]] .+
+
+# --- huawei ---
+huawei/huawei_vrp_display_lldp_neighbor.textfsm, .*, huawei_vrp, dis[[play]] lldp nei[[ghbor]]
+huawei/huawei_vrp_display_interface_brief.textfsm, .*, huawei_vrp, dis[[play]] inter[[face]] br[[ief]]
+huawei/huawei_vrp_display_interface.textfsm, .*, huawei_vrp, dis[[play]] inter[[face]]\s*((?!brief|counters|description).)*$
+
+# --- h3c (community hp_comware covers list/brief/detail; override here if lab differs) ---
+# h3c/hp_comware_display_lldp_neighbor-information_list.textfsm, .*, hp_comware, ...
+
+# --- juniper (community juniper_junos covers lldp + show interfaces) ---
+# juniper/juniper_junos_....textfsm, .*, juniper_junos, ...
+
+# --- nokia / alcatel (community alcatel_sros show port; aos lldp in community) ---
+# (add overrides when SROS LLDP / rates are captured from lab)

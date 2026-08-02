@@ -1,0 +1,19 @@
+Value Required INTERFACE (\S+)
+Value LINK_STATUS (.+?)
+Value PROTOCOL_STATUS (.+?)
+Value DESCRIPTION (.+?)
+Value BANDWIDTH (\d+\s+\w+)
+Value RATE_PERIOD (\d+)
+Value RATE_PERIOD_UNIT (second|minute|hour)
+Value INPUT_RATE (\d+)
+Value OUTPUT_RATE (\d+)
+
+Start
+  ^${INTERFACE}\s+is\s+${LINK_STATUS},\s*line\s+protocol\s+is\s+${PROTOCOL_STATUS}\s*$$
+  ^\s+Description:\s+${DESCRIPTION}\s*$$
+  ^\s+MTU\s+\d+\s+bytes,\s+BW\s+${BANDWIDTH}(?:/s(?:ec)?)?,
+  ^\s+${RATE_PERIOD}\s+${RATE_PERIOD_UNIT}s?\s+input\s+rate\s+${INPUT_RATE}\s+bits/sec
+  ^\s+\d+\s+(?:second|minute|hour)s?\s+output\s+rate\s+${OUTPUT_RATE}\s+bits/sec -> Record
+  ^\s*$$
+  ^\S+#\s*$$ -> End
+  ^.* -> Start

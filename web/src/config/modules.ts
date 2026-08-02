@@ -3,6 +3,16 @@
  */
 
 export type ModuleIconTone = "blue" | "green" | "amber" | "slate";
+export type ModuleIconKind =
+  | "sync"
+  | "server"
+  | "network"
+  | "topology"
+  | "terminal"
+  | "wall"
+  | "users"
+  | "audit"
+  | "key";
 export type WorkbenchSection = "monitoring" | "operations" | "system";
 
 export type ModuleDefinition = {
@@ -12,6 +22,7 @@ export type ModuleDefinition = {
   labelKey: string;
   descKey?: string;
   iconTone: ModuleIconTone;
+  iconKind: ModuleIconKind;
   titleKey: string;
   /** Required capability scope to show in workbench (admin bypasses). */
   requiredScope?: string;
@@ -28,6 +39,7 @@ export const MODULES: readonly ModuleDefinition[] = [
     labelKey: "workbench.cards.umeSync",
     descKey: "workbench.cards.umeSyncDesc",
     iconTone: "blue",
+    iconKind: "sync",
     titleKey: "layout.titleUme",
     requiredScope: "alarms:read",
   },
@@ -38,6 +50,7 @@ export const MODULES: readonly ModuleDefinition[] = [
     labelKey: "workbench.cards.managedNe",
     descKey: "workbench.cards.managedNeDesc",
     iconTone: "green",
+    iconKind: "server",
     titleKey: "layout.titleManagedNe",
     requiredScope: "ne:read",
   },
@@ -48,6 +61,7 @@ export const MODULES: readonly ModuleDefinition[] = [
     labelKey: "workbench.cards.network",
     descKey: "workbench.cards.networkDesc",
     iconTone: "slate",
+    iconKind: "network",
     titleKey: "layout.titleNetwork",
     requiredScope: "ne:read",
   },
@@ -58,6 +72,7 @@ export const MODULES: readonly ModuleDefinition[] = [
     labelKey: "workbench.cards.topology",
     descKey: "workbench.cards.topologyDesc",
     iconTone: "amber",
+    iconKind: "topology",
     titleKey: "layout.titleTopology",
     requiredScope: "ne:read",
   },
@@ -68,6 +83,7 @@ export const MODULES: readonly ModuleDefinition[] = [
     labelKey: "workbench.cards.webcrt",
     descKey: "workbench.cards.webcrtDesc",
     iconTone: "slate",
+    iconKind: "terminal",
     titleKey: "layout.titleWebcrt",
     requiredScope: "webcrt:session",
   },
@@ -78,6 +94,7 @@ export const MODULES: readonly ModuleDefinition[] = [
     labelKey: "workbench.cards.portTrafficWall",
     descKey: "workbench.cards.portTrafficWallDesc",
     iconTone: "amber",
+    iconKind: "wall",
     titleKey: "layout.titlePortTrafficWall",
     workbenchHidden: true,
     requiredScope: "ne:read",
@@ -89,6 +106,7 @@ export const MODULES: readonly ModuleDefinition[] = [
     labelKey: "workbench.cards.users",
     descKey: "workbench.cards.usersDesc",
     iconTone: "slate",
+    iconKind: "users",
     titleKey: "layout.titleUsers",
     adminOnly: true,
   },
@@ -99,6 +117,7 @@ export const MODULES: readonly ModuleDefinition[] = [
     labelKey: "workbench.cards.audit",
     descKey: "workbench.cards.auditDesc",
     iconTone: "amber",
+    iconKind: "audit",
     titleKey: "layout.titleAudit",
   },
   {
@@ -108,6 +127,7 @@ export const MODULES: readonly ModuleDefinition[] = [
     labelKey: "workbench.cards.apiKeys",
     descKey: "workbench.cards.apiKeysDesc",
     iconTone: "green",
+    iconKind: "key",
     titleKey: "layout.titleApiKeys",
   },
 ] as const satisfies readonly ModuleDefinition[];

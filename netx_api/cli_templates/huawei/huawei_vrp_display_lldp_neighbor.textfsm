@@ -1,0 +1,23 @@
+Value Filldown LOCAL_INTERFACE (\S+)
+Value CHASSIS_ID (\S+)
+Value NEIGHBOR_PORT_ID (\S+)
+Value NEIGHBOR_NAME (\S+)
+Value MGMT_ADDRESS (\S+)
+
+Start
+  ^${LOCAL_INTERFACE}\s+has\s+\d+\s+neighbor -> Neighbor
+  ^\s*$$
+  ^.* -> Start
+
+Neighbor
+  ^Chassis\s+ID\s*:\s*${CHASSIS_ID}
+  ^Port\s+ID\s*:\s*${NEIGHBOR_PORT_ID}
+  ^System\s+name\s*:\s*${NEIGHBOR_NAME}
+  ^Management\s+address\s*:\s*${MGMT_ADDRESS} -> Record
+  ^Local\s+Interface\s*:\s*${LOCAL_INTERFACE}
+  ^Neighbor\s+index\s*:
+  ^${LOCAL_INTERFACE}\s+has\s+\d+\s+neighbor -> Neighbor
+  ^\s*$$
+  ^\s*<.*>\s*$$
+  ^.*#\s*$$
+  ^.* -> Neighbor
