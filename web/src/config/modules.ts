@@ -118,6 +118,8 @@ export function moduleIdFromPath(pathname: string): string | null {
 }
 
 export function getPageTitleKey(pathname: string): string {
+  if (pathname.startsWith("/audit/tasks")) return "audit.tasks.title";
+  if (pathname.startsWith("/audit/logs") || pathname === "/audit") return "audit.logsTitle";
   const moduleId = moduleIdFromPath(pathname);
   if (moduleId) {
     const mod = getModuleById(moduleId);

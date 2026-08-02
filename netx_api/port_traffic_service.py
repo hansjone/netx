@@ -720,6 +720,7 @@ def compare_targets(
     baseline: str = "off",
     offset_hours: float | None = None,
     baseline_target_id: str | None = None,
+    ahead_hours: float = 0,
     to_ts: datetime | None = None,
 ) -> PortTrafficCompareOut:
     target = db.get(PortTrafficTarget, target_row_id)
@@ -736,10 +737,14 @@ def compare_targets(
             raise HTTPException(status_code=404, detail="baseline_target_not_found")
 
     now = _utcnow()
-    to_ts = _as_naive_utc(to_ts) or now
+    # Anchor = "now" (or explicit to). Lookback is from anchor; ahead extends past it
+    # so period compare can show baseline trend after the current clock time.
+    anchor = _as_naive_utc(to_ts) or now
     range_h = max(0.25, float(range_hours or 24))
-    from_ts = to_ts - timedelta(hours=range_h)
-    to_q = to_ts + timedelta(seconds=5)
+    ahead_h = max(0.0, min(24.0, float(ahead_hours or 0)))
+    from_ts = anchor - timedelta(hours=range_h)
+    to_end = anchor + timedelta(hours=ahead_h)
+    to_q = to_end + timedelta(seconds=5)
     current = _sample_points(
         _query_target_samples(db, target_row_id=str(target.id), from_ts=from_ts, to_ts=to_q)
     )
@@ -770,6 +775,7 @@ def compare_targets(
             baseline=str(baseline or "off"),
             offset_hours=float(off_h or 0),
             range_hours=range_h,
+            ahead_hours=ahead_h,
             current_target=_target_out(target),
             baseline_target=_target_out(mapped) if mapped is not None else None,
             baseline_target_id=str(mapped.id) if mapped is not None else "",

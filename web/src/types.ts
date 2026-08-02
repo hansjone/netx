@@ -798,6 +798,7 @@ export type PortTrafficBoardPanel = {
   range_hours: number;
   baseline: "off" | "day" | "week" | "shift" | "custom" | string;
   offset_hours: number;
+  ahead_hours: number;
   baseline_target_id: string;
   y_mode: "auto" | "current" | "util" | string;
   ord: number;
@@ -817,6 +818,7 @@ export type PortTrafficBoardPanelIn = {
   range_hours?: number;
   baseline?: string;
   offset_hours?: number;
+  ahead_hours?: number;
   baseline_target_id?: string;
   y_mode?: string;
   ord?: number;
@@ -909,6 +911,7 @@ export type PortTrafficCompare = {
     baseline: string;
     offset_hours: number;
     range_hours: number;
+    ahead_hours?: number;
     current_target: PortTrafficTarget | null;
     baseline_target: PortTrafficTarget | null;
     baseline_target_id: string;

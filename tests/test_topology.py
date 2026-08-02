@@ -34,12 +34,15 @@ from netx_api.topology_schemas import (
 
 
 CISCO_LLDP_BRIEF = """
+R2#show lldp neighbors
 Capability codes:
-  (R) Router, (B) Bridge
+    (R) Router, (B) Bridge, (T) Telephone, (C) DOCSIS Cable Device
+    (W) WLAN Access Point, (P) Repeater, (S) Station, (O) Other
 
 Device ID           Local Intf     Hold-time  Capability      Port ID
-R1                  Gi0/0          120        R               Gi0/1
-R3                  Gi0/1          120        R               Gi0/0
+r1                  Gi0/1          120        B,R             Ethernet1/0/1
+
+Total entries displayed: 1
 """
 
 CISCO_LLDP_DETAIL = """
@@ -72,8 +75,16 @@ gei-0/1/0/1          0011.2233.4455     gei-0/1/0/2          R1
 class LldpParserTests(unittest.TestCase):
     def test_cisco_brief(self) -> None:
         hits = lldp.parse_cisco_lldp(CISCO_LLDP_BRIEF)
-        self.assertGreaterEqual(len(hits), 1)
-        self.assertTrue(any(h.remote_name.upper().startswith("R1") for h in hits))
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0].remote_name.lower(), "r1")
+        self.assertEqual(hits[0].local_port, "Gi0/1")
+        self.assertEqual(hits[0].remote_port, "Ethernet1/0/1")
+
+    def test_cisco_detail_fallback(self) -> None:
+        hits = lldp.parse_cisco_lldp(CISCO_LLDP_DETAIL)
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0].remote_name.lower(), "r1")
+        self.assertEqual(hits[0].remote_ip, "192.168.0.1")
 
     def test_huawei(self) -> None:
         hits = lldp.parse_huawei_lldp(HUAWEI_LLDP)
@@ -83,7 +94,7 @@ class LldpParserTests(unittest.TestCase):
     def test_pick_command_lldp_only(self) -> None:
         cmd, tag = lldp.pick_neighbor_command(protocol="cdp", vendor="Cisco", device_type="cisco_ios")
         self.assertEqual(tag, "lldp")
-        self.assertIn("lldp", cmd.lower())
+        self.assertEqual(cmd, "show lldp neighbors detail")
 
 
 class FabricTopologyTests(unittest.TestCase):

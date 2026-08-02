@@ -440,6 +440,12 @@ def api_compare(
     range_hours: float = Query(default=24, ge=0.25, le=24 * 90),
     baseline: str = Query(default="off", description="off|shift|day|week|custom"),
     offset_hours: float | None = Query(default=None, ge=0.25, le=24 * 90),
+    ahead_hours: float = Query(
+        default=0,
+        ge=0,
+        le=24,
+        description="extend chart end past now so baseline can show upcoming trend",
+    ),
     baseline_target_id: str | None = Query(
         default=None,
         description="optional mapped interface for baseline overlay",
@@ -454,5 +460,6 @@ def api_compare(
         baseline=baseline,
         offset_hours=offset_hours,
         baseline_target_id=baseline_target_id,
+        ahead_hours=ahead_hours,
         to_ts=to_ts,
     ).model_dump()

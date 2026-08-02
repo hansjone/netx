@@ -154,6 +154,7 @@ def ensure_port_traffic_series_schema(conn) -> None:
             range_hours INTEGER DEFAULT 24,
             baseline VARCHAR(16) DEFAULT 'off',
             offset_hours INTEGER DEFAULT 0,
+            ahead_hours INTEGER DEFAULT 1,
             baseline_target_id VARCHAR(64) DEFAULT '',
             y_mode VARCHAR(16) DEFAULT 'auto',
             ord INTEGER DEFAULT 0,
@@ -163,6 +164,9 @@ def ensure_port_traffic_series_schema(conn) -> None:
             updated_at TIMESTAMP
         )
         """
+    )
+    conn.exec_driver_sql(
+        "ALTER TABLE port_traffic_panel ADD COLUMN IF NOT EXISTS ahead_hours INTEGER DEFAULT 1"
     )
     conn.exec_driver_sql(
         "CREATE INDEX IF NOT EXISTS ix_port_traffic_panel_board_id ON port_traffic_panel (board_id)"

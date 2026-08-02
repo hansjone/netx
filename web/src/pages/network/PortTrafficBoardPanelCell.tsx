@@ -29,6 +29,10 @@ export function PortTrafficBoardPanelCell({
 }: Props) {
   const { t } = useI18n();
   const baseline = panel.baseline || "off";
+  const aheadHours =
+    baseline === "off" && !panel.baseline_target_id
+      ? 0
+      : Math.max(0, Number(panel.ahead_hours ?? 1) || 0);
   const compareQuery = useQuery({
     queryKey: [
       ...queryKeys.portTrafficCompare(
@@ -37,6 +41,7 @@ export function PortTrafficBoardPanelCell({
         baseline,
         baseline === "custom" ? panel.offset_hours : 0,
         panel.baseline_target_id || "",
+        aheadHours,
       ),
       boardId,
       panel.id,
@@ -47,6 +52,7 @@ export function PortTrafficBoardPanelCell({
         rangeHours: panel.range_hours,
         baseline,
         offsetHours: baseline === "custom" ? panel.offset_hours : undefined,
+        aheadHours: aheadHours || undefined,
         baselineTargetId: panel.baseline_target_id || undefined,
       }),
     enabled: Boolean(panel.target_id) && !panel.stale,

@@ -96,5 +96,7 @@ export const queryKeys = {
     baseline: string,
     offsetHours: number,
     baselineTargetId: string,
-  ) => ["portTrafficCompare", targetId, rangeHours, baseline, offsetHours, baselineTargetId] as const,
+    aheadHours = 0,
+  ) =>
+    ["portTrafficCompare", targetId, rangeHours, baseline, offsetHours, baselineTargetId, aheadHours] as const,
 };

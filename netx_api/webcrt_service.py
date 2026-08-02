@@ -471,8 +471,7 @@ class WebcrtSession:
     detach_deadline: float | None = None
     closed: bool = False
     close_reason: str = ""
-    # connecting | ready | error | closed
-    state: str = "ready"
+    state: str = "connecting"
     connect_error: str = ""
     connect_started_at: float = field(default_factory=time.time)
     connect_finished_at: float | None = None
@@ -1444,32 +1443,54 @@ def close_session(session_id: str, *, reason: str = "closed", client: str = "") 
 
 def list_sessions() -> dict[str, Any]:
     with _sessions_lock:
-        items = [
-            {
-                "session_id": s.session_id,
-                "ne_id": s.ne_id,
-                "ne_name": s.ne_name,
-                "ne_ip": s.ne_ip,
-                "protocol": s.protocol,
-                "encoding": s.encoding,
-                "keepalive_sec": int(s.keepalive_sec or 0),
-                "state": s.state,
-                "attached": s.attached,
-                "created_at": datetime.fromtimestamp(s.created_at, tz=timezone.utc).isoformat(),
-                "last_activity": datetime.fromtimestamp(s.last_activity, tz=timezone.utc).isoformat(),
-                "bytes_in": s.bytes_in,
-                "bytes_out": s.bytes_out,
-                "queue_depth": s.out_queue.qsize(),
-                "queue_dropped": getattr(s.out_queue, "dropped", 0),
-                "connect_ms": (
-                    int((s.connect_finished_at - s.connect_started_at) * 1000)
-                    if s.connect_finished_at
-                    else None
-                ),
-            }
-            for s in _sessions.values()
-            if not s.closed
-        ]
+        items = []
+        for s in _sessions.values():
+            if s.closed:
+                continue
+            state = str(s.state or "unknown")
+            attached = bool(s.attached)
+            # Lifecycle for ops UI: distinguish login vs live vs grace-period detach.
+            if state == "connecting":
+                lifecycle = "connecting"
+            elif state == "error":
+                lifecycle = "error"
+            elif state == "ready" and attached:
+                lifecycle = "ready"
+            elif state == "ready" and not attached:
+                lifecycle = "detached"
+            else:
+                lifecycle = state
+            elapsed_ms = None
+            if state == "connecting":
+                elapsed_ms = int(max(0.0, time.time() - float(s.connect_started_at or time.time())) * 1000)
+            items.append(
+                {
+                    "session_id": s.session_id,
+                    "ne_id": s.ne_id,
+                    "ne_name": s.ne_name,
+                    "ne_ip": s.ne_ip,
+                    "protocol": s.protocol,
+                    "encoding": s.encoding,
+                    "keepalive_sec": int(s.keepalive_sec or 0),
+                    "state": state,
+                    "lifecycle": lifecycle,
+                    "attached": attached,
+                    "detach_deadline": s.detach_deadline,
+                    "connect_error": str(s.connect_error or "")[:500],
+                    "elapsed_ms": elapsed_ms,
+                    "created_at": datetime.fromtimestamp(s.created_at, tz=timezone.utc).isoformat(),
+                    "last_activity": datetime.fromtimestamp(s.last_activity, tz=timezone.utc).isoformat(),
+                    "bytes_in": s.bytes_in,
+                    "bytes_out": s.bytes_out,
+                    "queue_depth": s.out_queue.qsize(),
+                    "queue_dropped": getattr(s.out_queue, "dropped", 0),
+                    "connect_ms": (
+                        int((s.connect_finished_at - s.connect_started_at) * 1000)
+                        if s.connect_finished_at
+                        else None
+                    ),
+                }
+            )
     return {
         "total": len(items),
         "max_sessions": max(1, int(settings.webcrt_max_sessions or 20)),

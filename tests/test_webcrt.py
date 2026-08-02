@@ -503,6 +503,8 @@ class WebcrtServiceTests(unittest.TestCase):
             rows=24,
             conn=conn,  # type: ignore[arg-type]
         )
+        sess.state = "ready"
+        sess.connect_finished_at = time.time()
         sess.attached = True
         with svc._sessions_lock:
             svc._sessions["grace"] = sess
@@ -521,6 +523,42 @@ class WebcrtServiceTests(unittest.TestCase):
             with patch.object(svc.settings, "webcrt_idle_timeout_sec", 99999):
                 svc._reap_sessions()
         self.assertIsNone(svc.get_session("grace"))
+
+    @patch.object(svc, "_audit")
+    def test_list_sessions_lifecycle_ready_vs_detached(self, _mock_audit: MagicMock) -> None:
+        conn = _FakeConn()
+        sess = svc.WebcrtSession(
+            session_id="life",
+            ne_id="ne1",
+            ne_name="lab",
+            ne_ip="1.2.3.4",
+            protocol="ssh",
+            cols=80,
+            rows=24,
+            conn=conn,  # type: ignore[arg-type]
+        )
+        sess.state = "ready"
+        sess.attached = True
+        with svc._sessions_lock:
+            svc._sessions["life"] = sess
+        ready_rows = {r["session_id"]: r for r in svc.list_sessions()["items"]}
+        self.assertEqual(ready_rows["life"]["lifecycle"], "ready")
+        self.assertTrue(ready_rows["life"]["attached"])
+
+        svc.detach_session("life", grace_sec=120.0, attach_gen=0)
+        detached_rows = {r["session_id"]: r for r in svc.list_sessions()["items"]}
+        self.assertEqual(detached_rows["life"]["lifecycle"], "detached")
+        self.assertFalse(detached_rows["life"]["attached"])
+        self.assertIsNotNone(detached_rows["life"]["detach_deadline"])
+
+        sess.state = "connecting"
+        sess.attached = False
+        connecting_rows = {r["session_id"]: r for r in svc.list_sessions()["items"]}
+        self.assertEqual(connecting_rows["life"]["lifecycle"], "connecting")
+        self.assertIsInstance(connecting_rows["life"]["elapsed_ms"], int)
+
+        svc.close_session("life", reason="test")
+        self.assertEqual(svc.list_sessions()["total"], 0)
 
     @patch.object(svc, "_audit")
     def test_attach_timeout_reaper(self, _mock_audit: MagicMock) -> None:

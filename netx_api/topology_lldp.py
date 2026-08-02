@@ -77,7 +77,7 @@ VENDOR_LLDP_PROFILES: dict[str, VendorLldpProfile] = {
         key="cisco",
         lldp_command="show lldp neighbors detail",
         cdp_command="show cdp neighbors detail",
-        notes="device_type cisco_*; use detail form for System Name / Port id.",
+        notes="device_type cisco_*; prefer detail for System Name / Port id / mgmt IP.",
     ),
     "huawei": VendorLldpProfile(
         key="huawei",

@@ -5957,6 +5957,23 @@ pre {
   border-left-color: var(--nm-accent);
 }
 
+.network-nav__brand {
+  padding: 14px 16px 10px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--nm-brand);
+  border-bottom: 1px solid var(--nm-nav-border);
+}
+
+.network-nav__list--flat {
+  padding: 8px 10px 12px;
+}
+
+.audit-shell .network-main {
+  overflow: auto;
+}
+
 .network-main {
   flex: 1;
   min-width: 0;

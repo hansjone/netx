@@ -41,12 +41,17 @@ function panelToIn(p: PortTrafficBoardPanel): PortTrafficBoardPanelIn {
     range_hours: p.range_hours,
     baseline: p.baseline || "off",
     offset_hours: p.offset_hours || 0,
+    ahead_hours: p.ahead_hours ?? 1,
     baseline_target_id: p.baseline_target_id || "",
     y_mode: p.y_mode || "auto",
     ord: p.ord,
     col_span: p.col_span || 1,
     row_span: p.row_span || 1,
   };
+}
+
+function normalizePanel(p: PortTrafficBoardPanel): PortTrafficBoardPanel {
+  return { ...p, ahead_hours: p.ahead_hours ?? 1 };
 }
 
 /** Dedicated board wall tab at `/port-traffic/wall/:boardId` (outside Network shell). */
@@ -136,7 +141,7 @@ export function PortTrafficWallPage() {
 
   useEffect(() => {
     if (!board || editing) return;
-    setDraftPanels(board.panels || []);
+    setDraftPanels((board.panels || []).map(normalizePanel));
     setDraftName(board.name || "");
     setDraftCols(board.cols || 2);
   }, [board, editing]);
@@ -188,7 +193,7 @@ export function PortTrafficWallPage() {
 
   const startEdit = () => {
     if (!board) return;
-    setDraftPanels([...(board.panels || [])]);
+    setDraftPanels((board.panels || []).map(normalizePanel));
     setDraftName(board.name || "");
     setDraftCols(board.cols || 2);
     setEditing(true);
@@ -201,7 +206,7 @@ export function PortTrafficWallPage() {
     setDirty(false);
     closePanelSettings();
     if (board) {
-      setDraftPanels(board.panels || []);
+      setDraftPanels((board.panels || []).map(normalizePanel));
       setDraftName(board.name || "");
       setDraftCols(board.cols || 2);
     }
@@ -249,6 +254,7 @@ export function PortTrafficWallPage() {
       range_hours: 24,
       baseline: "off",
       offset_hours: 0,
+      ahead_hours: 1,
       baseline_target_id: "",
       y_mode: "auto",
       ord: draftPanels.length,
@@ -571,9 +577,15 @@ export function PortTrafficWallPage() {
                 {t("portTraffic.compare")}
                 <select
                   value={editPanel.baseline}
-                  onChange={(e) =>
-                    updatePanel(editPanel.id, { baseline: e.target.value as BaselineMode })
-                  }
+                  onChange={(e) => {
+                    const next = e.target.value as BaselineMode;
+                    updatePanel(editPanel.id, {
+                      baseline: next,
+                      ...(next !== "off" && !(editPanel.ahead_hours > 0)
+                        ? { ahead_hours: 1 }
+                        : {}),
+                    });
+                  }}
                 >
                   <option value="off">{t("portTraffic.compareOff")}</option>
                   <option value="day">{t("portTraffic.compareDay")}</option>
@@ -660,6 +672,7 @@ export function PortTrafficWallPage() {
                     updatePanel(editPanel.id, {
                       baseline_target_id: tid,
                       baseline_target: tgt,
+                      ...(tid && !(editPanel.ahead_hours > 0) ? { ahead_hours: 1 } : {}),
                     });
                   }}
                 >
@@ -671,10 +684,33 @@ export function PortTrafficWallPage() {
                   ))}
                 </select>
               </label>
+              {editPanel.baseline !== "off" || editPanel.baseline_target_id ? (
+                <label>
+                  {t("portTraffic.aheadHours")}
+                  <input
+                    type="number"
+                    min={0}
+                    max={24}
+                    step={1}
+                    title={t("portTraffic.aheadHoursHint")}
+                    value={editPanel.ahead_hours ?? 1}
+                    onChange={(e) =>
+                      updatePanel(editPanel.id, {
+                        ahead_hours: Math.max(0, Math.min(24, Number(e.target.value) || 0)),
+                      })
+                    }
+                  />
+                </label>
+              ) : null}
             </div>
             {editPanel.baseline === "week" ? (
               <p className="muted" style={{ marginTop: 10 }}>
                 {t("portTraffic.retentionHint")}
+              </p>
+            ) : null}
+            {editPanel.baseline_target_id ? (
+              <p className="muted" style={{ marginTop: 10 }}>
+                {t("portTraffic.mapBaselineHint")}
               </p>
             ) : null}
             <div className="modal__actions">

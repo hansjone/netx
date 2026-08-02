@@ -930,6 +930,7 @@ class PortTrafficPanel(Base):
     range_hours: Mapped[int] = mapped_column(Integer, default=24)
     baseline: Mapped[str] = mapped_column(String(16), default="off")  # off|day|week|shift|custom
     offset_hours: Mapped[int] = mapped_column(Integer, default=0)
+    ahead_hours: Mapped[int] = mapped_column(Integer, default=1)  # extend chart past "now" for baseline peek
     baseline_target_id: Mapped[str] = mapped_column(String(64), default="")
     y_mode: Mapped[str] = mapped_column(String(16), default="auto")  # auto|current|util
     ord: Mapped[int] = mapped_column(Integer, default=0)

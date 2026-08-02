@@ -20,6 +20,8 @@ import { PortTrafficBoardListPage } from "./pages/network/PortTrafficBoardListPa
 import { PortTrafficWallPage } from "./pages/network/PortTrafficWallPage";
 import { LoginPage } from "./pages/LoginPage";
 import { UsersPage } from "./pages/UsersPage";
+import { AuditLayout } from "./pages/audit/AuditLayout";
+import { TaskOverviewPage } from "./pages/audit/TaskOverviewPage";
 import { AuditPage } from "./pages/AuditPage";
 import { ApiTokensPage } from "./pages/ApiTokensPage";
 import { ForceChangePasswordPage } from "./pages/ForceChangePasswordPage";
@@ -117,7 +119,11 @@ function ProtectedApp() {
         </Route>
         <Route path="/collect" element={<Navigate to="/network/tasks/collect" replace />} />
         <Route path="/users" element={<UsersPage />} />
-        <Route path="/audit" element={<AuditPage />} />
+        <Route path="/audit" element={<AuditLayout />}>
+          <Route index element={<Navigate to="tasks" replace />} />
+          <Route path="tasks" element={<TaskOverviewPage />} />
+          <Route path="logs" element={<AuditPage />} />
+        </Route>
         <Route path="/api-keys" element={<ApiTokensPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

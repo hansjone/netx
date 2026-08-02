@@ -160,19 +160,20 @@ class PortTrafficSamplePoint(BaseModel):
     ts_raw: datetime | None = None
 
 
-class PortTrafficSamplesOut(BaseModel):
-    target: PortTrafficTargetOut
-    points: list[PortTrafficSamplePoint] = Field(default_factory=list)
-
-
 class PortTrafficCompareMeta(BaseModel):
     target_id: str
     baseline: str = "off"
     offset_hours: float = 0
     range_hours: float = 24
+    ahead_hours: float = 0
     current_target: PortTrafficTargetOut | None = None
     baseline_target: PortTrafficTargetOut | None = None
     baseline_target_id: str = ""
+
+
+class PortTrafficSamplesOut(BaseModel):
+    target: PortTrafficTargetOut
+    points: list[PortTrafficSamplePoint] = Field(default_factory=list)
 
 
 class PortTrafficCompareOut(BaseModel):
@@ -214,6 +215,7 @@ class PortTrafficPanelIn(BaseModel):
     range_hours: int = Field(default=24, ge=1, le=24 * 90)
     baseline: Literal["off", "day", "week", "shift", "custom"] = "off"
     offset_hours: int = Field(default=0, ge=0, le=24 * 90)
+    ahead_hours: int = Field(default=1, ge=0, le=24)
     baseline_target_id: str = ""
     y_mode: Literal["auto", "current", "util"] = "auto"
     ord: int = 0
@@ -229,6 +231,7 @@ class PortTrafficPanelOut(BaseModel):
     range_hours: int = 24
     baseline: str = "off"
     offset_hours: int = 0
+    ahead_hours: int = 1
     baseline_target_id: str = ""
     y_mode: str = "auto"
     ord: int = 0

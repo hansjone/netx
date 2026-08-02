@@ -55,7 +55,7 @@ export function AuditPage() {
     <div className="page-stack system-page">
       <section className="panel">
         <div className="panel__toolbar">
-          <h2>{t("auth.auditTitle")}</h2>
+          <h2>{t("audit.logsTitle")}</h2>
         </div>
         <p className="panel__hint">{isAdmin ? t("auth.auditHintAdmin") : t("auth.auditHintUser")}</p>
 

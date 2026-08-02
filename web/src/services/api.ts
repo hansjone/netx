@@ -205,6 +205,31 @@ export const apiPut = async <T,>(path: string, body: unknown): Promise<T> => {
 
 export const fetchIntegrationStatus = () => apiGet<IntegrationStatus>("/v1/integrations/status");
 
+export type OpsTaskItem = {
+  kind: string;
+  id: string;
+  title: string;
+  status: string;
+  trigger: string;
+  actor: string;
+  started_at: string | null;
+  updated_at: string | null;
+  progress: string;
+  detail: string;
+  href: string;
+};
+
+export type OpsTasksResponse = {
+  generated_at: string;
+  total: number;
+  active: number;
+  by_kind: Record<string, number>;
+  by_status: Record<string, number>;
+  items: OpsTaskItem[];
+};
+
+export const fetchOpsTasks = () => apiGet<OpsTasksResponse>("/v1/ops/tasks");
+
 export const fetchUmeAlarmSubscriptionStatus = () =>
   apiGet<UmeAlarmSubscriptionStatus>("/v1/ume/alarm-subscription/status");
 
@@ -1347,6 +1372,7 @@ export const fetchPortTrafficCompare = (params: {
   rangeHours: number;
   baseline: string;
   offsetHours?: number;
+  aheadHours?: number;
   baselineTargetId?: string;
   to?: string;
 }) => {
@@ -1355,6 +1381,9 @@ export const fetchPortTrafficCompare = (params: {
   p.set("range_hours", String(params.rangeHours));
   p.set("baseline", params.baseline);
   if (params.offsetHours != null) p.set("offset_hours", String(params.offsetHours));
+  if (params.aheadHours != null && params.aheadHours > 0) {
+    p.set("ahead_hours", String(params.aheadHours));
+  }
   if (params.baselineTargetId) p.set("baseline_target_id", params.baselineTargetId);
   if (params.to) p.set("to", params.to);
   return apiGet<PortTrafficCompare>(`/v1/port-traffic/compare?${p.toString()}`);

@@ -32,6 +32,7 @@ from .managed_ne_router import router as managed_ne_router
 from .webcrt_router import router as webcrt_router
 from .topology_router import router as topology_router
 from .lldp_collect_router import router as lldp_collect_router
+from .ops_router import router as ops_router
 from .importer import aggregate_alarms, import_alarm_excel, query_alarms
 from .models import (
     AiAnalyzeHistory,
@@ -141,6 +142,7 @@ app.include_router(port_traffic_router)
 app.include_router(webcrt_router)
 app.include_router(topology_router)
 app.include_router(lldp_collect_router)
+app.include_router(ops_router)
 parser_cfg = load_parser_config()
 _UME_CLIENT_SINGLETON = UMEClient(
     token_loader=lambda: load_shared_token(),

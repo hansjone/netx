@@ -236,6 +236,46 @@ class CompareTargetsTests(unittest.TestCase):
         self.assertGreaterEqual(len(out.baseline), 2)
         self.assertEqual(out.meta.offset_hours, 2.0)
 
+    def test_ahead_hours_extends_baseline_past_now(self):
+        # Yesterday sample 30min after "now" clock — only visible when ahead_hours > 0.
+        future_raw = self.now - timedelta(days=1) + timedelta(minutes=30)
+        self.db.add(
+            PortTrafficSample(
+                id=uuid4().hex,
+                target_row_id=self.target_id,
+                series_id=self.series_id,
+                ts=future_raw,
+                in_bps=777.0,
+                out_bps=888.0,
+                raw_ok=True,
+            )
+        )
+        self.db.commit()
+
+        without = compare_targets(
+            self.db,
+            target_row_id=self.target_id,
+            range_hours=2,
+            baseline="day",
+            ahead_hours=0,
+            to_ts=self.now,
+        )
+        self.assertFalse(any(abs((p.ts_raw or p.ts) - future_raw).total_seconds() < 1 for p in without.baseline))
+
+        with_ahead = compare_targets(
+            self.db,
+            target_row_id=self.target_id,
+            range_hours=2,
+            baseline="day",
+            ahead_hours=1,
+            to_ts=self.now,
+        )
+        self.assertEqual(with_ahead.meta.ahead_hours, 1.0)
+        hit = [p for p in with_ahead.baseline if p.in_bps == 777.0]
+        self.assertEqual(len(hit), 1)
+        self.assertGreater(hit[0].ts, self.now)
+        self.assertLessEqual(hit[0].ts, self.now + timedelta(hours=1, seconds=5))
+
 
 if __name__ == "__main__":
     unittest.main()
