@@ -347,10 +347,11 @@ function isSshAuthFailure(err: unknown): boolean {
   );
 }
 
-/** Inventory managed / Quick Connect. UME uses shared CLI profile — no per-NE popup. */
-function isInventoryTarget(target: Pick<CliTargetItem, "source" | "protocol">): boolean {
+/** Inventory SSH (managed / Quick Connect). Telnet authenticates in-terminal; UME uses shared profile. */
+function isInventorySsh(target: Pick<CliTargetItem, "source" | "protocol">): boolean {
   const src = String(target.source || "").toLowerCase();
-  return src === "webcrt" || src === "managed";
+  if (src !== "webcrt" && src !== "managed") return false;
+  return String(target.protocol || "ssh").toLowerCase() !== "telnet";
 }
 
 function isSessionGoneError(err: unknown): boolean {
@@ -941,8 +942,9 @@ export function WebcrtPage() {
       }
       if (connectingKeysRef.current.has(key)) return;
 
-      // Managed / WebCRT without saved password → credential popup (UME uses shared profile).
-      if (isInventoryTarget(target) && !target.has_password && !opts?.force) {
+      // Managed / WebCRT SSH without saved password → credential popup.
+      // Telnet stays interactive in the terminal (SecureCRT-style); UME uses shared profile.
+      if (isInventorySsh(target) && !target.has_password && !opts?.force) {
         openAuthForTarget(target);
         return;
       }
@@ -1016,7 +1018,7 @@ export function WebcrtPage() {
       } catch (err) {
         const message = webcrtErrorMessage(err, t);
         const needAuth =
-          isInventoryTarget(target) &&
+          isInventorySsh(target) &&
           (String(err).includes("credentials_incomplete") ||
             String(err).includes("connect_failed") ||
             isSshAuthFailure(err));
@@ -2450,7 +2452,7 @@ export function WebcrtPage() {
                             if (sid) {
                               void closeWebcrtSession(sid).catch(() => undefined);
                             }
-                            if (isInventoryTarget(tab.target) && isSshAuthFailure(errMsg)) {
+                            if (isInventorySsh(tab.target) && isSshAuthFailure(errMsg)) {
                               openAuthForTarget(tab.target, webcrtErrorMessage(errMsg, t));
                             }
                           } else if (state === "closed") {
