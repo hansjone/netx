@@ -3,12 +3,19 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint, event
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..db import Base
 from ..timeutil import utcnow_naive
 from ._types import JsonType as _JsonType
+
+
+def _mirror_device_task_id(target: object) -> None:
+    """Keep legacy task_id column aligned with device_id (brownfield NOT NULL)."""
+    did = str(getattr(target, "device_id", None) or getattr(target, "task_id", None) or "")
+    target.device_id = did  # type: ignore[attr-defined]
+    target.task_id = did  # type: ignore[attr-defined]
 
 class PortTrafficDevice(Base):
     """Per-NE port traffic monitoring config (device-centric)."""
@@ -49,17 +56,11 @@ class PortTrafficSeries(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
     device_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    # Legacy column retained for brownfield DBs that still enforce NOT NULL task_id.
+    task_id: Mapped[str] = mapped_column(String(64), default="")
     title: Mapped[str] = mapped_column(String(256), default="")
     status: Mapped[str] = mapped_column(String(32), default="active", index=True)  # active|disabled
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
-
-    @property
-    def task_id(self) -> str:
-        return str(self.device_id or "")
-
-    @task_id.setter
-    def task_id(self, value: str) -> None:
-        self.device_id = str(value or "")
 
 
 class PortTrafficTarget(Base):
@@ -69,6 +70,8 @@ class PortTrafficTarget(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
     device_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    # Legacy column retained for brownfield DBs that still enforce NOT NULL task_id.
+    task_id: Mapped[str] = mapped_column(String(64), default="")
     series_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     source: Mapped[str] = mapped_column(String(32), default="managed", index=True)
     target_id: Mapped[str] = mapped_column(String(128), index=True)  # NE id
@@ -83,13 +86,17 @@ class PortTrafficTarget(Base):
     last_sample_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
 
-    @property
-    def task_id(self) -> str:
-        return str(self.device_id or "")
 
-    @task_id.setter
-    def task_id(self, value: str) -> None:
-        self.device_id = str(value or "")
+@event.listens_for(PortTrafficSeries, "before_insert")
+@event.listens_for(PortTrafficSeries, "before_update")
+def _sync_series_task_id(mapper, connection, target) -> None:  # noqa: ANN001
+    _mirror_device_task_id(target)
+
+
+@event.listens_for(PortTrafficTarget, "before_insert")
+@event.listens_for(PortTrafficTarget, "before_update")
+def _sync_target_task_id(mapper, connection, target) -> None:  # noqa: ANN001
+    _mirror_device_task_id(target)
 
 
 class PortTrafficSample(Base):

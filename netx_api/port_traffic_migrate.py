@@ -63,6 +63,27 @@ def ensure_port_traffic_series_schema(conn) -> None:
     conn.exec_driver_sql(
         "ALTER TABLE port_traffic_series ADD COLUMN IF NOT EXISTS task_id VARCHAR(64) DEFAULT ''"
     )
+    # Older installs created task_id as NOT NULL before the device-centric rename.
+    # Keep both columns populated and relax NOT NULL so ORM inserts that only set
+    # device_id (or only task_id) do not 500.
+    for sql in (
+        """
+        UPDATE port_traffic_series
+        SET device_id = task_id
+        WHERE COALESCE(device_id, '') = '' AND COALESCE(task_id, '') <> ''
+        """,
+        """
+        UPDATE port_traffic_series
+        SET task_id = device_id
+        WHERE COALESCE(task_id, '') = '' AND COALESCE(device_id, '') <> ''
+        """,
+        "ALTER TABLE port_traffic_series ALTER COLUMN task_id DROP NOT NULL",
+        "ALTER TABLE port_traffic_series ALTER COLUMN task_id SET DEFAULT ''",
+    ):
+        try:
+            conn.exec_driver_sql(sql)
+        except Exception:
+            pass
     conn.exec_driver_sql(
         "CREATE INDEX IF NOT EXISTS ix_port_traffic_series_device_id ON port_traffic_series (device_id)"
     )
@@ -79,6 +100,24 @@ def ensure_port_traffic_series_schema(conn) -> None:
     conn.exec_driver_sql(
         "ALTER TABLE port_traffic_target ADD COLUMN IF NOT EXISTS task_id VARCHAR(64) DEFAULT ''"
     )
+    for sql in (
+        """
+        UPDATE port_traffic_target
+        SET device_id = task_id
+        WHERE COALESCE(device_id, '') = '' AND COALESCE(task_id, '') <> ''
+        """,
+        """
+        UPDATE port_traffic_target
+        SET task_id = device_id
+        WHERE COALESCE(task_id, '') = '' AND COALESCE(device_id, '') <> ''
+        """,
+        "ALTER TABLE port_traffic_target ALTER COLUMN task_id DROP NOT NULL",
+        "ALTER TABLE port_traffic_target ALTER COLUMN task_id SET DEFAULT ''",
+    ):
+        try:
+            conn.exec_driver_sql(sql)
+        except Exception:
+            pass
     conn.exec_driver_sql(
         "CREATE INDEX IF NOT EXISTS ix_port_traffic_target_series_id ON port_traffic_target (series_id)"
     )
