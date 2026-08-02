@@ -9,6 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from .models import PortTrafficDevice, PortTrafficSample, PortTrafficSeries, PortTrafficTarget
+from .schema_patches import _run_sql
 
 _log = logging.getLogger("netx.port_traffic.migrate")
 
@@ -65,7 +66,7 @@ def ensure_port_traffic_series_schema(conn) -> None:
     )
     # Older installs created task_id as NOT NULL before the device-centric rename.
     # Keep both columns populated and relax NOT NULL so ORM inserts that only set
-    # device_id (or only task_id) do not 500.
+    # device_id (or only task_id) do not 500. Each statement uses SAVEPOINT.
     for sql in (
         """
         UPDATE port_traffic_series
@@ -79,28 +80,11 @@ def ensure_port_traffic_series_schema(conn) -> None:
         """,
         "ALTER TABLE port_traffic_series ALTER COLUMN task_id DROP NOT NULL",
         "ALTER TABLE port_traffic_series ALTER COLUMN task_id SET DEFAULT ''",
-    ):
-        try:
-            conn.exec_driver_sql(sql)
-        except Exception:
-            pass
-    conn.exec_driver_sql(
-        "CREATE INDEX IF NOT EXISTS ix_port_traffic_series_device_id ON port_traffic_series (device_id)"
-    )
-    conn.exec_driver_sql(
-        "CREATE INDEX IF NOT EXISTS ix_port_traffic_series_status ON port_traffic_series (status)"
-    )
-
-    conn.exec_driver_sql(
-        "ALTER TABLE port_traffic_target ADD COLUMN IF NOT EXISTS series_id VARCHAR(64) DEFAULT ''"
-    )
-    conn.exec_driver_sql(
-        "ALTER TABLE port_traffic_target ADD COLUMN IF NOT EXISTS device_id VARCHAR(64) DEFAULT ''"
-    )
-    conn.exec_driver_sql(
-        "ALTER TABLE port_traffic_target ADD COLUMN IF NOT EXISTS task_id VARCHAR(64) DEFAULT ''"
-    )
-    for sql in (
+        "CREATE INDEX IF NOT EXISTS ix_port_traffic_series_device_id ON port_traffic_series (device_id)",
+        "CREATE INDEX IF NOT EXISTS ix_port_traffic_series_status ON port_traffic_series (status)",
+        "ALTER TABLE port_traffic_target ADD COLUMN IF NOT EXISTS series_id VARCHAR(64) DEFAULT ''",
+        "ALTER TABLE port_traffic_target ADD COLUMN IF NOT EXISTS device_id VARCHAR(64) DEFAULT ''",
+        "ALTER TABLE port_traffic_target ADD COLUMN IF NOT EXISTS task_id VARCHAR(64) DEFAULT ''",
         """
         UPDATE port_traffic_target
         SET device_id = task_id
@@ -113,31 +97,18 @@ def ensure_port_traffic_series_schema(conn) -> None:
         """,
         "ALTER TABLE port_traffic_target ALTER COLUMN task_id DROP NOT NULL",
         "ALTER TABLE port_traffic_target ALTER COLUMN task_id SET DEFAULT ''",
-    ):
-        try:
-            conn.exec_driver_sql(sql)
-        except Exception:
-            pass
-    conn.exec_driver_sql(
-        "CREATE INDEX IF NOT EXISTS ix_port_traffic_target_series_id ON port_traffic_target (series_id)"
-    )
-    conn.exec_driver_sql(
-        "CREATE INDEX IF NOT EXISTS ix_port_traffic_target_device_id ON port_traffic_target (device_id)"
-    )
-    conn.exec_driver_sql(
-        "ALTER TABLE port_traffic_sample ADD COLUMN IF NOT EXISTS series_id VARCHAR(64) DEFAULT ''"
-    )
-    conn.exec_driver_sql(
-        "CREATE INDEX IF NOT EXISTS ix_port_traffic_sample_series_id ON port_traffic_sample (series_id)"
-    )
-    # One active interface globally per physical port
-    conn.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_port_traffic_target_series_id ON port_traffic_target (series_id)",
+        "CREATE INDEX IF NOT EXISTS ix_port_traffic_target_device_id ON port_traffic_target (device_id)",
+        "ALTER TABLE port_traffic_sample ADD COLUMN IF NOT EXISTS series_id VARCHAR(64) DEFAULT ''",
+        "CREATE INDEX IF NOT EXISTS ix_port_traffic_sample_series_id ON port_traffic_sample (series_id)",
+        # One active interface globally per physical port (may fail if duplicates exist)
         """
         CREATE UNIQUE INDEX IF NOT EXISTS uq_port_traffic_target_active_if
         ON port_traffic_target (source, target_id, ifname)
         WHERE status = 'active'
-        """
-    )
+        """,
+    ):
+        _run_sql(conn, sql)
 
     conn.exec_driver_sql(
         """

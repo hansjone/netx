@@ -24,19 +24,62 @@ def _dialect_name(conn: Connection) -> str:
 
 
 def _run_sql(conn: Connection, sql: str, *, quiet: bool = True) -> None:
+    """Run one DDL/DML statement.
+
+    On PostgreSQL a failed statement aborts the whole transaction. Optional
+    patches must use a SAVEPOINT (``begin_nested``) so Alembic can still stamp
+    ``alembic_version`` after a best-effort ALTER fails.
+    """
     stmt = str(sql or "").strip()
     if not stmt:
         return
-    try:
+
+    def _exec() -> None:
         if hasattr(conn, "exec_driver_sql"):
             conn.exec_driver_sql(stmt)
         else:
             conn.execute(text(stmt))
+
+    if not quiet:
+        _exec()
+        return
+
+    nested = None
+    try:
+        nested = conn.begin_nested()
     except Exception:
-        if quiet:
-            _log.debug("schema patch skipped/failed: %s", stmt[:120], exc_info=True)
-        else:
-            raise
+        nested = None
+    try:
+        _exec()
+        if nested is not None:
+            nested.commit()
+    except Exception:
+        if nested is not None:
+            try:
+                nested.rollback()
+            except Exception:
+                pass
+        _log.debug("schema patch skipped/failed: %s", stmt[:120], exc_info=True)
+
+
+def _run_optional_block(conn: Connection, label: str, fn) -> None:
+    """Run a block of optional DDL inside a SAVEPOINT."""
+    nested = None
+    try:
+        nested = conn.begin_nested()
+    except Exception:
+        nested = None
+    try:
+        fn(conn)
+        if nested is not None:
+            nested.commit()
+    except Exception:
+        if nested is not None:
+            try:
+                nested.rollback()
+            except Exception:
+                pass
+        _log.debug("schema block skipped/failed: %s", label, exc_info=True)
 
 
 def apply_auth_schema_patches(conn: Connection) -> None:
@@ -128,14 +171,9 @@ def apply_domain_schema_patches(conn: Connection) -> None:
     from .port_traffic_migrate import ensure_port_traffic_series_schema
     from .topology_migrate import ensure_topology_schema
 
-    try:
-        ensure_port_traffic_series_schema(conn)
-    except Exception:
-        _log.debug("port_traffic schema ensure failed", exc_info=True)
-    try:
-        ensure_topology_schema(conn)
-    except Exception:
-        _log.debug("topology schema ensure failed", exc_info=True)
+    # Never let optional ensure_* poison the Alembic transaction.
+    _run_optional_block(conn, "port_traffic", ensure_port_traffic_series_schema)
+    _run_optional_block(conn, "topology", ensure_topology_schema)
 
     _run_sql(
         conn,

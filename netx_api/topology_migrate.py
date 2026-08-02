@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import logging
 
-from sqlalchemy import text
 from sqlalchemy.engine import Connection
+
+from .schema_patches import _run_sql
 
 _log = logging.getLogger("netx.topology.migrate")
 
@@ -16,13 +17,10 @@ def drop_legacy_topology_tables(conn: Connection) -> None:
     """Remove document-style topology_* tables after cutover to fabric/view."""
     dialect = str(getattr(conn.dialect, "name", "") or "").lower()
     for table in _LEGACY_TABLES:
-        try:
-            if dialect.startswith("postgres"):
-                conn.execute(text(f'DROP TABLE IF EXISTS "{table}" CASCADE'))
-            else:
-                conn.execute(text(f"DROP TABLE IF EXISTS {table}"))
-        except Exception:
-            _log.exception("drop legacy topology table failed: %s", table)
+        if dialect.startswith("postgres"):
+            _run_sql(conn, f'DROP TABLE IF EXISTS "{table}" CASCADE')
+        else:
+            _run_sql(conn, f"DROP TABLE IF EXISTS {table}")
 
 
 def ensure_topology_schema(conn: Connection) -> None:
@@ -120,34 +118,24 @@ def ensure_topology_schema(conn: Connection) -> None:
             ]
         )
     for sql in alter_stmts:
-        try:
-            conn.execute(text(sql))
-        except Exception:
-            _log.debug("topology alter skipped/failed: %s", sql[:80], exc_info=True)
+        _run_sql(conn, sql)
 
     # Backfill hours from legacy days when hours unset/zero.
-    try:
-        conn.execute(
-            text(
-                "UPDATE lldp_collect_policy SET interval_hours = "
-                "CASE WHEN COALESCE(interval_hours, 0) <= 0 "
-                "THEN GREATEST(1, COALESCE(interval_days, 1)) * 24 "
-                "ELSE interval_hours END"
-            )
-        )
-    except Exception:
-        try:
-            # SQLite has no GREATEST in older builds — use MAX.
-            conn.execute(
-                text(
-                    "UPDATE lldp_collect_policy SET interval_hours = "
-                    "CASE WHEN COALESCE(interval_hours, 0) <= 0 "
-                    "THEN MAX(1, COALESCE(interval_days, 1)) * 24 "
-                    "ELSE interval_hours END"
-                )
-            )
-        except Exception:
-            _log.debug("interval_hours backfill skipped", exc_info=True)
+    _run_sql(
+        conn,
+        "UPDATE lldp_collect_policy SET interval_hours = "
+        "CASE WHEN COALESCE(interval_hours, 0) <= 0 "
+        "THEN GREATEST(1, COALESCE(interval_days, 1)) * 24 "
+        "ELSE interval_hours END",
+    )
+    # SQLite has no GREATEST in older builds — use MAX (no-op if previous applied).
+    _run_sql(
+        conn,
+        "UPDATE lldp_collect_policy SET interval_hours = "
+        "CASE WHEN COALESCE(interval_hours, 0) <= 0 "
+        "THEN MAX(1, COALESCE(interval_days, 1)) * 24 "
+        "ELSE interval_hours END",
+    )
 
     if not dialect.startswith("postgres"):
         return
@@ -169,7 +157,4 @@ def ensure_topology_schema(conn: Connection) -> None:
         "CREATE INDEX IF NOT EXISTS ix_topo_discover_job_trigger ON topo_discover_job (trigger_mode)",
     ]
     for sql in stmts:
-        try:
-            conn.execute(text(sql))
-        except Exception:
-            _log.exception("ensure topology index failed: %s", sql[:80])
+        _run_sql(conn, sql)
