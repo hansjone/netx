@@ -74,6 +74,15 @@ Local Interface      Chassis ID         Port ID              System Name
 gei-0/1/0/1          0011.2233.4455     gei-0/1/0/2          R1
 """
 
+ZTE_LLDP_SCOPE = """
+Total neighbors: 12
+Local Interface   Scope  Chassis ID      Port ID           Holdtime  System Name
+-----------------------------------------------------------------------------------------
+xgei-1/1/0/1     NB     026e.8219.bc57  xgei-1/1/0/26     100       CSR1_6120HSC
+xgei-1/1/0/3     NB     00d0.0000.081f  gei-1/2/0/3       113       OLT/CPE_6180H
+cgei-1/1/0/34    NB     0022.9354.6e60  cgei-0/3/0/34     110       AG5
+"""
+
 
 class LldpParserTests(unittest.TestCase):
     def test_cisco_brief(self) -> None:
@@ -89,6 +98,18 @@ class LldpParserTests(unittest.TestCase):
         self.assertEqual(hits[0].remote_name.lower(), "r1")
         self.assertEqual(hits[0].remote_ip, "192.168.0.1")
 
+    def test_no_vendor_skips_discover(self) -> None:
+        self.assertFalse(lldp.can_discover_lldp(vendor="", device_type=""))
+        self.assertFalse(lldp.can_discover_lldp(vendor="", device_type="generic"))
+        self.assertTrue(lldp.can_discover_lldp(vendor="Cisco", device_type="cisco_ios"))
+        hits = lldp.parse_neighbor_output(
+            CISCO_LLDP_BRIEF,
+            vendor="",
+            device_type="generic",
+            command="show lldp neighbors",
+        )
+        self.assertEqual(hits, [])
+
     def test_huawei(self) -> None:
         hits = lldp.parse_huawei_lldp(HUAWEI_LLDP)
         self.assertGreaterEqual(len(hits), 1)
@@ -99,6 +120,13 @@ class LldpParserTests(unittest.TestCase):
         hits = lldp.parse_zte_lldp(ZTE_LLDP_BRIEF)
         self.assertEqual(len(hits), 1)
         self.assertEqual(hits[0].remote_name, "R1")
+
+    def test_zte_scope_holdtime(self) -> None:
+        hits = lldp.parse_zte_lldp(ZTE_LLDP_SCOPE)
+        self.assertEqual(len(hits), 3)
+        self.assertEqual(hits[0].remote_name, "CSR1_6120HSC")
+        self.assertEqual(hits[1].remote_name, "OLT/CPE_6180H")
+        self.assertEqual(hits[1].remote_port, "gei-1/2/0/3")
 
     def test_pick_command_lldp_only(self) -> None:
         cmd, tag = lldp.pick_neighbor_command(protocol="cdp", vendor="Cisco", device_type="cisco_ios")

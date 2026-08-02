@@ -38,8 +38,22 @@ def send_show_command(conn: Any, command: str, *, read_timeout: int = 120) -> st
 
     Do not use ``send_command_timing`` for Cisco config collection: long idle during
     ``Building configuration...`` is treated as end-of-output and truncates the config.
+
+    ``cmd_verify=False``: Netmiko's default echo check often raises
+    ``Pattern not detected: 'show\\ lldp\\ ...'`` on IOSv / hop / slow echo paths.
     """
     cmd = str(command or "").strip()
     if not cmd:
         return ""
-    return str(conn.send_command(command_string=cmd, read_timeout=read_timeout) or "")
+    try:
+        return str(
+            conn.send_command(
+                command_string=cmd,
+                read_timeout=read_timeout,
+                cmd_verify=False,
+            )
+            or ""
+        )
+    except TypeError:
+        # Older Netmiko without cmd_verify kwarg.
+        return str(conn.send_command(command_string=cmd, read_timeout=read_timeout) or "")

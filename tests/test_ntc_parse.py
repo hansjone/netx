@@ -14,6 +14,16 @@ Local Interface      Chassis ID         Port ID              System Name
 gei-0/1/0/1          0011.2233.4455     gei-0/1/0/2          R1
 """
 
+ZTE_LLDP_SCOPE = """\
+Total neighbors: 12
+Local Interface   Scope  Chassis ID      Port ID           Holdtime  System Name
+-----------------------------------------------------------------------------------------
+xgei-1/1/0/1     NB     026e.8219.bc57  xgei-1/1/0/26     100       CSR1_6120HSC
+xgei-1/1/0/3     NB     00d0.0000.081f  gei-1/2/0/3       113       OLT/CPE_6180H
+xxvgei-1/1/0/16  NB     026e.8219.bc57  xxvgei-1/1/0/32   100       CSR1_6120HSC
+cgei-1/1/0/34    NB     0022.9354.6e60  cgei-0/3/0/34     110       AG5
+"""
+
 ZTE_BRIEF = """\
 Interface               Attribute  Mode         BW    Admin Phy   Prot  Description
 xgei-1/1/0/1            optical    Duplex/full  1G    up    up    up    C2930L100-EQ2
@@ -67,6 +77,19 @@ class CustomTemplateTests(unittest.TestCase):
         self.assertEqual(rows[0].get("local_interface"), "gei-0/1/0/1")
         self.assertEqual(rows[0].get("neighbor_name"), "R1")
 
+    def test_zte_lldp_scope_holdtime(self) -> None:
+        rows = parse_cli(
+            platform="zte_zxros",
+            command="show lldp neighbor brief",
+            text=ZTE_LLDP_SCOPE,
+        )
+        self.assertEqual(len(rows), 4)
+        by_local = {r.get("local_interface"): r for r in rows}
+        self.assertEqual(by_local["xgei-1/1/0/1"].get("neighbor_name"), "CSR1_6120HSC")
+        self.assertEqual(by_local["xgei-1/1/0/3"].get("neighbor_name"), "OLT/CPE_6180H")
+        self.assertEqual(by_local["xgei-1/1/0/3"].get("neighbor_port_id"), "gei-1/2/0/3")
+        self.assertEqual(by_local["cgei-1/1/0/34"].get("scope"), "NB")
+
     def test_zte_brief_custom(self) -> None:
         rows = parse_cli(
             platform="zte_zxros",
@@ -93,6 +116,13 @@ class WiredParserTests(unittest.TestCase):
         self.assertEqual(len(hits), 1)
         self.assertEqual(hits[0].remote_name, "R1")
         self.assertEqual(hits[0].local_port, "gei-0/1/0/1")
+
+    def test_zte_lldp_scope_parser(self) -> None:
+        hits = lldp.parse_zte_lldp(ZTE_LLDP_SCOPE)
+        self.assertEqual(len(hits), 4)
+        by_local = {h.local_port: h for h in hits}
+        self.assertEqual(by_local["xgei-1/1/0/3"].remote_name, "OLT/CPE_6180H")
+        self.assertEqual(by_local["xxvgei-1/1/0/16"].remote_port, "xxvgei-1/1/0/32")
 
     def test_cisco_lldp_community(self) -> None:
         hits = lldp.parse_cisco_lldp(CISCO_LLDP_DETAIL)

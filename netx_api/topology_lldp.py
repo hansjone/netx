@@ -159,6 +159,11 @@ def pick_neighbor_command(
     return lldp_command_for_vendor(vendor, device_type), "lldp"
 
 
+def can_discover_lldp(*, vendor: str = "", device_type: str = "") -> bool:
+    """False when inventory has no usable vendor/device_type (do not SSH a guess command)."""
+    return resolve_vendor_key(vendor, device_type) != "generic"
+
+
 def parser_meta(*, vendor: str = "", device_type: str = "") -> tuple[str, bool]:
     """Return (parser_key, is_stub)."""
     key = resolve_vendor_key(vendor, device_type)
@@ -202,6 +207,17 @@ def _map_lldp_rows(rows: list[dict[str, Any]]) -> list[NeighborHit]:
     return hits
 
 
+def _strip_collect_wrapper(text: str) -> str:
+    """Drop SecureCRT-style headers injected by ``_collect_on_device``."""
+    lines: list[str] = []
+    for ln in str(text or "").splitlines():
+        s = ln.strip()
+        if s.startswith(">>>") and '"String"' in s:
+            continue
+        lines.append(ln)
+    return "\n".join(lines)
+
+
 def _parse_lldp_via_ntc(
     text: str,
     *,
@@ -226,15 +242,18 @@ def parse_neighbor_output(
     command: str = "",
 ) -> list[NeighborHit]:
     """Parse neighbor CLI via TextFSM only (custom then community)."""
-    raw = str(text or "")
+    raw = _strip_collect_wrapper(text)
     if not raw.strip():
         return []
     _ = protocol  # CDP discovery removed; always parse as LLDP
+    if not can_discover_lldp(vendor=vendor, device_type=device_type):
+        return []
+    cmd = (command or "").strip() or lldp_command_for_vendor(vendor, device_type)
     return _parse_lldp_via_ntc(
         raw,
         vendor=vendor,
         device_type=device_type,
-        command=command or lldp_command_for_vendor(vendor, device_type),
+        command=cmd,
     )
 
 

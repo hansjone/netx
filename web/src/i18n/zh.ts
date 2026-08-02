@@ -1389,6 +1389,7 @@ const zh = {
     discoverNeFail: "采集失败",
     discoverUnmatched: "未匹配 {{count}}",
     discoverUnmatchedMore: "另有 {{count}} 条未列出",
+    discoverVendorRequired: "未设置厂商/设备类型，已跳过下发 LLDP 命令",
     discoverParserStub: "厂商解析器「{{parser}}」仍为 stub，已采集到输出但未能解析邻居",
     discoverNoTargets: "画布上没有可扫描网元。请添加托管网元，或添加已配置 CLI 凭据的 UME 网元。",
     discoverFilter: "结果筛选",

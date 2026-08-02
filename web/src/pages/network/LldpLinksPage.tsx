@@ -685,7 +685,9 @@ export function LldpLinksPage() {
 
             {!itemDetail.ok ? (
               <p className="topo-discover__error">
-                {itemDetail.error || t("topology.discoverNeFail")}
+                {itemDetail.error === "vendor_or_device_type_required"
+                  ? t("topology.discoverVendorRequired")
+                  : itemDetail.error || t("topology.discoverNeFail")}
               </p>
             ) : null}
             {itemDetail.parser_stub ? (

@@ -1,15 +1,32 @@
 Value LOCAL_INTERFACE (\S+)
+Value SCOPE (\S+)
 Value CHASSIS_ID (\S+)
 Value NEIGHBOR_PORT_ID (\S+)
-Value NEIGHBOR_NAME (\S+.*)
+Value HOLDTIME (\d+)
+Value NEIGHBOR_NAME (\S.*?)
 
 Start
-  ^Local\s+Interface\s+Chassis\s+ID -> Neighbors
+  ^Local\s+Interface\s+Scope\s+Chassis\s+ID -> Neighbors
+  ^Local\s+Interface\s+Chassis\s+ID -> NeighborsSimple
+  ^Total\s+neighbors
+  ^-+
   ^\s*$$
   ^.* -> Start
 
 Neighbors
-  ^${LOCAL_INTERFACE}\s+${CHASSIS_ID}\s+${NEIGHBOR_PORT_ID}\s+${NEIGHBOR_NAME}\s*$$ -> Record
+  ^${LOCAL_INTERFACE}\s+${SCOPE}\s+${CHASSIS_ID}\s+${NEIGHBOR_PORT_ID}\s+${HOLDTIME}\s+${NEIGHBOR_NAME}\s*$$ -> Record
+  ^-+
+  ^Total\s+neighbors
   ^\s*$$
-  ^Local\s+Interface -> Neighbors
-  ^.* -> Start
+  ^\S+\s*#\s*$$ -> End
+  ^.*#\s*$$ -> End
+  ^.* -> Neighbors
+
+NeighborsSimple
+  ^${LOCAL_INTERFACE}\s+${CHASSIS_ID}\s+${NEIGHBOR_PORT_ID}\s+${NEIGHBOR_NAME}\s*$$ -> Record
+  ^-+
+  ^Total\s+neighbors
+  ^\s*$$
+  ^\S+\s*#\s*$$ -> End
+  ^.*#\s*$$ -> End
+  ^.* -> NeighborsSimple

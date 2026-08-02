@@ -1395,6 +1395,7 @@ const en = {
     discoverNeFail: "Collect failed",
     discoverUnmatched: "unmatched {{count}}",
     discoverUnmatchedMore: "{{count}} more not listed",
+    discoverVendorRequired: "Vendor/device type missing; skipped LLDP command",
     discoverParserStub: "Parser \"{{parser}}\" is still a stub; output was collected but neighbors were not parsed",
     discoverNoTargets:
       "No scannable NEs on the map. Add managed NEs, or UME NEs with a CLI connect profile.",

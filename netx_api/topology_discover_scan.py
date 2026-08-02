@@ -23,7 +23,13 @@ from .topology_fabric import (
     ensure_fabric_node_for_ume,
     upsert_fabric_edge,
 )
-from .topology_lldp import NeighborHit, parse_neighbor_output, parser_meta, pick_neighbor_command
+from .topology_lldp import (
+    NeighborHit,
+    can_discover_lldp,
+    parse_neighbor_output,
+    parser_meta,
+    pick_neighbor_command,
+)
 
 
 def _discover_one_target(
@@ -70,10 +76,21 @@ def _discover_one_target(
         # Release unique-index locks before slow SSH.
         db.commit()
 
-        cmd, _proto = pick_neighbor_command(
-            vendor=target.get("vendor") or "",
-            device_type=target.get("device_type") or "",
-        )
+        vendor = target.get("vendor") or ""
+        device_type = target.get("device_type") or ""
+        pkey, is_stub = parser_meta(vendor=vendor, device_type=device_type)
+        if not can_discover_lldp(vendor=vendor, device_type=device_type):
+            return {
+                **base,
+                "ok": False,
+                "command": "",
+                "parser_key": pkey,
+                "parser_stub": True,
+                "error": "vendor_or_device_type_required",
+                "raw_preview": "",
+            }
+
+        cmd, _proto = pick_neighbor_command(vendor=vendor, device_type=device_type)
         exec_kwargs: dict[str, Any] = {"read_timeout_sec": 60}
         if target.get("ume_ne_id") and not db.get(ManagedNE, target["ne_id"]):
             exec_kwargs["ume_ne_id"] = target["ume_ne_id"]
@@ -102,14 +119,12 @@ def _discover_one_target(
             }
 
         raw = str(exec_out.get("output") or "")
-        pkey, is_stub = parser_meta(
-            vendor=target.get("vendor") or "", device_type=target.get("device_type") or ""
-        )
         hits = parse_neighbor_output(
             raw,
             protocol="lldp",
-            vendor=target.get("vendor") or "",
-            device_type=target.get("device_type") or "",
+            vendor=vendor,
+            device_type=device_type,
+            command=cmd,
         )
         stub_flag = bool(is_stub and raw.strip() and not hits)
 
