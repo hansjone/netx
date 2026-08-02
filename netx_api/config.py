@@ -133,8 +133,11 @@ class Settings(BaseSettings):
     # Async audit writer; sample_n>1 keeps 1/N of generic http.* events.
     audit_async: bool = True
     audit_sample_n: int = 1
-    # Prefer Alembic; when true, skip ad-hoc ALTER TABLE on startup (create_all still runs).
-    skip_legacy_startup_ddl: bool = False
+    # Prefer Alembic on API start; brownfield patches live in schema_patches + revisions.
+    # Auth column ensures still run as a safety net before bootstrap.
+    skip_legacy_startup_ddl: bool = True
+    # Run `alembic upgrade head` during API startup (recommended default).
+    alembic_upgrade_on_start: bool = True
     # Optional dedicated SQLAlchemy URL for /v1/sql/* (read-only DB role recommended).
     sql_readonly_database_url: str = ""
     # When false, API skips config_sync / lldp / port_traffic schedulers (run `python -m netx_api.worker`).
