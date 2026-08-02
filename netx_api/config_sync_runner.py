@@ -5,7 +5,7 @@ from __future__ import annotations
 import io
 import logging
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from threading import Lock
 from typing import Any
@@ -38,10 +38,12 @@ def _format_error(exc: BaseException) -> str:
 
 
 def _pool_for_cycle(cycle_id: str, concurrency: int) -> ThreadPoolExecutor:
+    from .cli_budget import clamp_cli_workers
+
     with _pools_lock:
         pool = _pools.get(cycle_id)
         if pool is None:
-            workers = max(1, min(30, int(concurrency or 5)))
+            workers = clamp_cli_workers(int(concurrency or 5), hard_cap=30)
             pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix=f"cfg-sync-{cycle_id[:8]}")
             _pools[cycle_id] = pool
         return pool
@@ -55,6 +57,19 @@ def _release_pool(cycle_id: str) -> None:
             pool.shutdown(wait=False, cancel_futures=False)
         except TypeError:
             pool.shutdown(wait=False)
+        except Exception:
+            _log.exception("config_sync pool shutdown failed cycle=%s", cycle_id)
+
+
+def shutdown_config_sync_pools(*, wait: bool = False) -> None:
+    with _pools_lock:
+        pools = list(_pools.items())
+        _pools.clear()
+    for cycle_id, pool in pools:
+        try:
+            pool.shutdown(wait=wait, cancel_futures=True)
+        except TypeError:
+            pool.shutdown(wait=wait)
         except Exception:
             _log.exception("config_sync pool shutdown failed cycle=%s", cycle_id)
 
@@ -102,7 +117,12 @@ def _claim_task(cycle_id: str, task_id: str) -> bool:
     return False
 
 
-def _collect_commands(creds: dict[str, Any], commands: list[str]) -> list[str]:
+def _collect_commands(
+    creds: dict[str, Any],
+    commands: list[str],
+    *,
+    conn_holder: dict[str, Any] | None = None,
+) -> list[str]:
     per_cmd = int(settings.ne_collect_read_timeout_sec or 120)
     session_timeout = per_cmd * max(1, len(commands)) + 60
     log_buf = io.BytesIO()
@@ -110,9 +130,13 @@ def _collect_commands(creds: dict[str, Any], commands: list[str]) -> list[str]:
         conn = open_netmiko_connection(creds, session_timeout=session_timeout, session_log=log_buf)
     except Exception as exc:
         raise RuntimeError(format_cli_failure(exc, session_log_text(log_buf))) from exc
+    if conn_holder is not None:
+        conn_holder["conn"] = conn
     try:
         outputs: list[str] = []
         for command in commands:
+            if conn_holder is not None and conn_holder.get("timed_out"):
+                raise TimeoutError("config_sync_aborted")
             try:
                 out = send_show_command(conn, command, read_timeout=per_cmd)
             except Exception as exc:
@@ -120,19 +144,25 @@ def _collect_commands(creds: dict[str, Any], commands: list[str]) -> list[str]:
             outputs.append(str(out or ""))
         return outputs
     finally:
+        if conn_holder is not None:
+            conn_holder.pop("conn", None)
         close_netmiko_connection(conn)
 
 
 def _collect_with_timeout(creds: dict[str, Any], commands: list[str]) -> list[str]:
+    from .cli_timeout import run_cli_with_timeout
+
     per_cmd = int(settings.ne_collect_read_timeout_sec or 120)
     cap = int(settings.ne_collect_run_timeout_cap_sec or 600)
     budget = min(cap, per_cmd * max(1, len(commands)) + 90)
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        fut = pool.submit(_collect_commands, creds, commands)
-        try:
-            return fut.result(timeout=budget)
-        except FuturesTimeout as exc:
-            raise TimeoutError(f"config_sync_timeout ({budget}s)") from exc
+    holder: dict[str, Any] = {}
+    return run_cli_with_timeout(
+        lambda: _collect_commands(creds, commands, conn_holder=holder),
+        timeout_sec=budget,
+        conn_holder=holder,
+        label="config_sync",
+        acquire_budget=True,
+    )
 
 
 def _history_keep(db) -> int:

@@ -577,6 +577,21 @@ def close_session(session_id: str, *, reason: str = "closed", client: str = "") 
     return {"ok": True, "session_id": session_id, "closed": True, "reason": reason}
 
 
+def close_all_sessions(*, reason: str = "shutdown") -> int:
+    """Close every active WebCRT session (API shutdown). Returns count closed."""
+    with _sessions_lock:
+        ids = [sid for sid, s in _sessions.items() if not s.closed]
+    closed = 0
+    for sid in ids:
+        try:
+            out = close_session(sid, reason=reason, client="shutdown")
+            if out.get("closed"):
+                closed += 1
+        except Exception:  # noqa: BLE001
+            _log.exception("webcrt close_all failed session=%s", sid)
+    return closed
+
+
 def list_sessions() -> dict[str, Any]:
     with _sessions_lock:
         items = []

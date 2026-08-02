@@ -129,10 +129,16 @@ def _mark_alarm_cleared_tombstone(alarm_key: str) -> None:
     expires = time.time() + ttl_s
     with _cleared_tombstone_lock:
         _cleared_tombstones[key] = expires
-        if len(_cleared_tombstones) > 50000:
-            now = time.time()
-            stale = [k for k, exp in _cleared_tombstones.items() if exp <= now]
-            for k in stale[:10000]:
+        now = time.time()
+        # Always sweep expired keys; hard-cap with oldest-first eviction.
+        stale = [k for k, exp in _cleared_tombstones.items() if exp <= now]
+        for k in stale:
+            _cleared_tombstones.pop(k, None)
+        max_keys = 50000
+        if len(_cleared_tombstones) > max_keys:
+            overflow = len(_cleared_tombstones) - max_keys
+            oldest = sorted(_cleared_tombstones.items(), key=lambda kv: kv[1])[:overflow]
+            for k, _ in oldest:
                 _cleared_tombstones.pop(k, None)
 
 

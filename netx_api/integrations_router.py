@@ -25,6 +25,9 @@ def health_live() -> dict[str, str]:
 @router.get("/health/ready", status_code=200)
 def health_ready(db: Session = Depends(get_db)) -> dict[str, Any]:
     """Readiness — DB plus scheduler deployment hint."""
+    from .cli_budget import cli_budget_status
+    from .db import db_pool_status
+
     out: dict[str, Any] = {"status": "ok", "probe": "ready"}
     try:
         db.execute(sql_text("select 1"))
@@ -36,6 +39,8 @@ def health_ready(db: Session = Depends(get_db)) -> dict[str, Any]:
             "db": "down",
             "error": str(exc)[:240],
         }
+    out["db_pool"] = db_pool_status()
+    out["cli_budget"] = cli_budget_status()
     inline = bool(getattr(settings, "run_inline_schedulers", True))
     out["schedulers"] = {
         "inline": inline,

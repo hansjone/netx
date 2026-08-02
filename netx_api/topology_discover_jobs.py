@@ -1,6 +1,7 @@
 """Discover job lifecycle: start, background run, stale reclaim."""
 from __future__ import annotations
 
+import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
@@ -25,6 +26,8 @@ from .topology_fabric import (
     refresh_fabric_stats,
 )
 from .topology_schemas import FabricDiscoverJobOut, FabricDiscoverRequest
+
+_log = logging.getLogger("netx.topology.discover")
 
 
 def _run_discover_job(job_id: str, body: FabricDiscoverRequest) -> None:
@@ -54,7 +57,9 @@ def _run_discover_job(job_id: str, body: FabricDiscoverRequest) -> None:
         except Exception:  # noqa: BLE001
             db.rollback()
 
-        concurrency = max(1, min(32, int(body.concurrency or 4)))
+        from .cli_budget import clamp_cli_workers
+
+        concurrency = clamp_cli_workers(int(body.concurrency or 4), hard_cap=32)
         added = 0
         updated = 0
         stale = 0
@@ -142,7 +147,7 @@ def _run_discover_job(job_id: str, body: FabricDiscoverRequest) -> None:
             keep = int(getattr(ensure_policy(db), "history_keep", DEFAULT_HISTORY_KEEP) or 0)
             prune_discover_jobs(db, keep=keep)
         except Exception:  # noqa: BLE001
-            pass
+            _log.warning("prune_discover_jobs failed job=%s", job_id, exc_info=True)
     except Exception as exc:  # noqa: BLE001
         db.rollback()
         job = db.get(TopoDiscoverJob, job_id)

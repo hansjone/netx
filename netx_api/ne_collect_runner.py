@@ -4,7 +4,7 @@ import logging
 import re
 import time
 import traceback
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -14,6 +14,7 @@ from .config import settings
 from .db import SessionLocal
 from fastapi import HTTPException
 
+from .cli_budget import clamp_cli_workers
 from .cli_resolve import resolve_cli_target
 from .models import NeCollectionJob, NeCollectionRun
 from .ne_collection_paths import clear_run_output_files, run_output_dir
@@ -28,9 +29,19 @@ _executor: ThreadPoolExecutor | None = None
 def _executor_pool() -> ThreadPoolExecutor:
     global _executor
     if _executor is None:
-        workers = max(1, int(settings.ne_collect_max_workers or 5))
+        workers = clamp_cli_workers(int(settings.ne_collect_max_workers or 5), hard_cap=32)
         _executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ne-collect")
     return _executor
+
+
+def shutdown_ne_collect_executor(*, wait: bool = False) -> None:
+    global _executor
+    if _executor is not None:
+        try:
+            _executor.shutdown(wait=wait, cancel_futures=True)
+        except TypeError:
+            _executor.shutdown(wait=wait)
+        _executor = None
 
 
 def _format_run_error(exc: BaseException) -> str:
@@ -50,14 +61,19 @@ def _collect_on_device(
     commands: list[str],
     *,
     read_timeout_sec: int | None = None,
+    conn_holder: dict[str, Any] | None = None,
 ) -> str:
     per_cmd = int(read_timeout_sec if read_timeout_sec is not None else (settings.ne_collect_read_timeout_sec or 120))
     session_timeout = per_cmd * max(1, len(commands)) + 60
     conn = open_netmiko_connection(creds, session_timeout=session_timeout)
+    if conn_holder is not None:
+        conn_holder["conn"] = conn
     try:
         prompt = str(conn.find_prompt() or "")
         chunks: list[str] = []
         for command in commands:
+            if conn_holder is not None and conn_holder.get("timed_out"):
+                raise TimeoutError("collection_aborted")
             ts = datetime.now().isoformat(timespec="seconds")
             chunks.append(f'>>> [{ts}] {{"String":"{command}", "Match":"{prompt}", "Timeout":0}}\n')
             out = send_show_command(conn, command, read_timeout=per_cmd)
@@ -65,6 +81,8 @@ def _collect_on_device(
             chunks.append("\n")
         return "".join(chunks)
     finally:
+        if conn_holder is not None:
+            conn_holder.pop("conn", None)
         close_netmiko_connection(conn)
 
 
@@ -74,15 +92,21 @@ def _collect_with_timeout(
     *,
     read_timeout_sec: int | None = None,
 ) -> str:
+    from .cli_timeout import run_cli_with_timeout
+
     per_cmd = int(read_timeout_sec if read_timeout_sec is not None else (settings.ne_collect_read_timeout_sec or 120))
     cap = int(settings.ne_collect_run_timeout_cap_sec or 600)
     budget = min(cap, per_cmd * max(1, len(commands)) + 90)
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        fut = pool.submit(_collect_on_device, creds, commands, read_timeout_sec=per_cmd)
-        try:
-            return fut.result(timeout=budget)
-        except FuturesTimeout as exc:
-            raise TimeoutError(f"collection_timeout ({budget}s)") from exc
+    holder: dict[str, Any] = {}
+    return run_cli_with_timeout(
+        lambda: _collect_on_device(
+            creds, commands, read_timeout_sec=per_cmd, conn_holder=holder
+        ),
+        timeout_sec=budget,
+        conn_holder=holder,
+        label="collection",
+        acquire_budget=True,
+    )
 
 
 def _update_run(run_id: str, **fields: Any) -> None:
@@ -192,7 +216,15 @@ def _run_single(job_id: str, run_id: str, commands: list[str]) -> None:
             out_dir.mkdir(parents=True, exist_ok=True)
             filename = f"{name_part}-{ip_part}-{ts}.txt"
             full_path = out_dir / filename
-            full_path.write_text(output, encoding="utf-8", errors="replace")
+            max_bytes = int(getattr(settings, "ne_collect_max_output_bytes", 0) or 0)
+            if max_bytes > 0 and len(output.encode("utf-8", errors="replace")) > max_bytes:
+                # Truncate by characters roughly under byte budget.
+                truncated = output.encode("utf-8", errors="replace")[:max_bytes]
+                text = truncated.decode("utf-8", errors="replace")
+                text += f"\n...[truncated {max_bytes} bytes cap]\n"
+                full_path.write_text(text, encoding="utf-8", errors="replace")
+            else:
+                full_path.write_text(output, encoding="utf-8", errors="replace")
             rel_path = str(rel_dir / filename).replace("\\", "/")
             _update_run(
                 run_id,

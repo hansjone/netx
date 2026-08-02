@@ -43,6 +43,10 @@ def main() -> None:
 
     while not stop.is_set():
         time.sleep(1.0)
+
+    from .app_shutdown import shutdown_runtime
+
+    shutdown_runtime(reason="worker_signal")
     _log.info("netx worker exiting")
 
 

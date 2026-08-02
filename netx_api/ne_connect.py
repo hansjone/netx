@@ -30,9 +30,21 @@ _DETAIL_MAX = 8000
 def _executor_pool() -> ThreadPoolExecutor:
     global _executor
     if _executor is None:
-        workers = max(1, int(settings.ne_connect_max_workers or 5))
+        from .cli_budget import clamp_cli_workers
+
+        workers = clamp_cli_workers(int(settings.ne_connect_max_workers or 5), hard_cap=32)
         _executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ne-connect")
     return _executor
+
+
+def shutdown_ne_connect_executor(*, wait: bool = False) -> None:
+    global _executor
+    if _executor is not None:
+        try:
+            _executor.shutdown(wait=wait, cancel_futures=True)
+        except TypeError:
+            _executor.shutdown(wait=wait)
+        _executor = None
 
 
 def _truncate_detail(text: str) -> str:

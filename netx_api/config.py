@@ -143,6 +143,24 @@ class Settings(BaseSettings):
     # When true (default), API also runs config_sync / lldp / port_traffic schedulers.
     # Production split: set false and run `python -m netx_api.worker` beside the API.
     run_inline_schedulers: bool = True
+    # SQLAlchemy QueuePool (API + background workers share one engine).
+    # Rule of thumb: pool_size + max_overflow >= HTTP peak + cli_max_concurrent + UME WS burst.
+    db_pool_size: int = 20
+    db_max_overflow: int = 20
+    db_pool_recycle_sec: int = 1800
+    db_pool_timeout_sec: int = 30
+    # Global Netmiko/SSH concurrency across discover / collect / config_sync / port_traffic.
+    cli_max_concurrent: int = 20
+    # Shared timeout watchdog pool (not per-task executors).
+    cli_timeout_pool_workers: int = 16
+    # Port-traffic: how many devices may collect in parallel on the scheduler tick.
+    port_traffic_dispatch_workers: int = 4
+    # Bound async audit queue; drop oldest when full to protect RSS.
+    audit_queue_max: int = 5000
+    # Cap NE collection output files (bytes); 0 = unlimited (not recommended).
+    ne_collect_max_output_bytes: int = 8 * 1024 * 1024
+    # WebCRT session transcript rotate size (bytes); 0 disables rotate.
+    webcrt_session_log_max_bytes: int = 4 * 1024 * 1024
 
 
 settings = Settings()

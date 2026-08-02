@@ -80,7 +80,12 @@ def _discover_one_target(
         else:
             exec_kwargs["ne_id"] = target["ne_id"]
         try:
-            exec_out = execute_managed_ne_commands(db, [cmd], **exec_kwargs)
+            from .cli_budget import acquire_cli_slot
+
+            with acquire_cli_slot() as ok:
+                if not ok:
+                    return {**base, "ok": False, "command": cmd, "error": "cli_budget_unavailable"}
+                exec_out = execute_managed_ne_commands(db, [cmd], **exec_kwargs)
         except HTTPException as exc:
             return {
                 **base,

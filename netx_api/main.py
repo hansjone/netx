@@ -36,10 +36,8 @@ from .ume_support import (  # noqa: F401 — tests import from main
     _classify_protocol_bucket,
     _protocol_bucket_label,
 )
-import netx_api.ume_support as ume_support
-from .oclaw_alarm_forwarder import shutdown_oclaw_alarm_forwarder
-from .ume_alarm_ws import shutdown_ws_consumer
 from .webcrt_router import router as webcrt_router
+from .metrics_router import router as metrics_router
 
 _schedule_log = logging.getLogger("netx.ume.schedule")
 _BOOT_MONO = time.monotonic()
@@ -48,15 +46,13 @@ _BOOT_MONO = time.monotonic()
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     from .app_startup import run_api_startup
+    from .app_shutdown import shutdown_runtime
 
     run_api_startup()
     try:
         yield
     finally:
-        shutdown_oclaw_alarm_forwarder()
-        if ume_support._UME_WS_STOP_EVENT is not None:
-            ume_support._UME_WS_STOP_EVENT.set()
-        shutdown_ws_consumer()
+        shutdown_runtime(reason="api_lifespan")
 
 
 app = FastAPI(
@@ -80,6 +76,7 @@ app.include_router(lldp_collect_router)
 app.include_router(ops_router)
 app.include_router(sql_router)
 app.include_router(integrations_router)
+app.include_router(metrics_router)
 app.include_router(ume_router)
 app.include_router(alarms_router)
 parser_cfg = load_parser_config()

@@ -4,15 +4,14 @@ from __future__ import annotations
 
 import logging
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-from threading import Lock
 from typing import Any
 from uuid import uuid4
 
 from fastapi import HTTPException
 
 from .cli_resolve import resolve_cli_target
+from .cli_timeout import run_cli_with_timeout
 from .config import settings
 from .db import SessionLocal
 from .models import PortTrafficDevice, PortTrafficEvent, PortTrafficSample, PortTrafficTarget
@@ -22,8 +21,6 @@ from .port_traffic_commands import commands_for_vendor, detail_command
 from .port_traffic_parsers import parse_interface_detail, resolve_util_pct
 
 _log = logging.getLogger("netx.port_traffic.runner")
-_pools: dict[str, ThreadPoolExecutor] = {}
-_pools_lock = Lock()
 
 
 def _utcnow() -> datetime:
@@ -93,29 +90,6 @@ def _finish_collect_round(device_id: str, *, error: str = "") -> None:
         db.commit()
     finally:
         db.close()
-    _release_pool(device_id)
-
-
-def _pool_for_device(device_id: str, concurrency: int) -> ThreadPoolExecutor:
-    with _pools_lock:
-        pool = _pools.get(device_id)
-        if pool is None:
-            workers = max(1, min(5, int(concurrency or 1)))
-            pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix=f"pt-{device_id[:8]}")
-            _pools[device_id] = pool
-        return pool
-
-
-def _release_pool(device_id: str) -> None:
-    with _pools_lock:
-        pool = _pools.pop(device_id, None)
-    if pool is not None:
-        try:
-            pool.shutdown(wait=False, cancel_futures=False)
-        except TypeError:
-            pool.shutdown(wait=False)
-        except Exception:
-            _log.exception("port_traffic pool shutdown failed device=%s", device_id)
 
 
 def _claim_collect_round(device_id: str) -> list[str] | None:
@@ -225,7 +199,6 @@ def _sample_targets_shared_session(device_id: str, target_ids: list[str]) -> tup
     """
     per_cmd = int(settings.ne_collect_read_timeout_sec or 120)
     cap = int(settings.ne_collect_run_timeout_cap_sec or 600)
-    errors = 0
 
     db = SessionLocal()
     try:
@@ -277,30 +250,52 @@ def _sample_targets_shared_session(device_id: str, target_ids: list[str]) -> tup
         return 0, ""
 
     budget = min(cap, per_cmd * max(1, len(ifaces)) + 90)
-    conn = None
-    try:
+    holder: dict[str, Any] = {}
+
+    def _run_session() -> tuple[int, str]:
         conn = open_netmiko_connection(creds, session_timeout=budget)
-        for tid, ifname in ifaces:
-            try:
-                cmd = detail_command(cmds, ifname)
-                raw = send_show_command(conn, cmd, read_timeout=per_cmd)
-                parsed = parse_interface_detail(raw, vendor_key)
-                _save_sample(tid, parsed)
-            except Exception as exc:
-                errors += 1
-                _set_target_error(tid, _format_error(exc))
-                _log.exception("port_traffic iface sample failed device=%s if=%s", device_id, ifname)
+        holder["conn"] = conn
+        local_errors = 0
+        try:
+            for tid, ifname in ifaces:
+                if holder.get("timed_out"):
+                    raise TimeoutError("port_traffic_aborted")
+                try:
+                    cmd = detail_command(cmds, ifname)
+                    raw = send_show_command(conn, cmd, read_timeout=per_cmd)
+                    parsed = parse_interface_detail(raw, vendor_key)
+                    _save_sample(tid, parsed)
+                except Exception as exc:
+                    local_errors += 1
+                    _set_target_error(tid, _format_error(exc))
+                    _log.exception(
+                        "port_traffic iface sample failed device=%s if=%s", device_id, ifname
+                    )
+            return local_errors, ""
+        finally:
+            holder.pop("conn", None)
+            close_netmiko_connection(conn)
+
+    try:
+        # Budget acquired inside run_cli_with_timeout; avoid double-acquire.
+        return run_cli_with_timeout(
+            _run_session,
+            timeout_sec=budget,
+            conn_holder=holder,
+            label="port_traffic",
+            acquire_budget=True,
+        )
+    except TimeoutError as exc:
+        msg = str(exc)[:1020]
+        for tid, _ in ifaces:
+            _set_target_error(tid, msg)
+        return len(ifaces), msg
     except Exception as exc:
         msg = _format_error(exc)
         for tid, _ in ifaces:
             _set_target_error(tid, msg)
-        errors = len(ifaces)
         _log.exception("port_traffic session failed device=%s", device_id)
-        return errors, msg
-    finally:
-        if conn is not None:
-            close_netmiko_connection(conn)
-    return errors, ""
+        return len(ifaces), msg
 
 
 def dispatch_collect(device_id: str) -> int:

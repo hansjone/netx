@@ -24,6 +24,8 @@ _PUBLIC_EXACT = frozenset(
         "/health",
         "/health/live",
         "/health/ready",
+        "/metrics",
+        "/metrics/json",
         "/favicon.ico",
         "/v1/auth/login",
     }

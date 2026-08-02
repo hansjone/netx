@@ -12,10 +12,11 @@ from .db import SessionLocal
 
 _log = logging.getLogger("netx.audit.async")
 
-_q: queue.SimpleQueue[dict[str, Any]] | None = None
+_q: queue.Queue[dict[str, Any] | None] | None = None
 _worker: threading.Thread | None = None
 _lock = threading.Lock()
 _counter = 0
+_dropped = 0
 
 
 def _sample_ok() -> bool:
@@ -26,6 +27,15 @@ def _sample_ok() -> bool:
         return True
     _counter += 1
     return (_counter % n) == 0
+
+
+def audit_queue_status() -> dict[str, int]:
+    q = _q
+    return {
+        "depth": int(q.qsize()) if q is not None else 0,
+        "dropped": int(_dropped),
+        "maxsize": max(100, int(getattr(settings, "audit_queue_max", 5000) or 5000)),
+    }
 
 
 def _worker_loop() -> None:
@@ -46,14 +56,33 @@ def _worker_loop() -> None:
             _log.exception("async audit write failed")
 
 
-def _ensure_worker() -> queue.SimpleQueue:
+def _ensure_worker() -> queue.Queue:
     global _q, _worker
     with _lock:
         if _q is None:
-            _q = queue.SimpleQueue()
+            maxsize = max(100, int(getattr(settings, "audit_queue_max", 5000) or 5000))
+            _q = queue.Queue(maxsize=maxsize)
             _worker = threading.Thread(target=_worker_loop, name="netx-audit-writer", daemon=True)
             _worker.start()
         return _q
+
+
+def shutdown_audit_worker(*, timeout_sec: float = 2.0) -> None:
+    global _q, _worker
+    with _lock:
+        q = _q
+        worker = _worker
+        if q is None:
+            return
+        try:
+            q.put_nowait(None)
+        except queue.Full:
+            pass
+    if worker is not None:
+        worker.join(timeout=max(0.1, float(timeout_sec)))
+    with _lock:
+        _q = None
+        _worker = None
 
 
 def enqueue_audit(
@@ -68,6 +97,7 @@ def enqueue_audit(
     user_agent: str = "",
     detail: dict[str, Any] | None = None,
 ) -> None:
+    global _dropped
     act = str(action or "")
     # Always persist auth / security-relevant events.
     if act.startswith("auth.") or act.startswith("users.") or act.startswith("api_tokens.") or act.startswith("webcrt."):
@@ -95,7 +125,21 @@ def enqueue_audit(
             db.close()
         return
     try:
-        _ensure_worker().put(payload)
+        q = _ensure_worker()
+        try:
+            q.put_nowait(payload)
+        except queue.Full:
+            # Drop oldest then retry once to keep newest events.
+            try:
+                q.get_nowait()
+                _dropped += 1
+            except queue.Empty:
+                pass
+            try:
+                q.put_nowait(payload)
+            except queue.Full:
+                _dropped += 1
+                _log.warning("audit queue full; dropped event action=%s", act)
     except Exception:
         _log.exception("audit enqueue failed; falling back to sync")
         from .auth_service import write_audit

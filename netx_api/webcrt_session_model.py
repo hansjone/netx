@@ -204,8 +204,30 @@ class WebcrtSession:
         try:
             self._log_fh.write(text)
             self._log_fh.flush()
+            max_bytes = int(getattr(settings, "webcrt_session_log_max_bytes", 0) or 0)
+            if max_bytes > 0:
+                try:
+                    pos = int(self._log_fh.tell())
+                except Exception:  # noqa: BLE001
+                    pos = 0
+                if pos >= max_bytes:
+                    self._log_fh.write(
+                        f"\n# rotated at {pos} bytes (cap={max_bytes}) ts={_utc_iso()}\n"
+                    )
+                    self._log_fh.flush()
+                    self._log_fh.close()
+                    self._log_fh = None
+                    # Re-open fresh file (append mode continues same path; rotate by rename).
+                    try:
+                        path = _session_log_path(self.session_id)
+                        rotated = path.with_suffix(path.suffix + f".{int(pos)}.old")
+                        if path.exists():
+                            path.replace(rotated)
+                    except Exception:  # noqa: BLE001
+                        _log.debug("webcrt session log rotate rename failed", exc_info=True)
+                    self.open_session_log()
         except Exception:
-            pass
+            _log.warning("webcrt session log append failed session=%s", self.session_id, exc_info=True)
 
     def close_session_log(self) -> None:
         fh = self._log_fh
