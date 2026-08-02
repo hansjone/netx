@@ -125,11 +125,20 @@ def run_api_startup() -> None:
             backfill_port_traffic_series(db)
         except Exception:
             _log.exception("startup: port_traffic series backfill failed")
+        try:
+            from .ne_collection_paths import prune_old_collection_dirs
+
+            pruned = prune_old_collection_dirs()
+            if pruned:
+                _log.info("startup: pruned %s old ne_collection job dir(s)", pruned)
+        except Exception:
+            _log.exception("startup: ne_collection prune failed")
     except Exception:
         _log.exception("startup: ne collection / config_sync recovery failed")
     finally:
         db.close()
 
+    # One-click start (scripts/start_netx.ps1) keeps collectors inline with the API.
     if bool(getattr(settings, "run_inline_schedulers", True)):
         try:
             start_device_schedulers()

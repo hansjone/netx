@@ -30,6 +30,9 @@ class StabilityHardeningTests(unittest.TestCase):
         self.assertEqual(s.oclaw_forward_queue_max, 5000)
         self.assertEqual(s.ne_collect_max_output_bytes, 8 * 1024 * 1024)
         self.assertEqual(s.webcrt_session_log_max_bytes, 4 * 1024 * 1024)
+        self.assertEqual(s.ume_raw_json_max_bytes, 64 * 1024)
+        self.assertEqual(s.ne_collection_keep_days, 14)
+        self.assertTrue(s.run_inline_schedulers)
         # Pool should cover CLI + multi-user HTTP/WS reserve under defaults.
         self.assertGreaterEqual(s.db_pool_size + s.db_max_overflow, s.cli_max_concurrent + 24)
 

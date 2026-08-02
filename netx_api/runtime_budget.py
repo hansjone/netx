@@ -48,11 +48,11 @@ def log_runtime_budget(*, role: str = "api") -> None:
             http_reserve,
         )
     host = str(getattr(settings, "host", "") or "").strip().lower()
-    if host not in {"127.0.0.1", "localhost", "::1"} and bool(
-        getattr(settings, "run_inline_schedulers", True)
-    ):
-        _log.warning(
-            "Non-loopback bind (%s) with inline schedulers — for multi-user production prefer "
-            "NETX_RUN_INLINE_SCHEDULERS=false and `python -m netx_api.worker`.",
-            host,
+    inline = bool(getattr(settings, "run_inline_schedulers", True))
+    if inline:
+        _log.info(
+            "runtime budget: inline schedulers ON (one-click start via scripts/start_netx.ps1). "
+            "Optional split: NETX_RUN_INLINE_SCHEDULERS=false + python -m netx_api.worker"
         )
+    elif host not in {"127.0.0.1", "localhost", "::1"}:
+        _log.info("runtime budget: external worker mode on bind=%s", host)

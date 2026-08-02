@@ -28,6 +28,7 @@ from .ume_alarm_apply import (
     normalize_yang_alarm,
     notification_id_from_norm,
 )
+from .ume_raw import dumps_ume_raw
 from .ume_client import UMEClient
 from .ume_sync_common import (
     _backfill_alarm_host_names,
@@ -205,7 +206,7 @@ def sync_inventory_full(db: Session, client: UMEClient, *, trigger_mode: str = "
             existing.creator = _s(_pick(row, "creator"))
             existing.vendor = _s(_pick(row, "vendor-name")) or "ZTE"
             existing.last_seen_at = now
-            existing.raw_json = json.dumps(row, ensure_ascii=False, default=str)
+            existing.raw_json = dumps_ume_raw(row)
             _propagate_host_name_to_alarms(db, ne_id, existing.host_name)
 
         db.flush()
@@ -352,7 +353,7 @@ def _sync_alarms_common(
             )
             existing.notification_id = notification_id_from_norm(alarm)
             existing.last_seen_at = touch_ts
-            existing.raw_json = json.dumps(alarm, ensure_ascii=False, default=str)
+            existing.raw_json = dumps_ume_raw(alarm)
 
         iterator_500_as_end = bool(getattr(settings, "ume_iterator_500_as_end", True))
         pages, meta = _collect_marker_pages(
@@ -408,7 +409,7 @@ def _sync_alarms_common(
         batch.failed_rows = max(0, int(pulled) - int(inserted + updated))
         batch.status = "done"
         batch.ended_at = _utc_now_naive()
-        batch.raw_json = json.dumps(
+        batch.raw_json = dumps_ume_raw(
             {
                 "pulled": pulled,
                 "inserted": inserted,
@@ -425,8 +426,7 @@ def _sync_alarms_common(
                 "reconcile_mode": reconcile_mode if not is_uncleared else "",
                 "wss_active_during_sync": bool(wss_active) if not is_uncleared else False,
                 "seen_keys_count": len(seen_keys) if not is_uncleared else 0,
-            },
-            ensure_ascii=False,
+            }
         )
 
         job.status = "done"

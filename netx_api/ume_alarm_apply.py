@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .models import UmeAlarmCurrent
+from .ume_raw import dumps_ume_raw
 from .ume_sync_common import _lookup_host_name, _pick, _s, _utc_now_naive
 
 def _alarm_key(alarm: dict[str, Any]) -> str:
@@ -178,7 +179,7 @@ def _alarm_row_from_norm(key: str, norm: dict[str, Any], *, touch_ts: datetime, 
         "notification_id": notification_id_from_norm(norm),
         "first_seen_at": first_seen_at,
         "last_seen_at": touch_ts,
-        "raw_json": json.dumps(norm, ensure_ascii=False, default=str),
+        "raw_json": dumps_ume_raw(norm),
     }
 
 
@@ -197,7 +198,7 @@ def _apply_row_to_model(db: Session, existing: UmeAlarmCurrent, norm: dict[str, 
     prev_seen = existing.last_seen_at
     if prev_seen is None or touch_ts >= prev_seen:
         existing.last_seen_at = touch_ts
-    existing.raw_json = json.dumps(norm, ensure_ascii=False, default=str)
+    existing.raw_json = dumps_ume_raw(norm)
 
 
 def _upsert_alarm_current(db: Session, key: str, norm: dict[str, Any], *, touch_ts: datetime) -> tuple[str, bool]:

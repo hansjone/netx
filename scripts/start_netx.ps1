@@ -73,6 +73,8 @@ Write-Host ""
 Write-Host "==> netx API URL"
 Write-Host "Base:          $baseUrl/"
 Write-Host "Health:        $baseUrl/health"
+Write-Host "Ready:         $baseUrl/health/ready"
+Write-Host "Metrics:       $baseUrl/metrics"
 Write-Host "Integrations:  $baseUrl/v1/integrations/status"
 if ($WithWeb) {
     Write-Host ""

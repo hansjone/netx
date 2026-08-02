@@ -167,6 +167,10 @@ class Settings(BaseSettings):
     # oclaw alarm forwarder: requeue attempts before drop on send failure.
     oclaw_forward_max_retries: int = 3
     oclaw_forward_queue_max: int = 5000
+    # Cap persisted UME raw_json blobs (inventory / alarms / sync batch meta).
+    ume_raw_json_max_bytes: int = 64 * 1024
+    # Delete NE collection job dirs older than N days (0 disables).
+    ne_collection_keep_days: int = 14
 
 
 settings = Settings()
