@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import random
 import re
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import and_, func, or_
+from sqlalchemy import and_, func, or_, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -170,6 +172,54 @@ def _empty_to_none(s: str | None) -> str | None:
     return v or None
 
 
+# Postgres advisory-lock namespaces for fabric ensure (avoid cross-feature collisions).
+_ADV_NS_FABRIC_MANAGED = 710001
+_ADV_NS_FABRIC_UME = 710002
+_DISCOVER_DEADLOCK_RETRIES = 4
+
+
+def _is_postgres(db: Session) -> bool:
+    bind = db.get_bind()
+    return bind is not None and str(bind.dialect.name).lower() == "postgresql"
+
+
+def _advisory_xact_lock(db: Session, namespace: int, key: str) -> None:
+    """Serialize concurrent creates for the same unique key (Postgres only)."""
+    k = str(key or "").strip()
+    if not k or not _is_postgres(db):
+        return
+    db.execute(
+        text("SELECT pg_advisory_xact_lock(:ns, hashtext(:key))"),
+        {"ns": int(namespace), "key": k},
+    )
+
+
+def _is_deadlock_error(exc: BaseException) -> bool:
+    """True for Postgres 40P01 / SQLite 'database is locked' style races."""
+    cur: BaseException | None = exc
+    seen: set[int] = set()
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        pgcode = getattr(cur, "pgcode", None) or getattr(cur, "sqlstate", None)
+        if str(pgcode or "") == "40P01":
+            return True
+        msg = str(cur).lower()
+        if "deadlock" in msg or "40p01" in msg:
+            return True
+        orig = getattr(cur, "orig", None)
+        if isinstance(orig, BaseException) and id(orig) not in seen:
+            cur = orig
+            continue
+        cur = cur.__cause__ or cur.__context__  # type: ignore[assignment]
+    return False
+
+
+def _sleep_deadlock_backoff(attempt: int) -> None:
+    # attempt is 0-based; jitter avoids thundering herd across workers.
+    base = 0.05 * (2**attempt)
+    time.sleep(base + random.uniform(0.0, 0.05))
+
+
 # ---------------------------------------------------------------------------
 # Fabric nodes / edges helpers
 # ---------------------------------------------------------------------------
@@ -257,6 +307,11 @@ def ensure_fabric_node_for_managed(db: Session, ne: ManagedNE) -> TopoFabricNode
     row = db.query(TopoFabricNode).filter(TopoFabricNode.managed_ne_id == mid).one_or_none()
     if row is not None:
         return _apply(row)
+    # Serialize same-key creates across workers (cross-key deadlocks still retried upstream).
+    _advisory_xact_lock(db, _ADV_NS_FABRIC_MANAGED, mid)
+    row = db.query(TopoFabricNode).filter(TopoFabricNode.managed_ne_id == mid).one_or_none()
+    if row is not None:
+        return _apply(row)
     try:
         with db.begin_nested():
             row = TopoFabricNode(
@@ -300,6 +355,10 @@ def ensure_fabric_node_for_ume(
         row.updated_at = now
         return row
 
+    row = db.query(TopoFabricNode).filter(TopoFabricNode.ume_ne_id == uid).one_or_none()
+    if row is not None:
+        return _apply(row)
+    _advisory_xact_lock(db, _ADV_NS_FABRIC_UME, uid)
     row = db.query(TopoFabricNode).filter(TopoFabricNode.ume_ne_id == uid).one_or_none()
     if row is not None:
         return _apply(row)
@@ -602,23 +661,40 @@ def upsert_fabric_edge(
         .one_or_none()
     )
     if row is None:
-        row = TopoFabricEdge(
-            id=uuid4().hex,
-            layer=layer_v,
-            a_node_id=a,
-            b_node_id=b,
-            a_port=ap,
-            b_port=bp,
-            source=src,
-            status="active",
-            attrs={},
-            discovered_at=now if src == "lldp" else None,
-            last_seen_at=now,
-            created_at=now,
-            updated_at=now,
-        )
-        db.add(row)
-        return row, "added"
+        try:
+            with db.begin_nested():
+                row = TopoFabricEdge(
+                    id=uuid4().hex,
+                    layer=layer_v,
+                    a_node_id=a,
+                    b_node_id=b,
+                    a_port=ap,
+                    b_port=bp,
+                    source=src,
+                    status="active",
+                    attrs={},
+                    discovered_at=now if src == "lldp" else None,
+                    last_seen_at=now,
+                    created_at=now,
+                    updated_at=now,
+                )
+                db.add(row)
+                db.flush()
+                return row, "added"
+        except IntegrityError:
+            row = (
+                db.query(TopoFabricEdge)
+                .filter(
+                    TopoFabricEdge.layer == layer_v,
+                    TopoFabricEdge.a_node_id == a,
+                    TopoFabricEdge.b_node_id == b,
+                    TopoFabricEdge.a_port == ap,
+                    TopoFabricEdge.b_port == bp,
+                )
+                .one_or_none()
+            )
+            if row is None:
+                raise
     if (row.source or "") == "manual" and src == "lldp":
         return row, "kept_manual"
     row.source = src
@@ -629,6 +705,46 @@ def upsert_fabric_edge(
     row.last_seen_at = now
     row.updated_at = now
     return row, "updated"
+
+
+def _absorb_fabric_node(db: Session, canon: TopoFabricNode, dupe: TopoFabricNode) -> None:
+    """Retarget edges/view placements from dupe onto canon, then delete dupe."""
+    if canon is None or dupe is None or canon.id == dupe.id:
+        return
+    if db.get(TopoFabricNode, dupe.id) is None:
+        return
+    _retarget_fabric_edges(db, from_id=dupe.id, to_id=canon.id)
+    vnodes = db.query(TopoViewNode).filter(TopoViewNode.fabric_node_id == dupe.id).all()
+    for vn in vnodes:
+        exists = (
+            db.query(TopoViewNode)
+            .filter(
+                TopoViewNode.view_id == vn.view_id,
+                TopoViewNode.fabric_node_id == canon.id,
+            )
+            .one_or_none()
+        )
+        if exists is not None:
+            db.delete(vn)
+        else:
+            vn.fabric_node_id = canon.id
+            vn.updated_at = _utcnow()
+    db.delete(dupe)
+
+
+def _prefer_fabric_canon(
+    db: Session, a: TopoFabricNode, b: TopoFabricNode
+) -> tuple[TopoFabricNode, TopoFabricNode]:
+    """Return (canon, dupe) preferring higher inventory score, then older row."""
+    sa = _fabric_match_score(db, a)
+    sb = _fabric_match_score(db, b)
+    if sa != sb:
+        return (a, b) if sa > sb else (b, a)
+    ta = a.created_at or a.updated_at
+    tb = b.created_at or b.updated_at
+    if ta and tb and ta != tb:
+        return (a, b) if ta <= tb else (b, a)
+    return (a, b) if a.id <= b.id else (b, a)
 
 
 def _mark_replaced_port_peers(
@@ -643,6 +759,9 @@ def _mark_replaced_port_peers(
 ) -> list[str]:
     """Same local port now peers with a different NE → mark old edges missing (cutover).
 
+    If the previous peer is the same hostname (duplicate fabric rows for one device),
+    absorb the weaker node instead of marking the link missing.
+
     Returns ids of edges touched by this replacement (skip re-bump in same job).
     """
     now = now or _utcnow()
@@ -650,6 +769,8 @@ def _mark_replaced_port_peers(
     if not self_id or not peer_id or not lp:
         return []
     layer_v = str(layer or "physical").strip() or "physical"
+    new_peer = db.get(TopoFabricNode, peer_id)
+    new_name = _norm_host(new_peer.name if new_peer is not None else "")
     candidates = (
         db.query(TopoFabricEdge)
         .filter(
@@ -669,6 +790,47 @@ def _mark_replaced_port_peers(
         if normalize_ifname(e_local) != lp:
             continue
         if e_peer == peer_id:
+            continue
+        old_peer = db.get(TopoFabricNode, e_peer)
+        old_name = _norm_host(old_peer.name if old_peer is not None else "")
+        # Same System Name under two fabric nodes → collapse, keep one link.
+        if (
+            new_peer is not None
+            and old_peer is not None
+            and new_name
+            and old_name
+            and new_name == old_name
+        ):
+            canon, dupe = _prefer_fabric_canon(db, new_peer, old_peer)
+            _absorb_fabric_node(db, canon, dupe)
+            # Survivor edge on this port should stay active (retarget may have merged).
+            survivor = (
+                db.query(TopoFabricEdge)
+                .filter(
+                    TopoFabricEdge.layer == layer_v,
+                    or_(
+                        and_(
+                            TopoFabricEdge.a_node_id == self_id,
+                            TopoFabricEdge.b_node_id == canon.id,
+                        ),
+                        and_(
+                            TopoFabricEdge.b_node_id == self_id,
+                            TopoFabricEdge.a_node_id == canon.id,
+                        ),
+                    ),
+                )
+                .all()
+            )
+            for se in survivor:
+                se_local = se.a_port if se.a_node_id == self_id else se.b_port
+                if normalize_ifname(se_local or "") != lp:
+                    continue
+                se.status = "active"
+                se.attrs = _clear_miss_attrs(_edge_attrs(se))
+                se.last_seen_at = now
+                se.updated_at = now
+                handled.append(se.id)
+            handled.append(e.id)
             continue
         _set_edge_missing(e, now, replaced_by_edge_id=new_edge_id)
         handled.append(e.id)
@@ -1794,13 +1956,25 @@ def _fabric_match_score(db: Session, n: TopoFabricNode) -> int:
 def _pick_managed_ne(
     db: Session, *, ip: str = "", name_key: str = ""
 ) -> ManagedNE | None:
+    """Pick inventory NE. Name matching uses hostname key (not LLDP mgmt IP)."""
     rows: list[ManagedNE] = []
-    if ip:
+    if name_key:
+        key = _norm_host(name_key) or str(name_key or "").strip().lower()
+        if key:
+            candidates = (
+                db.query(ManagedNE)
+                .filter(
+                    or_(
+                        func.lower(ManagedNE.name) == key,
+                        func.lower(ManagedNE.name).like(f"{key}.%"),
+                    )
+                )
+                .all()
+            )
+            rows = [ne for ne in candidates if _norm_host(ne.name or "") == key]
+    elif ip:
+        # Kept for non-LLDP callers; LLDP peer match must not use this path.
         rows = db.query(ManagedNE).filter(ManagedNE.ip_address == ip).all()
-    elif name_key:
-        rows = (
-            db.query(ManagedNE).filter(func.lower(ManagedNE.name) == name_key).all()
-        )
     if not rows:
         return None
     rows.sort(key=_ne_inventory_score, reverse=True)
@@ -1877,18 +2051,18 @@ def ensure_lldp_discovered_managed_ne(
 
 
 class _FabricPeerIndex:
-    """In-memory name/IP index for one discover target (avoids O(nodes) per neighbor)."""
+    """In-memory name index for one discover target (avoids O(nodes) per neighbor).
+
+    Identity is System Name / Device ID only. LLDP Management Address is often a
+    physical-interface IP and must not be used to pick the peer NE.
+    """
 
     def __init__(self, db: Session, self_id: str) -> None:
         self.db = db
         self.self_id = self_id
-        self.by_ip: dict[str, list[TopoFabricNode]] = {}
         self.by_name: dict[str, list[TopoFabricNode]] = {}
         self.placeholder_by_name: dict[str, ManagedNE] = {}
         for n in db.query(TopoFabricNode).filter(TopoFabricNode.id != self_id).all():
-            ip = str(n.ip or "").strip()
-            if ip:
-                self.by_ip.setdefault(ip, []).append(n)
             nk = _norm_host(n.name or "")
             if nk:
                 self.by_name.setdefault(nk, []).append(n)
@@ -1900,53 +2074,35 @@ class _FabricPeerIndex:
                 self.placeholder_by_name[nk] = ne
 
     def _best(self, matched: list[TopoFabricNode]) -> TopoFabricNode:
-        matched.sort(key=lambda n: _fabric_match_score(self.db, n), reverse=True)
+        # Prefer real inventory; ties → older fabric row (stable across rediscovers).
+        matched.sort(
+            key=lambda n: (
+                -_fabric_match_score(self.db, n),
+                n.created_at.timestamp() if n.created_at else 0.0,
+                n.id,
+            )
+        )
         return matched[0]
 
     def match(self, hit: NeighborHit) -> TopoFabricNode | None:
         name_key = _norm_host(hit.remote_name)
-        ip_key = str(hit.remote_ip or "").strip()
-        matched: list[TopoFabricNode] = []
-        if ip_key:
-            matched.extend(self.by_ip.get(ip_key) or [])
-        if name_key:
-            for n in self.by_name.get(name_key) or []:
-                if n not in matched:
-                    matched.append(n)
+        if not name_key:
+            return None
+
+        matched = list(self.by_name.get(name_key) or [])
         if matched:
             return self._best(matched)
 
-        if ip_key:
-            ne = _pick_managed_ne(self.db, ip=ip_key)
-            if ne is not None:
-                node = ensure_fabric_node_for_managed(self.db, ne)
-                self._remember(node)
-                return node
-            ume = (
-                self.db.query(UmeInventoryNE)
-                .filter(UmeInventoryNE.ip_address == ip_key)
-                .first()
-            )
-            if ume is not None:
-                node = ensure_fabric_node_for_ume(self.db, ume)
-                self._remember(node)
-                return node
-        if name_key:
-            ne = _pick_managed_ne(self.db, name_key=name_key)
-            if ne is not None:
-                node = ensure_fabric_node_for_managed(self.db, ne)
-                self._remember(node)
-                return node
+        ne = _pick_managed_ne(self.db, name_key=name_key)
+        if ne is not None:
+            node = ensure_fabric_node_for_managed(self.db, ne)
+            self._remember(node)
+            return node
         return None
 
     def _remember(self, node: TopoFabricNode) -> None:
         if not node or node.id == self.self_id:
             return
-        ip = str(node.ip or "").strip()
-        if ip:
-            bucket = self.by_ip.setdefault(ip, [])
-            if node not in bucket:
-                bucket.append(node)
         nk = _norm_host(node.name or "")
         if nk:
             bucket = self.by_name.setdefault(nk, [])
@@ -2047,24 +2203,9 @@ def merge_duplicate_fabric_nodes(db: Session) -> dict[str, int]:
         for d in dupes:
             if d.id == canon.id:
                 continue
-            _retarget_fabric_edges(db, from_id=d.id, to_id=canon.id)
-            # View placements: keep canon if present, else retarget; drop duplicate placements.
-            vnodes = db.query(TopoViewNode).filter(TopoViewNode.fabric_node_id == d.id).all()
-            for vn in vnodes:
-                exists = (
-                    db.query(TopoViewNode)
-                    .filter(
-                        TopoViewNode.view_id == vn.view_id,
-                        TopoViewNode.fabric_node_id == canon.id,
-                    )
-                    .one_or_none()
-                )
-                if exists is not None:
-                    db.delete(vn)
-                else:
-                    vn.fabric_node_id = canon.id
-                    vn.updated_at = _utcnow()
-            db.delete(d)
+            if db.get(TopoFabricNode, d.id) is None:
+                continue
+            _absorb_fabric_node(db, canon, d)
             merged += 1
 
     seen_absorb: set[str] = set()
@@ -2368,12 +2509,20 @@ def _discover_one_target(
     *,
     auto_add_unmatched: bool,
 ) -> dict[str, Any]:
-    """Run LLDP for one NE in a fresh DB session."""
+    """Run LLDP for one NE in a fresh DB session.
+
+    Keep the write txn short: resolve self fabric → commit → SSH → apply peers/edges
+    (with deadlock retries). Holding inserts across SSH was a major deadlock source.
+    """
+    base = {
+        "ne_id": target.get("ne_id") or "",
+        "ume_ne_id": target.get("ume_ne_id") or "",
+        "fabric_node_id": "",
+        "ne_name": target.get("ne_name") or "",
+        "ne_ip": target.get("ne_ip") or "",
+    }
     db = SessionLocal()
     try:
-        now = _utcnow()
-        if target["ume_ne_id"] and not target["ne_id"]:
-            pass
         fabric_node: TopoFabricNode | None = None
         managed = db.get(ManagedNE, target["ne_id"]) if target.get("ne_id") else None
         if managed is not None:
@@ -2392,15 +2541,12 @@ def _discover_one_target(
                     vendor=target.get("vendor") or "",
                 )
         if fabric_node is None:
-            return {
-                "ne_id": target["ne_id"],
-                "ume_ne_id": target.get("ume_ne_id") or "",
-                "fabric_node_id": "",
-                "ne_name": target.get("ne_name") or "",
-                "ne_ip": target.get("ne_ip") or "",
-                "ok": False,
-                "error": "fabric_node_resolve_failed",
-            }
+            return {**base, "ok": False, "error": "fabric_node_resolve_failed"}
+
+        fabric_node_id = fabric_node.id
+        base["fabric_node_id"] = fabric_node_id
+        # Release unique-index locks before slow SSH.
+        db.commit()
 
         cmd, _proto = pick_neighbor_command(
             vendor=target.get("vendor") or "",
@@ -2414,25 +2560,15 @@ def _discover_one_target(
         try:
             exec_out = execute_managed_ne_commands(db, [cmd], **exec_kwargs)
         except HTTPException as exc:
-            db.commit()
             return {
-                "ne_id": target["ne_id"],
-                "ume_ne_id": target.get("ume_ne_id") or "",
-                "fabric_node_id": fabric_node.id,
-                "ne_name": target.get("ne_name") or "",
-                "ne_ip": target.get("ne_ip") or "",
+                **base,
                 "ok": False,
                 "command": cmd,
                 "error": str(exc.detail or "exec_failed")[:500],
             }
         if not exec_out.get("ok"):
-            db.commit()
             return {
-                "ne_id": target["ne_id"],
-                "ume_ne_id": target.get("ume_ne_id") or "",
-                "fabric_node_id": fabric_node.id,
-                "ne_name": target.get("ne_name") or "",
-                "ne_ip": target.get("ne_ip") or "",
+                **base,
                 "ok": False,
                 "command": cmd,
                 "error": str(exec_out.get("detail") or exec_out.get("error") or "exec_failed")[:500],
@@ -2448,98 +2584,161 @@ def _discover_one_target(
             vendor=target.get("vendor") or "",
             device_type=target.get("device_type") or "",
         )
-        added = 0
-        updated = 0
-        unmatched: list[dict[str, str]] = []
-        touched: list[str] = []
-        replaced: list[str] = []
-        peer_index = _FabricPeerIndex(db, fabric_node.id)
-        for hit in hits:
-            peer = peer_index.match(hit)
-            if peer is None:
-                if auto_add_unmatched and (hit.remote_name or hit.remote_ip):
-                    # Not in inventory → SSH placeholder ManagedNE (empty IP/creds).
-                    peer = peer_index.ensure_placeholder(
-                        remote_name=(hit.remote_name or "").strip(),
-                        remote_ip=(hit.remote_ip or "").strip(),
-                    )
-                    peer.attrs = dict(peer.attrs or {})
-                    peer.attrs["from_lldp_unmatched"] = True
-                    peer.last_seen_at = now
-                    peer.updated_at = now
-                else:
-                    unmatched.append(
-                        {
-                            "remote_name": (hit.remote_name or "").strip()[:256],
-                            "remote_ip": (hit.remote_ip or "").strip()[:128],
-                            "local_port": (hit.local_port or "").strip()[:128],
-                            "remote_port": (hit.remote_port or "").strip()[:128],
-                        }
-                    )
-                    continue
-            edge, action = upsert_fabric_edge(
-                db,
-                a_node_id=fabric_node.id,
-                b_node_id=peer.id,
-                a_port=(hit.local_port or ""),
-                b_port=(hit.remote_port or ""),
-                source="lldp",
-                now=now,
-            )
-            touched.append(edge.id)
-            # Same local port, different peer → immediate missing (cutover).
-            replaced.extend(
-                _mark_replaced_port_peers(
-                    db,
-                    self_id=fabric_node.id,
-                    local_port=(hit.local_port or ""),
-                    peer_id=peer.id,
-                    new_edge_id=edge.id,
-                    now=now,
-                )
-            )
-            if action == "added":
-                added += 1
-            elif action == "updated":
-                updated += 1
-        fabric_node.last_seen_at = now
-        fabric_node.updated_at = now
-        db.commit()
         stub_flag = bool(is_stub and raw.strip() and not hits)
+
+        apply_out = _apply_discover_hits(
+            db,
+            fabric_node_id=fabric_node_id,
+            hits=hits,
+            auto_add_unmatched=auto_add_unmatched,
+        )
+        if not apply_out.get("ok"):
+            return {
+                **base,
+                "ok": False,
+                "command": cmd,
+                "parser_key": pkey,
+                "parser_stub": stub_flag,
+                "error": str(apply_out.get("error") or "apply_failed")[:500],
+                "raw_preview": _raw_preview(raw),
+            }
+
         return {
-            "ne_id": target["ne_id"],
-            "ume_ne_id": target.get("ume_ne_id") or "",
-            "fabric_node_id": fabric_node.id,
-            "ne_name": target.get("ne_name") or "",
-            "ne_ip": target.get("ne_ip") or "",
+            **base,
             "ok": True,
             "command": cmd,
             "neighbors": len(hits),
-            "edges_added": added,
-            "edges_updated": updated,
-            "unmatched_count": len(unmatched),
-            "unmatched": unmatched[:40],
+            "edges_added": int(apply_out.get("edges_added") or 0),
+            "edges_updated": int(apply_out.get("edges_updated") or 0),
+            "unmatched_count": int(apply_out.get("unmatched_count") or 0),
+            "unmatched": list(apply_out.get("unmatched") or []),
             "parser_key": pkey,
             "parser_stub": stub_flag,
             "error": "parser_stub" if stub_flag else "",
             "raw_preview": _raw_preview(raw),
-            "touched_edge_ids": touched,
-            "replaced_edge_ids": replaced,
-            "scanned_node_id": fabric_node.id,
+            "touched_edge_ids": list(apply_out.get("touched_edge_ids") or []),
+            "replaced_edge_ids": list(apply_out.get("replaced_edge_ids") or []),
+            "scanned_node_id": fabric_node_id,
         }
     except Exception as exc:  # noqa: BLE001
         db.rollback()
-        return {
-            "ne_id": target.get("ne_id") or "",
-            "ume_ne_id": target.get("ume_ne_id") or "",
-            "fabric_node_id": "",
-            "ne_name": target.get("ne_name") or "",
-            "ne_ip": target.get("ne_ip") or "",
-            "ok": False,
-            "error": str(exc)[:500],
-        }
+        return {**base, "ok": False, "error": str(exc)[:500]}
     finally:
         db.close()
+
+
+def _apply_discover_hits(
+    db: Session,
+    *,
+    fabric_node_id: str,
+    hits: list[NeighborHit],
+    auto_add_unmatched: bool,
+) -> dict[str, Any]:
+    """Write peer fabric nodes + edges; retry on Postgres deadlocks."""
+    last_err = ""
+    for attempt in range(_DISCOVER_DEADLOCK_RETRIES):
+        try:
+            now = _utcnow()
+            fabric_node = db.get(TopoFabricNode, fabric_node_id)
+            if fabric_node is None:
+                return {"ok": False, "error": "fabric_node_missing"}
+
+            added = 0
+            updated = 0
+            unmatched: list[dict[str, str]] = []
+            touched: list[str] = []
+            replaced: list[str] = []
+            peer_index = _FabricPeerIndex(db, fabric_node.id)
+            for hit in hits:
+                peer = peer_index.match(hit)
+                if peer is None:
+                    if auto_add_unmatched and (hit.remote_name or hit.remote_ip):
+                        peer = peer_index.ensure_placeholder(
+                            remote_name=(hit.remote_name or "").strip(),
+                            remote_ip=(hit.remote_ip or "").strip(),
+                        )
+                        peer.attrs = dict(peer.attrs or {})
+                        peer.attrs["from_lldp_unmatched"] = True
+                        peer.last_seen_at = now
+                        peer.updated_at = now
+                    else:
+                        unmatched.append(
+                            {
+                                "remote_name": (hit.remote_name or "").strip()[:256],
+                                "remote_ip": (hit.remote_ip or "").strip()[:128],
+                                "local_port": (hit.local_port or "").strip()[:128],
+                                "remote_port": (hit.remote_port or "").strip()[:128],
+                            }
+                        )
+                        continue
+                edge, action = upsert_fabric_edge(
+                    db,
+                    a_node_id=fabric_node.id,
+                    b_node_id=peer.id,
+                    a_port=(hit.local_port or ""),
+                    b_port=(hit.remote_port or ""),
+                    source="lldp",
+                    now=now,
+                )
+                touched.append(edge.id)
+                replaced.extend(
+                    _mark_replaced_port_peers(
+                        db,
+                        self_id=fabric_node.id,
+                        local_port=(hit.local_port or ""),
+                        peer_id=peer.id,
+                        new_edge_id=edge.id,
+                        now=now,
+                    )
+                )
+                if action == "added":
+                    added += 1
+                elif action == "updated":
+                    updated += 1
+            fabric_node.last_seen_at = now
+            fabric_node.updated_at = now
+            db.commit()
+            return {
+                "ok": True,
+                "edges_added": added,
+                "edges_updated": updated,
+                "unmatched_count": len(unmatched),
+                "unmatched": unmatched[:40],
+                "touched_edge_ids": touched,
+                "replaced_edge_ids": replaced,
+            }
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            last_err = str(exc)[:500]
+            if _is_deadlock_error(exc) and attempt + 1 < _DISCOVER_DEADLOCK_RETRIES:
+                _sleep_deadlock_backoff(attempt)
+                continue
+            return {"ok": False, "error": last_err}
+    return {"ok": False, "error": last_err or "apply_failed"}
+
+
+def _preensure_discover_targets(db: Session, targets: list[dict[str, str]]) -> None:
+    """Create fabric rows for scan targets before parallel workers start."""
+    for target in targets:
+        managed = db.get(ManagedNE, target["ne_id"]) if target.get("ne_id") else None
+        if managed is not None:
+            ensure_fabric_node_for_managed(db, managed)
+            continue
+        if not target.get("ume_ne_id"):
+            continue
+        ume = (
+            db.query(UmeInventoryNE)
+            .filter(UmeInventoryNE.ne_id == target["ume_ne_id"])
+            .one_or_none()
+        )
+        if ume is not None:
+            ensure_fabric_node_for_ume(
+                db,
+                ume,
+                device_type=target.get("device_type") or "",
+                vendor=target.get("vendor") or "",
+            )
+    db.commit()
 
 
 def _run_discover_job(job_id: str, body: FabricDiscoverRequest) -> None:
@@ -2562,6 +2761,12 @@ def _run_discover_job(job_id: str, body: FabricDiscoverRequest) -> None:
             return
         job.total = len(targets)
         db.commit()
+
+        # Reduce cross-worker races on self nodes before concurrent SSH/apply.
+        try:
+            _preensure_discover_targets(db, targets)
+        except Exception:  # noqa: BLE001
+            db.rollback()
 
         concurrency = max(1, min(32, int(body.concurrency or 4)))
         added = 0

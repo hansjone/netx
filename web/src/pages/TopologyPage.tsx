@@ -1,5 +1,5 @@
 ﻿import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ReactFlow,
@@ -39,6 +39,7 @@ import {
   patchTopologyPositions,
   projectTopologyNeighbors,
   removeTopologyViewNodes,
+  searchFabricNodes,
   startLldpDiscover,
   updateTopologyFolder,
   updateTopologyMap,
@@ -49,6 +50,7 @@ import { useI18n } from "../i18n";
 import { useToast } from "../hooks/useToast";
 import { openOrFocusModule } from "../utils/moduleWindows";
 import type {
+  FabricNodeSearchHit,
   ManagedNeItem,
   TopologyDiscoverJob,
   TopologyDiscoverNeResult,
@@ -69,10 +71,6 @@ import { behaviorForMode, toolModeFromKey, type ToolMode } from "./topology/tool
 
 const LAST_LEAF_KEY = "netx.topology.lastLeafViewId";
 const TREE_EXPAND_KEY = "netx.topology.treeExpanded";
-
-function kindLabelKey(kind: string): string {
-  return String(kind) === "physical" ? "topology.kindPhysical" : "topology.kindCustom";
-}
 
 function findViewInRegion(
   regions: TopologyTreeFolderItem[],
@@ -127,36 +125,15 @@ function FullscreenIcon({ exit }: { exit?: boolean }) {
 /** ASCII-safe separators ? avoid Unicode middots that corrupt on some editors. */
 const SEP = " / ";
 
-function ChevronIcon({ dir }: { dir: "left" | "right" | "down" }) {
-  const d =
-    dir === "left" ? "M15 6l-6 6 6 6" : dir === "down" ? "M6 9l6 6 6-6" : "M9 6l6 6-6 6";
-  return (
-    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" className="topo-svg-icon">
-      <path fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" d={d} />
-    </svg>
-  );
-}
-
-/** Left-panel collapse / expand control (icon-only sidebar toggle). */
+/** Left-panel collapse / expand control (simple chevron). */
 function SidebarFoldIcon({ expand }: { expand?: boolean }) {
   return (
     <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" className="topo-svg-icon">
-      <rect
-        x="3.5"
-        y="4.5"
-        width="17"
-        height="15"
-        rx="2"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-      />
-      <path d="M9.5 4.5v15" fill="none" stroke="currentColor" strokeWidth="1.8" />
       <path
-        d={expand ? "M13.5 9.5L17 12l-3.5 2.5" : "M16.5 9.5L13 12l3.5 2.5"}
+        d={expand ? "M9 6l6 6-6 6" : "M15 6l-6 6 6 6"}
         fill="none"
         stroke="currentColor"
-        strokeWidth="1.8"
+        strokeWidth="2.2"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
@@ -632,6 +609,8 @@ export function TopologyPage() {
   // mapId set → fabric canvas; otherwise browse directory (region or view folder).
   const [mapId, setMapId] = useState<string>("");
   const [selectedFolderId, setSelectedFolderId] = useState<string>("");
+  /** Hover sync key between left tree and right hex browser: `region:<id>` | `view:<id>`. */
+  const [hotBrowseKey, setHotBrowseKey] = useState("");
   const [pendingHighlightNe, setPendingHighlightNe] = useState("");
   const [expandedIds, setExpandedIds] = useState<Record<string, boolean>>(() => {
     try {
@@ -643,6 +622,10 @@ export function TopologyPage() {
   });
   const [keyword, setKeyword] = useState("");
   const [debouncedKeyword, setDebouncedKeyword] = useState("");
+  const [treeNeQuery, setTreeNeQuery] = useState("");
+  const [debouncedTreeNeQuery, setDebouncedTreeNeQuery] = useState("");
+  const [treeSearchOpen, setTreeSearchOpen] = useState(false);
+  const treeSearchRef = useRef<HTMLDivElement | null>(null);
   const [dirty, setDirty] = useState(false);
   const [historyTick, setHistoryTick] = useState(0);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
@@ -755,6 +738,17 @@ export function TopologyPage() {
     queryFn: fetchTopologyTree,
   });
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedTreeNeQuery(treeNeQuery.trim()), 200);
+    return () => window.clearTimeout(timer);
+  }, [treeNeQuery]);
+
+  const treeNeSearchQuery = useQuery({
+    queryKey: queryKeys.fabricNodeSearch(debouncedTreeNeQuery, 1),
+    queryFn: () => searchFabricNodes({ q: debouncedTreeNeQuery, page: 1, pageSize: 30 }),
+    enabled: debouncedTreeNeQuery.length >= 1,
+  });
+
   const graphQuery = useQuery({
     queryKey: queryKeys.topologyGraph(mapId),
     queryFn: () => fetchTopologyGraph(mapId),
@@ -815,11 +809,9 @@ export function TopologyPage() {
       }
       return;
     }
-    if (!selectedFolderId || selectedFolderId === treeRoot.id) {
-      setSelectedFolderId(regions[0].id);
-      setExpandedIds((prev) =>
-        prev[regions[0].id] === undefined ? { ...prev, [regions[0].id]: true } : prev,
-      );
+    // Keep root (all regions) as the default landing view — do not auto-pick regions[0].
+    if (selectedFolderId && !regions.some((r) => r.id === selectedFolderId)) {
+      setSelectedFolderId("");
     }
   }, [mapId, selectedFolderId, treeRoot, regions]);
 
@@ -851,6 +843,15 @@ export function TopologyPage() {
     },
     [confirmDiscardIfDirty, clearDirty, setNodes, setEdges],
   );
+
+  const goRoot = useCallback(() => {
+    if (!confirmDiscardIfDirty()) return;
+    setMapId("");
+    setSelectedFolderId("");
+    clearDirty();
+    setNodes([]);
+    setEdges([]);
+  }, [confirmDiscardIfDirty, clearDirty, setNodes, setEdges]);
 
   const goCanvas = useCallback(
     (viewId: string, folderId?: string) => {
@@ -1801,6 +1802,70 @@ export function TopologyPage() {
     [focusNode],
   );
 
+  const jumpToTreeSearchHit = useCallback(
+    (
+      hit: FabricNodeSearchHit,
+      view?: NonNullable<FabricNodeSearchHit["views"]>[number],
+    ) => {
+      const views = hit.views || [];
+      const onCurrent =
+        Boolean(mapId) &&
+        (views.some((v) => v.view_id === mapId) || nodes.some((n) => n.id === hit.id));
+      if (onCurrent && mapId && (!view || view.view_id === mapId)) {
+        if (nodes.some((n) => n.id === hit.id)) {
+          locateNode(hit.id);
+        } else {
+          setPendingHighlightNe(hit.id);
+        }
+        setTreeNeQuery("");
+        setDebouncedTreeNeQuery("");
+        setTreeSearchOpen(false);
+        return;
+      }
+      const target =
+        view ||
+        views.find((v) => String(v.kind) === "physical") ||
+        views[0] ||
+        null;
+      if (!target) {
+        showError(t("topology.treeSearchNotOnMap"));
+        return;
+      }
+      if (!confirmDiscardIfDirty()) return;
+      const regionId = target.folder_id || findViewInRegion(regions, target.view_id)?.region.id;
+      if (regionId) {
+        setSelectedFolderId(regionId);
+        setExpandedIds((p) => ({ ...p, [regionId]: true }));
+      }
+      setMapId(target.view_id);
+      setPendingHighlightNe(hit.id);
+      setTreeNeQuery("");
+      setDebouncedTreeNeQuery("");
+      setTreeSearchOpen(false);
+    },
+    [
+      mapId,
+      nodes,
+      locateNode,
+      showError,
+      t,
+      confirmDiscardIfDirty,
+      regions,
+    ],
+  );
+
+  useEffect(() => {
+    if (!treeSearchOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      const el = treeSearchRef.current;
+      if (el && e.target instanceof Element && !el.contains(e.target)) {
+        setTreeSearchOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [treeSearchOpen]);
+
   useEffect(() => {
     if (!pendingHighlightNe || !canvasMode || !nodes.length) return;
     const nodeId = pendingHighlightNe;
@@ -1922,7 +1987,8 @@ export function TopologyPage() {
 
   const titleText = useMemo(() => {
     if (canvasMode) return activeLeafName || t("topology.selectMap");
-    return regionDisplayName(activeRegion) || t("topology.selectRegion");
+    if (activeRegion) return regionDisplayName(activeRegion);
+    return t("topology.rootName");
   }, [canvasMode, activeLeafName, activeRegion, t]);
   const onCanvasManagedIds = useMemo(
     () => new Set(nodes.map((n) => n.data.managed_ne_id).filter(Boolean)),
@@ -2002,12 +2068,23 @@ export function TopologyPage() {
         ) : (
           <>
             <div className="topo-sidebar__section">
-              <div className="topo-sidebar__head">
-                <strong>{t("topology.tree")}</strong>
-                <div className="topo-sidebar__head-actions">
+              <div className="topo-tree-search" ref={treeSearchRef}>
+                <div className="topo-tree-search__bar">
+                  <input
+                    className="input"
+                    type="search"
+                    value={treeNeQuery}
+                    placeholder={t("topology.treeSearchPh")}
+                    aria-label={t("topology.treeSearch")}
+                    onChange={(e) => {
+                      setTreeNeQuery(e.target.value);
+                      setTreeSearchOpen(true);
+                    }}
+                    onFocus={() => setTreeSearchOpen(true)}
+                  />
                   <button
                     type="button"
-                    className="btn btn--sm btn--ghost topo-icon-btn"
+                    className="topo-sidebar__icon-btn"
                     onClick={promptNewRegion}
                     disabled={createRegionMut.isPending || !treeRoot}
                     title={t("topology.newRegion")}
@@ -2017,7 +2094,7 @@ export function TopologyPage() {
                   </button>
                   <button
                     type="button"
-                    className="btn btn--sm btn--ghost topo-icon-btn"
+                    className="topo-sidebar__icon-btn"
                     title={t("topology.collapseSidebar")}
                     aria-label={t("topology.collapseSidebar")}
                     onClick={() => setSidebarCollapsed(true)}
@@ -2025,6 +2102,72 @@ export function TopologyPage() {
                     <SidebarFoldIcon />
                   </button>
                 </div>
+                {treeSearchOpen && treeNeQuery.trim() ? (
+                  <div className="topo-tree-search__panel" role="listbox">
+                    {debouncedTreeNeQuery.length < 1 || treeNeSearchQuery.isFetching ? (
+                      <p className="topo-tree-search__hint muted">…</p>
+                    ) : !(treeNeSearchQuery.data?.items || []).length ? (
+                      <p className="topo-tree-search__hint muted">{t("topology.treeSearchEmpty")}</p>
+                    ) : (
+                      (treeNeSearchQuery.data?.items || []).map((hit) => {
+                        const views = hit.views || [];
+                        const title = hit.name || hit.ip || hit.id.slice(0, 8);
+                        return (
+                          <div key={hit.id} className="topo-tree-search__item">
+                            <button
+                              type="button"
+                              className="topo-tree-search__ne"
+                              onClick={() => jumpToTreeSearchHit(hit)}
+                              title={
+                                views.length
+                                  ? t("topology.locateOnCanvas")
+                                  : t("topology.treeSearchNotOnMap")
+                              }
+                            >
+                              <span className="topo-tree-search__name">{title}</span>
+                              {hit.ip ? <span className="topo-tree-search__ip muted">{hit.ip}</span> : null}
+                              {!views.length ? (
+                                <span className="topo-tree-search__meta muted">
+                                  {t("topology.treeSearchNoViews")}
+                                </span>
+                              ) : (
+                                <span className="topo-tree-search__meta muted">
+                                  {t("topology.treeSearchViewCount").replace(
+                                    "{{count}}",
+                                    String(views.length),
+                                  )}
+                                </span>
+                              )}
+                            </button>
+                            {views.length > 1 ? (
+                              <div className="topo-tree-search__views">
+                                {views.map((v) => (
+                                  <button
+                                    key={`${hit.id}-${v.view_id}`}
+                                    type="button"
+                                    className="topo-tree-search__view"
+                                    onClick={() => jumpToTreeSearchHit(hit, v)}
+                                    title={`${v.folder_name ? `${v.folder_name} / ` : ""}${v.view_name}`}
+                                  >
+                                    {v.view_name || v.view_id.slice(0, 8)}
+                                  </button>
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
+                        );
+                      })
+                    )}
+                    {(treeNeSearchQuery.data?.total || 0) > 30 ? (
+                      <p className="topo-tree-search__hint muted">
+                        {t("topology.treeSearchTruncated").replace(
+                          "{{total}}",
+                          String(treeNeSearchQuery.data?.total || 0),
+                        )}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
               {!treeRoot ? (
                 <p className="panel__hint">{treeQuery.isLoading ? t("topology.treeLoading") : t("topology.emptyMaps")}</p>
@@ -2033,30 +2176,56 @@ export function TopologyPage() {
               ) : (
                 <ul className="topo-map-list topo-region-list">
                   {regions.map((region) => {
-                    const open = expandedIds[region.id] ?? true;
+                    const open = expandedIds[region.id] ?? false;
                     const regionActive = selectedFolderId === region.id && !mapId;
+                    const regionBranch = selectedFolderId === region.id && Boolean(mapId);
+                    const regionHot = hotBrowseKey === `region:${region.id}`;
                     return (
                       <li
                         key={region.id}
-                        className={`topo-region-list__block${regionActive ? " is-active" : ""}`}
+                        className={`topo-region-list__block${
+                          regionActive ? " is-active" : regionBranch ? " is-branch-active" : ""
+                        }${regionHot ? " is-hot" : ""}`}
                       >
-                        <div className="topo-map-list__row topo-region-list__row">
+                        <div
+                          className="topo-map-list__row topo-region-list__row"
+                          onMouseEnter={() => setHotBrowseKey(`region:${region.id}`)}
+                          onMouseLeave={() =>
+                            setHotBrowseKey((k) => (k === `region:${region.id}` ? "" : k))
+                          }
+                        >
                           <button
                             type="button"
                             className="topo-map-list__item"
-                            onClick={() => goRegion(region.id)}
+                            onClick={() => {
+                              if (!confirmDiscardIfDirty()) return;
+                              const nextOpen = !(expandedIds[region.id] ?? false);
+                              setMapId("");
+                              setSelectedFolderId(region.id);
+                              setExpandedIds((p) => ({ ...p, [region.id]: nextOpen }));
+                              clearDirty();
+                              setNodes([]);
+                              setEdges([]);
+                            }}
+                            title={
+                              open
+                                ? t("topology.collapseRegion")
+                                : t("topology.expandRegion")
+                            }
                           >
                             <span className="topo-map-list__name">
                               <span className="topo-region-list__glyph" aria-hidden="true">
                                 <RegionGlyph size={14} />
                               </span>
-                              {regionDisplayName(region)}
-                            </span>
-                            <span className="topo-map-list__meta">
-                              {t("topology.regionNodeHint").replace(
-                                "{{count}}",
-                                String(region.views.length),
-                              )}
+                              <span className="topo-map-list__title">
+                                {regionDisplayName(region)}
+                              </span>
+                              <span className="topo-map-list__count">
+                                {t("topology.regionNodeHint").replace(
+                                  "{{count}}",
+                                  String(region.views.length),
+                                )}
+                              </span>
                             </span>
                           </button>
                           <div className="topo-map-list__actions">
@@ -2086,34 +2255,27 @@ export function TopologyPage() {
                             >
                               <CloseIcon />
                             </button>
-                            <button
-                              type="button"
-                              className="topo-map-list__icon"
-                              title={
-                                open
-                                  ? t("topology.collapseRegion")
-                                  : t("topology.expandRegion")
-                              }
-                              aria-label={
-                                open
-                                  ? t("topology.collapseRegion")
-                                  : t("topology.expandRegion")
-                              }
-                              onClick={() =>
-                                setExpandedIds((p) => ({ ...p, [region.id]: !open }))
-                              }
-                            >
-                              <ChevronIcon dir={open ? "down" : "right"} />
-                            </button>
                           </div>
                         </div>
                         {open ? (
                           <ul className="topo-map-list topo-region-list__maps">
                             {(region.views || []).map((v) => {
                               const isPhysical = String(v.kind) === "physical";
+                              const viewHot = hotBrowseKey === `view:${v.id}`;
                               return (
-                                <li key={v.id} className={mapId === v.id ? "is-active" : ""}>
-                                  <div className="topo-map-list__row">
+                                <li
+                                  key={v.id}
+                                  className={`${mapId === v.id ? "is-active" : ""}${
+                                    viewHot ? " is-hot" : ""
+                                  }`}
+                                >
+                                  <div
+                                    className="topo-map-list__row"
+                                    onMouseEnter={() => setHotBrowseKey(`view:${v.id}`)}
+                                    onMouseLeave={() =>
+                                      setHotBrowseKey((k) => (k === `view:${v.id}` ? "" : k))
+                                    }
+                                  >
                                     <button
                                       type="button"
                                       className="topo-map-list__item"
@@ -2133,13 +2295,13 @@ export function TopologyPage() {
                                             size={13}
                                           />
                                         </span>
-                                        {v.name}
-                                        {mapId === v.id && dirty ? " *" : ""}
-                                      </span>
-                                      <span className="topo-map-list__meta">
-                                        {t(kindLabelKey(String(v.kind)))}
-                                        {" · "}
-                                        {v.node_count || 0}N
+                                        <span className="topo-map-list__title">
+                                          {v.name}
+                                          {mapId === v.id && dirty ? " *" : ""}
+                                        </span>
+                                        <span className="topo-map-list__count">
+                                          {v.node_count || 0}N
+                                        </span>
                                       </span>
                                     </button>
                                     <div className="topo-map-list__actions">
@@ -2197,17 +2359,25 @@ export function TopologyPage() {
           <div className="topo-toolbar__row">
             <div className="topo-toolbar__title">
               <div className="topo-breadcrumb">
+                <button
+                  type="button"
+                  className="topo-breadcrumb__link"
+                  onClick={() => goRoot()}
+                >
+                  {t("topology.rootName")}
+                </button>
                 {activeRegion ? (
-                  <button
-                    type="button"
-                    className="topo-breadcrumb__link"
-                    onClick={() => goRegion(activeRegion.id)}
-                  >
-                    {regionDisplayName(activeRegion)}
-                  </button>
-                ) : (
-                  <span className="topo-breadcrumb__current">{t("topology.selectRegion")}</span>
-                )}
+                  <>
+                    <span className="topo-breadcrumb__sep">/</span>
+                    <button
+                      type="button"
+                      className="topo-breadcrumb__link"
+                      onClick={() => goRegion(activeRegion.id)}
+                    >
+                      {regionDisplayName(activeRegion)}
+                    </button>
+                  </>
+                ) : null}
                 {activeView ? (
                   <>
                     <span className="topo-breadcrumb__sep">/</span>
@@ -2597,9 +2767,18 @@ export function TopologyPage() {
                     .replace("{{failed}}", String(discoverSummary.failed))}
                 </p>
                 <p className="panel__hint">
-                  <Link className="btn btn--sm btn--ghost" to="/network/topology/lldp">
+                  <button
+                    type="button"
+                    className="btn btn--sm btn--ghost"
+                    onClick={() =>
+                      openOrFocusModule({
+                        moduleId: "network",
+                        path: "/network/topology/lldp",
+                      })
+                    }
+                  >
                     {t("topology.discoverGoLldp")}
-                  </Link>
+                  </button>
                 </p>
               </>
             ) : null}
@@ -2610,90 +2789,147 @@ export function TopologyPage() {
           <div className="topo-browser" aria-label={t("topology.browserTitle")}>
             <div className="topo-browser__head">
               <div>
-                <strong>{titleText}</strong>
+                {activeRegion ? (
+                  <div className="topo-breadcrumb">
+                    <button
+                      type="button"
+                      className="topo-breadcrumb__link"
+                      onClick={() => goRoot()}
+                    >
+                      {t("topology.rootName")}
+                    </button>
+                    <span className="topo-breadcrumb__sep">/</span>
+                    <span className="topo-breadcrumb__current">{regionDisplayName(activeRegion)}</span>
+                  </div>
+                ) : (
+                  <strong>{titleText}</strong>
+                )}
                 <p className="topo-browser__sub">
                   {activeRegion
                     ? t("topology.browserRegionSub").replace(
                         "{{count}}",
                         String(browseEntries.length),
                       )
-                    : t("topology.regionBrowseHint")}
+                    : t("topology.browserRegionsSub").replace(
+                        "{{count}}",
+                        String(regions.length),
+                      )}
                 </p>
               </div>
             </div>
             {!activeRegion ? (
-              <div className="topo-browser__empty">
-                <span className="topo-browser__empty-icon" aria-hidden="true">
-                  <RegionGlyph size={36} />
-                </span>
-                <p>{t("topology.selectRegion")}</p>
-              </div>
+              regions.length === 0 ? (
+                <div className="topo-browser__empty">
+                  <span className="topo-browser__empty-icon" aria-hidden="true">
+                    <RegionGlyph size={36} />
+                  </span>
+                  <p>{t("topology.emptyMaps")}</p>
+                  <button
+                    type="button"
+                    className="btn btn--sm"
+                    onClick={promptNewRegion}
+                    disabled={createRegionMut.isPending || !treeRoot}
+                  >
+                    {t("topology.newRegion")}
+                  </button>
+                </div>
+              ) : (
+                <div className="topo-browser__grid topo-browser__grid--regions">
+                  {regions.map((region, idx) => (
+                    <button
+                      key={region.id}
+                      type="button"
+                      className={`topo-region-hex topo-region-hex--tone-${idx % 5}${
+                        selectedFolderId === region.id ? " is-selected" : ""
+                      }${hotBrowseKey === `region:${region.id}` ? " is-hot" : ""}`}
+                      onMouseEnter={() => setHotBrowseKey(`region:${region.id}`)}
+                      onMouseLeave={() =>
+                        setHotBrowseKey((k) => (k === `region:${region.id}` ? "" : k))
+                      }
+                      onClick={() => goRegion(region.id)}
+                      title={t("topology.openRegion")}
+                    >
+                      <span className="topo-region-hex__icon" aria-hidden="true">
+                        <RegionGlyph size={22} />
+                      </span>
+                      <span className="topo-region-hex__title">
+                        <span className="topo-region-hex__name">{regionDisplayName(region)}</span>
+                        <span className="topo-region-hex__meta">
+                          {t("topology.regionNodeHint").replace(
+                            "{{count}}",
+                            String(region.views?.length || 0),
+                          )}
+                        </span>
+                      </span>
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    className="topo-region-hex topo-region-hex--add"
+                    onClick={promptNewRegion}
+                    disabled={createRegionMut.isPending || !treeRoot}
+                    title={t("topology.newRegion")}
+                  >
+                    <span className="topo-region-hex__plus" aria-hidden="true">
+                      +
+                    </span>
+                    <span className="topo-region-hex__name">{t("topology.newRegion")}</span>
+                  </button>
+                </div>
+              )
             ) : browseEntries.length === 0 ? (
-              <div className="topo-browser__empty">
-                <p>{t("topology.browserEmptyMaps")}</p>
+              <div className="topo-browser__grid topo-browser__grid--regions">
                 <button
                   type="button"
-                  className="btn btn--sm"
+                  className="topo-region-hex topo-region-hex--add"
                   onClick={() => promptNewCustom(activeRegion.id)}
+                  title={t("topology.newCustom")}
                 >
-                  {t("topology.newCustom")}
+                  <span className="topo-region-hex__plus" aria-hidden="true">
+                    +
+                  </span>
+                  <span className="topo-region-hex__name">{t("topology.newCustom")}</span>
                 </button>
               </div>
             ) : (
-              <div className="topo-browser__grid">
-                {browseEntries.map((v) => {
+              <div className="topo-browser__grid topo-browser__grid--regions">
+                {browseEntries.map((v, idx) => {
                   const isPhysical = String(v.kind) === "physical";
+                  const tone = isPhysical ? "physical" : String((idx + 1) % 5);
                   return (
-                    <article
+                    <button
                       key={v.id}
-                      className={`topo-map-card${isPhysical ? " is-physical" : ""}`}
+                      type="button"
+                      className={`topo-region-hex topo-region-hex--tone-${tone}${
+                        mapId === v.id ? " is-selected" : ""
+                      }${hotBrowseKey === `view:${v.id}` ? " is-hot" : ""}`}
+                      onMouseEnter={() => setHotBrowseKey(`view:${v.id}`)}
+                      onMouseLeave={() =>
+                        setHotBrowseKey((k) => (k === `view:${v.id}` ? "" : k))
+                      }
+                      onClick={() => goCanvas(v.id, activeRegion.id)}
+                      title={t("topology.openMap")}
                     >
-                      <button
-                        type="button"
-                        className="topo-map-card__body"
-                        onClick={() => goCanvas(v.id, activeRegion.id)}
-                        onDoubleClick={() => goCanvas(v.id, activeRegion.id)}
-                      >
-                        <span className="topo-map-card__icon" aria-hidden="true">
-                          <LayerGlyph role={isPhysical ? "core" : "aggregation"} size={28} />
-                        </span>
-                        <span className={`topo-map-card__kind${isPhysical ? " is-physical" : ""}`}>
-                          {t(kindLabelKey(String(v.kind)))}
-                        </span>
-                        <span className="topo-map-card__name">{v.name}</span>
-                        <span className="topo-map-card__meta">
-                          {t("topology.layerNodeHint").replace("{{count}}", String(v.node_count || 0))}
-                          {v.updated_at ? ` · ${formatUpdatedAt(v.updated_at)}` : ""}
-                        </span>
-                      </button>
-                      <div className="topo-map-card__actions">
-                        <button
-                          type="button"
-                          className="btn btn--sm"
-                          onClick={() => goCanvas(v.id, activeRegion.id)}
-                        >
-                          {t("topology.openMap")}
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn--sm btn--ghost"
-                          onClick={() => promptRenameMap(v.id, v.name)}
-                        >
-                          {t("topology.rename")}
-                        </button>
-                      </div>
-                    </article>
+                      <span className="topo-region-hex__icon" aria-hidden="true">
+                        <LayerGlyph role={isPhysical ? "core" : "aggregation"} size={22} />
+                      </span>
+                      <span className="topo-region-hex__title">
+                        <span className="topo-region-hex__name">{v.name}</span>
+                        <span className="topo-region-hex__meta">{v.node_count || 0}N</span>
+                      </span>
+                    </button>
                   );
                 })}
                 <button
                   type="button"
-                  className="topo-map-card topo-map-card--add"
+                  className="topo-region-hex topo-region-hex--add"
                   onClick={() => promptNewCustom(activeRegion.id)}
+                  title={t("topology.newCustom")}
                 >
-                  <span className="topo-map-card__add-plus" aria-hidden="true">
+                  <span className="topo-region-hex__plus" aria-hidden="true">
                     +
                   </span>
-                  <span>{t("topology.newCustom")}</span>
+                  <span className="topo-region-hex__name">{t("topology.newCustom")}</span>
                 </button>
               </div>
             )}

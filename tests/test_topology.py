@@ -7,6 +7,9 @@ import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
+from sqlalchemy import or_
+from sqlalchemy.exc import OperationalError
+
 from netx_api import topology_lldp as lldp
 from netx_api import topology_service as svc
 from netx_api.db import Base, SessionLocal, engine
@@ -97,6 +100,17 @@ class LldpParserTests(unittest.TestCase):
         self.assertEqual(cmd, "show lldp neighbors detail")
 
 
+class DeadlockHelperTests(unittest.TestCase):
+    def test_is_deadlock_error_detects_pg_message(self) -> None:
+        exc = Exception(
+            '(psycopg.errors.DeadlockDetected) 检测到死锁 DETAIL: 进程28484等待'
+        )
+        self.assertTrue(svc._is_deadlock_error(exc))
+
+    def test_is_deadlock_error_ignores_other(self) -> None:
+        self.assertFalse(svc._is_deadlock_error(ValueError("unique violation")))
+
+
 class FabricTopologyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -124,6 +138,62 @@ class FabricTopologyTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.db.close()
+
+    def test_apply_discover_hits_retries_deadlock(self) -> None:
+        suffix = uuid4().hex[:8]
+        ne = ManagedNE(
+            id=f"nea-{suffix}",
+            name=f"R2-{suffix}",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address=f"203.0.113.{(int(suffix[:2], 16) % 80) + 20}",
+        )
+        peer_ne = ManagedNE(
+            id=f"neb-{suffix}",
+            name="r1",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address=f"203.0.113.{(int(suffix[2:4], 16) % 80) + 120}",
+        )
+        self.db.add(ne)
+        self.db.add(peer_ne)
+        self.db.commit()
+        node = svc.ensure_fabric_node_for_managed(self.db, ne)
+        svc.ensure_fabric_node_for_managed(self.db, peer_ne)
+        self.db.commit()
+        hits = [
+            lldp.NeighborHit(
+                remote_name="r1",
+                local_port="Gi0/1",
+                remote_port="Ethernet1/0/1",
+            )
+        ]
+        calls = {"n": 0}
+        real_upsert = svc.upsert_fabric_edge
+
+        def flaky_upsert(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OperationalError(
+                    "INSERT",
+                    {},
+                    Exception("DeadlockDetected: fake"),
+                )
+            return real_upsert(*args, **kwargs)
+
+        with (
+            patch.object(svc, "upsert_fabric_edge", side_effect=flaky_upsert),
+            patch.object(svc, "_sleep_deadlock_backoff", return_value=None),
+        ):
+            out = svc._apply_discover_hits(
+                self.db,
+                fabric_node_id=node.id,
+                hits=hits,
+                auto_add_unmatched=False,
+            )
+        self.assertTrue(out.get("ok"), out)
+        self.assertEqual(calls["n"], 2)
+        self.assertGreaterEqual(int(out.get("edges_added") or 0), 1)
 
     def _region(self, name: str = "Test-Region") -> str:
         return svc.create_folder(
@@ -742,7 +812,15 @@ Management Addresses:
         inv = svc.ensure_fabric_node_for_managed(self.db, real)
         ghost = svc.ensure_fabric_node_for_managed(self.db, webcrt)
         self.db.commit()
-        hit = lldp.NeighborHit(remote_name="", remote_ip=ip, local_port="Gi0/0", remote_port="Gi0/1")
+        # LLDP management IP alone is not identity — need System Name.
+        ip_only = lldp.NeighborHit(
+            remote_name="", remote_ip=ip, local_port="Gi0/0", remote_port="Gi0/1"
+        )
+        self.assertIsNone(svc._match_hit_to_fabric_node(self.db, ip_only, self_id="self"))
+
+        hit = lldp.NeighborHit(
+            remote_name="R2", remote_ip=ip, local_port="Gi0/0", remote_port="Gi0/1"
+        )
         peer = svc._match_hit_to_fabric_node(self.db, hit, self_id="self")
         self.assertEqual(peer.id, inv.id)
         self.assertNotEqual(peer.id, ghost.id)
@@ -753,6 +831,127 @@ Management Addresses:
         self.assertIsNone(self.db.get(TopoFabricNode, ghost.id))
         self.db.delete(real)
         self.db.delete(webcrt)
+        self.db.commit()
+
+    def test_match_ignores_lldp_mgmt_ip_prefers_hostname(self) -> None:
+        """Two inventory NEs both named r1 with different IPs — match by name, not LLDP IP."""
+        suffix = uuid4().hex[:8]
+        ne_real = ManagedNE(
+            id=f"real-{suffix}",
+            name="r1",
+            vendor="Huawei",
+            device_type="huawei",
+            ip_address="192.168.0.127",
+            source="manual",
+        )
+        ne_wrong = ManagedNE(
+            id=f"wrong-{suffix}",
+            name="r1-lab",  # different hostname key
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address="203.0.113.184",
+            source="manual",
+        )
+        self.db.add(ne_real)
+        self.db.add(ne_wrong)
+        self.db.commit()
+        fa = svc.ensure_fabric_node_for_managed(self.db, ne_real)
+        fb = svc.ensure_fabric_node_for_managed(self.db, ne_wrong)
+        self.db.commit()
+        hit = lldp.NeighborHit(
+            remote_name="r1",
+            remote_ip="203.0.113.184",  # misleading interface/mgmt IP
+            local_port="Gi0/1",
+            remote_port="Ethernet1/0/1",
+        )
+        peer = svc._match_hit_to_fabric_node(self.db, hit, self_id="self")
+        self.assertEqual(peer.id, fa.id)
+        self.assertNotEqual(peer.id, fb.id)
+        self.db.delete(ne_real)
+        self.db.delete(ne_wrong)
+        self.db.commit()
+
+    def test_same_hostname_port_cutover_merges_not_missing(self) -> None:
+        """Duplicate fabric rows for same hostname must not leave a red replaced edge."""
+        suffix = uuid4().hex[:8]
+        ne_a = ManagedNE(
+            id=f"nea-{suffix}",
+            name=f"R2-{suffix}",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address=f"192.168.0.{(int(suffix[:2], 16) % 80) + 10}",
+        )
+        ne_b = ManagedNE(
+            id=f"neb-{suffix}",
+            name="r1",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address="192.168.0.127",
+            source="manual",
+        )
+        ne_c = ManagedNE(
+            id=f"nec-{suffix}",
+            name="r1",
+            vendor="Other",
+            device_type="generic",
+            ip_address="203.0.113.184",
+            source=LLDP_DISCOVERED_NE_SOURCE,
+        )
+        self.db.add_all([ne_a, ne_b, ne_c])
+        self.db.commit()
+        fa = svc.ensure_fabric_node_for_managed(self.db, ne_a)
+        fb = svc.ensure_fabric_node_for_managed(self.db, ne_b)
+        fc = svc.ensure_fabric_node_for_managed(self.db, ne_c)
+        self.db.commit()
+
+        old, _ = svc.upsert_fabric_edge(
+            self.db,
+            a_node_id=fa.id,
+            b_node_id=fb.id,
+            a_port="Gi0/1",
+            b_port="Ethernet1/0/1",
+            source="lldp",
+        )
+        new, _ = svc.upsert_fabric_edge(
+            self.db,
+            a_node_id=fa.id,
+            b_node_id=fc.id,
+            a_port="Gi0/1",
+            b_port="Ethernet1/0/1",
+            source="lldp",
+        )
+        self.db.commit()
+
+        handled = svc._mark_replaced_port_peers(
+            self.db,
+            self_id=fa.id,
+            local_port="Gi0/1",
+            peer_id=fc.id,
+            new_edge_id=new.id,
+        )
+        self.db.commit()
+        self.db.expire_all()
+
+        # Placeholder fabric absorbed into real inventory; no missing/replaced link.
+        self.assertIsNone(self.db.get(TopoFabricNode, fc.id))
+        edges = (
+            self.db.query(TopoFabricEdge)
+            .filter(
+                or_(TopoFabricEdge.a_node_id == fa.id, TopoFabricEdge.b_node_id == fa.id)
+            )
+            .all()
+        )
+        active = [e for e in edges if e.status == "active"]
+        missing = [e for e in edges if e.status == "missing"]
+        self.assertEqual(len(active), 1)
+        self.assertEqual(len(missing), 0)
+        peer_id = active[0].b_node_id if active[0].a_node_id == fa.id else active[0].a_node_id
+        self.assertEqual(peer_id, fb.id)
+        self.assertTrue(handled)
+
+        self.db.delete(ne_a)
+        self.db.delete(ne_b)
+        self.db.delete(ne_c)
         self.db.commit()
 
     def test_neighborhood(self) -> None:
