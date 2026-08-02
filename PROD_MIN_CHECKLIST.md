@@ -12,7 +12,7 @@
 ## Runtime
 - Ensure PostgreSQL backup policy exists (daily logical backup + retention).
 - Schema: API auto-runs `alembic upgrade head` on start (see [docs/ALEMBIC.md](docs/ALEMBIC.md)). No manual migrate flag required for normal deploys.
-- Optional: `NETX_RUN_INLINE_SCHEDULERS=false` and run `python -m netx_api.worker` for collectors.
+- Collectors: default is external worker (`python -m netx_api.worker`). Only set `NETX_RUN_INLINE_SCHEDULERS=true` for single-process lab. Check `/health/ready` → `schedulers.mode`.
 - Run `oclaw` and `netx` under process managers (systemd/Windows service/pm2 equivalent).
 - Enable auto-restart and startup-at-boot for both services.
 

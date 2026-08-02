@@ -47,6 +47,7 @@ from .ume_token_store import (
 )
 
 _schedule_log = logging.getLogger("netx.ume.schedule")
+_BOOT_MONO = time.monotonic()
 
 _UME_CLIENT_SINGLETON = UMEClient(
     token_loader=lambda: load_shared_token(),

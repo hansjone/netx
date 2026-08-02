@@ -140,8 +140,9 @@ class Settings(BaseSettings):
     alembic_upgrade_on_start: bool = True
     # Optional dedicated SQLAlchemy URL for /v1/sql/* (read-only DB role recommended).
     sql_readonly_database_url: str = ""
-    # When false, API skips config_sync / lldp / port_traffic schedulers (run `python -m netx_api.worker`).
-    run_inline_schedulers: bool = True
+    # When false (default), API skips config_sync / lldp / port_traffic schedulers —
+    # run `python -m netx_api.worker` alongside the API. Set true only for single-process lab.
+    run_inline_schedulers: bool = False
 
 
 settings = Settings()

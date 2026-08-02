@@ -106,6 +106,12 @@ class NeExecValidationTests(unittest.TestCase):
             _validate_command("ip address 1.1.1.1 255.255.255.0")
         self.assertEqual(ctx.exception.detail, "command_blocked")
 
+    def test_blocks_vendor_destructive(self) -> None:
+        for cmd in ("save", "request system reboot", "clear configuration", "file delete flash:/x"):
+            with self.assertRaises(HTTPException) as ctx:
+                _validate_command(cmd)
+            self.assertEqual(ctx.exception.detail, "command_blocked", cmd)
+
     def test_agent_batch_rejects_configure_before_connect(self) -> None:
         cmds = [
             "show interface",

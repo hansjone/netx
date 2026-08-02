@@ -38,12 +38,13 @@ class SchemaPatchesTests(unittest.TestCase):
             apply_domain_schema_patches(conn)
             apply_domain_schema_patches(conn)
 
-    def test_alembic_auto_defaults(self) -> None:
+    def test_worker_default_off_inline(self) -> None:
         from netx_api.config import Settings
 
         s = Settings(_env_file=None)
+        self.assertFalse(s.run_inline_schedulers)
         self.assertTrue(s.alembic_upgrade_on_start)
-        self.assertTrue(s.skip_legacy_startup_ddl)
+
         versions = Path(__file__).resolve().parents[1] / "alembic" / "versions"
         files = sorted(p.name for p in versions.glob("*.py") if p.name != "__init__.py")
         self.assertIn("20260802_scopes.py", files)

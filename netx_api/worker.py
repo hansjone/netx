@@ -1,6 +1,7 @@
 """Background worker process for long-running schedulers.
 
-Run separately from the API when NETX_RUN_INLINE_SCHEDULERS=false:
+Default deployment: API has ``NETX_RUN_INLINE_SCHEDULERS=false``; run this
+alongside the API:
 
     python -m netx_api.worker
 

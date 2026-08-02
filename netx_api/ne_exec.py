@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from fastapi import HTTPException
@@ -12,71 +11,23 @@ from .cli_resolve import resolve_cli_target
 from .config import settings
 from .ne_collect_runner import _collect_on_device
 from .ne_crypto import credentials_configured
+from .ne_exec_guard import _validate_command, validate_ne_exec_command
 
 _EXEC_MAX_COMMANDS_CAP = 50
 _EXEC_MAX_OUTPUT = 32_000
 _EXEC_READ_TIMEOUT_DEFAULT = 60
 _EXEC_READ_TIMEOUT_MAX = 120
 
+__all__ = [
+    "_validate_command",
+    "execute_managed_ne_commands",
+    "validate_ne_exec_command",
+]
+
 
 def _exec_max_commands() -> int:
     raw = int(settings.ne_exec_max_commands or 5)
     return max(1, min(_EXEC_MAX_COMMANDS_CAP, raw))
-
-# Block obvious config-change / destructive patterns (case-insensitive).
-_BLOCKED_RE = re.compile(
-    r"(?i)("
-    r"configure\s+terminal|conf\s+t\b|"
-    r"\bwrite\s+(memory|erase)|\bcopy\s+run|\bcopy\s+startup|"
-    r"\breload\b|\breboot\b|\berase\b|\bformat\b|\bdelete\b|"
-    r"\bcommit\b|\brollback\b|startup-config|"
-    r"\bsystem-view\b|\bip\s+address\b|\bvlan\s+\d"
-    r")"
-)
-
-# Read-only CLI: show/display plus ping/traceroute reachability checks.
-_ALLOWED_PREFIX_RE = re.compile(
-    r"(?i)^(show\s|display\s|ping\s|ping6\s|traceroute\s|tracert\s|trace\s|trace6\s)"
-)
-
-# Unicode / C1 line separators that can smuggle a second CLI after a show prefix.
-_FORBIDDEN_LINE_SEPARATORS = ("\u2028", "\u2029", "\x85", "\x0b", "\x0c")
-
-# Pipe segments allowed after show/display (output filtering only).
-_ALLOWED_PIPE_SEGMENT_RE = re.compile(
-    r"(?i)^(include|exclude|begin|section|count|match|grep|one-line|no-more)(\s|$)"
-)
-_BLOCKED_PIPE_SEGMENT_RE = re.compile(r"(?i)\b(redirect|append|tee|send)\b")
-
-
-def _validate_pipe_segments(cmd: str) -> None:
-    if "|" not in cmd:
-        return
-    parts = [p.strip() for p in cmd.split("|")]
-    if len(parts) < 2 or not parts[0] or any(not p for p in parts[1:]):
-        raise HTTPException(status_code=400, detail="command_pipe_not_allowed")
-    for segment in parts[1:]:
-        if _BLOCKED_PIPE_SEGMENT_RE.search(segment):
-            raise HTTPException(status_code=400, detail="command_pipe_not_allowed")
-        if not _ALLOWED_PIPE_SEGMENT_RE.match(segment):
-            raise HTTPException(status_code=400, detail="command_pipe_not_allowed")
-
-
-def _validate_command(command: str) -> None:
-    cmd = str(command or "").strip()
-    if not cmd:
-        raise HTTPException(status_code=400, detail="empty_command")
-    if len(cmd) > 500:
-        raise HTTPException(status_code=400, detail="command_too_long")
-    if any(ch in cmd for ch in (";", "\n", "\r", "`")):
-        raise HTTPException(status_code=400, detail="command_chars_not_allowed")
-    if any(sep in cmd for sep in _FORBIDDEN_LINE_SEPARATORS):
-        raise HTTPException(status_code=400, detail="command_chars_not_allowed")
-    if _BLOCKED_RE.search(cmd):
-        raise HTTPException(status_code=400, detail="command_blocked")
-    if not _ALLOWED_PREFIX_RE.match(cmd):
-        raise HTTPException(status_code=400, detail="command_not_allowed_prefix")
-    _validate_pipe_segments(cmd)
 
 
 def _normalize_read_timeout(sec: int | None) -> int:
@@ -105,7 +56,7 @@ def execute_managed_ne_commands(
     if len(cmds) > max_cmds:
         raise HTTPException(status_code=400, detail=f"too_many_commands (max {max_cmds})")
     for c in cmds:
-        _validate_command(c)
+        validate_ne_exec_command(c)
 
     creds, device = resolve_cli_target(db, managed_ne_id=mid or None, ume_ne_id=uid or None)
     read_timeout = _normalize_read_timeout(read_timeout_sec)
