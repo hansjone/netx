@@ -39,11 +39,21 @@ def collect_runtime_metrics() -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         pass
     try:
-        from .port_traffic_scheduler import port_traffic_scheduler_status
+        from .scheduler_heartbeat import resolve_device_scheduler_metrics
 
-        out["port_traffic"] = port_traffic_scheduler_status()
+        sched = resolve_device_scheduler_metrics()
+        out["device_schedulers"] = sched
+        # Convenience aliases (prefer heartbeat when split; local when inline).
+        out["port_traffic"] = sched.get("port_traffic") or {"running": False}
+        out["config_sync"] = sched.get("config_sync") or {"running": False}
+        out["lldp_collect"] = sched.get("lldp_collect") or {"running": False}
     except Exception:  # noqa: BLE001
-        pass
+        try:
+            from .port_traffic_scheduler import port_traffic_scheduler_status
+
+            out["port_traffic"] = port_traffic_scheduler_status()
+        except Exception:  # noqa: BLE001
+            pass
     try:
         from .webcrt_session_registry import active_session_count, list_sessions
 
@@ -89,9 +99,22 @@ def _prom_lines(metrics: dict[str, Any]) -> str:
     ):
         if key in fwd:
             lines.append(f"{prom} {int(fwd.get(key) or 0)}")
+    sched = metrics.get("device_schedulers") or {}
+    if "stale" in sched:
+        lines.append(f'netx_device_schedulers_stale {1 if sched.get("stale") else 0}')
+    if sched.get("age_sec") is not None:
+        lines.append(f'netx_device_schedulers_heartbeat_age_seconds {sched["age_sec"]}')
+    for name, key in (
+        ("config_sync", "netx_config_sync_scheduler_running"),
+        ("lldp_collect", "netx_lldp_collect_scheduler_running"),
+        ("port_traffic", "netx_port_traffic_scheduler_running"),
+    ):
+        block = sched.get(name) or metrics.get(name) or {}
+        if "running" in block:
+            lines.append(f'{key} {1 if block.get("running") else 0}')
+        if block.get("last_tick_age_sec") is not None:
+            lines.append(f"netx_{name}_tick_age_seconds {block['last_tick_age_sec']}")
     pt = metrics.get("port_traffic") or {}
-    if pt.get("last_tick_age_sec") is not None:
-        lines.append(f'netx_port_traffic_tick_age_seconds {pt["last_tick_age_sec"]}')
     if pt.get("last_purge_age_sec") is not None:
         lines.append(f'netx_port_traffic_purge_age_seconds {pt["last_purge_age_sec"]}')
     web = metrics.get("webcrt") or {}

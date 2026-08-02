@@ -42,13 +42,31 @@ def health_ready(db: Session = Depends(get_db)) -> dict[str, Any]:
     out["db_pool"] = db_pool_status()
     out["cli_budget"] = cli_budget_status()
     inline = bool(getattr(settings, "run_inline_schedulers", True))
-    out["schedulers"] = {
+    sched_block: dict[str, Any] = {
         "inline": inline,
         "mode": "inline" if inline else "external_worker",
         "hint": None
         if inline
         else "run `python -m netx_api.worker` for config_sync / lldp_collect / port_traffic",
     }
+    try:
+        from .scheduler_heartbeat import resolve_device_scheduler_metrics
+
+        resolved = resolve_device_scheduler_metrics()
+        sched_block["source"] = resolved.get("source")
+        sched_block["stale"] = bool(resolved.get("stale"))
+        sched_block["age_sec"] = resolved.get("age_sec")
+        sched_block["worker_pid"] = resolved.get("pid")
+        for key in ("config_sync", "lldp_collect", "port_traffic"):
+            block = resolved.get(key) or {}
+            sched_block[key] = {"running": bool(block.get("running"))}
+        if resolved.get("hint"):
+            sched_block["hint"] = resolved["hint"]
+        if not inline and resolved.get("stale"):
+            out["status"] = "degraded"
+    except Exception:  # noqa: BLE001
+        pass
+    out["schedulers"] = sched_block
     return out
 
 

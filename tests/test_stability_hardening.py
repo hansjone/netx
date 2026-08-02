@@ -13,7 +13,13 @@ from netx_api.runtime_budget import log_runtime_budget
 
 class StabilityHardeningTests(unittest.TestCase):
     def test_production_defaults(self) -> None:
-        s = Settings(_env_file=None)
+        import os
+        from unittest.mock import patch
+
+        # Ignore process env (one-click start may set NETX_RUN_INLINE_SCHEDULERS=false).
+        clean = {k: v for k, v in os.environ.items() if not k.startswith("NETX_")}
+        with patch.dict(os.environ, clean, clear=True):
+            s = Settings(_env_file=None)
         self.assertEqual(s.db_pool_size, 40)
         self.assertEqual(s.db_max_overflow, 40)
         self.assertEqual(s.cli_max_concurrent, 24)
@@ -33,6 +39,7 @@ class StabilityHardeningTests(unittest.TestCase):
         self.assertEqual(s.ume_raw_json_max_bytes, 64 * 1024)
         self.assertEqual(s.ne_collection_keep_days, 14)
         self.assertTrue(s.run_inline_schedulers)
+        self.assertEqual(s.scheduler_heartbeat_path, "data/runtime/scheduler_heartbeat.json")
         # Pool should cover CLI + multi-user HTTP/WS reserve under defaults.
         self.assertGreaterEqual(s.db_pool_size + s.db_max_overflow, s.cli_max_concurrent + 24)
 
@@ -65,9 +72,37 @@ class StabilityHardeningTests(unittest.TestCase):
         self.assertIn("netx_thread_count", body)
         self.assertIn("netx_cli_budget_limit", body)
         self.assertIn("netx_oclaw_forwarder_dropped", body)
+        self.assertIn("netx_device_schedulers_stale", body)
 
     def test_log_runtime_budget_does_not_raise(self) -> None:
         log_runtime_budget(role="test")
+
+    def test_scheduler_heartbeat_roundtrip(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from netx_api.scheduler_heartbeat import (
+            publish_scheduler_heartbeat,
+            read_scheduler_heartbeat,
+            resolve_device_scheduler_metrics,
+        )
+
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "hb.json"
+            with patch("netx_api.scheduler_heartbeat.heartbeat_path", return_value=path):
+                publish_scheduler_heartbeat(role="worker")
+                hb = read_scheduler_heartbeat(max_age_sec=60)
+                self.assertIsNotNone(hb)
+                assert hb is not None
+                self.assertFalse(hb["stale"])
+                self.assertEqual(hb.get("role"), "worker")
+                with patch.object(settings, "run_inline_schedulers", False):
+                    resolved = resolve_device_scheduler_metrics()
+                self.assertEqual(resolved["mode"], "external_worker")
+                self.assertEqual(resolved["source"], "heartbeat")
+                self.assertFalse(resolved["stale"])
+                self.assertIn("port_traffic", resolved)
 
 
 if __name__ == "__main__":

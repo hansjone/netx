@@ -23,6 +23,7 @@ _log = logging.getLogger("netx.config_sync.scheduler")
 _stop = threading.Event()
 _thread: threading.Thread | None = None
 _BOOT_MONO = time.monotonic()
+_last_tick_mono: float = 0.0
 
 
 def _utcnow() -> datetime:
@@ -114,11 +115,13 @@ def try_start_scheduled_cycle() -> str | None:
 
 
 def _loop() -> None:
+    global _last_tick_mono
     tick = max(15, int(settings.config_sync_scheduler_tick_sec or 60))
     grace = max(0, int(settings.config_sync_startup_grace_sec or 0))
     _log.info("config_sync scheduler started tick=%ss startup_grace=%ss", tick, grace)
     while not _stop.is_set():
         try:
+            _last_tick_mono = time.monotonic()
             if bool(settings.config_sync_scheduler_enabled):
                 try_start_scheduled_cycle()
         except Exception:
@@ -142,3 +145,12 @@ def start_config_sync_scheduler() -> None:
 
 def stop_config_sync_scheduler() -> None:
     _stop.set()
+
+
+def config_sync_scheduler_status() -> dict:
+    now = time.monotonic()
+    return {
+        "running": bool(_thread and _thread.is_alive()),
+        "last_tick_age_sec": (now - _last_tick_mono) if _last_tick_mono else None,
+        "startup_grace_remaining_sec": round(startup_grace_remaining_sec(), 1),
+    }

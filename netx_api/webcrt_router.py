@@ -17,6 +17,7 @@ from .auth_deps import AuthContext, require_user, resolve_user_from_token
 from .auth_scopes import SCOPE_WEBCRT, has_scope
 from .config import settings
 from .webcrt_tickets import consume_ws_ticket, issue_ws_ticket
+from .webcrt_io import webcrt_io_executor
 from .webcrt_service import (
     close_session,
     create_session,
@@ -450,7 +451,7 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
             slice_timeout = min(1.0, max(0.2, remaining))
             try:
                 await loop.run_in_executor(
-                    None,
+                    webcrt_io_executor(),
                     lambda t=slice_timeout: wait_session_ready(session_id, timeout=t),
                 )
                 sess = get_session(session_id) or cur
@@ -533,7 +534,7 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
         data = "".join(stdin_buf)
         stdin_buf = []
         try:
-            await asyncio.get_running_loop().run_in_executor(None, sess.write_stdin, data)
+            await asyncio.get_running_loop().run_in_executor(webcrt_io_executor(), sess.write_stdin, data)
         except Exception as exc:
             await websocket.send_json(
                 {"type": "status", "state": "error", "message": f"write_failed:{exc}"}
@@ -589,7 +590,7 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
         while not stop.is_set():
             # Longer block is cheap now (Condition wait); cuts executor churn when idle.
             chunk = await loop.run_in_executor(
-                None, lambda: sess.take_stdout(attach_gen, timeout=0.2)
+                webcrt_io_executor(), lambda: sess.take_stdout(attach_gen, timeout=0.2)
             )
             if chunk == "stale":
                 break
@@ -626,7 +627,7 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
     if sess.needs_live_prompt:
         sess.needs_live_prompt = False
         try:
-            await asyncio.get_running_loop().run_in_executor(None, sess.write_stdin, "\r")
+            await asyncio.get_running_loop().run_in_executor(webcrt_io_executor(), sess.write_stdin, "\r")
         except Exception:
             _log.debug("webcrt live prompt sync failed session=%s", session_id, exc_info=True)
     try:
@@ -667,10 +668,10 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
             elif mtype == "resize":
                 cols = int(msg.get("cols") or sess.cols)
                 rows = int(msg.get("rows") or sess.rows)
-                await asyncio.get_running_loop().run_in_executor(None, sess.resize, cols, rows)
+                await asyncio.get_running_loop().run_in_executor(webcrt_io_executor(), sess.resize, cols, rows)
             elif mtype == "break":
                 try:
-                    await asyncio.get_running_loop().run_in_executor(None, sess.send_break)
+                    await asyncio.get_running_loop().run_in_executor(webcrt_io_executor(), sess.send_break)
                 except Exception as exc:
                     await websocket.send_json(
                         {"type": "status", "state": "error", "message": f"break_failed:{exc}"}

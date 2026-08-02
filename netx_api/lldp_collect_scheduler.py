@@ -20,6 +20,7 @@ _log = logging.getLogger("netx.lldp_collect.scheduler")
 _stop = threading.Event()
 _thread: threading.Thread | None = None
 _BOOT_MONO = time.monotonic()
+_last_tick_mono: float = 0.0
 
 
 def _utcnow() -> datetime:
@@ -68,11 +69,13 @@ def try_start_scheduled_collect() -> str | None:
 
 
 def _loop() -> None:
+    global _last_tick_mono
     tick = max(15, int(getattr(settings, "lldp_collect_scheduler_tick_sec", 60) or 60))
     grace = max(0, int(getattr(settings, "lldp_collect_startup_grace_sec", 3600) or 0))
     _log.info("lldp_collect scheduler started tick=%ss startup_grace=%ss", tick, grace)
     while not _stop.is_set():
         try:
+            _last_tick_mono = time.monotonic()
             try_start_scheduled_collect()
         except Exception:
             _log.exception("lldp_collect scheduler tick failed")
@@ -94,3 +97,12 @@ def start_lldp_collect_scheduler() -> None:
 
 def stop_lldp_collect_scheduler() -> None:
     _stop.set()
+
+
+def lldp_collect_scheduler_status() -> dict:
+    now = time.monotonic()
+    return {
+        "running": bool(_thread is not None and _thread.is_alive()),
+        "last_tick_age_sec": (now - _last_tick_mono) if _last_tick_mono else None,
+        "startup_grace_remaining_sec": round(startup_grace_remaining_sec(), 1),
+    }

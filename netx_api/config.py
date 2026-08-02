@@ -144,6 +144,8 @@ class Settings(BaseSettings):
     # When true (default), API also runs config_sync / lldp / port_traffic schedulers.
     # Production split: set false and run `python -m netx_api.worker` beside the API.
     run_inline_schedulers: bool = True
+    # Worker→API heartbeat file (used when run_inline_schedulers=false).
+    scheduler_heartbeat_path: str = "data/runtime/scheduler_heartbeat.json"
     # SQLAlchemy QueuePool for multi-user API + collectors + UME WS.
     # Rule of thumb: pool_size + max_overflow >= HTTP/WS peak + cli_max_concurrent + sidebands.
     db_pool_size: int = 40

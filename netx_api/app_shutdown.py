@@ -11,6 +11,13 @@ def shutdown_runtime(*, reason: str = "lifespan") -> None:
     _log.info("shutdown_runtime begin reason=%s", reason)
 
     try:
+        from .scheduler_heartbeat import stop_scheduler_heartbeat_publisher
+
+        stop_scheduler_heartbeat_publisher()
+    except Exception:  # noqa: BLE001
+        _log.exception("stop_scheduler_heartbeat_publisher failed")
+
+    try:
         from .config_sync_scheduler import stop_config_sync_scheduler
 
         stop_config_sync_scheduler()
@@ -66,6 +73,13 @@ def shutdown_runtime(*, reason: str = "lifespan") -> None:
         shutdown_cli_timeout_pool(wait=False)
     except Exception:  # noqa: BLE001
         _log.exception("shutdown_cli_timeout_pool failed")
+
+    try:
+        from .webcrt_io import shutdown_webcrt_io_executor
+
+        shutdown_webcrt_io_executor(wait=False)
+    except Exception:  # noqa: BLE001
+        _log.exception("shutdown_webcrt_io_executor failed")
 
     try:
         from .audit_async import shutdown_audit_worker
