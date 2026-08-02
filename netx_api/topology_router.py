@@ -41,15 +41,14 @@ from .topology_schemas import (
     ViewPopulateRequest,
     ViewPositionsPatch,
 )
+from .topology_discover import get_discover_job, start_discover_job
 from .topology_fabric import (
-    get_discover_job,
     get_fabric_neighborhood,
     get_fabric_summary,
     list_fabric_edges,
     list_fabric_nodes,
     merge_duplicate_fabric_nodes,
     refresh_fabric_stats,
-    start_discover_job,
     upsert_fabric_edge,
 )
 from .topology_views import (

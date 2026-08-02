@@ -183,7 +183,8 @@ class FabricTopologyTests(unittest.TestCase):
 
         with (
             patch.object(svc, "upsert_fabric_edge", side_effect=flaky_upsert),
-            patch.object(svc, "_sleep_deadlock_backoff", return_value=None),
+            patch("netx_api.topology_discover.upsert_fabric_edge", side_effect=flaky_upsert),
+            patch("netx_api.topology_discover._sleep_deadlock_backoff", return_value=None),
         ):
             out = svc._apply_discover_hits(
                 self.db,
@@ -566,7 +567,7 @@ class FabricTopologyTests(unittest.TestCase):
             "output": CISCO_LLDP_DETAIL,
             "commands": ["show lldp neighbors detail"],
         }
-        with patch.object(svc, "execute_managed_ne_commands", return_value=fake_exec):
+        with patch("netx_api.topology_discover.execute_managed_ne_commands", return_value=fake_exec):
             job = svc.start_discover_job(
                 self.db,
                 FabricDiscoverRequest(scope="ne_ids", ne_ids=[ne_a.id], concurrency=1),
@@ -741,7 +742,7 @@ Management Addresses:
             "output": lldp_out,
             "commands": ["show lldp neighbors detail"],
         }
-        with patch.object(svc, "execute_managed_ne_commands", return_value=fake_exec):
+        with patch("netx_api.topology_discover.execute_managed_ne_commands", return_value=fake_exec):
             job = svc.start_discover_job(
                 self.db,
                 FabricDiscoverRequest(
