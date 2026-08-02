@@ -50,9 +50,9 @@ class CliHopReturnDetectionTests(unittest.TestCase):
         self.assertFalse(should_close_cli_hop_session(text, "<HOP>", seen_other_prompt=False))
         self.assertTrue(should_close_cli_hop_session(text, "<HOP>", seen_other_prompt=True))
 
-    @patch("netx_api.ne_session_factory._interactive_target_auth")
-    @patch("netx_api.ne_session_factory._read_channel")
-    @patch("netx_api.ne_session_factory.ConnectHandler")
+    @patch("netx_api.ne_session_connect._interactive_target_auth")
+    @patch("netx_api.ne_session_connect._read_channel")
+    @patch("netx_api.ne_session_connect.ConnectHandler")
     def test_connect_attaches_cli_hop_guard(
         self,
         mock_ch: MagicMock,

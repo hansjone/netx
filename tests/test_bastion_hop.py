@@ -73,8 +73,8 @@ class BastionTemplateTests(unittest.TestCase):
 
 
 class BastionConnectRoutingTests(unittest.TestCase):
-    @patch("netx_api.ne_session_factory._connect_via_bastion")
-    @patch("netx_api.ne_session_factory._connect_direct")
+    @patch("netx_api.ne_session_connect._connect_via_bastion")
+    @patch("netx_api.ne_session_connect._connect_direct")
     def test_open_routes_to_bastion_when_enabled(self, direct, bastion) -> None:
         bastion.return_value = MagicMock()
         creds = {"hop_enabled": True, "hop_vendor": "bastion"}
@@ -82,8 +82,8 @@ class BastionConnectRoutingTests(unittest.TestCase):
         bastion.assert_called_once()
         direct.assert_not_called()
 
-    @patch("netx_api.ne_session_factory._connect_via_bastion")
-    @patch("netx_api.ne_session_factory._connect_via_linux_hop")
+    @patch("netx_api.ne_session_connect._connect_via_bastion")
+    @patch("netx_api.ne_session_connect._connect_via_linux_hop")
     def test_open_routes_linux_not_bastion(self, linux, bastion) -> None:
         linux.return_value = MagicMock()
         creds = {"hop_enabled": True, "hop_vendor": "linux"}
@@ -93,8 +93,8 @@ class BastionConnectRoutingTests(unittest.TestCase):
 
 
 class BastionConnectImplTests(unittest.TestCase):
-    @patch("netx_api.ne_session_factory._netmiko_over_ssh_client")
-    @patch("netx_api.ne_session_factory._bastion_ssh_connect")
+    @patch("netx_api.ne_session_connect._netmiko_over_ssh_client")
+    @patch("netx_api.ne_session_connect._bastion_ssh_connect")
     def test_bastion_managed_skips_secondary_auth(self, bastion_ssh, netmiko_wrap) -> None:
         from netx_api.ne_session_factory import _connect_via_bastion
 
@@ -132,10 +132,10 @@ class BastionConnectImplTests(unittest.TestCase):
         self.assertEqual(wrap_kwargs["password"], "vault-pass")
         conn.disconnect.assert_not_called()
 
-    @patch("netx_api.ne_session_factory._interactive_target_auth")
-    @patch("netx_api.ne_session_factory._read_channel")
-    @patch("netx_api.ne_session_factory._netmiko_over_ssh_client")
-    @patch("netx_api.ne_session_factory._bastion_ssh_connect")
+    @patch("netx_api.ne_session_connect._interactive_target_auth")
+    @patch("netx_api.ne_session_connect._read_channel")
+    @patch("netx_api.ne_session_connect._netmiko_over_ssh_client")
+    @patch("netx_api.ne_session_connect._bastion_ssh_connect")
     def test_bastion_manual_invokes_secondary_auth(
         self, bastion_ssh, netmiko_wrap, _read, interact
     ) -> None:
