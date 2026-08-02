@@ -1305,6 +1305,12 @@ export const collectPortTrafficNow = (deviceId: string) =>
 export const deletePortTrafficDevice = (deviceId: string) =>
   apiDelete<{ ok: boolean; id: string }>(`/v1/port-traffic/devices/${encodeURIComponent(deviceId)}`);
 
+export const rebindPortTrafficDevice = (deviceId: string, body: { ne_id: string }) =>
+  apiPost<PortTrafficDevice>(
+    `/v1/port-traffic/devices/${encodeURIComponent(deviceId)}/rebind`,
+    body,
+  );
+
 export const fetchPortTrafficTargets = (deviceId: string) =>
   apiGet<{ items: PortTrafficTarget[] }>(
     `/v1/port-traffic/devices/${encodeURIComponent(deviceId)}/targets`,

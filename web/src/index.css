@@ -5924,12 +5924,19 @@ pre {
 .network-nav__list {
   list-style: none;
   margin: 0;
-  padding: 0 8px 6px 10px;
+  /* Indent under group label (toggle pad + chevron + gap), not under the chevron */
+  padding: 0 8px 6px 34px;
+}
+
+.network-nav__list > li {
+  width: 100%;
 }
 
 .network-nav__link {
   display: block;
-  padding: 7px 12px 7px 18px;
+  box-sizing: border-box;
+  width: 100%;
+  padding: 7px 12px;
   border-radius: 6px;
   color: var(--nm-muted);
   text-decoration: none;
@@ -6270,22 +6277,19 @@ pre {
   color: #b91c1c;
 }
 
-.pt-list-task-err-btn {
-  display: inline-block;
-  margin-top: 4px;
-  padding: 0;
-  border: 0;
-  background: transparent;
+/* Beat .app-main button { color/background } so error state shows without hover. */
+.app-main .pt-list-log-btn--error,
+.pt-list-actions .pt-list-log-btn--error {
   color: #b91c1c;
-  font-size: 12px;
+  border-color: #fecaca;
+  background: #fef2f2;
   font-weight: 600;
-  cursor: pointer;
-  text-decoration: underline;
-  text-underline-offset: 2px;
 }
 
-.pt-list-task-err-btn:hover {
+.app-main .pt-list-log-btn--error:hover,
+.pt-list-actions .pt-list-log-btn--error:hover {
   color: #991b1b;
+  background: #fee2e2;
 }
 
 .pt-log-modal__head {
@@ -6362,12 +6366,48 @@ pre {
 
 .pt-log-item__msg {
   margin: 0;
+  /* Override global `pre` dark terminal chrome — logs sit on light cards. */
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 8px 10px;
   white-space: pre-wrap;
   word-break: break-word;
   font-size: 12px;
   line-height: 1.45;
-  color: #1e293b;
+  color: #0f172a;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.pt-rebind-modal__current {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.pt-rebind-modal__current strong {
+  margin-left: 8px;
+  font-weight: 600;
+}
+
+.pt-rebind-modal__table-wrap {
+  max-height: min(40vh, 360px);
+  overflow: auto;
+}
+
+.pt-rebind-row--same-ip {
+  background: #fffbeb;
+}
+
+.pt-rebind-same-ip {
+  margin-left: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #b45309;
 }
 
 .pt-list-status {

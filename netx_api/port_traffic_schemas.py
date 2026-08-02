@@ -51,6 +51,12 @@ class PortTrafficDeviceUpdate(BaseModel):
     vendor: str | None = None
 
 
+class PortTrafficDeviceRebind(BaseModel):
+    """Re-link a monitor device to an explicitly chosen managed/UME NE; keeps samples."""
+
+    ne_id: str = Field(min_length=1, max_length=128)
+
+
 class PortTrafficDeviceOut(BaseModel):
     id: str
     source: str

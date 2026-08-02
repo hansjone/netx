@@ -12,6 +12,7 @@ import {
   fetchPortTrafficTargets,
   pausePortTrafficDevice,
   putPortTrafficInterfaces,
+  rebindPortTrafficDevice,
   startPortTrafficDevice,
   stopPortTrafficDevice,
   updatePortTrafficDevice,
@@ -38,6 +39,30 @@ function statusTone(status: string): "running" | "paused" | "stopped" | "other" 
   if (status === "paused") return "paused";
   if (status === "stopped") return "stopped";
   return "other";
+}
+
+function formatPortTrafficLogMessage(
+  raw: string,
+  t: (key: string, vars?: Record<string, string | number>) => string,
+): string {
+  const s = String(raw || "").trim();
+  if (!s) return "";
+  if (s.includes("managed_ne_not_found") || s.includes("ume_ne_not_found")) {
+    return t("portTraffic.err.managedNeNotFound");
+  }
+  const m = s.match(/^(\d+)_target_errors$/);
+  if (m) return t("portTraffic.err.targetErrors", { count: m[1] });
+  if (s === "unsupported_vendor") return t("portTraffic.err.unsupportedVendor");
+  if (s === "invalid_source") return t("portTraffic.err.invalidSource");
+  return s;
+}
+
+function needsNeRebind(row: PortTrafficDevice): boolean {
+  const err = String(row.last_error || "");
+  if (err.includes("managed_ne_not_found") || err.includes("ume_ne_not_found")) return true;
+  // Older rounds only stored "N_target_errors"; still offer rebind when IP is known.
+  if (/^\d+_target_errors$/.test(err.trim()) && String(row.ne_ip || "").trim()) return true;
+  return false;
 }
 
 function formatBw(bps: number) {
@@ -84,6 +109,10 @@ export function PortTrafficPage() {
   const [wizardStep, setWizardStep] = useState<1 | 2 | 3>(1);
   const [logDeviceId, setLogDeviceId] = useState("");
   const [logDeviceLabel, setLogDeviceLabel] = useState("");
+  const [rebindDevice, setRebindDevice] = useState<PortTrafficDevice | null>(null);
+  const [rebindKeyword, setRebindKeyword] = useState("");
+  const [rebindPage, setRebindPage] = useState(1);
+  const [rebindSelectedNe, setRebindSelectedNe] = useState<CliTargetItem | null>(null);
 
   const dashQuery = useQuery({
     queryKey: queryKeys.portTrafficDashboard,
@@ -104,6 +133,20 @@ export function PortTrafficPage() {
     queryFn: () =>
       fetchCliTargets({ source: "all", keyword: neKeyword, page: nePage, pageSize: TARGET_PAGE_SIZE }),
     enabled: view === "wizard" && wizardStep === 1,
+    staleTime: 5000,
+  });
+
+  const rebindSource = rebindDevice?.source === "ume" ? "ume" : "managed";
+  const rebindNesQuery = useQuery({
+    queryKey: ["cliTargets", "rebind", rebindSource, rebindKeyword, rebindPage, TARGET_PAGE_SIZE],
+    queryFn: () =>
+      fetchCliTargets({
+        source: rebindSource,
+        keyword: rebindKeyword,
+        page: rebindPage,
+        pageSize: TARGET_PAGE_SIZE,
+      }),
+    enabled: Boolean(rebindDevice),
     staleTime: 5000,
   });
 
@@ -229,6 +272,61 @@ export function PortTrafficPage() {
     },
     onError: (e: Error) => showError(e.message),
   });
+
+  const rebindMut = useMutation({
+    mutationFn: ({ id, neId }: { id: string; neId: string }) =>
+      rebindPortTrafficDevice(id, { ne_id: neId }),
+    onSuccess: () => {
+      showOk(t("portTraffic.rebindOk"));
+      setRebindDevice(null);
+      setRebindSelectedNe(null);
+      setRebindKeyword("");
+      setRebindPage(1);
+      invalidateAll();
+    },
+    onError: (e: Error) => {
+      const msg = String(e.message || "");
+      if (msg.includes("managed_ne_not_found") || msg.includes("ume_ne_not_found")) {
+        showError(t("portTraffic.err.rebindNeMissing"));
+      } else if (msg.includes("device_already_monitored")) {
+        showError(t("portTraffic.err.alreadyMonitored"));
+      } else if (msg.includes("ne_id_required")) {
+        showError(t("portTraffic.err.rebindPickFirst"));
+      } else {
+        showError(msg || t("portTraffic.rebindFailed"));
+      }
+    },
+  });
+
+  const openRebind = (row: PortTrafficDevice) => {
+    setRebindDevice(row);
+    setRebindSelectedNe(null);
+    setRebindKeyword(row.ne_ip || row.ne_name || "");
+    setRebindPage(1);
+  };
+
+  const closeRebind = () => {
+    if (rebindMut.isPending) return;
+    setRebindDevice(null);
+    setRebindSelectedNe(null);
+    setRebindKeyword("");
+    setRebindPage(1);
+  };
+
+  const confirmRebind = () => {
+    if (!rebindDevice || !rebindSelectedNe) {
+      showError(t("portTraffic.err.rebindPickFirst"));
+      return;
+    }
+    const src = rebindSelectedNe.source === "ume" ? "ume" : "managed";
+    if (src !== rebindSource) {
+      showError(t("portTraffic.err.rebindSourceMismatch"));
+      return;
+    }
+    const label = `${rebindSelectedNe.name} (${rebindSelectedNe.ip_address})`;
+    if (!window.confirm(t("portTraffic.rebindConfirm", { ne: label }))) return;
+    rebindMut.mutate({ id: rebindDevice.id, neId: rebindSelectedNe.id });
+  };
 
   const resetWizard = () => {
     setWizardStep(1);
@@ -488,18 +586,6 @@ export function PortTrafficPage() {
                               {row.vendor ? ` · ${row.vendor}` : ""}
                               {row.note ? ` · ${row.note}` : ""}
                             </div>
-                            {row.last_error ? (
-                              <button
-                                type="button"
-                                className="pt-list-task-err-btn"
-                                onClick={() => {
-                                  setLogDeviceId(row.id);
-                                  setLogDeviceLabel(deviceLabel(row));
-                                }}
-                              >
-                                {t("portTraffic.logHasError")}
-                              </button>
-                            ) : null}
                           </td>
                           <td>
                             <span className={`pt-list-status pt-list-status--${tone}`}>
@@ -530,6 +616,15 @@ export function PortTrafficPage() {
                               <button type="button" onClick={() => openEdit(row)}>
                                 {t("portTraffic.edit")}
                               </button>
+                              {needsNeRebind(row) ? (
+                                <button
+                                  type="button"
+                                  title={t("portTraffic.rebindHint")}
+                                  onClick={() => openRebind(row)}
+                                >
+                                  {t("portTraffic.rebind")}
+                                </button>
+                              ) : null}
                               {row.status !== "running" ? (
                                 <button
                                   type="button"
@@ -558,6 +653,7 @@ export function PortTrafficPage() {
                               ) : null}
                               <button
                                 type="button"
+                                className={row.last_error ? "pt-list-log-btn--error" : undefined}
                                 onClick={() => {
                                   setLogDeviceId(row.id);
                                   setLogDeviceLabel(deviceLabel(row));
@@ -967,27 +1063,174 @@ export function PortTrafficPage() {
               <p className="muted">{t("portTraffic.logEmpty")}</p>
             ) : (
               <div className="pt-log-modal__list">
-                {(logQuery.data?.items || []).map((ev) => (
-                  <article
-                    key={ev.id}
-                    className={`pt-log-item pt-log-item--${ev.level === "error"}`}
-                  >
-                    <div className="pt-log-item__meta">
-                      <span className="pt-log-item__level">{ev.level || "error"}</span>
-                      <span className="pt-log-item__time">
-                        {formatSystemTime(ev.created_at) || "—"}
-                      </span>
-                      {ev.ifname ? (
-                        <span className="pt-log-item__if" title={ev.ifname}>
-                          {ev.ifname}
+                {(logQuery.data?.items || []).map((ev) => {
+                  const level = String(ev.level || "error").toLowerCase();
+                  const tone =
+                    level === "warn" || level === "warning"
+                      ? "warn"
+                      : level === "info"
+                        ? "info"
+                        : "error";
+                  return (
+                    <article key={ev.id} className={`pt-log-item pt-log-item--${tone}`}>
+                      <div className="pt-log-item__meta">
+                        <span className="pt-log-item__level">{level}</span>
+                        <span className="pt-log-item__time">
+                          {formatSystemTime(ev.created_at) || "—"}
                         </span>
-                      ) : null}
-                    </div>
-                    <pre className="pt-log-item__msg">{ev.message}</pre>
-                  </article>
-                ))}
+                        {ev.ifname ? (
+                          <span className="pt-log-item__if" title={ev.ifname}>
+                            {ev.ifname}
+                          </span>
+                        ) : null}
+                      </div>
+                      <pre className="pt-log-item__msg">{formatPortTrafficLogMessage(ev.message, t)}</pre>
+                    </article>
+                  );
+                })}
               </div>
             )}
+          </div>
+        </div>
+      ) : null}
+
+      {rebindDevice ? (
+        <div className="modal-backdrop" role="presentation" onClick={closeRebind}>
+          <div
+            className="modal modal--wide pt-rebind-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="pt-rebind-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="pt-log-modal__head">
+              <div>
+                <h3 id="pt-rebind-title">{t("portTraffic.rebindTitle")}</h3>
+                <p className="muted pt-log-modal__sub">
+                  {t("portTraffic.rebindCurrent")}: {deviceLabel(rebindDevice)}
+                  {rebindDevice.ne_ip ? ` · ${rebindDevice.ne_ip}` : ""}
+                  {` · ${rebindSource}`}
+                  {rebindDevice.ne_id ? ` · ID ${rebindDevice.ne_id.slice(0, 8)}…` : ""}
+                </p>
+                <p className="muted pt-log-modal__sub">{t("portTraffic.rebindHint")}</p>
+              </div>
+              <button type="button" onClick={closeRebind} disabled={rebindMut.isPending}>
+                {t("portTraffic.logClose")}
+              </button>
+            </div>
+
+            <div className="filter-inline" style={{ marginBottom: 10 }}>
+              <input
+                value={rebindKeyword}
+                onChange={(e) => {
+                  setRebindKeyword(e.target.value);
+                  setRebindPage(1);
+                }}
+                placeholder={t("portTraffic.neKeywordPh")}
+              />
+              {rebindSelectedNe ? (
+                <span className="muted">
+                  {t("portTraffic.selectedOneNe")}: {rebindSelectedNe.name} (
+                  {rebindSelectedNe.ip_address})
+                </span>
+              ) : null}
+            </div>
+
+            {rebindNesQuery.isLoading ? (
+              <p className="muted">…</p>
+            ) : !(rebindNesQuery.data?.items || []).length ? (
+              <p className="muted">{t("portTraffic.rebindEmpty")}</p>
+            ) : (
+              <div className="pt-rebind-modal__table-wrap">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th />
+                      <th>{t("portTraffic.col.name")}</th>
+                      <th>IP</th>
+                      <th>{t("portTraffic.col.vendor")}</th>
+                      <th>ID</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(rebindNesQuery.data?.items || []).map((row) => {
+                      const checked = rebindSelectedNe?.id === row.id;
+                      const sameIp =
+                        Boolean(rebindDevice.ne_ip) &&
+                        String(row.ip_address || "").trim() ===
+                          String(rebindDevice.ne_ip || "").trim();
+                      return (
+                        <tr
+                          key={`${row.source}:${row.id}`}
+                          className={sameIp ? "pt-rebind-row--same-ip" : undefined}
+                          title={sameIp ? t("portTraffic.rebindSameIpHint") : undefined}
+                        >
+                          <td>
+                            <input
+                              type="radio"
+                              name="pt-rebind-ne"
+                              checked={checked}
+                              onChange={() => setRebindSelectedNe(row)}
+                            />
+                          </td>
+                          <td>{row.name}</td>
+                          <td>
+                            {row.ip_address}
+                            {sameIp ? (
+                              <span className="pt-rebind-same-ip">{t("portTraffic.rebindSameIp")}</span>
+                            ) : null}
+                          </td>
+                          <td>{row.vendor || "—"}</td>
+                          <td className="muted" style={{ fontSize: 12 }}>
+                            {row.id.slice(0, 8)}…
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            <div className="pager pt-list-pager" style={{ marginTop: 8 }}>
+              <button
+                type="button"
+                className="pager__btn"
+                disabled={rebindPage <= 1}
+                onClick={() => setRebindPage((p) => p - 1)}
+              >
+                ‹
+              </button>
+              <span className="muted">
+                {rebindPage}/
+                {Math.max(1, pageCount(rebindNesQuery.data?.total || 0, TARGET_PAGE_SIZE))}
+              </span>
+              <button
+                type="button"
+                className="pager__btn"
+                disabled={
+                  rebindPage >=
+                  Math.max(1, pageCount(rebindNesQuery.data?.total || 0, TARGET_PAGE_SIZE))
+                }
+                onClick={() => setRebindPage((p) => p + 1)}
+              >
+                ›
+              </button>
+            </div>
+
+            <div className="modal__actions" style={{ marginTop: 12 }}>
+              <button type="button" onClick={closeRebind} disabled={rebindMut.isPending}>
+                {t("portTraffic.boardCancel")}
+              </button>
+              <button
+                type="button"
+                className="btn-primary"
+                disabled={!rebindSelectedNe || rebindMut.isPending}
+                onClick={confirmRebind}
+              >
+                {rebindMut.isPending ? "…" : t("portTraffic.rebindSubmit")}
+              </button>
+            </div>
           </div>
         </div>
       ) : null}

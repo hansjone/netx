@@ -217,8 +217,12 @@ def _save_sample(target_row_id: str, parsed: Any, vendor_hint_bw: int = 0) -> No
         db.close()
 
 
-def _sample_targets_shared_session(device_id: str, target_ids: list[str]) -> int:
-    """One CLI login for the device; run show per interface. Returns error count."""
+def _sample_targets_shared_session(device_id: str, target_ids: list[str]) -> tuple[int, str]:
+    """One CLI login for the device; run show per interface.
+
+    Returns (error_count, device_error). device_error is set when the whole
+    round fails for one shared reason (e.g. managed_ne_not_found).
+    """
     per_cmd = int(settings.ne_collect_read_timeout_sec or 120)
     cap = int(settings.ne_collect_run_timeout_cap_sec or 600)
     errors = 0
@@ -227,7 +231,7 @@ def _sample_targets_shared_session(device_id: str, target_ids: list[str]) -> int
     try:
         device = db.get(PortTrafficDevice, device_id)
         if not device:
-            return len(target_ids)
+            return len(target_ids), "device_not_found"
         source = str(device.source or "").strip().lower()
         ne_id = str(device.ne_id or "").strip()
         vendor_hint = str(device.vendor or "")
@@ -239,17 +243,17 @@ def _sample_targets_shared_session(device_id: str, target_ids: list[str]) -> int
             else:
                 for tid in target_ids:
                     _set_target_error(tid, "invalid_source")
-                return len(target_ids)
+                return len(target_ids), "invalid_source"
         except HTTPException as exc:
             msg = str(exc.detail or "resolve_failed")[:1020]
             for tid in target_ids:
                 _set_target_error(tid, msg)
-            return len(target_ids)
+            return len(target_ids), msg
         except Exception as exc:
             msg = _format_error(exc)
             for tid in target_ids:
                 _set_target_error(tid, msg)
-            return len(target_ids)
+            return len(target_ids), msg
 
         vendor = str(info.get("vendor") or vendor_hint or "")
         device_type = str(info.get("device_type") or "")
@@ -257,7 +261,7 @@ def _sample_targets_shared_session(device_id: str, target_ids: list[str]) -> int
         if cmds is None:
             for tid in target_ids:
                 _set_target_error(tid, "unsupported_vendor")
-            return len(target_ids)
+            return len(target_ids), "unsupported_vendor"
         vendor_key = cmds.vendor_key
 
         targets = (
@@ -270,7 +274,7 @@ def _sample_targets_shared_session(device_id: str, target_ids: list[str]) -> int
         db.close()
 
     if not ifaces:
-        return 0
+        return 0, ""
 
     budget = min(cap, per_cmd * max(1, len(ifaces)) + 90)
     conn = None
@@ -292,10 +296,11 @@ def _sample_targets_shared_session(device_id: str, target_ids: list[str]) -> int
             _set_target_error(tid, msg)
         errors = len(ifaces)
         _log.exception("port_traffic session failed device=%s", device_id)
+        return errors, msg
     finally:
         if conn is not None:
             close_netmiko_connection(conn)
-    return errors
+    return errors, ""
 
 
 def dispatch_collect(device_id: str) -> int:
@@ -304,13 +309,18 @@ def dispatch_collect(device_id: str) -> int:
     if not target_ids:
         return 0
 
+    session_err = ""
     try:
-        errors = _sample_targets_shared_session(device_id, target_ids)
+        errors, session_err = _sample_targets_shared_session(device_id, target_ids)
     except Exception:
         errors = len(target_ids)
+        session_err = "collect_failed"
         _log.exception("port_traffic collect failed device=%s", device_id)
     finally:
-        err_msg = f"{errors}_target_errors" if errors else ""
+        if session_err and errors:
+            err_msg = session_err[:1020]
+        else:
+            err_msg = f"{errors}_target_errors" if errors else ""
         _finish_collect_round(device_id, error=err_msg)
     return len(target_ids)
 

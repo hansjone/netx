@@ -16,6 +16,7 @@ from .port_traffic_schemas import (
     PortTrafficBoardPanelsPut,
     PortTrafficBoardUpdate,
     PortTrafficDeviceCreate,
+    PortTrafficDeviceRebind,
     PortTrafficDeviceUpdate,
     PortTrafficInterfacesPut,
     PortTrafficReplacePortRequest,
@@ -41,6 +42,7 @@ from .port_traffic_service import (
     list_series,
     list_targets,
     put_interfaces,
+    rebind_device,
     replace_series_port,
     set_device_status,
     update_device,
@@ -234,6 +236,28 @@ def api_delete_device(device_id: str, request: Request, db: Session = Depends(ge
         detail={"id": device_id},
     )
     return out
+
+
+@router.post("/devices/{device_id}/rebind")
+def api_rebind_device(
+    device_id: str,
+    body: PortTrafficDeviceRebind,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    out = rebind_device(db, device_id, body)
+    uid, uname = _actor(request)
+    write_audit(
+        db,
+        action="port_traffic.device.rebind",
+        actor_user_id=uid,
+        actor_username=uname,
+        method="POST",
+        path=f"/v1/port-traffic/devices/{device_id}/rebind",
+        status_code=200,
+        detail={"id": device_id, "ne_id": out.ne_id},
+    )
+    return out.model_dump()
 
 
 @router.post("/devices/{device_id}/start")

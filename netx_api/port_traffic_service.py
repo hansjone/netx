@@ -13,7 +13,15 @@ from sqlalchemy.orm import Session
 
 from .cli_resolve import resolve_cli_target
 from .config import settings
-from .models import PortTrafficDevice, PortTrafficEvent, PortTrafficSample, PortTrafficSeries, PortTrafficTarget
+from .models import (
+    ManagedNE,
+    PortTrafficDevice,
+    PortTrafficEvent,
+    PortTrafficSample,
+    PortTrafficSeries,
+    PortTrafficTarget,
+    UmeInventoryNE,
+)
 from .ne_session_factory import close_netmiko_connection, open_netmiko_connection
 from .ne_netmiko import send_show_command
 from .port_traffic_commands import commands_for_vendor
@@ -28,6 +36,7 @@ from .port_traffic_schemas import (
     PortTrafficDashboardOut,
     PortTrafficDeviceCreate,
     PortTrafficDeviceOut,
+    PortTrafficDeviceRebind,
     PortTrafficDeviceUpdate,
     PortTrafficEventOut,
     PortTrafficEventsOut,
@@ -254,6 +263,101 @@ def update_device(db: Session, device_id: str, body: PortTrafficDeviceUpdate) ->
     device.updated_at = _utcnow()
     db.commit()
     db.refresh(device)
+    return _device_out(db, device)
+
+
+def rebind_device(
+    db: Session,
+    device_id: str,
+    body: PortTrafficDeviceRebind,
+) -> PortTrafficDeviceOut:
+    """Point a monitor device at an explicitly chosen inventory NE; keeps samples."""
+    device = db.get(PortTrafficDevice, device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="device_not_found")
+    if bool(device.collect_running):
+        raise HTTPException(status_code=409, detail="collect_running")
+
+    source = str(device.source or "").strip().lower() or "managed"
+    want_id = str(body.ne_id or "").strip()
+    if not want_id:
+        raise HTTPException(status_code=400, detail="ne_id_required")
+
+    new_id = ""
+    new_name = ""
+    new_ip = ""
+    new_vendor = ""
+
+    if source == "managed":
+        row = db.get(ManagedNE, want_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="managed_ne_not_found")
+        new_id = str(row.id)
+        new_name = str(row.name or "")
+        new_ip = str(row.ip_address or "")
+        new_vendor = str(row.vendor or "")
+    elif source == "ume":
+        inv = db.get(UmeInventoryNE, want_id)
+        if not inv:
+            raise HTTPException(status_code=404, detail="ume_ne_not_found")
+        new_id = str(inv.ne_id)
+        new_ip = str(inv.ip_address or "")
+        new_name = str(inv.user_label or inv.ne_name or inv.host_name or new_ip or "").strip()
+        new_vendor = str(inv.vendor or "")
+    else:
+        raise HTTPException(status_code=400, detail="invalid_source")
+
+    if new_id == str(device.ne_id or ""):
+        # Already bound; clear stale errors so collect can resume.
+        device.last_error = ""
+        device.updated_at = _utcnow()
+        for tgt in db.query(PortTrafficTarget).filter(PortTrafficTarget.device_id == device_id).all():
+            if "managed_ne_not_found" in str(tgt.last_error or "") or "ume_ne_not_found" in str(
+                tgt.last_error or ""
+            ):
+                tgt.last_error = ""
+        db.commit()
+        db.refresh(device)
+        return _device_out(db, device)
+
+    clash = (
+        db.query(PortTrafficDevice)
+        .filter(
+            PortTrafficDevice.source == source,
+            PortTrafficDevice.ne_id == new_id,
+            PortTrafficDevice.id != device_id,
+        )
+        .first()
+    )
+    if clash:
+        raise HTTPException(status_code=409, detail="device_already_monitored")
+
+    device.ne_id = new_id
+    if new_name:
+        device.ne_name = new_name
+    if new_ip:
+        device.ne_ip = new_ip
+    if new_vendor:
+        device.vendor = new_vendor
+    device.last_error = ""
+    device.updated_at = _utcnow()
+
+    for tgt in db.query(PortTrafficTarget).filter(PortTrafficTarget.device_id == device_id).all():
+        tgt.target_id = new_id
+        if new_name:
+            tgt.ne_name = new_name
+        if new_ip:
+            tgt.ne_ip = new_ip
+        if new_vendor:
+            tgt.vendor = new_vendor
+        if "managed_ne_not_found" in str(tgt.last_error or "") or "ume_ne_not_found" in str(
+            tgt.last_error or ""
+        ):
+            tgt.last_error = ""
+
+    db.commit()
+    db.refresh(device)
+    _log.info("port_traffic rebind device=%s -> ne_id=%s ip=%s", device_id, new_id, new_ip)
     return _device_out(db, device)
 
 
