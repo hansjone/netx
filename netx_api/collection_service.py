@@ -13,7 +13,7 @@ from fastapi import HTTPException
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from .models import ManagedNE, NeCollectionJob, NeCollectionRun
+from .models import ManagedNE, NeCollectionJob, NeCollectionRun, UmeCliOverride, UmeInventoryNE
 from .collection_job_state import (
     finalize_collection_job,
     reconcile_stale_collection_job,
@@ -100,6 +100,7 @@ def run_to_out(row: NeCollectionRun) -> CollectionRunOut:
         id=str(row.id),
         job_id=str(row.job_id),
         ne_id=str(row.ne_id),
+        ne_source=str(getattr(row, "ne_source", None) or "managed"),
         ne_name=str(row.ne_name or ""),
         ne_ip=str(row.ne_ip or ""),
         status=str(row.status or "pending"),
@@ -118,11 +119,17 @@ def list_eligible_ne(
     page_size: int = 200,
     keyword: str = "",
 ) -> dict[str, Any]:
-    stmt = db.query(ManagedNE).filter(ManagedNE.connect_status == "pass")
+    from .device_types import WEBCRT_NE_SOURCE
+
+    page = max(1, int(page or 1))
+    page_size = max(1, min(500, int(page_size or 200)))
     kw = str(keyword or "").strip()
-    if kw:
-        like = f"%{kw}%"
-        stmt = stmt.filter(
+    like = f"%{kw}%" if kw else ""
+
+    # Managed inventory (any connect_status); exclude WebCRT session hosts.
+    m_stmt = db.query(ManagedNE).filter(ManagedNE.source != WEBCRT_NE_SOURCE)
+    if like:
+        m_stmt = m_stmt.filter(
             or_(
                 ManagedNE.name.ilike(like),
                 ManagedNE.ip_address.ilike(like),
@@ -130,16 +137,10 @@ def list_eligible_ne(
                 ManagedNE.device_type.ilike(like),
             )
         )
-    total = int(stmt.count())
-    rows = (
-        stmt.order_by(ManagedNE.name.asc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-        .all()
-    )
-    items = [
+    managed_items = [
         {
             "id": str(x.id),
+            "source": "managed",
             "name": str(x.name or ""),
             "vendor": str(x.vendor or ""),
             "device_type": str(x.device_type or ""),
@@ -147,36 +148,94 @@ def list_eligible_ne(
             "connect_status": str(x.connect_status or ""),
             "connect_tested_at": x.connect_tested_at.isoformat() if x.connect_tested_at else None,
         }
-        for x in rows
+        for x in m_stmt.order_by(ManagedNE.name.asc()).all()
     ]
-    return {"total": total, "page": page, "page_size": page_size, "items": items}
+
+    u_stmt = db.query(UmeInventoryNE)
+    if like:
+        u_stmt = u_stmt.filter(
+            or_(
+                UmeInventoryNE.ne_id.ilike(like),
+                UmeInventoryNE.ne_name.ilike(like),
+                UmeInventoryNE.user_label.ilike(like),
+                UmeInventoryNE.host_name.ilike(like),
+                UmeInventoryNE.ip_address.ilike(like),
+                UmeInventoryNE.vendor.ilike(like),
+                UmeInventoryNE.ne_type.ilike(like),
+            )
+        )
+    ume_rows = u_stmt.order_by(UmeInventoryNE.host_name.asc(), UmeInventoryNE.ne_name.asc()).all()
+    overrides = {
+        str(o.ume_ne_id): o
+        for o in db.query(UmeCliOverride).filter(
+            UmeCliOverride.ume_ne_id.in_([str(x.ne_id) for x in ume_rows] or ["__none__"])
+        ).all()
+    }
+    ume_items = []
+    for x in ume_rows:
+        uid = str(x.ne_id)
+        ov = overrides.get(uid)
+        ume_items.append(
+            {
+                "id": uid,
+                "source": "ume",
+                "name": str(x.host_name or x.user_label or x.ne_name or x.ip_address or uid),
+                "vendor": str(x.vendor or "ZTE"),
+                "device_type": str(x.ne_type or ""),
+                "ip_address": str(x.ip_address or ""),
+                "connect_status": str(ov.connect_status or "unknown") if ov else "unknown",
+                "connect_tested_at": ov.connect_tested_at.isoformat()
+                if ov and ov.connect_tested_at
+                else None,
+            }
+        )
+
+    items = managed_items + ume_items
+    items.sort(key=lambda r: (str(r.get("name") or "").lower(), str(r.get("id") or "")))
+    total = len(items)
+    start = (page - 1) * page_size
+    page_items = items[start : start + page_size]
+    return {"total": total, "page": page, "page_size": page_size, "items": page_items}
 
 
 def create_collection(db: Session, body: CollectionJobCreate) -> CollectionJobOut:
     commands = _parse_commands(body.commands)
     if not commands:
         raise HTTPException(status_code=400, detail="commands_empty")
-    ne_ids = [str(x).strip() for x in body.ne_ids if str(x).strip()]
-    if not ne_ids:
+    ne_ids = [str(x).strip() for x in (body.ne_ids or []) if str(x).strip()]
+    ume_ids = [str(x).strip() for x in (body.ume_ne_ids or []) if str(x).strip()]
+    if not ne_ids and not ume_ids:
         raise HTTPException(status_code=400, detail="ne_ids_required")
 
-    ne_rows: list[ManagedNE] = []
-    missing: list[str] = []
-    not_pass: list[str] = []
+    targets: list[tuple[str, str, str, str]] = []  # source, id, name, ip
+    missing_m: list[str] = []
     for ne_id in ne_ids:
         row = db.get(ManagedNE, ne_id)
         if not row:
-            missing.append(ne_id)
+            missing_m.append(ne_id)
             continue
-        if str(row.connect_status or "") != "pass":
-            not_pass.append(ne_id)
+        targets.append(
+            (
+                "managed",
+                str(row.id),
+                str(row.name or row.ip_address or ""),
+                str(row.ip_address or ""),
+            )
+        )
+    if missing_m:
+        raise HTTPException(status_code=404, detail=f"managed_ne_not_found: {','.join(missing_m[:5])}")
+
+    missing_u: list[str] = []
+    for uid in ume_ids:
+        inv = db.get(UmeInventoryNE, uid)
+        if not inv:
+            missing_u.append(uid)
             continue
-        ne_rows.append(row)
-    if missing:
-        raise HTTPException(status_code=404, detail=f"managed_ne_not_found: {','.join(missing[:5])}")
-    if not_pass:
-        raise HTTPException(status_code=400, detail=f"ne_connect_not_pass: {','.join(not_pass[:5])}")
-    if not ne_rows:
+        name = str(inv.host_name or inv.user_label or inv.ne_name or inv.ip_address or uid)
+        targets.append(("ume", uid, name, str(inv.ip_address or "")))
+    if missing_u:
+        raise HTTPException(status_code=404, detail=f"ume_ne_not_found: {','.join(missing_u[:5])}")
+    if not targets:
         raise HTTPException(status_code=400, detail="no_eligible_ne")
 
     now = _now()
@@ -184,7 +243,7 @@ def create_collection(db: Session, body: CollectionJobCreate) -> CollectionJobOu
         title=str(body.title or "").strip() or f"collect-{now.strftime('%Y%m%d-%H%M%S')}",
         commands="\n".join(commands),
         status="pending",
-        ne_count=len(ne_rows),
+        ne_count=len(targets),
         created_at=now,
         started_at=None,
         last_run_at=None,
@@ -192,12 +251,13 @@ def create_collection(db: Session, body: CollectionJobCreate) -> CollectionJobOu
     db.add(job)
     db.flush()
 
-    for ne in ne_rows:
+    for source, tid, name, ip in targets:
         run = NeCollectionRun(
             job_id=str(job.id),
-            ne_id=str(ne.id),
-            ne_name=str(ne.name or ne.ip_address or ""),
-            ne_ip=str(ne.ip_address or ""),
+            ne_id=tid,
+            ne_source=source,
+            ne_name=name,
+            ne_ip=ip,
             status="pending",
         )
         db.add(run)

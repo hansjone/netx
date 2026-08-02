@@ -10,7 +10,7 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import func, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -26,10 +26,20 @@ from .models import (
     TopoFabricEdge,
     TopoFabricNode,
     TopoFabricStats,
+    TopoFolder,
     TopoView,
     TopoViewEdgeStyle,
     TopoViewNode,
     UmeInventoryNE,
+)
+from .topology_membership import (
+    VIEW_KIND_CUSTOM,
+    VIEW_KIND_PHYSICAL,
+    has_hard_scope,
+    merge_filter_with_membership,
+    normalize_view_kind,
+    normalize_view_role,
+    parse_membership,
 )
 from .ne_exec import execute_managed_ne_commands
 from .topology_lldp import (
@@ -48,6 +58,12 @@ from .topology_schemas import (
     FabricNeighborhoodOut,
     FabricNodeOut,
     FabricSummaryOut,
+    TopologyFolderCreate,
+    TopologyFolderOut,
+    TopologyFolderUpdate,
+    TopologyTreeFolderOut,
+    TopologyTreeOut,
+    TopologyTreeViewOut,
     TopologyViewCreate,
     TopologyViewGraphOut,
     TopologyViewOut,
@@ -57,8 +73,15 @@ from .topology_schemas import (
     ViewNodeIn,
     ViewNodeOut,
     ViewNodesAdd,
+    ViewPopulateOut,
+    ViewPopulateRequest,
     ViewPositionsPatch,
 )
+
+ROOT_FOLDER_NAME = "Network"
+PHYSICAL_VIEW_NAME = "Physical topology"
+# Legacy system region name (no longer auto-created; stripped on bootstrap when empty).
+_LEGACY_UNASSIGNED_NAME = "Unassigned"
 
 PAGE_DEFAULT = 100
 PAGE_MAX = 2000
@@ -154,6 +177,10 @@ def _empty_to_none(s: str | None) -> str | None:
 
 def _node_out(n: TopoFabricNode) -> FabricNodeOut:
     return FabricNodeOut(
+        role=str(getattr(n, "role", "") or ""),
+        region_folder_id=str(getattr(n, "region_folder_id", None) or "") or None,
+        role_source=str(getattr(n, "role_source", "") or ""),
+        region_source=str(getattr(n, "region_source", "") or ""),
         id=n.id,
         managed_ne_id=n.managed_ne_id or "",
         ume_ne_id=n.ume_ne_id or "",
@@ -346,9 +373,15 @@ def list_fabric_nodes(
     db: Session,
     *,
     keyword: str = "",
+    role: str = "",
+    region_folder_id: str = "",
+    unmatched: str = "",
+    link_status: str = "",
     page: int = 1,
     page_size: int = PAGE_DEFAULT,
 ) -> dict[str, Any]:
+    from .topology_inventory_lifecycle import enrich_fabric_node_dicts
+
     page = max(1, int(page or 1))
     page_size = max(1, min(PAGE_MAX, int(page_size or PAGE_DEFAULT)))
     q = db.query(TopoFabricNode)
@@ -363,18 +396,69 @@ def list_fabric_nodes(
                 TopoFabricNode.ume_ne_id.ilike(like),
             )
         )
+    role_v = str(role or "").strip().lower()
+    if role_v:
+        q = q.filter(TopoFabricNode.role == role_v)
+    region_v = str(region_folder_id or "").strip()
+    if region_v:
+        q = q.filter(TopoFabricNode.region_folder_id == region_v)
+    um = str(unmatched or "").strip().lower()
+    if um == "role":
+        q = q.filter(or_(TopoFabricNode.role == "", TopoFabricNode.role == "unknown"))
+    elif um == "region":
+        q = q.filter(
+            or_(TopoFabricNode.region_folder_id.is_(None), TopoFabricNode.region_folder_id == "")
+        )
+    elif um == "any":
+        q = q.filter(
+            or_(
+                TopoFabricNode.role == "",
+                TopoFabricNode.role == "unknown",
+                TopoFabricNode.region_folder_id.is_(None),
+                TopoFabricNode.region_folder_id == "",
+            )
+        )
+    ls = str(link_status or "").strip().lower()
+    if ls == "orphaned":
+        q = q.filter(
+            or_(TopoFabricNode.managed_ne_id.is_(None), TopoFabricNode.managed_ne_id == ""),
+            or_(TopoFabricNode.ume_ne_id.is_(None), TopoFabricNode.ume_ne_id == ""),
+        )
+    elif ls == "linked":
+        q = q.filter(
+            or_(
+                and_(TopoFabricNode.managed_ne_id.isnot(None), TopoFabricNode.managed_ne_id != ""),
+                and_(TopoFabricNode.ume_ne_id.isnot(None), TopoFabricNode.ume_ne_id != ""),
+            )
+        )
+    elif ls == "managed":
+        q = q.filter(
+            and_(TopoFabricNode.managed_ne_id.isnot(None), TopoFabricNode.managed_ne_id != ""),
+            or_(TopoFabricNode.ume_ne_id.is_(None), TopoFabricNode.ume_ne_id == ""),
+        )
+    elif ls == "ume":
+        q = q.filter(
+            and_(TopoFabricNode.ume_ne_id.isnot(None), TopoFabricNode.ume_ne_id != ""),
+            or_(TopoFabricNode.managed_ne_id.is_(None), TopoFabricNode.managed_ne_id == ""),
+        )
+    elif ls == "both":
+        q = q.filter(
+            and_(TopoFabricNode.managed_ne_id.isnot(None), TopoFabricNode.managed_ne_id != ""),
+            and_(TopoFabricNode.ume_ne_id.isnot(None), TopoFabricNode.ume_ne_id != ""),
+        )
     total = int(q.count())
     rows = (
-        q.order_by(TopoFabricNode.updated_at.desc())
+        q.order_by(TopoFabricNode.name.asc())
         .offset((page - 1) * page_size)
         .limit(page_size)
         .all()
     )
+    items = enrich_fabric_node_dicts(db, [_node_out(n).model_dump() for n in rows])
     return {
         "total": total,
         "page": page,
         "page_size": page_size,
-        "items": [_node_out(n).model_dump() for n in rows],
+        "items": items,
     }
 
 
@@ -632,8 +716,21 @@ def _apply_missing_and_purge(
 
 
 # ---------------------------------------------------------------------------
-# Views
+# Folders (tree) + Views (leaf canvases)
 # ---------------------------------------------------------------------------
+
+
+def _folder_out(f: TopoFolder) -> TopologyFolderOut:
+    return TopologyFolderOut(
+        id=f.id,
+        parent_id=str(f.parent_id or ""),
+        kind=str(f.kind or "region"),
+        name=f.name or "",
+        sort_order=int(f.sort_order or 0),
+        is_system=bool(f.is_system),
+        created_at=f.created_at,
+        updated_at=f.updated_at,
+    )
 
 
 def _view_out(v: TopoView, *, node_count: int = 0) -> TopologyViewOut:
@@ -641,6 +738,10 @@ def _view_out(v: TopoView, *, node_count: int = 0) -> TopologyViewOut:
         id=v.id,
         name=v.name,
         remark=v.remark or "",
+        folder_id=str(v.folder_id or ""),
+        kind=normalize_view_kind(getattr(v, "kind", None)),
+        role=normalize_view_role(v.role),
+        sort_order=int(v.sort_order or 0),
         filter=dict(v.filter or {}),
         viewport=dict(v.viewport or {}),
         node_count=node_count,
@@ -657,7 +758,281 @@ def _get_view_or_404(db: Session, view_id: str) -> TopoView:
     return row
 
 
+def _get_folder_or_404(db: Session, folder_id: str) -> TopoFolder:
+    fid = str(folder_id or "").strip()
+    row = db.get(TopoFolder, fid) if fid else None
+    if row is None:
+        raise HTTPException(status_code=404, detail="topology_folder_not_found")
+    return row
+
+
+def ensure_region_physical_view(db: Session, folder_id: str, *, commit: bool = True) -> TopoView:
+    """Ensure a site has exactly one default physical topology map."""
+    fid = str(folder_id or "").strip()
+    folder = _get_folder_or_404(db, fid)
+    if str(folder.kind or "") == "root":
+        raise HTTPException(status_code=400, detail="view_must_hang_under_region")
+    existing = (
+        db.query(TopoView)
+        .filter(TopoView.folder_id == folder.id, TopoView.kind == VIEW_KIND_PHYSICAL)
+        .order_by(TopoView.sort_order.asc(), TopoView.created_at.asc())
+        .first()
+    )
+    if existing is not None:
+        return existing
+    now = _utcnow()
+    role = "core"
+    row = TopoView(
+        id=uuid4().hex,
+        folder_id=folder.id,
+        parent_view_id=None,
+        kind=VIEW_KIND_PHYSICAL,
+        role=role,
+        name=PHYSICAL_VIEW_NAME,
+        remark="",
+        sort_order=0,
+        filter=merge_filter_with_membership({}, role=role, kind=VIEW_KIND_PHYSICAL),
+        viewport={},
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(row)
+    if commit:
+        db.commit()
+        db.refresh(row)
+    else:
+        db.flush()
+    return row
+
+
+def bootstrap_topology_tree(db: Session) -> dict[str, str]:
+    """Ensure hidden system root; flatten legacy nesting; ensure physical map per site."""
+    now = _utcnow()
+    root = (
+        db.query(TopoFolder)
+        .filter(TopoFolder.kind == "root")
+        .order_by(TopoFolder.created_at.asc())
+        .first()
+    )
+    if root is None:
+        root = TopoFolder(
+            id=uuid4().hex,
+            parent_id=None,
+            kind="root",
+            name=ROOT_FOLDER_NAME,
+            sort_order=0,
+            is_system=True,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(root)
+        db.flush()
+
+    # Drop legacy auto-created Unassigned region when empty; otherwise demote to normal region.
+    legacy = (
+        db.query(TopoFolder)
+        .filter(
+            TopoFolder.kind == "region",
+            TopoFolder.name == _LEGACY_UNASSIGNED_NAME,
+        )
+        .all()
+    )
+    for folder in legacy:
+        view_cnt = db.query(TopoView).filter(TopoView.folder_id == folder.id).count()
+        if view_cnt == 0:
+            db.delete(folder)
+        elif bool(folder.is_system):
+            folder.is_system = False
+            folder.updated_at = now
+
+    # Flatten nesting + normalize kind for all views.
+    for v in db.query(TopoView).all():
+        changed = False
+        if v.parent_view_id:
+            v.parent_view_id = None
+            changed = True
+        kind = normalize_view_kind(getattr(v, "kind", None))
+        if str(getattr(v, "kind", "") or "") != kind:
+            v.kind = kind
+            changed = True
+        if not str(v.role or "").strip():
+            v.role = "core"
+            changed = True
+        filt = dict(v.filter or {})
+        if "membership" not in filt:
+            v.filter = merge_filter_with_membership(
+                filt, role=normalize_view_role(v.role), kind=kind
+            )
+            changed = True
+        if changed:
+            v.updated_at = now
+
+    # Ensure every region has a physical map.
+    regions = db.query(TopoFolder).filter(TopoFolder.kind == "region").all()
+    for region in regions:
+        ensure_region_physical_view(db, region.id, commit=False)
+
+    db.commit()
+    return {"root_id": root.id}
+
+
+def create_folder(db: Session, body: TopologyFolderCreate) -> TopologyFolderOut:
+    bootstrap_topology_tree(db)
+    name = str(body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name_required")
+    kind = str(body.kind or "region").strip().lower()
+    if kind != "region":
+        raise HTTPException(status_code=400, detail="folder_kind_must_be_region")
+    root = db.query(TopoFolder).filter(TopoFolder.kind == "root").first()
+    if root is None:
+        raise HTTPException(status_code=500, detail="topology_root_missing")
+    parent_id = str(body.parent_id or "").strip() or root.id
+    parent = _get_folder_or_404(db, parent_id)
+    if str(parent.kind or "") != "root":
+        raise HTTPException(status_code=400, detail="region_must_hang_under_root")
+    now = _utcnow()
+    row = TopoFolder(
+        id=uuid4().hex,
+        parent_id=root.id,
+        kind="region",
+        name=name[:256],
+        sort_order=int(body.sort_order or 0),
+        is_system=False,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(row)
+    db.flush()
+    ensure_region_physical_view(db, row.id, commit=False)
+    db.commit()
+    db.refresh(row)
+    return _folder_out(row)
+
+
+def update_folder(db: Session, folder_id: str, body: TopologyFolderUpdate) -> TopologyFolderOut:
+    row = _get_folder_or_404(db, folder_id)
+    if str(row.kind or "") == "root":
+        if body.parent_id is not None:
+            raise HTTPException(status_code=400, detail="cannot_reparent_root")
+    if body.name is not None:
+        name = str(body.name or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="name_required")
+        if bool(row.is_system) and str(row.kind or "") == "root":
+            row.name = name[:256]
+        elif bool(row.is_system):
+            raise HTTPException(status_code=400, detail="cannot_rename_system_folder")
+        else:
+            row.name = name[:256]
+    if body.sort_order is not None:
+        row.sort_order = int(body.sort_order)
+    if body.parent_id is not None and str(row.kind or "") == "region":
+        parent = _get_folder_or_404(db, body.parent_id)
+        if str(parent.kind or "") != "root":
+            raise HTTPException(status_code=400, detail="region_must_hang_under_root")
+        row.parent_id = parent.id
+    row.updated_at = _utcnow()
+    db.commit()
+    db.refresh(row)
+    return _folder_out(row)
+
+
+def delete_folder(db: Session, folder_id: str, *, force: bool = False) -> dict[str, Any]:
+    """Delete a region and cascade-delete its maps.
+
+    Every region has a default physical map, so folder delete must purge views
+    itself (cannot call ``delete_view``, which recreates physical).
+    ``force`` is accepted for API compatibility; cascade always runs.
+    """
+    row = _get_folder_or_404(db, folder_id)
+    if str(row.kind or "") == "root" or bool(row.is_system):
+        raise HTTPException(status_code=400, detail="cannot_delete_system_folder")
+    _ = force
+    views = db.query(TopoView).filter(TopoView.folder_id == row.id).all()
+    for v in views:
+        db.query(TopoViewEdgeStyle).filter(TopoViewEdgeStyle.view_id == v.id).delete(
+            synchronize_session=False
+        )
+        db.query(TopoViewNode).filter(TopoViewNode.view_id == v.id).delete(
+            synchronize_session=False
+        )
+        db.delete(v)
+    db.flush()
+    db.delete(row)
+    db.commit()
+    return {"ok": True, "folder_id": folder_id, "deleted": True}
+
+
+def get_topology_tree(db: Session) -> TopologyTreeOut:
+    bootstrap_topology_tree(db)
+    folders = db.query(TopoFolder).order_by(TopoFolder.sort_order.asc(), TopoFolder.name.asc()).all()
+    views = db.query(TopoView).order_by(TopoView.sort_order.asc(), TopoView.name.asc()).all()
+    nc_map: dict[str, int] = {}
+    for vid, cnt in (
+        db.query(TopoViewNode.view_id, func.count(TopoViewNode.id))
+        .group_by(TopoViewNode.view_id)
+        .all()
+    ):
+        nc_map[str(vid)] = int(cnt or 0)
+
+    by_parent: dict[str, list[TopoFolder]] = {}
+    root: TopoFolder | None = None
+    for f in folders:
+        if str(f.kind or "") == "root":
+            root = f
+            continue
+        pid = str(f.parent_id or "")
+        by_parent.setdefault(pid, []).append(f)
+
+    views_by_folder: dict[str, list[TopoView]] = {}
+    for v in views:
+        views_by_folder.setdefault(str(v.folder_id or ""), []).append(v)
+
+    def _flat_views(folder_views: list[TopoView]) -> list[TopologyTreeViewOut]:
+        # physical first, then custom; stable by sort_order/name.
+        ordered = sorted(
+            folder_views,
+            key=lambda x: (
+                0 if normalize_view_kind(getattr(x, "kind", None)) == VIEW_KIND_PHYSICAL else 1,
+                int(x.sort_order or 0),
+                x.name or "",
+                x.id,
+            ),
+        )
+        return [
+            TopologyTreeViewOut(
+                id=v.id,
+                name=v.name or "",
+                kind=normalize_view_kind(getattr(v, "kind", None)),
+                role=normalize_view_role(v.role),
+                sort_order=int(v.sort_order or 0),
+                node_count=nc_map.get(v.id, 0),
+                updated_at=v.updated_at,
+            )
+            for v in ordered
+        ]
+
+    def _build(folder: TopoFolder) -> TopologyTreeFolderOut:
+        kids = [_build(c) for c in by_parent.get(folder.id, [])]
+        return TopologyTreeFolderOut(
+            id=folder.id,
+            parent_id=str(folder.parent_id or ""),
+            kind=str(folder.kind or "region"),
+            name=folder.name or "",
+            sort_order=int(folder.sort_order or 0),
+            is_system=bool(folder.is_system),
+            views=_flat_views(views_by_folder.get(folder.id, [])),
+            children=kids,
+        )
+
+    if root is None:
+        return TopologyTreeOut(root=None)
+    return TopologyTreeOut(root=_build(root))
+
+
 def list_views(db: Session) -> dict[str, Any]:
+    bootstrap_topology_tree(db)
     rows = db.query(TopoView).order_by(TopoView.updated_at.desc()).all()
     items = []
     for v in rows:
@@ -670,12 +1045,34 @@ def create_view(db: Session, body: TopologyViewCreate) -> TopologyViewOut:
     name = str(body.name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="name_required")
+    role = normalize_view_role(body.role)
+    kind = normalize_view_kind(body.kind)
+    folder_id = str(body.folder_id or "").strip()
+    if not folder_id:
+        raise HTTPException(status_code=400, detail="folder_id_required")
+    folder = _get_folder_or_404(db, folder_id)
+    if str(folder.kind or "") == "root":
+        raise HTTPException(status_code=400, detail="view_must_hang_under_region")
+    if kind == VIEW_KIND_PHYSICAL:
+        existing = (
+            db.query(TopoView)
+            .filter(TopoView.folder_id == folder.id, TopoView.kind == VIEW_KIND_PHYSICAL)
+            .first()
+        )
+        if existing is not None:
+            raise HTTPException(status_code=400, detail="region_already_has_physical_view")
+    filt = merge_filter_with_membership(dict(body.filter or {}), role=role, kind=kind)
     now = _utcnow()
     row = TopoView(
         id=uuid4().hex,
+        folder_id=folder_id,
+        parent_view_id=None,
+        kind=kind,
+        role=role,
         name=name[:256],
         remark=str(body.remark or "")[:1024],
-        filter=dict(body.filter or {}),
+        sort_order=int(body.sort_order or 0),
+        filter=filt,
         viewport={},
         created_at=now,
         updated_at=now,
@@ -695,8 +1092,38 @@ def update_view(db: Session, view_id: str, body: TopologyViewUpdate) -> Topology
         row.name = name[:256]
     if body.remark is not None:
         row.remark = str(body.remark or "")[:1024]
+    if body.role is not None:
+        row.role = normalize_view_role(body.role)
+    if body.sort_order is not None:
+        row.sort_order = int(body.sort_order)
+    if body.folder_id is not None:
+        fid = str(body.folder_id or "").strip()
+        folder = _get_folder_or_404(db, fid)
+        if str(folder.kind or "") == "root":
+            raise HTTPException(status_code=400, detail="view_must_hang_under_region")
+        row.folder_id = folder.id
+    if body.kind is not None:
+        new_kind = normalize_view_kind(body.kind)
+        if new_kind == VIEW_KIND_PHYSICAL and normalize_view_kind(row.kind) != VIEW_KIND_PHYSICAL:
+            clash = (
+                db.query(TopoView)
+                .filter(
+                    TopoView.folder_id == row.folder_id,
+                    TopoView.kind == VIEW_KIND_PHYSICAL,
+                    TopoView.id != row.id,
+                )
+                .first()
+            )
+            if clash is not None:
+                raise HTTPException(status_code=400, detail="region_already_has_physical_view")
+        row.kind = new_kind
+    row.parent_view_id = None
     if body.filter is not None:
-        row.filter = dict(body.filter or {})
+        row.filter = merge_filter_with_membership(
+            dict(body.filter or {}),
+            role=normalize_view_role(row.role),
+            kind=normalize_view_kind(row.kind),
+        )
     if body.viewport is not None:
         row.viewport = dict(body.viewport or {})
     row.updated_at = _utcnow()
@@ -706,13 +1133,20 @@ def update_view(db: Session, view_id: str, body: TopologyViewUpdate) -> Topology
     return _view_out(row, node_count=nc)
 
 
-def delete_view(db: Session, view_id: str) -> dict[str, Any]:
+def delete_view(db: Session, view_id: str, *, force: bool = False) -> dict[str, Any]:
     row = _get_view_or_404(db, view_id)
+    folder_id = str(row.folder_id or "")
+    is_physical = normalize_view_kind(row.kind) == VIEW_KIND_PHYSICAL
+    if is_physical and not force:
+        raise HTTPException(status_code=400, detail="cannot_delete_physical_view")
     db.query(TopoViewEdgeStyle).filter(TopoViewEdgeStyle.view_id == row.id).delete(
         synchronize_session=False
     )
     db.query(TopoViewNode).filter(TopoViewNode.view_id == row.id).delete(synchronize_session=False)
     db.delete(row)
+    db.flush()
+    if folder_id and is_physical:
+        ensure_region_physical_view(db, folder_id, commit=False)
     db.commit()
     return {"ok": True, "view_id": view_id, "deleted": True}
 
@@ -817,13 +1251,130 @@ def get_view_graph(db: Session, view_id: str) -> TopologyViewGraphOut:
                     discovered_at=e.discovered_at,
                 )
             )
+    outside = _outside_peers_for_view(db, view, member_ids=set(fids), layer=layer)
     return TopologyViewGraphOut(
         view=_view_out(view, node_count=len(nodes_out)),
         nodes=nodes_out,
         edges=edges_out,
         truncated=truncated,
         truncate_reason=reason,
+        outside_peers=outside,
     )
+
+
+def _membership_for_view(view: TopoView) -> dict[str, Any]:
+    return parse_membership(dict(view.filter or {}), role=normalize_view_role(view.role))
+
+
+def _fabric_in_hard_scope(db: Session, fn: TopoFabricNode, mem: dict[str, Any]) -> bool:
+    """If hard scope filters are set, node must match ALL set dimensions (AND)."""
+    if not has_hard_scope(mem):
+        return True
+    mid = str(fn.managed_ne_id or "").strip()
+    allowed_mids = set(mem.get("managed_ne_ids") or [])
+    if allowed_mids and mid not in allowed_mids:
+        return False
+    vendors = {str(x).lower() for x in (mem.get("vendors") or [])}
+    if vendors and str(fn.vendor or "").strip().lower() not in vendors:
+        return False
+    dtypes = {str(x).lower() for x in (mem.get("device_types") or [])}
+    if dtypes and str(fn.device_type or "").strip().lower() not in dtypes:
+        return False
+    keyword = str(mem.get("keyword") or "").strip().lower()
+    if keyword:
+        blob = f"{fn.name or ''} {fn.ip or ''}".lower()
+        if keyword not in blob:
+            return False
+    tags_any = {str(x).lower() for x in (mem.get("tags_any") or [])}
+    if tags_any:
+        ne = db.get(ManagedNE, mid) if mid else None
+        tag_blob = str(getattr(ne, "tags", "") or "").lower() if ne else ""
+        if not any(t in tag_blob for t in tags_any):
+            return False
+    return True
+
+
+def _outside_peers_for_view(
+    db: Session,
+    view: TopoView,
+    *,
+    member_ids: set[str],
+    layer: str,
+    limit: int = 50,
+) -> list[dict[str, str]]:
+    if not member_ids:
+        return []
+    edges = (
+        db.query(TopoFabricEdge)
+        .filter(
+            TopoFabricEdge.layer == layer,
+            or_(
+                TopoFabricEdge.a_node_id.in_(list(member_ids)),
+                TopoFabricEdge.b_node_id.in_(list(member_ids)),
+            ),
+        )
+        .limit(5000)
+        .all()
+    )
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for e in edges:
+        for peer_id, local_id in ((e.b_node_id, e.a_node_id), (e.a_node_id, e.b_node_id)):
+            if local_id not in member_ids or peer_id in member_ids:
+                continue
+            if peer_id in seen:
+                continue
+            seen.add(peer_id)
+            fn = db.get(TopoFabricNode, peer_id)
+            out.append(
+                {
+                    "fabric_node_id": peer_id,
+                    "name": (fn.name if fn else "") or "",
+                    "ip": (fn.ip if fn else "") or "",
+                    "via_node_id": local_id,
+                }
+            )
+            if len(out) >= limit:
+                return out
+    return out
+
+
+def _place_fabric_ids_on_view(
+    db: Session,
+    view: TopoView,
+    fabric_ids: list[str],
+    *,
+    existing: set[str],
+) -> int:
+    now = _utcnow()
+    added = 0
+    vnodes = db.query(TopoViewNode).filter(TopoViewNode.view_id == view.id).all()
+    max_x = max((float(vn.x or 0) for vn in vnodes), default=40.0)
+    base_x = max_x + 200.0
+    cols = max(1, int(len(fabric_ids) ** 0.5) or 1)
+    for i, fid in enumerate(fabric_ids):
+        if fid in existing or db.get(TopoFabricNode, fid) is None:
+            continue
+        x = base_x + (i % cols) * 180.0
+        y = 40.0 + (i // cols) * 120.0
+        db.add(
+            TopoViewNode(
+                id=uuid4().hex,
+                view_id=view.id,
+                fabric_node_id=fid,
+                x=x,
+                y=y,
+                label="",
+                locked=False,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        existing.add(fid)
+        added += 1
+    if added:
+        view.updated_at = now
+    return added
 
 
 def patch_view_positions(
@@ -878,11 +1429,15 @@ def patch_view_positions(
 
 def add_nodes_to_view(db: Session, view_id: str, body: ViewNodesAdd) -> TopologyViewGraphOut:
     view = _get_view_or_404(db, view_id)
+    mem = _membership_for_view(view)
+    max_nodes = int(mem.get("max_nodes") or 300)
     now = _utcnow()
     existing = {
         vn.fabric_node_id
         for vn in db.query(TopoViewNode).filter(TopoViewNode.view_id == view.id).all()
     }
+    if len(existing) >= max_nodes:
+        raise HTTPException(status_code=400, detail="membership_max_nodes")
     added_ids: list[str] = []
     for mid in body.managed_ne_ids or []:
         mid_s = str(mid or "").strip()
@@ -919,6 +1474,11 @@ def add_nodes_to_view(db: Session, view_id: str, body: ViewNodesAdd) -> Topology
             continue
         added_ids.append(fid_s)
         existing.add(fid_s)
+    # `existing` already includes ids in added_ids; cap new placements.
+    original_count = len(existing) - len(added_ids)
+    room = max(0, max_nodes - original_count)
+    if len(added_ids) > room:
+        added_ids = added_ids[:room]
     cols = max(1, int(len(added_ids) ** 0.5) or 1)
     for i, fid in enumerate(added_ids):
         x = (i % cols) * 180.0 + 40.0
@@ -941,19 +1501,51 @@ def add_nodes_to_view(db: Session, view_id: str, body: ViewNodesAdd) -> Topology
     return get_view_graph(db, view.id)
 
 
+def _neighbor_ids(
+    db: Session, *, seed_ids: set[str], layer: str, hops: int
+) -> set[str]:
+    frontier = set(seed_ids)
+    found: set[str] = set()
+    for _ in range(max(0, hops)):
+        if not frontier:
+            break
+        rows = (
+            db.query(TopoFabricEdge)
+            .filter(
+                TopoFabricEdge.layer == layer,
+                or_(
+                    TopoFabricEdge.a_node_id.in_(list(frontier)),
+                    TopoFabricEdge.b_node_id.in_(list(frontier)),
+                ),
+            )
+            .all()
+        )
+        nxt: set[str] = set()
+        for e in rows:
+            for a, b in ((e.a_node_id, e.b_node_id), (e.b_node_id, e.a_node_id)):
+                if a in frontier and b not in seed_ids and b not in found:
+                    nxt.add(b)
+        found |= nxt
+        frontier = nxt
+    return found
+
+
 def project_fabric_neighbors_to_view(db: Session, view_id: str) -> TopologyViewGraphOut:
-    """Add fabric neighbors of current view nodes onto the view so edges can render."""
-    # Collapse duplicate fabric nodes first (fixes R1/r1 + twin R2 after raced discovers).
+    """Add in-scope fabric neighbors onto the leaf view (bounded by membership)."""
     merge_duplicate_fabric_nodes(db)
     view = _get_view_or_404(db, view_id)
-    vnodes = db.query(TopoViewNode).filter(TopoViewNode.view_id == view.id).all()
+    mem = _membership_for_view(view)
+    if bool(mem.get("frozen")):
+        return get_view_graph(db, view.id)
 
-    # Drop view placements that still point at LLDP orphans (no inventory link).
-    orphan_vns = []
-    for vn in vnodes:
-        fn = db.get(TopoFabricNode, vn.fabric_node_id)
-        if fn is None or not _is_inventory_node(fn):
-            orphan_vns.append(vn)
+    max_nodes = int(mem.get("max_nodes") or 300)
+    hops = int(mem.get("expand_hops") or 1)
+    filt = dict(view.filter or {})
+    layer = str(filt.get("layer") or "physical").strip() or "physical"
+
+    vnodes = db.query(TopoViewNode).filter(TopoViewNode.view_id == view.id).all()
+    # Drop placements pointing at missing fabric rows only (keep LLDP placeholders).
+    orphan_vns = [vn for vn in vnodes if db.get(TopoFabricNode, vn.fabric_node_id) is None]
     if orphan_vns:
         for vn in orphan_vns:
             db.delete(vn)
@@ -964,60 +1556,130 @@ def project_fabric_neighbors_to_view(db: Session, view_id: str) -> TopologyViewG
     existing = {vn.fabric_node_id for vn in vnodes}
     if not existing:
         return get_view_graph(db, view.id)
+    if len(existing) >= max_nodes:
+        g = get_view_graph(db, view.id)
+        g.truncated = True
+        g.truncate_reason = g.truncate_reason or "membership_cap"
+        return g
 
-    filt = dict(view.filter or {})
-    layer = str(filt.get("layer") or "physical").strip() or "physical"
-    peer_ids: set[str] = set()
-    for fid in existing:
-        rows = (
-            db.query(TopoFabricEdge)
-            .filter(
-                TopoFabricEdge.layer == layer,
-                or_(TopoFabricEdge.a_node_id == fid, TopoFabricEdge.b_node_id == fid),
+    peer_ids = _neighbor_ids(db, seed_ids=existing, layer=layer, hops=hops)
+    to_add: list[str] = []
+    for peer in sorted(peer_ids):
+        if peer in existing:
+            continue
+        fn = db.get(TopoFabricNode, peer)
+        if fn is None or not _is_inventory_node(fn):
+            continue
+        if _fabric_match_score(db, fn) < 2:
+            continue
+        if not _fabric_in_hard_scope(db, fn, mem):
+            continue
+        to_add.append(peer)
+        if len(existing) + len(to_add) >= max_nodes:
+            break
+
+    truncated = len(peer_ids) > len(to_add)
+    if to_add:
+        _place_fabric_ids_on_view(db, view, to_add, existing=existing)
+        db.commit()
+    g = get_view_graph(db, view.id)
+    if truncated:
+        g.truncated = True
+        g.truncate_reason = g.truncate_reason or "membership_cap"
+    return g
+
+
+def populate_view(db: Session, view_id: str, body: ViewPopulateRequest) -> ViewPopulateOut:
+    """Resolve membership candidates and optionally place them on the leaf view."""
+    view = _get_view_or_404(db, view_id)
+    role = normalize_view_role(view.role)
+    if body.membership is not None:
+        filt = merge_filter_with_membership(
+            dict(view.filter or {}), role=role, membership=parse_membership(
+                {"membership": body.membership}, role=role
             )
-            .all()
         )
-        for edge in rows:
-            peer = edge.b_node_id if edge.a_node_id == fid else edge.a_node_id
-            if not peer or peer in existing:
+        if not body.dry_run:
+            view.filter = filt
+    mem = parse_membership(dict(view.filter or {}), role=role)
+    max_nodes = int(mem.get("max_nodes") or 300)
+    hops = int(mem.get("expand_hops") or 1)
+    layer = str((view.filter or {}).get("layer") or "physical").strip() or "physical"
+
+    existing = {
+        vn.fabric_node_id
+        for vn in db.query(TopoViewNode).filter(TopoViewNode.view_id == view.id).all()
+    }
+    seeds = set(mem.get("seed_fabric_node_ids") or []) | set(existing)
+
+    # Seed from managed_ne_ids
+    for mid in mem.get("managed_ne_ids") or []:
+        ne = db.get(ManagedNE, mid)
+        if ne is None:
+            continue
+        fn = ensure_fabric_node_for_managed(db, ne)
+        seeds.add(fn.id)
+
+    # Hard-scope scan when filters present
+    candidates: set[str] = set(seeds)
+    if has_hard_scope(mem):
+        for fn in db.query(TopoFabricNode).all():
+            if not _is_inventory_node(fn):
                 continue
+            if _fabric_in_hard_scope(db, fn, mem):
+                candidates.add(fn.id)
+
+    if hops > 0 and seeds:
+        for peer in _neighbor_ids(db, seed_ids=seeds, layer=layer, hops=hops):
             fn = db.get(TopoFabricNode, peer)
-            # Project real inventory + LLDP placeholders; skip WebCRT twins / orphans.
             if fn is None or not _is_inventory_node(fn):
+                continue
+            if has_hard_scope(mem) and not _fabric_in_hard_scope(db, fn, mem):
                 continue
             if _fabric_match_score(db, fn) < 2:
                 continue
-            peer_ids.add(peer)
+            candidates.add(peer)
 
-    if not peer_ids:
-        return get_view_graph(db, view.id)
+    ordered = sorted(candidates)
+    truncated = len(ordered) > max_nodes
+    ordered = ordered[:max_nodes]
+    would_add = [fid for fid in ordered if fid not in existing]
 
-    now = _utcnow()
-    added = sorted(peer_ids)
-    cols = max(1, int(len(added) ** 0.5) or 1)
-    max_x = max((float(vn.x or 0) for vn in vnodes), default=40.0)
-    base_x = max_x + 200.0
-    for i, fid in enumerate(added):
-        if db.get(TopoFabricNode, fid) is None:
-            continue
-        x = base_x + (i % cols) * 180.0
-        y = 40.0 + (i // cols) * 120.0
-        db.add(
-            TopoViewNode(
-                id=uuid4().hex,
-                view_id=view.id,
-                fabric_node_id=fid,
-                x=x,
-                y=y,
-                label="",
-                locked=False,
-                created_at=now,
-                updated_at=now,
-            )
+    outside = _outside_peers_for_view(db, view, member_ids=set(ordered), layer=layer)
+    if body.dry_run:
+        return ViewPopulateOut(
+            view_id=view.id,
+            dry_run=True,
+            candidate_count=len(candidates),
+            would_add=len(would_add),
+            added=0,
+            max_nodes=max_nodes,
+            truncated=truncated,
+            outside_peers=outside,
+            graph=None,
         )
-    view.updated_at = now
+
+    added = _place_fabric_ids_on_view(db, view, would_add, existing=existing)
+    if body.freeze_after:
+        mem["frozen"] = True
+        view.filter = merge_filter_with_membership(dict(view.filter or {}), role=role, membership=mem)
+    view.updated_at = _utcnow()
     db.commit()
-    return get_view_graph(db, view.id)
+    g = get_view_graph(db, view.id)
+    if truncated:
+        g.truncated = True
+        g.truncate_reason = g.truncate_reason or "membership_cap"
+    return ViewPopulateOut(
+        view_id=view.id,
+        dry_run=False,
+        candidate_count=len(candidates),
+        would_add=len(would_add),
+        added=added,
+        max_nodes=max_nodes,
+        truncated=truncated,
+        outside_peers=g.outside_peers,
+        graph=g,
+    )
 
 
 def remove_view_nodes(db: Session, view_id: str, fabric_node_ids: list[str]) -> TopologyViewGraphOut:

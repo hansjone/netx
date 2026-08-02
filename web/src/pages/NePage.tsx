@@ -34,6 +34,9 @@ import {
   type HopVendor,
 } from "../utils/hopProxy";
 
+/** Hide UME→managed sync/delete controls until needed again. APIs remain available. */
+const SHOW_UME_MANAGED_SYNC = false;
+
 type FormState = {
   name: string;
   vendor: string;
@@ -95,6 +98,13 @@ function applyHopTemplate(prev: FormState, protocol: string, vrf: string, force 
     return {};
   }
   return { hop_command_template: defaultHopTemplate(prev.hop_vendor, protocol, vrf) };
+}
+
+function managedSourceKey(source: string | undefined): "manual" | "ume_sync" | "webcrt" | "lldp" | "" {
+  const s = String(source || "").trim().toLowerCase();
+  if (!s) return "manual";
+  if (s === "ume_sync" || s === "webcrt" || s === "lldp") return s;
+  return "";
 }
 
 function FormLabel({ children, required }: { children: ReactNode; required?: boolean }) {
@@ -571,24 +581,32 @@ export function NePage() {
               <button type="button" onClick={openCreate} disabled={!credsOk}>
                 {t("managedNe.add")}
               </button>
-              <button
-                type="button"
-                onClick={() => umeSyncMutation.mutate()}
-                disabled={umeSyncMutation.isPending}
-              >
-                {umeSyncMutation.isPending ? t("managedNe.umeSync.syncing") : t("managedNe.umeSync.sync")}
-              </button>
-              <button
-                type="button"
-                className="btn btn--danger"
-                onClick={() => {
-                  if (!window.confirm(t("managedNe.umeSync.deleteConfirm"))) return;
-                  umeDeleteMutation.mutate();
-                }}
-                disabled={umeDeleteMutation.isPending}
-              >
-                {umeDeleteMutation.isPending ? t("managedNe.umeSync.deleting") : t("managedNe.umeSync.delete")}
-              </button>
+              {SHOW_UME_MANAGED_SYNC ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => umeSyncMutation.mutate()}
+                    disabled={umeSyncMutation.isPending}
+                  >
+                    {umeSyncMutation.isPending
+                      ? t("managedNe.umeSync.syncing")
+                      : t("managedNe.umeSync.sync")}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn--danger"
+                    onClick={() => {
+                      if (!window.confirm(t("managedNe.umeSync.deleteConfirm"))) return;
+                      umeDeleteMutation.mutate();
+                    }}
+                    disabled={umeDeleteMutation.isPending}
+                  >
+                    {umeDeleteMutation.isPending
+                      ? t("managedNe.umeSync.deleting")
+                      : t("managedNe.umeSync.delete")}
+                  </button>
+                </>
+              ) : null}
               <button
                 type="button"
                 onClick={() => {
@@ -746,6 +764,7 @@ export function NePage() {
                     <th>{t("managedNe.col.name")}</th>
                     <th>{t("managedNe.col.vendor")}</th>
                     <th>{t("managedNe.col.deviceType")}</th>
+                    <th>{t("managedNe.col.source")}</th>
                     <th>{t("managedNe.col.tags")}</th>
                     <th>{t("managedNe.col.ip")}</th>
                     <th>{t("managedNe.col.user")}</th>
@@ -755,7 +774,12 @@ export function NePage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {listItems.map((row) => (
+                  {listItems.map((row) => {
+                    const srcKey = managedSourceKey(row.source);
+                    const srcLabel = srcKey
+                      ? t(`managedNe.source.${srcKey}`)
+                      : String(row.source || "").trim() || t("managedNe.source.manual");
+                    return (
                     <tr key={row.id}>
                       <td>
                         <input
@@ -767,6 +791,9 @@ export function NePage() {
                       <td className="pt-list-task-name">{row.name || row.ip_address}</td>
                       <td>{row.vendor}</td>
                       <td>{row.device_type}</td>
+                      <td title={row.source_ref || undefined}>
+                        <span className="table-tag">{srcLabel}</span>
+                      </td>
                       <td>
                         {row.tags
                           ? row.tags.split(/\s+/).map((tag) => (
@@ -839,7 +866,8 @@ export function NePage() {
                         </div>
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

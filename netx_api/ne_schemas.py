@@ -95,6 +95,9 @@ class ManagedNeOut(BaseModel):
     connect_tested_at: datetime | None
     tags: str
     remark: str
+    # Provenance: "" | ume_sync | webcrt | lldp | …
+    source: str = ""
+    source_ref: str = ""
     hop_enabled: bool = False
     hop_vendor: str = "zte"
     hop_host: str = ""

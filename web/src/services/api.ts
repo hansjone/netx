@@ -21,6 +21,8 @@ import type {
   FabricEdge,
   FabricSummary,
   TopologyDiscoverJob,
+  TopologyOutsidePeer,
+  TopologyTree,
   TopologyViewGraph,
   TopologyViewItem,
   LldpCollectDashboard,
@@ -442,7 +444,12 @@ export const fetchEligibleNe = (params: { page: number; pageSize: number; keywor
   );
 };
 
-export const createNeCollection = (body: { title?: string; commands: string; ne_ids: string[] }) =>
+export const createNeCollection = (body: {
+  title?: string;
+  commands: string;
+  ne_ids?: string[];
+  ume_ne_ids?: string[];
+}) =>
   apiPost<CollectionJobItem>("/v1/ne-collections", body);
 
 export const fetchNeCollections = (params: { page: number; pageSize: number }) => {
@@ -852,20 +859,81 @@ export const fetchUmeCurrentAlarms = (params: {
 export const fetchTopologyViews = () =>
   apiGet<{ total: number; items: TopologyViewItem[] }>("/v1/topology/views");
 
-export const createTopologyView = (body: { name: string; remark?: string; filter?: Record<string, unknown> }) =>
-  apiPost<TopologyViewItem>("/v1/topology/views", body);
+export const fetchTopologyTree = () => apiGet<TopologyTree>("/v1/topology/tree");
+
+export const createTopologyFolder = (body: { name: string; kind?: string; parent_id?: string; sort_order?: number }) =>
+  apiPost<{
+    id: string;
+    parent_id: string;
+    kind: string;
+    name: string;
+    sort_order: number;
+    is_system: boolean;
+  }>("/v1/topology/folders", body);
+
+export const updateTopologyFolder = (
+  folderId: string,
+  body: { name?: string; parent_id?: string; sort_order?: number },
+) =>
+  apiPatch<{
+    id: string;
+    parent_id: string;
+    kind: string;
+    name: string;
+    sort_order: number;
+    is_system: boolean;
+  }>(`/v1/topology/folders/${encodeURIComponent(folderId)}`, body);
+
+export const deleteTopologyFolder = (folderId: string, force = false) =>
+  apiDelete<{ ok: boolean; folder_id: string; deleted: boolean }>(
+    `/v1/topology/folders/${encodeURIComponent(folderId)}?force=${force ? "true" : "false"}`,
+  );
+
+export const createTopologyView = (body: {
+  name: string;
+  remark?: string;
+  filter?: Record<string, unknown>;
+  folder_id?: string;
+  kind?: string;
+  role?: string;
+  sort_order?: number;
+}) => apiPost<TopologyViewItem>("/v1/topology/views", body);
+
+export const populateTopologyView = (
+  viewId: string,
+  body?: { dry_run?: boolean; membership?: Record<string, unknown>; freeze_after?: boolean },
+) =>
+  apiPost<{
+    view_id: string;
+    dry_run: boolean;
+    candidate_count: number;
+    would_add: number;
+    added: number;
+    max_nodes: number;
+    truncated: boolean;
+    outside_peers: TopologyOutsidePeer[];
+    graph: TopologyViewGraph | null;
+  }>(`/v1/topology/views/${encodeURIComponent(viewId)}/populate`, body || {});
 
 export const fetchTopologyViewGraph = (viewId: string) =>
   apiGet<TopologyViewGraph>(`/v1/topology/views/${encodeURIComponent(viewId)}`);
 
 export const updateTopologyView = (
   viewId: string,
-  body: { name?: string; remark?: string; filter?: Record<string, unknown>; viewport?: Record<string, unknown> },
+  body: {
+    name?: string;
+    remark?: string;
+    filter?: Record<string, unknown>;
+    viewport?: Record<string, unknown>;
+    folder_id?: string;
+    role?: string;
+    sort_order?: number;
+  },
 ) => apiPatch<TopologyViewItem>(`/v1/topology/views/${encodeURIComponent(viewId)}`, body);
 
-export const deleteTopologyView = (viewId: string) =>
+export const deleteTopologyView = (viewId: string, force = false) =>
   apiDelete<{ ok: boolean; view_id: string; deleted: boolean }>(
-    `/v1/topology/views/${encodeURIComponent(viewId)}`,
+    `/v1/topology/views/${encodeURIComponent(viewId)}?force=${force ? "true" : "false"}`,
   );
 
 export const patchTopologyPositions = (
@@ -907,6 +975,91 @@ export const patchTopologyEdgeStyle = (
   apiPatch<TopologyViewGraph>(`/v1/topology/views/${encodeURIComponent(viewId)}/edge-style`, body);
 
 export const fetchFabricSummary = () => apiGet<FabricSummary>("/v1/topology/fabric/summary");
+
+export const fetchFabricNodes = (params?: {
+  keyword?: string;
+  role?: string;
+  regionFolderId?: string;
+  unmatched?: string;
+  linkStatus?: string;
+  page?: number;
+  pageSize?: number;
+}) => {
+  const p = new URLSearchParams();
+  if (params?.keyword) p.set("keyword", params.keyword);
+  if (params?.role) p.set("role", params.role);
+  if (params?.regionFolderId) p.set("region_folder_id", params.regionFolderId);
+  if (params?.unmatched) p.set("unmatched", params.unmatched);
+  if (params?.linkStatus) p.set("link_status", params.linkStatus);
+  p.set("page", String(Math.max(1, Number(params?.page || 1))));
+  p.set("page_size", String(Math.max(1, Math.min(500, Number(params?.pageSize || 50)))));
+  return apiGet<{
+    total: number;
+    page: number;
+    page_size: number;
+    items: import("../types").FabricNodeSearchHit[];
+  }>(`/v1/topology/fabric/nodes?${p.toString()}`);
+};
+
+export const matchFabricNodes = (body: {
+  pattern: string;
+  match_field?: string;
+  sample_limit?: number;
+}) =>
+  apiPost<{
+    pattern: string;
+    match_field: string;
+    total_matched: number;
+    samples: Array<Record<string, string>>;
+    fabric_node_ids: string[];
+  }>("/v1/topology/fabric/nodes/match", body);
+
+export const bulkTagFabricNodes = (body: {
+  fabric_node_ids?: string[];
+  pattern?: string;
+  match_field?: string;
+  role?: string | null;
+  region_folder_id?: string | null;
+  dry_run?: boolean;
+}) =>
+  apiPost<{
+    dry_run: boolean;
+    matched: number;
+    updated: number;
+    role?: string | null;
+    region_folder_id?: string | null;
+    samples: Array<Record<string, string>>;
+  }>("/v1/topology/fabric/nodes/tags/bulk", body);
+
+export const patchFabricNodeTags = (
+  fabricNodeId: string,
+  body: { role?: string | null; region_folder_id?: string | null },
+) =>
+  apiPatch<import("../types").FabricNodeSearchHit>(
+    `/v1/topology/fabric/nodes/${encodeURIComponent(fabricNodeId)}/tags`,
+    body,
+  );
+
+export const generateTopologySlices = (body: {
+  folder_id: string;
+  template: "core_only" | "core_agg" | "agg_access";
+  dry_run?: boolean;
+  max_nodes?: number;
+  seed_physical_cores?: boolean;
+}) => apiPost<import("../types").SliceGenerateResult>("/v1/topology/slices/generate", body);
+
+export const searchFabricNodes = (params?: { q?: string; page?: number; pageSize?: number }) => {
+  const p = new URLSearchParams();
+  if (params?.q) p.set("q", params.q);
+  p.set("page", String(Math.max(1, Number(params?.page || 1))));
+  p.set("page_size", String(Math.max(1, Math.min(200, Number(params?.pageSize || 50)))));
+  return apiGet<{
+    total: number;
+    page: number;
+    page_size: number;
+    items: import("../types").FabricNodeSearchHit[];
+  }>(`/v1/topology/fabric/nodes/search?${p.toString()}`);
+};
 
 export const fetchFabricEdges = (params?: {
   keyword?: string;

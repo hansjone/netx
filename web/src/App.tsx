@@ -14,6 +14,7 @@ import { NetworkDevicesPage } from "./pages/network/NetworkDevicesPage";
 import { NetworkAlarmsPage } from "./pages/network/NetworkAlarmsPage";
 import { NetworkConfigsPage } from "./pages/network/NetworkConfigsPage";
 import { LldpLinksPage } from "./pages/network/LldpLinksPage";
+import { TopologyClassifyPage } from "./pages/network/TopologyClassifyPage";
 import { PortTrafficPage } from "./pages/network/PortTrafficPage";
 import { PortTrafficBoardListPage } from "./pages/network/PortTrafficBoardListPage";
 import { PortTrafficWallPage } from "./pages/network/PortTrafficWallPage";
@@ -106,6 +107,7 @@ function ProtectedApp() {
           <Route path="alarms" element={<NetworkAlarmsPage />} />
           <Route path="configs" element={<NetworkConfigsPage />} />
           <Route path="topology/lldp" element={<LldpLinksPage />} />
+          <Route path="topology/classify" element={<TopologyClassifyPage />} />
           <Route path="topology" element={<Navigate to="/network/topology/lldp" replace />} />
           <Route path="webcrt" element={<NetworkWebcrtRedirect />} />
           <Route path="tasks/collect" element={<CollectPage />} />

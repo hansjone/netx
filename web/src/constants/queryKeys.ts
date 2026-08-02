@@ -47,6 +47,16 @@ export const queryKeys = {
     pageSize: number,
   ) => ["umeCurrentAlarms", severity, cleared, hostName, keyword, page, pageSize] as const,
   topologyViews: ["topologyViews"] as const,
+  topologyTree: ["topologyTree"] as const,
+  fabricNodeInventory: (
+    keyword: string,
+    role: string,
+    regionFolderId: string,
+    unmatched: string,
+    linkStatus: string,
+    page: number,
+  ) => ["fabricNodeInventory", keyword, role, regionFolderId, unmatched, linkStatus, page] as const,
+  fabricNodeSearch: (q: string, page: number) => ["fabricNodeSearch", q, page] as const,
   topologyViewGraph: (viewId: string) => ["topologyViewGraph", viewId] as const,
   fabricSummary: ["fabricSummary"] as const,
   /** @deprecated */

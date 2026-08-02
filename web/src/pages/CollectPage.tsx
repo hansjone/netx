@@ -23,6 +23,11 @@ import { formatSystemTime } from "../utils/time";
 const POLL_MS = 2000;
 const ELIGIBLE_PAGE_SIZE = 20;
 
+function eligibleKey(row: Pick<EligibleNeItem, "id" | "source">): string {
+  const src = String(row.source || "managed").trim().toLowerCase() || "managed";
+  return `${src}:${row.id}`;
+}
+
 function collectionErrorMessage(err: unknown, t: (key: string) => string): string {
   const raw = String(err);
   if (raw.includes("collection_ne_busy")) return t("collect.neBusy");
@@ -140,12 +145,20 @@ export function CollectPage() {
   });
 
   const createMutation = useMutation({
-    mutationFn: () =>
-      createNeCollection({
+    mutationFn: () => {
+      const ne_ids: string[] = [];
+      const ume_ne_ids: string[] = [];
+      for (const row of selectedList) {
+        if (String(row.source || "managed").toLowerCase() === "ume") ume_ne_ids.push(row.id);
+        else ne_ids.push(row.id);
+      }
+      return createNeCollection({
         title: title.trim(),
         commands,
-        ne_ids: selectedIds,
-      }),
+        ne_ids,
+        ume_ne_ids,
+      });
+    },
     onSuccess: async (job) => {
       showOk(t("collect.created", { id: job.id }));
       setCreateOpen(false);
@@ -157,7 +170,8 @@ export function CollectPage() {
   });
 
   const addNe = (row: EligibleNeItem) => {
-    setSelectedMap((prev) => (prev[row.id] ? prev : { ...prev, [row.id]: row }));
+    const key = eligibleKey(row);
+    setSelectedMap((prev) => (prev[key] ? prev : { ...prev, [key]: row }));
   };
 
   const addBatchNe = (rows: EligibleNeItem[]) => {
@@ -165,16 +179,17 @@ export function CollectPage() {
     setSelectedMap((prev) => {
       const next = { ...prev };
       for (const row of rows) {
-        if (!next[row.id]) next[row.id] = row;
+        const key = eligibleKey(row);
+        if (!next[key]) next[key] = row;
       }
       return next;
     });
   };
 
-  const removeNe = (id: string) => {
+  const removeNe = (key: string) => {
     setSelectedMap((prev) => {
       const next = { ...prev };
-      delete next[id];
+      delete next[key];
       return next;
     });
   };
@@ -182,8 +197,10 @@ export function CollectPage() {
   const clearSelected = () => setSelectedMap({});
 
   const eligibleItems = eligibleQuery.data?.items ?? [];
-  const selectablePickItems = eligibleItems.filter((row) => !selectedMap[row.id]);
-  const allPickSelected = selectablePickItems.length > 0 && selectablePickItems.every((row) => pickSelectedIds.includes(row.id));
+  const selectablePickItems = eligibleItems.filter((row) => !selectedMap[eligibleKey(row)]);
+  const allPickSelected =
+    selectablePickItems.length > 0 &&
+    selectablePickItems.every((row) => pickSelectedIds.includes(eligibleKey(row)));
   const batchPickCount = pickSelectedIds.length;
   const neTotal = eligibleQuery.data?.total ?? 0;
   const nePages = pageCount(neTotal, ELIGIBLE_PAGE_SIZE);
@@ -257,20 +274,25 @@ export function CollectPage() {
             <p className="panel__hint">{t("collect.create.selectedEmpty")}</p>
           ) : (
             <div className="collect-selected-list">
-              {selectedList.map((row) => (
-                <div key={row.id} className="collect-selected-chip">
+              {selectedList.map((row) => {
+                const key = eligibleKey(row);
+                const src = String(row.source || "managed").toLowerCase();
+                return (
+                <div key={key} className="collect-selected-chip">
                   <span className="collect-selected-chip__main">
                     <strong>{row.name || row.ip_address}</strong>
                     <span className="collect-selected-chip__meta">
-                      {row.ip_address}
+                      {src}
+                      {row.ip_address ? ` · ${row.ip_address}` : ""}
                       {row.vendor ? ` · ${row.vendor}` : ""}
                     </span>
                   </span>
-                  <button type="button" className="link-btn" onClick={() => removeNe(row.id)}>
+                  <button type="button" className="link-btn" onClick={() => removeNe(key)}>
                     {t("collect.create.remove")}
                   </button>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -287,7 +309,9 @@ export function CollectPage() {
                 className="link-btn"
                 disabled={batchPickCount === 0}
                 onClick={() => {
-                  const rows = eligibleItems.filter((x) => pickSelectedIds.includes(x.id) && !selectedMap[x.id]);
+                  const rows = eligibleItems.filter(
+                    (x) => pickSelectedIds.includes(eligibleKey(x)) && !selectedMap[eligibleKey(x)],
+                  );
                   addBatchNe(rows);
                   setPickSelectedIds([]);
                 }}
@@ -327,7 +351,7 @@ export function CollectPage() {
                       checked={allPickSelected}
                       onChange={(e) => {
                         if (e.target.checked) {
-                          setPickSelectedIds(selectablePickItems.map((row) => row.id));
+                          setPickSelectedIds(selectablePickItems.map((row) => eligibleKey(row)));
                           return;
                         }
                         setPickSelectedIds([]);
@@ -335,6 +359,7 @@ export function CollectPage() {
                       aria-label="pick all"
                     />
                   </th>
+                  <th>{t("managedNe.col.source")}</th>
                   <th>{t("managedNe.col.name")}</th>
                   <th>{t("managedNe.col.vendor")}</th>
                   <th>{t("managedNe.col.ip")}</th>
@@ -344,21 +369,26 @@ export function CollectPage() {
               </thead>
               <tbody>
                 {eligibleItems.map((row) => {
-                  const picked = Boolean(selectedMap[row.id]);
+                  const key = eligibleKey(row);
+                  const picked = Boolean(selectedMap[key]);
+                  const src = String(row.source || "managed").toLowerCase();
                   return (
-                    <tr key={row.id}>
+                    <tr key={key}>
                       <td>
                         <input
                           type="checkbox"
-                          checked={pickSelectedIds.includes(row.id)}
+                          checked={pickSelectedIds.includes(key)}
                           disabled={picked}
                           onChange={(e) => {
                             if (picked) return;
                             setPickSelectedIds((prev) =>
-                              e.target.checked ? [...new Set([...prev, row.id])] : prev.filter((id) => id !== row.id),
+                              e.target.checked ? [...new Set([...prev, key])] : prev.filter((id) => id !== key),
                             );
                           }}
                         />
+                      </td>
+                      <td>
+                        <span className="table-tag">{src}</span>
                       </td>
                       <td>{row.name || row.ip_address}</td>
                       <td>{row.vendor}</td>
@@ -373,7 +403,7 @@ export function CollectPage() {
                           disabled={picked}
                           onClick={() => {
                             addNe(row);
-                            setPickSelectedIds((prev) => prev.filter((id) => id !== row.id));
+                            setPickSelectedIds((prev) => prev.filter((id) => id !== key));
                           }}
                         >
                           {picked ? t("collect.create.added") : t("collect.create.add")}
@@ -703,6 +733,7 @@ function JobRunsPanel({
         <table>
           <thead>
             <tr>
+              <th>{t("managedNe.col.source")}</th>
               <th>{t("managedNe.col.name")}</th>
               <th>{t("managedNe.col.ip")}</th>
               <th>{t("collect.runs.status")}</th>
@@ -713,6 +744,9 @@ function JobRunsPanel({
           <tbody>
             {runs.map((run) => (
               <tr key={run.id}>
+                <td>
+                  <span className="table-tag">{run.ne_source || "managed"}</span>
+                </td>
                 <td>{run.ne_name}</td>
                 <td>{run.ne_ip}</td>
                 <td>{run.status}</td>

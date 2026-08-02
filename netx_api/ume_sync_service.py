@@ -564,14 +564,29 @@ def sync_inventory_full(db: Session, client: UMEClient, *, trigger_mode: str = "
         db.flush()
         deleted_ne = 0
         if _snapshot_reconcile_ok(inv_meta):
+            from .topology_inventory_lifecycle import detach_fabric_from_ume
+
             if seen_ne_ids:
+                stale_ids = [
+                    str(x[0])
+                    for x in db.query(UmeInventoryNE.ne_id)
+                    .filter(~UmeInventoryNE.ne_id.in_(list(seen_ne_ids)))
+                    .all()
+                    if str(x[0] or "").strip()
+                ]
+            else:
+                stale_ids = [
+                    str(x[0])
+                    for x in db.query(UmeInventoryNE.ne_id).all()
+                    if str(x[0] or "").strip()
+                ]
+            if stale_ids:
+                detach_fabric_from_ume(db, stale_ids)
                 deleted_ne = int(
                     db.query(UmeInventoryNE)
-                    .filter(~UmeInventoryNE.ne_id.in_(list(seen_ne_ids)))
+                    .filter(UmeInventoryNE.ne_id.in_(stale_ids))
                     .delete(synchronize_session=False)
                 )
-            else:
-                deleted_ne = int(db.query(UmeInventoryNE).delete(synchronize_session=False))
 
         job.details_json = json.dumps(
             {

@@ -820,15 +820,25 @@ def on_startup() -> None:
 
             ensure_port_traffic_series_schema(conn)
             ensure_topology_schema(conn)
+            conn.exec_driver_sql(
+                "ALTER TABLE ne_collection_run ADD COLUMN IF NOT EXISTS ne_source VARCHAR(16) DEFAULT 'managed'"
+            )
+            try:
+                conn.exec_driver_sql(
+                    "ALTER TABLE ne_collection_run ALTER COLUMN ne_id TYPE VARCHAR(128)"
+                )
+            except Exception:
+                pass
     except Exception:
         _schedule_log.exception("startup: auth/port_traffic/topology schema migration failed")
     _reset_runtime_pause_flags()
     _fail_stale_running_sync_jobs_on_startup()
     try:
-        from .topology_service import reclaim_stale_discover_jobs
+        from .topology_service import bootstrap_topology_tree, reclaim_stale_discover_jobs
 
         db_topo = SessionLocal()
         try:
+            bootstrap_topology_tree(db_topo)
             closed = reclaim_stale_discover_jobs(db_topo, force_all_open=True)
             if closed:
                 _schedule_log.warning(

@@ -17,14 +17,17 @@ from netx_api.models import (
     TopoDiscoverJobItem,
     TopoFabricEdge,
     TopoFabricNode,
+    TopoFolder,
     TopoView,
     TopoViewEdgeStyle,
     TopoViewNode,
 )
 from netx_api.topology_schemas import (
     FabricDiscoverRequest,
+    TopologyFolderCreate,
     TopologyViewCreate,
     ViewNodesAdd,
+    ViewPopulateRequest,
     ViewPositionsPatch,
     ViewNodeIn,
 )
@@ -99,6 +102,7 @@ class FabricTopologyTests(unittest.TestCase):
             TopoViewEdgeStyle,
             TopoViewNode,
             TopoView,
+            TopoFolder,
             TopoFabricEdge,
             TopoFabricNode,
             TopoDiscoverJobItem,
@@ -109,6 +113,11 @@ class FabricTopologyTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.db.close()
+
+    def _region(self, name: str = "Test-Region") -> str:
+        return svc.create_folder(
+            self.db, TopologyFolderCreate(name=name, kind="region")
+        ).id
 
     def test_view_crud_and_positions(self) -> None:
         suffix = uuid4().hex[:8]
@@ -122,7 +131,10 @@ class FabricTopologyTests(unittest.TestCase):
         self.db.add(ne)
         self.db.commit()
 
-        view = svc.create_view(self.db, TopologyViewCreate(name=f"V-{suffix}"))
+        view = svc.create_view(
+            self.db,
+            TopologyViewCreate(name=f"V-{suffix}", folder_id=self._region(f"R-{suffix}")),
+        )
         graph = svc.add_nodes_to_view(
             self.db, view.id, ViewNodesAdd(managed_ne_ids=[ne.id])
         )
@@ -142,6 +154,307 @@ class FabricTopologyTests(unittest.TestCase):
         svc.delete_view(self.db, view.id)
         self.db.delete(ne)
         self.db.commit()
+
+    def test_topology_tree_root_region_and_leaf(self) -> None:
+        tree = svc.get_topology_tree(self.db)
+        self.assertIsNotNone(tree.root)
+        assert tree.root is not None
+        self.assertEqual(tree.root.kind, "root")
+        # No default Unassigned region — only user-created regions under hidden root.
+        self.assertEqual(tree.root.children, [])
+
+        region = svc.create_folder(
+            self.db, TopologyFolderCreate(name="East", kind="region")
+        )
+        # Creating a site auto-creates a physical map.
+        tree1 = svc.get_topology_tree(self.db)
+        assert tree1.root is not None
+        east0 = next(c for c in tree1.root.children if c.id == region.id)
+        self.assertTrue(any(v.kind == "physical" for v in east0.views))
+
+        view = svc.create_view(
+            self.db,
+            TopologyViewCreate(
+                name="East-Custom",
+                folder_id=region.id,
+                kind="custom",
+            ),
+        )
+        self.assertEqual(view.folder_id, region.id)
+        self.assertEqual(view.kind, "custom")
+        self.assertIn("membership", view.filter)
+
+        tree2 = svc.get_topology_tree(self.db)
+        assert tree2.root is not None
+        east = next(c for c in tree2.root.children if c.id == region.id)
+        self.assertTrue(any(v.id == view.id for v in east.views))
+        # Flat siblings: physical + custom
+        self.assertGreaterEqual(len(east.views), 2)
+        self.assertTrue(all(not getattr(v, "children", None) for v in east.views))
+
+    def test_site_physical_and_custom_flat(self) -> None:
+        region = svc.create_folder(
+            self.db, TopologyFolderCreate(name="Site-R", kind="region")
+        )
+        tree = svc.get_topology_tree(self.db)
+        assert tree.root is not None
+        reg = next(c for c in tree.root.children if c.id == region.id)
+        physicals = [v for v in reg.views if v.kind == "physical"]
+        self.assertEqual(len(physicals), 1)
+        phys = physicals[0]
+
+        custom = svc.create_view(
+            self.db,
+            TopologyViewCreate(
+                name="Custom-A",
+                folder_id=region.id,
+                kind="custom",
+            ),
+        )
+        tree2 = svc.get_topology_tree(self.db)
+        assert tree2.root is not None
+        reg2 = next(c for c in tree2.root.children if c.id == region.id)
+        ids = {v.id for v in reg2.views}
+        self.assertIn(phys.id, ids)
+        self.assertIn(custom.id, ids)
+        # physical first
+        self.assertEqual(reg2.views[0].kind, "physical")
+
+        with self.assertRaises(Exception):
+            svc.delete_view(self.db, phys.id)
+        svc.delete_view(self.db, custom.id)
+        # force-delete physical recreates a fresh physical map
+        svc.delete_view(self.db, phys.id, force=True)
+        tree3 = svc.get_topology_tree(self.db)
+        assert tree3.root is not None
+        reg3 = next(c for c in tree3.root.children if c.id == region.id)
+        self.assertEqual(sum(1 for v in reg3.views if v.kind == "physical"), 1)
+
+    def test_delete_region_cascades_views(self) -> None:
+        region = svc.create_folder(
+            self.db, TopologyFolderCreate(name="Del-Region", kind="region")
+        )
+        custom = svc.create_view(
+            self.db,
+            TopologyViewCreate(
+                name="Custom-Del",
+                folder_id=region.id,
+                kind="custom",
+            ),
+        )
+        tree = svc.get_topology_tree(self.db)
+        assert tree.root is not None
+        reg = next(c for c in tree.root.children if c.id == region.id)
+        self.assertGreaterEqual(len(reg.views), 2)
+
+        out = svc.delete_folder(self.db, region.id)
+        self.assertTrue(out.get("deleted"))
+        tree2 = svc.get_topology_tree(self.db)
+        assert tree2.root is not None
+        self.assertFalse(any(c.id == region.id for c in tree2.root.children))
+        self.assertIsNone(self.db.get(TopoView, custom.id))
+        self.assertEqual(
+            self.db.query(TopoView).filter(TopoView.folder_id == region.id).count(),
+            0,
+        )
+
+    def test_classify_role_region_and_slices(self) -> None:
+        from netx_api import topology_classify as clf
+        from netx_api.topology_schemas import (
+            ClassifyRuleCreate,
+            SliceGenerateRequest,
+        )
+
+        suffix = uuid4().hex[:6]
+        region = svc.create_folder(
+            self.db, TopologyFolderCreate(name=f"East-{suffix}", kind="region")
+        )
+        nes = []
+        for name, ip in (
+            (f"CORE-A-{suffix}", "10.1.1.1"),
+            (f"CORE-B-{suffix}", "10.1.1.2"),
+            (f"AGG-A-{suffix}", "10.1.2.1"),
+            (f"ACC-A-{suffix}", "10.1.3.1"),
+        ):
+            ne = ManagedNE(
+                id=f"clf-{suffix}-{name[:8]}",
+                name=name,
+                vendor="Cisco",
+                device_type="cisco_ios",
+                ip_address=ip,
+            )
+            self.db.add(ne)
+            nes.append(ne)
+        self.db.commit()
+        nodes = [svc.ensure_fabric_node_for_managed(self.db, ne) for ne in nes]
+        self.db.commit()
+        svc.upsert_fabric_edge(
+            self.db,
+            a_node_id=nodes[0].id,
+            b_node_id=nodes[2].id,
+            a_port="Gi0/0",
+            b_port="Gi0/1",
+            source="lldp",
+        )
+        svc.upsert_fabric_edge(
+            self.db,
+            a_node_id=nodes[2].id,
+            b_node_id=nodes[3].id,
+            a_port="Gi0/2",
+            b_port="Gi0/3",
+            source="lldp",
+        )
+        self.db.commit()
+
+        clf.create_rule(
+            self.db,
+            ClassifyRuleCreate(
+                scope="role",
+                name="core",
+                pattern=r"^CORE-",
+                priority=10,
+                payload={"role": "core"},
+            ),
+        )
+        clf.create_rule(
+            self.db,
+            ClassifyRuleCreate(
+                scope="role",
+                name="agg",
+                pattern=r"^AGG-",
+                priority=20,
+                payload={"role": "aggregation"},
+            ),
+        )
+        clf.create_rule(
+            self.db,
+            ClassifyRuleCreate(
+                scope="role",
+                name="acc",
+                pattern=r"^ACC-",
+                priority=30,
+                payload={"role": "access"},
+            ),
+        )
+        clf.create_rule(
+            self.db,
+            ClassifyRuleCreate(
+                scope="region",
+                name="east",
+                pattern=rf"-{suffix}$",
+                priority=10,
+                payload={"folder_id": region.id},
+            ),
+        )
+        prev = clf.preview_classify(self.db)
+        self.assertGreaterEqual(prev.role_matched, 4)
+        applied = clf.apply_classify(self.db)
+        self.assertGreaterEqual(applied.role_updated, 4)
+        self.db.refresh(nodes[0])
+        self.assertEqual(nodes[0].role, "core")
+        self.assertEqual(nodes[0].region_folder_id, region.id)
+
+        dry = clf.generate_slices(
+            self.db,
+            SliceGenerateRequest(
+                folder_id=region.id,
+                template="core_agg",
+                dry_run=True,
+                max_nodes=50,
+            ),
+        )
+        self.assertGreaterEqual(dry.map_count, 1)
+        self.assertTrue(dry.dry_run)
+        real = clf.generate_slices(
+            self.db,
+            SliceGenerateRequest(
+                folder_id=region.id,
+                template="core_agg",
+                dry_run=False,
+                max_nodes=50,
+            ),
+        )
+        self.assertFalse(real.dry_run)
+        self.assertTrue(real.created_view_ids)
+        search = clf.search_fabric_nodes_with_views(self.db, keyword=f"CORE-A-{suffix}")
+        self.assertGreaterEqual(search["total"], 1)
+        self.assertTrue(search["items"][0].get("views"))
+
+        from netx_api.topology_schemas import FabricNodesBulkTagRequest, FabricNodesMatchRequest
+
+        matched = clf.match_fabric_nodes(
+            self.db,
+            FabricNodesMatchRequest(pattern=rf"^AGG-A-{suffix}$", match_field="name"),
+        )
+        self.assertEqual(matched.total_matched, 1)
+        bulk = clf.bulk_tag_fabric_nodes(
+            self.db,
+            FabricNodesBulkTagRequest(
+                pattern=rf"^ACC-A-{suffix}$",
+                role="access",
+                region_folder_id=region.id,
+            ),
+        )
+        self.assertEqual(bulk.updated, 1)
+
+    def test_project_neighbors_respects_max_nodes(self) -> None:
+        suffix = uuid4().hex[:8]
+        nes = []
+        for i in range(4):
+            ne = ManagedNE(
+                id=f"cap-{suffix}-{i}",
+                name=f"N{i}-{suffix}",
+                vendor="Cisco",
+                device_type="cisco_ios",
+                ip_address=f"10.9.{(int(suffix[:2], 16) % 200)}.{i + 1}",
+            )
+            self.db.add(ne)
+            nes.append(ne)
+        self.db.commit()
+        nodes = [svc.ensure_fabric_node_for_managed(self.db, ne) for ne in nes]
+        self.db.commit()
+        # Line: 0-1-2-3
+        for a, b in ((0, 1), (1, 2), (2, 3)):
+            svc.upsert_fabric_edge(
+                self.db,
+                a_node_id=nodes[a].id,
+                b_node_id=nodes[b].id,
+                a_port=f"Gi0/{a}",
+                b_port=f"Gi0/{b}",
+                source="lldp",
+            )
+        self.db.commit()
+
+        view = svc.create_view(
+            self.db,
+            TopologyViewCreate(
+                name=f"Cap-{suffix}",
+                folder_id=self._region(f"CapR-{suffix}"),
+                role="core",
+                filter={
+                    "membership": {
+                        "expand_hops": 3,
+                        "max_nodes": 2,
+                        "frozen": False,
+                    }
+                },
+            ),
+        )
+        svc.add_nodes_to_view(self.db, view.id, ViewNodesAdd(managed_ne_ids=[nes[0].id]))
+        g = svc.project_fabric_neighbors_to_view(self.db, view.id)
+        self.assertLessEqual(len(g.nodes), 2)
+        self.assertTrue(g.truncated or len(g.nodes) == 2)
+
+        pop = svc.populate_view(
+            self.db,
+            view.id,
+            ViewPopulateRequest(
+                dry_run=True,
+                membership={"seed_fabric_node_ids": [nodes[0].id], "expand_hops": 3, "max_nodes": 2},
+            ),
+        )
+        self.assertLessEqual(pop.candidate_count, 4)
+        self.assertTrue(pop.truncated or pop.candidate_count <= 2 or pop.would_add <= 2)
 
     def test_lldp_discover_writes_fabric_edge(self) -> None:
         suffix = uuid4().hex[:8]
@@ -250,7 +563,10 @@ class FabricTopologyTests(unittest.TestCase):
         )
         self.db.commit()
 
-        view = svc.create_view(self.db, TopologyViewCreate(name=f"V-{suffix}"))
+        view = svc.create_view(
+            self.db,
+            TopologyViewCreate(name=f"V-{suffix}", folder_id=self._region(f"MR-{suffix}")),
+        )
         graph = svc.add_nodes_to_view(
             self.db,
             view.id,
@@ -377,7 +693,10 @@ Management Addresses:
         self.assertEqual(placeholder.device_type, "generic")
         self.assertEqual(placeholder.source_ref, "198.51.100.200")
 
-        view = svc.create_view(self.db, TopologyViewCreate(name=f"V-{suffix}"))
+        view = svc.create_view(
+            self.db,
+            TopologyViewCreate(name=f"V-{suffix}", folder_id=self._region(f"PR-{suffix}")),
+        )
         svc.add_nodes_to_view(self.db, view.id, ViewNodesAdd(managed_ne_ids=[ne_a.id]))
         projected = svc.project_fabric_neighbors_to_view(self.db, view.id)
         self.assertEqual(len(projected.nodes), 2)
@@ -807,6 +1126,82 @@ Management Addresses:
         self.db.delete(ne_a)
         self.db.delete(ne_b)
         self.db.commit()
+
+    def test_delete_managed_detaches_fabric_keeps_topology(self) -> None:
+        from netx_api import ne_service
+        from netx_api.topology_inventory_lifecycle import reconcile_dangling_fabric_links
+
+        suffix = uuid4().hex[:8]
+        ne = ManagedNE(
+            id=f"detach-{suffix}",
+            name=f"DET-{suffix}",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address=f"10.66.{(int(suffix[:2], 16) % 200) + 1}.1",
+        )
+        self.db.add(ne)
+        self.db.commit()
+        region_id = self._region(f"Detach-{suffix}")
+        view = svc.create_view(
+            self.db,
+            TopologyViewCreate(name=f"DV-{suffix}", folder_id=region_id),
+        )
+        graph = svc.add_nodes_to_view(
+            self.db, view.id, ViewNodesAdd(managed_ne_ids=[ne.id])
+        )
+        fid = graph.nodes[0].fabric_node_id
+        peer = TopoFabricNode(
+            id=f"peer-{suffix}",
+            name=f"PEER-{suffix}",
+            ip=f"10.66.{(int(suffix[:2], 16) % 200) + 1}.2",
+        )
+        self.db.add(peer)
+        self.db.commit()
+        edge, _ = svc.upsert_fabric_edge(
+            self.db,
+            a_node_id=fid,
+            b_node_id=peer.id,
+            a_port="Gi0/0",
+            b_port="Gi0/1",
+            source="lldp",
+        )
+        self.db.commit()
+
+        ne_service.delete_managed_ne(self.db, ne.id)
+
+        fab = self.db.get(TopoFabricNode, fid)
+        self.assertIsNotNone(fab)
+        assert fab is not None
+        self.assertFalse(str(fab.managed_ne_id or "").strip())
+        self.assertEqual(
+            self.db.query(TopoViewNode)
+            .filter(TopoViewNode.view_id == view.id, TopoViewNode.fabric_node_id == fid)
+            .count(),
+            1,
+        )
+        self.assertIsNotNone(self.db.get(TopoFabricEdge, edge.id))
+
+        orphaned = svc.list_fabric_nodes(self.db, link_status="orphaned", page_size=500)
+        self.assertTrue(any(x["id"] == fid for x in orphaned["items"]))
+        hit = next(x for x in orphaned["items"] if x["id"] == fid)
+        self.assertEqual(hit["link_status"], "orphaned")
+        self.assertFalse(hit["managed_alive"])
+
+        # Historical dangling ref (pre-lifecycle) is cleared by reconcile.
+        ghost_id = f"ghost-{suffix}"
+        dangling = TopoFabricNode(
+            id=f"dang-{suffix}",
+            managed_ne_id=ghost_id,
+            name=f"DANG-{suffix}",
+            ip="10.66.9.9",
+        )
+        self.db.add(dangling)
+        self.db.commit()
+        stats = reconcile_dangling_fabric_links(self.db)
+        self.db.commit()
+        self.assertGreaterEqual(int(stats["detached_managed_nodes"]), 1)
+        self.db.refresh(dangling)
+        self.assertFalse(str(dangling.managed_ne_id or "").strip())
 
 
 if __name__ == "__main__":

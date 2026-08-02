@@ -21,8 +21,17 @@ class FabricNodeOut(BaseModel):
     ip: str = ""
     vendor: str = ""
     device_type: str = ""
+    role: str = ""
+    region_folder_id: str | None = None
+    role_source: str = ""
+    region_source: str = ""
     attrs: dict[str, Any] = Field(default_factory=dict)
     last_seen_at: datetime | None = None
+    # Inventory link diagnostics (list/enrich); empty when not enriched.
+    link_status: str = ""  # managed | ume | both | orphaned
+    managed_alive: bool = False
+    ume_alive: bool = False
+    managed_source: str = ""  # manual | ume_sync | lldp | webcrt | …
 
 
 class FabricEdgeOut(BaseModel):
@@ -125,14 +134,45 @@ class FabricDiscoverJobOut(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Views
+# Folders (tree grouping) + Views (leaf canvases)
 # ---------------------------------------------------------------------------
+
+
+class TopologyFolderCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=256)
+    kind: str = Field(default="region", description="region only from API")
+    parent_id: str | None = None
+    sort_order: int = 0
+
+
+class TopologyFolderUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=256)
+    parent_id: str | None = None
+    sort_order: int | None = None
+
+
+class TopologyFolderOut(BaseModel):
+    id: str
+    parent_id: str = ""
+    kind: str
+    name: str
+    sort_order: int = 0
+    is_system: bool = False
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class TopologyViewCreate(BaseModel):
     name: str = Field(min_length=1, max_length=256)
     remark: str = Field(default="", max_length=1024)
     filter: dict[str, Any] = Field(default_factory=dict)
+    folder_id: str = Field(..., min_length=1, description="Site/region folder id (required)")
+    kind: str = Field(default="custom", description="physical | custom")
+    role: str = Field(
+        default="core",
+        description="Optional filter preset label (legacy); not a tree level",
+    )
+    sort_order: int = 0
 
 
 class TopologyViewUpdate(BaseModel):
@@ -140,17 +180,58 @@ class TopologyViewUpdate(BaseModel):
     remark: str | None = Field(default=None, max_length=1024)
     filter: dict[str, Any] | None = None
     viewport: dict[str, Any] | None = None
+    folder_id: str | None = None
+    kind: str | None = None
+    role: str | None = None
+    sort_order: int | None = None
 
 
 class TopologyViewOut(BaseModel):
     id: str
     name: str
     remark: str = ""
+    folder_id: str = ""
+    kind: str = "custom"
+    role: str = "core"
+    sort_order: int = 0
     filter: dict[str, Any] = Field(default_factory=dict)
     viewport: dict[str, Any] = Field(default_factory=dict)
     node_count: int = 0
     created_at: datetime | None = None
     updated_at: datetime | None = None
+
+
+class TopologyTreeViewOut(BaseModel):
+    id: str
+    name: str
+    kind: str = "custom"
+    role: str = "core"
+    sort_order: int = 0
+    node_count: int = 0
+    updated_at: datetime | None = None
+
+
+class TopologyTreeFolderOut(BaseModel):
+    id: str
+    parent_id: str = ""
+    kind: str
+    name: str
+    sort_order: int = 0
+    is_system: bool = False
+    views: list[TopologyTreeViewOut] = Field(default_factory=list)
+    children: list["TopologyTreeFolderOut"] = Field(default_factory=list)
+
+
+class TopologyTreeOut(BaseModel):
+    root: TopologyTreeFolderOut | None = None
+
+
+class ViewPopulateRequest(BaseModel):
+    """Fill a leaf view from membership rules (optional dry-run)."""
+
+    dry_run: bool = False
+    membership: dict[str, Any] | None = None
+    freeze_after: bool = True
 
 
 class ViewNodeIn(BaseModel):
@@ -197,6 +278,19 @@ class TopologyViewGraphOut(BaseModel):
     edges: list[ViewEdgeOut]
     truncated: bool = False
     truncate_reason: str = ""
+    outside_peers: list[dict[str, str]] = Field(default_factory=list)
+
+
+class ViewPopulateOut(BaseModel):
+    view_id: str
+    dry_run: bool = False
+    candidate_count: int = 0
+    would_add: int = 0
+    added: int = 0
+    max_nodes: int = 0
+    truncated: bool = False
+    outside_peers: list[dict[str, str]] = Field(default_factory=list)
+    graph: TopologyViewGraphOut | None = None
 
 
 class ViewPositionsPatch(BaseModel):
@@ -228,3 +322,130 @@ class FabricManualEdgeIn(BaseModel):
     b_node_id: str = Field(min_length=1, max_length=64)
     a_port: str = ""
     b_port: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Classify rules + slices + search
+# ---------------------------------------------------------------------------
+
+
+class ClassifyRuleOut(BaseModel):
+    id: str
+    scope: str = "role"
+    name: str = ""
+    pattern: str = ""
+    match_field: str = "name"
+    priority: int = 100
+    enabled: bool = True
+    payload: dict[str, Any] = Field(default_factory=dict)
+    remark: str = ""
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class ClassifyRuleCreate(BaseModel):
+    scope: str = Field(default="role", description="role | region")
+    name: str = ""
+    pattern: str
+    match_field: str = "name"
+    priority: int = 100
+    enabled: bool = True
+    payload: dict[str, Any] = Field(default_factory=dict)
+    remark: str = ""
+
+
+class ClassifyRuleUpdate(BaseModel):
+    name: str | None = None
+    pattern: str | None = None
+    match_field: str | None = None
+    priority: int | None = None
+    enabled: bool | None = None
+    payload: dict[str, Any] | None = None
+    remark: str | None = None
+
+
+class ClassifyPreviewOut(BaseModel):
+    total_nodes: int = 0
+    role_matched: int = 0
+    role_unmatched: int = 0
+    role_conflicts: int = 0
+    region_matched: int = 0
+    region_unmatched: int = 0
+    region_conflicts: int = 0
+    role_samples: list[dict[str, Any]] = Field(default_factory=list)
+    region_samples: list[dict[str, Any]] = Field(default_factory=list)
+    unmatched_samples: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ClassifyApplyOut(BaseModel):
+    role_updated: int = 0
+    region_updated: int = 0
+    skipped_manual: int = 0
+    total_nodes: int = 0
+
+
+class FabricNodeTagPatch(BaseModel):
+    role: str | None = None
+    region_folder_id: str | None = None
+
+
+class FabricNodesMatchRequest(BaseModel):
+    """Ephemeral regex match over fabric inventory (not persisted as rules)."""
+
+    pattern: str
+    match_field: str = "name"
+    sample_limit: int = Field(default=50, ge=1, le=200)
+
+
+class FabricNodesMatchOut(BaseModel):
+    pattern: str
+    match_field: str = "name"
+    total_matched: int = 0
+    samples: list[dict[str, Any]] = Field(default_factory=list)
+    fabric_node_ids: list[str] = Field(default_factory=list)
+
+
+class FabricNodesBulkTagRequest(BaseModel):
+    """Assign role/region to explicit ids or to an ephemeral regex match."""
+
+    fabric_node_ids: list[str] = Field(default_factory=list)
+    pattern: str = ""
+    match_field: str = "name"
+    role: str | None = None
+    region_folder_id: str | None = None
+    dry_run: bool = False
+
+
+class FabricNodesBulkTagOut(BaseModel):
+    dry_run: bool = False
+    matched: int = 0
+    updated: int = 0
+    role: str | None = None
+    region_folder_id: str | None = None
+    samples: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class SliceGenerateRequest(BaseModel):
+    folder_id: str
+    template: str = Field(description="core_only | core_agg | agg_access")
+    dry_run: bool = True
+    max_nodes: int = Field(default=300, ge=1, le=2000)
+    seed_physical_cores: bool = False
+
+
+class SliceMapPlan(BaseModel):
+    name: str
+    role: str = "core"
+    seed_fabric_node_ids: list[str] = Field(default_factory=list)
+    member_fabric_node_ids: list[str] = Field(default_factory=list)
+    node_count: int = 0
+
+
+class SliceGenerateOut(BaseModel):
+    folder_id: str
+    template: str
+    dry_run: bool = True
+    maps: list[SliceMapPlan] = Field(default_factory=list)
+    map_count: int = 0
+    overlap_node_count: int = 0
+    created_view_ids: list[str] = Field(default_factory=list)

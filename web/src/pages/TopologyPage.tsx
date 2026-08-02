@@ -1,5 +1,5 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+﻿import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ReactFlow,
@@ -26,21 +26,23 @@ import "@xyflow/react/dist/style.css";
 import {
   addTopologyViewNodes,
   createFabricManualEdge,
-  createTopologyMap,
+  createTopologyFolder,
+  createTopologyView,
+  deleteTopologyFolder,
   deleteTopologyMap,
   fetchLldpDiscoverJob,
   fetchManagedNe,
   fetchTopologyGraph,
-  fetchTopologyMaps,
+  fetchTopologyTree,
   fetchUmeNe,
   patchTopologyEdgeStyle,
   patchTopologyPositions,
   projectTopologyNeighbors,
   removeTopologyViewNodes,
   startLldpDiscover,
+  updateTopologyFolder,
   updateTopologyMap,
 } from "../services/api";
-import type { TopologyDiscoverJob, TopologyViewEdgeItem, TopologyViewGraph, TopologyViewNodeItem } from "../types";
 import { queryKeys } from "../constants/queryKeys";
 import { HelpHint } from "../components/HelpHint";
 import { useI18n } from "../i18n";
@@ -48,14 +50,54 @@ import { useToast } from "../hooks/useToast";
 import { openOrFocusModule } from "../utils/moduleWindows";
 import type {
   ManagedNeItem,
+  TopologyDiscoverJob,
   TopologyDiscoverNeResult,
   TopologyDiscoverOut,
   TopologyEdgeItem,
   TopologyNodeItem,
+  TopologyTreeFolderItem,
+  TopologyTreeViewItem,
+  TopologyViewEdgeItem,
+  TopologyViewGraph,
+  TopologyViewNodeItem,
+  TopologyViewKind,
+  TopologyViewRole,
   UmeNeItem,
 } from "../types";
 import { alignNodes, layoutGraph, type LayoutKind } from "./topology/layoutGraph";
 import { behaviorForMode, toolModeFromKey, type ToolMode } from "./topology/toolMode";
+
+const LAST_LEAF_KEY = "netx.topology.lastLeafViewId";
+const TREE_EXPAND_KEY = "netx.topology.treeExpanded";
+
+function kindLabelKey(kind: string): string {
+  return String(kind) === "physical" ? "topology.kindPhysical" : "topology.kindCustom";
+}
+
+function findViewInRegion(
+  regions: TopologyTreeFolderItem[],
+  viewId: string,
+): { region: TopologyTreeFolderItem; view: TopologyTreeViewItem } | null {
+  for (const region of regions) {
+    const view = (region.views || []).find((v) => v.id === viewId);
+    if (view) return { region, view };
+  }
+  return null;
+}
+
+function regionDisplayName(region: TopologyTreeFolderItem | null | undefined): string {
+  if (!region) return "";
+  return region.name || "";
+}
+
+function formatUpdatedAt(value?: string | null): string {
+  if (!value) return "";
+  try {
+    return new Date(value).toLocaleString();
+  } catch {
+    return String(value);
+  }
+}
 
 const SNAP_GRID: [number, number] = [16, 16];
 const UNDO_MAX = 40;
@@ -85,11 +127,39 @@ function FullscreenIcon({ exit }: { exit?: boolean }) {
 /** ASCII-safe separators ? avoid Unicode middots that corrupt on some editors. */
 const SEP = " / ";
 
-function ChevronIcon({ dir }: { dir: "left" | "right" }) {
-  const d = dir === "left" ? "M15 6l-6 6 6 6" : "M9 6l6 6-6 6";
+function ChevronIcon({ dir }: { dir: "left" | "right" | "down" }) {
+  const d =
+    dir === "left" ? "M15 6l-6 6 6 6" : dir === "down" ? "M6 9l6 6 6-6" : "M9 6l6 6-6 6";
   return (
     <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" className="topo-svg-icon">
       <path fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" d={d} />
+    </svg>
+  );
+}
+
+/** Left-panel collapse / expand control (icon-only sidebar toggle). */
+function SidebarFoldIcon({ expand }: { expand?: boolean }) {
+  return (
+    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" className="topo-svg-icon">
+      <rect
+        x="3.5"
+        y="4.5"
+        width="17"
+        height="15"
+        rx="2"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+      />
+      <path d="M9.5 4.5v15" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <path
+        d={expand ? "M13.5 9.5L17 12l-3.5 2.5" : "M16.5 9.5L13 12l3.5 2.5"}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
     </svg>
   );
 }
@@ -100,6 +170,20 @@ function PencilIcon() {
       <path
         fill="currentColor"
         d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"
+      />
+    </svg>
+  );
+}
+
+function PlusIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" className="topo-svg-icon">
+      <path
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.2"
+        strokeLinecap="round"
+        d="M12 5v14M5 12h14"
       />
     </svg>
   );
@@ -119,6 +203,51 @@ function CloseIcon() {
   );
 }
 
+function RegionGlyph({ size = 16 }: { size?: number }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} aria-hidden="true" className="topo-tree__glyph-svg">
+      <path
+        d="M4 8.5L12 4l8 4.5v7L12 20l-8-4.5v-7z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
+      <path d="M12 4v16M4 8.5l8 4.5 8-4.5" fill="none" stroke="currentColor" strokeWidth="1.5" opacity="0.7" />
+    </svg>
+  );
+}
+
+function LayerGlyph({ role, size = 16 }: { role?: string; size?: number }) {
+  const r = String(role || "core").toLowerCase();
+  if (r === "aggregation") {
+    return (
+      <svg viewBox="0 0 24 24" width={size} height={size} aria-hidden="true" className="topo-tree__glyph-svg">
+        <rect x="4" y="5" width="16" height="4" rx="1.5" fill="currentColor" opacity="0.9" />
+        <rect x="6" y="11" width="12" height="3.5" rx="1.2" fill="currentColor" opacity="0.65" />
+        <rect x="8" y="16.5" width="8" height="3" rx="1" fill="currentColor" opacity="0.45" />
+      </svg>
+    );
+  }
+  if (r === "access") {
+    return (
+      <svg viewBox="0 0 24 24" width={size} height={size} aria-hidden="true" className="topo-tree__glyph-svg">
+        <circle cx="7" cy="12" r="2.4" fill="currentColor" />
+        <circle cx="17" cy="7" r="2.2" fill="currentColor" opacity="0.8" />
+        <circle cx="17" cy="17" r="2.2" fill="currentColor" opacity="0.8" />
+        <path d="M9.4 12H14.5M14.5 12L16 8.4M14.5 12L16 15.6" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+      </svg>
+    );
+  }
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} aria-hidden="true" className="topo-tree__glyph-svg">
+      <rect x="7" y="3.5" width="10" height="17" rx="2" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <circle cx="12" cy="8" r="2.2" fill="currentColor" />
+      <path d="M9 13.5h6M9 16.5h6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 type NeNodeData = {
   label: string;
   managed_ne_id: string;
@@ -126,6 +255,13 @@ type NeNodeData = {
   ne_ip: string;
   vendor: string;
   connect_status: string;
+  /** Canvas navigation node (not a fabric NE). */
+  kind?: "ne" | "region" | "layer";
+  folder_id?: string;
+  view_id?: string;
+  role?: TopologyViewRole | string;
+  subtitle?: string;
+  node_count?: number;
 };
 
 type HistorySnap = { nodes: Node<NeNodeData>[]; edges: Edge[] };
@@ -170,8 +306,19 @@ function newId(): string {
   return `${Date.now().toString(16)}${Math.random().toString(16).slice(2, 10)}`;
 }
 
-function vendorTone(vendor: string): string {
+/**
+ * Icon tone for /topo/ne-router.png (base = blue).
+ * Unmanaged (no managed/ume) and unknown vendors → gray.
+ * UME-linked NEs default to ZTE when vendor is empty/unknown.
+ */
+function nodeIconTone(vendor: string, managedNeId: string, umeNeId = ""): string {
+  const hasManaged = Boolean(String(managedNeId || "").trim());
+  const hasUme = Boolean(String(umeNeId || "").trim());
+  if (!hasManaged && !hasUme) return "gray";
   const v = String(vendor || "").trim().toLowerCase();
+  if (!v || v === "other" || v === "unknown" || v === "generic") {
+    return hasUme ? "zte" : "gray";
+  }
   if (v.includes("cisco")) return "cisco";
   if (v.includes("huawei")) return "huawei";
   if (v.includes("zte")) return "zte";
@@ -179,7 +326,9 @@ function vendorTone(vendor: string): string {
   if (v.includes("nokia") || v.includes("alcatel")) return "nokia";
   if (v.includes("ericsson")) return "ericsson";
   if (v.includes("h3c") || v.includes("comware")) return "h3c";
-  return "other";
+  if (v.includes("ruijie") || v.includes("锐捷")) return "ruijie";
+  if (v.includes("mikrotik")) return "mikrotik";
+  return hasUme ? "zte" : "gray";
 }
 
 function discoverResultKind(r: TopologyDiscoverNeResult): "ok" | "warn" | "fail" {
@@ -221,7 +370,7 @@ function nodeMatchesQuery(n: Node<NeNodeData>, query: string): boolean {
   return tokens.every((tok) => bits.some((b) => fuzzyIncludes(String(b || ""), tok)));
 }
 
-/** Asset: /topo/ne-router.png (default blue = ZTE); other vendors tint via CSS. */
+/** Asset: /topo/ne-router.png (navy blue base); vendors tint via CSS filters. */
 function RouterIcon() {
   return (
     <img
@@ -236,7 +385,7 @@ function RouterIcon() {
 
 function NeNode({ data, selected }: NodeProps<Node<NeNodeData>>) {
   const { hideIp, hideVendor, connectMode } = useContext(TopoDisplayContext);
-  const tone = vendorTone(data.vendor);
+  const tone = nodeIconTone(data.vendor, data.managed_ne_id, data.ume_ne_id);
   const name = data.label || (!hideIp ? data.ne_ip : "") || "NE";
   const secondary = [
     hideIp || !data.ne_ip || data.ne_ip === name ? "" : data.ne_ip,
@@ -479,7 +628,19 @@ export function TopologyPage() {
   const { t } = useI18n();
   const { showOk, showError } = useToast();
   const queryClient = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
+  // mapId set → fabric canvas; otherwise browse directory (region or view folder).
   const [mapId, setMapId] = useState<string>("");
+  const [selectedFolderId, setSelectedFolderId] = useState<string>("");
+  const [pendingHighlightNe, setPendingHighlightNe] = useState("");
+  const [expandedIds, setExpandedIds] = useState<Record<string, boolean>>(() => {
+    try {
+      const raw = localStorage.getItem(TREE_EXPAND_KEY);
+      return raw ? (JSON.parse(raw) as Record<string, boolean>) : {};
+    } catch {
+      return {};
+    }
+  });
   const [keyword, setKeyword] = useState("");
   const [debouncedKeyword, setDebouncedKeyword] = useState("");
   const [dirty, setDirty] = useState(false);
@@ -495,7 +656,7 @@ export function TopologyPage() {
   const [snapToGrid, setSnapToGrid] = useState(true);
   const [autoLayoutAfterDiscover, setAutoLayoutAfterDiscover] = useState(loadAutoLayoutAfterDiscover);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [hideAddedNes, setHideAddedNes] = useState(true);
+  const [addNeOpen, setAddNeOpen] = useState(false);
   const [paletteSource, setPaletteSource] = useState<PaletteSource>("managed");
   const [discoverOpen, setDiscoverOpen] = useState(false);
   const [discovering, setDiscovering] = useState(false);
@@ -589,9 +750,9 @@ export function TopologyPage() {
     [edges, hidePorts, edgeFlow],
   );
 
-  const mapsQuery = useQuery({
-    queryKey: queryKeys.topologyMaps,
-    queryFn: fetchTopologyMaps,
+  const treeQuery = useQuery({
+    queryKey: queryKeys.topologyTree,
+    queryFn: fetchTopologyTree,
   });
 
   const graphQuery = useQuery({
@@ -600,8 +761,25 @@ export function TopologyPage() {
     enabled: Boolean(mapId),
   });
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(TREE_EXPAND_KEY, JSON.stringify(expandedIds));
+    } catch {
+      /* ignore */
+    }
+  }, [expandedIds]);
+
+  useEffect(() => {
+    try {
+      if (mapId) localStorage.setItem(LAST_LEAF_KEY, mapId);
+      else localStorage.removeItem(LAST_LEAF_KEY);
+    } catch {
+      /* ignore */
+    }
+  }, [mapId]);
+
   const neQuery = useQuery({
-    queryKey: [...queryKeys.managedNeAll, "topology-palette", debouncedKeyword],
+    queryKey: [...queryKeys.managedNeAll, "topology-add-ne", debouncedKeyword],
     queryFn: () =>
       fetchManagedNe({
         keyword: debouncedKeyword,
@@ -610,27 +788,108 @@ export function TopologyPage() {
         page: 1,
         pageSize: 100,
       }),
-    enabled: paletteSource === "managed",
+    enabled: addNeOpen && paletteSource === "managed",
   });
 
   const umeQuery = useQuery({
-    queryKey: ["umeInventoryNe", "topology-palette", debouncedKeyword],
+    queryKey: ["umeInventoryNe", "topology-add-ne", debouncedKeyword],
     queryFn: () =>
       fetchUmeNe({
         keyword: debouncedKeyword,
         page: 1,
         pageSize: 100,
       }),
-    enabled: paletteSource === "ume",
+    enabled: addNeOpen && paletteSource === "ume",
   });
 
-  useEffect(() => {
-    if (!mapId && mapsQuery.data?.items?.length) {
-      setMapId(mapsQuery.data.items[0].id);
-    }
-  }, [mapId, mapsQuery.data]);
+  const treeRoot = treeQuery.data?.root || null;
+  const regions = useMemo(() => treeRoot?.children || [], [treeRoot]);
 
   useEffect(() => {
+    if (!treeRoot || !regions.length) return;
+    if (mapId) {
+      const hit = findViewInRegion(regions, mapId);
+      if (hit && selectedFolderId !== hit.region.id) {
+        setSelectedFolderId(hit.region.id);
+        setExpandedIds((prev) => ({ ...prev, [hit.region.id]: true }));
+      }
+      return;
+    }
+    if (!selectedFolderId || selectedFolderId === treeRoot.id) {
+      setSelectedFolderId(regions[0].id);
+      setExpandedIds((prev) =>
+        prev[regions[0].id] === undefined ? { ...prev, [regions[0].id]: true } : prev,
+      );
+    }
+  }, [mapId, selectedFolderId, treeRoot, regions]);
+
+  const canvasMode = Boolean(mapId);
+  const activeRegion = useMemo(() => {
+    if (!selectedFolderId) return null;
+    return regions.find((c) => c.id === selectedFolderId) || null;
+  }, [regions, selectedFolderId]);
+
+  const activeView = useMemo(() => {
+    if (!mapId) return null;
+    return findViewInRegion(regions, mapId)?.view || null;
+  }, [mapId, regions]);
+
+  const browseEntries = useMemo(
+    (): TopologyTreeViewItem[] => activeRegion?.views || [],
+    [activeRegion],
+  );
+
+  const goRegion = useCallback(
+    (folderId: string) => {
+      if (!confirmDiscardIfDirty()) return;
+      setMapId("");
+      setSelectedFolderId(folderId);
+      setExpandedIds((p) => ({ ...p, [folderId]: true }));
+      clearDirty();
+      setNodes([]);
+      setEdges([]);
+    },
+    [confirmDiscardIfDirty, clearDirty, setNodes, setEdges],
+  );
+
+  const goCanvas = useCallback(
+    (viewId: string, folderId?: string) => {
+      if (!confirmDiscardIfDirty()) return;
+      const hit = findViewInRegion(regions, viewId);
+      const regionId = folderId || hit?.region.id || selectedFolderId;
+      if (regionId) {
+        setSelectedFolderId(regionId);
+        setExpandedIds((p) => ({ ...p, [regionId]: true }));
+      }
+      setMapId(viewId);
+    },
+    [confirmDiscardIfDirty, regions, selectedFolderId],
+  );
+
+  const goBackBrowse = useCallback(() => {
+    if (!confirmDiscardIfDirty()) return;
+    setMapId("");
+    clearDirty();
+    setNodes([]);
+    setEdges([]);
+  }, [confirmDiscardIfDirty, clearDirty, setNodes, setEdges]);
+
+  // Deep link from classify search: /topology?view=&ne=
+  useEffect(() => {
+    const viewId = String(searchParams.get("view") || "").trim();
+    const neId = String(searchParams.get("ne") || "").trim();
+    if (!viewId || !regions.length) return;
+    const hit = findViewInRegion(regions, viewId);
+    if (!hit) return;
+    setSelectedFolderId(hit.region.id);
+    setExpandedIds((p) => ({ ...p, [hit.region.id]: true }));
+    setMapId(viewId);
+    if (neId) setPendingHighlightNe(neId);
+    setSearchParams({}, { replace: true });
+  }, [regions, searchParams, setSearchParams]);
+
+  useEffect(() => {
+    if (!canvasMode) return;
     if (!graphQuery.data) return;
     const { rfNodes, rfEdges } = graphToFlow(graphQuery.data.nodes, graphQuery.data.edges, edgeDefaults);
     historyLockRef.current = true;
@@ -642,9 +901,7 @@ export function TopologyPage() {
     bumpHistory();
     historyLockRef.current = false;
     window.setTimeout(() => rfRef.current?.fitView({ padding: 0.2 }), 50);
-    // edgeDefaults applied separately so changing defaults won't reload the whole graph.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- only reload when graph payload changes
-  }, [graphQuery.data, setNodes, setEdges]);
+  }, [canvasMode, mapId, graphQuery.data, edgeDefaults, setNodes, setEdges, clearDirty, bumpHistory]);
 
   useEffect(() => {
     setEdges((eds) => eds.map((e) => withEdgeVisual(e, edgeDefaults)));
@@ -759,6 +1016,7 @@ export function TopologyPage() {
     mutationFn: ({ id, name }: { id: string; name: string }) =>
       updateTopologyMap(id, { name }),
     onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.topologyTree });
       await queryClient.invalidateQueries({ queryKey: queryKeys.topologyMaps });
       showOk(t("topology.renamed"));
     },
@@ -776,14 +1034,54 @@ export function TopologyPage() {
     [renameMapMut, t],
   );
 
+  const createRegionMut = useMutation({
+    mutationFn: (name: string) =>
+      createTopologyFolder({
+        name,
+        kind: "region",
+        parent_id: treeQuery.data?.root?.id,
+      }),
+    onSuccess: async (folder) => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.topologyTree });
+      setSelectedFolderId(folder.id);
+      setMapId("");
+      setExpandedIds((prev) => ({ ...prev, [folder.id]: true }));
+      showOk(t("topology.regionCreated"));
+    },
+    onError: (err) => showError(String(err)),
+  });
+
+  const renameRegionMut = useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string }) =>
+      updateTopologyFolder(id, { name }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.topologyTree });
+      showOk(t("topology.regionRenamed"));
+    },
+    onError: (err) => showError(String(err)),
+  });
+
+  const promptRenameRegion = useCallback(
+    (id: string, currentName: string) => {
+      const next = window.prompt(t("topology.renameRegionPrompt"), currentName);
+      if (next == null) return;
+      const name = next.trim();
+      if (!name || name === currentName) return;
+      renameRegionMut.mutate({ id, name });
+    },
+    [renameRegionMut, t],
+  );
+
   const createMapMut = useMutation({
-    mutationFn: () => createTopologyMap({ name: t("topology.newMapName") }),
+    mutationFn: (input: { folder_id: string; kind: TopologyViewKind; name: string }) =>
+      createTopologyView(input),
     onSuccess: async (row) => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.topologyTree });
       await queryClient.invalidateQueries({ queryKey: queryKeys.topologyMaps });
       clearDirty();
+      if (row.folder_id) setSelectedFolderId(row.folder_id);
       setMapId(row.id);
       showOk(t("topology.newMap"));
-      // Prompt rename right after create ? default name is a placeholder.
       window.setTimeout(() => promptRenameMap(row.id, row.name), 0);
     },
     onError: (err) => showError(String(err)),
@@ -792,6 +1090,7 @@ export function TopologyPage() {
   const deleteMapMut = useMutation({
     mutationFn: (id: string) => deleteTopologyMap(id),
     onSuccess: async (_out, id) => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.topologyTree });
       await queryClient.invalidateQueries({ queryKey: queryKeys.topologyMaps });
       if (mapId === id) {
         clearDirty();
@@ -802,6 +1101,38 @@ export function TopologyPage() {
     },
     onError: (err) => showError(String(err)),
   });
+
+  const deleteFolderMut = useMutation({
+    mutationFn: (id: string) => deleteTopologyFolder(id, false),
+    onSuccess: async (_out, id) => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.topologyTree });
+      if (selectedFolderId === id) {
+        setSelectedFolderId("");
+        setMapId("");
+      }
+      showOk(t("topology.regionDeleted"));
+    },
+    onError: (err) => showError(String(err)),
+  });
+
+  const promptNewRegion = useCallback(() => {
+    const name = window.prompt(t("topology.newRegionPrompt"), t("topology.newRegionName"));
+    if (!name?.trim()) return;
+    createRegionMut.mutate(name.trim());
+  }, [createRegionMut, t]);
+
+  const promptNewCustom = useCallback(
+    (folderId: string) => {
+      const name = window.prompt(t("topology.newCustomPrompt"), t("topology.newCustomName"));
+      if (!name?.trim()) return;
+      createMapMut.mutate({
+        folder_id: folderId,
+        kind: "custom",
+        name: name.trim(),
+      });
+    },
+    [createMapMut, t],
+  );
 
   const saveMut = useMutation({
     mutationFn: () => patchTopologyPositions(mapId, flowToPositions(nodes)),
@@ -1470,6 +1801,14 @@ export function TopologyPage() {
     [focusNode],
   );
 
+  useEffect(() => {
+    if (!pendingHighlightNe || !canvasMode || !nodes.length) return;
+    const nodeId = pendingHighlightNe;
+    if (!nodes.some((n) => n.id === nodeId)) return;
+    setPendingHighlightNe("");
+    window.setTimeout(() => locateNode(nodeId), 80);
+  }, [pendingHighlightNe, canvasMode, nodes, locateNode]);
+
   const canvasHits = useMemo(() => {
     const q = canvasQuery.trim();
     if (!q) return [];
@@ -1574,7 +1913,17 @@ export function TopologyPage() {
     [toolMode, focusNode, onConnect],
   );
 
-  const maps = mapsQuery.data?.items || [];
+  const outsidePeers = graphQuery.data?.outside_peers || [];
+  const activeLeafName = useMemo(() => {
+    if (!mapId) return "";
+    if (activeView?.name) return activeView.name;
+    return graphQuery.data?.view?.name || "";
+  }, [mapId, activeView, graphQuery.data?.view?.name]);
+
+  const titleText = useMemo(() => {
+    if (canvasMode) return activeLeafName || t("topology.selectMap");
+    return regionDisplayName(activeRegion) || t("topology.selectRegion");
+  }, [canvasMode, activeLeafName, activeRegion, t]);
   const onCanvasManagedIds = useMemo(
     () => new Set(nodes.map((n) => n.data.managed_ne_id).filter(Boolean)),
     [nodes],
@@ -1625,13 +1974,12 @@ export function TopologyPage() {
         return tokens.every((tok) => bits.some((b) => fuzzyIncludes(String(b || ""), tok)));
       });
     }
-    if (!hideAddedNes) return list;
     return list.filter((item) =>
       item.source === "managed"
         ? !onCanvasManagedIds.has(item.managed_ne_id)
         : !onCanvasUmeIds.has(item.ume_ne_id),
     );
-  }, [palette, hideAddedNes, onCanvasManagedIds, onCanvasUmeIds, keyword]);
+  }, [palette, onCanvasManagedIds, onCanvasUmeIds, keyword]);
   const paletteLoading =
     (paletteSource === "managed" && neQuery.isLoading) ||
     (paletteSource === "ume" && umeQuery.isLoading);
@@ -1648,26 +1996,24 @@ export function TopologyPage() {
             onClick={() => setSidebarCollapsed(false)}
           >
             <span className="topo-sidebar__rail-icon" aria-hidden="true">
-              <ChevronIcon dir="right" />
+              <SidebarFoldIcon expand />
             </span>
-            <span className="topo-sidebar__rail-label">{t("topology.maps")}</span>
           </button>
         ) : (
           <>
             <div className="topo-sidebar__section">
               <div className="topo-sidebar__head">
-                <strong>{t("topology.maps")}</strong>
+                <strong>{t("topology.tree")}</strong>
                 <div className="topo-sidebar__head-actions">
                   <button
                     type="button"
-                    className="btn btn--sm"
-                    onClick={() => {
-                      if (!confirmDiscardIfDirty()) return;
-                      createMapMut.mutate();
-                    }}
-                    disabled={createMapMut.isPending}
+                    className="btn btn--sm btn--ghost topo-icon-btn"
+                    onClick={promptNewRegion}
+                    disabled={createRegionMut.isPending || !treeRoot}
+                    title={t("topology.newRegion")}
+                    aria-label={t("topology.newRegion")}
                   >
-                    {t("topology.newMap")}
+                    <PlusIcon />
                   </button>
                   <button
                     type="button"
@@ -1676,165 +2022,202 @@ export function TopologyPage() {
                     aria-label={t("topology.collapseSidebar")}
                     onClick={() => setSidebarCollapsed(true)}
                   >
-                    <ChevronIcon dir="left" />
+                    <SidebarFoldIcon />
                   </button>
                 </div>
               </div>
-              {maps.length === 0 ? (
+              {!treeRoot ? (
+                <p className="panel__hint">{treeQuery.isLoading ? t("topology.treeLoading") : t("topology.emptyMaps")}</p>
+              ) : regions.length === 0 ? (
                 <p className="panel__hint">{t("topology.emptyMaps")}</p>
               ) : (
-                <ul className="topo-map-list">
-                  {maps.map((m) => (
-                    <li key={m.id} className={mapId === m.id ? "is-active" : ""}>
-                      <div className="topo-map-list__row">
-                        <button
-                          type="button"
-                          className="topo-map-list__item"
-                          onClick={() => selectMap(m.id)}
-                          onDoubleClick={() => promptRenameMap(m.id, m.name)}
-                          title={t("topology.renameHint")}
-                        >
-                          <span className="topo-map-list__name">
-                            {m.name}
-                            {mapId === m.id && dirty ? " *" : ""}
-                          </span>
-                          <span className="topo-map-list__meta">
-                            {m.node_count}N / {m.edge_count}E
-                          </span>
-                        </button>
-                        <div className="topo-map-list__actions">
-                          <button
-                            type="button"
-                            className="topo-map-list__icon"
-                            title={t("topology.rename")}
-                            disabled={renameMapMut.isPending}
-                            onClick={() => promptRenameMap(m.id, m.name)}
-                          >
-                            <PencilIcon />
-                          </button>
-                          <button
-                            type="button"
-                            className="topo-map-list__icon"
-                            title={t("topology.deleteMap")}
-                            onClick={() => {
-                              const msg = t("topology.deleteMapConfirm").replace("{{name}}", m.name);
-                              if (window.confirm(msg)) deleteMapMut.mutate(m.id);
-                            }}
-                          >
-                            <CloseIcon />
-                          </button>
-                        </div>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-
-            <div className="topo-sidebar__section topo-sidebar__section--grow">
-              <div className="topo-sidebar__head">
-                <strong>{t("topology.palette")}</strong>
-                <label className="topo-display-toggles__item">
-                  <input
-                    type="checkbox"
-                    checked={hideAddedNes}
-                    onChange={(e) => setHideAddedNes(e.target.checked)}
-                  />
-                  {t("topology.hideAdded")}
-                </label>
-              </div>
-              <div className="topo-palette-source" role="tablist" aria-label={t("topology.paletteSource")}>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={paletteSource === "managed"}
-                  className={`topo-palette-source__btn${paletteSource === "managed" ? " is-active" : ""}`}
-                  onClick={() => setPaletteSource("managed")}
-                >
-                  {t("topology.paletteManaged")}
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={paletteSource === "ume"}
-                  className={`topo-palette-source__btn${paletteSource === "ume" ? " is-active" : ""}`}
-                  onClick={() => setPaletteSource("ume")}
-                >
-                  {t("topology.paletteUme")}
-                </button>
-              </div>
-                  <p className="panel__hint">{t("topology.paletteHint")}</p>
-              <input
-                className="input"
-                value={keyword}
-                onChange={(e) => setKeyword(e.target.value)}
-                placeholder={t("topology.filterPh")}
-              />
-              <ul className="topo-palette">
-                {paletteLoading ? (
-                  <li className="topo-palette__empty">
-                    <span className="panel__hint">{t("topology.paletteLoading")}</span>
-                  </li>
-                ) : paletteVisible.length === 0 ? (
-                  <li className="topo-palette__empty">
-                    <span className="panel__hint">
-                      {palette.length === 0
-                        ? t("topology.paletteEmpty")
-                        : t("topology.paletteHiddenAll")}
-                    </span>
-                  </li>
-                ) : (
-                  paletteVisible.map((item) => {
-                    const onCanvas =
-                      item.source === "managed"
-                        ? onCanvasManagedIds.has(item.managed_ne_id)
-                        : onCanvasUmeIds.has(item.ume_ne_id);
+                <ul className="topo-map-list topo-region-list">
+                  {regions.map((region) => {
+                    const open = expandedIds[region.id] ?? true;
+                    const regionActive = selectedFolderId === region.id && !mapId;
                     return (
-                      <li key={item.key} className={onCanvas ? "is-on-canvas" : ""}>
-                        <div className="topo-palette__row">
+                      <li
+                        key={region.id}
+                        className={`topo-region-list__block${regionActive ? " is-active" : ""}`}
+                      >
+                        <div className="topo-map-list__row topo-region-list__row">
                           <button
                             type="button"
-                            className="topo-palette__item"
-                            disabled={!mapId}
-                            draggable={Boolean(mapId) && !onCanvas}
-                            onDragStart={(e) => {
-                              if (onCanvas) {
-                                e.preventDefault();
-                                return;
-                              }
-                              onPaletteDragStart(e, item);
-                            }}
-                            onClick={() => {
-                              if (onCanvas) locatePaletteItem(item);
-                              else addPaletteItem(item);
-                            }}
-                            title={`${item.name}\n${item.ip}${onCanvas ? `\n${t("topology.locateOnCanvas")}` : ""}`}
+                            className="topo-map-list__item"
+                            onClick={() => goRegion(region.id)}
                           >
-                            <span className="topo-palette__name">{item.name}</span>
-                            <span className="topo-palette__meta">
-                              {item.meta}
-                              {onCanvas ? " ?" : ""}
+                            <span className="topo-map-list__name">
+                              <span className="topo-region-list__glyph" aria-hidden="true">
+                                <RegionGlyph size={14} />
+                              </span>
+                              {regionDisplayName(region)}
+                            </span>
+                            <span className="topo-map-list__meta">
+                              {t("topology.regionNodeHint").replace(
+                                "{{count}}",
+                                String(region.views.length),
+                              )}
                             </span>
                           </button>
+                          <div className="topo-map-list__actions">
+                            <button
+                              type="button"
+                              className="topo-map-list__icon"
+                              title={t("topology.renameRegion")}
+                              aria-label={t("topology.renameRegion")}
+                              disabled={!!region.is_system || renameRegionMut.isPending}
+                              onClick={() => promptRenameRegion(region.id, region.name)}
+                            >
+                              <PencilIcon />
+                            </button>
+                            <button
+                              type="button"
+                              className="topo-map-list__icon"
+                              title={t("topology.deleteRegion")}
+                              aria-label={t("topology.deleteRegion")}
+                              disabled={!!region.is_system}
+                              onClick={() => {
+                                const msg = t("topology.deleteRegionConfirm").replace(
+                                  "{{name}}",
+                                  region.name,
+                                );
+                                if (window.confirm(msg)) deleteFolderMut.mutate(region.id);
+                              }}
+                            >
+                              <CloseIcon />
+                            </button>
+                            <button
+                              type="button"
+                              className="topo-map-list__icon"
+                              title={
+                                open
+                                  ? t("topology.collapseRegion")
+                                  : t("topology.expandRegion")
+                              }
+                              aria-label={
+                                open
+                                  ? t("topology.collapseRegion")
+                                  : t("topology.expandRegion")
+                              }
+                              onClick={() =>
+                                setExpandedIds((p) => ({ ...p, [region.id]: !open }))
+                              }
+                            >
+                              <ChevronIcon dir={open ? "down" : "right"} />
+                            </button>
+                          </div>
                         </div>
+                        {open ? (
+                          <ul className="topo-map-list topo-region-list__maps">
+                            {(region.views || []).map((v) => {
+                              const isPhysical = String(v.kind) === "physical";
+                              return (
+                                <li key={v.id} className={mapId === v.id ? "is-active" : ""}>
+                                  <div className="topo-map-list__row">
+                                    <button
+                                      type="button"
+                                      className="topo-map-list__item"
+                                      onClick={() => goCanvas(v.id, region.id)}
+                                      onDoubleClick={() => promptRenameMap(v.id, v.name)}
+                                      title={t("topology.renameHint")}
+                                    >
+                                      <span className="topo-map-list__name">
+                                        <span
+                                          className={`topo-region-list__glyph topo-dir__icon--${
+                                            isPhysical ? "core" : "aggregation"
+                                          }`}
+                                          aria-hidden="true"
+                                        >
+                                          <LayerGlyph
+                                            role={isPhysical ? "core" : "aggregation"}
+                                            size={13}
+                                          />
+                                        </span>
+                                        {v.name}
+                                        {mapId === v.id && dirty ? " *" : ""}
+                                      </span>
+                                      <span className="topo-map-list__meta">
+                                        {t(kindLabelKey(String(v.kind)))}
+                                        {" · "}
+                                        {v.node_count || 0}N
+                                      </span>
+                                    </button>
+                                    <div className="topo-map-list__actions">
+                                      <button
+                                        type="button"
+                                        className="topo-map-list__icon"
+                                        title={t("topology.rename")}
+                                        aria-label={t("topology.rename")}
+                                        disabled={renameMapMut.isPending}
+                                        onClick={() => promptRenameMap(v.id, v.name)}
+                                      >
+                                        <PencilIcon />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="topo-map-list__icon"
+                                        title={t("topology.deleteMap")}
+                                        aria-label={t("topology.deleteMap")}
+                                        disabled={isPhysical}
+                                        onClick={() => {
+                                          const msg = t("topology.deleteMapConfirm").replace(
+                                            "{{name}}",
+                                            v.name,
+                                          );
+                                          if (window.confirm(msg)) deleteMapMut.mutate(v.id);
+                                        }}
+                                      >
+                                        <CloseIcon />
+                                      </button>
+                                    </div>
+                                  </div>
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        ) : null}
                       </li>
                     );
-                  })
-                )}
-              </ul>
+                  })}
+                </ul>
+              )}
+              {mapId && outsidePeers.length > 0 && (
+                <p className="panel__hint">
+                  {t("topology.outsidePeers").replace("{{count}}", String(outsidePeers.length))}
+                </p>
+              )}
             </div>
           </>
         )}
       </aside>
 
       <main className="topo-main">
+        {canvasMode ? (
         <div className="topo-toolbar">
           <div className="topo-toolbar__row">
             <div className="topo-toolbar__title">
-              <strong>
-                {maps.find((m) => m.id === mapId)?.name || t("topology.selectMap")}
-                {mapId && dirty ? " *" : ""}
-              </strong>
+              <div className="topo-breadcrumb">
+                {activeRegion ? (
+                  <button
+                    type="button"
+                    className="topo-breadcrumb__link"
+                    onClick={() => goRegion(activeRegion.id)}
+                  >
+                    {regionDisplayName(activeRegion)}
+                  </button>
+                ) : (
+                  <span className="topo-breadcrumb__current">{t("topology.selectRegion")}</span>
+                )}
+                {activeView ? (
+                  <>
+                    <span className="topo-breadcrumb__sep">/</span>
+                    <span className="topo-breadcrumb__current">
+                      {activeView.name}
+                      {dirty ? " *" : ""}
+                    </span>
+                  </>
+                ) : null}
+              </div>
               {selectedNodes.length > 0 || selectedEdgeId ? (
                 <span className="topo-toolbar__meta">
                   {selectedNodes.length > 0
@@ -1847,8 +2230,21 @@ export function TopologyPage() {
             <div className="topo-toolbar__actions">
               <button
                 type="button"
+                className="btn btn--sm"
+                onClick={() => {
+                  setKeyword("");
+                  setAddNeOpen(true);
+                }}
+              >
+                {t("topology.addNe")}
+              </button>
+              <button type="button" className="btn btn--sm btn--ghost" onClick={() => goBackBrowse()}>
+                {t("topology.backUp")}
+              </button>
+              <button
+                type="button"
                 className="btn btn--sm btn--ghost"
-                disabled={!mapId || !canUndo}
+                disabled={!canUndo}
                 onClick={undo}
                 title="Ctrl+Z"
               >
@@ -1857,7 +2253,7 @@ export function TopologyPage() {
               <button
                 type="button"
                 className="btn btn--sm btn--ghost"
-                disabled={!mapId || !canRedo}
+                disabled={!canRedo}
                 onClick={redo}
                 title="Ctrl+Y"
               >
@@ -1866,7 +2262,7 @@ export function TopologyPage() {
               <button
                 type="button"
                 className={`btn btn--sm${dirty ? "" : " btn--ghost"}`}
-                disabled={!mapId || saveMut.isPending || !dirty}
+                disabled={saveMut.isPending || !dirty}
                 onClick={() => saveMut.mutate()}
                 title="Ctrl+S"
               >
@@ -1879,7 +2275,7 @@ export function TopologyPage() {
               <button
                 type="button"
                 className="btn btn--sm btn--ghost"
-                disabled={!mapId}
+                disabled={nodes.length === 0}
                 onClick={() => rfRef.current?.fitView({ padding: 0.2 })}
               >
                 {t("topology.fit")}
@@ -2145,7 +2541,7 @@ export function TopologyPage() {
             </div>
           </div>
         </div>
-
+        ) : null}
 
         {discoverOpen ? (
           <div className="topo-discover">
@@ -2210,109 +2606,280 @@ export function TopologyPage() {
           </div>
         ) : null}
 
-        <div
-          className={`topo-canvas${fullscreen ? " is-fullscreen" : ""}${toolMode === "pan" ? " is-pan-mode" : ""}`}
-          ref={canvasRef}
-          onDragOver={onCanvasDragOver}
-          onDrop={onCanvasDrop}
-        >
-          {mapId ? (
-            <TopoDisplayContext.Provider value={displayOpts}>
-              <ReactFlow
-                nodes={nodes.map((n) =>
-                  searchHitIds.includes(n.id)
-                    ? { ...n, className: "is-search-hit" }
-                    : { ...n, className: undefined },
-                )}
-                edges={displayEdges}
-                nodeTypes={nodeTypes}
-                connectionMode={ConnectionMode.Loose}
-                defaultEdgeOptions={{ type: "straight" }}
-                proOptions={{ hideAttribution: true }}
-                nodesDraggable={toolBehavior.nodesDraggable}
-                nodesConnectable={toolBehavior.nodesConnectable}
-                elementsSelectable={toolBehavior.elementsSelectable}
-                panOnDrag={toolBehavior.panOnDrag}
-                selectionOnDrag={toolBehavior.selectionOnDrag}
-                panOnScroll={toolBehavior.panOnScroll}
-                selectionMode={SelectionMode.Partial}
-                multiSelectionKeyCode="Shift"
-                snapToGrid={snapToGrid}
-                snapGrid={SNAP_GRID}
-                onNodeDragStart={() => pushHistory()}
-                onNodesChange={(changes) => {
-                  if (changes.some((c) => c.type === "position" || c.type === "remove" || c.type === "add")) {
-                    markDirty();
-                  }
-                  onNodesChange(changes);
-                }}
-                onEdgesChange={(changes) => {
-                  if (changes.some((c) => c.type !== "select")) {
-                    markDirty();
-                  }
-                  onEdgesChange(changes);
-                }}
-                onConnect={onConnect}
-                isValidConnection={isValidConnection}
-                onNodeClick={onNodeClick}
-                onEdgeClick={(_e, edge) => {
-                  setCtxMenu(null);
-                  focusEdge(edge.id);
-                }}
-                onPaneClick={() => {
-                  setCtxMenu(null);
-                  clearSelection();
-                }}
-                onNodeContextMenu={(e, node) => {
-                  e.preventDefault();
-                  const multi = selectedNodeIds.length > 1 && selectedNodeIds.includes(node.id);
-                  if (!multi) focusNode(node.id, false);
-                  const pos = placeCtxMenu(e.clientX, e.clientY);
-                  setCtxMenu(multi ? { kind: "selection", ...pos } : { kind: "node", id: node.id, ...pos });
-                }}
-                onEdgeContextMenu={(e, edge) => {
-                  e.preventDefault();
-                  focusEdge(edge.id);
-                  const pos = placeCtxMenu(e.clientX, e.clientY, { w: 260, h: 280 });
-                  setCtxMenu({ kind: "edge", id: edge.id, ...pos });
-                }}
-                onSelectionContextMenu={(e) => {
-                  e.preventDefault();
-                  const pos = placeCtxMenu(e.clientX, e.clientY);
-                  setCtxMenu({ kind: "selection", ...pos });
-                }}
-                onMoveStart={closeCtxMenu}
-                onInit={(inst) => {
-                  rfRef.current = inst as ReactFlowInstance<Node<NeNodeData>, Edge>;
-                }}
-                fitView
-                deleteKeyCode={null}
-                edgesFocusable
-              >
-                <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="#d8dee8" />
-                {toolMode === "connect" ? (
-                  <div className="topo-mode-hint" role="status">
-                    {t("topology.connectHint")}
-                  </div>
-                ) : null}
-                <Controls showInteractive>
-                  <ControlButton
-                    className="topo-fs-control"
-                    onClick={() => void toggleFullscreen()}
-                    title={fullscreen ? t("topology.exitFullscreen") : t("topology.fullscreen")}
-                    aria-label={fullscreen ? t("topology.exitFullscreen") : t("topology.fullscreen")}
-                  >
-                    <FullscreenIcon exit={fullscreen} />
-                  </ControlButton>
-                </Controls>
-                <MiniMap pannable zoomable />
-              </ReactFlow>
-            </TopoDisplayContext.Provider>
-          ) : (
-            <div className="topo-canvas__empty">{t("topology.selectMap")}</div>
-          )}
-        </div>
+        {!canvasMode ? (
+          <div className="topo-browser" aria-label={t("topology.browserTitle")}>
+            <div className="topo-browser__head">
+              <div>
+                <strong>{titleText}</strong>
+                <p className="topo-browser__sub">
+                  {activeRegion
+                    ? t("topology.browserRegionSub").replace(
+                        "{{count}}",
+                        String(browseEntries.length),
+                      )
+                    : t("topology.regionBrowseHint")}
+                </p>
+              </div>
+            </div>
+            {!activeRegion ? (
+              <div className="topo-browser__empty">
+                <span className="topo-browser__empty-icon" aria-hidden="true">
+                  <RegionGlyph size={36} />
+                </span>
+                <p>{t("topology.selectRegion")}</p>
+              </div>
+            ) : browseEntries.length === 0 ? (
+              <div className="topo-browser__empty">
+                <p>{t("topology.browserEmptyMaps")}</p>
+                <button
+                  type="button"
+                  className="btn btn--sm"
+                  onClick={() => promptNewCustom(activeRegion.id)}
+                >
+                  {t("topology.newCustom")}
+                </button>
+              </div>
+            ) : (
+              <div className="topo-browser__grid">
+                {browseEntries.map((v) => {
+                  const isPhysical = String(v.kind) === "physical";
+                  return (
+                    <article
+                      key={v.id}
+                      className={`topo-map-card${isPhysical ? " is-physical" : ""}`}
+                    >
+                      <button
+                        type="button"
+                        className="topo-map-card__body"
+                        onClick={() => goCanvas(v.id, activeRegion.id)}
+                        onDoubleClick={() => goCanvas(v.id, activeRegion.id)}
+                      >
+                        <span className="topo-map-card__icon" aria-hidden="true">
+                          <LayerGlyph role={isPhysical ? "core" : "aggregation"} size={28} />
+                        </span>
+                        <span className={`topo-map-card__kind${isPhysical ? " is-physical" : ""}`}>
+                          {t(kindLabelKey(String(v.kind)))}
+                        </span>
+                        <span className="topo-map-card__name">{v.name}</span>
+                        <span className="topo-map-card__meta">
+                          {t("topology.layerNodeHint").replace("{{count}}", String(v.node_count || 0))}
+                          {v.updated_at ? ` · ${formatUpdatedAt(v.updated_at)}` : ""}
+                        </span>
+                      </button>
+                      <div className="topo-map-card__actions">
+                        <button
+                          type="button"
+                          className="btn btn--sm"
+                          onClick={() => goCanvas(v.id, activeRegion.id)}
+                        >
+                          {t("topology.openMap")}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn--sm btn--ghost"
+                          onClick={() => promptRenameMap(v.id, v.name)}
+                        >
+                          {t("topology.rename")}
+                        </button>
+                      </div>
+                    </article>
+                  );
+                })}
+                <button
+                  type="button"
+                  className="topo-map-card topo-map-card--add"
+                  onClick={() => promptNewCustom(activeRegion.id)}
+                >
+                  <span className="topo-map-card__add-plus" aria-hidden="true">
+                    +
+                  </span>
+                  <span>{t("topology.newCustom")}</span>
+                </button>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div
+            className={`topo-canvas${fullscreen ? " is-fullscreen" : ""}${toolMode === "pan" ? " is-pan-mode" : ""}`}
+            ref={canvasRef}
+            onDragOver={onCanvasDragOver}
+            onDrop={onCanvasDrop}
+          >
+            {treeRoot ? (
+              <TopoDisplayContext.Provider value={displayOpts}>
+                <ReactFlow
+                  nodes={nodes.map((n) =>
+                    searchHitIds.includes(n.id)
+                      ? { ...n, className: "is-search-hit" }
+                      : { ...n, className: undefined },
+                  )}
+                  edges={displayEdges}
+                  nodeTypes={nodeTypes}
+                  connectionMode={ConnectionMode.Loose}
+                  defaultEdgeOptions={{ type: "straight" }}
+                  proOptions={{ hideAttribution: true }}
+                  nodesDraggable={toolBehavior.nodesDraggable}
+                  nodesConnectable={toolBehavior.nodesConnectable}
+                  elementsSelectable={toolBehavior.elementsSelectable}
+                  panOnDrag={toolBehavior.panOnDrag}
+                  selectionOnDrag={toolBehavior.selectionOnDrag}
+                  panOnScroll={toolBehavior.panOnScroll}
+                  selectionMode={SelectionMode.Partial}
+                  multiSelectionKeyCode="Shift"
+                  snapToGrid={snapToGrid}
+                  snapGrid={SNAP_GRID}
+                  onNodeDragStart={() => {
+                    pushHistory();
+                  }}
+                  onNodesChange={(changes) => {
+                    if (
+                      changes.some(
+                        (c) => c.type === "position" || c.type === "remove" || c.type === "add",
+                      )
+                    ) {
+                      markDirty();
+                    }
+                    onNodesChange(changes);
+                  }}
+                  onEdgesChange={(changes) => {
+                    if (changes.some((c) => c.type !== "select")) {
+                      markDirty();
+                    }
+                    onEdgesChange(changes);
+                  }}
+                  onConnect={onConnect}
+                  isValidConnection={isValidConnection}
+                  onNodeClick={onNodeClick}
+                  onEdgeClick={(_e, edge) => {
+                    setCtxMenu(null);
+                    focusEdge(edge.id);
+                  }}
+                  onPaneClick={() => {
+                    setCtxMenu(null);
+                    clearSelection();
+                  }}
+                  onNodeContextMenu={(e, node) => {
+                    e.preventDefault();
+                    const multi = selectedNodeIds.length > 1 && selectedNodeIds.includes(node.id);
+                    if (!multi) focusNode(node.id, false);
+                    const pos = placeCtxMenu(e.clientX, e.clientY);
+                    setCtxMenu(
+                      multi ? { kind: "selection", ...pos } : { kind: "node", id: node.id, ...pos },
+                    );
+                  }}
+                  onEdgeContextMenu={(e, edge) => {
+                    e.preventDefault();
+                    focusEdge(edge.id);
+                    const pos = placeCtxMenu(e.clientX, e.clientY, { w: 260, h: 280 });
+                    setCtxMenu({ kind: "edge", id: edge.id, ...pos });
+                  }}
+                  onSelectionContextMenu={(e) => {
+                    e.preventDefault();
+                    const pos = placeCtxMenu(e.clientX, e.clientY);
+                    setCtxMenu({ kind: "selection", ...pos });
+                  }}
+                  onMoveStart={closeCtxMenu}
+                  onInit={(inst) => {
+                    rfRef.current = inst as ReactFlowInstance<Node<NeNodeData>, Edge>;
+                  }}
+                  fitView
+                  deleteKeyCode={null}
+                  edgesFocusable
+                >
+                  <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="#d8dee8" />
+                  {toolMode === "connect" ? (
+                    <div className="topo-mode-hint" role="status">
+                      {t("topology.connectHint")}
+                    </div>
+                  ) : null}
+                  <Controls showInteractive>
+                    <ControlButton
+                      className="topo-fs-control"
+                      onClick={() => void toggleFullscreen()}
+                      title={fullscreen ? t("topology.exitFullscreen") : t("topology.fullscreen")}
+                      aria-label={fullscreen ? t("topology.exitFullscreen") : t("topology.fullscreen")}
+                    >
+                      <FullscreenIcon exit={fullscreen} />
+                    </ControlButton>
+                  </Controls>
+                  <MiniMap pannable zoomable />
+                </ReactFlow>
+              </TopoDisplayContext.Provider>
+            ) : (
+              <div className="topo-canvas__empty">{t("topology.treeLoading")}</div>
+            )}
+          </div>
+        )}
       </main>
+
+      {addNeOpen && canvasMode ? (
+
+        <div className="topo-modal" role="dialog" aria-modal="true" aria-label={t("topology.addNe")}>
+          <div className="topo-modal__backdrop" onClick={() => setAddNeOpen(false)} />
+          <div className="topo-modal__panel">
+            <div className="topo-modal__head">
+              <strong>{t("topology.addNe")}</strong>
+              <button type="button" className="btn btn--sm btn--ghost" onClick={() => setAddNeOpen(false)}>
+                {t("topology.discoverClose")}
+              </button>
+            </div>
+            <div className="topo-palette-source" role="tablist">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={paletteSource === "managed"}
+                className={`topo-palette-source__btn${paletteSource === "managed" ? " is-active" : ""}`}
+                onClick={() => setPaletteSource("managed")}
+              >
+                {t("topology.paletteManaged")}
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={paletteSource === "ume"}
+                className={`topo-palette-source__btn${paletteSource === "ume" ? " is-active" : ""}`}
+                onClick={() => setPaletteSource("ume")}
+              >
+                {t("topology.paletteUme")}
+              </button>
+            </div>
+            <input
+              className="input"
+              value={keyword}
+              onChange={(e) => setKeyword(e.target.value)}
+              placeholder={t("topology.filterPh")}
+              autoFocus
+            />
+            <ul className="topo-palette topo-modal__list">
+              {paletteLoading ? (
+                <li className="topo-palette__empty">
+                  <span className="panel__hint">{t("topology.paletteLoading")}</span>
+                </li>
+              ) : paletteVisible.length === 0 ? (
+                <li className="topo-palette__empty">
+                  <span className="panel__hint">{t("topology.paletteEmpty")}</span>
+                </li>
+              ) : (
+                paletteVisible.map((item) => (
+                  <li key={item.key}>
+                    <button
+                      type="button"
+                      className="topo-palette__item"
+                      onClick={() => {
+                        addPaletteItem(item);
+                        setAddNeOpen(false);
+                      }}
+                    >
+                      <span className="topo-palette__name">{item.name}</span>
+                      <span className="topo-palette__meta">{item.meta}</span>
+                    </button>
+                  </li>
+                ))
+              )}
+            </ul>
+          </div>
+        </div>
+      ) : null}
 
       {ctxMenu ? (
         <ul

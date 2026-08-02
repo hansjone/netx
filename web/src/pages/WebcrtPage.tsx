@@ -3208,7 +3208,6 @@ export function WebcrtPage() {
             onClick={(e) => e.stopPropagation()}
           >
             <h3 id="webcrt-new-session-title">{t("webcrt.newSession.title")}</h3>
-            <p className="form-hint">{t("webcrt.newSession.hint")}</p>
             <div className="form-grid">
               <label>
                 <FormLabel required>{t("webcrt.newSession.protocol")}</FormLabel>

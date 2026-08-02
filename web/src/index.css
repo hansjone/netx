@@ -3461,10 +3461,22 @@ pre {
   width: 100%;
   border: 0;
   background: transparent;
-  padding: 6px 0;
+  padding: 8px 0;
   cursor: pointer;
   color: var(--nm-muted);
   border-radius: 6px;
+}
+
+.topo-sidebar__rail .topo-sidebar__rail-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+}
+
+.topo-sidebar__rail:hover .topo-sidebar__rail-icon {
+  border-color: var(--nm-nav-border);
+  background: #fff;
 }
 
 .topo-sidebar__rail:hover {
@@ -3548,6 +3560,557 @@ pre {
   box-shadow: inset 0 0 0 1px #b8c4d2;
 }
 
+.topo-page .topo-sidebar__section {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.topo-dir {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid #c8d2de;
+  border-radius: 6px;
+  background: #f7f9fc;
+}
+.topo-dir__list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+}
+.topo-dir__list--nested {
+  margin: 0 0 2px 10px;
+  padding: 2px 0 4px;
+  border-left: 1px solid #d5dde8;
+}
+.topo-dir__block {
+  list-style: none;
+}
+.topo-dir__block--sep {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid #d5dde8;
+}
+.topo-dir__row {
+  display: flex;
+  align-items: center;
+  min-height: 28px;
+  gap: 2px;
+  margin: 0 4px;
+  padding: 0 4px 0 2px;
+  border-radius: 4px;
+}
+.topo-dir__row:hover {
+  background: rgba(255, 255, 255, 0.72);
+}
+.topo-dir__row:last-child {
+  border-bottom: 0;
+}
+.topo-dir__row--root {
+  min-height: 32px;
+  background: #eef3f9;
+  border-bottom: 1px solid #dbe3ee;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.topo-dir__row--file {
+  min-height: 26px;
+}
+.topo-dir__row.is-active {
+  background: #fff;
+  box-shadow: inset 0 0 0 1px #b7c9e2;
+}
+.topo-dir__row.is-active .topo-dir__name {
+  font-weight: 600;
+  color: var(--nm-accent);
+}
+.topo-dir__twist {
+  border: 0;
+  background: transparent;
+  width: 18px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #64748b;
+  flex: 0 0 auto;
+}
+.topo-dir__indent {
+  width: 10px;
+  flex: 0 0 auto;
+}
+.topo-dir__item {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 2px;
+  cursor: pointer;
+  color: inherit;
+  text-align: left;
+}
+.topo-dir__icon {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  color: #475569;
+}
+.topo-dir__icon--root {
+  color: #1d4ed8;
+}
+.topo-dir__icon--region {
+  color: #0f766e;
+}
+.topo-dir__icon--core {
+  color: #b45309;
+}
+.topo-dir__icon--aggregation {
+  color: #1d4ed8;
+}
+.topo-dir__icon--access {
+  color: #6d28d9;
+}
+.topo-dir__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  color: var(--nm-text);
+}
+.topo-dir__text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.topo-dir__meta {
+  font-size: 11px;
+  color: #64748b;
+}
+.topo-dir__kind {
+  flex: 0 0 auto;
+  max-width: 4.5rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #64748b;
+  background: #e8eef5;
+  border-radius: 3px;
+  padding: 1px 5px;
+  line-height: 1.4;
+}
+.topo-dir__kind.is-physical {
+  color: #9a3412;
+  background: #ffedd5;
+}
+.topo-dir__badge {
+  font-size: 10px;
+  color: #64748b;
+  min-width: 1.1rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  background: #e8eef5;
+  border-radius: 8px;
+  padding: 0 5px;
+  line-height: 1.5;
+}
+.topo-dir__action {
+  border: 0;
+  background: transparent;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #94a3b8;
+  opacity: 0;
+  flex: 0 0 auto;
+}
+.topo-dir__row:hover .topo-dir__action,
+.topo-dir__row.is-active .topo-dir__action {
+  opacity: 1;
+}
+.topo-dir__action:hover {
+  color: #334155;
+  background: #e8eef5;
+}
+.topo-dir__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 2px 6px 6px 20px;
+}
+.topo-dir__toolbar button {
+  border: 0;
+  background: transparent;
+  border-radius: 4px;
+  font-size: 11px;
+  padding: 2px 6px;
+  cursor: pointer;
+  color: var(--nm-accent);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.topo-dir__toolbar button:hover {
+  background: rgba(26, 86, 168, 0.08);
+}
+.topo-dir__hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #94a3b8;
+}
+.topo-dir__icon svg,
+.topo-tree__glyph-svg {
+  display: block;
+}
+.topo-browser {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background:
+    linear-gradient(180deg, #f4f7fb 0%, #eef2f7 100%);
+  overflow: hidden;
+}
+.topo-browser__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 18px 10px;
+  border-bottom: 1px solid #dbe3ee;
+  background: #fff;
+}
+.topo-browser__head strong {
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--nm-brand);
+}
+.topo-browser__sub {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: #64748b;
+}
+.topo-browser__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.topo-browser__actions .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.topo-browser__empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 48px 20px;
+  color: #64748b;
+  font-size: 13px;
+}
+.topo-browser__empty p {
+  margin: 0;
+}
+.topo-browser__empty-icon {
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  border-radius: 14px;
+  background: #fff;
+  border: 1px solid #d5dde8;
+  color: #0f766e;
+  box-shadow: 0 1px 2px rgba(15, 39, 68, 0.05);
+}
+.topo-browser__grid {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 14px;
+  align-content: start;
+  padding: 16px 18px 20px;
+  background-image:
+    radial-gradient(circle at 1px 1px, rgba(148, 163, 184, 0.22) 1px, transparent 0);
+  background-size: 18px 18px;
+}
+.topo-map-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 168px;
+  border: 1px solid #cfd8e6;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(15, 39, 68, 0.05);
+  overflow: hidden;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+.topo-map-card:hover {
+  border-color: #9eb4d0;
+  box-shadow: 0 4px 14px rgba(15, 39, 68, 0.08);
+  transform: translateY(-1px);
+}
+.topo-map-card.is-physical {
+  border-color: #f0c48a;
+  background: linear-gradient(180deg, #fffdf8 0%, #fff 42%);
+}
+.topo-map-card__body {
+  flex: 1;
+  min-height: 0;
+  border: 0;
+  background: transparent;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 16px 14px 10px;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+}
+.topo-map-card__icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  background: #eef3f9;
+  color: #1d4ed8;
+  border: 1px solid #dbe3ee;
+}
+.topo-map-card.is-physical .topo-map-card__icon {
+  background: #fff7ed;
+  color: #b45309;
+  border-color: #fed7aa;
+}
+.topo-map-card__kind {
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  color: #1d4ed8;
+  background: #e8eef8;
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+.topo-map-card__kind.is-physical {
+  color: #9a3412;
+  background: #ffedd5;
+}
+.topo-map-card__name {
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--nm-brand);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%;
+}
+.topo-map-card__meta {
+  font-size: 11px;
+  line-height: 1.4;
+  color: #64748b;
+  width: 100%;
+}
+.topo-map-card__actions {
+  display: flex;
+  gap: 6px;
+  padding: 0 12px 12px;
+}
+.topo-map-card__actions .btn {
+  flex: 1;
+}
+.topo-map-card--add {
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 168px;
+  border-style: dashed;
+  border-color: #b7c4d4;
+  background: rgba(255, 255, 255, 0.55);
+  color: var(--nm-accent);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: none;
+}
+.topo-map-card--add:hover {
+  background: #fff;
+  border-color: var(--nm-accent);
+  color: var(--nm-brand);
+  box-shadow: 0 2px 8px rgba(15, 39, 68, 0.06);
+}
+.topo-map-card__add-plus {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 22px;
+  line-height: 1;
+  border: 1px dashed currentColor;
+  opacity: 0.85;
+}
+.topo-breadcrumb__crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.topo-breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.topo-breadcrumb__link {
+  border: 0;
+  background: transparent;
+  color: var(--nm-accent, #2563eb);
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+}
+.topo-breadcrumb__sep {
+  opacity: 0.45;
+}
+.topo-breadcrumb__current {
+  font-weight: 600;
+}
+.topo-toolbar__level {
+  margin-left: 8px;
+}
+.topo-nav-node {
+  min-width: 180px;
+  max-width: 220px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid #c9d4e2;
+  background: linear-gradient(165deg, #ffffff 0%, #f3f7fb 100%);
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.07);
+  cursor: pointer;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.topo-nav-node.is-selected,
+.topo-nav-node:hover {
+  border-color: var(--nm-accent, #2563eb);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--nm-accent, #2563eb) 22%, transparent),
+    0 8px 18px rgba(37, 99, 235, 0.12);
+}
+.topo-nav-node__icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  color: #1d4ed8;
+  background: color-mix(in srgb, #2563eb 12%, #fff);
+}
+.topo-nav-node--region .topo-nav-node__icon {
+  color: #0f766e;
+  background: color-mix(in srgb, #0d9488 14%, #fff);
+}
+.topo-nav-node--core .topo-nav-node__icon {
+  color: #b45309;
+  background: color-mix(in srgb, #f59e0b 16%, #fff);
+}
+.topo-nav-node--aggregation .topo-nav-node__icon {
+  color: #1d4ed8;
+  background: color-mix(in srgb, #3b82f6 14%, #fff);
+}
+.topo-nav-node--access .topo-nav-node__icon {
+  color: #6d28d9;
+  background: color-mix(in srgb, #8b5cf6 14%, #fff);
+}
+.topo-nav-node__body {
+  min-width: 0;
+  flex: 1;
+}
+.topo-nav-node__badge {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.55;
+  margin-bottom: 2px;
+}
+.topo-nav-node__title {
+  font-weight: 650;
+  font-size: 14px;
+  line-height: 1.25;
+}
+.topo-nav-node__sub,
+.topo-nav-node__meta {
+  margin-top: 4px;
+  font-size: 12px;
+  opacity: 0.68;
+  line-height: 1.3;
+}
+.topo-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+}
+.topo-modal__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.35);
+}
+.topo-modal__panel {
+  position: relative;
+  width: min(480px, calc(100vw - 32px));
+  max-height: min(70vh, 640px);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 16px 48px rgba(15, 23, 42, 0.22);
+}
+.topo-modal__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.topo-modal__list {
+  max-height: 360px;
+  overflow: auto;
+}
 .topo-map-list,
 .topo-palette {
   list-style: none;
@@ -3555,6 +4118,160 @@ pre {
   padding: 0;
   overflow: auto;
   flex: 1;
+  min-width: 0;
+}
+
+.topo-classify .topo-classify__head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.topo-classify__section {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid #d5dde8;
+}
+.topo-classify__section--first {
+  margin-top: 8px;
+  padding-top: 0;
+  border-top: 0;
+}
+.topo-classify__regex-bar,
+.topo-classify__assign-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 0 0 12px;
+  padding: 10px;
+  border: 1px solid #d5dde8;
+  border-radius: 6px;
+  background: #f8fafc;
+}
+.topo-classify__regex-input {
+  min-width: 220px;
+  flex: 1 1 220px;
+}
+.topo-classify__table tr.is-match {
+  background: #eef6ff;
+}
+.topo-classify__row-actions {
+  display: inline-flex;
+  gap: 4px;
+}
+.topo-classify__section h3 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  color: var(--nm-brand, #0f2744);
+}
+.topo-classify__section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.topo-classify__section-head h3 {
+  margin: 0;
+}
+.topo-classify__draft {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+  align-items: center;
+}
+.topo-classify__draft .input {
+  min-width: 140px;
+  max-width: 280px;
+}
+.topo-classify__preview {
+  margin: 10px 0 14px;
+  padding: 10px 12px;
+  border: 1px solid #d5dde8;
+  border-radius: 6px;
+  background: #f8fafc;
+}
+.topo-classify__pager {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+.topo-classify__check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #475569;
+}
+.topo-classify__slice-list,
+.topo-classify__view-links {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+.topo-classify__view-links {
+  list-style: none;
+  padding-left: 0;
+}
+.topo-classify__view-links a {
+  color: var(--nm-accent, #1a56a8);
+}
+
+.topo-region-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 0;
+}
+
+.topo-region-list__block {
+  margin: 0;
+  width: 100%;
+  min-width: 0;
+}
+
+.topo-region-list__row {
+  align-items: stretch;
+}
+
+.topo-region-list__block.is-active > .topo-region-list__row {
+  border-color: var(--nm-accent);
+  background: var(--nm-nav-active);
+  box-shadow: inset 2px 0 0 var(--nm-accent);
+}
+
+.topo-region-list__block.is-active > .topo-region-list__row .topo-map-list__actions {
+  border-left-color: #9bb6d9;
+}
+
+.topo-region-list__glyph {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 5px;
+  vertical-align: -2px;
+  color: #0f766e;
+}
+
+.topo-region-list__maps {
+  margin: 4px 0 0 18px;
+  padding: 0;
+  overflow: visible;
+  flex: none;
+}
+
+.topo-region-list__maps > li {
+  margin: 0 0 4px;
+}
+
+.topo-region-list .topo-map-list__actions {
+  opacity: 1;
+}
+
+.topo-region-list .topo-map-list__name {
+  display: flex;
+  align-items: center;
   min-width: 0;
 }
 
@@ -4793,33 +5510,50 @@ pre {
   box-shadow: none;
   font-size: 11px;
   text-align: center;
-  /* Default asset is blue (= ZTE). */
+  /* Base asset /topo/ne-router.png is navy-blue; tints approximate brand hues. */
   --topo-icon-filter: none;
 }
 
+/* Cisco — cyan / light blue (#049FD9) */
 .topo-node--cisco {
-  --topo-icon-filter: hue-rotate(-8deg) saturate(1.15);
+  --topo-icon-filter: hue-rotate(-18deg) saturate(1.25) brightness(1.08);
 }
+/* Huawei — red (#CF0A2C); was incorrectly greenish at 155deg */
 .topo-node--huawei {
-  --topo-icon-filter: hue-rotate(155deg) saturate(1.35);
+  --topo-icon-filter: hue-rotate(128deg) saturate(1.85) brightness(1.02);
 }
+/* ZTE — keep navy-blue base (#0091DA family) */
 .topo-node--zte {
-  --topo-icon-filter: none;
+  --topo-icon-filter: saturate(1.15) brightness(1.02);
 }
+/* Juniper — green (#84B135) */
 .topo-node--juniper {
-  --topo-icon-filter: hue-rotate(95deg) saturate(1.2);
+  --topo-icon-filter: hue-rotate(78deg) saturate(1.35) brightness(1.05);
 }
+/* Nokia / Alcatel — deep blue-purple (#124191) */
 .topo-node--nokia {
-  --topo-icon-filter: hue-rotate(-28deg) saturate(1.1) brightness(0.98);
+  --topo-icon-filter: hue-rotate(-35deg) saturate(1.2) brightness(0.92);
 }
+/* Ericsson — dark navy */
 .topo-node--ericsson {
-  --topo-icon-filter: hue-rotate(175deg) saturate(1.45) brightness(1.05);
+  --topo-icon-filter: hue-rotate(-8deg) saturate(1.1) brightness(0.82);
 }
+/* H3C — green (#7AC143) */
 .topo-node--h3c {
-  --topo-icon-filter: hue-rotate(165deg) saturate(1.4);
+  --topo-icon-filter: hue-rotate(88deg) saturate(1.45) brightness(1.06);
 }
+/* Ruijie — purple */
+.topo-node--ruijie {
+  --topo-icon-filter: hue-rotate(45deg) saturate(1.4) brightness(1.0);
+}
+/* MikroTik — red-orange */
+.topo-node--mikrotik {
+  --topo-icon-filter: hue-rotate(145deg) saturate(1.7) brightness(1.05);
+}
+/* Unmanaged / unknown vendor */
+.topo-node--gray,
 .topo-node--other {
-  --topo-icon-filter: grayscale(0.85) brightness(0.95);
+  --topo-icon-filter: grayscale(1) brightness(0.92) contrast(0.95);
 }
 
 .topo-node__glyph {

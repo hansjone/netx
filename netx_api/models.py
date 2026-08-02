@@ -383,7 +383,10 @@ class NeCollectionRun(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
     job_id: Mapped[str] = mapped_column(String(64), index=True)
-    ne_id: Mapped[str] = mapped_column(String(64), index=True)
+    # managed_ne.id or ume_inventory_ne.ne_id
+    ne_id: Mapped[str] = mapped_column(String(128), index=True)
+    # managed | ume
+    ne_source: Mapped[str] = mapped_column(String(16), default="managed", index=True)
     ne_name: Mapped[str] = mapped_column(String(256), default="")
     ne_ip: Mapped[str] = mapped_column(String(128), default="")
     status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
@@ -409,8 +412,35 @@ class TopoFabricNode(Base):
     ip: Mapped[str] = mapped_column(String(128), default="", index=True)
     vendor: Mapped[str] = mapped_column(String(64), default="")
     device_type: Mapped[str] = mapped_column(String(64), default="")
+    # Classify tags (regex rules / manual). role: core|aggregation|access|unknown|""
+    role: Mapped[str] = mapped_column(String(32), default="", index=True)
+    region_folder_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    # rule | manual | ""
+    role_source: Mapped[str] = mapped_column(String(16), default="")
+    region_source: Mapped[str] = mapped_column(String(16), default="")
     attrs: Mapped[dict] = mapped_column(_JsonType, default=dict)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class TopoClassifyRule(Base):
+    """Regex rules to assign fabric role or region from NE name/IP."""
+
+    __tablename__ = "topo_classify_rule"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
+    # role | region
+    scope: Mapped[str] = mapped_column(String(16), default="role", index=True)
+    name: Mapped[str] = mapped_column(String(256), default="")
+    pattern: Mapped[str] = mapped_column(String(512), default="")
+    # name | ip | name_ip
+    match_field: Mapped[str] = mapped_column(String(32), default="name")
+    priority: Mapped[int] = mapped_column(Integer, default=100, index=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    # role: {role}; region: {folder_id} or {region_name_from_group}
+    payload: Mapped[dict] = mapped_column(_JsonType, default=dict)
+    remark: Mapped[str] = mapped_column(String(512), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
@@ -448,15 +478,39 @@ class TopoFabricEdge(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class TopoFolder(Base):
+    """Grouping node for topology tree (root / region). Not a canvas."""
+
+    __tablename__ = "topo_folder"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
+    parent_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    # root | region
+    kind: Mapped[str] = mapped_column(String(32), default="region", index=True)
+    name: Mapped[str] = mapped_column(String(256), default="", index=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    is_system: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
 class TopoView(Base):
-    """Named topology view (presentation); replaces legacy topology_map."""
+    """Topology canvas under a site/region (physical or custom; flat siblings)."""
 
     __tablename__ = "topo_view"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
+    folder_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    # Legacy nesting column; unused (always null after vendor-model migration).
+    parent_view_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    # physical | custom
+    kind: Mapped[str] = mapped_column(String(32), default="custom", index=True)
+    # Optional filter preset label (legacy core|aggregation|access); not a tree level.
+    role: Mapped[str] = mapped_column(String(32), default="core", index=True)
     name: Mapped[str] = mapped_column(String(256), default="", index=True)
     remark: Mapped[str] = mapped_column(String(1024), default="")
-    # { node_ids?: [], layer?: "physical", status?: "active", keyword?: "" }
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    # { layer?, status?, membership?: {...} }
     filter: Mapped[dict] = mapped_column(_JsonType, default=dict)
     viewport: Mapped[dict] = mapped_column(_JsonType, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

@@ -12,11 +12,13 @@ from typing import Any
 from .collection_job_state import finalize_collection_job, sync_job_progress
 from .config import settings
 from .db import SessionLocal
-from .models import ManagedNE, NeCollectionJob, NeCollectionRun
+from fastapi import HTTPException
+
+from .cli_resolve import resolve_cli_target
+from .models import NeCollectionJob, NeCollectionRun
 from .ne_collection_paths import clear_run_output_files, run_output_dir
 from .ne_crypto import CredentialCryptoError
 from .ne_netmiko import send_show_command
-from .ne_service import get_device_credentials
 from .ne_session_factory import close_netmiko_connection, open_netmiko_connection
 
 _log = logging.getLogger("netx.ne.collect")
@@ -159,15 +161,16 @@ def _run_single(job_id: str, run_id: str, commands: list[str]) -> None:
         run = db.get(NeCollectionRun, run_id)
         if not run:
             return
-        ne = db.get(ManagedNE, str(run.ne_id))
-        if not ne:
-            _update_run(run_id, status="fail", message="managed_ne_not_found", ended_at=datetime.now())
-            return
         if _job_is_paused(job_id):
             _update_run(run_id, status="cancelled", message="paused", ended_at=datetime.now())
             return
         try:
-            creds = get_device_credentials(ne)
+            source = str(getattr(run, "ne_source", None) or "managed").strip().lower()
+            tid = str(run.ne_id or "").strip()
+            if source == "ume":
+                creds, _device = resolve_cli_target(db, ume_ne_id=tid)
+            else:
+                creds, _device = resolve_cli_target(db, managed_ne_id=tid)
             output = _collect_with_timeout(creds, commands)
             finished_at = datetime.now()
             name_part = _safe_filename_part(str(run.ne_name or creds.get("name") or "ne"))
@@ -190,6 +193,9 @@ def _run_single(job_id: str, run_id: str, commands: list[str]) -> None:
             )
         except CredentialCryptoError as exc:
             _update_run(run_id, status="fail", message=str(exc)[:1020], ended_at=datetime.now())
+        except HTTPException as exc:
+            detail = str(exc.detail if exc.detail is not None else exc)[:1020]
+            _update_run(run_id, status="fail", message=detail, ended_at=datetime.now())
         except Exception as exc:
             _log.exception("collection failed run=%s", run_id)
             _update_run(run_id, status="fail", message=_format_run_error(exc), ended_at=datetime.now())

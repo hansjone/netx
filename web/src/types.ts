@@ -188,6 +188,8 @@ export type ManagedNeItem = {
   connect_tested_at: string | null;
   tags: string;
   remark: string;
+  source?: string;
+  source_ref?: string;
   hop_enabled: boolean;
   hop_vendor: string;
   hop_host: string;
@@ -287,6 +289,7 @@ export type UmeCliOverrideItem = {
 
 export type EligibleNeItem = {
   id: string;
+  source?: "managed" | "ume" | string;
   name: string;
   vendor: string;
   device_type: string;
@@ -315,6 +318,7 @@ export type CollectionRunItem = {
   id: string;
   job_id: string;
   ne_id: string;
+  ne_source?: string;
   ne_name: string;
   ne_ip: string;
   status: string;
@@ -348,15 +352,122 @@ export type UmeTokenStatus = {
   error?: string;
 };
 
+export type TopologyViewRole = "core" | "aggregation" | "access";
+export type TopologyViewKind = "physical" | "custom";
+
 export type TopologyViewItem = {
   id: string;
   name: string;
   remark: string;
+  folder_id?: string;
+  kind?: TopologyViewKind | string;
+  role?: TopologyViewRole | string;
+  sort_order?: number;
   filter?: Record<string, unknown>;
   viewport?: Record<string, unknown>;
   node_count: number;
+  edge_count?: number;
   created_at?: string | null;
   updated_at?: string | null;
+};
+
+export type TopologyTreeViewItem = {
+  id: string;
+  name: string;
+  kind: TopologyViewKind | string;
+  role?: TopologyViewRole | string;
+  sort_order: number;
+  node_count: number;
+  updated_at?: string | null;
+};
+
+export type TopologyTreeFolderItem = {
+  id: string;
+  parent_id: string;
+  kind: "root" | "region" | string;
+  name: string;
+  sort_order: number;
+  is_system: boolean;
+  views: TopologyTreeViewItem[];
+  children: TopologyTreeFolderItem[];
+};
+
+export type TopologyTree = {
+  root: TopologyTreeFolderItem | null;
+};
+
+export type ClassifyRuleScope = "role" | "region";
+
+export type ClassifyRule = {
+  id: string;
+  scope: ClassifyRuleScope | string;
+  name: string;
+  pattern: string;
+  match_field: string;
+  priority: number;
+  enabled: boolean;
+  payload: Record<string, unknown>;
+  remark?: string;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type ClassifyPreview = {
+  total_nodes: number;
+  role_matched: number;
+  role_unmatched: number;
+  role_conflicts: number;
+  region_matched: number;
+  region_unmatched: number;
+  region_conflicts: number;
+  role_samples: Array<Record<string, unknown>>;
+  region_samples: Array<Record<string, unknown>>;
+  unmatched_samples: Array<Record<string, unknown>>;
+};
+
+export type ClassifyApplyResult = {
+  role_updated: number;
+  region_updated: number;
+  skipped_manual: number;
+  total_nodes: number;
+};
+
+export type FabricNodeSearchHit = {
+  id: string;
+  name: string;
+  ip: string;
+  vendor: string;
+  managed_ne_id?: string;
+  ume_ne_id?: string;
+  role?: string;
+  region_folder_id?: string | null;
+  link_status?: "managed" | "ume" | "both" | "orphaned" | string;
+  managed_alive?: boolean;
+  ume_alive?: boolean;
+  managed_source?: string;
+  views?: Array<{
+    view_id: string;
+    view_name: string;
+    folder_id: string;
+    folder_name: string;
+    kind: string;
+  }>;
+};
+
+export type SliceGenerateResult = {
+  folder_id: string;
+  template: string;
+  dry_run: boolean;
+  map_count: number;
+  overlap_node_count: number;
+  created_view_ids: string[];
+  maps: Array<{
+    name: string;
+    role: string;
+    node_count: number;
+    seed_fabric_node_ids: string[];
+    member_fabric_node_ids: string[];
+  }>;
 };
 
 export type TopologyViewNodeItem = {
@@ -389,12 +500,20 @@ export type TopologyViewEdgeItem = {
   discovered_at?: string | null;
 };
 
+export type TopologyOutsidePeer = {
+  fabric_node_id: string;
+  name: string;
+  ip: string;
+  via_node_id: string;
+};
+
 export type TopologyViewGraph = {
   view: TopologyViewItem;
   nodes: TopologyViewNodeItem[];
   edges: TopologyViewEdgeItem[];
   truncated?: boolean;
   truncate_reason?: string;
+  outside_peers?: TopologyOutsidePeer[];
 };
 
 export type FabricSummary = {

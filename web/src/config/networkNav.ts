@@ -38,6 +38,12 @@ export const NETWORK_NAV: readonly NetworkNavGroup[] = [
         labelKey: "network.nav.lldpLinks",
         group: "topologyMgmt",
       },
+      {
+        id: "topo-classify",
+        path: "/network/topology/classify",
+        labelKey: "network.nav.topoClassify",
+        group: "topologyMgmt",
+      },
     ],
   },
   {

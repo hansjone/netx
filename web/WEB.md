@@ -123,14 +123,27 @@ src/
 - 采集日志：`GET /v1/port-traffic/devices/{id}/events`；失败写入 `port_traffic_event`，列表操作可查看
 - 支持拓扑深链：`?ne_id=&source=managed|ume&ifname=` 打开向导并预填网元
 
-## 拓扑管理（Fabric + View）
+## 拓扑管理（Fabric + 站点目录，对齐厂商）
 
+- 三层库存：**运维** `managed_ne`（凭据/采集/WebCRT）· **EMS** `ume_inventory_ne` · **拓扑投影** `topo_fabric_node`（上图/LLDP/分类）。Fabric 由 ensure 按需创建，与运维表不是同一张表。
+- 删除运维网元：解绑 `fabric.managed_ne_id`（及 view membership），**不删**上图点/边；UME 库存 reconcile 对称解绑 `ume_ne_id`。历史悬空引用：`POST /fabric/reconcile-links`（亦并入 `cleanup-duplicates`）。
 - 事实库：`topo_fabric_node` / `topo_fabric_edge`（按 5 万网元 / 100 万链路设计；物理层仅 LLDP）
-- 视图：`topo_view` + `topo_view_node`（坐标）；旧 `topology_map/node/edge` 已退役
-- API：`/v1/topology/fabric/*`（summary / nodes / edges / neighborhood / discover job）、`/v1/topology/views*`
-- 前端：`@xyflow/react`；侧栏上图、拖拽保存坐标（PATCH positions）、布局（dagre/力导向/网格/环形）、轮询 LLDP job
-- MCP：`getTopologySummary`、`queryTopologyNodes/Edges`、`getTopologyNeighborhood`、`runLldpDiscover`、`getLldpDiscoverJob`、`listTopologyViews`、`getTopologyView`
+- 站点树：`topo_folder`（系统隐藏 `root`；用户新建站点/区域，无默认「未分区」）
+- 拓扑图：`topo_view.kind=physical|custom`（同站点下平级；建站自动建物理拓扑）+ `topo_view_node`
+- 边界：图 `filter.membership`（max_nodes / expand_hops / frozen）；`project-neighbors` / `populate` 不得无界灌全网
+- API：`/v1/topology/tree`、`/folders*`、`/fabric/*`、`/views*`（含 `populate`、`kind`）
+- 前端：左侧站点→物理/自定义图；右侧目录浏览，打开本图进设备画布；「添加网元」上图
+- MCP：以 `queryTopologyEdges` 为主查询 Fabric；画布编辑走 Web
 - BGP / 隧道 / L2VPN：`layer` 预留，实现 TODO
+
+## 分类与切片（清单打标）
+
+- Fabric 标签：`topo_fabric_node.role` / `region_folder_id`（`role_source` / `region_source`）
+- 主流程：网元清单表（Fabric 全量）+ 临时正则查找 → 确认后批量写角色/区域；支持单行编辑
+- 关联状态：`link_status`=`managed|ume|both|orphaned`；筛选 `link_status=linked|orphaned|…`
+- API：`GET /fabric/nodes`（keyword/role/region/unmatched/link_status）、`POST /fabric/nodes/match`、`POST /fabric/nodes/tags/bulk`、`PATCH /fabric/nodes/{id}/tags`
+- 切片：`POST /v1/topology/slices/generate`（`core_only` / `core_agg` / `agg_access`；dry_run；可重叠上图）
+- 前端：网络管理 →「分类与切片」
 
 ## WebCRT
 

@@ -220,6 +220,8 @@ def row_to_out(row: ManagedNE) -> ManagedNeOut:
         connect_tested_at=row.connect_tested_at,
         tags=str(row.tags or ""),
         remark=str(row.remark or ""),
+        source=str(row.source or ""),
+        source_ref=str(row.source_ref or ""),
         hop_enabled=bool(row.hop_enabled),
         hop_vendor=str(row.hop_vendor or "zte"),
         hop_host=str(row.hop_host or ""),
@@ -641,9 +643,12 @@ def batch_apply_account(db: Session, ids: list[str], account: BatchAccountConfig
 
 
 def delete_managed_ne(db: Session, ne_id: str) -> dict[str, bool]:
+    from .topology_inventory_lifecycle import detach_fabric_from_managed
+
     row = db.get(ManagedNE, ne_id)
     if not row:
         raise HTTPException(status_code=404, detail="managed_ne_not_found")
+    detach_fabric_from_managed(db, [str(row.id)])
     db.delete(row)
     db.commit()
     return {"ok": True}
@@ -724,6 +729,8 @@ def get_ids_by_tag(db: Session, tag: str | None) -> list[str]:
 
 
 def batch_delete_managed_ne(db: Session, ids: list[str]) -> dict[str, Any]:
+    from .topology_inventory_lifecycle import detach_fabric_from_managed
+
     ne_ids = [str(x).strip() for x in ids if str(x).strip()]
     if not ne_ids:
         raise HTTPException(status_code=400, detail="ids_required")
@@ -732,6 +739,7 @@ def batch_delete_managed_ne(db: Session, ids: list[str]) -> dict[str, Any]:
     missing = [x for x in ne_ids if x not in found_ids]
     if missing:
         raise HTTPException(status_code=404, detail=f"managed_ne_not_found: {','.join(missing[:5])}")
+    detach_fabric_from_managed(db, [str(r.id) for r in rows])
     for row in rows:
         db.delete(row)
     db.commit()
@@ -779,12 +787,19 @@ def sync_ume_inventory_to_managed_ne(db: Session) -> UmeManagedSyncResult:
         existing.source = UME_SYNC_SOURCE
         existing.source_ref = source_ref
         existing.updated_at = now
-    deleted = 0
-    for row in db.query(ManagedNE).filter(ManagedNE.source == UME_SYNC_SOURCE).all():
-        ref = str(row.source_ref or "").strip()
-        if not ref or ref not in inventory_ids:
+    from .topology_inventory_lifecycle import detach_fabric_from_managed
+
+    stale = [
+        row
+        for row in db.query(ManagedNE).filter(ManagedNE.source == UME_SYNC_SOURCE).all()
+        if (not str(row.source_ref or "").strip())
+        or str(row.source_ref or "").strip() not in inventory_ids
+    ]
+    if stale:
+        detach_fabric_from_managed(db, [str(r.id) for r in stale])
+        for row in stale:
             db.delete(row)
-            deleted += 1
+    deleted = len(stale)
     db.commit()
     return UmeManagedSyncResult(
         inserted=inserted,
@@ -795,10 +810,14 @@ def sync_ume_inventory_to_managed_ne(db: Session) -> UmeManagedSyncResult:
 
 
 def delete_ume_synced_managed_ne(db: Session) -> UmeManagedDeleteResult:
+    from .topology_inventory_lifecycle import detach_fabric_from_managed
+
     rows = db.query(ManagedNE).filter(ManagedNE.source == UME_SYNC_SOURCE).all()
     deleted = len(rows)
-    for row in rows:
-        db.delete(row)
+    if rows:
+        detach_fabric_from_managed(db, [str(r.id) for r in rows])
+        for row in rows:
+            db.delete(row)
     db.commit()
     return UmeManagedDeleteResult(deleted=deleted)
 
