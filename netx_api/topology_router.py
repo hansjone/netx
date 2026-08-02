@@ -41,32 +41,34 @@ from .topology_schemas import (
     ViewPopulateRequest,
     ViewPositionsPatch,
 )
-from .topology_service import (
+from .topology_fabric import (
+    get_discover_job,
+    get_fabric_neighborhood,
+    get_fabric_summary,
+    list_fabric_edges,
+    list_fabric_nodes,
+    merge_duplicate_fabric_nodes,
+    refresh_fabric_stats,
+    start_discover_job,
+    upsert_fabric_edge,
+)
+from .topology_views import (
     add_nodes_to_view,
     bootstrap_topology_tree,
     create_folder,
     create_view,
     delete_folder,
     delete_view,
-    get_discover_job,
-    get_fabric_neighborhood,
-    get_fabric_summary,
     get_topology_tree,
     get_view_graph,
-    list_fabric_edges,
-    list_fabric_nodes,
     list_views,
-    merge_duplicate_fabric_nodes,
     patch_view_edge_style,
     patch_view_positions,
     populate_view,
     project_fabric_neighbors_to_view,
-    refresh_fabric_stats,
     remove_view_nodes,
-    start_discover_job,
     update_folder,
     update_view,
-    upsert_fabric_edge,
 )
 
 router = APIRouter(prefix="/v1/topology", tags=["topology"])

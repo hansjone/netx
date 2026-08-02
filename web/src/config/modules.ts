@@ -29,6 +29,7 @@ export const MODULES: readonly ModuleDefinition[] = [
     descKey: "workbench.cards.umeSyncDesc",
     iconTone: "blue",
     titleKey: "layout.titleUme",
+    requiredScope: "alarms:read",
   },
   {
     moduleId: "ne",
@@ -38,6 +39,7 @@ export const MODULES: readonly ModuleDefinition[] = [
     descKey: "workbench.cards.managedNeDesc",
     iconTone: "green",
     titleKey: "layout.titleManagedNe",
+    requiredScope: "ne:read",
   },
   {
     moduleId: "network",
@@ -47,6 +49,7 @@ export const MODULES: readonly ModuleDefinition[] = [
     descKey: "workbench.cards.networkDesc",
     iconTone: "slate",
     titleKey: "layout.titleNetwork",
+    requiredScope: "ne:read",
   },
   {
     moduleId: "topology",
@@ -56,6 +59,7 @@ export const MODULES: readonly ModuleDefinition[] = [
     descKey: "workbench.cards.topologyDesc",
     iconTone: "amber",
     titleKey: "layout.titleTopology",
+    requiredScope: "ne:read",
   },
   {
     moduleId: "webcrt",
@@ -76,6 +80,7 @@ export const MODULES: readonly ModuleDefinition[] = [
     iconTone: "amber",
     titleKey: "layout.titlePortTrafficWall",
     workbenchHidden: true,
+    requiredScope: "ne:read",
   },
   {
     moduleId: "users",

@@ -23,6 +23,7 @@ import { HopProxyFields, emptyHopProxyFields, type HopProxyFieldsState } from ".
 import { queryKeys } from "../constants/queryKeys";
 import { useI18n } from "../i18n";
 import { useToast } from "../hooks/useToast";
+import { useAuth } from "../auth/AuthContext";
 import type { ManagedNeItem } from "../types";
 import { pageCount } from "../utils/display";
 import { formatSystemTime } from "../utils/time";
@@ -131,6 +132,8 @@ function connectStatusClass(status: string): string {
 export function NePage() {
   const { t } = useI18n();
   const { showOk, showError } = useToast();
+  const { hasScope, isAdmin } = useAuth();
+  const canWriteNe = isAdmin || hasScope("ne:write");
   const queryClient = useQueryClient();
   const importRef = useRef<HTMLInputElement>(null);
 
@@ -578,7 +581,7 @@ export function NePage() {
           <h2>{t("managedNe.title")}</h2>
           <div className="panel__toolbar-end">
             <div className="panel__actions">
-              <button type="button" onClick={openCreate} disabled={!credsOk}>
+              <button type="button" onClick={openCreate} disabled={!credsOk || !canWriteNe}>
                 {t("managedNe.add")}
               </button>
               {SHOW_UME_MANAGED_SYNC ? (
@@ -618,7 +621,7 @@ export function NePage() {
               <button
                 type="button"
                 onClick={() => importRef.current?.click()}
-                disabled={!credsOk || importMutation.isPending}
+                disabled={!credsOk || importMutation.isPending || !canWriteNe}
               >
                 {importMutation.isPending ? t("managedNe.importing") : t("managedNe.importBtn")}
               </button>
@@ -642,7 +645,7 @@ export function NePage() {
               </button>
               <button
                 type="button"
-                disabled={selected.length === 0 || batchHopMutation.isPending}
+                disabled={selected.length === 0 || batchHopMutation.isPending || !canWriteNe}
                 onClick={() => {
                   if (selected.length === 0) {
                     showError(t("managedNe.hop.selectRequired"));
@@ -656,7 +659,7 @@ export function NePage() {
               </button>
               <button
                 type="button"
-                disabled={selected.length === 0 || batchAccountMutation.isPending}
+                disabled={selected.length === 0 || batchAccountMutation.isPending || !canWriteNe}
                 onClick={() => {
                   if (selected.length === 0) {
                     showError(t("managedNe.account.selectRequired"));
@@ -671,7 +674,7 @@ export function NePage() {
               <button
                 type="button"
                 className="btn btn--danger"
-                disabled={selected.length === 0 || batchDeleteMutation.isPending}
+                disabled={selected.length === 0 || batchDeleteMutation.isPending || !canWriteNe}
                 onClick={() => {
                   if (selected.length === 0) {
                     showError(t("managedNe.batchDeleteSelectRequired"));
@@ -851,12 +854,13 @@ export function NePage() {
                           >
                             {t("managedNe.connectDetail")}
                           </button>
-                          <button type="button" onClick={() => openEdit(row)}>
+                          <button type="button" onClick={() => openEdit(row)} disabled={!canWriteNe}>
                             {t("managedNe.edit")}
                           </button>
                           <button
                             type="button"
                             className="btn--danger"
+                            disabled={!canWriteNe}
                             onClick={() => {
                               if (window.confirm(t("managedNe.confirmDelete"))) deleteMutation.mutate(row.id);
                             }}

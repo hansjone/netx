@@ -11,7 +11,7 @@
 
 ## Runtime
 - Ensure PostgreSQL backup policy exists (daily logical backup + retention).
-- Prefer Alembic: `alembic upgrade head` and `NETX_SKIP_LEGACY_STARTUP_DDL=true`.
+- Prefer Alembic: see [docs/ALEMBIC.md](docs/ALEMBIC.md). After `alembic upgrade head`, set `NETX_SKIP_LEGACY_STARTUP_DDL=true`.
 - Optional: `NETX_RUN_INLINE_SCHEDULERS=false` and run `python -m netx_api.worker` for collectors.
 - Run `oclaw` and `netx` under process managers (systemd/Windows service/pm2 equivalent).
 - Enable auto-restart and startup-at-boot for both services.
