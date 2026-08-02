@@ -26,12 +26,24 @@ _AUTH_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
     )
 )
 
+# Huawei / ZTE post-login security banner (success path via SSH or bastion hop).
+# Example: "Afterwards, 0 authentication failure occurred."
+_LOGIN_SUCCESS_NOTICE = re.compile(
+    r"^.*(?:"
+    r"last\s+successful\s+login\s+was\s+performed"
+    r"|afterwards,\s*\d+\s+authentication\s+failures?\s+occurred"
+    r"|上次成功登录"
+    r"|之后发生了?\s*\d+\s*次认证失败"
+    r").*$",
+    re.I | re.M,
+)
+
 _PROMPT_TIMEOUT = re.compile(r"pattern not detected|readtimeout|read timeout", re.I)
 
 
 def find_auth_failure_snippet(text: str, *, max_len: int = 220) -> str | None:
     """Return a short matching auth-failure line/snippet, or None."""
-    blob = str(text or "")
+    blob = _LOGIN_SUCCESS_NOTICE.sub("", str(text or ""))
     if not blob.strip():
         return None
     for pat in _AUTH_PATTERNS:

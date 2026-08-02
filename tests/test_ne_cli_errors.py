@@ -40,6 +40,29 @@ class CliAuthClassifyTests(unittest.TestCase):
         msg = format_cli_failure(AuthenticationException())
         self.assertTrue(msg.startswith("auth_rejected:"))
 
+    def test_huawei_post_login_banner_not_auth_failure(self):
+        """Bastion/SSH hop success banner must not be classified as auth reject."""
+        text = (
+            "Info: The max number of VTY users is 21, "
+            "the number of current VTY users online is 1.\n"
+            "The last successful login was performed at 19:28:16 08-02-2026 "
+            "from 10.229.147.122 through SSH. Afterwards, 0 authentication "
+            "failure occurred.\n"
+            "<HUAWEI>"
+        )
+        self.assertIsNone(find_auth_failure_snippet(text))
+        msg = format_cli_failure("ReadTimeout: Pattern not detected", text)
+        self.assertFalse(msg.startswith("auth_rejected:"))
+
+    def test_real_auth_failure_still_detected_near_banner(self):
+        text = (
+            "The last successful login was performed at 19:28:16 08-02-2026 "
+            "from 10.229.147.122 through SSH. Afterwards, 0 authentication "
+            "failure occurred.\n"
+            "Error: Username or password is wrong.\n"
+        )
+        self.assertIn("Username or password is wrong", find_auth_failure_snippet(text) or "")
+
 
 if __name__ == "__main__":
     unittest.main()
