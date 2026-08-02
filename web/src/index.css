@@ -4160,6 +4160,61 @@ pre {
   display: inline-flex;
   gap: 4px;
 }
+.topo-classify__help {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1px solid #94a3b8;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: help;
+  user-select: none;
+  flex: 0 0 auto;
+}
+.topo-classify__help:hover,
+.topo-classify__help:focus-visible {
+  border-color: #64748b;
+  color: #334155;
+  outline: none;
+}
+.topo-classify__help-tip {
+  display: none;
+  position: absolute;
+  left: 0;
+  top: calc(100% + 8px);
+  z-index: 40;
+  width: max-content;
+  max-width: min(280px, 70vw);
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #0f172a;
+  color: #f8fafc;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.45;
+  white-space: normal;
+  text-align: left;
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.22);
+  pointer-events: none;
+}
+.topo-classify__help-tip::after {
+  content: "";
+  position: absolute;
+  bottom: 100%;
+  left: 8px;
+  border: 5px solid transparent;
+  border-bottom-color: #0f172a;
+}
+.topo-classify__help:hover .topo-classify__help-tip,
+.topo-classify__help:focus-visible .topo-classify__help-tip {
+  display: block;
+}
 .topo-classify__section h3 {
   margin: 0 0 10px;
   font-size: 14px;

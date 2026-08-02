@@ -1040,6 +1040,17 @@ export const patchFabricNodeTags = (
     body,
   );
 
+export const deleteFabricNode = (fabricNodeId: string) =>
+  apiDelete<{ deleted: number; edges_deleted: number; placements_deleted: number }>(
+    `/v1/topology/fabric/nodes/${encodeURIComponent(fabricNodeId)}`,
+  );
+
+export const deleteFabricNodes = (fabricNodeIds: string[]) =>
+  apiPost<{ deleted: number; edges_deleted: number; placements_deleted: number }>(
+    "/v1/topology/fabric/nodes/delete",
+    { fabric_node_ids: fabricNodeIds },
+  );
+
 export const generateTopologySlices = (body: {
   folder_id: string;
   template: "core_only" | "core_agg" | "agg_access";

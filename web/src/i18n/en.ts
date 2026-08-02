@@ -1424,6 +1424,14 @@ const en = {
     edit: "Edit",
     save: "Save",
     cancel: "Cancel",
+    delete: "Delete",
+    deleteSelected: "Delete nodes ({{count}})",
+    deleteConfirm:
+      "Delete {{count}} fabric node(s) (placements and edges)? Managed/UME inventory is not touched.",
+    deleteOk: "Deleted {{count}} node(s)",
+    deleteHint:
+      "Only orphaned or LLDP/WebCRT placeholder fabric nodes can be deleted; UME-only and real managed NEs cannot",
+    deleteBlocked: "UME-only or still linked to real managed inventory — cannot delete here",
     rowSaved: "Saved",
     loading: "Loading…",
     empty: "No NEs.",

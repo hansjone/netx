@@ -1203,6 +1203,65 @@ Management Addresses:
         self.db.refresh(dangling)
         self.assertFalse(str(dangling.managed_ne_id or "").strip())
 
+    def test_delete_fabric_node_only_orphans_and_placeholders(self) -> None:
+        from fastapi import HTTPException
+
+        from netx_api.topology_inventory_lifecycle import delete_fabric_nodes
+
+        suffix = uuid4().hex[:8]
+        real = ManagedNE(
+            id=f"real-{suffix}",
+            name=f"REAL-{suffix}",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address=f"10.77.{(int(suffix[:2], 16) % 200) + 1}.1",
+            source="",
+        )
+        ph = ManagedNE(
+            id=f"ph-{suffix}",
+            name=f"PH-{suffix}",
+            vendor="Other",
+            device_type="generic",
+            ip_address="",
+            source=LLDP_DISCOVERED_NE_SOURCE,
+        )
+        self.db.add(real)
+        self.db.add(ph)
+        self.db.commit()
+        fab_real = svc.ensure_fabric_node_for_managed(self.db, real)
+        fab_ph = svc.ensure_fabric_node_for_managed(self.db, ph)
+        orphan = TopoFabricNode(
+            id=f"orp-{suffix}",
+            name=f"ORP-{suffix}",
+            ip="10.77.0.9",
+        )
+        ume_only = TopoFabricNode(
+            id=f"ume-{suffix}",
+            name=f"UME-{suffix}",
+            ip="10.77.0.8",
+            ume_ne_id=f"ume-ne-{suffix}",
+        )
+        self.db.add(orphan)
+        self.db.add(ume_only)
+        self.db.commit()
+
+        with self.assertRaises(HTTPException) as ctx:
+            delete_fabric_nodes(self.db, [fab_real.id])
+        self.assertEqual(ctx.exception.status_code, 400)
+
+        with self.assertRaises(HTTPException) as ctx_ume:
+            delete_fabric_nodes(self.db, [ume_only.id])
+        self.assertEqual(ctx_ume.exception.status_code, 400)
+
+        out = delete_fabric_nodes(self.db, [fab_ph.id, orphan.id])
+        self.assertEqual(out["deleted"], 2)
+        self.assertIsNone(self.db.get(TopoFabricNode, fab_ph.id))
+        self.assertIsNone(self.db.get(TopoFabricNode, orphan.id))
+        self.assertIsNotNone(self.db.get(TopoFabricNode, fab_real.id))
+        self.assertIsNotNone(self.db.get(TopoFabricNode, ume_only.id))
+        self.assertIsNotNone(self.db.get(ManagedNE, real.id))
+        self.assertIsNotNone(self.db.get(ManagedNE, ph.id))
+
 
 if __name__ == "__main__":
     unittest.main()

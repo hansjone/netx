@@ -32,6 +32,7 @@ class FabricNodeOut(BaseModel):
     managed_alive: bool = False
     ume_alive: bool = False
     managed_source: str = ""  # manual | ume_sync | lldp | webcrt | …
+    deletable: bool = False
 
 
 class FabricEdgeOut(BaseModel):
@@ -423,6 +424,16 @@ class FabricNodesBulkTagOut(BaseModel):
     role: str | None = None
     region_folder_id: str | None = None
     samples: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class FabricNodesDeleteRequest(BaseModel):
+    fabric_node_ids: list[str] = Field(default_factory=list, min_length=1)
+
+
+class FabricNodesDeleteOut(BaseModel):
+    deleted: int = 0
+    edges_deleted: int = 0
+    placements_deleted: int = 0
 
 
 class SliceGenerateRequest(BaseModel):

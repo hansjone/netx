@@ -2,6 +2,8 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   bulkTagFabricNodes,
+  deleteFabricNode,
+  deleteFabricNodes,
   fetchFabricNodes,
   fetchTopologyTree,
   generateTopologySlices,
@@ -19,6 +21,20 @@ const PAGE_SIZE = 50;
 function flattenRegions(root: TopologyTreeFolderItem | null | undefined): TopologyTreeFolderItem[] {
   if (!root) return [];
   return (root.children || []).filter((c) => String(c.kind) === "region");
+}
+
+/** Prefer API flag; fall back so UI still works if backend is stale. */
+function isFabricNodeDeletable(n: FabricNodeSearchHit): boolean {
+  if (typeof n.deletable === "boolean") return n.deletable;
+  const status = String(n.link_status || "").toLowerCase();
+  if (status === "ume" || status === "both") return false;
+  if (status === "orphaned") return true;
+  if (!String(n.managed_ne_id || "").trim()) {
+    return !String(n.ume_ne_id || "").trim();
+  }
+  if (n.managed_alive === false) return true;
+  const src = String(n.managed_source || "").toLowerCase();
+  return src === "lldp" || src === "webcrt";
 }
 
 export function TopologyClassifyPage() {
@@ -156,6 +172,26 @@ export function TopologyClassifyPage() {
     onError: (err) => showError(String(err)),
   });
 
+  const deleteOneMut = useMutation({
+    mutationFn: (id: string) => deleteFabricNode(id),
+    onSuccess: async (out) => {
+      showOk(t("topoClassify.deleteOk").replace("{{count}}", String(out.deleted)));
+      setSelected({});
+      await invalidateList();
+    },
+    onError: (err) => showError(String(err)),
+  });
+
+  const deleteBulkMut = useMutation({
+    mutationFn: (ids: string[]) => deleteFabricNodes(ids),
+    onSuccess: async (out) => {
+      showOk(t("topoClassify.deleteOk").replace("{{count}}", String(out.deleted)));
+      setSelected({});
+      await invalidateList();
+    },
+    onError: (err) => showError(String(err)),
+  });
+
   const slicePreviewMut = useMutation({
     mutationFn: () =>
       generateTopologySlices({
@@ -187,6 +223,9 @@ export function TopologyClassifyPage() {
   });
 
   const items = listQuery.data?.items || [];
+  const deletableSelected = items
+    .filter((n) => selected[n.id] && isFabricNodeDeletable(n))
+    .map((n) => n.id);
   const total = listQuery.data?.total || 0;
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const selectedCount = Object.values(selected).filter(Boolean).length;
@@ -373,8 +412,29 @@ export function TopologyClassifyPage() {
           >
             {t("topoClassify.confirmAssign")}
           </button>
-          <span className="panel__hint">
-            {t("topoClassify.selectedCount").replace("{{count}}", String(selectedCount))}
+          <button
+            type="button"
+            className="btn btn--sm btn--danger"
+            disabled={deleteBulkMut.isPending || deletableSelected.length === 0}
+            title={t("topoClassify.deleteHint")}
+            onClick={() => {
+              const msg = t("topoClassify.deleteConfirm").replace(
+                "{{count}}",
+                String(deletableSelected.length),
+              );
+              if (window.confirm(msg)) deleteBulkMut.mutate(deletableSelected);
+            }}
+          >
+            {t("topoClassify.deleteSelected").replace(
+              "{{count}}",
+              String(deletableSelected.length),
+            )}
+          </button>
+          <span className="topo-classify__help" tabIndex={0} aria-label={t("topoClassify.deleteHint")}>
+            ?
+            <span className="topo-classify__help-tip" role="tooltip">
+              {t("topoClassify.deleteHint")}
+            </span>
           </span>
         </div>
 
@@ -475,13 +535,35 @@ export function TopologyClassifyPage() {
                         </button>
                       </div>
                     ) : (
-                      <button
-                        type="button"
-                        className="btn btn--sm btn--ghost"
-                        onClick={() => startEdit(n)}
-                      >
-                        {t("topoClassify.edit")}
-                      </button>
+                      <div className="topo-classify__row-actions">
+                        <button
+                          type="button"
+                          className="btn btn--sm btn--ghost"
+                          onClick={() => startEdit(n)}
+                        >
+                          {t("topoClassify.edit")}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn--sm btn--danger"
+                          disabled={deleteOneMut.isPending || !isFabricNodeDeletable(n)}
+                          title={
+                            isFabricNodeDeletable(n)
+                              ? t("topoClassify.deleteHint")
+                              : t("topoClassify.deleteBlocked")
+                          }
+                          onClick={() => {
+                            if (!isFabricNodeDeletable(n)) return;
+                            const msg = t("topoClassify.deleteConfirm").replace(
+                              "{{count}}",
+                              "1",
+                            );
+                            if (window.confirm(msg)) deleteOneMut.mutate(n.id);
+                          }}
+                        >
+                          {t("topoClassify.delete")}
+                        </button>
+                      </div>
                     )}
                   </td>
                 </tr>

@@ -28,6 +28,7 @@ from .topology_schemas import (
     FabricDiscoverRequest,
     FabricManualEdgeIn,
     FabricNodesBulkTagRequest,
+    FabricNodesDeleteRequest,
     FabricNodesMatchRequest,
     FabricNodeTagPatch,
     SliceGenerateRequest,
@@ -399,6 +400,27 @@ def api_fabric_nodes_bulk_tag(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     return bulk_tag_fabric_nodes(db, body).model_dump()
+
+
+@router.delete("/fabric/nodes/{fabric_node_id}")
+def api_delete_fabric_node(
+    fabric_node_id: str,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Delete a fabric node (orphaned / non-managed only). Does not touch inventory tables."""
+    from .topology_inventory_lifecycle import delete_fabric_nodes
+
+    return delete_fabric_nodes(db, [fabric_node_id])
+
+
+@router.post("/fabric/nodes/delete")
+def api_delete_fabric_nodes(
+    body: FabricNodesDeleteRequest,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    from .topology_inventory_lifecycle import delete_fabric_nodes
+
+    return delete_fabric_nodes(db, body.fabric_node_ids)
 
 
 @router.post("/slices/generate")

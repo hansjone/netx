@@ -445,6 +445,7 @@ export type FabricNodeSearchHit = {
   managed_alive?: boolean;
   ume_alive?: boolean;
   managed_source?: string;
+  deletable?: boolean;
   views?: Array<{
     view_id: string;
     view_name: string;
