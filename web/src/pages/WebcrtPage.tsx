@@ -2282,13 +2282,13 @@ export function WebcrtPage() {
                   className="webcrt-main__pane"
                   hidden={!isActive}
                 >
-                  {tab.status === "connecting" && !tab.wsUrl ? (
+                  {tab.status === "connecting" && !tab.sessionId ? (
                     <div className="webcrt-main__placeholder">
                       <div>{connectPhaseLabel(tab.connectPhase, t)}…</div>
                       <p className="panel__hint">{t("webcrt.phase.hint")}</p>
                     </div>
                   ) : null}
-                  {tab.status === "error" && !tab.wsUrl ? (
+                  {tab.status === "error" && !tab.sessionId ? (
                     <div className="webcrt-main__placeholder webcrt-main__placeholder--error">
                       <div>{t("webcrt.status.error")}</div>
                       {tab.errorMessage ? <pre className="webcrt-error-detail">{tab.errorMessage}</pre> : null}
@@ -2297,7 +2297,7 @@ export function WebcrtPage() {
                       </button>
                     </div>
                   ) : null}
-                  {tab.wsUrl ? (
+                  {tab.sessionId ? (
                     <>
                       {tab.status === "connecting" ? (
                         <div className="webcrt-connect-banner" role="status">
