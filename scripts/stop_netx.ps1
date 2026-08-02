@@ -8,6 +8,7 @@ $ErrorActionPreference = "Continue"
 
 $runDir = Join-Path $PSScriptRoot ".run"
 $pidFile = Join-Path $runDir "netx.pid"
+$workerPidFile = Join-Path $runDir "worker.pid"
 $webPidFile = Join-Path $runDir "web.pid"
 
 function Get-ListenPids {
@@ -48,14 +49,31 @@ if (Test-Path $pidFile) {
     if ($procId -gt 0) {
         try {
             Stop-Process -Id $procId -Force:$Force -ErrorAction Stop
-            Write-Host "Stopped PID=$procId"
+            Write-Host "Stopped API PID=$procId"
         } catch {
             Write-Host "[WARN] PID file process not running: $procId"
         }
     }
     Remove-Item -Path $pidFile -Force -ErrorAction SilentlyContinue
 } else {
-    Write-Host "==> No PID file, try by port $Port"
+    Write-Host "==> No API PID file, try by port $Port"
+}
+
+if (Test-Path $workerPidFile) {
+    $workerPidText = (Get-Content -Path $workerPidFile -ErrorAction SilentlyContinue | Select-Object -First 1)
+    $workerProcId = 0
+    [void][int]::TryParse("$workerPidText", [ref]$workerProcId)
+    if ($workerProcId -gt 0) {
+        try {
+            Stop-Process -Id $workerProcId -Force:$Force -ErrorAction Stop
+            Write-Host "Stopped worker PID=$workerProcId"
+        } catch {
+            Write-Host "[WARN] worker PID file process not running: $workerProcId"
+        }
+    }
+    Remove-Item -Path $workerPidFile -Force -ErrorAction SilentlyContinue
+} else {
+    Write-Host "[INFO] No worker PID file"
 }
 
 if (Test-Path $webPidFile) {

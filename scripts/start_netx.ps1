@@ -4,7 +4,9 @@ param(
     [int]$WebPort = 5173,
     [switch]$SkipInstall = $false,
     [switch]$Background = $false,
-    [switch]$WithWeb = $false
+    [switch]$WithWeb = $false,
+    # Keep collectors inside the API process (legacy). Default: split API + worker.
+    [switch]$InlineSchedulers = $false
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,6 +22,9 @@ if (-not (Test-Path $runDir)) {
 $pidFile = Join-Path $runDir "netx.pid"
 $logFile = Join-Path $runDir "netx.out.log"
 $errFile = Join-Path $runDir "netx.err.log"
+$workerPidFile = Join-Path $runDir "worker.pid"
+$workerLogFile = Join-Path $runDir "worker.out.log"
+$workerErrFile = Join-Path $runDir "worker.err.log"
 $webPidFile = Join-Path $runDir "web.pid"
 $webLogFile = Join-Path $runDir "web.out.log"
 $webErrFile = Join-Path $runDir "web.err.log"
@@ -66,6 +71,13 @@ $env:NETX_HOST = $BindHost
 $env:NETX_PORT = "$Port"
 # netx_api is a source tree (not always pip -e installed); ensure imports work from any launcher cwd.
 $env:PYTHONPATH = $projectRoot
+# Split collectors from API so HTTP/WebCRT stay responsive under multi-user load.
+# Override with -InlineSchedulers to keep legacy single-process mode.
+if ($InlineSchedulers) {
+    $env:NETX_RUN_INLINE_SCHEDULERS = "true"
+} else {
+    $env:NETX_RUN_INLINE_SCHEDULERS = "false"
+}
 $baseUrl = "http://$BindHost`:$Port"
 $webUrl = "http://$BindHost`:$WebPort"
 
@@ -76,6 +88,11 @@ Write-Host "Health:        $baseUrl/health"
 Write-Host "Ready:         $baseUrl/health/ready"
 Write-Host "Metrics:       $baseUrl/metrics"
 Write-Host "Integrations:  $baseUrl/v1/integrations/status"
+if (-not $InlineSchedulers) {
+    Write-Host "Schedulers:    external worker (auto-started by this script)"
+} else {
+    Write-Host "Schedulers:    inline with API (-InlineSchedulers)"
+}
 if ($WithWeb) {
     Write-Host ""
     Write-Host "==> netx UI URL"
@@ -114,11 +131,45 @@ function Test-NetxApiListening {
     return $false
 }
 
+function Start-NetxWorker {
+    if ($InlineSchedulers) {
+        return
+    }
+    Set-Content -Path $workerLogFile -Value "" -Encoding utf8
+    Set-Content -Path $workerErrFile -Value "" -Encoding utf8
+    Write-Host "==> Starting netx worker (config_sync / lldp / port_traffic)"
+    $workerProc = Start-Process -FilePath $pythonExe `
+        -ArgumentList @("-m", "netx_api.worker") `
+        -WorkingDirectory $projectRoot `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput $workerLogFile `
+        -RedirectStandardError $workerErrFile `
+        -PassThru
+    Set-Content -Path $workerPidFile -Value "$($workerProc.Id)"
+    Write-Host "worker.pid = $workerPidFile"
+    Write-Host "PID = $($workerProc.Id)"
+    Write-Host "Log = $workerLogFile"
+    Write-Host "Err = $workerErrFile"
+    Start-Sleep -Seconds 1
+    $alive = $false
+    try {
+        $alive = -not $workerProc.HasExited
+    } catch {
+        $alive = $false
+    }
+    if (-not $alive) {
+        Write-Host "[ERR] netx worker exited immediately (PID $($workerProc.Id))." -ForegroundColor Red
+        Show-LogTail -Path $workerErrFile
+        Show-LogTail -Path $workerLogFile
+        exit 1
+    }
+}
+
 if ($Background) {
     # Truncate logs so a failed start is not confused with an old run.
     Set-Content -Path $logFile -Value "" -Encoding utf8
     Set-Content -Path $errFile -Value "" -Encoding utf8
-    Write-Host "==> Starting netx in background"
+    Write-Host "==> Starting netx API in background"
     $proc = Start-Process -FilePath $pythonExe `
         -ArgumentList @("-m", "netx_api.main") `
         -WorkingDirectory $projectRoot `
@@ -152,6 +203,7 @@ if ($Background) {
         exit 1
     }
     Write-Host "==> netx API ready: http://${BindHost}:${Port}/health" -ForegroundColor Green
+    Start-NetxWorker
     if ($WithWeb) {
         Write-Host "==> Starting Vite dev server in background"
         $webRoot = Join-Path $projectRoot "web"
@@ -169,7 +221,7 @@ if ($Background) {
         Write-Host "Err = $webErrFile"
     }
     Write-Host ""
-    Write-Host "==> Background services started; this script exits (API/web keep running)." -ForegroundColor Cyan
+    Write-Host "==> Background services started; this script exits (API/worker/web keep running)." -ForegroundColor Cyan
     exit 0
 }
 
@@ -190,6 +242,6 @@ if ($WithWeb) {
     Write-Host "Err = $webErrFile"
 }
 
-Write-Host "==> Starting netx in foreground"
+Start-NetxWorker
+Write-Host "==> Starting netx API in foreground"
 & $pythonExe -m netx_api.main
-

@@ -22,10 +22,13 @@ Options:
   --web-host <host>     Web bind host. Default: 0.0.0.0
   --web-port <port>     Web port. Default: 8505
   --api-only            Start API only (no Node/npm on this host)
+  --inline-schedulers   Keep collectors inside API (no worker process)
   --skip-install        Skip pip/npm install steps
   -h, --help            Show help
 
 Notes:
+  - By default starts API + worker (config_sync / lldp / port_traffic) + optional web.
+  - Sets NETX_RUN_INLINE_SCHEDULERS=false unless --inline-schedulers is passed.
   - Runs with system/host Python (no .venv).
   - Web uses isolated Node at /usr/local/nodejs/node-v24.16.0-linux-x64 (not system PATH).
   - Override with NODE_CMD / --node-cmd if install path differs.
@@ -94,6 +97,9 @@ mkdir -p "${RUN_DIR}"
 PID_FILE="${RUN_DIR}/netx.pid"
 LOG_FILE="${RUN_DIR}/netx.out.log"
 ERR_FILE="${RUN_DIR}/netx.err.log"
+WORKER_PID_FILE="${RUN_DIR}/worker.pid"
+WORKER_LOG_FILE="${RUN_DIR}/worker.out.log"
+WORKER_ERR_FILE="${RUN_DIR}/worker.err.log"
 WEB_PID_FILE="${RUN_DIR}/web.pid"
 WEB_LOG_FILE="${RUN_DIR}/web.out.log"
 WEB_ERR_FILE="${RUN_DIR}/web.err.log"
@@ -106,6 +112,7 @@ WEB_BIND_HOST="0.0.0.0"
 WEB_PORT="8505"
 SKIP_INSTALL="0"
 API_ONLY="0"
+INLINE_SCHEDULERS="0"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -117,6 +124,7 @@ while [[ $# -gt 0 ]]; do
     --web-host) WEB_BIND_HOST="${2:-}"; shift 2 ;;
     --web-port) WEB_PORT="${2:-}"; shift 2 ;;
     --api-only) API_ONLY="1"; shift ;;
+    --inline-schedulers) INLINE_SCHEDULERS="1"; shift ;;
     --skip-install) SKIP_INSTALL="1"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "[ERR] Unknown arg: $1" >&2; usage; exit 2 ;;
@@ -139,6 +147,12 @@ fi
 
 export NETX_HOST="${API_BIND_HOST}"
 export NETX_PORT="${API_PORT}"
+export PYTHONPATH="${ROOT_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
+if [[ "${INLINE_SCHEDULERS}" == "1" ]]; then
+  export NETX_RUN_INLINE_SCHEDULERS="true"
+else
+  export NETX_RUN_INLINE_SCHEDULERS="false"
+fi
 
 if [[ ! -x "${PYTHON_CMD}" ]]; then
   echo "[ERR] python_not_found: ${PYTHON_CMD}" >&2
@@ -183,7 +197,14 @@ echo ""
 echo "==> netx API URL"
 echo "Base:          ${BASE_URL}/"
 echo "Health:        ${BASE_URL}/health"
+echo "Ready:         ${BASE_URL}/health/ready"
+echo "Metrics:       ${BASE_URL}/metrics"
 echo "Integrations:  ${BASE_URL}/v1/integrations/status"
+if [[ "${INLINE_SCHEDULERS}" == "1" ]]; then
+  echo "Schedulers:    inline with API (--inline-schedulers)"
+else
+  echo "Schedulers:    external worker (auto-started by this script)"
+fi
 if [[ "${API_ONLY}" == "1" ]]; then
   echo ""
   echo "==> Web: skipped (--api-only). Serve web/dist via Nginx or run dev on another host."
@@ -206,6 +227,20 @@ echo "PID      = ${API_PID}"
 echo "Log      = ${LOG_FILE}"
 echo "Err      = ${ERR_FILE}"
 
+if [[ "${INLINE_SCHEDULERS}" != "1" ]]; then
+  echo "==> Starting netx worker (config_sync / lldp / port_traffic)"
+  (
+    cd "${ROOT_DIR}"
+    nohup "${PYTHON_CMD}" -m netx_api.worker >"${WORKER_LOG_FILE}" 2>"${WORKER_ERR_FILE}" &
+    echo $! > "${WORKER_PID_FILE}"
+  )
+  WORKER_PID="$(cat "${WORKER_PID_FILE}")"
+  echo "worker.pid = ${WORKER_PID_FILE}"
+  echo "PID        = ${WORKER_PID}"
+  echo "Log        = ${WORKER_LOG_FILE}"
+  echo "Err        = ${WORKER_ERR_FILE}"
+fi
+
 if [[ "${API_ONLY}" != "1" ]]; then
   echo "==> Starting Vite dev server in background"
   (
@@ -223,7 +258,7 @@ fi
 
 echo ""
 if [[ "${API_ONLY}" == "1" ]]; then
-  echo "==> API started (--api-only)."
+  echo "==> API(+worker) started (--api-only)."
 else
-  echo "==> Background services started; API/web keep running."
+  echo "==> Background services started; API/worker/web keep running."
 fi

@@ -51,8 +51,11 @@ def log_runtime_budget(*, role: str = "api") -> None:
     inline = bool(getattr(settings, "run_inline_schedulers", True))
     if inline:
         _log.info(
-            "runtime budget: inline schedulers ON (one-click start via scripts/start_netx.ps1). "
-            "Optional split: NETX_RUN_INLINE_SCHEDULERS=false + python -m netx_api.worker"
+            "runtime budget: inline schedulers ON "
+            "(legacy single-process; start scripts default to API+worker split)"
         )
-    elif host not in {"127.0.0.1", "localhost", "::1"}:
-        _log.info("runtime budget: external worker mode on bind=%s", host)
+    else:
+        _log.info(
+            "runtime budget: external worker mode "
+            "(start_netx.ps1/sh auto-starts python -m netx_api.worker)"
+        )

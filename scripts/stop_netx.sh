@@ -20,6 +20,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN_DIR="${ROOT_DIR}/scripts/.run"
 
 PID_FILE="${RUN_DIR}/netx.pid"
+WORKER_PID_FILE="${RUN_DIR}/worker.pid"
 WEB_PID_FILE="${RUN_DIR}/web.pid"
 
 API_PORT="8890"
@@ -91,6 +92,14 @@ if [[ -f "${PID_FILE}" ]]; then
   rm -f "${PID_FILE}" || true
 else
   echo "[INFO] No API PID file: ${PID_FILE}"
+fi
+
+if [[ -f "${WORKER_PID_FILE}" ]]; then
+  WORKER_PID="$(head -n 1 "${WORKER_PID_FILE}" | tr -d '[:space:]' || true)"
+  kill_pid "${WORKER_PID}" "worker"
+  rm -f "${WORKER_PID_FILE}" || true
+else
+  echo "[INFO] No worker PID file: ${WORKER_PID_FILE}"
 fi
 
 if [[ -f "${WEB_PID_FILE}" ]]; then
