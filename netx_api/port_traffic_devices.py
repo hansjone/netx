@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from .cli_resolve import resolve_cli_target
+from .config import settings
 from .models import (
     ManagedNE,
     PortTrafficDevice,
