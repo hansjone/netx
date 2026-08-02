@@ -715,8 +715,10 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
       termRef.current = null;
       fitRef.current = null;
     };
-    // Fresh ticket per mount when sessionId is set; wsUrl is fallback only.
-  }, [wsUrl, sessionId]);
+    // Fresh ticket per mount when sessionId is set. Do not re-run when a late
+    // parent wsUrl fill-in arrives — that remount dropped the wait-loop WS and
+    // left Quick Connect stuck on "authenticating".
+  }, [sessionId || wsUrl]);
 
   const pasteFromClipboard = async () => {
     try {

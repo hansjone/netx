@@ -29,7 +29,6 @@ import {
   webcrtSftpRemove,
   webcrtSftpRename,
   webcrtSftpUpload,
-  webcrtWsUrl,
   type WebcrtSftpItem,
 } from "../services/api";
 import { pageCount } from "../utils/display";
@@ -887,6 +886,8 @@ export function WebcrtPage() {
     ) => {
       const key = targetKey(target);
       const existing = tabsRef.current.find((tab) => tab.key === key);
+      // WebTerminal mints its own ws_ticket from sessionId; leave wsUrl empty so a
+      // late ticket fill-in cannot remount the terminal mid-connect (Quick Connect).
       const pending: TermTab = {
         key,
         sessionId,
@@ -906,12 +907,9 @@ export function WebcrtPage() {
         return [...without, pending];
       });
       setActiveTabKey(key);
-      void webcrtWsUrl(sessionId).then((wsUrl) => {
-        updateTab(key, { wsUrl });
-      });
       showOk(t("webcrt.opened", { name: deviceLabel(target) }));
     },
-    [showOk, t, updateTab],
+    [showOk, t],
   );
 
   const openAuthForTarget = useCallback((target: CliTargetItem, errorHint?: string) => {
@@ -1003,11 +1001,12 @@ export function WebcrtPage() {
                 keepalive_sec: keepaliveSec,
                 async_connect: true,
               };
+        // Prefer sessionId; WebTerminal mints a fresh ticket on mount.
+        // Avoid a second updateTab({wsUrl}) — that remounted the terminal mid-connect.
         const sess = await createWebcrtSession(body);
-        const wsUrl = await webcrtWsUrl(sess.session_id);
         updateTab(key, {
           sessionId: sess.session_id,
-          wsUrl,
+          wsUrl: "",
           status: "connecting",
           connectPhase: "authenticating",
           termEpoch: pending.termEpoch + 1,
