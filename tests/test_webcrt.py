@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 from fastapi import HTTPException
 
 from netx_api import webcrt_service as svc
+from netx_api import webcrt_session_registry as reg
 
 
 class _FakeConn:
@@ -127,8 +128,8 @@ class WebcrtServiceTests(unittest.TestCase):
         self.assertIn("R2#", text)
         self.assertNotIn("MagicMock", text)
 
-    @patch.object(svc, "_audit")
-    @patch.object(svc, "open_netmiko_connection")
+    @patch.object(reg, "_audit")
+    @patch.object(reg, "open_netmiko_connection")
     @patch("netx_api.cli_resolve.resolve_cli_target")
     def test_bootstrap_from_channel_when_session_log_empty(
         self,
@@ -170,8 +171,8 @@ class WebcrtServiceTests(unittest.TestCase):
         self.assertIn("R2#", boot)
         svc.close_session(out["session_id"], reason="test")
 
-    @patch.object(svc, "_audit")
-    @patch.object(svc, "open_netmiko_connection")
+    @patch.object(reg, "_audit")
+    @patch.object(reg, "open_netmiko_connection")
     @patch("netx_api.cli_resolve.resolve_cli_target")
     def test_create_session_password_override(
         self,
@@ -215,8 +216,8 @@ class WebcrtServiceTests(unittest.TestCase):
         self.assertEqual(called_creds.get("password"), "once")
         svc.close_session(out["session_id"], reason="test")
 
-    @patch.object(svc, "_audit")
-    @patch.object(svc, "open_netmiko_connection")
+    @patch.object(reg, "_audit")
+    @patch.object(reg, "open_netmiko_connection")
     @patch("netx_api.cli_resolve.resolve_cli_target")
     def test_create_session_limit(
         self,
@@ -252,8 +253,8 @@ class WebcrtServiceTests(unittest.TestCase):
                 svc.create_session(db, ne_id="ne-a", cols=80, rows=24, client="test", async_connect=False)
             self.assertEqual(ctx.exception.status_code, 429)
 
-    @patch.object(svc, "_audit")
-    @patch.object(svc, "open_netmiko_connection")
+    @patch.object(reg, "_audit")
+    @patch.object(reg, "open_netmiko_connection")
     @patch("netx_api.cli_resolve.resolve_cli_target")
     def test_create_session_passes_hop_creds(
         self,
@@ -319,9 +320,9 @@ class WebcrtServiceTests(unittest.TestCase):
         self.assertEqual(fake.written[len(before) :], ["\n"])
         svc.close_session(out["session_id"], reason="test")
 
-    @patch.object(svc, "_audit")
-    @patch.object(svc, "get_cli_hop_guard")
-    @patch.object(svc, "open_netmiko_connection")
+    @patch.object(reg, "_audit")
+    @patch.object(reg, "get_cli_hop_guard")
+    @patch.object(reg, "open_netmiko_connection")
     @patch("netx_api.cli_resolve.resolve_cli_target")
     def test_create_session_reports_cli_hop(
         self,
@@ -361,8 +362,8 @@ class WebcrtServiceTests(unittest.TestCase):
         self.assertEqual(sess.cli_hop_prompt, "<HOP>")
         svc.close_session(out["session_id"], reason="test")
 
-    @patch.object(svc, "_audit")
-    @patch.object(svc, "open_netmiko_connection")
+    @patch.object(reg, "_audit")
+    @patch.object(reg, "open_netmiko_connection")
     @patch("netx_api.cli_resolve.resolve_cli_target")
     def test_create_session_bastion_managed_without_target_password(
         self,
@@ -451,7 +452,7 @@ class WebcrtServiceTests(unittest.TestCase):
             )
         )
 
-    @patch.object(svc, "_audit")
+    @patch.object(reg, "_audit")
     def test_attach_gen_exclusive_stdout_and_stale_detach(self, _mock_audit: MagicMock) -> None:
         conn = _FakeConn()
         sess = svc.WebcrtSession(
@@ -490,7 +491,7 @@ class WebcrtServiceTests(unittest.TestCase):
         self.assertFalse(sess.attached)
         svc.close_session("race", reason="test")
 
-    @patch.object(svc, "_audit")
+    @patch.object(reg, "_audit")
     def test_detach_grace_keeps_session_until_deadline(self, _mock_audit: MagicMock) -> None:
         conn = _FakeConn()
         sess = svc.WebcrtSession(
@@ -524,7 +525,7 @@ class WebcrtServiceTests(unittest.TestCase):
                 svc._reap_sessions()
         self.assertIsNone(svc.get_session("grace"))
 
-    @patch.object(svc, "_audit")
+    @patch.object(reg, "_audit")
     def test_list_sessions_lifecycle_ready_vs_detached(self, _mock_audit: MagicMock) -> None:
         conn = _FakeConn()
         sess = svc.WebcrtSession(
@@ -560,7 +561,7 @@ class WebcrtServiceTests(unittest.TestCase):
         svc.close_session("life", reason="test")
         self.assertEqual(svc.list_sessions()["total"], 0)
 
-    @patch.object(svc, "_audit")
+    @patch.object(reg, "_audit")
     def test_attach_timeout_reaper(self, _mock_audit: MagicMock) -> None:
         conn = _FakeConn()
         sess = svc.WebcrtSession(
@@ -574,6 +575,7 @@ class WebcrtServiceTests(unittest.TestCase):
             conn=conn,  # type: ignore[arg-type]
         )
         sess.created_at = time.time() - 120
+        sess.state = "ready"
         with svc._sessions_lock:
             svc._sessions["stale"] = sess
         with patch.object(svc.settings, "webcrt_attach_timeout_sec", 30):
@@ -581,7 +583,7 @@ class WebcrtServiceTests(unittest.TestCase):
                 svc._reap_sessions()
         self.assertIsNone(svc.get_session("stale"))
 
-    @patch.object(svc, "_audit")
+    @patch.object(reg, "_audit")
     def test_attach_timeout_uses_connect_finished_at(self, _mock_audit: MagicMock) -> None:
         """Slow connect should not burn the attach window from HTTP create time."""
         conn = _FakeConn()
@@ -622,7 +624,7 @@ class WebcrtServiceTests(unittest.TestCase):
             except OSError:
                 pass
 
-    @patch.object(svc, "_audit")
+    @patch.object(reg, "_audit")
     def test_idle_timeout_reaper(self, _mock_audit: MagicMock) -> None:
         conn = _FakeConn()
         sess = svc.WebcrtSession(
@@ -636,6 +638,7 @@ class WebcrtServiceTests(unittest.TestCase):
             conn=conn,  # type: ignore[arg-type]
         )
         sess.attached = True
+        sess.state = "ready"
         sess.last_activity = time.time() - 9999
         with svc._sessions_lock:
             svc._sessions["idle"] = sess
@@ -644,7 +647,7 @@ class WebcrtServiceTests(unittest.TestCase):
                 svc._reap_sessions()
         self.assertIsNone(svc.get_session("idle"))
 
-    @patch.object(svc, "_audit")
+    @patch.object(reg, "_audit")
     def test_cli_hop_return_closes_session(self, _mock_audit: MagicMock) -> None:
         """Vendor CLI hop: nested target exit must tear down WebCRT (no hop shell)."""
         conn = _FakeConn()
@@ -889,7 +892,7 @@ class WebcrtServiceTests(unittest.TestCase):
             _parse_chmod_mode("bad")
         self.assertEqual(cm.exception.detail, "sftp_chmod_invalid_mode")
 
-    @patch.object(svc, "_audit")
+    @patch.object(reg, "_audit")
     def test_find_ssh_session_for_ne_prefers_attached(self, _mock_audit: MagicMock) -> None:
         conn = _FakeConn()
         sess = svc.WebcrtSession(
@@ -911,7 +914,7 @@ class WebcrtServiceTests(unittest.TestCase):
         self.assertIsNone(svc.find_ssh_session_for_ne("other"))
         svc.close_session("sftpne", reason="test")
 
-    @patch.object(svc, "_audit")
+    @patch.object(reg, "_audit")
     def test_reattach_clears_detach_deadline(self, _mock_audit: MagicMock) -> None:
         conn = _FakeConn()
         sess = svc.WebcrtSession(

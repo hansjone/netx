@@ -1,10 +1,20 @@
 """WebCRT facade — re-exports channel helpers and session registry."""
 from __future__ import annotations
 
+from .config import settings
+from .ne_session_factory import get_cli_hop_guard, open_netmiko_connection
 from .webcrt_channel import (
+    _BoundedByteQueue,
+    _audit,
+    _capture_raw_channel,
     _decode_bytes,
     _encode_text,
+    _is_prompt_only_echo,
+    _looks_like_cli_prompt,
+    _looks_like_login_prompt,
+    _looks_like_password_change_prompt,
     _normalize_encoding,
+    _session_log_path,
     channel_return,
     map_network_cli_enter,
     map_network_cli_keys,
@@ -27,12 +37,28 @@ from .webcrt_session import (
     mark_attached,
     wait_session_ready,
 )
+from .webcrt_session_registry import (
+    _reap_sessions,
+    _sessions,
+    _sessions_lock,
+)
 
 __all__ = [
     "WebcrtSession",
+    "_BoundedByteQueue",
+    "_audit",
+    "_capture_raw_channel",
     "_decode_bytes",
     "_encode_text",
+    "_is_prompt_only_echo",
+    "_looks_like_cli_prompt",
+    "_looks_like_login_prompt",
+    "_looks_like_password_change_prompt",
     "_normalize_encoding",
+    "_reap_sessions",
+    "_session_log_path",
+    "_sessions",
+    "_sessions_lock",
     "_webcrt_creds_ready",
     "active_session_count",
     "channel_return",
@@ -40,14 +66,17 @@ __all__ = [
     "create_session",
     "detach_session",
     "find_ssh_session_for_ne",
+    "get_cli_hop_guard",
     "get_session",
     "list_sessions",
     "map_network_cli_enter",
     "map_network_cli_keys",
     "mark_attached",
     "normalize_cli_transcript",
+    "open_netmiko_connection",
     "prepare_bootstrap_output",
     "read_session_log_tail",
+    "settings",
     "uses_network_cli_keymap",
     "wait_session_ready",
     "webcrt_data_root",
