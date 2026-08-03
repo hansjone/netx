@@ -868,7 +868,7 @@ export function PortTrafficPage() {
                     {portsError ? <span className="muted">{portsError}</span> : null}
                   </div>
                   {discoverMeta ? (
-                    <details className="panel" open style={{ marginBottom: 12 }}>
+                    <details className="panel" style={{ marginBottom: 12 }}>
                       <summary>
                         {t("portTraffic.discoverDetail")}
                         {" · "}
@@ -1090,7 +1090,7 @@ export function PortTrafficPage() {
           </div>
           {portsError ? <p className="muted">{portsError}</p> : null}
           {discoverMeta ? (
-            <details className="panel" open style={{ marginBottom: 12 }}>
+            <details className="panel" style={{ marginBottom: 12 }}>
               <summary>
                 {t("portTraffic.discoverDetail")}
                 {" · "}
