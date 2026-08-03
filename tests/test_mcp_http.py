@@ -14,7 +14,7 @@ from netx_mcp.http_tools import HTTP_MCP_TOOLS, call_http_tool
 
 def test_http_mcp_tool_list_has_thirteen_tools() -> None:
     names = [str(t.get("name") or "") for t in HTTP_MCP_TOOLS]
-    assert len(names) == 13
+    assert len(names) == 14
     assert "queryUmeAlarms" in names
     assert "queryUmeAlarmsRaw" in names
     assert "execManagedNe" in names
@@ -67,6 +67,8 @@ def test_stdio_initialize_and_tools_list() -> None:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     assert proc.stdin and proc.stdout
     init_req = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}) + "\n"
@@ -81,8 +83,9 @@ def test_stdio_initialize_and_tools_list() -> None:
     proc.stdin.flush()
     list_line = proc.stdout.readline()
     list_resp = json.loads(list_line)
+    assert "error" not in list_resp, list_resp
     tools = list_resp["result"]["tools"]
-    assert len(tools) == 13
+    assert len(tools) == 14
 
     proc.terminate()
     proc.wait(timeout=5)
@@ -95,6 +98,8 @@ def test_legacy_netx_api_mcp_module_still_works() -> None:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         cwd=str(__import__("pathlib").Path(__file__).resolve().parents[1]),
     )
     assert proc.stdin and proc.stdout

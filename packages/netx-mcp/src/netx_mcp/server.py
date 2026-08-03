@@ -40,14 +40,22 @@ def _err(rid: Any, code: int, message: str) -> None:
     sys.stdout.flush()
 
 
+_UNSET = object()
+
+
 def _fetch_scopes() -> list[str] | None:
     """Return granted scopes from /v1/auth/me, or None if the call fails (show all tools)."""
     try:
-        data = http_json("GET", "/v1/auth/me")
-        scopes = data.get("scopes") if isinstance(data, dict) else None
+        envelope = http_json("GET", "/v1/auth/me")
+        if not isinstance(envelope, dict) or not envelope.get("ok"):
+            return None
+        data = envelope.get("data")
+        if not isinstance(data, dict):
+            return None
+        scopes = data.get("scopes")
         if isinstance(scopes, list):
             return [str(s) for s in scopes]
-        user = data.get("user") if isinstance(data, dict) else None
+        user = data.get("user")
         if isinstance(user, dict) and isinstance(user.get("scopes"), list):
             return [str(s) for s in user["scopes"]]
     except Exception:
@@ -56,11 +64,11 @@ def _fetch_scopes() -> list[str] | None:
 
 
 def run_stdio_loop() -> None:
-    cached_scopes: list[str] | None | object = object()
+    cached_scopes: list[str] | None | object = _UNSET
 
     def scopes() -> list[str] | None:
         nonlocal cached_scopes
-        if cached_scopes is object():
+        if cached_scopes is _UNSET:
             cached_scopes = _fetch_scopes()
         return cached_scopes  # type: ignore[return-value]
 
