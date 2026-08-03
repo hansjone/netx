@@ -1153,8 +1153,17 @@ export const fetchLldpCollectJobs = (params: { page?: number; pageSize?: number 
   );
 };
 
-export const fetchLldpCollectJob = (jobId: string) =>
-  apiGet<TopologyDiscoverJob>(`/v1/topology/lldp-collect/jobs/${encodeURIComponent(jobId)}`);
+export const fetchLldpCollectJob = (
+  jobId: string,
+  params?: { page?: number; pageSize?: number },
+) => {
+  const p = new URLSearchParams();
+  p.set("page", String(Math.max(1, Number(params?.page || 1))));
+  p.set("page_size", String(Math.max(1, Math.min(100, Number(params?.pageSize || 20)))));
+  return apiGet<TopologyDiscoverJob>(
+    `/v1/topology/lldp-collect/jobs/${encodeURIComponent(jobId)}?${p.toString()}`,
+  );
+};
 
 export const createFabricManualEdge = (body: {
   a_node_id: string;

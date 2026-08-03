@@ -422,23 +422,33 @@ type EdgeDefaults = Record<EdgeSourceKind, EdgeDefaultStyle>;
 
 const EDGE_DEFAULTS_KEY = "netx.topology.edgeDefaults";
 const AUTO_LAYOUT_DISCOVER_KEY = "netx.topology.autoLayoutAfterDiscover";
+const DISCOVER_AUTO_ADD_KEY = "netx.topology.discoverAutoAddUnmatched";
+const DISCOVER_PROJECT_NEIGHBORS_KEY = "netx.topology.discoverProjectNeighbors";
 
-function loadAutoLayoutAfterDiscover(): boolean {
+function loadBoolFlag(key: string, defaultValue: boolean): boolean {
   try {
-    const raw = localStorage.getItem(AUTO_LAYOUT_DISCOVER_KEY);
-    if (raw === null) return false;
+    const raw = localStorage.getItem(key);
+    if (raw === null) return defaultValue;
     return raw === "1" || raw === "true";
   } catch {
-    return false;
+    return defaultValue;
   }
 }
 
-function persistAutoLayoutAfterDiscover(value: boolean) {
+function persistBoolFlag(key: string, value: boolean) {
   try {
-    localStorage.setItem(AUTO_LAYOUT_DISCOVER_KEY, value ? "1" : "0");
+    localStorage.setItem(key, value ? "1" : "0");
   } catch {
     /* ignore */
   }
+}
+
+function loadAutoLayoutAfterDiscover(): boolean {
+  return loadBoolFlag(AUTO_LAYOUT_DISCOVER_KEY, false);
+}
+
+function persistAutoLayoutAfterDiscover(value: boolean) {
+  persistBoolFlag(AUTO_LAYOUT_DISCOVER_KEY, value);
 }
 
 const BUILTIN_EDGE_DEFAULTS: EdgeDefaults = {
@@ -592,11 +602,18 @@ function applyViewGraph(
   defaults: EdgeDefaults,
   setNodes: (ns: Node<NeNodeData>[]) => void,
   setEdges: (es: Edge[]) => void,
+  localPositions?: Map<string, { x: number; y: number }>,
 ) {
   const { rfNodes, rfEdges } = graphToFlow(graph.nodes, graph.edges, defaults);
-  setNodes(rfNodes);
+  const merged = localPositions?.size
+    ? rfNodes.map((n) => {
+        const p = localPositions.get(n.id);
+        return p ? { ...n, position: { ...p } } : n;
+      })
+    : rfNodes;
+  setNodes(merged);
   setEdges(rfEdges);
-  return { rfNodes, rfEdges };
+  return { rfNodes: merged, rfEdges };
 }
 
 export function TopologyPage() {
@@ -636,6 +653,12 @@ export function TopologyPage() {
   const [toolMode, setToolMode] = useState<ToolMode>("select");
   const [snapToGrid, setSnapToGrid] = useState(true);
   const [autoLayoutAfterDiscover, setAutoLayoutAfterDiscover] = useState(loadAutoLayoutAfterDiscover);
+  const [discoverAutoAddUnmatched, setDiscoverAutoAddUnmatched] = useState(() =>
+    loadBoolFlag(DISCOVER_AUTO_ADD_KEY, false),
+  );
+  const [discoverProjectNeighbors, setDiscoverProjectNeighbors] = useState(() =>
+    loadBoolFlag(DISCOVER_PROJECT_NEIGHBORS_KEY, false),
+  );
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [addNeOpen, setAddNeOpen] = useState(false);
   const [paletteSource, setPaletteSource] = useState<PaletteSource>("managed");
@@ -668,6 +691,7 @@ export function TopologyPage() {
   const rfRef = useRef<ReactFlowInstance<Node<NeNodeData>, Edge> | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const dirtyRef = useRef(false);
+  const appliedMapIdRef = useRef("");
   const historyRef = useRef<HistorySnap[]>([]);
   const redoRef = useRef<HistorySnap[]>([]);
   const historyLockRef = useRef(false);
@@ -890,8 +914,15 @@ export function TopologyPage() {
   }, [regions, searchParams, setSearchParams]);
 
   useEffect(() => {
+    appliedMapIdRef.current = "";
+  }, [mapId]);
+
+  useEffect(() => {
     if (!canvasMode) return;
-    if (!graphQuery.data) return;
+    if (!mapId || !graphQuery.data) return;
+    // Only hydrate React Flow from server when entering a map — never clobber unsaved local positions.
+    if (appliedMapIdRef.current === mapId) return;
+    appliedMapIdRef.current = mapId;
     const { rfNodes, rfEdges } = graphToFlow(graphQuery.data.nodes, graphQuery.data.edges, edgeDefaults);
     historyLockRef.current = true;
     setNodes(rfNodes);
@@ -1199,7 +1230,7 @@ export function TopologyPage() {
           scope: "ne_ids",
           ne_ids,
           concurrency: 4,
-          auto_add_unmatched: true,
+          auto_add_unmatched: discoverAutoAddUnmatched,
           trigger_mode: "topology",
         });
         let job: TopologyDiscoverJob = jobStart;
@@ -1221,9 +1252,18 @@ export function TopologyPage() {
         if (job.status === "failed") {
           throw new Error(job.error || "discover_failed");
         }
-        const projected = await projectTopologyNeighbors(mapId);
+        const projected = discoverProjectNeighbors
+          ? await projectTopologyNeighbors(mapId)
+          : await fetchTopologyGraph(mapId);
         queryClient.setQueryData(queryKeys.topologyGraph(mapId), projected);
+        appliedMapIdRef.current = mapId;
         let { rfNodes, rfEdges } = graphToFlow(projected.nodes, projected.edges, edgeDefaults);
+        // Keep existing node positions when we did not auto-layout.
+        const localPos = new Map(nodes.map((n) => [n.id, n.position]));
+        rfNodes = rfNodes.map((n) => {
+          const p = localPos.get(n.id);
+          return p ? { ...n, position: { ...p } } : n;
+        });
         let didAutoLayout = false;
         if (autoLayoutAfterDiscover && rfNodes.length > 1) {
           rfNodes = layoutGraph(rfNodes, rfEdges, "hierarchical-tb");
@@ -1271,7 +1311,7 @@ export function TopologyPage() {
         setDiscovering(false);
       }
     },
-    [mapId, discovering, nodes, queryClient, setNodes, setEdges, showOk, showError, t, autoLayoutAfterDiscover, edgeDefaults, clearDirty, markDirty],
+    [mapId, discovering, nodes, queryClient, setNodes, setEdges, showOk, showError, t, autoLayoutAfterDiscover, discoverAutoAddUnmatched, discoverProjectNeighbors, edgeDefaults, clearDirty, markDirty],
   );
 
   const discoverResults = discoverReport?.results?.length
@@ -1580,10 +1620,16 @@ export function TopologyPage() {
     pushHistory();
     try {
       if (nodeIds.length) {
+        if (dirtyRef.current) {
+          await patchTopologyPositions(mapId, flowToPositions(nodes));
+          clearDirty();
+        }
+        const localPos = new Map(nodes.map((n) => [n.id, n.position]));
         const graph = await removeTopologyViewNodes(mapId, nodeIds);
         queryClient.setQueryData(queryKeys.topologyGraph(mapId), graph);
+        appliedMapIdRef.current = mapId;
         historyLockRef.current = true;
-        applyViewGraph(graph, edgeDefaults, setNodes, setEdges);
+        applyViewGraph(graph, edgeDefaults, setNodes, setEdges, localPos);
         historyLockRef.current = false;
         clearDirty();
       } else if (edgeIds.size) {
@@ -1670,10 +1716,16 @@ export function TopologyPage() {
     pushHistory();
     closeCtxMenu();
     try {
+      if (dirtyRef.current) {
+        await patchTopologyPositions(mapId, flowToPositions(nodes));
+        clearDirty();
+      }
+      const localPos = new Map(nodes.map((n) => [n.id, n.position]));
       const graph = await removeTopologyViewNodes(mapId, [nodeId]);
       queryClient.setQueryData(queryKeys.topologyGraph(mapId), graph);
+      appliedMapIdRef.current = mapId;
       historyLockRef.current = true;
-      applyViewGraph(graph, edgeDefaults, setNodes, setEdges);
+      applyViewGraph(graph, edgeDefaults, setNodes, setEdges, localPos);
       historyLockRef.current = false;
       clearDirty();
     } catch (err) {
@@ -2473,7 +2525,6 @@ export function TopologyPage() {
                   [
                     ["select", t("topology.toolSelect"), "V"],
                     ["pan", t("topology.toolPan"), "H"],
-                    ["drag", t("topology.toolDrag"), "A"],
                     ["connect", t("topology.toolConnect"), "C"],
                   ] as const
                 ).map(([mode, label, key]) => (
@@ -2543,6 +2594,30 @@ export function TopologyPage() {
                       }}
                     />
                     {t("topology.autoLayoutDiscover")}
+                  </label>
+                  <label className="topo-display-toggles__item">
+                    <input
+                      type="checkbox"
+                      checked={discoverAutoAddUnmatched}
+                      onChange={(e) => {
+                        const next = e.target.checked;
+                        setDiscoverAutoAddUnmatched(next);
+                        persistBoolFlag(DISCOVER_AUTO_ADD_KEY, next);
+                      }}
+                    />
+                    {t("topology.discoverAutoAddUnmatched")}
+                  </label>
+                  <label className="topo-display-toggles__item">
+                    <input
+                      type="checkbox"
+                      checked={discoverProjectNeighbors}
+                      onChange={(e) => {
+                        const next = e.target.checked;
+                        setDiscoverProjectNeighbors(next);
+                        persistBoolFlag(DISCOVER_PROJECT_NEIGHBORS_KEY, next);
+                      }}
+                    />
+                    {t("topology.discoverProjectNeighbors")}
                   </label>
                   <div className="topo-display-defaults">
                     <div className="topo-display-defaults__head">
@@ -2955,6 +3030,48 @@ export function TopologyPage() {
             onDragOver={onCanvasDragOver}
             onDrop={onCanvasDrop}
           >
+            {fullscreen ? (
+              <div className="topo-fs-toolbar" role="toolbar" aria-label={t("topology.toolModes")}>
+                {(
+                  [
+                    ["select", t("topology.toolSelect"), "V"],
+                    ["pan", t("topology.toolPan"), "H"],
+                    ["connect", t("topology.toolConnect"), "C"],
+                  ] as const
+                ).map(([mode, label, key]) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    className={`topo-fs-toolbar__btn${toolMode === mode ? " is-active" : ""}`}
+                    title={`${label} (${key})`}
+                    aria-pressed={toolMode === mode}
+                    onClick={() => {
+                      setToolMode(mode);
+                      connectClickRef.current = null;
+                    }}
+                  >
+                    {label}
+                    <kbd>{key}</kbd>
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  className="topo-fs-toolbar__btn"
+                  title={t("topology.fit")}
+                  onClick={() => rfRef.current?.fitView({ padding: 0.2 })}
+                >
+                  {t("topology.fit")}
+                </button>
+                <button
+                  type="button"
+                  className="topo-fs-toolbar__btn"
+                  title={t("topology.exitFullscreen")}
+                  onClick={() => void toggleFullscreen()}
+                >
+                  {t("topology.exitFullscreen")}
+                </button>
+              </div>
+            ) : null}
             {treeRoot ? (
               <TopoDisplayContext.Provider value={displayOpts}>
                 <ReactFlow
@@ -2968,6 +3085,8 @@ export function TopologyPage() {
                   connectionMode={ConnectionMode.Loose}
                   defaultEdgeOptions={{ type: "straight" }}
                   proOptions={{ hideAttribution: true }}
+                  minZoom={0.05}
+                  maxZoom={4}
                   nodesDraggable={toolBehavior.nodesDraggable}
                   nodesConnectable={toolBehavior.nodesConnectable}
                   elementsSelectable={toolBehavior.elementsSelectable}

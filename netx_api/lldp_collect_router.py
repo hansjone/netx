@@ -53,5 +53,10 @@ def api_list_jobs(
 
 
 @router.get("/jobs/{job_id}")
-def api_get_job(job_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
-    return get_job_detail(db, job_id)
+def api_get_job(
+    job_id: str,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    return get_job_detail(db, job_id, page=page, page_size=page_size)

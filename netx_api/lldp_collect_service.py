@@ -287,5 +287,7 @@ def list_jobs(db: Session, *, page: int = 1, page_size: int = 20) -> dict:
     }
 
 
-def get_job_detail(db: Session, job_id: str) -> dict:
-    return get_discover_job(db, job_id).model_dump()
+def get_job_detail(
+    db: Session, job_id: str, *, page: int | None = None, page_size: int | None = None
+) -> dict:
+    return get_discover_job(db, job_id, page=page, page_size=page_size).model_dump()

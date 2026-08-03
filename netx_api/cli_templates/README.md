@@ -18,10 +18,16 @@ cli_templates/
 
 ## Lookup order
 
-1. **This tree** (`index` → `vendor/*.textfsm`)
-2. Community `ntc-templates` package
+1. **Wrap-line join** (`netx_api.cli_wrap`) — flatten last-column wraps for registered
+   platform+command pairs (ZTE interface brief / LLDP brief today). Other vendors can
+   register rules the same way; do **not** apply blindly (Huawei LLDP detail uses real
+   indented fields).
+2. **This tree** (`index` → `vendor/*.textfsm`)
+3. Community `ntc-templates` package
 
-No regex CLI parsers. If both miss, the call returns empty — fix or add a template.
+No regex CLI parsers for field extraction. If both template trees miss, the call returns
+empty — fix or add a template. Wrap joining is the supported escape hatch when TextFSM
+alone cannot merge mid-token column wraps.
 
 ## Vendor coverage (blind fill from community + NetX)
 
@@ -45,7 +51,10 @@ No regex CLI parsers. If both miss, the call returns empty — fix or add a temp
 3. Register in root `index` with a **relative path**:
    `zte/zte_zxros_show_xxx.textfsm, .*, zte_zxros, sh[[ow]] ...`
 4. Align Value names with community templates when possible
-5. Add unit tests under `tests/`
+5. If the CLI wraps the last column onto the next line, add a `CliWrapRule` in
+   `netx_api/cli_wrap.py` (platform + command scoped) — do not try to solve mid-token
+   wraps in TextFSM alone
+6. Add unit tests under `tests/`
 
 When community already works, no file is required.
 When community is wrong/incomplete for our lab, add an override under the vendor folder
@@ -54,4 +63,4 @@ with the same Platform+Command so NetX wins.
 ## Concurrency
 
 Template files are read-only and safe across processes. Parsing goes through
-`netx_api.ntc_parse` (fresh `CliTable` + process lock; never share instances across threads).
+`netx_api.ntc_parse` (wrap-join → fresh `CliTable` + process lock; never share instances across threads).

@@ -66,7 +66,7 @@ export const queryKeys = {
   lldpCollectJobsAll: ["lldpCollectJobs"] as const,
   lldpCollectJobs: (page: number) => ["lldpCollectJobs", page] as const,
   lldpCollectJobAll: ["lldpCollectJob"] as const,
-  lldpCollectJob: (jobId: string) => ["lldpCollectJob", jobId] as const,
+  lldpCollectJob: (jobId: string, page = 1) => ["lldpCollectJob", jobId, page] as const,
   fabricEdgesAll: ["fabricEdges"] as const,
   fabricEdges: (status: string, keyword: string, page: number) =>
     ["fabricEdges", status, keyword, page] as const,

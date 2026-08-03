@@ -590,6 +590,9 @@ export type TopologyDiscoverJob = {
   ended_at?: string | null;
   created_at?: string | null;
   items: TopologyDiscoverJobItem[];
+  items_total?: number;
+  items_page?: number;
+  items_page_size?: number;
 };
 
 /** @deprecated alias — prefer TopologyViewItem */
@@ -887,6 +890,10 @@ export type PortTrafficDiscoverResponse = {
   vendor: string;
   vendor_key: string;
   ports: PortTrafficDiscoverPort[];
+  ok?: boolean;
+  command?: string;
+  raw_preview?: string;
+  error?: string;
 };
 
 export type PortTrafficSamplePoint = {

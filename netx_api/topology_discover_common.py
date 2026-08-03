@@ -24,15 +24,33 @@ def _raw_preview(raw: str, *, limit: int = _RAW_PREVIEW_MAX) -> str:
     return f"{text[:limit]}\n...[truncated preview {limit}/{len(text)} chars]"
 
 
-def _job_out(db: Session, job: TopoDiscoverJob, *, include_items: bool = True) -> FabricDiscoverJobOut:
+def _job_out(
+    db: Session,
+    job: TopoDiscoverJob,
+    *,
+    include_items: bool = True,
+    page: int | None = None,
+    page_size: int | None = None,
+) -> FabricDiscoverJobOut:
     items_out: list[FabricDiscoverJobItemOut] = []
+    items_total = 0
+    items_page = 1
+    items_page_size = 0
     if include_items:
-        items = (
+        q = (
             db.query(TopoDiscoverJobItem)
             .filter(TopoDiscoverJobItem.job_id == job.id)
             .order_by(TopoDiscoverJobItem.created_at.asc())
-            .all()
         )
+        items_total = int(q.count())
+        if page is not None and page_size is not None:
+            items_page = max(1, int(page or 1))
+            items_page_size = max(1, min(100, int(page_size or 20)))
+            items = q.offset((items_page - 1) * items_page_size).limit(items_page_size).all()
+        else:
+            items = q.all()
+            items_page = 1
+            items_page_size = items_total
         for it in items:
             unmatched = [
                 FabricDiscoverUnmatched.model_validate(x) for x in (it.unmatched_json or [])[:40]
@@ -74,14 +92,23 @@ def _job_out(db: Session, job: TopoDiscoverJob, *, include_items: bool = True) -
         started_at=job.started_at,
         ended_at=job.ended_at,
         items=items_out,
+        items_total=items_total,
+        items_page=items_page,
+        items_page_size=items_page_size,
     )
 
 
-def get_discover_job(db: Session, job_id: str) -> FabricDiscoverJobOut:
+def get_discover_job(
+    db: Session,
+    job_id: str,
+    *,
+    page: int | None = None,
+    page_size: int | None = None,
+) -> FabricDiscoverJobOut:
     job = db.get(TopoDiscoverJob, str(job_id or "").strip())
     if job is None:
         raise HTTPException(status_code=404, detail="discover_job_not_found")
-    return _job_out(db, job)
+    return _job_out(db, job, page=page, page_size=page_size)
 
 
 def _ume_target_dict(db: Session, uid: str, default_profile: Any) -> dict[str, str] | None:

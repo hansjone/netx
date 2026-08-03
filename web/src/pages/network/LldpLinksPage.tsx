@@ -27,7 +27,9 @@ export function LldpLinksPage() {
 
   const [jobPage, setJobPage] = useState(1);
   const [expandedJobId, setExpandedJobId] = useState("");
+  const [itemPage, setItemPage] = useState(1);
   const [itemDetail, setItemDetail] = useState<TopologyDiscoverJobItem | null>(null);
+  const ITEM_PAGE_SIZE = 20;
 
   const [edgeStatus, setEdgeStatus] = useState<"all" | "active" | "missing">("all");
   const [edgeKeyword, setEdgeKeyword] = useState("");
@@ -90,8 +92,8 @@ export function LldpLinksPage() {
   });
 
   const jobDetailQuery = useQuery({
-    queryKey: queryKeys.lldpCollectJob(expandedJobId),
-    queryFn: () => fetchLldpCollectJob(expandedJobId),
+    queryKey: queryKeys.lldpCollectJob(expandedJobId, itemPage),
+    queryFn: () => fetchLldpCollectJob(expandedJobId, { page: itemPage, pageSize: ITEM_PAGE_SIZE }),
     enabled: Boolean(expandedJobId),
     staleTime: 800,
     refetchInterval: () => (dashQuery.data?.running_job?.id === expandedJobId ? POLL_MS : false),
@@ -193,6 +195,8 @@ export function LldpLinksPage() {
   const jobPages = pageCount(jobTotal, 10);
   const selectedCount = useMemo(() => Object.keys(selectedMap).length, [selectedMap]);
   const detailItems = jobDetailQuery.data?.items ?? [];
+  const itemTotal = Number(jobDetailQuery.data?.items_total ?? detailItems.length);
+  const itemPages = pageCount(itemTotal, ITEM_PAGE_SIZE);
   const edgeItems = edgesQuery.data?.items ?? [];
   const edgeTotal = Number(edgesQuery.data?.total || 0);
   const edgePages = pageCount(edgeTotal, EDGE_PAGE_SIZE);
@@ -546,6 +550,7 @@ export function LldpLinksPage() {
                       onClick={() => {
                         setItemDetail(null);
                         setExpandedJobId(open ? "" : job.id);
+                        setItemPage(1);
                       }}
                     >
                       {open ? "−" : "+"}
@@ -653,6 +658,25 @@ export function LldpLinksPage() {
               ) : null}
             </tbody>
           </table>
+          <div className="pager">
+            <button type="button" disabled={itemPage <= 1} onClick={() => setItemPage((p) => p - 1)}>
+              {t("common.prevPage")}
+            </button>
+            <span className="muted">
+              {t("common.pagerMeta", {
+                total: String(itemTotal),
+                page: String(itemPage),
+                pages: String(itemPages),
+              })}
+            </span>
+            <button
+              type="button"
+              disabled={itemPage >= itemPages}
+              onClick={() => setItemPage((p) => p + 1)}
+            >
+              {t("common.nextPage")}
+            </button>
+          </div>
         </div>
       ) : null}
 

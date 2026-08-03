@@ -6181,6 +6181,50 @@ pre {
   max-height: 14px;
 }
 
+.topo-fs-toolbar {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 20;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+  pointer-events: auto;
+}
+
+.topo-fs-toolbar__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: #fff;
+  color: #0f172a;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.topo-fs-toolbar__btn:hover {
+  background: #f8fafc;
+}
+
+.topo-fs-toolbar__btn.is-active {
+  border-color: #0ea5e9;
+  background: #e0f2fe;
+  color: #075985;
+}
+
+.topo-fs-toolbar__btn kbd {
+  font-size: 10px;
+  opacity: 0.7;
+}
+
 .topo-canvas__empty {
   display: grid;
   place-items: center;

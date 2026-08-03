@@ -33,7 +33,7 @@ class PortTrafficDevice(Base):
     vendor: Mapped[str] = mapped_column(String(64), default="")
     note: Mapped[str] = mapped_column(String(256), default="")  # optional remark
     status: Mapped[str] = mapped_column(String(32), default="draft", index=True)  # draft|running|paused|stopped
-    interval_sec: Mapped[int] = mapped_column(Integer, default=60)
+    interval_sec: Mapped[int] = mapped_column(Integer, default=300)
     retention_days: Mapped[int] = mapped_column(Integer, default=7)
     concurrency: Mapped[int] = mapped_column(Integer, default=1)
     collect_running: Mapped[bool] = mapped_column(Boolean, default=False)

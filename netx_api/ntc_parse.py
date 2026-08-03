@@ -13,6 +13,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
+from .cli_wrap import apply_cli_wrap
+
 _log = logging.getLogger("netx.ntc_parse")
 
 _PARSE_LOCK = threading.Lock()
@@ -107,10 +109,10 @@ def parse_cli(
     command: str,
     text: str,
 ) -> list[dict[str, Any]]:
-    """Parse CLI text: custom templates first, then community ntc-templates."""
+    """Parse CLI text: wrap-join → custom templates → community ntc-templates."""
     plat = str(platform or "").strip()
     cmd = str(command or "").strip()
-    raw = str(text or "")
+    raw = apply_cli_wrap(str(text or ""), platform=plat, command=cmd)
     if not plat or not cmd or not raw.strip():
         return []
 

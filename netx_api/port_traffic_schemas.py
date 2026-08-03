@@ -34,7 +34,7 @@ class PortTrafficDeviceCreate(BaseModel):
     ne_ip: str = ""
     vendor: str = ""
     note: str = Field(default="", max_length=256)
-    interval_sec: int = Field(default=60, ge=15, le=3600)
+    interval_sec: int = Field(default=300, ge=15, le=3600)
     retention_days: int = Field(default=7, ge=1, le=90)
     concurrency: int = Field(default=1, ge=1, le=5)
     interfaces: list[PortTrafficIfaceIn] = Field(default_factory=list)
@@ -147,6 +147,10 @@ class DiscoverPortsResponse(BaseModel):
     vendor: str = ""
     vendor_key: str = ""
     ports: list[DiscoverPortItem] = Field(default_factory=list)
+    ok: bool = True
+    command: str = ""
+    raw_preview: str = ""
+    error: str = ""
 
 
 class PortTrafficSamplePoint(BaseModel):

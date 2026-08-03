@@ -481,30 +481,58 @@ def discover_ports(db: Session, body: DiscoverPortsRequest) -> DiscoverPortsResp
             detail=f"vendor_not_supported_for_port_traffic: {vendor or 'unknown'}",
         )
 
-    per_cmd = int(settings.ne_collect_read_timeout_sec or 120)
-    conn = open_netmiko_connection(creds, session_timeout=per_cmd + 60)
-    try:
-        raw = send_show_command(conn, cmds.brief, read_timeout=per_cmd)
-    finally:
-        close_netmiko_connection(conn)
-
-    ports = [
-        DiscoverPortItem(**brief_port_to_dict(p))
-        for p in parse_interface_brief(
-            raw,
-            cmds.vendor_key,
-            command=cmds.brief,
-            device_type=device_type,
-        )
-    ]
-    return DiscoverPortsResponse(
+    command = str(cmds.brief or "")
+    base = DiscoverPortsResponse(
         source=body.source,
         id=body.id,
         ne_name=ne_name,
         ne_ip=ne_ip,
         vendor=vendor,
         vendor_key=cmds.vendor_key,
-        ports=ports,
+        command=command,
     )
+
+    per_cmd = int(settings.ne_collect_read_timeout_sec or 120)
+    raw = ""
+    try:
+        conn = open_netmiko_connection(creds, session_timeout=per_cmd + 60)
+        try:
+            raw = send_show_command(conn, command, read_timeout=per_cmd)
+        finally:
+            close_netmiko_connection(conn)
+    except Exception as exc:
+        preview = str(raw or "")
+        if len(preview) > 12_000:
+            preview = f"{preview[:12_000]}\n...[truncated preview 12000/{len(raw)} chars]"
+        base.ok = False
+        base.error = f"cli_failed: {exc}"
+        base.raw_preview = preview
+        return base
+
+    preview = str(raw or "")
+    if len(preview) > 12_000:
+        preview = f"{preview[:12_000]}\n...[truncated preview 12000/{len(raw)} chars]"
+    base.raw_preview = preview
+
+    try:
+        ports = [
+            DiscoverPortItem(**brief_port_to_dict(p))
+            for p in parse_interface_brief(
+                raw,
+                cmds.vendor_key,
+                command=command,
+                device_type=device_type,
+            )
+        ]
+    except Exception as exc:
+        base.ok = False
+        base.error = f"parse_failed: {exc}"
+        return base
+
+    base.ports = ports
+    if not ports:
+        base.ok = False
+        base.error = "no_ports_parsed"
+    return base
 
 

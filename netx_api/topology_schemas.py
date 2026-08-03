@@ -132,6 +132,9 @@ class FabricDiscoverJobOut(BaseModel):
     started_at: datetime | None = None
     ended_at: datetime | None = None
     items: list[FabricDiscoverJobItemOut] = Field(default_factory=list)
+    items_total: int = 0
+    items_page: int = 1
+    items_page_size: int = 0
 
 
 # ---------------------------------------------------------------------------

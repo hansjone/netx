@@ -8,13 +8,13 @@ Value PROT (up|down)
 Value DESCRIPTION (.*)
 
 Start
+  ^Interface\s+\S+\s+Mode\s+.*Admin -> Ports
   ^Interface\s+Attribute\s+Mode -> Ports
   ^\s*$$
   ^.* -> Start
 
 Ports
-  ^${INTERFACE}\s+${ATTRIBUTE}\s+${MODE}\s+${BW}\s+${ADMIN}\s+${PHY}\s+${PROT}(?:\s+${DESCRIPTION})?\s*$$ -> Record
-  ^${INTERFACE}\s+${ATTRIBUTE}\s+${MODE}\s+${ADMIN}\s+${PHY}\s+${PROT}(?:\s+${DESCRIPTION})?\s*$$ -> Record
+  ^${INTERFACE}\s+${ATTRIBUTE}\s+${MODE}(?:\s+${BW})?\s+${ADMIN}\s+${PHY}\s+${PROT}(?:\s+${DESCRIPTION})?\s*$$ -> Record
   ^\s*$$
   ^\S+\s*#\s*$$ -> End
   ^.*#\s*$$ -> End

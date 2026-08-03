@@ -126,7 +126,7 @@ export function PortTrafficPage() {
   // Wizard / edit
   const [editDeviceId, setEditDeviceId] = useState("");
   const [editDeviceSnap, setEditDeviceSnap] = useState<PortTrafficDevice | null>(null);
-  const [intervalSec, setIntervalSec] = useState(60);
+  const [intervalSec, setIntervalSec] = useState(300);
   const [retentionDays, setRetentionDays] = useState(7);
   const [concurrency, setConcurrency] = useState(1);
   const [note, setNote] = useState("");
@@ -137,6 +137,12 @@ export function PortTrafficPage() {
   const [ports, setPorts] = useState<PortTrafficDiscoverPort[]>([]);
   const [portsLoading, setPortsLoading] = useState(false);
   const [portsError, setPortsError] = useState("");
+  const [discoverMeta, setDiscoverMeta] = useState<{
+    ok: boolean;
+    command: string;
+    raw_preview: string;
+    error: string;
+  } | null>(null);
   const [pickedIfnames, setPickedIfnames] = useState<Record<string, PortTrafficIfaceIn>>({});
   const [deepLinkHint, setDeepLinkHint] = useState("");
   const [deepLinkSource, setDeepLinkSource] = useState<"managed" | "ume" | "">("");
@@ -366,7 +372,7 @@ export function PortTrafficPage() {
 
   const resetWizard = () => {
     setWizardStep(1);
-    setIntervalSec(60);
+    setIntervalSec(300);
     setRetentionDays(7);
     setConcurrency(1);
     setNote("");
@@ -374,6 +380,7 @@ export function PortTrafficPage() {
     setSelectedNe(null);
     setPorts([]);
     setPortsError("");
+    setDiscoverMeta(null);
     setPickedIfnames({});
     setNeKeyword("");
     setNePage(1);
@@ -404,6 +411,7 @@ export function PortTrafficPage() {
     setPickedIfnames({});
     setPorts([]);
     setPortsError("");
+    setDiscoverMeta(null);
     setView("edit");
   };
 
@@ -434,11 +442,23 @@ export function PortTrafficPage() {
     if (!id) return;
     setPortsLoading(true);
     setPortsError("");
+    setDiscoverMeta(null);
     try {
       const res = await discoverPortTrafficPorts({ source, id });
-      setPorts(res.ports);
+      setPorts(res.ports || []);
+      setDiscoverMeta({
+        ok: res.ok !== false,
+        command: res.command || "",
+        raw_preview: res.raw_preview || "",
+        error: res.error || "",
+      });
+      if (res.ok === false) {
+        const msg = res.error || t("portTraffic.discoverFail");
+        setPortsError(msg);
+        showError(msg);
+      }
       if (deepLinkIfname) {
-        const hit = res.ports.find((p) => p.ifname === deepLinkIfname);
+        const hit = (res.ports || []).find((p) => p.ifname === deepLinkIfname);
         if (hit) {
           setPickedIfnames((prev) => ({
             ...prev,
@@ -455,6 +475,12 @@ export function PortTrafficPage() {
       const msg = e instanceof Error ? e.message : "discover_failed";
       setPorts([]);
       setPortsError(msg);
+      setDiscoverMeta({
+        ok: false,
+        command: "",
+        raw_preview: "",
+        error: msg,
+      });
       showError(msg);
     } finally {
       setPortsLoading(false);
@@ -841,6 +867,29 @@ export function PortTrafficPage() {
                     </button>
                     {portsError ? <span className="muted">{portsError}</span> : null}
                   </div>
+                  {discoverMeta ? (
+                    <details className="panel" open style={{ marginBottom: 12 }}>
+                      <summary>
+                        {t("portTraffic.discoverDetail")}
+                        {" · "}
+                        {discoverMeta.ok ? t("portTraffic.discoverOk") : t("portTraffic.discoverFail")}
+                      </summary>
+                      {discoverMeta.command ? (
+                        <p className="muted">
+                          {t("portTraffic.discoverCommand")}: <code>{discoverMeta.command}</code>
+                        </p>
+                      ) : null}
+                      {discoverMeta.error ? (
+                        <p className="muted" style={{ color: "var(--danger, #b00)" }}>
+                          {discoverMeta.error}
+                        </p>
+                      ) : null}
+                      <p className="muted">{t("portTraffic.discoverRaw")}</p>
+                      <pre className="topo-discover-modal__raw" style={{ maxHeight: 240, overflow: "auto" }}>
+                        {discoverMeta.raw_preview || "—"}
+                      </pre>
+                    </details>
+                  ) : null}
                   {ports.length ? (
                     <table className="data-table">
                       <thead>
@@ -894,7 +943,7 @@ export function PortTrafficPage() {
                     min={15}
                     max={3600}
                     value={intervalSec}
-                    onChange={(e) => setIntervalSec(Number(e.target.value) || 60)}
+                    onChange={(e) => setIntervalSec(Number(e.target.value) || 300)}
                   />
                 </label>
                 <label className="config-sync-policy-field">
@@ -1005,7 +1054,7 @@ export function PortTrafficPage() {
                 min={15}
                 max={3600}
                 value={intervalSec}
-                onChange={(e) => setIntervalSec(Number(e.target.value) || 60)}
+                onChange={(e) => setIntervalSec(Number(e.target.value) || 300)}
               />
             </label>
             <label className="config-sync-policy-field">
@@ -1040,6 +1089,29 @@ export function PortTrafficPage() {
             <span className="muted">{t("portTraffic.selectedPorts", { count: String(pickedList.length) })}</span>
           </div>
           {portsError ? <p className="muted">{portsError}</p> : null}
+          {discoverMeta ? (
+            <details className="panel" open style={{ marginBottom: 12 }}>
+              <summary>
+                {t("portTraffic.discoverDetail")}
+                {" · "}
+                {discoverMeta.ok ? t("portTraffic.discoverOk") : t("portTraffic.discoverFail")}
+              </summary>
+              {discoverMeta.command ? (
+                <p className="muted">
+                  {t("portTraffic.discoverCommand")}: <code>{discoverMeta.command}</code>
+                </p>
+              ) : null}
+              {discoverMeta.error ? (
+                <p className="muted" style={{ color: "var(--danger, #b00)" }}>
+                  {discoverMeta.error}
+                </p>
+              ) : null}
+              <p className="muted">{t("portTraffic.discoverRaw")}</p>
+              <pre className="topo-discover-modal__raw" style={{ maxHeight: 240, overflow: "auto" }}>
+                {discoverMeta.raw_preview || "—"}
+              </pre>
+            </details>
+          ) : null}
           {ports.length ? (
             <table className="data-table">
               <thead>
