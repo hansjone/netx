@@ -1,4 +1,4 @@
-"""MCP tool schemas and HTTP-backed handlers (UME + managed NE + topology fabric)."""
+"""MCP tool schemas and HTTP-backed handlers (UME + managed NE)."""
 
 from __future__ import annotations
 
@@ -285,61 +285,6 @@ def _list_cli_targets(args: dict[str, Any]) -> dict[str, Any]:
     return http_json("GET", "/v1/cli/targets", params=params)
 
 
-def _query_topology_edges(args: dict[str, Any]) -> dict[str, Any]:
-    """List fabric edges; with node_id, also summarize unique peer NEs (interconnect count)."""
-    page = max(1, int(args.get("page") or 1))
-    page_size = min(500, max(1, int(args.get("page_size") or 50)))
-    node_id = str(args.get("node_id") or "").strip()
-    params: dict[str, Any] = {
-        "page": page,
-        "page_size": page_size,
-        "layer": str(args.get("layer") or "physical").strip() or "physical",
-    }
-    if node_id:
-        params["node_id"] = node_id
-    if str(args.get("status") or "").strip():
-        params["status"] = str(args.get("status")).strip()
-    if str(args.get("source") or "").strip():
-        src = str(args.get("source")).strip().lower()
-        if src == "stale":
-            src = "lldp"
-        params["source"] = src
-    if str(args.get("keyword") or "").strip():
-        params["keyword"] = str(args.get("keyword")).strip()
-    out = http_json("GET", "/v1/topology/fabric/edges", params=params)
-    if not isinstance(out, dict):
-        return out
-    items = out.get("items") if isinstance(out.get("items"), list) else []
-    # When scoping to one NE: unique peers on this page (+ total edges from API).
-    if node_id and items:
-        peers: set[str] = set()
-        peer_labels: list[dict[str, str]] = []
-        seen_label: set[str] = set()
-        for e in items:
-            if not isinstance(e, dict):
-                continue
-            a_id = str(e.get("a_node_id") or "")
-            b_id = str(e.get("b_node_id") or "")
-            if a_id == node_id:
-                peer_id, pname, pip = b_id, str(e.get("b_name") or ""), str(e.get("b_ip") or "")
-            elif b_id == node_id:
-                peer_id, pname, pip = a_id, str(e.get("a_name") or ""), str(e.get("a_ip") or "")
-            else:
-                continue
-            if not peer_id or peer_id in peers:
-                continue
-            peers.add(peer_id)
-            if peer_id not in seen_label:
-                seen_label.add(peer_id)
-                peer_labels.append({"node_id": peer_id, "name": pname, "ip": pip})
-        out["peer_count"] = len(peers)
-        out["peers"] = peer_labels
-        out["edge_total"] = int(out.get("total") or len(items))
-        # Incomplete if caller didn't fetch all pages.
-        out["peers_complete"] = int(out.get("total") or 0) <= len(items)
-    return out
-
-
 HTTP_MCP_TOOLS: list[dict[str, Any]] = [
     {
         "name": "queryUmeAlarms",
@@ -524,34 +469,6 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
             "additionalProperties": False,
         },
     },
-    {
-        "name": "queryTopologyEdges",
-        "description": (
-            "Query fabric LLDP/manual links. Pass node_id to list edges of NE A and get peer_count "
-            "(how many distinct NEs A interconnects with). Optional keyword filters by endpoint name/IP; "
-            "status=active|missing. Raise page_size if peers_complete is false."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "node_id": {
-                    "type": "string",
-                    "description": "Fabric node id of NE A — returns its edges + peer_count/peers summary",
-                },
-                "keyword": {
-                    "type": "string",
-                    "description": "Filter edges whose endpoint name/IP contains this text",
-                },
-                "layer": {"type": "string", "default": "physical"},
-                "status": {"type": "string", "enum": ["active", "missing", "stale"]},
-                "source": {"type": "string", "enum": ["lldp", "manual"]},
-                "page": {"type": "integer", "minimum": 1, "default": 1},
-                "page_size": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100},
-            },
-            "required": [],
-            "additionalProperties": False,
-        },
-    },
 ]
 
 _HANDLERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
@@ -568,7 +485,6 @@ _HANDLERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "getManagedNe": _get_managed_ne,
     "execManagedNe": _exec_managed_ne,
     "listCliTargets": _list_cli_targets,
-    "queryTopologyEdges": _query_topology_edges,
 }
 
 # Minimum scope required to advertise / invoke each tool (matches netx API RBAC).
@@ -586,7 +502,6 @@ TOOL_REQUIRED_SCOPE: dict[str, str] = {
     "getManagedNe": "ne:read",
     "execManagedNe": "ne:exec",
     "listCliTargets": "ne:read",
-    "queryTopologyEdges": "ne:read",
 }
 
 

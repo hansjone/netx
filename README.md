@@ -160,19 +160,23 @@ API base: `http://127.0.0.1:8890/`
 
 先启动 netx API（§5），再在 **MCP 宿主同机** 安装轻量客户端并配置。
 
-**完整说明（安装、配置、更新、排错）见：[docs/MCP.md](docs/MCP.md)**
+**完整说明（安装、配置、更新、排错）见：[docs/MCP.md](docs/MCP.md)**  
+**拓扑画布独立 MCP** 见：[docs/MCP_TOPOLOGY.md](docs/MCP_TOPOLOGY.md)
 
 速查：
 
 ```powershell
 pip install -e ./packages/netx-mcp
+# 拓扑（可选，单独安装）
+pip install -e ./packages/netx-topology-mcp
 # 配置见 mcp.json，运行：
 python -m netx_mcp
+python -m netx_topology_mcp
 ```
 
-- 客户端配置：[`mcp.json`](mcp.json)（Cursor / oclaw Admin 粘贴同一份）
-- oclaw 可选 payload：[`mcp_install_payload.json`](mcp_install_payload.json)
-- 子包说明：[`packages/netx-mcp/README.md`](packages/netx-mcp/README.md)
+- 客户端配置：[`mcp.json`](mcp.json)（含 `netx` + 可选 `netx-topology`）
+- oclaw payload：[`mcp_install_payload.json`](mcp_install_payload.json) / [`mcp_topology_install_payload.json`](mcp_topology_install_payload.json)
+- 子包：[`packages/netx-mcp`](packages/netx-mcp/README.md)、[`packages/netx-topology-mcp`](packages/netx-topology-mcp/README.md)
 
 ## Useful API endpoints
 

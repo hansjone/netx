@@ -1,0 +1,28 @@
+{
+  "source_type": "local",
+  "source_ref": "netx-topology-mcp",
+  "server_id": "netx-topology",
+  "version": "0.1.0",
+  "entry_command": "python",
+  "entry_args": ["-m", "netx_topology_mcp"],
+  "env_schema": {
+    "NETX_API_URL": {
+      "type": "string",
+      "description": "netx REST API base URL (no trailing slash)",
+      "default": "http://127.0.0.1:8890"
+    },
+    "NETX_API_TOKEN": {
+      "type": "string",
+      "description": "Optional Bearer token when netx API auth is enabled"
+    },
+    "NETX_LANG": {
+      "type": "string",
+      "description": "Response language hint: zh or en",
+      "default": "zh"
+    }
+  },
+  "required_permissions": [],
+  "risk_level": "medium",
+  "enabled": true,
+  "timeout_s": 120
+}

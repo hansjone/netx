@@ -597,6 +597,22 @@ function flowToPositions(nodes: Node<NeNodeData>[]) {
   }));
 }
 
+/** Stable signature so live poll only re-applies when the server graph actually changed. */
+function graphFingerprint(graph: TopologyViewGraph): string {
+  const nodes = [...graph.nodes]
+    .map(
+      (n) =>
+        `${n.fabric_node_id}:${Math.round(Number(n.x) || 0)}:${Math.round(Number(n.y) || 0)}:${n.label || n.name || ""}`,
+    )
+    .sort()
+    .join("|");
+  const edges = [...graph.edges]
+    .map((e) => `${e.id}:${e.a_node_id}:${e.b_node_id}:${e.a_port || ""}:${e.b_port || ""}:${e.status || ""}`)
+    .sort()
+    .join("|");
+  return `${nodes}#${edges}#${graph.outside_peers?.length || 0}`;
+}
+
 function applyViewGraph(
   graph: TopologyViewGraph,
   defaults: EdgeDefaults,
@@ -678,6 +694,8 @@ export function TopologyPage() {
   });
   const [discoverError, setDiscoverError] = useState("");
   const [fullscreen, setFullscreen] = useState(false);
+  /** Opt-in poll so MCP / other clients painting the open map can be watched. Off by default. */
+  const [liveSync, setLiveSync] = useState(false);
   const [canvasQuery, setCanvasQuery] = useState("");
   const [searchHitIds, setSearchHitIds] = useState<string[]>([]);
   const [findOpen, setFindOpen] = useState(false);
@@ -692,12 +710,16 @@ export function TopologyPage() {
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const dirtyRef = useRef(false);
   const appliedMapIdRef = useRef("");
+  const appliedGraphFpRef = useRef("");
+  const nodesRef = useRef<Node<NeNodeData>[]>([]);
   const historyRef = useRef<HistorySnap[]>([]);
   const redoRef = useRef<HistorySnap[]>([]);
   const historyLockRef = useRef(false);
   const connectClickRef = useRef<string | null>(null);
   const canUndo = historyTick >= 0 && historyRef.current.length > 0;
   const canRedo = historyTick >= 0 && redoRef.current.length > 0;
+
+  nodesRef.current = nodes;
 
   const markDirty = useCallback(() => {
     dirtyRef.current = true;
@@ -760,6 +782,8 @@ export function TopologyPage() {
   const treeQuery = useQuery({
     queryKey: queryKeys.topologyTree,
     queryFn: fetchTopologyTree,
+    refetchInterval: liveSync ? 5000 : false,
+    refetchIntervalInBackground: false,
   });
 
   useEffect(() => {
@@ -777,6 +801,8 @@ export function TopologyPage() {
     queryKey: queryKeys.topologyGraph(mapId),
     queryFn: () => fetchTopologyGraph(mapId),
     enabled: Boolean(mapId),
+    refetchInterval: liveSync && mapId ? 3000 : false,
+    refetchIntervalInBackground: false,
   });
 
   useEffect(() => {
@@ -915,24 +941,41 @@ export function TopologyPage() {
 
   useEffect(() => {
     appliedMapIdRef.current = "";
+    appliedGraphFpRef.current = "";
   }, [mapId]);
 
   useEffect(() => {
     if (!canvasMode) return;
     if (!mapId || !graphQuery.data) return;
-    // Only hydrate React Flow from server when entering a map — never clobber unsaved local positions.
-    if (appliedMapIdRef.current === mapId) return;
-    appliedMapIdRef.current = mapId;
+    const entering = appliedMapIdRef.current !== mapId;
+    // Live poll while on the same map: apply server graph only if no unsaved local edits.
+    if (!entering && dirtyRef.current) return;
+
+    const fp = graphFingerprint(graphQuery.data);
+    if (!entering && fp === appliedGraphFpRef.current) return;
+
+    const selectedIds = entering
+      ? new Set<string>()
+      : new Set(nodesRef.current.filter((n) => n.selected).map((n) => n.id));
     const { rfNodes, rfEdges } = graphToFlow(graphQuery.data.nodes, graphQuery.data.edges, edgeDefaults);
+    const nextNodes =
+      selectedIds.size > 0
+        ? rfNodes.map((n) => (selectedIds.has(n.id) ? { ...n, selected: true } : n))
+        : rfNodes;
+
     historyLockRef.current = true;
-    setNodes(rfNodes);
+    setNodes(nextNodes);
     setEdges(rfEdges);
-    historyRef.current = [];
-    redoRef.current = [];
-    clearDirty();
-    bumpHistory();
+    appliedGraphFpRef.current = fp;
+    if (entering) {
+      appliedMapIdRef.current = mapId;
+      historyRef.current = [];
+      redoRef.current = [];
+      clearDirty();
+      bumpHistory();
+      window.setTimeout(() => rfRef.current?.fitView({ padding: 0.2 }), 50);
+    }
     historyLockRef.current = false;
-    window.setTimeout(() => rfRef.current?.fitView({ padding: 0.2 }), 50);
   }, [canvasMode, mapId, graphQuery.data, edgeDefaults, setNodes, setEdges, clearDirty, bumpHistory]);
 
   useEffect(() => {
@@ -2119,17 +2162,29 @@ export function TopologyPage() {
     <div className={`topo-page${sidebarCollapsed ? " is-sidebar-collapsed" : ""}`}>
       <aside className="topo-sidebar" aria-label={t("topology.maps")}>
         {sidebarCollapsed ? (
-          <button
-            type="button"
-            className="topo-sidebar__rail"
-            title={t("topology.expandSidebar")}
-            aria-label={t("topology.expandSidebar")}
-            onClick={() => setSidebarCollapsed(false)}
-          >
-            <span className="topo-sidebar__rail-icon" aria-hidden="true">
-              <SidebarFoldIcon expand />
-            </span>
-          </button>
+          <div className="topo-sidebar__rail-wrap">
+            <button
+              type="button"
+              className="topo-sidebar__rail"
+              title={t("topology.expandSidebar")}
+              aria-label={t("topology.expandSidebar")}
+              onClick={() => setSidebarCollapsed(false)}
+            >
+              <span className="topo-sidebar__rail-icon" aria-hidden="true">
+                <SidebarFoldIcon expand />
+              </span>
+            </button>
+            <button
+              type="button"
+              className={`topo-sidebar__rail topo-sidebar__rail--live${liveSync ? " is-on" : ""}`}
+              aria-pressed={liveSync}
+              title={t("topology.liveSyncHint")}
+              aria-label={liveSync ? t("topology.liveSyncOn") : t("topology.liveSync")}
+              onClick={() => setLiveSync((v) => !v)}
+            >
+              <span className="topo-sidebar__rail-live-dot" aria-hidden="true" />
+            </button>
+          </div>
         ) : (
           <>
             <div className="topo-sidebar__section">
@@ -2165,6 +2220,17 @@ export function TopologyPage() {
                     onClick={() => setSidebarCollapsed(true)}
                   >
                     <SidebarFoldIcon />
+                  </button>
+                </div>
+                <div className="topo-sidebar__live">
+                  <button
+                    type="button"
+                    className={`btn btn--sm${liveSync ? "" : " btn--ghost"}`}
+                    aria-pressed={liveSync}
+                    title={t("topology.liveSyncHint")}
+                    onClick={() => setLiveSync((v) => !v)}
+                  >
+                    {liveSync ? t("topology.liveSyncOn") : t("topology.liveSync")}
                   </button>
                 </div>
                 {treeSearchOpen && treeNeQuery.trim() ? (
@@ -2905,6 +2971,15 @@ export function TopologyPage() {
                       )}
                 </p>
               </div>
+              <button
+                type="button"
+                className={`btn btn--sm${liveSync ? "" : " btn--ghost"}`}
+                aria-pressed={liveSync}
+                title={t("topology.liveSyncHint")}
+                onClick={() => setLiveSync((v) => !v)}
+              >
+                {liveSync ? t("topology.liveSyncOn") : t("topology.liveSync")}
+              </button>
             </div>
             {!activeRegion ? (
               regions.length === 0 ? (

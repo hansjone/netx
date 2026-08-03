@@ -234,6 +234,29 @@ class AuthApiTests(unittest.TestCase):
         r = self.client.get("/v1/probe", headers={"Authorization": f"Bearer {api_tok}"})
         self.assertEqual(r.status_code, 200)
 
+    def test_api_token_with_scopes(self) -> None:
+        token = self._login()
+        created = self.client.post(
+            "/v1/api-tokens",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "name": "topo-write",
+                "expires_in_days": 30,
+                "scopes": ["ne:read", "ne:write", "alarms:read"],
+            },
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        body = created.json()["token"]
+        self.assertEqual(sorted(body.get("scopes") or []), ["alarms:read", "ne:read", "ne:write"])
+        api_tok = body["token"]
+        me = self.client.get("/v1/auth/me", headers={"Authorization": f"Bearer {api_tok}"})
+        self.assertEqual(me.status_code, 200, me.text)
+        granted = sorted(me.json().get("scopes") or [])
+        self.assertIn("ne:write", granted)
+        self.assertIn("ne:read", granted)
+        # Token cannot escalate beyond listed scopes (admin owner still capped by token list).
+        self.assertNotIn("admin:users", granted)
+
 
 if __name__ == "__main__":
     unittest.main()

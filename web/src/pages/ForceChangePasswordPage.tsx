@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import { useAuth } from "../auth/AuthContext";
 import { useI18n } from "../i18n";
 import { apiPost } from "../services/api";
+import { LoginShell } from "./LoginShell";
 
 export function ForceChangePasswordPage() {
   const { t } = useI18n();
@@ -42,26 +43,24 @@ export function ForceChangePasswordPage() {
   };
 
   return (
-    <div className="login-page">
-      <div className="login-page__atmosphere" aria-hidden="true">
-        <span className="login-page__orb login-page__orb--a" />
-        <span className="login-page__orb login-page__orb--b" />
-        <span className="login-page__grid" />
-      </div>
+    <LoginShell>
       <form className="login-card" onSubmit={(e) => void onSubmit(e)}>
-        <div className="login-card__brand" aria-label="NETX">
-          NETX
+        <div className="login-card__head">
+          <h1 className="login-card__title">{t("auth.forceChangeTitle")}</h1>
+          <div className="login-card__brand" aria-label="NETX">
+            NETX
+          </div>
         </div>
-        <h1 className="login-card__title">{t("auth.forceChangeTitle")}</h1>
         <p className="login-card__hint">
           {t("auth.forceChangeHint", { user: user?.username || "admin" })}
         </p>
         <label className="login-card__label">
-          {t("auth.oldPassword")}
+          <span className="login-card__sr">{t("auth.oldPassword")}</span>
           <input
             type="password"
             autoComplete="current-password"
             autoFocus
+            placeholder={t("auth.oldPassword")}
             value={oldPassword}
             onChange={(e) => setOldPassword(e.target.value)}
             disabled={busy}
@@ -69,10 +68,11 @@ export function ForceChangePasswordPage() {
           />
         </label>
         <label className="login-card__label">
-          {t("auth.newPassword")}
+          <span className="login-card__sr">{t("auth.newPassword")}</span>
           <input
             type="password"
             autoComplete="new-password"
+            placeholder={t("auth.newPassword")}
             value={newPassword}
             onChange={(e) => setNewPassword(e.target.value)}
             disabled={busy}
@@ -81,10 +81,11 @@ export function ForceChangePasswordPage() {
           />
         </label>
         <label className="login-card__label">
-          {t("auth.confirmPassword")}
+          <span className="login-card__sr">{t("auth.confirmPassword")}</span>
           <input
             type="password"
             autoComplete="new-password"
+            placeholder={t("auth.confirmPassword")}
             value={confirm}
             onChange={(e) => setConfirm(e.target.value)}
             disabled={busy}
@@ -92,20 +93,23 @@ export function ForceChangePasswordPage() {
             minLength={6}
           />
         </label>
-        {error ? <div className="login-card__error">{error}</div> : null}
+        {error ? (
+          <div className="login-card__error" role="alert">
+            {error}
+          </div>
+        ) : null}
         <button type="submit" className="login-card__submit" disabled={busy}>
           {busy ? t("auth.savingPassword") : t("auth.savePassword")}
         </button>
         <button
           type="button"
-          className="login-card__submit"
-          style={{ background: "#64748b" }}
+          className="login-card__submit login-card__submit--ghost"
           disabled={busy}
           onClick={() => void logout()}
         >
           {t("auth.logout")}
         </button>
       </form>
-    </div>
+    </LoginShell>
   );
 }

@@ -32,9 +32,11 @@ dependencies = [
 
 [project.optional-dependencies]
 mcp = ["netx-mcp @ file:packages/netx-mcp"]
+mcp-topology = ["netx-topology-mcp @ file:packages/netx-topology-mcp"]
 
 [project.scripts]
 netx-mcp = "netx_mcp.server:main"
+netx-topology-mcp = "netx_topology_mcp.server:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

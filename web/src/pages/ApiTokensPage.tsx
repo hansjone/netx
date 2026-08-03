@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../auth/AuthContext";
 import { useI18n } from "../i18n";
@@ -11,6 +11,7 @@ type TokenRow = {
   name: string;
   user_id: string;
   username: string;
+  scopes?: string[];
   created_at: string | null;
   expires_at: string | null;
   last_used_at: string | null;
@@ -23,7 +24,33 @@ type UserRow = {
   id: string;
   username: string;
   role: string;
+  scopes?: string[];
   is_active: boolean;
+};
+
+const ALL_SCOPE_KEYS = [
+  "alarms:read",
+  "ne:read",
+  "ne:write",
+  "ne:exec",
+  "webcrt:session",
+  "sql:query",
+  "admin:users",
+  "ops:write",
+] as const;
+
+const MCP_DEFAULT_SCOPES = ["alarms:read", "ne:read", "ne:exec"] as const;
+const MCP_TOPO_WRITE_SCOPES = ["alarms:read", "ne:read", "ne:exec", "ne:write"] as const;
+
+const SCOPE_LABEL_KEYS: Record<(typeof ALL_SCOPE_KEYS)[number], string> = {
+  "alarms:read": "auth.scopeAlarmsRead",
+  "ne:read": "auth.scopeNeRead",
+  "ne:write": "auth.scopeNeWrite",
+  "ne:exec": "auth.scopeNeExec",
+  "webcrt:session": "auth.scopeWebcrt",
+  "sql:query": "auth.scopeSql",
+  "admin:users": "auth.scopeAdminUsers",
+  "ops:write": "auth.scopeOpsWrite",
 };
 
 const EXPIRY_OPTIONS = [
@@ -40,14 +67,21 @@ function tokenStatusClass(row: TokenRow): string {
   return "pt-list-status--ok";
 }
 
+function intersectScopes(available: string[], desired: readonly string[]): string[] {
+  const allow = new Set(available);
+  return desired.filter((s) => allow.has(s));
+}
+
 export function ApiTokensPage() {
   const { t } = useI18n();
-  const { ready, user, isAdmin } = useAuth();
+  const { ready, user, isAdmin, scopes: myScopes } = useAuth();
   const { showOk, showError } = useToast();
   const qc = useQueryClient();
   const [name, setName] = useState("mcp");
   const [expiresInDays, setExpiresInDays] = useState(90);
   const [ownerUserId, setOwnerUserId] = useState("");
+  const [inheritScopes, setInheritScopes] = useState(false);
+  const [selectedScopes, setSelectedScopes] = useState<string[]>([...MCP_DEFAULT_SCOPES]);
   const [createdPlain, setCreatedPlain] = useState("");
 
   const tokensQuery = useQuery({
@@ -62,12 +96,32 @@ export function ApiTokensPage() {
     enabled: ready && isAdmin,
   });
 
+  const items = useMemo(() => tokensQuery.data?.items || [], [tokensQuery.data]);
+  const users = useMemo(() => usersQuery.data?.items || [], [usersQuery.data]);
+
+  const availableScopes = useMemo(() => {
+    if (ownerUserId) {
+      const owner = users.find((u) => u.id === ownerUserId);
+      return [...(owner?.scopes || [])].sort();
+    }
+    return [...(myScopes || [])].sort();
+  }, [ownerUserId, users, myScopes]);
+
+  useEffect(() => {
+    setSelectedScopes((prev) => {
+      const next = prev.filter((s) => availableScopes.includes(s));
+      if (next.length) return next;
+      return intersectScopes(availableScopes, MCP_DEFAULT_SCOPES);
+    });
+  }, [availableScopes]);
+
   const createMut = useMutation({
     mutationFn: () =>
       apiPost<{ token: TokenRow & { token: string } }>("/v1/api-tokens", {
         name: name.trim() || "mcp",
         expires_in_days: expiresInDays,
         user_id: isAdmin && ownerUserId ? ownerUserId : undefined,
+        scopes: inheritScopes ? [] : selectedScopes,
       }),
     onSuccess: async (data) => {
       setCreatedPlain(data.token.token);
@@ -86,11 +140,12 @@ export function ApiTokensPage() {
     onError: (e) => showError(String(e instanceof Error ? e.message : e)),
   });
 
-  const items = useMemo(() => tokensQuery.data?.items || [], [tokensQuery.data]);
-  const users = useMemo(() => usersQuery.data?.items || [], [usersQuery.data]);
-
   const onCreate = (e: FormEvent) => {
     e.preventDefault();
+    if (!inheritScopes && selectedScopes.length === 0) {
+      showError(t("auth.scopesRequired"));
+      return;
+    }
     setCreatedPlain("");
     createMut.mutate();
   };
@@ -104,6 +159,22 @@ export function ApiTokensPage() {
     }
   };
 
+  const toggleScope = (scope: string) => {
+    setSelectedScopes((prev) =>
+      prev.includes(scope) ? prev.filter((s) => s !== scope) : [...prev, scope].sort(),
+    );
+  };
+
+  const applyPreset = (desired: readonly string[]) => {
+    setInheritScopes(false);
+    setSelectedScopes(intersectScopes(availableScopes, desired));
+  };
+
+  const formatScopes = (scopes: string[] | undefined) => {
+    if (!scopes || scopes.length === 0) return t("auth.scopesInheritShort");
+    return scopes.join(", ");
+  };
+
   return (
     <div className="page-stack system-page">
       <section className="panel">
@@ -113,43 +184,91 @@ export function ApiTokensPage() {
         <p className="panel__hint">{t("auth.apiKeysHint")}</p>
 
         <div className="pt-list">
-          <form className="filter-inline" onSubmit={onCreate}>
-            <input
-              placeholder={t("auth.tokenName")}
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              required
-            />
-            <select
-              value={expiresInDays}
-              onChange={(e) => setExpiresInDays(Number(e.target.value))}
-              aria-label={t("auth.expiresIn")}
-            >
-              {EXPIRY_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {t(opt.labelKey)}
-                </option>
-              ))}
-            </select>
-            {isAdmin ? (
+          <form className="token-create" onSubmit={onCreate}>
+            <div className="filter-inline">
+              <input
+                placeholder={t("auth.tokenName")}
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                required
+              />
               <select
-                value={ownerUserId}
-                onChange={(e) => setOwnerUserId(e.target.value)}
-                aria-label={t("auth.tokenOwner")}
+                value={expiresInDays}
+                onChange={(e) => setExpiresInDays(Number(e.target.value))}
+                aria-label={t("auth.expiresIn")}
               >
-                <option value="">{t("auth.tokenOwnerSelf", { user: user?.username || "" })}</option>
-                {users
-                  .filter((u) => u.is_active)
-                  .map((u) => (
-                    <option key={u.id} value={u.id}>
-                      {u.username} ({u.role})
-                    </option>
-                  ))}
+                {EXPIRY_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {t(opt.labelKey)}
+                  </option>
+                ))}
               </select>
-            ) : null}
-            <button type="submit" disabled={createMut.isPending}>
-              {t("auth.createToken")}
-            </button>
+              {isAdmin ? (
+                <select
+                  value={ownerUserId}
+                  onChange={(e) => setOwnerUserId(e.target.value)}
+                  aria-label={t("auth.tokenOwner")}
+                >
+                  <option value="">{t("auth.tokenOwnerSelf", { user: user?.username || "" })}</option>
+                  {users
+                    .filter((u) => u.is_active)
+                    .map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {u.username} ({u.role})
+                      </option>
+                    ))}
+                </select>
+              ) : null}
+              <button type="submit" disabled={createMut.isPending}>
+                {t("auth.createToken")}
+              </button>
+            </div>
+
+            <div className="token-scopes">
+              <div className="token-scopes__head">
+                <strong>{t("auth.scopesTitle")}</strong>
+                <span className="panel__hint" style={{ margin: 0 }}>
+                  {t("auth.scopesHint")}
+                </span>
+              </div>
+              <div className="token-scopes__presets">
+                <button type="button" className="btn--ghost btn--sm" onClick={() => applyPreset(MCP_DEFAULT_SCOPES)}>
+                  {t("auth.scopePresetMcp")}
+                </button>
+                <button
+                  type="button"
+                  className="btn--ghost btn--sm"
+                  onClick={() => applyPreset(MCP_TOPO_WRITE_SCOPES)}
+                  disabled={!availableScopes.includes("ne:write")}
+                >
+                  {t("auth.scopePresetTopoWrite")}
+                </button>
+              </div>
+              <label className="token-scopes__inherit">
+                <input
+                  type="checkbox"
+                  checked={inheritScopes}
+                  onChange={(e) => setInheritScopes(e.target.checked)}
+                />
+                {t("auth.scopesInherit")}
+              </label>
+              <div className={`token-scopes__grid${inheritScopes ? " is-disabled" : ""}`}>
+                {ALL_SCOPE_KEYS.filter((s) => availableScopes.includes(s)).map((scope) => (
+                  <label key={scope}>
+                    <input
+                      type="checkbox"
+                      disabled={inheritScopes}
+                      checked={selectedScopes.includes(scope)}
+                      onChange={() => toggleScope(scope)}
+                    />
+                    {t(SCOPE_LABEL_KEYS[scope])}
+                  </label>
+                ))}
+                {!availableScopes.length ? (
+                  <span className="muted">{t("auth.scopesNoneAvailable")}</span>
+                ) : null}
+              </div>
+            </div>
           </form>
 
           {createdPlain ? (
@@ -177,6 +296,7 @@ export function ApiTokensPage() {
                   <tr>
                     <th>{t("auth.tokenName")}</th>
                     <th>{t("auth.tokenOwner")}</th>
+                    <th>{t("auth.scopesCol")}</th>
                     <th>{t("auth.colTime")}</th>
                     <th>{t("auth.expiresAt")}</th>
                     <th>{t("auth.lastUsed")}</th>
@@ -189,6 +309,9 @@ export function ApiTokensPage() {
                     <tr key={row.id}>
                       <td className="pt-list-task-name">{row.name}</td>
                       <td>{row.username || row.user_id}</td>
+                      <td className="token-scopes-cell" title={formatScopes(row.scopes)}>
+                        {formatScopes(row.scopes)}
+                      </td>
                       <td className="pt-list-time">
                         {row.created_at ? formatSystemTime(row.created_at) : t("common.empty")}
                       </td>

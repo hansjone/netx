@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "netx-topology-mcp"
+version = "0.1.0"
+description = "stdio MCP server for netx topology canvas (views / fabric / draw)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+  "httpx>=0.27.0",
+]
+
+[project.scripts]
+netx-topology-mcp = "netx_topology_mcp.server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

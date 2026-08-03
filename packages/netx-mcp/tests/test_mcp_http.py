@@ -15,11 +15,12 @@ from netx_mcp.server import _fetch_scopes
 
 def test_http_mcp_tool_list_has_expected_tools() -> None:
     names = [str(t.get("name") or "") for t in HTTP_MCP_TOOLS]
-    assert len(names) == 14
+    assert len(names) == 13
     assert "queryUmeAlarms" in names
     assert "queryUmeAlarmsRaw" in names
     assert "execManagedNe" in names
     assert "listCliTargets" in names
+    assert "queryTopologyEdges" not in names
     exec_tool = next(t for t in HTTP_MCP_TOOLS if t.get("name") == "execManagedNe")
     assert exec_tool["inputSchema"]["properties"]["commands"]["maxItems"] >= 5
 
@@ -105,6 +106,11 @@ def test_tools_for_scopes_filters_by_granted() -> None:
 
 
 def test_stdio_initialize_and_tools_list() -> None:
+    import os
+
+    env = os.environ.copy()
+    env["NETX_API_URL"] = "http://127.0.0.1:1"
+    env.pop("NETX_API_TOKEN", None)
     proc = subprocess.Popen(
         [sys.executable, "-m", "netx_mcp"],
         stdin=subprocess.PIPE,
@@ -113,6 +119,7 @@ def test_stdio_initialize_and_tools_list() -> None:
         text=True,
         encoding="utf-8",
         errors="replace",
+        env=env,
     )
     assert proc.stdin and proc.stdout
     init_req = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}) + "\n"
@@ -129,7 +136,7 @@ def test_stdio_initialize_and_tools_list() -> None:
     list_resp = json.loads(list_line)
     assert "error" not in list_resp, list_resp
     tools = list_resp["result"]["tools"]
-    assert len(tools) == 14
+    assert len(tools) == 13
 
     proc.terminate()
     proc.wait(timeout=5)
