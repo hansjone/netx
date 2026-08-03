@@ -43,8 +43,15 @@ export function ForceChangePasswordPage() {
 
   return (
     <div className="login-page">
+      <div className="login-page__atmosphere" aria-hidden="true">
+        <span className="login-page__orb login-page__orb--a" />
+        <span className="login-page__orb login-page__orb--b" />
+        <span className="login-page__grid" />
+      </div>
       <form className="login-card" onSubmit={(e) => void onSubmit(e)}>
-        <div className="login-card__brand">NETX</div>
+        <div className="login-card__brand" aria-label="NETX">
+          NETX
+        </div>
         <h1 className="login-card__title">{t("auth.forceChangeTitle")}</h1>
         <p className="login-card__hint">
           {t("auth.forceChangeHint", { user: user?.username || "admin" })}

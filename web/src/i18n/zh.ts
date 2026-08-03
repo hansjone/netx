@@ -437,7 +437,7 @@ const zh = {
     langEn: "English",
   },
   auth: {
-    loginTitle: "登录 NETX",
+    loginTitle: "登录",
     username: "用户名",
     password: "密码",
     login: "登录",

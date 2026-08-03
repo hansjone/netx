@@ -440,7 +440,7 @@ const en = {
     langEn: "English",
   },
   auth: {
-    loginTitle: "Sign in to NETX",
+    loginTitle: "Sign in",
     username: "Username",
     password: "Password",
     login: "Sign in",

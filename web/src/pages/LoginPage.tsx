@@ -32,8 +32,15 @@ export function LoginPage() {
 
   return (
     <div className="login-page">
+      <div className="login-page__atmosphere" aria-hidden="true">
+        <span className="login-page__orb login-page__orb--a" />
+        <span className="login-page__orb login-page__orb--b" />
+        <span className="login-page__grid" />
+      </div>
       <form className="login-card" onSubmit={(e) => void onSubmit(e)}>
-        <div className="login-card__brand">NETX</div>
+        <div className="login-card__brand" aria-label="NETX">
+          NETX
+        </div>
         <h1 className="login-card__title">{t("auth.loginTitle")}</h1>
         <label className="login-card__label">
           {t("auth.username")}
@@ -55,7 +62,11 @@ export function LoginPage() {
             disabled={busy || !ready}
           />
         </label>
-        {error ? <div className="login-card__error">{error}</div> : null}
+        {error ? (
+          <div className="login-card__error" role="alert">
+            {error}
+          </div>
+        ) : null}
         <button type="submit" className="login-card__submit" disabled={busy || !ready || !password}>
           {busy ? t("auth.loggingIn") : t("auth.login")}
         </button>
