@@ -438,7 +438,6 @@ const zh = {
   },
   auth: {
     loginTitle: "登录 NETX",
-    loginHint: "使用本地账号访问运维平台",
     username: "用户名",
     password: "密码",
     login: "登录",

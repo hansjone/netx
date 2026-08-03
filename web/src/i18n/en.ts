@@ -441,7 +441,6 @@ const en = {
   },
   auth: {
     loginTitle: "Sign in to NETX",
-    loginHint: "Use a local account to access the ops platform",
     username: "Username",
     password: "Password",
     login: "Sign in",
