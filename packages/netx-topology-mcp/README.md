@@ -33,7 +33,7 @@ pip install "git+https://github.com/hansjone/netx.git#subdirectory=packages/netx
 | 类别 | 工具 |
 |------|------|
 | 树/画布 | `getTopologyTree`, `listTopologyViews`, `getTopologyView`, `createTopologyView` |
-| 画图 | `addTopologyViewNodes`（仅已有 `fabric_node_ids`）, `removeTopologyViewNodes`, `updateTopologyViewPositions`, `projectTopologyNeighbors` |
+| 画图 | `addTopologyViewNodes` / `remove…` / `update…Positions`（**优先筛选**，API 自选 id；也可 id 列表）, `projectTopologyNeighbors` |
 | Fabric 只读 | `getTopologyFabricSummary`, `listTopologyFabricNodes`, `searchTopologyFabricNodes`, `queryTopologyNeighborhood`, `queryTopologyEdges` |
 
 **安全约束：** MCP **不会**创建 Fabric 占位节点、**不会**写手工链路；画布只能引用已存在的 fabric 节点。

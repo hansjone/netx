@@ -1,9 +1,7 @@
 ---
 name: netx-topology
 description: >-
-  用 netx-topology MCP 查询 Fabric 链路、建拓扑画布并安全摆点（不污染 Fabric）。
-  触发：画拓扑/拓扑图/拓扑画布、LLDP 邻居/链路、Fabric 网元搜索、createTopologyView /
-  addTopologyViewNodes、netx-topology、看着 MCP 画图。须先读本 skill 再调 MCP。
+  用 netx-topology MCP 查链路、画拓扑（不污染 Fabric）。触发：画拓扑、LLDP、Fabric、netx-topology。先读再调。
 user-invocable: true
 disable-model-invocation: false
 ---
@@ -16,47 +14,45 @@ disable-model-invocation: false
 
 ## 硬规则
 
-1. **先读后写**：任何建图/摆点前先 `getTopologyTree`；改已有图前先 `getTopologyView`。
-2. **只放已有 Fabric 节点**：`addTopologyViewNodes` **仅** `fabric_node_ids`。禁止臆造 id；禁止试图传 `managed_ne_ids` / `ume_ne_ids`（会被拒）。
-3. **不污染 Fabric**：本 MCP **不能**手工建链、不能 `populate`、不能删 Fabric / 整图。链路来自已有 LLDP/手工边；邻居用 `projectTopologyNeighbors`。
-4. **写权限**：画图工具要 token 含 `ne:write`。若 `tools/list` 没有写工具 → 停下来告诉用户去 **系统 → API Key** 用「MCP + 拓扑写」签发，并配置 `NETX_API_TOKEN` 后 Sync Tools。勿假装已画成功。
-5. **无文件夹则停**：`createTopologyView` 需要已有 `folder_id`（region）。树里没有可用 folder 时，请用户先在网页建区域，或改挂到已有 region；**MCP 不能新建 region/folder**。
-6. **批量克制**：单次 `addTopologyViewNodes` 控制在合理数量（优先先搜再加）；大图用多次调用 + `projectTopologyNeighbors` 扩展。
+1. **先读后写**：任何建图/摆点前先 `getTopologyTree`；改已有图前可 `getTopologyView`（大图慎拉整图）。
+2. **筛选交给 API**：加/挪/删优先传 `keyword` / `role` / `vendor` / `link_status`（加节点再用 `limit`/`offset`）。**不要**先 list 全量再回传成千上万 id。
+3. **只动已有 Fabric**：禁止 `managed_ne_ids` / `ume_ne_ids`；禁止臆造 fabric id。
+4. **不污染 Fabric**：不能手工建链、不能 populate、不能删 Fabric / 整图。邻居用 `projectTopologyNeighbors`。
+5. **写权限**：需要 `ne:write`。tools/list 没有写工具 → 停，让用户用「MCP + 拓扑写」签发 Token。
+6. **无 folder 则停**：`createTopologyView` 需要已有 `folder_id`；MCP 不能新建 region。
+7. **单画布硬顶 2000**：满了 `truncated` / 触顶 → 新建另一张画布继续；全网五万设备靠多画布切片。
 
 ## 推荐流水线（从零画一张图）
 
 ```
-1 getTopologyTree          → 选 folder_id（region）
-2 searchTopologyFabricNodes / listTopologyFabricNodes → 拿到 fabric_node_ids
-3 createTopologyView       → name + folder_id → 得到 view_id
-4 addTopologyViewNodes     → view_id + fabric_node_ids（layout=grid）
-5 projectTopologyNeighbors → 把已有 LLDP 邻居投影上画布（可重复）
-6 （可选）updateTopologyViewPositions → 微调坐标
-7 getTopologyView          → 向用户确认节点/边数量
+1 getTopologyTree                         → folder_id
+2 createTopologyView                      → view_id
+3 addTopologyViewNodes(keyword=…, limit)  → 看 added / next_offset，循环 offset 直到无更多或满 cap
+4 projectTopologyNeighbors                → 可选
+5 updateTopologyViewPositions(layout=grid|offset|stack, keyword=…)  → API 自己筛并摆
+6 （少量微调才用 positions[]）
 ```
 
-查链路不画图时：`queryTopologyEdges`（带 `node_id` 看 `peer_count`）或 `queryTopologyNeighborhood`。
+查链路不画图：`queryTopologyEdges` / `queryTopologyNeighborhood`。
 
 ## 工具速查
 
 | 目的 | 工具 |
 |------|------|
-| 树 / region / 已有画布 | `getTopologyTree`, `listTopologyViews` |
-| 读一图画布 | `getTopologyView` |
-| 新建画布 | `createTopologyView` |
-| 摆点 / 移除（仅画布） | `addTopologyViewNodes`, `removeTopologyViewNodes` |
-| 摆坐标 | `updateTopologyViewPositions` |
-| 投影 LLDP 邻居 | `projectTopologyNeighbors` |
-| 搜 Fabric | `searchTopologyFabricNodes`, `listTopologyFabricNodes` |
-| 汇总 / 邻接 / 边 | `getTopologyFabricSummary`, `queryTopologyNeighborhood`, `queryTopologyEdges` |
+| 树 / 画布 | `getTopologyTree`, `listTopologyViews`, `getTopologyView`, `createTopologyView` |
+| 筛选批量加 | `addTopologyViewNodes`（filters + limit/offset） |
+| 筛选批量挪 | `updateTopologyViewPositions`（layout + filters） |
+| 筛选批量删 | `removeTopologyViewNodes`（filters） |
+| 投影邻居 | `projectTopologyNeighbors` |
+| Fabric 读 | `search…` / `list…` / `queryTopologyEdges` / `…Neighborhood` / summary |
 
 ## 对人说清楚
 
-- 网页观看：拓扑页左侧或浏览区开 **「实时同步」**（默认关）；**不必先打开某张图**也能看到新建画布。
-- 回报时给出：`view_id`、画布名、folder、节点数；写失败则原样报 scope/API 错误。
+- 网页观看：拓扑页开 **「实时同步」**（默认关）。
+- 回报：`view_id`、画布名、`added`/`updated`/`removed`、是否 `truncated`/`next_offset`。
 
 ## 不要做
 
-- 不要用 `netx`（告警 MCP）冒充拓扑写接口。
-- 不要为「画上设备」去改 managed-NE / 造假 Fabric。
+- 不要用 `netx` 告警 MCP 冒充拓扑写。
+- 不要为画图去造 Fabric / 改 managed-NE。
 - 不要在未确认 folder/view 时连环盲写。

@@ -61,9 +61,11 @@ from .topology_schemas import (
     TopologyViewUpdate,
     ViewEdgeOut,
     ViewEdgeStylePatch,
+    ViewMutationOut,
     ViewNodeIn,
     ViewNodeOut,
     ViewNodesAdd,
+    ViewNodesRemove,
     ViewPopulateOut,
     ViewPopulateRequest,
     ViewPositionsPatch,
@@ -308,57 +310,319 @@ def _place_fabric_ids_on_view(
     return added
 
 
+def _has_fabric_filter(
+    *,
+    keyword: str = "",
+    role: str = "",
+    vendor: str = "",
+    link_status: str = "",
+) -> bool:
+    return bool(
+        str(keyword or "").strip()
+        or str(role or "").strip()
+        or str(vendor or "").strip()
+        or str(link_status or "").strip()
+    )
+
+
+def _apply_fabric_filters(
+    q: Any,
+    *,
+    keyword: str = "",
+    role: str = "",
+    vendor: str = "",
+    link_status: str = "",
+) -> Any:
+    kw = str(keyword or "").strip()
+    if kw:
+        like = f"%{kw}%"
+        q = q.filter(
+            or_(
+                TopoFabricNode.name.ilike(like),
+                TopoFabricNode.ip.ilike(like),
+                TopoFabricNode.managed_ne_id.ilike(like),
+                TopoFabricNode.ume_ne_id.ilike(like),
+            )
+        )
+    role_v = str(role or "").strip().lower()
+    if role_v:
+        q = q.filter(TopoFabricNode.role == role_v)
+    vendor_v = str(vendor or "").strip()
+    if vendor_v:
+        q = q.filter(TopoFabricNode.vendor.ilike(f"%{vendor_v}%"))
+    ls = str(link_status or "").strip().lower()
+    if ls == "orphaned":
+        q = q.filter(
+            or_(TopoFabricNode.managed_ne_id.is_(None), TopoFabricNode.managed_ne_id == ""),
+            or_(TopoFabricNode.ume_ne_id.is_(None), TopoFabricNode.ume_ne_id == ""),
+        )
+    elif ls == "linked":
+        q = q.filter(
+            or_(
+                and_(TopoFabricNode.managed_ne_id.isnot(None), TopoFabricNode.managed_ne_id != ""),
+                and_(TopoFabricNode.ume_ne_id.isnot(None), TopoFabricNode.ume_ne_id != ""),
+            )
+        )
+    elif ls == "managed":
+        q = q.filter(
+            and_(TopoFabricNode.managed_ne_id.isnot(None), TopoFabricNode.managed_ne_id != ""),
+            or_(TopoFabricNode.ume_ne_id.is_(None), TopoFabricNode.ume_ne_id == ""),
+        )
+    elif ls == "ume":
+        q = q.filter(
+            and_(TopoFabricNode.ume_ne_id.isnot(None), TopoFabricNode.ume_ne_id != ""),
+            or_(TopoFabricNode.managed_ne_id.is_(None), TopoFabricNode.managed_ne_id == ""),
+        )
+    elif ls == "both":
+        q = q.filter(
+            and_(TopoFabricNode.managed_ne_id.isnot(None), TopoFabricNode.managed_ne_id != ""),
+            and_(TopoFabricNode.ume_ne_id.isnot(None), TopoFabricNode.ume_ne_id != ""),
+        )
+    return q
+
+
+def select_fabric_ids(
+    db: Session,
+    *,
+    keyword: str = "",
+    role: str = "",
+    vendor: str = "",
+    link_status: str = "",
+    offset: int = 0,
+    limit: int = 500,
+) -> tuple[list[str], int]:
+    """Server-side fabric id selection for bulk add (paged)."""
+    lim = max(1, min(VIEW_GRAPH_NODE_HARD_CAP, int(limit or 500)))
+    off = max(0, int(offset or 0))
+    q = _apply_fabric_filters(
+        db.query(TopoFabricNode),
+        keyword=keyword,
+        role=role,
+        vendor=vendor,
+        link_status=link_status,
+    )
+    total = int(q.count())
+    rows = q.order_by(TopoFabricNode.name.asc()).offset(off).limit(lim).all()
+    return [str(r.id) for r in rows], total
+
+
+def select_view_fabric_ids(
+    db: Session,
+    view_id: str,
+    *,
+    fabric_node_ids: list[str] | None = None,
+    keyword: str = "",
+    role: str = "",
+    vendor: str = "",
+    link_status: str = "",
+) -> list[str]:
+    """Select fabric ids already placed on a view, optionally narrowed by filter/ids."""
+    explicit = [str(x).strip() for x in (fabric_node_ids or []) if str(x).strip()]
+    q = (
+        db.query(TopoFabricNode.id)
+        .join(TopoViewNode, TopoViewNode.fabric_node_id == TopoFabricNode.id)
+        .filter(TopoViewNode.view_id == view_id)
+    )
+    if explicit:
+        q = q.filter(TopoFabricNode.id.in_(explicit))
+    if _has_fabric_filter(keyword=keyword, role=role, vendor=vendor, link_status=link_status):
+        q = _apply_fabric_filters(
+            q, keyword=keyword, role=role, vendor=vendor, link_status=link_status
+        )
+    rows = q.order_by(TopoFabricNode.name.asc()).all()
+    return [str(r[0] if isinstance(r, tuple) else r.id if hasattr(r, "id") else r) for r in rows]
+
+
+def _layout_coords(
+    count: int,
+    *,
+    layout: str,
+    origin_x: float,
+    origin_y: float,
+    gap_x: float,
+    gap_y: float,
+    cols: int,
+) -> list[tuple[float, float]]:
+    kind = str(layout or "grid").strip().lower() or "grid"
+    if count <= 0:
+        return []
+    if kind == "stack":
+        return [(float(origin_x), float(origin_y) + i * float(gap_y)) for i in range(count)]
+    c = int(cols or 0)
+    if c <= 0:
+        c = max(1, int(count**0.5) or 1)
+    return [
+        (float(origin_x) + (i % c) * float(gap_x), float(origin_y) + (i // c) * float(gap_y))
+        for i in range(count)
+    ]
+
+
+def _view_node_count(db: Session, view_id: str) -> int:
+    return int(
+        db.query(func.count(TopoViewNode.id)).filter(TopoViewNode.view_id == view_id).scalar() or 0
+    )
+
+
+def _mutation_result(
+    db: Session,
+    view_id: str,
+    *,
+    max_nodes: int,
+    return_graph: bool,
+    matched: int = 0,
+    added: int = 0,
+    updated: int = 0,
+    removed: int = 0,
+    skipped_existing: int = 0,
+    skipped_missing: int = 0,
+    skipped_locked: int = 0,
+    truncated: bool = False,
+    next_offset: int | None = None,
+) -> ViewMutationOut | TopologyViewGraphOut:
+    if return_graph:
+        return get_view_graph(db, view_id)
+    return ViewMutationOut(
+        ok=True,
+        view_id=view_id,
+        matched=matched,
+        added=added,
+        updated=updated,
+        removed=removed,
+        skipped_existing=skipped_existing,
+        skipped_missing=skipped_missing,
+        skipped_locked=skipped_locked,
+        view_node_count=_view_node_count(db, view_id),
+        max_nodes=max_nodes,
+        truncated=truncated,
+        next_offset=next_offset,
+        graph=None,
+    )
+
+
 def patch_view_positions(
     db: Session, view_id: str, body: ViewPositionsPatch
-) -> TopologyViewGraphOut:
+) -> ViewMutationOut | TopologyViewGraphOut:
     view = _get_view_or_404(db, view_id)
+    mem = _membership_for_view(view)
+    max_nodes = int(mem.get("max_nodes") or 300)
     now = _utcnow()
-    positions = list(body.positions or [])
-    if len(positions) > VIEW_GRAPH_NODE_HARD_CAP:
-        raise HTTPException(status_code=400, detail="too_many_positions")
+    layout = str(body.layout or "").strip().lower()
+    updated = 0
+    skipped_locked = 0
+    matched = 0
+
     existing = {
         vn.fabric_node_id: vn
         for vn in db.query(TopoViewNode).filter(TopoViewNode.view_id == view.id).all()
     }
-    for p in positions:
-        fid = str(p.fabric_node_id or "").strip()
-        if not fid:
-            continue
-        if db.get(TopoFabricNode, fid) is None:
-            raise HTTPException(status_code=400, detail=f"fabric_node_not_found:{fid}")
-        row = existing.get(fid)
-        if row is None:
-            row = TopoViewNode(
-                id=uuid4().hex,
-                view_id=view.id,
-                fabric_node_id=fid,
-                x=float(p.x or 0),
-                y=float(p.y or 0),
-                label=str(p.label or "")[:256],
-                locked=bool(p.locked),
-                created_at=now,
-                updated_at=now,
-            )
-            db.add(row)
-            existing[fid] = row
+
+    if layout in {"grid", "offset", "stack"}:
+        ids = select_view_fabric_ids(
+            db,
+            view.id,
+            fabric_node_ids=list(body.fabric_node_ids or []),
+            keyword=body.keyword,
+            role=body.role,
+            vendor=body.vendor,
+            link_status=body.link_status,
+        )
+        if not ids and not _has_fabric_filter(
+            keyword=body.keyword,
+            role=body.role,
+            vendor=body.vendor,
+            link_status=body.link_status,
+        ) and not (body.fabric_node_ids or []):
+            # layout with no filter/ids → all nodes on view
+            ids = sorted(existing.keys())
+        matched = len(ids)
+        if layout == "offset":
+            for fid in ids:
+                row = existing.get(fid)
+                if row is None:
+                    continue
+                if row.locked:
+                    skipped_locked += 1
+                    continue
+                row.x = float(row.x or 0) + float(body.dx or 0)
+                row.y = float(row.y or 0) + float(body.dy or 0)
+                row.updated_at = now
+                updated += 1
         else:
-            if row.locked and not p.locked:
-                # allow unlock + move when explicitly unlocked in patch
-                pass
-            if row.locked and bool(p.locked):
+            coords = _layout_coords(
+                len(ids),
+                layout=layout,
+                origin_x=float(body.origin_x),
+                origin_y=float(body.origin_y),
+                gap_x=float(body.gap_x),
+                gap_y=float(body.gap_y),
+                cols=int(body.cols or 0),
+            )
+            for fid, (x, y) in zip(ids, coords):
+                row = existing.get(fid)
+                if row is None:
+                    continue
+                if row.locked:
+                    skipped_locked += 1
+                    continue
+                row.x = x
+                row.y = y
+                row.updated_at = now
+                updated += 1
+    else:
+        positions = list(body.positions or [])
+        if len(positions) > VIEW_GRAPH_NODE_HARD_CAP:
+            raise HTTPException(status_code=400, detail="too_many_positions")
+        matched = len(positions)
+        for p in positions:
+            fid = str(p.fabric_node_id or "").strip()
+            if not fid:
                 continue
-            row.x = float(p.x or 0)
-            row.y = float(p.y or 0)
-            if p.label is not None:
-                row.label = str(p.label or "")[:256]
-            row.locked = bool(p.locked)
-            row.updated_at = now
+            if db.get(TopoFabricNode, fid) is None:
+                raise HTTPException(status_code=400, detail=f"fabric_node_not_found:{fid}")
+            row = existing.get(fid)
+            if row is None:
+                row = TopoViewNode(
+                    id=uuid4().hex,
+                    view_id=view.id,
+                    fabric_node_id=fid,
+                    x=float(p.x or 0),
+                    y=float(p.y or 0),
+                    label=str(p.label or "")[:256],
+                    locked=bool(p.locked),
+                    created_at=now,
+                    updated_at=now,
+                )
+                db.add(row)
+                existing[fid] = row
+                updated += 1
+            else:
+                if row.locked and bool(p.locked):
+                    skipped_locked += 1
+                    continue
+                row.x = float(p.x or 0)
+                row.y = float(p.y or 0)
+                if p.label is not None:
+                    row.label = str(p.label or "")[:256]
+                row.locked = bool(p.locked)
+                row.updated_at = now
+                updated += 1
+
     view.updated_at = now
     db.commit()
-    return get_view_graph(db, view.id)
+    return _mutation_result(
+        db,
+        view.id,
+        max_nodes=max_nodes,
+        return_graph=bool(body.return_graph),
+        matched=matched,
+        updated=updated,
+        skipped_locked=skipped_locked,
+    )
 
 
-def add_nodes_to_view(db: Session, view_id: str, body: ViewNodesAdd) -> TopologyViewGraphOut:
+def add_nodes_to_view(
+    db: Session, view_id: str, body: ViewNodesAdd
+) -> ViewMutationOut | TopologyViewGraphOut:
     view = _get_view_or_404(db, view_id)
     mem = _membership_for_view(view)
     max_nodes = int(mem.get("max_nodes") or 300)
@@ -367,9 +631,51 @@ def add_nodes_to_view(db: Session, view_id: str, body: ViewNodesAdd) -> Topology
         vn.fabric_node_id
         for vn in db.query(TopoViewNode).filter(TopoViewNode.view_id == view.id).all()
     }
-    if len(existing) >= max_nodes:
-        raise HTTPException(status_code=400, detail="membership_max_nodes")
-    added_ids: list[str] = []
+    original_count = len(existing)
+    if original_count >= max_nodes:
+        if body.return_graph:
+            raise HTTPException(status_code=400, detail="membership_max_nodes")
+        return ViewMutationOut(
+            ok=False,
+            view_id=view.id,
+            matched=0,
+            view_node_count=original_count,
+            max_nodes=max_nodes,
+            truncated=True,
+        )
+
+    candidate_ids: list[str] = []
+    matched_total = 0
+    next_offset: int | None = None
+    filter_mode = _has_fabric_filter(
+        keyword=body.keyword,
+        role=body.role,
+        vendor=body.vendor,
+        link_status=body.link_status,
+    )
+
+    if filter_mode:
+        page_ids, matched_total = select_fabric_ids(
+            db,
+            keyword=body.keyword,
+            role=body.role,
+            vendor=body.vendor,
+            link_status=body.link_status,
+            offset=int(body.offset or 0),
+            limit=int(body.limit or 500),
+        )
+        candidate_ids.extend(page_ids)
+        end = int(body.offset or 0) + len(page_ids)
+        if end < matched_total:
+            next_offset = end
+    else:
+        for fid in body.fabric_node_ids or []:
+            fid_s = str(fid or "").strip()
+            if fid_s:
+                candidate_ids.append(fid_s)
+        matched_total = len(candidate_ids)
+
+    # UI path: managed / ume may still create fabric nodes.
     for mid in body.managed_ne_ids or []:
         mid_s = str(mid or "").strip()
         if not mid_s:
@@ -378,9 +684,8 @@ def add_nodes_to_view(db: Session, view_id: str, body: ViewNodesAdd) -> Topology
         if ne is None:
             continue
         fn = ensure_fabric_node_for_managed(db, ne)
-        if fn.id not in existing:
-            added_ids.append(fn.id)
-            existing.add(fn.id)
+        candidate_ids.append(fn.id)
+        matched_total += 1
     default_profile = get_default_profile(db)
     for uid in body.ume_ne_ids or []:
         uid_s = str(uid or "").strip()
@@ -394,26 +699,56 @@ def add_nodes_to_view(db: Session, view_id: str, body: ViewNodesAdd) -> Topology
         else:
             dtype, vendor = "zte_zxros", (ume.vendor or "ZTE")
         fn = ensure_fabric_node_for_ume(db, ume, device_type=dtype, vendor=vendor)
-        if fn.id not in existing:
-            added_ids.append(fn.id)
-            existing.add(fn.id)
-    for fid in body.fabric_node_ids or []:
-        fid_s = str(fid or "").strip()
-        if not fid_s or fid_s in existing:
+        candidate_ids.append(fn.id)
+        matched_total += 1
+
+    # Dedupe preserve order
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for fid in candidate_ids:
+        if fid in seen:
             continue
-        if db.get(TopoFabricNode, fid_s) is None:
+        seen.add(fid)
+        ordered.append(fid)
+
+    skipped_existing = 0
+    skipped_missing = 0
+    to_add: list[str] = []
+    for fid in ordered:
+        if fid in existing:
+            skipped_existing += 1
             continue
-        added_ids.append(fid_s)
-        existing.add(fid_s)
-    # `existing` already includes ids in added_ids; cap new placements.
-    original_count = len(existing) - len(added_ids)
+        if db.get(TopoFabricNode, fid) is None:
+            skipped_missing += 1
+            continue
+        to_add.append(fid)
+
     room = max(0, max_nodes - original_count)
-    if len(added_ids) > room:
-        added_ids = added_ids[:room]
-    cols = max(1, int(len(added_ids) ** 0.5) or 1)
-    for i, fid in enumerate(added_ids):
-        x = (i % cols) * 180.0 + 40.0
-        y = (i // cols) * 120.0 + 40.0
+    truncated = len(to_add) > room
+    if truncated:
+        to_add = to_add[:room]
+        next_offset = None  # capped by membership; caller should open another view
+
+    keep_layout = str(body.layout or "grid").strip().lower() == "keep"
+    if keep_layout:
+        coords = [(40.0, 40.0)] * len(to_add)
+    else:
+        # Place new nodes to the right of existing content when possible.
+        max_x = max((float(vn.x or 0) for vn in db.query(TopoViewNode).filter(
+            TopoViewNode.view_id == view.id
+        ).all()), default=40.0)
+        origin_x = (max_x + 200.0) if original_count else 40.0
+        coords = _layout_coords(
+            len(to_add),
+            layout="grid",
+            origin_x=origin_x,
+            origin_y=40.0,
+            gap_x=180.0,
+            gap_y=120.0,
+            cols=0,
+        )
+
+    for fid, (x, y) in zip(to_add, coords):
         db.add(
             TopoViewNode(
                 id=uuid4().hex,
@@ -427,9 +762,26 @@ def add_nodes_to_view(db: Session, view_id: str, body: ViewNodesAdd) -> Topology
                 updated_at=now,
             )
         )
-    view.updated_at = now
-    db.commit()
-    return get_view_graph(db, view.id)
+        existing.add(fid)
+
+    if to_add:
+        view.updated_at = now
+        db.commit()
+    elif filter_mode or body.fabric_node_ids or body.managed_ne_ids or body.ume_ne_ids:
+        db.commit()
+
+    return _mutation_result(
+        db,
+        view.id,
+        max_nodes=max_nodes,
+        return_graph=bool(body.return_graph),
+        matched=matched_total if filter_mode else len(ordered),
+        added=len(to_add),
+        skipped_existing=skipped_existing,
+        skipped_missing=skipped_missing,
+        truncated=truncated or (next_offset is not None),
+        next_offset=next_offset,
+    )
 
 
 def _neighbor_ids(
@@ -613,16 +965,59 @@ def populate_view(db: Session, view_id: str, body: ViewPopulateRequest) -> ViewP
     )
 
 
-def remove_view_nodes(db: Session, view_id: str, fabric_node_ids: list[str]) -> TopologyViewGraphOut:
+def remove_view_nodes(
+    db: Session,
+    view_id: str,
+    fabric_node_ids: list[str] | ViewNodesRemove | None = None,
+    *,
+    body: ViewNodesRemove | None = None,
+) -> ViewMutationOut | TopologyViewGraphOut:
+    """Remove placements. Accept ViewNodesRemove, or a legacy list of fabric ids."""
     view = _get_view_or_404(db, view_id)
-    ids = [str(x).strip() for x in (fabric_node_ids or []) if str(x).strip()]
+    mem = _membership_for_view(view)
+    max_nodes = int(mem.get("max_nodes") or 300)
+
+    if isinstance(fabric_node_ids, ViewNodesRemove):
+        req = fabric_node_ids
+    elif body is not None:
+        req = body
+    else:
+        req = ViewNodesRemove(fabric_node_ids=list(fabric_node_ids or []), return_graph=True)
+
+    filter_mode = _has_fabric_filter(
+        keyword=req.keyword, role=req.role, vendor=req.vendor, link_status=req.link_status
+    )
+    explicit = [str(x).strip() for x in (req.fabric_node_ids or []) if str(x).strip()]
+    if filter_mode or explicit:
+        ids = select_view_fabric_ids(
+            db,
+            view.id,
+            fabric_node_ids=explicit or None,
+            keyword=req.keyword,
+            role=req.role,
+            vendor=req.vendor,
+            link_status=req.link_status,
+        )
+    else:
+        ids = []
+
+    removed = 0
     if ids:
-        db.query(TopoViewNode).filter(
-            TopoViewNode.view_id == view.id, TopoViewNode.fabric_node_id.in_(ids)
-        ).delete(synchronize_session=False)
+        removed = (
+            db.query(TopoViewNode)
+            .filter(TopoViewNode.view_id == view.id, TopoViewNode.fabric_node_id.in_(ids))
+            .delete(synchronize_session=False)
+        )
         view.updated_at = _utcnow()
         db.commit()
-    return get_view_graph(db, view.id)
+    return _mutation_result(
+        db,
+        view.id,
+        max_nodes=max_nodes,
+        return_graph=bool(req.return_graph),
+        matched=len(ids),
+        removed=int(removed or 0),
+    )
 
 
 _HEX_COLOR_RE = re.compile(r"^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")

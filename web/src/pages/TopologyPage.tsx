@@ -1,4 +1,13 @@
-﻿import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+﻿import {
+  createContext,
+  memo,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -358,7 +367,11 @@ function RouterIcon() {
   );
 }
 
-function NeNode({ data, selected }: NodeProps<Node<NeNodeData>>) {
+/** Fixed box for onlyRenderVisibleElements (xyflow skips off-screen mount when sized + handles set). */
+const TOPO_NODE_W = 160;
+const TOPO_NODE_H = 88;
+
+const NeNode = memo(function NeNode({ data, selected }: NodeProps<Node<NeNodeData>>) {
   const { hideIp, hideVendor, connectMode } = useContext(TopoDisplayContext);
   const tone = nodeIconTone(data.vendor, data.managed_ne_id, data.ume_ne_id);
   const name = data.label || (!hideIp ? data.ne_ip : "") || "NE";
@@ -395,7 +408,7 @@ function NeNode({ data, selected }: NodeProps<Node<NeNodeData>>) {
       </div>
     </div>
   );
-}
+});
 
 const nodeTypes = { neNode: NeNode };
 
@@ -550,6 +563,13 @@ function graphToFlow(
     id: n.fabric_node_id,
     type: "neNode",
     position: { x: n.x || 0, y: n.y || 0 },
+    width: TOPO_NODE_W,
+    height: TOPO_NODE_H,
+    // Predetermined handles let onlyRenderVisibleElements skip measuring off-screen nodes.
+    handles: [
+      { type: "target", position: Position.Left, x: 0, y: TOPO_NODE_H / 2 },
+      { type: "source", position: Position.Right, x: TOPO_NODE_W, y: TOPO_NODE_H / 2 },
+    ],
     data: {
       label: n.label || n.name || n.ip || n.fabric_node_id,
       managed_ne_id: n.managed_ne_id || "",
@@ -3157,6 +3177,7 @@ export function TopologyPage() {
                   )}
                   edges={displayEdges}
                   nodeTypes={nodeTypes}
+                  onlyRenderVisibleElements
                   connectionMode={ConnectionMode.Loose}
                   defaultEdgeOptions={{ type: "straight" }}
                   proOptions={{ hideAttribution: true }}

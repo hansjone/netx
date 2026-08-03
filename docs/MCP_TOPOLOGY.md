@@ -81,16 +81,18 @@ oclaw：Install from JSON → Health → Sync Tools（应看到 **13** 个工具
 | 工具 | 作用 |
 |------|------|
 | `createTopologyView` | 在 folder 下新建画布 |
-| `addTopologyViewNodes` | **仅** `fabric_node_ids` 放到画布（拒绝 managed/UME，避免创建 Fabric 占位） |
-| `removeTopologyViewNodes` | 从画布移除（不删 Fabric） |
-| `updateTopologyViewPositions` | 设置坐标 |
+| `addTopologyViewNodes` | **优先**传 `keyword`/`role`/`vendor`/`link_status` + `limit`/`offset`，由 API 筛选落点；也可 `fabric_node_ids`。拒绝 managed/UME。返回摘要。 |
+| `removeTopologyViewNodes` | 筛选或 id 从画布移除（不删 Fabric），摘要 |
+| `updateTopologyViewPositions` | **优先** `layout=grid\|offset\|stack` + 筛选，API 自己挪点；`positions[]` 仅少量微调 |
 | `projectTopologyNeighbors` | 投影**已有** LLDP 邻居到画布 |
 
-**刻意不提供：** 手工建链、`populate`（会经 managed 创建 Fabric 占位）、删 Fabric / 删整图。
+**单画布硬顶 2000**；库存更大时多画布 + `offset` 翻页加满。前端对可见节点做 `onlyRenderVisibleElements`。
+
+**刻意不提供：** 手工建链、`populate`、删 Fabric / 删整图。
 
 写操作需要 token 具备 `ne:write`；只读为 `ne:read`。
 
-**权限怎么开：** 网页 **系统 → API Key**（`/api-keys`）创建 Key 时勾选 scopes，或点「MCP + 拓扑写」。默认 bootstrap `data/auth/mcp_token` **没有** `ne:write`，Agent 的 `tools/list` **不会出现**写工具。把新 Key 配到 `NETX_API_TOKEN`（或写进 MCP env）后重启 MCP / Sync Tools。
+**权限怎么开：** 网页 **系统 → API Key**（`/api-keys`）。新建默认已含 `ne:write`（可关掉）；已有 Key 在 **操作 → 改权限**。把明文配到 `NETX_API_TOKEN` 后重启 MCP / Sync Tools。仓库自动生成的 `data/auth/mcp_token` 仍是只读+CLI（无写），需要画图请另建 Key 或改权限。
 
 **前端能否看着画：** 在拓扑页左侧树或右侧浏览区点 **「实时同步」**（默认关闭；**不需要先打开某张图**）。开启后树约每 5 秒、已打开的图约每 3 秒拉取，可看到 MCP 新建区域/画布并往上加点。有未保存本地拖动时不会覆盖你的编辑。
 

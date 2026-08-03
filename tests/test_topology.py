@@ -1526,6 +1526,74 @@ Management Addresses:
         self.assertIsNotNone(self.db.get(ManagedNE, real.id))
         self.assertIsNotNone(self.db.get(ManagedNE, ph.id))
 
+    def test_filter_bulk_add_layout_and_remove(self) -> None:
+        from netx_api.topology_schemas import ViewMutationOut, ViewNodesRemove
+
+        suffix = uuid4().hex[:8]
+        region = self._region(f"Bulk-{suffix}")
+        view = svc.create_view(
+            self.db,
+            TopologyViewCreate(name=f"BulkV-{suffix}", folder_id=region),
+        )
+        nodes = []
+        for i in range(5):
+            n = TopoFabricNode(
+                id=f"bf-{suffix}-{i}",
+                name=f"BJ-SW-{suffix}-{i}",
+                ip=f"10.88.{i}.1",
+                vendor="Cisco",
+                role="access",
+            )
+            self.db.add(n)
+            nodes.append(n)
+        other = TopoFabricNode(
+            id=f"bf-other-{suffix}",
+            name=f"SH-SW-{suffix}",
+            ip="10.89.0.1",
+            vendor="Huawei",
+            role="core",
+        )
+        self.db.add(other)
+        self.db.commit()
+
+        summary = svc.add_nodes_to_view(
+            self.db,
+            view.id,
+            ViewNodesAdd(keyword="BJ-SW-", limit=3, offset=0, return_graph=False),
+        )
+        self.assertIsInstance(summary, ViewMutationOut)
+        assert isinstance(summary, ViewMutationOut)
+        self.assertEqual(summary.added, 3)
+        self.assertEqual(summary.matched, 5)
+        self.assertEqual(summary.next_offset, 3)
+        self.assertTrue(summary.truncated)
+
+        more = svc.add_nodes_to_view(
+            self.db,
+            view.id,
+            ViewNodesAdd(keyword="BJ-SW-", limit=10, offset=3, return_graph=False),
+        )
+        assert isinstance(more, ViewMutationOut)
+        self.assertEqual(more.added, 2)
+        self.assertIsNone(more.next_offset)
+
+        laid = svc.patch_view_positions(
+            self.db,
+            view.id,
+            ViewPositionsPatch(layout="grid", keyword="BJ-SW-", origin_x=10, origin_y=20, return_graph=False),
+        )
+        assert isinstance(laid, ViewMutationOut)
+        self.assertEqual(laid.updated, 5)
+
+        removed = svc.remove_view_nodes(
+            self.db,
+            view.id,
+            body=ViewNodesRemove(keyword=f"BJ-SW-{suffix}-1", return_graph=False),
+        )
+        assert isinstance(removed, ViewMutationOut)
+        self.assertGreaterEqual(removed.removed, 1)
+        self.assertLess(removed.view_node_count, 5)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -433,6 +433,47 @@ def revoke_api_token(db: Session, *, token_id: str, actor: AppUser) -> ApiToken:
     return row
 
 
+def update_api_token(
+    db: Session,
+    *,
+    token_id: str,
+    actor: AppUser,
+    name: str | None = None,
+    scopes: list[str] | None = None,
+) -> ApiToken:
+    row = db.query(ApiToken).filter(ApiToken.id == str(token_id)).one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="api_token_not_found")
+    if actor.role != "admin" and row.user_id != actor.id:
+        raise HTTPException(status_code=403, detail="forbidden")
+    if row.revoked_at is not None:
+        raise HTTPException(status_code=400, detail="api_token_revoked")
+
+    if name is not None:
+        label = str(name or "").strip() or row.name
+        if len(label) > 128:
+            raise HTTPException(status_code=400, detail="token_name_too_long")
+        row.name = label
+
+    if scopes is not None:
+        owner = get_user_by_id(db, row.user_id)
+        if owner is None:
+            raise HTTPException(status_code=404, detail="user_not_found")
+        owner_scopes = effective_user_scopes(
+            role=str(owner.role or "user"), override=getattr(owner, "scopes", None) or []
+        )
+        scope_list = normalize_scopes(scopes)
+        if scope_list:
+            scope_list = sorted(frozenset(scope_list) & owner_scopes)
+        if not scope_list:
+            raise HTTPException(status_code=400, detail="scopes_required")
+        row.scopes = scope_list
+
+    db.commit()
+    db.refresh(row)
+    return row
+
+
 def resolve_api_token_row(db: Session, plaintext: str) -> ApiToken | None:
     th = hash_api_token(plaintext)
     row = (

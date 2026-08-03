@@ -38,6 +38,7 @@ from .topology_schemas import (
     TopologyViewUpdate,
     ViewEdgeStylePatch,
     ViewNodesAdd,
+    ViewNodesRemove,
     ViewPopulateRequest,
     ViewPositionsPatch,
 )
@@ -303,11 +304,10 @@ def api_populate_view(
 @router.post("/views/{view_id}/nodes/remove")
 def api_remove_nodes(
     view_id: str,
-    body: dict[str, Any],
+    body: ViewNodesRemove,
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    ids = body.get("fabric_node_ids") if isinstance(body, dict) else None
-    return remove_view_nodes(db, view_id, list(ids or [])).model_dump()
+    return remove_view_nodes(db, view_id, body=body).model_dump()
 
 
 @router.patch("/views/{view_id}/edge-style")

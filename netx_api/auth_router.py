@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from .auth_deps import AuthContext, require_admin, require_user
 from .auth_schemas import (
     ApiTokenCreateRequest,
+    ApiTokenUpdateRequest,
     ChangePasswordRequest,
     LoginRequest,
     UserCreateRequest,
@@ -25,6 +26,7 @@ from .auth_service import (
     list_users,
     login_issue_token,
     revoke_api_token,
+    update_api_token,
     update_user,
     user_public,
     write_audit,
@@ -301,6 +303,47 @@ def api_create_token(
             "token": plaintext,
         }
     }
+
+
+@router.patch("/v1/api-tokens/{token_id}")
+def api_update_token(
+    token_id: str,
+    body: ApiTokenUpdateRequest,
+    request: Request,
+    ctx: Annotated[AuthContext, Depends(require_user)],
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    if body.name is None and body.scopes is None:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=400, detail="nothing_to_update")
+    row = update_api_token(
+        db,
+        token_id=token_id,
+        actor=ctx.user,
+        name=body.name,
+        scopes=body.scopes,
+    )
+    ip, ua = _client_meta(request)
+    write_audit(
+        db,
+        action="api_tokens.update",
+        actor_user_id=ctx.user.id,
+        actor_username=ctx.user.username,
+        method="PATCH",
+        path=f"/v1/api-tokens/{token_id}",
+        status_code=200,
+        client_ip=ip,
+        user_agent=ua,
+        detail={
+            "token_id": row.id,
+            "name": row.name,
+            "scopes": getattr(row, "scopes", None) or [],
+        },
+    )
+    from .auth_service import _token_public
+
+    return {"token": _token_public(db, row)}
 
 
 @router.delete("/v1/api-tokens/{token_id}")

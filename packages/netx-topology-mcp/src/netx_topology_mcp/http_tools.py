@@ -57,49 +57,152 @@ def _create_topology_view(args: dict[str, Any]) -> dict[str, Any]:
     return _data(http_json("POST", "/v1/topology/views", body=body))
 
 
+_CHUNK = 500
+
+
+def _filter_fields(args: dict[str, Any]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for key in ("keyword", "role", "vendor", "link_status"):
+        val = str(args.get(key) or "").strip()
+        if val:
+            out[key] = val
+    return out
+
+
+def _has_filter(args: dict[str, Any]) -> bool:
+    return bool(_filter_fields(args))
+
+
+def _merge_mutation_summaries(parts: list[dict[str, Any]]) -> dict[str, Any]:
+    if not parts:
+        return {"ok": False, "error": "empty_batch"}
+    if len(parts) == 1:
+        return parts[0]
+    base = dict(parts[-1])
+    for key in (
+        "matched",
+        "added",
+        "updated",
+        "removed",
+        "skipped_existing",
+        "skipped_missing",
+        "skipped_locked",
+    ):
+        base[key] = sum(int(p.get(key) or 0) for p in parts)
+    base["truncated"] = any(bool(p.get("truncated")) for p in parts)
+    # Keep last next_offset / view_node_count / max_nodes from final chunk.
+    base["ok"] = all(bool(p.get("ok", True)) for p in parts) and not any(
+        str(p.get("error") or "") for p in parts
+    )
+    return base
+
+
 def _add_topology_view_nodes(args: dict[str, Any]) -> dict[str, Any]:
-    """Place existing fabric nodes on a view only — never create fabric placeholders."""
+    """Place existing fabric nodes on a view — prefer server-side filters over id lists."""
     view_id = str(args.get("view_id") or "").strip()
     if not view_id:
         return {"ok": False, "error": "view_id_required"}
-    # Reject inventory-id shortcuts that would call ensure_fabric_node_* on the API.
     if args.get("managed_ne_ids") or args.get("ume_ne_ids"):
         return {
             "ok": False,
             "error": "fabric_nodes_only",
-            "detail": "Only fabric_node_ids are allowed; resolve inventory via search/list first.",
+            "detail": "Use keyword/role/vendor/link_status or fabric_node_ids; never managed/UME ids.",
         }
+    filters = _filter_fields(args)
     fabric_ids = [str(x) for x in (args.get("fabric_node_ids") or []) if str(x).strip()]
-    if not fabric_ids:
-        return {"ok": False, "error": "fabric_node_ids_required"}
-    body: dict[str, Any] = {
-        "managed_ne_ids": [],
-        "ume_ne_ids": [],
-        "fabric_node_ids": fabric_ids,
-        "layout": str(args.get("layout") or "grid").strip() or "grid",
-    }
-    return _data(http_json("POST", f"/v1/topology/views/{view_id}/nodes", body=body))
+    if not filters and not fabric_ids:
+        return {
+            "ok": False,
+            "error": "filter_or_fabric_node_ids_required",
+            "detail": "Pass keyword/role/vendor/link_status (preferred) or fabric_node_ids.",
+        }
+
+    layout = str(args.get("layout") or "grid").strip() or "grid"
+    if filters:
+        body: dict[str, Any] = {
+            "managed_ne_ids": [],
+            "ume_ne_ids": [],
+            "fabric_node_ids": [],
+            "layout": layout,
+            "limit": min(2000, max(1, int(args.get("limit") or 500))),
+            "offset": max(0, int(args.get("offset") or 0)),
+            "return_graph": False,
+            **filters,
+        }
+        return _data(http_json("POST", f"/v1/topology/views/{view_id}/nodes", body=body))
+
+    # Explicit ids: chunk to avoid huge payloads.
+    parts: list[dict[str, Any]] = []
+    for i in range(0, len(fabric_ids), _CHUNK):
+        chunk = fabric_ids[i : i + _CHUNK]
+        body = {
+            "managed_ne_ids": [],
+            "ume_ne_ids": [],
+            "fabric_node_ids": chunk,
+            "layout": layout,
+            "return_graph": False,
+        }
+        parts.append(_data(http_json("POST", f"/v1/topology/views/{view_id}/nodes", body=body)))
+    return _merge_mutation_summaries(parts)
 
 
 def _remove_topology_view_nodes(args: dict[str, Any]) -> dict[str, Any]:
     view_id = str(args.get("view_id") or "").strip()
-    ids = [str(x) for x in (args.get("fabric_node_ids") or []) if str(x).strip()]
     if not view_id:
         return {"ok": False, "error": "view_id_required"}
-    if not ids:
-        return {"ok": False, "error": "fabric_node_ids_required"}
-    return _data(
-        http_json("POST", f"/v1/topology/views/{view_id}/nodes/remove", body={"fabric_node_ids": ids})
-    )
+    filters = _filter_fields(args)
+    ids = [str(x) for x in (args.get("fabric_node_ids") or []) if str(x).strip()]
+    if not filters and not ids:
+        return {"ok": False, "error": "filter_or_fabric_node_ids_required"}
+    if filters:
+        body: dict[str, Any] = {"fabric_node_ids": ids, "return_graph": False, **filters}
+        return _data(http_json("POST", f"/v1/topology/views/{view_id}/nodes/remove", body=body))
+    parts: list[dict[str, Any]] = []
+    for i in range(0, len(ids), _CHUNK):
+        chunk = ids[i : i + _CHUNK]
+        parts.append(
+            _data(
+                http_json(
+                    "POST",
+                    f"/v1/topology/views/{view_id}/nodes/remove",
+                    body={"fabric_node_ids": chunk, "return_graph": False},
+                )
+            )
+        )
+    return _merge_mutation_summaries(parts)
 
 
 def _update_topology_view_positions(args: dict[str, Any]) -> dict[str, Any]:
     view_id = str(args.get("view_id") or "").strip()
-    positions = args.get("positions")
     if not view_id:
         return {"ok": False, "error": "view_id_required"}
+    layout = str(args.get("layout") or "").strip().lower()
+    filters = _filter_fields(args)
+    fabric_ids = [str(x) for x in (args.get("fabric_node_ids") or []) if str(x).strip()]
+    positions = args.get("positions")
+
+    if layout in {"grid", "offset", "stack"}:
+        body: dict[str, Any] = {
+            "layout": layout,
+            "origin_x": float(args.get("origin_x") if args.get("origin_x") is not None else 40),
+            "origin_y": float(args.get("origin_y") if args.get("origin_y") is not None else 40),
+            "gap_x": float(args.get("gap_x") if args.get("gap_x") is not None else 180),
+            "gap_y": float(args.get("gap_y") if args.get("gap_y") is not None else 120),
+            "cols": int(args.get("cols") or 0),
+            "dx": float(args.get("dx") or 0),
+            "dy": float(args.get("dy") or 0),
+            "fabric_node_ids": fabric_ids,
+            "return_graph": False,
+            **filters,
+        }
+        return _data(http_json("PATCH", f"/v1/topology/views/{view_id}/positions", body=body))
+
     if not isinstance(positions, list) or not positions:
-        return {"ok": False, "error": "positions_required"}
+        return {
+            "ok": False,
+            "error": "layout_or_positions_required",
+            "detail": "Pass layout=grid|offset|stack with optional filters, or positions[].",
+        }
     cleaned: list[dict[str, Any]] = []
     for p in positions:
         if not isinstance(p, dict):
@@ -118,7 +221,19 @@ def _update_topology_view_positions(args: dict[str, Any]) -> dict[str, Any]:
         )
     if not cleaned:
         return {"ok": False, "error": "positions_required"}
-    return _data(http_json("PATCH", f"/v1/topology/views/{view_id}/positions", body={"positions": cleaned}))
+    parts: list[dict[str, Any]] = []
+    for i in range(0, len(cleaned), _CHUNK):
+        chunk = cleaned[i : i + _CHUNK]
+        parts.append(
+            _data(
+                http_json(
+                    "PATCH",
+                    f"/v1/topology/views/{view_id}/positions",
+                    body={"positions": chunk, "return_graph": False},
+                )
+            )
+        )
+    return _merge_mutation_summaries(parts)
 
 
 def _project_topology_neighbors(args: dict[str, Any]) -> dict[str, Any]:
@@ -267,40 +382,79 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
     {
         "name": "addTopologyViewNodes",
         "description": (
-            "Place existing fabric nodes onto a view canvas (layout=grid|keep). "
-            "Only fabric_node_ids — never creates fabric placeholders from managed/UME ids."
+            "Bulk-place existing fabric nodes on a view. Prefer server filters "
+            "(keyword/role/vendor/link_status + limit/offset); API selects ids — do not pull then re-send huge id lists. "
+            "Returns a summary (added/truncated/next_offset). Canvas hard cap 2000. Never pass managed/UME ids."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "view_id": {"type": "string"},
-                "fabric_node_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                "keyword": {"type": "string"},
+                "role": {"type": "string"},
+                "vendor": {"type": "string"},
+                "link_status": {
+                    "type": "string",
+                    "enum": ["linked", "orphaned", "managed", "ume", "both"],
+                },
+                "limit": {"type": "integer", "minimum": 1, "maximum": 2000, "default": 500},
+                "offset": {"type": "integer", "minimum": 0, "default": 0},
+                "fabric_node_ids": {"type": "array", "items": {"type": "string"}},
                 "layout": {"type": "string", "enum": ["grid", "keep"], "default": "grid"},
             },
-            "required": ["view_id", "fabric_node_ids"],
+            "required": ["view_id"],
             "additionalProperties": False,
         },
     },
     {
         "name": "removeTopologyViewNodes",
-        "description": "Remove fabric nodes from a view canvas (does not delete fabric inventory).",
+        "description": (
+            "Remove placements from a view (not fabric). Prefer filters (keyword/role/vendor/link_status) "
+            "so the API selects matches; or pass fabric_node_ids. Returns a summary."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "view_id": {"type": "string"},
-                "fabric_node_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                "keyword": {"type": "string"},
+                "role": {"type": "string"},
+                "vendor": {"type": "string"},
+                "link_status": {
+                    "type": "string",
+                    "enum": ["linked", "orphaned", "managed", "ume", "both"],
+                },
+                "fabric_node_ids": {"type": "array", "items": {"type": "string"}},
             },
-            "required": ["view_id", "fabric_node_ids"],
+            "required": ["view_id"],
             "additionalProperties": False,
         },
     },
     {
         "name": "updateTopologyViewPositions",
-        "description": "Set x/y positions for fabric nodes on a view (draw / rearrange).",
+        "description": (
+            "Move nodes on a view. Prefer layout=grid|offset|stack with optional filters "
+            "(API selects matches and computes coords). Use positions[] only for small manual tweaks. Returns a summary."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "view_id": {"type": "string"},
+                "layout": {"type": "string", "enum": ["grid", "offset", "stack"]},
+                "keyword": {"type": "string"},
+                "role": {"type": "string"},
+                "vendor": {"type": "string"},
+                "link_status": {
+                    "type": "string",
+                    "enum": ["linked", "orphaned", "managed", "ume", "both"],
+                },
+                "fabric_node_ids": {"type": "array", "items": {"type": "string"}},
+                "origin_x": {"type": "number", "default": 40},
+                "origin_y": {"type": "number", "default": 40},
+                "gap_x": {"type": "number", "default": 180},
+                "gap_y": {"type": "number", "default": 120},
+                "cols": {"type": "integer", "minimum": 0, "default": 0},
+                "dx": {"type": "number", "default": 0},
+                "dy": {"type": "number", "default": 0},
                 "positions": {
                     "type": "array",
                     "items": {
@@ -315,10 +469,9 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                         "required": ["fabric_node_id"],
                         "additionalProperties": False,
                     },
-                    "minItems": 1,
                 },
             },
-            "required": ["view_id", "positions"],
+            "required": ["view_id"],
             "additionalProperties": False,
         },
     },

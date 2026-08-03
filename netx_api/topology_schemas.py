@@ -297,12 +297,48 @@ class ViewPopulateOut(BaseModel):
     graph: TopologyViewGraphOut | None = None
 
 
+class ViewMutationOut(BaseModel):
+    """Summary for bulk view mutations (add / move / remove)."""
+
+    ok: bool = True
+    view_id: str = ""
+    matched: int = 0
+    added: int = 0
+    updated: int = 0
+    removed: int = 0
+    skipped_existing: int = 0
+    skipped_missing: int = 0
+    skipped_locked: int = 0
+    view_node_count: int = 0
+    max_nodes: int = 0
+    truncated: bool = False
+    next_offset: int | None = None
+    graph: TopologyViewGraphOut | None = None
+
+
 class ViewPositionsPatch(BaseModel):
+    """Move nodes: explicit positions and/or filter + layout (grid|offset|stack)."""
+
     positions: list[ViewNodeIn] = Field(default_factory=list)
+    fabric_node_ids: list[str] = Field(default_factory=list)
+    keyword: str = ""
+    role: str = ""
+    vendor: str = ""
+    link_status: str = ""
+    layout: str = Field(default="", description="grid | offset | stack | empty=use positions")
+    origin_x: float = 40.0
+    origin_y: float = 40.0
+    gap_x: float = 180.0
+    gap_y: float = 120.0
+    cols: int = Field(default=0, ge=0, le=2000)
+    dx: float = 0.0
+    dy: float = 0.0
+    # Default True keeps web UI / existing clients returning a full graph.
+    return_graph: bool = True
 
 
 class ViewNodesAdd(BaseModel):
-    """Add inventory NEs onto a view (creates fabric nodes as needed)."""
+    """Add NEs onto a view. Prefer fabric filters for bulk; managed/ume still allowed for UI."""
 
     managed_ne_ids: list[str] = Field(default_factory=list)
     ume_ne_ids: list[str] = Field(default_factory=list)
@@ -310,8 +346,25 @@ class ViewNodesAdd(BaseModel):
         default_factory=list,
         description="Place existing fabric nodes onto the view",
     )
-    # Optional initial positions keyed by managed/ume id
+    keyword: str = ""
+    role: str = ""
+    vendor: str = ""
+    link_status: str = ""
+    limit: int = Field(default=500, ge=1, le=2000)
+    offset: int = Field(default=0, ge=0)
     layout: str = Field(default="grid", description="grid | keep")
+    return_graph: bool = True
+
+
+class ViewNodesRemove(BaseModel):
+    """Remove placements from a view (does not delete fabric). Filter and/or id list."""
+
+    fabric_node_ids: list[str] = Field(default_factory=list)
+    keyword: str = ""
+    role: str = ""
+    vendor: str = ""
+    link_status: str = ""
+    return_graph: bool = True
 
 
 class ViewEdgeStylePatch(BaseModel):

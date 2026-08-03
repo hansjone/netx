@@ -35,5 +35,11 @@ class ApiTokenCreateRequest(BaseModel):
     expires_in_days: int | None = Field(default=90, ge=0, le=3650)
     # Admin may create a token for another user; others ignored / forced to self.
     user_id: str | None = None
-    # Capability subset; empty inherits owner scopes.
+    # Explicit capability list; empty inherits owner scopes (legacy). Prefer non-empty.
+    scopes: list[str] | None = None
+
+
+class ApiTokenUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, max_length=128)
+    # Replace token scopes (capped to owner). Empty list clears to inherit owner scopes.
     scopes: list[str] | None = None

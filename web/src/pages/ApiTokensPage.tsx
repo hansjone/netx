@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../auth/AuthContext";
 import { useI18n } from "../i18n";
 import { useToast } from "../hooks/useToast";
-import { apiDelete, apiGet, apiPost } from "../services/api";
+import { apiDelete, apiGet, apiPatch, apiPost } from "../services/api";
 import { formatSystemTime } from "../utils/time";
 
 type TokenRow = {
@@ -33,22 +33,22 @@ const ALL_SCOPE_KEYS = [
   "ne:read",
   "ne:write",
   "ne:exec",
-  "webcrt:session",
   "sql:query",
+  "webcrt:session",
   "admin:users",
   "ops:write",
 ] as const;
 
-const MCP_DEFAULT_SCOPES = ["alarms:read", "ne:read", "ne:exec"] as const;
-const MCP_TOPO_WRITE_SCOPES = ["alarms:read", "ne:read", "ne:exec", "ne:write"] as const;
+/** Applied on create; refine later via「改权限」. */
+const CREATE_DEFAULT_SCOPES = ["alarms:read", "ne:read", "ne:exec", "ne:write"] as const;
 
 const SCOPE_LABEL_KEYS: Record<(typeof ALL_SCOPE_KEYS)[number], string> = {
   "alarms:read": "auth.scopeAlarmsRead",
   "ne:read": "auth.scopeNeRead",
   "ne:write": "auth.scopeNeWrite",
   "ne:exec": "auth.scopeNeExec",
-  "webcrt:session": "auth.scopeWebcrt",
   "sql:query": "auth.scopeSql",
+  "webcrt:session": "auth.scopeWebcrt",
   "admin:users": "auth.scopeAdminUsers",
   "ops:write": "auth.scopeOpsWrite",
 };
@@ -80,9 +80,9 @@ export function ApiTokensPage() {
   const [name, setName] = useState("mcp");
   const [expiresInDays, setExpiresInDays] = useState(90);
   const [ownerUserId, setOwnerUserId] = useState("");
-  const [inheritScopes, setInheritScopes] = useState(false);
-  const [selectedScopes, setSelectedScopes] = useState<string[]>([...MCP_DEFAULT_SCOPES]);
   const [createdPlain, setCreatedPlain] = useState("");
+  const [editingRow, setEditingRow] = useState<TokenRow | null>(null);
+  const [editScopes, setEditScopes] = useState<string[]>([]);
 
   const tokensQuery = useQuery({
     queryKey: ["apiTokens"],
@@ -99,7 +99,7 @@ export function ApiTokensPage() {
   const items = useMemo(() => tokensQuery.data?.items || [], [tokensQuery.data]);
   const users = useMemo(() => usersQuery.data?.items || [], [usersQuery.data]);
 
-  const availableScopes = useMemo(() => {
+  const availableForCreate = useMemo(() => {
     if (ownerUserId) {
       const owner = users.find((u) => u.id === ownerUserId);
       return [...(owner?.scopes || [])].sort();
@@ -107,25 +107,42 @@ export function ApiTokensPage() {
     return [...(myScopes || [])].sort();
   }, [ownerUserId, users, myScopes]);
 
-  useEffect(() => {
-    setSelectedScopes((prev) => {
-      const next = prev.filter((s) => availableScopes.includes(s));
-      if (next.length) return next;
-      return intersectScopes(availableScopes, MCP_DEFAULT_SCOPES);
-    });
-  }, [availableScopes]);
+  const editAvailable = useMemo(() => {
+    if (!editingRow) return [];
+    if (editingRow.user_id === user?.id) return [...(myScopes || [])].sort();
+    const owner = users.find((u) => u.id === editingRow.user_id);
+    return [...(owner?.scopes || myScopes || [])].sort();
+  }, [editingRow, user?.id, users, myScopes]);
 
   const createMut = useMutation({
-    mutationFn: () =>
-      apiPost<{ token: TokenRow & { token: string } }>("/v1/api-tokens", {
+    mutationFn: () => {
+      const scopes = intersectScopes(availableForCreate, CREATE_DEFAULT_SCOPES);
+      if (!scopes.length) {
+        throw new Error(t("auth.scopesNoneAvailable"));
+      }
+      return apiPost<{ token: TokenRow & { token: string } }>("/v1/api-tokens", {
         name: name.trim() || "mcp",
         expires_in_days: expiresInDays,
         user_id: isAdmin && ownerUserId ? ownerUserId : undefined,
-        scopes: inheritScopes ? [] : selectedScopes,
-      }),
+        scopes,
+      });
+    },
     onSuccess: async (data) => {
       setCreatedPlain(data.token.token);
       showOk(t("auth.tokenCreated"));
+      await qc.invalidateQueries({ queryKey: ["apiTokens"] });
+    },
+    onError: (e) => showError(String(e instanceof Error ? e.message : e)),
+  });
+
+  const updateMut = useMutation({
+    mutationFn: (payload: { id: string; scopes: string[] }) =>
+      apiPatch<{ token: TokenRow }>(`/v1/api-tokens/${encodeURIComponent(payload.id)}`, {
+        scopes: payload.scopes,
+      }),
+    onSuccess: async () => {
+      showOk(t("auth.tokenUpdated"));
+      setEditingRow(null);
       await qc.invalidateQueries({ queryKey: ["apiTokens"] });
     },
     onError: (e) => showError(String(e instanceof Error ? e.message : e)),
@@ -135,6 +152,7 @@ export function ApiTokensPage() {
     mutationFn: (id: string) => apiDelete(`/v1/api-tokens/${encodeURIComponent(id)}`),
     onSuccess: async () => {
       showOk(t("auth.tokenRevoked"));
+      setEditingRow(null);
       await qc.invalidateQueries({ queryKey: ["apiTokens"] });
     },
     onError: (e) => showError(String(e instanceof Error ? e.message : e)),
@@ -142,10 +160,6 @@ export function ApiTokensPage() {
 
   const onCreate = (e: FormEvent) => {
     e.preventDefault();
-    if (!inheritScopes && selectedScopes.length === 0) {
-      showError(t("auth.scopesRequired"));
-      return;
-    }
     setCreatedPlain("");
     createMut.mutate();
   };
@@ -159,19 +173,24 @@ export function ApiTokensPage() {
     }
   };
 
-  const toggleScope = (scope: string) => {
-    setSelectedScopes((prev) =>
+  const toggleEditScope = (scope: string) => {
+    setEditScopes((prev) =>
       prev.includes(scope) ? prev.filter((s) => s !== scope) : [...prev, scope].sort(),
     );
   };
 
-  const applyPreset = (desired: readonly string[]) => {
-    setInheritScopes(false);
-    setSelectedScopes(intersectScopes(availableScopes, desired));
+  const startEdit = (row: TokenRow) => {
+    const available =
+      row.user_id === user?.id
+        ? [...(myScopes || [])]
+        : [...(users.find((u) => u.id === row.user_id)?.scopes || myScopes || [])];
+    const current = row.scopes?.length ? [...row.scopes] : [...available];
+    setEditingRow(row);
+    setEditScopes(intersectScopes(available, current.length ? current : CREATE_DEFAULT_SCOPES));
   };
 
   const formatScopes = (scopes: string[] | undefined) => {
-    if (!scopes || scopes.length === 0) return t("auth.scopesInheritShort");
+    if (!scopes || scopes.length === 0) return t("auth.scopesUnsetLegacy");
     return scopes.join(", ");
   };
 
@@ -179,9 +198,16 @@ export function ApiTokensPage() {
     <div className="page-stack system-page">
       <section className="panel">
         <div className="panel__toolbar">
-          <h2>{t("auth.apiKeysTitle")}</h2>
+          <h2 className="token-page__title">
+            {t("auth.apiKeysTitle")}
+            <span className="help-q" tabIndex={0} aria-label={t("auth.apiKeysHelp")}>
+              ?
+              <span className="help-q__tip" role="tooltip">
+                {t("auth.apiKeysHelp")}
+              </span>
+            </span>
+          </h2>
         </div>
-        <p className="panel__hint">{t("auth.apiKeysHint")}</p>
 
         <div className="pt-list">
           <form className="token-create" onSubmit={onCreate}>
@@ -222,52 +248,6 @@ export function ApiTokensPage() {
               <button type="submit" disabled={createMut.isPending}>
                 {t("auth.createToken")}
               </button>
-            </div>
-
-            <div className="token-scopes">
-              <div className="token-scopes__head">
-                <strong>{t("auth.scopesTitle")}</strong>
-                <span className="panel__hint" style={{ margin: 0 }}>
-                  {t("auth.scopesHint")}
-                </span>
-              </div>
-              <div className="token-scopes__presets">
-                <button type="button" className="btn--ghost btn--sm" onClick={() => applyPreset(MCP_DEFAULT_SCOPES)}>
-                  {t("auth.scopePresetMcp")}
-                </button>
-                <button
-                  type="button"
-                  className="btn--ghost btn--sm"
-                  onClick={() => applyPreset(MCP_TOPO_WRITE_SCOPES)}
-                  disabled={!availableScopes.includes("ne:write")}
-                >
-                  {t("auth.scopePresetTopoWrite")}
-                </button>
-              </div>
-              <label className="token-scopes__inherit">
-                <input
-                  type="checkbox"
-                  checked={inheritScopes}
-                  onChange={(e) => setInheritScopes(e.target.checked)}
-                />
-                {t("auth.scopesInherit")}
-              </label>
-              <div className={`token-scopes__grid${inheritScopes ? " is-disabled" : ""}`}>
-                {ALL_SCOPE_KEYS.filter((s) => availableScopes.includes(s)).map((scope) => (
-                  <label key={scope}>
-                    <input
-                      type="checkbox"
-                      disabled={inheritScopes}
-                      checked={selectedScopes.includes(scope)}
-                      onChange={() => toggleScope(scope)}
-                    />
-                    {t(SCOPE_LABEL_KEYS[scope])}
-                  </label>
-                ))}
-                {!availableScopes.length ? (
-                  <span className="muted">{t("auth.scopesNoneAvailable")}</span>
-                ) : null}
-              </div>
             </div>
           </form>
 
@@ -334,6 +314,14 @@ export function ApiTokensPage() {
                         <div className="btn-row pt-list-actions table-actions">
                           <button
                             type="button"
+                            className="btn--ghost"
+                            disabled={row.revoked || row.expired}
+                            onClick={() => startEdit(row)}
+                          >
+                            {t("auth.editScopes")}
+                          </button>
+                          <button
+                            type="button"
                             className="btn--danger"
                             disabled={row.revoked || revokeMut.isPending}
                             onClick={() => {
@@ -352,6 +340,60 @@ export function ApiTokensPage() {
           )}
         </div>
       </section>
+
+      {editingRow ? (
+        <div
+          className="token-scopes-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label={t("auth.editScopes")}
+        >
+          <div className="token-scopes-modal__backdrop" onClick={() => setEditingRow(null)} />
+          <div className="token-scopes-modal__panel">
+            <div className="token-scopes-modal__head">
+              <div>
+                <h3>{t("auth.editScopes")}</h3>
+                <p className="panel__hint" style={{ margin: "4px 0 0" }}>
+                  {editingRow.name}
+                  {editingRow.username ? ` · ${editingRow.username}` : ""}
+                </p>
+              </div>
+              <button type="button" className="btn--ghost" onClick={() => setEditingRow(null)}>
+                {t("common.cancel")}
+              </button>
+            </div>
+            <ul className="token-scopes-modal__list">
+              {ALL_SCOPE_KEYS.filter((s) => editAvailable.includes(s)).map((scope) => (
+                <li key={scope}>
+                  <label className="token-scopes-modal__row">
+                    <input
+                      type="checkbox"
+                      checked={editScopes.includes(scope)}
+                      onChange={() => toggleEditScope(scope)}
+                    />
+                    <span className="token-scopes-modal__label">{t(SCOPE_LABEL_KEYS[scope])}</span>
+                  </label>
+                </li>
+              ))}
+              {!editAvailable.length ? (
+                <li className="muted">{t("auth.scopesNoneAvailable")}</li>
+              ) : null}
+            </ul>
+            <div className="token-scopes-modal__foot">
+              <button
+                type="button"
+                disabled={updateMut.isPending || editScopes.length === 0}
+                onClick={() => updateMut.mutate({ id: editingRow.id, scopes: editScopes })}
+              >
+                {t("auth.saveScopes")}
+              </button>
+              <button type="button" className="btn--ghost" onClick={() => setEditingRow(null)}>
+                {t("common.cancel")}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

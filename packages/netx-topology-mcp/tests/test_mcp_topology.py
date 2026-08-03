@@ -35,7 +35,7 @@ def test_add_nodes_rejects_managed_ume_ids() -> None:
 
 def test_add_nodes_posts_fabric_ids_only() -> None:
     with patch("netx_topology_mcp.http_tools.http_json") as mock_http:
-        mock_http.return_value = {"ok": True, "data": {"nodes": []}}
+        mock_http.return_value = {"ok": True, "data": {"ok": True, "added": 2, "return_graph": False}}
         out = call_http_tool(
             "addTopologyViewNodes",
             {"view_id": "v1", "fabric_node_ids": ["f1", "f2"], "layout": "grid"},
@@ -44,8 +44,43 @@ def test_add_nodes_posts_fabric_ids_only() -> None:
         assert body["fabric_node_ids"] == ["f1", "f2"]
         assert body["managed_ne_ids"] == []
         assert body["ume_ne_ids"] == []
+        assert body["return_graph"] is False
         payload = json.loads(out["content"][0]["text"])
         assert payload["ok"] is True
+
+
+def test_add_nodes_filter_posts_without_ids() -> None:
+    with patch("netx_topology_mcp.http_tools.http_json") as mock_http:
+        mock_http.return_value = {
+            "ok": True,
+            "data": {"ok": True, "added": 10, "matched": 40, "next_offset": 10, "truncated": True},
+        }
+        out = call_http_tool(
+            "addTopologyViewNodes",
+            {"view_id": "v1", "keyword": "BJ-", "limit": 10, "offset": 0},
+        )
+        body = mock_http.call_args[1]["body"]
+        assert body["keyword"] == "BJ-"
+        assert body["fabric_node_ids"] == []
+        assert body["return_graph"] is False
+        payload = json.loads(out["content"][0]["text"])
+        assert payload["added"] == 10
+        assert payload["next_offset"] == 10
+
+
+def test_update_positions_layout_filter() -> None:
+    with patch("netx_topology_mcp.http_tools.http_json") as mock_http:
+        mock_http.return_value = {"ok": True, "data": {"ok": True, "updated": 5}}
+        out = call_http_tool(
+            "updateTopologyViewPositions",
+            {"view_id": "v1", "layout": "grid", "keyword": "core", "origin_x": 0, "origin_y": 0},
+        )
+        body = mock_http.call_args[1]["body"]
+        assert body["layout"] == "grid"
+        assert body["keyword"] == "core"
+        assert body["return_graph"] is False
+        payload = json.loads(out["content"][0]["text"])
+        assert payload["updated"] == 5
 
 
 def test_create_view_requires_folder() -> None:
