@@ -383,6 +383,10 @@ function RouterIcon() {
 /** Fixed box for onlyRenderVisibleElements (xyflow skips off-screen mount when sized + handles set). */
 const TOPO_NODE_W = 160;
 const TOPO_NODE_H = 88;
+/** Must match `.topo-node__glyph` (56×56, top-centered) + `--center` handles. */
+const TOPO_ICON = 56;
+const TOPO_HANDLE_X = TOPO_NODE_W / 2;
+const TOPO_HANDLE_Y = TOPO_ICON / 2;
 
 const NeNode = memo(function NeNode({ data, selected }: NodeProps<Node<NeNodeData>>) {
   const { hideIp, hideVendor, connectMode } = useContext(TopoDisplayContext);
@@ -574,10 +578,11 @@ function graphToFlow(
     position: { x: n.x || 0, y: n.y || 0 },
     width: TOPO_NODE_W,
     height: TOPO_NODE_H,
-    // Predetermined handles let onlyRenderVisibleElements skip measuring off-screen nodes.
+    // Predetermined handles must match DOM anchors (icon center), not the 160px box edges —
+    // otherwise edges float in the gap and never touch the router glyph.
     handles: [
-      { type: "target", position: Position.Left, x: 0, y: TOPO_NODE_H / 2 },
-      { type: "source", position: Position.Right, x: TOPO_NODE_W, y: TOPO_NODE_H / 2 },
+      { type: "target", position: Position.Left, x: TOPO_HANDLE_X, y: TOPO_HANDLE_Y },
+      { type: "source", position: Position.Right, x: TOPO_HANDLE_X, y: TOPO_HANDLE_Y },
     ],
     data: {
       label: n.label || n.name || n.ip || n.fabric_node_id,
