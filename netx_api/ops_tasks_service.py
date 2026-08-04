@@ -1,4 +1,7 @@
-"""Unified live task overview across NetX runners."""
+"""Unified live task overview across NetX runners.
+
+Titles are language-neutral subjects; the UI prefixes localized kind labels.
+"""
 
 from __future__ import annotations
 
@@ -41,6 +44,7 @@ def _item(
     started_at: datetime | None = None,
     updated_at: datetime | None = None,
     progress: str = "",
+    inflight: int = 0,
     detail: str = "",
     href: str = "",
 ) -> dict[str, Any]:
@@ -54,6 +58,7 @@ def _item(
         "started_at": _iso(started_at),
         "updated_at": _iso(updated_at),
         "progress": progress,
+        "inflight": int(inflight or 0),
         "detail": detail,
         "href": href,
     }
@@ -106,7 +111,7 @@ def _port_traffic_items(db: Session, actors: dict[str, str]) -> list[dict[str, A
             _item(
                 kind="port_traffic",
                 id=did,
-                title=f"端口流量 · {name}",
+                title=name,
                 status=status,
                 trigger="schedule" if actor == "scheduler" else "manual",
                 actor=actor,
@@ -144,13 +149,14 @@ def _config_sync_items(db: Session, actors: dict[str, str]) -> list[dict[str, An
             _item(
                 kind="config_sync",
                 id=cid,
-                title=f"配置同步 · {cid[:8]}",
+                title=cid[:8],
                 status=str(row.status or "pending"),
                 trigger=trigger,
                 actor=actor,
                 started_at=row.started_at or row.created_at,
                 updated_at=row.ended_at or row.started_at or row.created_at,
-                progress=f"{done}/{planned}" + (f" · running {running}" if running else ""),
+                progress=f"{done}/{planned}",
+                inflight=int(running),
                 detail=str(row.error_message or "")[:240],
                 href="/network/tasks/config-sync",
             )
@@ -174,8 +180,11 @@ def _collection_items(db: Session, actors: dict[str, str]) -> list[dict[str, Any
             .filter(NeCollectionRun.job_id == jid, NeCollectionRun.status == "running")
             .count()
         )
-        title = str(row.title or "").strip() or f"采集任务 · {jid[:8]}"
+        title = str(row.title or "").strip() or jid[:8]
         actor = actors.get(jid) or "—"
+        ok = int(row.success_count or 0)
+        fail = int(row.fail_count or 0)
+        total = int(row.ne_count or 0)
         items.append(
             _item(
                 kind="ne_collect",
@@ -186,11 +195,8 @@ def _collection_items(db: Session, actors: dict[str, str]) -> list[dict[str, Any
                 actor=actor,
                 started_at=row.started_at or row.created_at,
                 updated_at=row.last_run_at or row.ended_at or row.started_at or row.created_at,
-                progress=(
-                    f"ok {int(row.success_count or 0)} / fail {int(row.fail_count or 0)}"
-                    f" / total {int(row.ne_count or 0)}"
-                    + (f" · running {running}" if running else "")
-                ),
+                progress=f"{ok}/{fail}/{total}",
+                inflight=int(running),
                 detail=str(row.error_message or "")[:240],
                 href="/network/tasks/collect",
             )
@@ -201,7 +207,7 @@ def _collection_items(db: Session, actors: dict[str, str]) -> list[dict[str, Any
 def _lldp_items(db: Session, actors: dict[str, str]) -> list[dict[str, Any]]:
     rows = (
         db.query(TopoDiscoverJob)
-        .filter(TopoDiscoverJob.status.in_(("pending", "running")))
+        .filter(TopoDiscoverJob.status.in_(("pending", "running", "paused")))
         .order_by(TopoDiscoverJob.created_at.desc())
         .limit(20)
         .all()
@@ -219,7 +225,7 @@ def _lldp_items(db: Session, actors: dict[str, str]) -> list[dict[str, Any]]:
             _item(
                 kind="lldp_discover",
                 id=jid,
-                title=f"LLDP 发现 · {trigger}",
+                title=trigger,
                 status=str(row.status or "pending"),
                 trigger=trigger,
                 actor=actor,
@@ -255,13 +261,13 @@ def _ume_sync_items(db: Session, actors: dict[str, str]) -> list[dict[str, Any]]
             _item(
                 kind="ume_sync",
                 id=jid,
-                title=f"UME 同步 · {domain}",
+                title=domain,
                 status="running",
                 trigger=trigger,
                 actor=actor,
                 started_at=row.started_at,
                 updated_at=row.started_at,
-                progress=f"pull {pulled} · +{inserted} ~{updated}",
+                progress=f"{pulled}/+{inserted}/~{updated}",
                 detail=str(row.error_message or "")[:240],
                 href="/ume",
             )
@@ -286,7 +292,7 @@ def _ne_connect_items(db: Session, actors: dict[str, str]) -> list[dict[str, Any
             _item(
                 kind="ne_connect",
                 id=f"managed:{nid}",
-                title=f"连通性测试 · {name}",
+                title=name,
                 status="testing",
                 trigger="manual",
                 actor=actors.get(nid) or "—",
@@ -310,7 +316,7 @@ def _ne_connect_items(db: Session, actors: dict[str, str]) -> list[dict[str, Any
             _item(
                 kind="ne_connect",
                 id=f"ume:{uid}",
-                title=f"连通性测试 · UME {uid[:12]}",
+                title=f"UME {uid[:12]}",
                 status="testing",
                 trigger="manual",
                 actor=actors.get(uid) or "—",
@@ -338,7 +344,7 @@ def _ume_runtime_items() -> list[dict[str, Any]]:
             _item(
                 kind="ume_runtime",
                 id=task,
-                title=f"UME · {task}",
+                title=task,
                 status=status,
                 trigger="system",
                 actor="system",
@@ -372,28 +378,23 @@ def _webcrt_items(actors: dict[str, str]) -> list[dict[str, Any]]:
         progress = ""
         if lifecycle == "connecting":
             elapsed_ms = row.get("elapsed_ms")
-            progress = f"{int(elapsed_ms)} ms" if isinstance(elapsed_ms, int) else "logging in"
-            detail = "authenticating"
+            progress = f"{int(elapsed_ms)} ms" if isinstance(elapsed_ms, int) else ""
         elif lifecycle == "ready":
-            progress = "attached"
             if row.get("connect_ms") is not None:
-                detail = f"connect {int(row['connect_ms'])} ms"
+                progress = f"{int(row['connect_ms'])} ms"
         elif lifecycle == "detached":
-            progress = "detached"
             deadline = row.get("detach_deadline")
             if isinstance(deadline, (int, float)) and deadline > 0:
                 left = max(0, int(deadline - now))
-                detail = f"grace {left}s"
-            else:
-                detail = "awaiting reconnect / close"
+                progress = f"{left}s"
+            detail = str(row.get("connect_error") or "")[:240]
         elif lifecycle == "error":
-            progress = "error"
             detail = str(row.get("connect_error") or "")[:240]
         items.append(
             _item(
                 kind="webcrt",
                 id=sid,
-                title=f"WebCRT · {name}",
+                title=name,
                 status=lifecycle,
                 trigger="manual",
                 actor=actor,

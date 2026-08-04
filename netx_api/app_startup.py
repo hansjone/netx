@@ -69,18 +69,18 @@ def run_api_startup() -> None:
     ume_support._reset_runtime_pause_flags()
     ume_support._fail_stale_running_sync_jobs_on_startup()
     try:
-        from .topology_service import bootstrap_topology_tree, reclaim_stale_discover_jobs
+        from .topology_service import bootstrap_topology_tree, recover_lldp_discover_on_startup
 
         db_topo = SessionLocal()
         try:
             bootstrap_topology_tree(db_topo)
-            closed = reclaim_stale_discover_jobs(db_topo, force_all_open=True)
-            if closed:
-                _log.warning("startup: closed %s orphaned topology discover jobs", closed)
+            resumed = recover_lldp_discover_on_startup(db_topo)
+            if resumed:
+                _log.info("startup: resumed %s interrupted LLDP discover job(s)", resumed)
         finally:
             db_topo.close()
     except Exception:
-        _log.exception("startup: topology discover job cleanup failed")
+        _log.exception("startup: topology discover job recovery failed")
 
     if ume_support._needs_startup_alarm_sync_before_ws():
         begin_startup_alarm_sync_gate()

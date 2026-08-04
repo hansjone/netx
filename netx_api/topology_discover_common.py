@@ -224,7 +224,7 @@ def prune_discover_jobs(db: Session, *, keep: int = 30) -> int:
     keep = max(0, min(200, int(keep)))
     finished = (
         db.query(TopoDiscoverJob)
-        .filter(TopoDiscoverJob.status.in_(["done", "failed"]))
+        .filter(TopoDiscoverJob.status.in_(["done", "failed", "cancelled"]))
         .order_by(TopoDiscoverJob.created_at.desc())
         .all()
     )

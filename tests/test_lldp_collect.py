@@ -14,6 +14,7 @@ from netx_api.lldp_collect_service import (
     ensure_policy,
     get_dashboard,
     has_running_job,
+    last_finished_job,
     next_due_at,
     update_policy,
 )
@@ -298,6 +299,151 @@ class LldpCollectTests(unittest.TestCase):
         self.db.delete(ume_only)
         self.db.delete(ume_dup)
         self.db.commit()
+
+    def test_pause_resume_stop_job_control(self) -> None:
+        from netx_api.topology_discover_jobs import (
+            pause_discover_job,
+            resume_discover_job,
+            stop_discover_job,
+        )
+        from netx_api.topology_schemas import FabricDiscoverRequest
+        from netx_api.topology_service import start_discover_job
+
+        now = datetime.utcnow()
+        job = TopoDiscoverJob(
+            id=uuid4().hex,
+            scope="ne_ids",
+            trigger_mode="manual",
+            ne_ids_json=["managed:m1"],
+            status="running",
+            total=10,
+            done=3,
+            created_at=now,
+            updated_at=now,
+            started_at=now,
+        )
+        self.db.add(job)
+        ensure_policy(self.db)
+        self.db.commit()
+
+        paused = pause_discover_job(self.db, job.id)
+        self.assertEqual(paused.status, "paused")
+        self.assertIsNotNone(has_running_job(self.db))
+
+        with self.assertRaises(Exception) as ctx:
+            start_discover_job(self.db, FabricDiscoverRequest(scope="ne_ids", ne_ids=["x"]))
+        self.assertEqual(getattr(ctx.exception, "detail", None), "lldp_collect_already_running")
+
+        # Resume without live worker re-spawns thread; mark done so it has no work and
+        # avoid racing real SSH — use stop path for terminal instead when remaining=0.
+        job.done = 10
+        self.db.commit()
+        with self.assertRaises(Exception) as ctx2:
+            resume_discover_job(self.db, job.id)
+        self.assertEqual(getattr(ctx2.exception, "detail", None), "no_pending_targets")
+
+        job.done = 3
+        job.status = "paused"
+        self.db.commit()
+        stopped = stop_discover_job(self.db, job.id)
+        self.assertEqual(stopped.status, "cancelled")
+        self.assertEqual(stopped.error, "stopped_by_user")
+        self.assertIsNone(has_running_job(self.db))
+        last = last_finished_job(self.db)
+        self.assertIsNotNone(last)
+        assert last is not None
+        self.assertEqual(last.id, job.id)
+        self.assertEqual(last.status, "cancelled")
+
+    def test_paused_survives_startup_reclaim(self) -> None:
+        now = datetime.utcnow()
+        job = TopoDiscoverJob(
+            id=uuid4().hex,
+            scope="all_inventory",
+            trigger_mode="manual",
+            status="paused",
+            total=5,
+            done=1,
+            created_at=now,
+            updated_at=now,
+            started_at=now,
+        )
+        self.db.add(job)
+        self.db.commit()
+        closed = reclaim_stale_discover_jobs(self.db, force_all_open=True)
+        self.assertEqual(closed, 0)
+        self.db.refresh(job)
+        self.assertEqual(job.status, "paused")
+
+    def test_recover_resumes_interrupted_running_job(self) -> None:
+        from unittest.mock import patch
+
+        from netx_api.topology_discover_jobs import recover_lldp_discover_on_startup
+
+        now = datetime.utcnow()
+        older = TopoDiscoverJob(
+            id=uuid4().hex,
+            scope="all_inventory",
+            trigger_mode="manual",
+            status="running",
+            total=10,
+            done=1,
+            created_at=now - timedelta(minutes=5),
+            updated_at=now - timedelta(minutes=5),
+            started_at=now - timedelta(minutes=5),
+        )
+        primary = TopoDiscoverJob(
+            id=uuid4().hex,
+            scope="ne_ids",
+            trigger_mode="manual",
+            ne_ids_json=["managed:m1"],
+            status="running",
+            total=10,
+            done=3,
+            created_at=now,
+            updated_at=now,
+            started_at=now,
+        )
+        self.db.add(older)
+        self.db.add(primary)
+        ensure_policy(self.db)
+        self.db.commit()
+
+        with patch("netx_api.topology_discover_jobs.threading.Thread") as thread_cls:
+            thread_cls.return_value.start = lambda: None
+            n = recover_lldp_discover_on_startup(self.db)
+        self.assertEqual(n, 1)
+        self.db.refresh(older)
+        self.db.refresh(primary)
+        self.assertEqual(older.status, "failed")
+        self.assertIn("superseded_active_job", older.error or "")
+        self.assertEqual(primary.status, "running")
+        thread_cls.assert_called_once()
+        kwargs = thread_cls.call_args.kwargs
+        self.assertTrue(kwargs.get("kwargs", {}).get("resume"))
+
+    def test_recover_keeps_paused_without_auto_resume(self) -> None:
+        from netx_api.topology_discover_jobs import recover_lldp_discover_on_startup
+
+        now = datetime.utcnow()
+        job = TopoDiscoverJob(
+            id=uuid4().hex,
+            scope="all_inventory",
+            trigger_mode="manual",
+            status="paused",
+            total=8,
+            done=2,
+            created_at=now,
+            updated_at=now,
+            started_at=now,
+        )
+        self.db.add(job)
+        self.db.commit()
+        n = recover_lldp_discover_on_startup(self.db)
+        self.assertEqual(n, 0)
+        self.db.refresh(job)
+        self.assertEqual(job.status, "paused")
+        self.assertIsNotNone(has_running_job(self.db))
 
 
 if __name__ == "__main__":

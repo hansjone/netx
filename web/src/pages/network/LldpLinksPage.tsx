@@ -6,7 +6,10 @@ import {
   fetchLldpCollectDashboard,
   fetchLldpCollectJob,
   fetchLldpCollectJobs,
+  pauseLldpCollectJob,
+  resumeLldpCollectJob,
   startLldpCollect,
+  stopLldpCollectJob,
   updateLldpCollectPolicy,
 } from "../../services/api";
 import { queryKeys } from "../../constants/queryKeys";
@@ -55,7 +58,10 @@ export function LldpLinksPage() {
     staleTime: 1000,
     refetchInterval: (q) => {
       const running = q.state.data?.running_job;
-      return running && (running.status === "running" || running.status === "pending") ? POLL_MS : false;
+      return running &&
+        (running.status === "running" || running.status === "pending" || running.status === "paused")
+        ? POLL_MS
+        : false;
     },
   });
 
@@ -187,6 +193,33 @@ export function LldpLinksPage() {
     onError: (err) => showError(String(err)),
   });
 
+  const pauseMut = useMutation({
+    mutationFn: (id: string) => pauseLldpCollectJob(id),
+    onSuccess: async () => {
+      showOk(t("lldpLinks.paused"));
+      await refresh();
+    },
+    onError: (err) => showError(String(err)),
+  });
+
+  const resumeMut = useMutation({
+    mutationFn: (id: string) => resumeLldpCollectJob(id),
+    onSuccess: async () => {
+      showOk(t("lldpLinks.resumed"));
+      await refresh();
+    },
+    onError: (err) => showError(String(err)),
+  });
+
+  const stopMut = useMutation({
+    mutationFn: (id: string) => stopLldpCollectJob(id),
+    onSuccess: async () => {
+      showOk(t("lldpLinks.stopped"));
+      await refresh();
+    },
+    onError: (err) => showError(String(err)),
+  });
+
   const dash = dashQuery.data;
   const running = dash?.running_job;
   const last = dash?.last_job;
@@ -228,6 +261,28 @@ export function LldpLinksPage() {
           >
             {t("lldpLinks.collectNow")}
           </button>
+          {running?.status === "running" || running?.status === "pending" ? (
+            <button type="button" onClick={() => pauseMut.mutate(running.id)} disabled={pauseMut.isPending}>
+              {t("lldpLinks.pause")}
+            </button>
+          ) : null}
+          {running?.status === "paused" ? (
+            <button type="button" onClick={() => resumeMut.mutate(running.id)} disabled={resumeMut.isPending}>
+              {t("lldpLinks.resume")}
+            </button>
+          ) : null}
+          {running &&
+          (running.status === "running" || running.status === "paused" || running.status === "pending") ? (
+            <button
+              type="button"
+              onClick={() => {
+                if (window.confirm(t("lldpLinks.confirmStop"))) stopMut.mutate(running.id);
+              }}
+              disabled={stopMut.isPending}
+            >
+              {t("lldpLinks.stop")}
+            </button>
+          ) : null}
         </div>
       </div>
 
@@ -536,6 +591,7 @@ export function LldpLinksPage() {
               <th>{t("lldpLinks.col.missingDelta")}</th>
               <th>{t("lldpLinks.col.started")}</th>
               <th>{t("lldpLinks.col.ended")}</th>
+              <th />
             </tr>
           </thead>
           <tbody>
@@ -559,7 +615,19 @@ export function LldpLinksPage() {
                   <td className="mono">{job.id.slice(0, 8)}</td>
                   <td>{job.trigger_mode}</td>
                   <td>{job.scope}</td>
-                  <td>{job.status}</td>
+                  <td>
+                    <span
+                      className={
+                        job.status === "running" || job.status === "pending"
+                          ? "pt-list-status--running"
+                          : job.status === "paused"
+                            ? "pt-list-status--paused"
+                            : undefined
+                      }
+                    >
+                      {job.status}
+                    </span>
+                  </td>
                   <td>
                     {job.done}/{job.total}
                   </td>
@@ -569,12 +637,45 @@ export function LldpLinksPage() {
                   <td>{job.edges_missing ?? job.edges_stale ?? 0}</td>
                   <td>{job.started_at ? formatSystemTime(job.started_at) : "—"}</td>
                   <td>{job.ended_at ? formatSystemTime(job.ended_at) : "—"}</td>
+                  <td>
+                    <div className="btn-row">
+                      {job.status === "running" || job.status === "pending" ? (
+                        <button
+                          type="button"
+                          onClick={() => pauseMut.mutate(job.id)}
+                          disabled={pauseMut.isPending}
+                        >
+                          {t("lldpLinks.pause")}
+                        </button>
+                      ) : null}
+                      {job.status === "paused" ? (
+                        <button
+                          type="button"
+                          onClick={() => resumeMut.mutate(job.id)}
+                          disabled={resumeMut.isPending}
+                        >
+                          {t("lldpLinks.resume")}
+                        </button>
+                      ) : null}
+                      {job.status === "running" || job.status === "paused" || job.status === "pending" ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (window.confirm(t("lldpLinks.confirmStop"))) stopMut.mutate(job.id);
+                          }}
+                          disabled={stopMut.isPending}
+                        >
+                          {t("lldpLinks.stop")}
+                        </button>
+                      ) : null}
+                    </div>
+                  </td>
                 </tr>
               );
             })}
             {!jobs.length ? (
               <tr>
-                <td colSpan={10} className="muted">
+                <td colSpan={11} className="muted">
                   {t("common.empty")}
                 </td>
               </tr>

@@ -14,7 +14,10 @@ from .lldp_collect_service import (
     get_job_detail,
     get_policy,
     list_jobs,
+    pause_collect,
+    resume_collect,
     start_collect,
+    stop_collect,
     update_policy,
 )
 
@@ -41,6 +44,21 @@ def api_dashboard(db: Session = Depends(get_db)) -> dict[str, Any]:
 @router.post("/start")
 def api_start(db: Session = Depends(get_db)) -> dict[str, Any]:
     return start_collect(db, trigger_mode="manual")
+
+
+@router.post("/jobs/{job_id}/pause")
+def api_pause_job(job_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    return pause_collect(db, job_id)
+
+
+@router.post("/jobs/{job_id}/resume")
+def api_resume_job(job_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    return resume_collect(db, job_id)
+
+
+@router.post("/jobs/{job_id}/stop")
+def api_stop_job(job_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    return stop_collect(db, job_id)
 
 
 @router.get("/jobs")

@@ -215,6 +215,7 @@ export type OpsTaskItem = {
   started_at: string | null;
   updated_at: string | null;
   progress: string;
+  inflight?: number;
   detail: string;
   href: string;
 };
@@ -1143,6 +1144,15 @@ export const updateLldpCollectPolicy = (body: Partial<LldpCollectPolicy>) =>
 
 export const startLldpCollect = () =>
   apiPost<{ ok: boolean; job: TopologyDiscoverJob }>("/v1/topology/lldp-collect/start", {});
+
+export const pauseLldpCollectJob = (jobId: string) =>
+  apiPost<TopologyDiscoverJob>(`/v1/topology/lldp-collect/jobs/${encodeURIComponent(jobId)}/pause`, {});
+
+export const resumeLldpCollectJob = (jobId: string) =>
+  apiPost<TopologyDiscoverJob>(`/v1/topology/lldp-collect/jobs/${encodeURIComponent(jobId)}/resume`, {});
+
+export const stopLldpCollectJob = (jobId: string) =>
+  apiPost<TopologyDiscoverJob>(`/v1/topology/lldp-collect/jobs/${encodeURIComponent(jobId)}/stop`, {});
 
 export const fetchLldpCollectJobs = (params: { page?: number; pageSize?: number }) => {
   const p = new URLSearchParams();

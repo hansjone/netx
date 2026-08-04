@@ -18,10 +18,13 @@ from .models import LldpCollectPolicy, TopoDiscoverJob, TopoFabricStats
 from .topology_schemas import FabricDiscoverRequest
 from .topology_service import (
     get_discover_job,
+    pause_discover_job,
     prune_discover_jobs,
     reclaim_stale_discover_jobs,
     refresh_fabric_stats,
+    resume_discover_job,
     start_discover_job,
+    stop_discover_job,
 )
 
 POLICY_ID = 1
@@ -170,10 +173,11 @@ def _job_summary(job: TopoDiscoverJob | None) -> LldpCollectJobSummary | None:
 
 
 def has_running_job(db: Session) -> TopoDiscoverJob | None:
+    """Active job including paused — blocks starting a new collect."""
     reclaim_stale_discover_jobs(db)
     return (
         db.query(TopoDiscoverJob)
-        .filter(TopoDiscoverJob.status.in_(["pending", "running"]))
+        .filter(TopoDiscoverJob.status.in_(["pending", "running", "paused"]))
         .order_by(TopoDiscoverJob.created_at.desc())
         .first()
     )
@@ -182,7 +186,7 @@ def has_running_job(db: Session) -> TopoDiscoverJob | None:
 def last_finished_job(db: Session) -> TopoDiscoverJob | None:
     return (
         db.query(TopoDiscoverJob)
-        .filter(TopoDiscoverJob.status.in_(["done", "failed"]))
+        .filter(TopoDiscoverJob.status.in_(["done", "failed", "cancelled"]))
         .order_by(TopoDiscoverJob.created_at.desc())
         .first()
     )
@@ -253,6 +257,18 @@ def start_collect(db: Session, *, trigger_mode: str = "manual") -> dict:
     job = start_discover_job(db, body, trigger_mode=trigger_mode)
     prune_discover_jobs(db, keep=int(getattr(policy, "history_keep", DEFAULT_HISTORY_KEEP) or 0))
     return {"ok": True, "job": job.model_dump()}
+
+
+def pause_collect(db: Session, job_id: str) -> dict:
+    return pause_discover_job(db, job_id).model_dump()
+
+
+def resume_collect(db: Session, job_id: str) -> dict:
+    return resume_discover_job(db, job_id).model_dump()
+
+
+def stop_collect(db: Session, job_id: str) -> dict:
+    return stop_discover_job(db, job_id).model_dump()
 
 
 def get_dashboard(db: Session) -> LldpCollectDashboardOut:

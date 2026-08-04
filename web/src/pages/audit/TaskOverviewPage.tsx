@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { useI18n } from "../../i18n";
-import { fetchOpsTasks } from "../../services/api";
+import { fetchOpsTasks, type OpsTaskItem } from "../../services/api";
 import { formatSystemTime } from "../../utils/time";
 
 const POLL_MS = 4000;
@@ -16,16 +16,45 @@ function statusTone(status: string): string {
   return "other";
 }
 
-function kindLabel(kind: string, t: (k: string) => string): string {
+function kindLabel(kind: string, t: (k: string, vars?: Record<string, string | number>) => string): string {
   const key = `audit.tasks.kind.${kind}`;
   const tr = t(key);
   return tr === key ? kind : tr;
 }
 
-function statusLabel(status: string, t: (k: string) => string): string {
+function statusLabel(status: string, t: (k: string, vars?: Record<string, string | number>) => string): string {
   const key = `audit.tasks.status.${status}`;
   const tr = t(key);
   return tr === key ? status : tr;
+}
+
+function triggerLabel(trigger: string, t: (k: string, vars?: Record<string, string | number>) => string): string {
+  const raw = String(trigger || "").trim();
+  if (!raw || raw === "—") return "—";
+  const key = `audit.tasks.trigger.${raw}`;
+  const tr = t(key);
+  return tr === key ? raw : tr;
+}
+
+function taskTitle(row: OpsTaskItem, t: (k: string, vars?: Record<string, string | number>) => string): string {
+  const kind = kindLabel(row.kind, t);
+  const subject = String(row.title || "").trim();
+  if (!subject) return kind;
+  // Avoid "Kind · Kind · x" if an old backend still prefixed the localized kind.
+  if (subject === kind || subject.startsWith(`${kind} · `) || subject.startsWith(`${kind}·`)) {
+    return subject;
+  }
+  return `${kind} · ${subject}`;
+}
+
+function progressLabel(row: OpsTaskItem, t: (k: string, vars?: Record<string, string | number>) => string): string {
+  const base = String(row.progress || "").trim();
+  const inflight = Number(row.inflight || 0);
+  if (inflight > 0) {
+    const extra = t("audit.tasks.inflight", { n: inflight });
+    return base ? `${base} · ${extra}` : extra;
+  }
+  return base || "—";
 }
 
 export function TaskOverviewPage() {
@@ -111,7 +140,7 @@ export function TaskOverviewPage() {
                   <tr key={`${row.kind}:${row.id}`} title={row.detail || undefined}>
                     <td>{kindLabel(row.kind, t)}</td>
                     <td>
-                      <div className="pt-list-task-name">{row.title}</div>
+                      <div className="pt-list-task-name">{taskTitle(row, t)}</div>
                       {row.detail ? (
                         <div className="muted" style={{ fontSize: 12 }}>
                           {row.detail}
@@ -124,8 +153,8 @@ export function TaskOverviewPage() {
                       </span>
                     </td>
                     <td>{row.actor || "—"}</td>
-                    <td>{row.trigger || "—"}</td>
-                    <td className="pt-list-num">{row.progress || "—"}</td>
+                    <td>{triggerLabel(row.trigger, t)}</td>
+                    <td className="pt-list-num">{progressLabel(row, t)}</td>
                     <td className="pt-list-time">{formatSystemTime(row.started_at) || "—"}</td>
                     <td className="pt-list-time">{formatSystemTime(row.updated_at) || "—"}</td>
                     <td>
