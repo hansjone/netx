@@ -57,6 +57,22 @@ def _create_topology_view(args: dict[str, Any]) -> dict[str, Any]:
     return _data(http_json("POST", "/v1/topology/views", body=body))
 
 
+def _create_topology_folder(args: dict[str, Any]) -> dict[str, Any]:
+    """Create a region folder under the topology root (API kind=region only)."""
+    name = str(args.get("name") or "").strip()
+    if not name:
+        return {"ok": False, "error": "name_required"}
+    body: dict[str, Any] = {
+        "name": name,
+        "kind": "region",
+        "sort_order": int(args.get("sort_order") or 0),
+    }
+    parent_id = str(args.get("parent_id") or "").strip()
+    if parent_id:
+        body["parent_id"] = parent_id
+    return _data(http_json("POST", "/v1/topology/folders", body=body))
+
+
 _CHUNK = 500
 
 
@@ -343,7 +359,7 @@ def _query_topology_edges(args: dict[str, Any]) -> dict[str, Any]:
 HTTP_MCP_TOOLS: list[dict[str, Any]] = [
     {
         "name": "getTopologyTree",
-        "description": "Get topology folder tree (sites/regions) with nested views — start here before createTopologyView.",
+        "description": "Get topology folder tree (sites/regions) with nested views — start here; create region with createTopologyFolder if missing.",
         "inputSchema": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
     },
     {
@@ -362,8 +378,28 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "createTopologyFolder",
+        "description": (
+            "Create a region folder under the topology root. Returns folder id for createTopologyView. "
+            "Also auto-creates a default physical map under the region. Requires ne:write."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Region display name"},
+                "parent_id": {
+                    "type": "string",
+                    "description": "Optional; must be topology root id (default: root)",
+                },
+                "sort_order": {"type": "integer", "default": 0},
+            },
+            "required": ["name"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "createTopologyView",
-        "description": "Create a topology canvas under a folder (folder_id from getTopologyTree).",
+        "description": "Create a topology canvas under a folder (folder_id from getTopologyTree or createTopologyFolder).",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -569,6 +605,7 @@ _HANDLERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "getTopologyTree": _get_topology_tree,
     "listTopologyViews": _list_topology_views,
     "getTopologyView": _get_topology_view,
+    "createTopologyFolder": _create_topology_folder,
     "createTopologyView": _create_topology_view,
     "addTopologyViewNodes": _add_topology_view_nodes,
     "removeTopologyViewNodes": _remove_topology_view_nodes,
@@ -585,6 +622,7 @@ TOOL_REQUIRED_SCOPE: dict[str, str] = {
     "getTopologyTree": "ne:read",
     "listTopologyViews": "ne:read",
     "getTopologyView": "ne:read",
+    "createTopologyFolder": "ne:write",
     "createTopologyView": "ne:write",
     "addTopologyViewNodes": "ne:write",
     "removeTopologyViewNodes": "ne:write",

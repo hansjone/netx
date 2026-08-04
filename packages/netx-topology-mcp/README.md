@@ -28,11 +28,11 @@ pip install "git+https://github.com/hansjone/netx.git#subdirectory=packages/netx
 
 复制 [`mcp.json`](./mcp.json) 到 Cursor / oclaw（`server_id=netx-topology`），可与 `netx` 同时存在。
 
-## 工具（13）
+## 工具（14）
 
 | 类别 | 工具 |
 |------|------|
-| 树/画布 | `getTopologyTree`, `listTopologyViews`, `getTopologyView`, `createTopologyView` |
+| 树/区域/画布 | `getTopologyTree`, `createTopologyFolder`, `listTopologyViews`, `getTopologyView`, `createTopologyView` |
 | 画图 | `addTopologyViewNodes` / `remove…` / `update…Positions`（**优先筛选**，API 自选 id；也可 id 列表）, `projectTopologyNeighbors` |
 | Fabric 只读 | `getTopologyFabricSummary`, `listTopologyFabricNodes`, `searchTopologyFabricNodes`, `queryTopologyNeighborhood`, `queryTopologyEdges` |
 

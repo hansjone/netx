@@ -57,7 +57,7 @@ pip install "git+https://github.com/hansjone/netx.git#subdirectory=packages/netx
 
 与告警 MCP 并存时，把两个 server 都放进 `mcpServers` 即可；未勾选/未安装的不会加载工具。
 
-oclaw：Install from JSON → Health → Sync Tools（应看到 **13** 个工具）→ 专家绑定勾选 `server_id=netx-topology`。
+oclaw：Install from JSON → Health → Sync Tools（应看到 **14** 个工具）→ 专家绑定勾选 `server_id=netx-topology`。
 
 配套 Agent Skill（画图流水线 / 安全约束）：[`.cursor/skills/netx-topology/SKILL.md`](../.cursor/skills/netx-topology/SKILL.md)。Cursor / oclaw 读 skill 后再调 MCP。
 
@@ -80,6 +80,7 @@ oclaw：Install from JSON → Health → Sync Tools（应看到 **13** 个工具
 
 | 工具 | 作用 |
 |------|------|
+| `createTopologyFolder` | 新建**区域**文件夹（挂在根下）；返回 `id` 供建画布；并自动创建默认 physical 图 |
 | `createTopologyView` | 在 folder 下新建画布 |
 | `addTopologyViewNodes` | **优先**传 `keyword`/`role`/`vendor`/`link_status` + `limit`/`offset`，由 API 筛选落点；也可 `fabric_node_ids`。拒绝 managed/UME。返回摘要。 |
 | `removeTopologyViewNodes` | 筛选或 id 从画布移除（不删 Fabric），摘要 |
@@ -103,7 +104,7 @@ oclaw：Install from JSON → Health → Sync Tools（应看到 **13** 个工具
 | 包 | server_id | 职责 |
 |----|-----------|------|
 | `netx-mcp` | `netx` | 告警、UME、托管网元 CLI（**13** 工具） |
-| `netx-topology-mcp` | `netx-topology` | 拓扑画布 / Fabric 只读 + 安全画图（**13** 工具） |
+| `netx-topology-mcp` | `netx-topology` | 拓扑画布 / Fabric 只读 + 安全画图（**14** 工具） |
 
 `queryTopologyEdges` 已从 `netx-mcp` **迁出**到本包，避免重复。
 

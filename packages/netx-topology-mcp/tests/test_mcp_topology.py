@@ -13,7 +13,8 @@ from netx_topology_mcp.server import _fetch_scopes
 
 def test_tool_list_has_draw_and_query_tools() -> None:
     names = {str(t.get("name") or "") for t in HTTP_MCP_TOOLS}
-    assert len(names) == 13
+    assert len(names) == 14
+    assert "createTopologyFolder" in names
     assert "createTopologyView" in names
     assert "addTopologyViewNodes" in names
     assert "updateTopologyViewPositions" in names
@@ -21,6 +22,29 @@ def test_tool_list_has_draw_and_query_tools() -> None:
     assert "getTopologyTree" in names
     assert "createTopologyManualEdge" not in names
     assert "populateTopologyView" not in names
+
+
+def test_create_folder_requires_name() -> None:
+    out = call_http_tool("createTopologyFolder", {})
+    assert out.get("isError") is True
+    payload = json.loads(out["content"][0]["text"])
+    assert payload["error"] == "name_required"
+
+
+def test_create_folder_posts_region() -> None:
+    with patch("netx_topology_mcp.http_tools.http_json") as mock_http:
+        mock_http.return_value = {"ok": True, "data": {"id": "f1", "name": "华北", "kind": "region"}}
+        out = call_http_tool("createTopologyFolder", {"name": "华北", "sort_order": 1})
+        mock_http.assert_called_once()
+        assert mock_http.call_args[0][0] == "POST"
+        assert mock_http.call_args[0][1] == "/v1/topology/folders"
+        body = mock_http.call_args[1]["body"]
+        assert body["name"] == "华北"
+        assert body["kind"] == "region"
+        assert body["sort_order"] == 1
+        payload = json.loads(out["content"][0]["text"])
+        assert payload["ok"] is True
+        assert payload["id"] == "f1"
 
 
 def test_add_nodes_rejects_managed_ume_ids() -> None:
@@ -137,8 +161,10 @@ def test_tools_for_scopes_filters_write() -> None:
     read_only = {str(t.get("name") or "") for t in tools_for_scopes(["ne:read"])}
     assert "queryTopologyEdges" in read_only
     assert "createTopologyView" not in read_only
+    assert "createTopologyFolder" not in read_only
     write = {str(t.get("name") or "") for t in tools_for_scopes(["ne:read", "ne:write"])}
     assert "createTopologyView" in write
+    assert "createTopologyFolder" in write
 
 
 def test_fetch_scopes_unwraps_envelope() -> None:
@@ -175,7 +201,7 @@ def test_stdio_initialize_and_tools_list() -> None:
         proc.stdin.flush()
         list_resp = json.loads(proc.stdout.readline())
         tools = list_resp["result"]["tools"]
-        assert len(tools) == 13
+        assert len(tools) == 14
     finally:
         proc.terminate()
         proc.wait(timeout=5)
