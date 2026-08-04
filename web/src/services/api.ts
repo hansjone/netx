@@ -231,6 +231,77 @@ export type OpsTasksResponse = {
 
 export const fetchOpsTasks = () => apiGet<OpsTasksResponse>("/v1/ops/tasks");
 
+export type RuntimeMetrics = {
+  uptime_sec?: number;
+  pid?: number;
+  thread_count?: number;
+  host?: {
+    source?: string;
+    platform?: string;
+    cpu_percent?: number;
+    mem_percent?: number;
+    mem_used_bytes?: number;
+    mem_total_bytes?: number;
+    mem_available_bytes?: number;
+    error?: string;
+  };
+  db_pool?: {
+    checked_out?: number;
+    checked_in?: number;
+    overflow?: number;
+    size?: number;
+  };
+  cli_budget?: {
+    limit?: number;
+    in_use?: number;
+    available?: number;
+  };
+  webcrt?: {
+    active_sessions?: number;
+    max_sessions?: number;
+  };
+  config_sync?: { running?: boolean };
+  lldp_collect?: { running?: boolean };
+  port_traffic?: { running?: boolean };
+  device_schedulers?: {
+    stale?: boolean;
+    config_sync?: { running?: boolean };
+    lldp_collect?: { running?: boolean };
+    port_traffic?: { running?: boolean };
+  };
+  [key: string]: unknown;
+};
+
+export const fetchRuntimeMetrics = () => apiGet<RuntimeMetrics>("/v1/metrics/json");
+
+export type AuditLogItem = {
+  id: string;
+  ts: string | null;
+  actor_username: string;
+  action: string;
+  method: string;
+  path: string;
+  status_code: number;
+  client_ip: string;
+  detail: Record<string, unknown>;
+};
+
+export const fetchAuditLogs = (params?: {
+  page?: number;
+  pageSize?: number;
+  username?: string;
+  action?: string;
+}) => {
+  const p = new URLSearchParams();
+  p.set("page", String(Math.max(1, Number(params?.page || 1))));
+  p.set("page_size", String(Math.max(1, Math.min(100, Number(params?.pageSize || 20)))));
+  if (params?.username?.trim()) p.set("username", params.username.trim());
+  if (params?.action?.trim()) p.set("action", params.action.trim());
+  return apiGet<{ total: number; page: number; page_size: number; items: AuditLogItem[] }>(
+    `/v1/audit-logs?${p.toString()}`,
+  );
+};
+
 export const fetchUmeAlarmSubscriptionStatus = () =>
   apiGet<UmeAlarmSubscriptionStatus>("/v1/ume/alarm-subscription/status");
 

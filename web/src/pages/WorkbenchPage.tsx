@@ -1,15 +1,85 @@
 import { useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useI18n } from "../i18n";
 import { WorkbenchCardIcon } from "../components/WorkbenchCardIcon";
 import { modulesInSection, type ModuleDefinition, type WorkbenchSection } from "../config/modules";
 import { openOrFocusModule } from "../utils/moduleWindows";
 import { useAuth } from "../auth/AuthContext";
+import { fetchOpsTasks, fetchRuntimeMetrics } from "../services/api";
 
 const SECTIONS: WorkbenchSection[] = ["monitoring", "operations", "system"];
 
+function clampPct(n: number): number {
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(100, Math.round(n)));
+}
+
+function ratioPct(used: number, limit: number): number {
+  if (limit <= 0) return 0;
+  return clampPct((used / limit) * 100);
+}
+
+function loadHint(pct: number, t: (k: string) => string): string {
+  if (pct >= 75) return t("workbench.gauge.high");
+  if (pct >= 40) return t("workbench.gauge.normal");
+  return t("workbench.gauge.low");
+}
+
+function gaugeTone(pct: number): string {
+  if (pct >= 75) return "#f59e0b";
+  if (pct >= 40) return "#3b82f6";
+  return "#22c55e";
+}
+
+function formatBytes(n: number, locale: string): string {
+  const v = Math.max(0, Number(n) || 0);
+  const gib = 1024 ** 3;
+  const mib = 1024 ** 2;
+  if (v >= gib) {
+    const g = v / gib;
+    return locale.startsWith("zh") ? `${g.toFixed(1)} GiB` : `${g.toFixed(1)} GiB`;
+  }
+  return `${(v / mib).toFixed(0)} MiB`;
+}
+
+function Gauge({ label, hint, pct }: { label: string; hint: string; pct: number }) {
+  const tone = gaugeTone(pct);
+  const safe = clampPct(pct);
+  return (
+    <div className="wb-gauge">
+      <div className="wb-gauge__wrap">
+        <div
+          className="wb-gauge__ring"
+          style={{
+            background: `conic-gradient(${tone} ${safe}%, rgba(148, 163, 184, 0.16) 0)`,
+          }}
+        >
+          <span className="wb-gauge__value">{safe}%</span>
+        </div>
+      </div>
+      <div className="wb-gauge__label">{label}</div>
+      <div className="wb-gauge__hint">{hint}</div>
+    </div>
+  );
+}
+
 export function WorkbenchPage() {
-  const { t } = useI18n();
-  const { isAdmin, hasScope } = useAuth();
+  const { t, locale } = useI18n();
+  const { user, isAdmin, hasScope } = useAuth();
+
+  const metricsQuery = useQuery({
+    queryKey: ["runtimeMetrics"],
+    queryFn: fetchRuntimeMetrics,
+    refetchInterval: 5000,
+    staleTime: 2000,
+  });
+
+  const opsQuery = useQuery({
+    queryKey: ["opsTasks"],
+    queryFn: fetchOpsTasks,
+    refetchInterval: 4000,
+    staleTime: 1500,
+  });
 
   const visibleBySection = useMemo(() => {
     const canSee = (mod: ModuleDefinition) =>
@@ -22,11 +92,93 @@ export function WorkbenchPage() {
     ) as Record<WorkbenchSection, ModuleDefinition[]>;
   }, [isAdmin, hasScope]);
 
+  const metrics = metricsQuery.data;
+  const host = metrics?.host;
+  const activeTasks = opsQuery.data?.active ?? 0;
+  const totalTasks = opsQuery.data?.total ?? 0;
+
+  const cpuPct = clampPct(Number(host?.cpu_percent ?? 0));
+  const memPct = clampPct(Number(host?.mem_percent ?? 0));
+  const memUsed = Number(host?.mem_used_bytes || 0);
+  const memTotal = Number(host?.mem_total_bytes || 0);
+
+  const cliUsed = Number(metrics?.cli_budget?.in_use || 0);
+  const cliLimit = Math.max(1, Number(metrics?.cli_budget?.limit || 0));
+  const cliPct = ratioPct(cliUsed, cliLimit);
+
+  const dbOut = Number(metrics?.db_pool?.checked_out || 0);
+  const dbSize = Math.max(1, Number(metrics?.db_pool?.size || 0));
+  const dbPct = ratioPct(dbOut, dbSize);
+
+  const webUsed = Number(metrics?.webcrt?.active_sessions || 0);
+  const webMax = Math.max(1, Number(metrics?.webcrt?.max_sessions || 20));
+  const webPct = ratioPct(webUsed, webMax);
+
+  const taskCap = Math.max(totalTasks, activeTasks, 8);
+  const taskPct = ratioPct(activeTasks, taskCap);
+
+  const todayLabel = useMemo(() => {
+    try {
+      return new Intl.DateTimeFormat(locale === "en" ? "en-US" : "zh-CN", {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+        weekday: "short",
+      }).format(new Date());
+    } catch {
+      return new Date().toLocaleDateString();
+    }
+  }, [locale]);
+
+  const displayName = user?.username || "admin";
+
   return (
     <div className="workbench">
-      <header className="wb-head">
-        <h1 className="wb-head__title">{t("workbench.title")}</h1>
-      </header>
+      <section className="wb-hero" aria-label={t("workbench.title")}>
+        <div className="wb-hero__copy">
+          <p className="wb-hero__eyebrow">{t("workbench.welcomeEyebrow")}</p>
+          <h1 className="wb-hero__title">{t("workbench.welcomeTitle", { name: displayName })}</h1>
+          <p className="wb-hero__date">{t("workbench.today", { date: todayLabel })}</p>
+        </div>
+        <div className="wb-hero__status" aria-label={t("workbench.statusTitle")}>
+          <div className="wb-gauges wb-gauges--hero">
+            <Gauge
+              label={t("workbench.gauge.cpu")}
+              hint={`${cpuPct}% · ${loadHint(cpuPct, t)}`}
+              pct={cpuPct}
+            />
+            <Gauge
+              label={t("workbench.gauge.mem")}
+              hint={
+                memTotal > 0
+                  ? `${formatBytes(memUsed, locale)} / ${formatBytes(memTotal, locale)}`
+                  : loadHint(memPct, t)
+              }
+              pct={memPct}
+            />
+            <Gauge
+              label={t("workbench.gauge.cli")}
+              hint={`${cliUsed}/${cliLimit || "—"} · ${loadHint(cliPct, t)}`}
+              pct={cliPct}
+            />
+            <Gauge
+              label={t("workbench.gauge.db")}
+              hint={`${dbOut}/${dbSize || "—"} · ${loadHint(dbPct, t)}`}
+              pct={dbPct}
+            />
+            <Gauge
+              label={t("workbench.gauge.webcrt")}
+              hint={`${webUsed}/${webMax} · ${loadHint(webPct, t)}`}
+              pct={webPct}
+            />
+            <Gauge
+              label={t("workbench.gauge.tasks")}
+              hint={`${activeTasks}/${taskCap} · ${loadHint(taskPct, t)}`}
+              pct={taskPct}
+            />
+          </div>
+        </div>
+      </section>
 
       {SECTIONS.map((section) => {
         const mods = visibleBySection[section];

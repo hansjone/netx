@@ -12,6 +12,7 @@ from .audit_async import audit_queue_status
 from .cli_budget import cli_budget_status
 from .config import settings
 from .db import db_pool_status
+from .host_metrics import collect_host_metrics
 from .oclaw_alarm_forwarder import forwarder_status
 
 router = APIRouter(tags=["metrics"])
@@ -29,6 +30,7 @@ def collect_runtime_metrics() -> dict[str, Any]:
         "audit_queue": audit_queue_status(),
         "oclaw_forwarder": forwarder_status(),
         "schedulers_inline": bool(getattr(settings, "run_inline_schedulers", True)),
+        "host": collect_host_metrics(),
     }
     try:
         import resource
@@ -124,6 +126,15 @@ def _prom_lines(metrics: dict[str, Any]) -> str:
         lines.append(f'netx_webcrt_queue_dropped_total {web["queue_dropped_total"]}')
     if "ru_maxrss" in metrics:
         lines.append(f'netx_ru_maxrss {metrics["ru_maxrss"]}')
+    host = metrics.get("host") or {}
+    if host.get("cpu_percent") is not None:
+        lines.append(f'netx_host_cpu_percent {host["cpu_percent"]}')
+    if host.get("mem_percent") is not None:
+        lines.append(f'netx_host_mem_percent {host["mem_percent"]}')
+    if host.get("mem_used_bytes") is not None:
+        lines.append(f'netx_host_mem_used_bytes {host["mem_used_bytes"]}')
+    if host.get("mem_total_bytes") is not None:
+        lines.append(f'netx_host_mem_total_bytes {host["mem_total_bytes"]}')
     lines.append("")
     return "\n".join(lines)
 
@@ -136,4 +147,10 @@ def metrics_prometheus() -> Response:
 
 @router.get("/metrics/json")
 def metrics_json() -> dict[str, Any]:
+    return collect_runtime_metrics()
+
+
+@router.get("/v1/metrics/json")
+def metrics_json_v1() -> dict[str, Any]:
+    """Alias under /v1 so Vite/nginx /v1 proxies also work."""
     return collect_runtime_metrics()
