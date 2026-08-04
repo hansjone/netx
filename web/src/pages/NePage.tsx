@@ -140,6 +140,14 @@ function connectStatusClass(status: string): string {
   return "pt-list-status--unknown";
 }
 
+function connectPillLevel(status: string): "up" | "down" | "unknown" | "warn" {
+  const s = String(status || "").toLowerCase();
+  if (s === "pass" || s === "ok") return "up";
+  if (s === "fail" || s === "error") return "down";
+  if (s === "testing") return "warn";
+  return "unknown";
+}
+
 export function NePage() {
   const { t } = useI18n();
   const { showOk, showError } = useToast();

@@ -557,7 +557,8 @@ th {
 pre {
   white-space: pre-wrap;
   margin: 0;
-  background: #091425;
+  background: #0f172a;
+  color: #e2e8f0;
   border: 1px solid #223651;
   border-radius: 8px;
   padding: 10px;
