@@ -85,7 +85,11 @@ function pickPrimary(list: Edge[]): Edge {
  * Default: one logical edge per NE pair (bundle parallel links).
  * Expanded: all physical edges, offset when count > 1.
  */
-export function buildLinkDisplayEdges(edges: Edge[], expandPhysical: boolean): Edge[] {
+export function buildLinkDisplayEdges(
+  edges: Edge[],
+  expandPhysical: boolean,
+  hidePorts = false,
+): Edge[] {
   const groups = new Map<string, Edge[]>();
   for (const e of edges) {
     const k = pairKey(e.source, e.target);
@@ -108,10 +112,12 @@ export function buildLinkDisplayEdges(edges: Edge[], expandPhysical: boolean): E
           parallelIndex: i,
           parallelCount: count,
         };
+        const portLabel = formatPortPairLabel(data.source_port || "", data.target_port || "");
         out.push({
           ...e,
           type: count > 1 ? "topoParallel" : e.type || "straight",
-          label: formatPortPairLabel(data.source_port || "", data.target_port || "") || e.label,
+          // Never fall back to a stale e.label — it may still contain ports.
+          label: hidePorts ? undefined : portLabel || undefined,
           data,
         });
       });
@@ -127,10 +133,11 @@ export function buildLinkDisplayEdges(edges: Edge[], expandPhysical: boolean): E
         member_count: 1,
         members: [memberFrom(e)],
       };
+      const portLabel = formatPortPairLabel(data.source_port || "", data.target_port || "");
       out.push({
         ...e,
         type: "straight",
-        label: formatPortPairLabel(data.source_port || "", data.target_port || "") || e.label,
+        label: hidePorts ? undefined : portLabel || undefined,
         data,
       });
       continue;
@@ -153,10 +160,11 @@ export function buildLinkDisplayEdges(edges: Edge[], expandPhysical: boolean): E
       ...primary,
       id: aggregateIdForPair(primary.source, primary.target),
       type: "straight",
-      label: formatBundleLabel(list.length, {
-        a_port: data.source_port,
-        b_port: data.target_port,
-      }),
+      label: formatBundleLabel(
+        list.length,
+        { a_port: data.source_port, b_port: data.target_port },
+        { hidePorts },
+      ) || undefined,
       data,
     });
   }

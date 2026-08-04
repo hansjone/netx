@@ -819,26 +819,19 @@ export function TopologyPage() {
     [hideIp, hideVendor, hidePorts, toolMode],
   );
   const displayEdges = useMemo(() => {
-    const built = buildLinkDisplayEdges(edges, expandPhysicalLinks).map((e) =>
+    const built = buildLinkDisplayEdges(edges, expandPhysicalLinks, hidePorts).map((e) =>
       withEdgeVisual(e, edgeDefaults),
     );
     return built.map((e) => {
       const d = (e.data || {}) as EdgeStyleData;
-      const count = Number(d.member_count || 1);
       const selected =
         e.id === selectedEdgeId ||
         Boolean(d.members?.some((m: LinkMember) => m.id === selectedEdgeId));
-      let label: string | undefined;
-      if (hidePorts) {
-        // Keep only the bundle count when ports are hidden — never leak port names.
-        label = !expandPhysicalLinks && count > 1 ? `×${count}` : undefined;
-      } else {
-        label = e.label ? String(e.label) : undefined;
-      }
       return {
         ...e,
         selected,
-        label,
+        // Empty string clears RF's previous edge-text; undefined can leave a stale label.
+        label: e.label ? String(e.label) : "",
         animated: edgeFlow,
       };
     });
