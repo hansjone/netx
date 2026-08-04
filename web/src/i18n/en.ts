@@ -287,7 +287,7 @@ const en = {
     concurrency: "Concurrency",
     historyKeep: "Jobs to keep",
     scope: "Scope",
-    scopeAll: "All managed NEs",
+    scopeAll: "All NEs (managed + UME)",
     scopeSelected: "Selected NEs",
     savePolicy: "Save policy",
     selectedCount: "{{count}} selected",

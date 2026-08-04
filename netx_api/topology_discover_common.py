@@ -137,7 +137,12 @@ def _resolve_scan_targets(
     default_profile = get_default_profile(db)
     targets: list[dict[str, str]] = []
     if scope == "all_inventory":
+        # Managed inventory first; then UME NEs not already covered by the same management IP.
+        managed_ips: set[str] = set()
         for ne in db.query(ManagedNE).all():
+            ip = str(ne.ip_address or "").strip()
+            if ip:
+                managed_ips.add(ip)
             targets.append(
                 {
                     "ne_id": ne.id,
@@ -148,6 +153,16 @@ def _resolve_scan_targets(
                     "device_type": ne.device_type or "",
                 }
             )
+        for ume in db.query(UmeInventoryNE).all():
+            uid = str(ume.ne_id or "").strip()
+            if not uid:
+                continue
+            ip = str(ume.ip_address or "").strip()
+            if ip and ip in managed_ips:
+                continue
+            row = _ume_target_dict(db, uid, default_profile)
+            if row is not None:
+                targets.append(row)
         return targets
 
     managed_ids = [str(x).strip() for x in (body.managed_ne_ids or []) if str(x).strip()]

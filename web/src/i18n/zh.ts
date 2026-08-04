@@ -284,7 +284,7 @@ const zh = {
     concurrency: "并发",
     historyKeep: "任务保留数",
     scope: "范围",
-    scopeAll: "全部纳管网元",
+    scopeAll: "全部网元（纳管+UME）",
     scopeSelected: "指定网元",
     savePolicy: "保存策略",
     selectedCount: "已选 {{count}} 台",

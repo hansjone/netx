@@ -242,6 +242,51 @@ class LldpCollectTests(unittest.TestCase):
         self.assertEqual(job.status, "failed")
         self.assertIn("running_stale_timeout", job.error or "")
 
+    def test_all_inventory_includes_ume(self) -> None:
+        from netx_api.models import UmeInventoryNE
+        from netx_api.topology_discover_common import _resolve_scan_targets
+        from netx_api.topology_schemas import FabricDiscoverRequest
+
+        suffix = uuid4().hex[:8]
+        managed = ManagedNE(
+            id=f"m-{suffix}",
+            name=f"M-{suffix}",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address="10.20.30.1",
+        )
+        ume_only = UmeInventoryNE(
+            ne_id=f"u-{suffix}",
+            ne_name=f"U-{suffix}",
+            ip_address="10.20.30.2",
+            vendor="ZTE",
+            ne_type="ZXCTN",
+        )
+        # Same IP as managed — should be skipped to avoid double SSH.
+        ume_dup = UmeInventoryNE(
+            ne_id=f"udup-{suffix}",
+            ne_name=f"UDup-{suffix}",
+            ip_address="10.20.30.1",
+            vendor="ZTE",
+            ne_type="ZXCTN",
+        )
+        self.db.add(managed)
+        self.db.add(ume_only)
+        self.db.add(ume_dup)
+        self.db.commit()
+
+        targets = _resolve_scan_targets(self.db, FabricDiscoverRequest(scope="all_inventory"))
+        ids = {(t.get("ne_id"), t.get("ume_ne_id")) for t in targets}
+        self.assertIn((managed.id, ""), ids)
+        self.assertIn((ume_only.ne_id, ume_only.ne_id), ids)
+        self.assertNotIn((ume_dup.ne_id, ume_dup.ne_id), ids)
+
+        # Cleanup shared DB rows created by this test.
+        self.db.delete(managed)
+        self.db.delete(ume_only)
+        self.db.delete(ume_dup)
+        self.db.commit()
+
 
 if __name__ == "__main__":
     unittest.main()

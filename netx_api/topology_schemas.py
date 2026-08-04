@@ -74,7 +74,7 @@ class FabricNeighborhoodOut(BaseModel):
 class FabricDiscoverRequest(BaseModel):
     """Start LLDP discovery into fabric (no CDP)."""
 
-    scope: str = Field(default="ne_ids", description="all_inventory | ne_ids")
+    scope: str = Field(default="ne_ids", description="all_inventory (managed+UME) | ne_ids")
     ne_ids: list[str] = Field(
         default_factory=list,
         description="Legacy mixed ids (managed first, then ume). Prefer managed_ne_ids/ume_ne_ids.",
