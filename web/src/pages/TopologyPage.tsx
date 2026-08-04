@@ -107,6 +107,13 @@ function formatUpdatedAt(value?: string | null): string {
 }
 
 const SNAP_GRID: [number, number] = [16, 16];
+
+/**
+ * onlyRenderVisibleElements leaves off-screen nodes unmeasured; default fitView
+ * skips those. includeHiddenNodes uses declared width/height so fit still works.
+ */
+const FIT_VIEW_OPTS = { padding: 0.2, includeHiddenNodes: true } as const;
+const FIT_VIEW_OPTS_FS = { padding: 0.15, includeHiddenNodes: true } as const;
 const UNDO_MAX = 40;
 const PALETTE_DND = "application/x-netx-topo-palette";
 
@@ -1009,7 +1016,7 @@ export function TopologyPage() {
       redoRef.current = [];
       clearDirty();
       bumpHistory();
-      window.setTimeout(() => rfRef.current?.fitView({ padding: 0.2 }), 50);
+      window.setTimeout(() => rfRef.current?.fitView({ ...FIT_VIEW_OPTS }), 50);
     }
     historyLockRef.current = false;
   }, [canvasMode, mapId, graphQuery.data, edgeDefaults, setNodes, setEdges, clearDirty, bumpHistory]);
@@ -1096,7 +1103,7 @@ export function TopologyPage() {
       const next = layoutGraph(nodes, edges, kind, { onlyIds });
       setNodes(next);
       markDirty();
-      window.setTimeout(() => rfRef.current?.fitView({ padding: 0.2 }), 40);
+      window.setTimeout(() => rfRef.current?.fitView({ ...FIT_VIEW_OPTS }), 40);
       if (opts?.persist && mapId) {
         try {
           const graph = await patchTopologyPositions(mapId, flowToPositions(next));
@@ -1362,7 +1369,7 @@ export function TopologyPage() {
         setEdges(rfEdges);
         historyLockRef.current = false;
         if (didAutoLayout) {
-          window.setTimeout(() => rfRef.current?.fitView({ padding: 0.2 }), 50);
+          window.setTimeout(() => rfRef.current?.fitView({ ...FIT_VIEW_OPTS }), 50);
         }
         const out: TopologyDiscoverOut = {
           map_id: mapId,
@@ -1657,7 +1664,7 @@ export function TopologyPage() {
       const active = Boolean(el && document.fullscreenElement === el);
       setFullscreen(active);
       if (active) {
-        window.setTimeout(() => rfRef.current?.fitView({ padding: 0.15 }), 80);
+        window.setTimeout(() => rfRef.current?.fitView({ ...FIT_VIEW_OPTS_FS }), 80);
       }
     };
     document.addEventListener("fullscreenchange", syncFs);
@@ -2043,7 +2050,12 @@ export function TopologyPage() {
       setSearchHitIds([nodeId]);
       if (searchHitTimerRef.current) window.clearTimeout(searchHitTimerRef.current);
       window.setTimeout(() => {
-        rfRef.current?.fitView({ nodes: [{ id: nodeId }], padding: 0.45, duration: 280 });
+        rfRef.current?.fitView({
+          nodes: [{ id: nodeId }],
+          padding: 0.45,
+          duration: 280,
+          includeHiddenNodes: true,
+        });
       }, 30);
       searchHitTimerRef.current = window.setTimeout(() => {
         setSearchHitIds((cur) => (cur.length === 1 && cur[0] === nodeId ? [] : cur));
@@ -2721,7 +2733,7 @@ export function TopologyPage() {
                 type="button"
                 className="btn btn--sm btn--ghost"
                 disabled={nodes.length === 0}
-                onClick={() => rfRef.current?.fitView({ padding: 0.2 })}
+                onClick={() => rfRef.current?.fitView({ ...FIT_VIEW_OPTS })}
               >
                 {t("topology.fit")}
               </button>
@@ -3276,7 +3288,7 @@ export function TopologyPage() {
                   type="button"
                   className="topo-fs-toolbar__btn"
                   title={t("topology.fit")}
-                  onClick={() => rfRef.current?.fitView({ padding: 0.2 })}
+                  onClick={() => rfRef.current?.fitView({ ...FIT_VIEW_OPTS })}
                 >
                   {t("topology.fit")}
                 </button>
@@ -3369,8 +3381,12 @@ export function TopologyPage() {
                   onMoveStart={closeCtxMenu}
                   onInit={(inst) => {
                     rfRef.current = inst as ReactFlowInstance<Node<NeNodeData>, Edge>;
+                    if (nodesRef.current.length > 0) {
+                      window.setTimeout(() => inst.fitView({ ...FIT_VIEW_OPTS }), 0);
+                    }
                   }}
                   fitView
+                  fitViewOptions={{ ...FIT_VIEW_OPTS }}
                   deleteKeyCode={null}
                   edgesFocusable
                 >
