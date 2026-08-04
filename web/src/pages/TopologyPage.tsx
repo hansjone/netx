@@ -451,6 +451,36 @@ const AUTO_LAYOUT_DISCOVER_KEY = "netx.topology.autoLayoutAfterDiscover";
 const DISCOVER_AUTO_ADD_KEY = "netx.topology.discoverAutoAddUnmatched";
 const DISCOVER_PROJECT_NEIGHBORS_KEY = "netx.topology.discoverProjectNeighbors";
 const SCALE_BUNDLE_WIDTH_KEY = "netx.topology.scaleBundleWidth";
+const CANVAS_BG_KEY = "netx.topology.canvasBg";
+const DEFAULT_CANVAS_BG = "#dbeafe";
+
+function loadCanvasBg(): string {
+  try {
+    const raw = String(localStorage.getItem(CANVAS_BG_KEY) || "").trim();
+    if (/^#[0-9a-fA-F]{6}$/.test(raw)) return raw.toLowerCase();
+  } catch {
+    /* ignore */
+  }
+  return DEFAULT_CANVAS_BG;
+}
+
+function persistCanvasBg(value: string) {
+  try {
+    localStorage.setItem(CANVAS_BG_KEY, value);
+  } catch {
+    /* ignore */
+  }
+}
+
+function canvasDotColor(bg: string): string {
+  const hex = String(bg || "").replace("#", "");
+  if (hex.length !== 6) return "#93c5fd";
+  const r = parseInt(hex.slice(0, 2), 16);
+  const g = parseInt(hex.slice(2, 4), 16);
+  const b = parseInt(hex.slice(4, 6), 16);
+  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return lum > 0.55 ? "#93c5fd" : "#64748b";
+}
 
 function loadBoolFlag(key: string, defaultValue: boolean): boolean {
   try {
@@ -703,6 +733,7 @@ export function TopologyPage() {
   );
   const [edgeFlow, setEdgeFlow] = useState(false);
   const [edgeDefaults, setEdgeDefaults] = useState<EdgeDefaults>(() => loadEdgeDefaults());
+  const [canvasBg, setCanvasBg] = useState(loadCanvasBg);
   const [toolMode, setToolMode] = useState<ToolMode>("select");
   const [snapToGrid, setSnapToGrid] = useState(true);
   const [autoLayoutAfterDiscover, setAutoLayoutAfterDiscover] = useState(loadAutoLayoutAfterDiscover);
@@ -2827,6 +2858,51 @@ export function TopologyPage() {
                     />
                     {t("topology.discoverProjectNeighbors")}
                   </label>
+                  <div className="topo-display-defaults topo-display-defaults--canvas-bg">
+                    <div className="topo-display-defaults__head">
+                      <strong>{t("topology.canvasBg")}</strong>
+                      <button
+                        type="button"
+                        className="btn btn--sm btn--ghost"
+                        onClick={() => {
+                          setCanvasBg(DEFAULT_CANVAS_BG);
+                          persistCanvasBg(DEFAULT_CANVAS_BG);
+                        }}
+                      >
+                        {t("topology.canvasBgReset")}
+                      </button>
+                    </div>
+                    <div className="topo-display-defaults__row">
+                      <span className="topo-display-defaults__name">{t("topology.canvasBgColor")}</span>
+                      <input
+                        type="color"
+                        value={canvasBg}
+                        title={t("topology.canvasBgColor")}
+                        onChange={(e) => {
+                          const next = e.target.value;
+                          setCanvasBg(next);
+                          persistCanvasBg(next);
+                        }}
+                      />
+                      <input
+                        className="topo-toolbar__select topo-canvas-bg-hex"
+                        value={canvasBg}
+                        spellCheck={false}
+                        aria-label={t("topology.canvasBgColor")}
+                        onChange={(e) => {
+                          const raw = e.target.value.trim();
+                          if (!/^#[0-9a-fA-F]{0,6}$/.test(raw)) return;
+                          setCanvasBg(raw);
+                          if (/^#[0-9a-fA-F]{6}$/.test(raw)) persistCanvasBg(raw.toLowerCase());
+                        }}
+                        onBlur={() => {
+                          if (!/^#[0-9a-fA-F]{6}$/.test(canvasBg)) {
+                            setCanvasBg(loadCanvasBg());
+                          }
+                        }}
+                      />
+                    </div>
+                  </div>
                   <div className="topo-display-defaults">
                     <div className="topo-display-defaults__head">
                       <strong>{t("topology.edgeDefaults")}</strong>
@@ -3244,6 +3320,7 @@ export function TopologyPage() {
           <div
             className={`topo-canvas${fullscreen ? " is-fullscreen" : ""}${toolMode === "pan" ? " is-pan-mode" : ""}`}
             ref={canvasRef}
+            style={{ ["--topo-canvas-bg" as string]: canvasBg }}
             onDragOver={onCanvasDragOver}
             onDrop={onCanvasDrop}
           >
@@ -3383,7 +3460,13 @@ export function TopologyPage() {
                   deleteKeyCode={null}
                   edgesFocusable
                 >
-                  <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="#d8dee8" />
+                  <Background
+                    variant={BackgroundVariant.Dots}
+                    gap={16}
+                    size={1}
+                    color={canvasDotColor(canvasBg)}
+                    bgColor={canvasBg}
+                  />
                   {toolMode === "connect" ? (
                     <div className="topo-mode-hint" role="status">
                       {t("topology.connectHint")}

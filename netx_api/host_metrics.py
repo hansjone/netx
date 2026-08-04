@@ -97,10 +97,11 @@ def _windows_cpu_utility_pdh(sample_sec: float = 0.25) -> float | None:
                 _PDH_COUNTER = h_counter
                 _PDH_PRIMED = False
 
+    # After prime, CollectQueryData alone is enough (matches Task Manager Utility).
             if pdh.PdhCollectQueryData(_PDH_QUERY) != 0:
                 return _PDH_LAST
             if not _PDH_PRIMED:
-                time.sleep(max(0.05, float(sample_sec)))
+                time.sleep(max(0.05, min(0.15, float(sample_sec))))
                 if pdh.PdhCollectQueryData(_PDH_QUERY) != 0:
                     return _PDH_LAST
                 _PDH_PRIMED = True
