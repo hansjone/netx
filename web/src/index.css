@@ -1,10 +1,10 @@
-* {
+﻿* {
   box-sizing: border-box;
 }
 
 body {
   margin: 0;
-  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   background: #070b14;
   color: #e2e8f0;
 }
