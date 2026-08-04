@@ -5,7 +5,7 @@ from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from .db import get_db
-from .device_types import SUPPORTED_DEVICE_TYPES, SUPPORTED_VENDORS
+from .device_types import SUPPORTED_VENDORS
 from .ne_connect import schedule_connect_tests
 from .ne_crypto import credentials_configured
 from .ne_exec import execute_managed_ne_commands
