@@ -6667,23 +6667,10 @@ pre {
   font-weight: 700;
 }
 
-/* Selected link: glow + wider interaction halo (inline stroke otherwise hides RF defaults). */
-.topo-canvas .react-flow__edge.selected .react-flow__edge-interaction,
-.topo-canvas .react-flow__edge.topo-edge--selected .react-flow__edge-interaction {
+/* Selected link: light highlight only (do not alter geometry / arrows). */
+.topo-canvas .react-flow__edge.selected .react-flow__edge-path {
   stroke: #2563eb !important;
-  stroke-width: 14px !important;
-  stroke-opacity: 0.28 !important;
-}
-
-.topo-canvas .react-flow__edge.selected .react-flow__edge-path,
-.topo-canvas .react-flow__edge.topo-edge--selected .react-flow__edge-path {
-  stroke-linecap: round;
-}
-
-.topo-canvas .react-flow__edge.selected .react-flow__edge-text,
-.topo-canvas .react-flow__edge.topo-edge--selected .react-flow__edge-text {
-  fill: #1d4ed8;
-  font-weight: 700;
+  stroke-width: 3px !important;
 }
 
 .topo-node__icon {

@@ -22,7 +22,6 @@ import {
   useNodesState,
   Handle,
   Position,
-  MarkerType,
   ConnectionMode,
   SelectionMode,
   type Connection,
@@ -558,31 +557,10 @@ function resolveEdgeStyle(
   };
 }
 
-function edgeMarker(stroke: string) {
-  return { type: MarkerType.ArrowClosed, width: 16, height: 16, color: stroke };
-}
-
 function withEdgeVisual(edge: Edge, defaults: EdgeDefaults): Edge {
   const data = (edge.data || {}) as EdgeStyleData;
-  const base = resolveEdgeStyle(data, defaults);
-  const selected = Boolean(edge.selected);
-  // Inline stroke beats RF's default .selected CSS — bump width + glow so selection is obvious.
-  const style = {
-    ...base,
-    strokeWidth: selected ? Math.min(14, Number(base.strokeWidth || 2) + 2.5) : base.strokeWidth,
-    ...(selected
-      ? {
-          filter:
-            "drop-shadow(0 0 2.5px rgba(37, 99, 235, 0.95)) drop-shadow(0 0 1px rgba(15, 23, 42, 0.4))",
-        }
-      : { filter: undefined }),
-  };
-  return {
-    ...edge,
-    style,
-    markerEnd: edgeMarker(base.stroke),
-    className: selected ? "topo-edge--selected" : undefined,
-  };
+  const style = resolveEdgeStyle(data, defaults);
+  return { ...edge, style, markerEnd: undefined };
 }
 
 function graphToFlow(
@@ -1698,15 +1676,15 @@ export function TopologyPage() {
   const clearSelection = useCallback(() => {
     setSelectedEdgeId(null);
     setNodes((ns) => ns.map((n) => ({ ...n, selected: false })));
-    setEdges((es) => es.map((e) => withEdgeVisual({ ...e, selected: false }, edgeDefaults)));
+    setEdges((es) => es.map((e) => ({ ...e, selected: false })));
     connectClickRef.current = null;
-  }, [setNodes, setEdges, edgeDefaults]);
+  }, [setNodes, setEdges]);
 
   const selectAllNodes = useCallback(() => {
     setSelectedEdgeId(null);
     setNodes((ns) => ns.map((n) => ({ ...n, selected: true })));
-    setEdges((es) => es.map((e) => withEdgeVisual({ ...e, selected: false }, edgeDefaults)));
-  }, [setNodes, setEdges, edgeDefaults]);
+    setEdges((es) => es.map((e) => ({ ...e, selected: false })));
+  }, [setNodes, setEdges]);
 
   const removeSelected = useCallback(async () => {
     if (!mapId) return;
@@ -2049,9 +2027,9 @@ export function TopologyPage() {
           return { ...n, selected: n.id === nodeId };
         }),
       );
-      setEdges((es) => es.map((e) => withEdgeVisual({ ...e, selected: false }, edgeDefaults)));
+      setEdges((es) => es.map((e) => ({ ...e, selected: false })));
     },
-    [setNodes, setEdges, edgeDefaults],
+    [setNodes, setEdges],
   );
 
   const locateNode = useCallback(
@@ -2220,11 +2198,9 @@ export function TopologyPage() {
     (edgeId: string) => {
       setSelectedEdgeId(edgeId);
       setNodes((ns) => ns.map((n) => ({ ...n, selected: false })));
-      setEdges((es) =>
-        es.map((e) => withEdgeVisual({ ...e, selected: e.id === edgeId }, edgeDefaults)),
-      );
+      setEdges((es) => es.map((e) => ({ ...e, selected: e.id === edgeId })));
     },
-    [setNodes, setEdges, edgeDefaults],
+    [setNodes, setEdges],
   );
 
   const onNodeClick = useCallback(
