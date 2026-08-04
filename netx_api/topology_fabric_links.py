@@ -72,12 +72,17 @@ def upsert_fabric_edge(
     source: str = "lldp",
     layer: str = "physical",
     now: datetime | None = None,
-) -> tuple[TopoFabricEdge, str]:
-    """Return (edge, action) where action is added|updated|kept_manual."""
+) -> tuple[TopoFabricEdge | None, str]:
+    """Return (edge, action) where action is added|updated|kept_manual|skipped_self_loop.
+
+    Self-loops are skipped (``(None, \"skipped_self_loop\")``) so LLDP discovery can
+    ignore a device advertising itself without aborting the rest of the scan.
+    Manual edge APIs should treat that action as a client error.
+    """
     now = now or _utcnow()
     a, b, ap, bp = _normalize_endpoints(a_node_id, b_node_id, a_port, b_port)
     if a == b:
-        raise HTTPException(status_code=400, detail="edge_self_loop")
+        return None, "skipped_self_loop"
     layer_v = str(layer or "physical").strip() or "physical"
     src = str(source or "lldp").strip().lower() or "lldp"
     if src == "stale":

@@ -222,6 +222,9 @@ def _apply_discover_hits(
                     source="lldp",
                     now=now,
                 )
+                if edge is None or action == "skipped_self_loop":
+                    # Device advertising itself (or peer resolved to same fabric node).
+                    continue
                 touched.append(edge.id)
                 replaced.extend(
                     _mark_replaced_port_peers(

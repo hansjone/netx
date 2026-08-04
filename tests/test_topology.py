@@ -249,6 +249,73 @@ class FabricTopologyTests(unittest.TestCase):
         self.assertEqual(calls["n"], 2)
         self.assertGreaterEqual(int(out.get("edges_added") or 0), 1)
 
+    def test_apply_discover_hits_skips_self_loop(self) -> None:
+        """LLDP advertising itself must not fail the whole apply; other peers still count."""
+        suffix = uuid4().hex[:8]
+        ne = ManagedNE(
+            id=f"nea-{suffix}",
+            name=f"R-self-{suffix}",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address=f"203.0.113.{(int(suffix[:2], 16) % 80) + 20}",
+        )
+        peer_ne = ManagedNE(
+            id=f"neb-{suffix}",
+            name=f"r-peer-{suffix}",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address=f"203.0.113.{(int(suffix[2:4], 16) % 80) + 120}",
+        )
+        self.db.add(ne)
+        self.db.add(peer_ne)
+        self.db.commit()
+        node = svc.ensure_fabric_node_for_managed(self.db, ne)
+        peer = svc.ensure_fabric_node_for_managed(self.db, peer_ne)
+        self.db.commit()
+        hits = [
+            lldp.NeighborHit(
+                remote_name=ne.name,
+                remote_ip=ne.ip_address,
+                local_port="Gi0/0",
+                remote_port="Gi0/0",
+            ),
+            lldp.NeighborHit(
+                remote_name=peer_ne.name,
+                remote_ip=peer_ne.ip_address,
+                local_port="Gi0/1",
+                remote_port="Ethernet1/0/1",
+            ),
+        ]
+        out = svc._apply_discover_hits(
+            self.db,
+            fabric_node_id=node.id,
+            hits=hits,
+            auto_add_unmatched=False,
+        )
+        self.assertTrue(out.get("ok"), out)
+        self.assertEqual(int(out.get("edges_added") or 0), 1)
+        edges = (
+            self.db.query(TopoFabricEdge)
+            .filter(
+                (TopoFabricEdge.a_node_id == node.id) | (TopoFabricEdge.b_node_id == node.id)
+            )
+            .all()
+        )
+        self.assertEqual(len(edges), 1)
+        ids = {edges[0].a_node_id, edges[0].b_node_id}
+        self.assertEqual(ids, {node.id, peer.id})
+
+        skipped, action = svc.upsert_fabric_edge(
+            self.db,
+            a_node_id=node.id,
+            b_node_id=node.id,
+            a_port="Lo0",
+            b_port="Lo0",
+            source="lldp",
+        )
+        self.assertIsNone(skipped)
+        self.assertEqual(action, "skipped_self_loop")
+
     def _region(self, name: str = "Test-Region") -> str:
         return svc.create_folder(
             self.db, TopologyFolderCreate(name=name, kind="region")

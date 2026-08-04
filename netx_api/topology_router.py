@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from .db import get_db
@@ -154,6 +154,8 @@ def api_fabric_manual_edge(
         b_port=body.b_port,
         source="manual",
     )
+    if edge is None or action == "skipped_self_loop":
+        raise HTTPException(status_code=400, detail="edge_self_loop")
     db.commit()
     refresh_fabric_stats(db)
     return {
