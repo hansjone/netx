@@ -8,9 +8,10 @@ from fastapi import HTTPException
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from .device_types import SUPPORTED_DEVICE_TYPES
+from .device_types import LLDP_DISCOVERED_NE_SOURCE, SUPPORTED_DEVICE_TYPES, SUPPORTED_VENDORS
 from .models import ManagedNE
 from .ne_crypto import encrypt_secret
+from .ne_hop_templates import default_bastion_username_template, default_hop_command_template
 from .ne_schemas import (
     BatchAccountConfig,
     HopProxyConfig,
@@ -21,6 +22,8 @@ from .ne_schemas import (
 from .ne_service_common import (
     _apply_hop_create,
     _apply_hop_update,
+    _normalize_hop_target_auth_mode,
+    _normalize_hop_vendor,
     _normalize_ip,
     _normalize_protocol,
     _normalize_vendor,
@@ -167,7 +170,16 @@ def update_managed_ne(db: Session, ne_id: str, body: ManagedNeUpdate) -> Managed
     )
     if any(k in data for k in hop_keys):
         _apply_hop_update(row, data)
+    # Filling IP on an LLDP placeholder promotes it into real inventory.
+    if "ip_address" in data and str(row.ip_address or "").strip():
+        if str(row.source or "").strip().lower() in {LLDP_DISCOVERED_NE_SOURCE, "lldp"}:
+            row.source = ""
     row.updated_at = _now()
+    # Keep linked fabric node identity in sync (name / IP / vendor).
+    if any(k in data for k in ("ip_address", "name", "vendor", "device_type")):
+        from .topology_fabric_nodes import ensure_fabric_node_for_managed
+
+        ensure_fabric_node_for_managed(db, row)
     db.commit()
     db.refresh(row)
     return row_to_out(row)
