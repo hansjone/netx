@@ -43,8 +43,15 @@ export function formatPortPairLabel(aPort: string, bPort: string): string {
   return a || b || "";
 }
 
-export function formatBundleLabel(count: number, sample?: { a_port?: string; b_port?: string }): string {
-  if (count <= 1) return formatPortPairLabel(sample?.a_port || "", sample?.b_port || "");
+export function formatBundleLabel(
+  count: number,
+  sample?: { a_port?: string; b_port?: string },
+  opts?: { hidePorts?: boolean },
+): string {
+  if (count <= 1) {
+    return opts?.hidePorts ? "" : formatPortPairLabel(sample?.a_port || "", sample?.b_port || "");
+  }
+  if (opts?.hidePorts) return `×${count}`;
   const sampleLabel = formatPortPairLabel(sample?.a_port || "", sample?.b_port || "");
   return sampleLabel ? `×${count} · ${sampleLabel}` : `×${count}`;
 }
