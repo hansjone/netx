@@ -5307,7 +5307,7 @@ pre {
 .topo-classify__section {
   margin-top: 18px;
   padding-top: 14px;
-  border-top: 1px solid #d5dde8;
+  border-top: 1px solid rgba(148, 163, 184, 0.18);
 }
 .topo-classify__section--first {
   margin-top: 8px;
@@ -5345,8 +5345,8 @@ pre {
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  border: 1px solid #94a3b8;
-  color: #64748b;
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  color: #94a3b8;
   font-size: 12px;
   font-weight: 600;
   line-height: 1;
@@ -5356,8 +5356,8 @@ pre {
 }
 .topo-classify__help:hover,
 .topo-classify__help:focus-visible {
-  border-color: #64748b;
-  color: #334155;
+  border-color: #93c5fd;
+  color: #e2e8f0;
   outline: none;
 }
 .topo-classify__help-tip {
@@ -5377,7 +5377,7 @@ pre {
   line-height: 1.45;
   white-space: normal;
   text-align: left;
-  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.22);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
   pointer-events: none;
 }
 .topo-classify__help-tip::after {
@@ -5395,7 +5395,7 @@ pre {
 .topo-classify__section h3 {
   margin: 0 0 10px;
   font-size: 14px;
-  color: var(--nm-brand, #0f1b2d);
+  color: var(--nm-brand, #f1f5f9);
 }
 .topo-classify__section-head {
   display: flex;
