@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from uuid import uuid4
 
 from netx_api.db import Base, SessionLocal, engine
+from netx_api.device_types import LLDP_DISCOVERED_NE_SOURCE
 from netx_api.lldp_collect_schemas import LldpCollectPolicyUpdate
 from netx_api.lldp_collect_service import (
     build_discover_request,
@@ -255,6 +256,14 @@ class LldpCollectTests(unittest.TestCase):
             device_type="cisco_ios",
             ip_address="10.20.30.1",
         )
+        placeholder = ManagedNE(
+            id=f"ph-{suffix}",
+            name=f"PH-{suffix}",
+            vendor="Other",
+            device_type="generic",
+            ip_address="",
+            source=LLDP_DISCOVERED_NE_SOURCE,
+        )
         ume_only = UmeInventoryNE(
             ne_id=f"u-{suffix}",
             ne_name=f"U-{suffix}",
@@ -271,6 +280,7 @@ class LldpCollectTests(unittest.TestCase):
             ne_type="ZXCTN",
         )
         self.db.add(managed)
+        self.db.add(placeholder)
         self.db.add(ume_only)
         self.db.add(ume_dup)
         self.db.commit()
@@ -280,9 +290,11 @@ class LldpCollectTests(unittest.TestCase):
         self.assertIn((managed.id, ""), ids)
         self.assertIn((ume_only.ne_id, ume_only.ne_id), ids)
         self.assertNotIn((ume_dup.ne_id, ume_dup.ne_id), ids)
+        self.assertNotIn((placeholder.id, ""), ids)
 
         # Cleanup shared DB rows created by this test.
         self.db.delete(managed)
+        self.db.delete(placeholder)
         self.db.delete(ume_only)
         self.db.delete(ume_dup)
         self.db.commit()

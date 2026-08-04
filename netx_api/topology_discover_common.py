@@ -7,6 +7,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from .cli_resolve import get_default_profile, infer_device_type_vendor
+from .device_types import LLDP_DISCOVERED_NE_SOURCE
 from .models import ManagedNE, TopoDiscoverJob, TopoDiscoverJobItem, UmeInventoryNE
 from .topology_common import _RAW_PREVIEW_MAX
 from .topology_schemas import (
@@ -22,6 +23,22 @@ def _raw_preview(raw: str, *, limit: int = _RAW_PREVIEW_MAX) -> str:
     if len(text) <= limit:
         return text
     return f"{text[:limit]}\n...[truncated preview {limit}/{len(text)} chars]"
+
+
+def _is_lldp_placeholder_ne(ne: ManagedNE) -> bool:
+    """LLDP SSH placeholders have no credentials until the operator promotes them."""
+    return str(ne.source or "").strip().lower() in {LLDP_DISCOVERED_NE_SOURCE, "lldp"}
+
+
+def _managed_target_dict(ne: ManagedNE) -> dict[str, str]:
+    return {
+        "ne_id": ne.id,
+        "ume_ne_id": "",
+        "ne_name": ne.name or "",
+        "ne_ip": ne.ip_address or "",
+        "vendor": ne.vendor or "",
+        "device_type": ne.device_type or "",
+    }
 
 
 def _job_out(
@@ -138,21 +155,15 @@ def _resolve_scan_targets(
     targets: list[dict[str, str]] = []
     if scope == "all_inventory":
         # Managed inventory first; then UME NEs not already covered by the same management IP.
+        # Skip LLDP placeholders (no login yet); once promoted they join normal inventory.
         managed_ips: set[str] = set()
         for ne in db.query(ManagedNE).all():
+            if _is_lldp_placeholder_ne(ne):
+                continue
             ip = str(ne.ip_address or "").strip()
             if ip:
                 managed_ips.add(ip)
-            targets.append(
-                {
-                    "ne_id": ne.id,
-                    "ume_ne_id": "",
-                    "ne_name": ne.name or "",
-                    "ne_ip": ne.ip_address or "",
-                    "vendor": ne.vendor or "",
-                    "device_type": ne.device_type or "",
-                }
-            )
+            targets.append(_managed_target_dict(ne))
         for ume in db.query(UmeInventoryNE).all():
             uid = str(ume.ne_id or "").strip()
             if not uid:
@@ -173,19 +184,10 @@ def _resolve_scan_targets(
             if mid in seen:
                 continue
             ne = db.get(ManagedNE, mid)
-            if ne is None:
+            if ne is None or _is_lldp_placeholder_ne(ne):
                 continue
             seen.add(mid)
-            targets.append(
-                {
-                    "ne_id": ne.id,
-                    "ume_ne_id": "",
-                    "ne_name": ne.name or "",
-                    "ne_ip": ne.ip_address or "",
-                    "vendor": ne.vendor or "",
-                    "device_type": ne.device_type or "",
-                }
-            )
+            targets.append(_managed_target_dict(ne))
         for uid in ume_ids:
             key = f"ume:{uid}"
             if key in seen:
@@ -206,17 +208,10 @@ def _resolve_scan_targets(
     for mid in list(filter_ids):
         ne = db.get(ManagedNE, mid)
         if ne is not None:
-            targets.append(
-                {
-                    "ne_id": ne.id,
-                    "ume_ne_id": "",
-                    "ne_name": ne.name or "",
-                    "ne_ip": ne.ip_address or "",
-                    "vendor": ne.vendor or "",
-                    "device_type": ne.device_type or "",
-                }
-            )
             filter_ids.discard(mid)
+            if _is_lldp_placeholder_ne(ne):
+                continue
+            targets.append(_managed_target_dict(ne))
     for uid in list(filter_ids):
         row = _ume_target_dict(db, uid, default_profile)
         if row is not None:
