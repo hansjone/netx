@@ -34,7 +34,6 @@ import "@xyflow/react/dist/style.css";
 import {
   addTopologyViewNodes,
   createFabricManualEdge,
-  createManagedNe,
   createTopologyFolder,
   createTopologyView,
   deleteTopologyFolder,
@@ -42,7 +41,6 @@ import {
   fetchLldpDiscoverJob,
   fetchManagedNe,
   fetchManagedNeById,
-  fetchManagedNeMeta,
   fetchTopologyGraph,
   fetchTopologyTree,
   fetchUmeNe,
@@ -52,7 +50,6 @@ import {
   removeTopologyViewNodes,
   searchFabricNodes,
   startLldpDiscover,
-  updateManagedNe,
   updateTopologyFolder,
   updateTopologyMap,
 } from "../services/api";
@@ -294,18 +291,6 @@ type CtxMenu =
   | { kind: "node"; id: string; x: number; y: number }
   | { kind: "edge"; id: string; x: number; y: number }
   | { kind: "selection"; x: number; y: number };
-
-/** Complete / create login for unmanaged topology nodes (LLDP placeholders, orphans). */
-type TermConnectDialog = {
-  neId: string;
-  name: string;
-  vendor: string;
-  ip_address: string;
-  port: number;
-  protocol: "ssh" | "telnet";
-  username: string;
-  password: string;
-};
 
 const TopoDisplayContext = createContext<TopoDisplayOpts>({
   hideIp: true,
@@ -724,8 +709,6 @@ export function TopologyPage() {
   );
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [addNeOpen, setAddNeOpen] = useState(false);
-  const [termDialog, setTermDialog] = useState<TermConnectDialog | null>(null);
-  const [termBusy, setTermBusy] = useState(false);
   const [paletteSource, setPaletteSource] = useState<PaletteSource>("managed");
   const [paletteSelectedKeys, setPaletteSelectedKeys] = useState<string[]>([]);
   const [paletteAdding, setPaletteAdding] = useState(false);
@@ -836,16 +819,6 @@ export function TopologyPage() {
       };
     });
   }, [edges, expandPhysicalLinks, hidePorts, edgeFlow, edgeDefaults, selectedEdgeId]);
-
-  const neMetaQuery = useQuery({
-    queryKey: queryKeys.managedNeMeta,
-    queryFn: fetchManagedNeMeta,
-    enabled: Boolean(termDialog),
-    staleTime: 60_000,
-  });
-  const termVendors = neMetaQuery.data?.vendors?.length
-    ? neMetaQuery.data.vendors
-    : ["ZTE", "Huawei", "Cisco", "H3C", "Juniper", "Nokia", "Other"];
 
   const treeQuery = useQuery({
     queryKey: queryKeys.topologyTree,
@@ -1873,18 +1846,34 @@ export function TopologyPage() {
     closeCtxMenu();
   };
 
+  const openNeInventory = (opts: {
+    neId?: string;
+    create?: boolean;
+    name?: string;
+    ip_address?: string;
+    vendor?: string;
+  }) => {
+    const q = new URLSearchParams();
+    if (opts.neId) {
+      q.set("ne_id", opts.neId);
+    } else if (opts.create) {
+      q.set("create", "1");
+      if (opts.name) q.set("name", opts.name);
+      if (opts.ip_address) q.set("ip_address", opts.ip_address);
+      if (opts.vendor) q.set("vendor", opts.vendor);
+    }
+    const qs = q.toString();
+    openOrFocusModule({
+      moduleId: "ne",
+      path: qs ? `/ne?${qs}` : "/ne",
+    });
+  };
+
   const openWebcrtFor = (node: Node<NeNodeData> | null) => {
     closeCtxMenu();
     if (!node) return;
     const managedId = String(node.data.managed_ne_id || "").trim();
     const umeId = String(node.data.ume_ne_id || "").trim();
-
-    const openManaged = (neId: string) => {
-      openOrFocusModule({
-        moduleId: "webcrt",
-        path: `/webcrt?ne_id=${encodeURIComponent(neId)}`,
-      });
-    };
 
     if (managedId) {
       void (async () => {
@@ -1892,25 +1881,18 @@ export function TopologyPage() {
           const ne = await fetchManagedNeById(managedId);
           const src = String(ne.source || "").trim().toLowerCase();
           const hasIp = Boolean(String(ne.ip_address || "").trim());
-          // Ready inventory / WebCRT hosts: reuse stored credentials.
-          // LLDP placeholders (empty IP) and other incomplete rows need a form.
+          // Ready inventory hosts: reuse stored credentials (incl. hop/proxy).
+          // LLDP placeholders / incomplete rows → full NE edit form (vendor, hop, etc.).
           const needsSetup = !hasIp || src === "lldp";
           if (!needsSetup) {
-            openManaged(managedId);
+            openOrFocusModule({
+              moduleId: "webcrt",
+              path: `/webcrt?ne_id=${encodeURIComponent(managedId)}`,
+            });
             return;
           }
-          const hintIp = String(ne.ip_address || ne.source_ref || node.data.ne_ip || "").trim();
-          const proto = String(ne.protocol || "ssh").toLowerCase() === "telnet" ? "telnet" : "ssh";
-          setTermDialog({
-            neId: managedId,
-            name: String(ne.name || node.data.label || "").trim(),
-            vendor: String(ne.vendor || node.data.vendor || "Other").trim() || "Other",
-            ip_address: hintIp,
-            port: Number(ne.port) || (proto === "telnet" ? 23 : 22),
-            protocol: proto,
-            username: String(ne.username || "").trim(),
-            password: "",
-          });
+          showOk(t("topology.completeNeFirst"));
+          openNeInventory({ neId: managedId });
         } catch (err) {
           showError(String(err));
         }
@@ -1926,103 +1908,22 @@ export function TopologyPage() {
       return;
     }
 
-    // No inventory link — same as creating a managed NE, then open terminal.
-    setTermDialog({
-      neId: "",
+    // No inventory link — open NE create with topology hint fields.
+    showOk(t("topology.completeNeFirst"));
+    openNeInventory({
+      create: true,
       name: String(node.data.label || "").trim(),
-      vendor: String(node.data.vendor || "Other").trim() || "Other",
       ip_address: String(node.data.ne_ip || "").trim(),
-      port: 22,
-      protocol: "ssh",
-      username: "",
-      password: "",
+      vendor: String(node.data.vendor || "").trim(),
     });
-  };
-
-  const submitTermDialog = async () => {
-    if (!termDialog || termBusy) return;
-    const ip = termDialog.ip_address.trim();
-    if (!ip) {
-      showError(t("topology.termConnect.ipRequired"));
-      return;
-    }
-    const protocol = termDialog.protocol;
-    const username = termDialog.username.trim();
-    if (protocol === "ssh" && !username) {
-      showError(t("topology.termConnect.userRequired"));
-      return;
-    }
-    if (protocol === "ssh" && !termDialog.password) {
-      showError(t("topology.termConnect.passwordRequired"));
-      return;
-    }
-    const port = Number(termDialog.port) || (protocol === "telnet" ? 23 : 22);
-    const name = termDialog.name.trim() || ip;
-    const vendor = String(termDialog.vendor || "Other").trim() || "Other";
-    setTermBusy(true);
-    try {
-      let neId = termDialog.neId;
-      if (neId) {
-        await updateManagedNe(neId, {
-          name,
-          vendor,
-          ip_address: ip,
-          port,
-          protocol,
-          username,
-          ...(protocol === "ssh" ? { password: termDialog.password } : {}),
-        });
-        setNodes((ns) =>
-          ns.map((n) =>
-            String(n.data.managed_ne_id || "") === neId
-              ? {
-                  ...n,
-                  data: {
-                    ...n.data,
-                    ne_ip: ip,
-                    vendor,
-                    label: name || n.data.label,
-                  },
-                }
-              : n,
-          ),
-        );
-      } else {
-        const created = await createManagedNe({
-          name,
-          vendor,
-          device_type: "generic",
-          ip_address: ip,
-          port,
-          protocol,
-          username: username || (protocol === "telnet" ? "" : username),
-          password: protocol === "ssh" ? termDialog.password : "",
-        });
-        neId = created.id;
-      }
-      setTermDialog(null);
-      showOk(t("topology.termConnect.saved"));
-      void queryClient.invalidateQueries({ queryKey: queryKeys.managedNeAll });
-      openOrFocusModule({
-        moduleId: "webcrt",
-        path: `/webcrt?ne_id=${encodeURIComponent(neId)}`,
-      });
-    } catch (err) {
-      showError(String(err));
-    } finally {
-      setTermBusy(false);
-    }
   };
 
   const openNeFor = (node: Node<NeNodeData> | null) => {
     closeCtxMenu();
-    const managedId = node?.data.managed_ne_id;
-    const umeId = node?.data.ume_ne_id;
+    const managedId = String(node?.data.managed_ne_id || "").trim();
+    const umeId = String(node?.data.ume_ne_id || "").trim();
     if (managedId) {
-      openOrFocusModule({
-        moduleId: "ne",
-        path: "/ne",
-      });
+      openNeInventory({ neId: managedId });
       return;
     }
     if (umeId) {
@@ -3903,162 +3804,6 @@ export function TopologyPage() {
             </>
           )}
         </ul>
-      ) : null}
-
-      {termDialog ? (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onClick={() => {
-            if (!termBusy) setTermDialog(null);
-          }}
-        >
-          <div
-            className="modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="topo-term-connect-title"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 id="topo-term-connect-title">
-              {termDialog.neId ? t("topology.termConnect.title") : t("topology.termConnect.titleCreate")}
-            </h3>
-            <p className="form-hint">{t("topology.termConnect.hint")}</p>
-            <div className="form-grid">
-              <label>
-                <span className="form-label">{t("topology.termConnect.name")}</span>
-                <input
-                  value={termDialog.name}
-                  disabled={termBusy}
-                  onChange={(e) => setTermDialog({ ...termDialog, name: e.target.value })}
-                />
-              </label>
-              <label>
-                <span className="form-label">
-                  {t("topology.termConnect.vendor")}
-                  <span className="form-label__required" aria-hidden="true">
-                    {" "}
-                    *
-                  </span>
-                </span>
-                <select
-                  value={
-                    termVendors.includes(termDialog.vendor) ? termDialog.vendor : termDialog.vendor || "Other"
-                  }
-                  disabled={termBusy}
-                  onChange={(e) => setTermDialog({ ...termDialog, vendor: e.target.value })}
-                >
-                  {!termVendors.includes(termDialog.vendor) && termDialog.vendor ? (
-                    <option value={termDialog.vendor}>{termDialog.vendor}</option>
-                  ) : null}
-                  {termVendors.map((v) => (
-                    <option key={v} value={v}>
-                      {v}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                <span className="form-label">
-                  {t("topology.termConnect.protocol")}
-                  <span className="form-label__required" aria-hidden="true">
-                    {" "}
-                    *
-                  </span>
-                </span>
-                <select
-                  value={termDialog.protocol}
-                  disabled={termBusy}
-                  onChange={(e) => {
-                    const protocol = e.target.value === "telnet" ? "telnet" : "ssh";
-                    setTermDialog({
-                      ...termDialog,
-                      protocol,
-                      port: protocol === "telnet" ? 23 : 22,
-                    });
-                  }}
-                >
-                  <option value="ssh">SSH</option>
-                  <option value="telnet">Telnet</option>
-                </select>
-              </label>
-              <label>
-                <span className="form-label">
-                  {t("topology.termConnect.ip")}
-                  <span className="form-label__required" aria-hidden="true">
-                    {" "}
-                    *
-                  </span>
-                </span>
-                <input
-                  required
-                  autoFocus
-                  value={termDialog.ip_address}
-                  disabled={termBusy}
-                  placeholder="192.168.1.1"
-                  onChange={(e) => setTermDialog({ ...termDialog, ip_address: e.target.value })}
-                />
-              </label>
-              <label>
-                <span className="form-label">{t("topology.termConnect.port")}</span>
-                <input
-                  type="number"
-                  value={termDialog.port}
-                  disabled={termBusy}
-                  onChange={(e) =>
-                    setTermDialog({
-                      ...termDialog,
-                      port: Number(e.target.value) || (termDialog.protocol === "telnet" ? 23 : 22),
-                    })
-                  }
-                />
-              </label>
-              {termDialog.protocol === "ssh" ? (
-                <>
-                  <label>
-                    <span className="form-label">
-                      {t("topology.termConnect.username")}
-                      <span className="form-label__required" aria-hidden="true">
-                        {" "}
-                        *
-                      </span>
-                    </span>
-                    <input
-                      required
-                      value={termDialog.username}
-                      disabled={termBusy}
-                      onChange={(e) => setTermDialog({ ...termDialog, username: e.target.value })}
-                    />
-                  </label>
-                  <label>
-                    <span className="form-label">
-                      {t("topology.termConnect.password")}
-                      <span className="form-label__required" aria-hidden="true">
-                        {" "}
-                        *
-                      </span>
-                    </span>
-                    <input
-                      type="password"
-                      required
-                      value={termDialog.password}
-                      disabled={termBusy}
-                      onChange={(e) => setTermDialog({ ...termDialog, password: e.target.value })}
-                    />
-                  </label>
-                </>
-              ) : null}
-            </div>
-            <div className="modal__actions">
-              <button type="button" disabled={termBusy} onClick={() => setTermDialog(null)}>
-                {t("topology.termConnect.cancel")}
-              </button>
-              <button type="button" disabled={termBusy} onClick={() => void submitTermDialog()}>
-                {termBusy ? t("topology.termConnect.connecting") : t("topology.termConnect.connect")}
-              </button>
-            </div>
-          </div>
-        </div>
       ) : null}
     </div>
   );

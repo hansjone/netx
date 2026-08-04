@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   batchApplyAccountManagedNe,
@@ -10,6 +11,7 @@ import {
   deleteManagedNe,
   fetchIdsByTag,
   fetchManagedNe,
+  fetchManagedNeById,
   fetchManagedNeMeta,
   fetchManagedNeStats,
   importManagedNe,
@@ -65,6 +67,15 @@ type AccountState = {
   username: string;
   password: string;
 };
+
+function deviceTypeForVendor(vendor: string): string {
+  if (vendor === "ZTE") return "zte_zxros";
+  if (vendor === "Huawei") return "huawei";
+  if (vendor === "Cisco") return "cisco_ios";
+  if (vendor === "Juniper") return "juniper_junos";
+  if (vendor === "Nokia") return "nokia_sros";
+  return "generic";
+}
 
 const emptyForm = (): FormState => ({
   name: "",
@@ -136,6 +147,8 @@ export function NePage() {
   const canWriteNe = isAdmin || hasScope("ne:write");
   const queryClient = useQueryClient();
   const importRef = useRef<HTMLInputElement>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const deepLinkHandled = useRef("");
 
   const [keyword, setKeyword] = useState("");
   const [vendorFilter, setVendorFilter] = useState("");
@@ -465,6 +478,63 @@ export function NePage() {
     });
     setModalOpen(true);
   };
+
+  // Deep links from topology: /ne?ne_id=… (edit) or /ne?create=1&name=&ip_address=&vendor=
+  useEffect(() => {
+    const neId = String(searchParams.get("ne_id") || "").trim();
+    const wantCreate = searchParams.get("create") === "1";
+    if (!neId && !wantCreate) {
+      deepLinkHandled.current = "";
+      return;
+    }
+
+    const handleKey = neId ? `edit:${neId}` : `create:${searchParams.toString()}`;
+    if (deepLinkHandled.current === handleKey) return;
+    deepLinkHandled.current = handleKey;
+
+    const clearDeepLink = () => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          for (const key of ["ne_id", "create", "name", "ip_address", "vendor"]) {
+            next.delete(key);
+          }
+          return next;
+        },
+        { replace: true },
+      );
+    };
+
+    if (neId) {
+      void (async () => {
+        try {
+          const row = await fetchManagedNeById(neId);
+          openEdit(row);
+        } catch (err) {
+          showError(String(err));
+        } finally {
+          clearDeepLink();
+        }
+      })();
+      return;
+    }
+
+    const name = String(searchParams.get("name") || "").trim();
+    const ip = String(searchParams.get("ip_address") || "").trim();
+    const vendorRaw = String(searchParams.get("vendor") || "").trim();
+    const base = emptyForm();
+    const vendor = vendorRaw || base.vendor;
+    setEditing(null);
+    setForm({
+      ...base,
+      name,
+      vendor,
+      device_type: deviceTypeForVendor(vendor),
+      ip_address: ip,
+    });
+    setModalOpen(true);
+    clearDeepLink();
+  }, [searchParams, setSearchParams, showError]);
 
   const toggleSelect = (id: string) => {
     setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
