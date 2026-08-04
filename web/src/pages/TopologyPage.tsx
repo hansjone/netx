@@ -452,12 +452,18 @@ const DISCOVER_AUTO_ADD_KEY = "netx.topology.discoverAutoAddUnmatched";
 const DISCOVER_PROJECT_NEIGHBORS_KEY = "netx.topology.discoverProjectNeighbors";
 const SCALE_BUNDLE_WIDTH_KEY = "netx.topology.scaleBundleWidth";
 const CANVAS_BG_KEY = "netx.topology.canvasBg";
-const DEFAULT_CANVAS_BG = "#dbeafe";
+const DEFAULT_CANVAS_BG = "#0f172a";
+/** Previous light default — migrate so existing sessions pick up dark canvas. */
+const LEGACY_CANVAS_BG = "#dbeafe";
 
 function loadCanvasBg(): string {
   try {
-    const raw = String(localStorage.getItem(CANVAS_BG_KEY) || "").trim();
-    if (/^#[0-9a-fA-F]{6}$/.test(raw)) return raw.toLowerCase();
+    const raw = String(localStorage.getItem(CANVAS_BG_KEY) || "").trim().toLowerCase();
+    if (raw === LEGACY_CANVAS_BG) {
+      persistCanvasBg(DEFAULT_CANVAS_BG);
+      return DEFAULT_CANVAS_BG;
+    }
+    if (/^#[0-9a-fA-F]{6}$/i.test(raw)) return raw;
   } catch {
     /* ignore */
   }
