@@ -89,6 +89,7 @@ export function buildLinkDisplayEdges(
   edges: Edge[],
   expandPhysical: boolean,
   hidePorts = false,
+  scaleBundleWidth = false,
 ): Edge[] {
   const groups = new Map<string, Edge[]>();
   for (const e of edges) {
@@ -153,9 +154,11 @@ export function buildLinkDisplayEdges(
       aggregated: true,
       member_count: list.length,
       members,
-      // Slightly thicker logical bundle.
-      stroke_width: Math.max(Number(prev.stroke_width || 0), Math.min(8, 2 + list.length)),
     };
+    // Optional: thicken logical bundles by member count (default keeps single-line width).
+    if (scaleBundleWidth) {
+      data.stroke_width = Math.max(Number(prev.stroke_width || 0), Math.min(8, 2 + list.length));
+    }
     out.push({
       ...primary,
       id: aggregateIdForPair(primary.source, primary.target),

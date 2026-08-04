@@ -160,7 +160,7 @@ def ensure_region_physical_view(db: Session, folder_id: str, *, commit: bool = T
 
 
 def bootstrap_topology_tree(db: Session) -> dict[str, str]:
-    """Ensure hidden system root; flatten legacy nesting; ensure physical map per site."""
+    """Ensure hidden system root; flatten legacy nesting."""
     now = _utcnow()
     root = (
         db.query(TopoFolder)
@@ -221,11 +221,6 @@ def bootstrap_topology_tree(db: Session) -> dict[str, str]:
         if changed:
             v.updated_at = now
 
-    # Ensure every region has a physical map.
-    regions = db.query(TopoFolder).filter(TopoFolder.kind == "region").all()
-    for region in regions:
-        ensure_region_physical_view(db, region.id, commit=False)
-
     db.commit()
     return {"root_id": root.id}
 
@@ -258,7 +253,6 @@ def create_folder(db: Session, body: TopologyFolderCreate) -> TopologyFolderOut:
     )
     db.add(row)
     db.flush()
-    ensure_region_physical_view(db, row.id, commit=False)
     db.commit()
     db.refresh(row)
     return _folder_out(row)
@@ -295,8 +289,6 @@ def update_folder(db: Session, folder_id: str, body: TopologyFolderUpdate) -> To
 def delete_folder(db: Session, folder_id: str, *, force: bool = False) -> dict[str, Any]:
     """Delete a region and cascade-delete its maps.
 
-    Every region has a default physical map, so folder delete must purge views
-    itself (cannot call ``delete_view``, which recreates physical).
     ``force`` is accepted for API compatibility; cascade always runs.
     """
     row = _get_folder_or_404(db, folder_id)
@@ -489,7 +481,6 @@ def update_view(db: Session, view_id: str, body: TopologyViewUpdate) -> Topology
 
 def delete_view(db: Session, view_id: str, *, force: bool = False) -> dict[str, Any]:
     row = _get_view_or_404(db, view_id)
-    folder_id = str(row.folder_id or "")
     is_physical = normalize_view_kind(row.kind) == VIEW_KIND_PHYSICAL
     if is_physical and not force:
         raise HTTPException(status_code=400, detail="cannot_delete_physical_view")
@@ -498,9 +489,6 @@ def delete_view(db: Session, view_id: str, *, force: bool = False) -> dict[str, 
     )
     db.query(TopoViewNode).filter(TopoViewNode.view_id == row.id).delete(synchronize_session=False)
     db.delete(row)
-    db.flush()
-    if folder_id and is_physical:
-        ensure_region_physical_view(db, folder_id, commit=False)
     db.commit()
     return {"ok": True, "view_id": view_id, "deleted": True}
 

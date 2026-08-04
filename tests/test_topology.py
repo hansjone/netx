@@ -368,11 +368,11 @@ class FabricTopologyTests(unittest.TestCase):
         region = svc.create_folder(
             self.db, TopologyFolderCreate(name="East", kind="region")
         )
-        # Creating a site auto-creates a physical map.
+        # Creating a region does not auto-create a map — user/MCP adds views.
         tree1 = svc.get_topology_tree(self.db)
         assert tree1.root is not None
         east0 = next(c for c in tree1.root.children if c.id == region.id)
-        self.assertTrue(any(v.kind == "physical" for v in east0.views))
+        self.assertEqual(east0.views, [])
 
         view = svc.create_view(
             self.db,
@@ -390,20 +390,27 @@ class FabricTopologyTests(unittest.TestCase):
         assert tree2.root is not None
         east = next(c for c in tree2.root.children if c.id == region.id)
         self.assertTrue(any(v.id == view.id for v in east.views))
-        # Flat siblings: physical + custom
-        self.assertGreaterEqual(len(east.views), 2)
+        self.assertEqual(len(east.views), 1)
         self.assertTrue(all(not getattr(v, "children", None) for v in east.views))
 
     def test_site_physical_and_custom_flat(self) -> None:
         region = svc.create_folder(
             self.db, TopologyFolderCreate(name="Site-R", kind="region")
         )
+        phys = svc.create_view(
+            self.db,
+            TopologyViewCreate(
+                name="Physical",
+                folder_id=region.id,
+                kind="physical",
+            ),
+        )
         tree = svc.get_topology_tree(self.db)
         assert tree.root is not None
         reg = next(c for c in tree.root.children if c.id == region.id)
         physicals = [v for v in reg.views if v.kind == "physical"]
         self.assertEqual(len(physicals), 1)
-        phys = physicals[0]
+        self.assertEqual(physicals[0].id, phys.id)
 
         custom = svc.create_view(
             self.db,
@@ -425,12 +432,12 @@ class FabricTopologyTests(unittest.TestCase):
         with self.assertRaises(Exception):
             svc.delete_view(self.db, phys.id)
         svc.delete_view(self.db, custom.id)
-        # force-delete physical recreates a fresh physical map
+        # force-delete physical does not recreate another map
         svc.delete_view(self.db, phys.id, force=True)
         tree3 = svc.get_topology_tree(self.db)
         assert tree3.root is not None
         reg3 = next(c for c in tree3.root.children if c.id == region.id)
-        self.assertEqual(sum(1 for v in reg3.views if v.kind == "physical"), 1)
+        self.assertEqual(sum(1 for v in reg3.views if v.kind == "physical"), 0)
 
     def test_delete_region_cascades_views(self) -> None:
         region = svc.create_folder(
@@ -447,7 +454,7 @@ class FabricTopologyTests(unittest.TestCase):
         tree = svc.get_topology_tree(self.db)
         assert tree.root is not None
         reg = next(c for c in tree.root.children if c.id == region.id)
-        self.assertGreaterEqual(len(reg.views), 2)
+        self.assertEqual(len(reg.views), 1)
 
         out = svc.delete_folder(self.db, region.id)
         self.assertTrue(out.get("deleted"))

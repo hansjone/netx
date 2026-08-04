@@ -129,7 +129,7 @@ src/
 - 删除运维网元：解绑 `fabric.managed_ne_id`（及 view membership），**不删**上图点/边；UME 库存 reconcile 对称解绑 `ume_ne_id`。历史悬空引用：`POST /fabric/reconcile-links`（亦并入 `cleanup-duplicates`）。
 - 事实库：`topo_fabric_node` / `topo_fabric_edge`（按 5 万网元 / 100 万链路设计；物理层仅 LLDP）
 - 站点树：`topo_folder`（系统隐藏 `root`；用户新建站点/区域，无默认「未分区」）
-- 拓扑图：`topo_view.kind=physical|custom`（同站点下平级；建站自动建物理拓扑）+ `topo_view_node`
+- 拓扑图：`topo_view.kind=physical|custom`（同站点下平级；建区域后需手工/MCP 建画布）+ `topo_view_node`
 - 边界：图 `filter.membership`（max_nodes / expand_hops / frozen）；`project-neighbors` / `populate` 不得无界灌全网
 - API：`/v1/topology/tree`、`/folders*`、`/fabric/*`、`/views*`（含 `populate`、`kind`）
 - 前端：左侧站点→物理/自定义图；右侧目录浏览，打开本图进设备画布；「添加网元」支持勾选批量上图（也可拖放单台）

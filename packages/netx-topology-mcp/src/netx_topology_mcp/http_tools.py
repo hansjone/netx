@@ -381,7 +381,7 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
         "name": "createTopologyFolder",
         "description": (
             "Create a region folder under the topology root. Returns folder id for createTopologyView. "
-            "Also auto-creates a default physical map under the region. Requires ne:write."
+            "Does not create a canvas — call createTopologyView next. Requires ne:write."
         ),
         "inputSchema": {
             "type": "object",

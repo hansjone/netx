@@ -450,6 +450,7 @@ const EDGE_DEFAULTS_KEY = "netx.topology.edgeDefaults";
 const AUTO_LAYOUT_DISCOVER_KEY = "netx.topology.autoLayoutAfterDiscover";
 const DISCOVER_AUTO_ADD_KEY = "netx.topology.discoverAutoAddUnmatched";
 const DISCOVER_PROJECT_NEIGHBORS_KEY = "netx.topology.discoverProjectNeighbors";
+const SCALE_BUNDLE_WIDTH_KEY = "netx.topology.scaleBundleWidth";
 
 function loadBoolFlag(key: string, defaultValue: boolean): boolean {
   try {
@@ -696,6 +697,10 @@ export function TopologyPage() {
   const [hidePorts, setHidePorts] = useState(true);
   /** Default: logical aggregate of parallel links; expand to see each physical edge. */
   const [expandPhysicalLinks, setExpandPhysicalLinks] = useState(false);
+  /** When aggregating, optionally thicken the line by member count (off = single-line width). */
+  const [scaleBundleWidth, setScaleBundleWidth] = useState(() =>
+    loadBoolFlag(SCALE_BUNDLE_WIDTH_KEY, false),
+  );
   const [edgeFlow, setEdgeFlow] = useState(false);
   const [edgeDefaults, setEdgeDefaults] = useState<EdgeDefaults>(() => loadEdgeDefaults());
   const [toolMode, setToolMode] = useState<ToolMode>("select");
@@ -802,7 +807,7 @@ export function TopologyPage() {
     [hideIp, hideVendor, hidePorts, toolMode],
   );
   const displayEdges = useMemo(() => {
-    const built = buildLinkDisplayEdges(edges, expandPhysicalLinks, hidePorts).map((e) =>
+    const built = buildLinkDisplayEdges(edges, expandPhysicalLinks, hidePorts, scaleBundleWidth).map((e) =>
       withEdgeVisual(e, edgeDefaults),
     );
     return built.map((e) => {
@@ -818,7 +823,7 @@ export function TopologyPage() {
         animated: edgeFlow,
       };
     });
-  }, [edges, expandPhysicalLinks, hidePorts, edgeFlow, edgeDefaults, selectedEdgeId]);
+  }, [edges, expandPhysicalLinks, hidePorts, scaleBundleWidth, edgeFlow, edgeDefaults, selectedEdgeId]);
 
   const treeQuery = useQuery({
     queryKey: queryKeys.topologyTree,
@@ -2756,6 +2761,19 @@ export function TopologyPage() {
                         onChange={(e) => setExpandPhysicalLinks(e.target.checked)}
                       />
                       {t("topology.expandPhysicalLinks")}
+                    </label>
+                    <label className="topo-display-toggles__item">
+                      <input
+                        type="checkbox"
+                        checked={scaleBundleWidth}
+                        disabled={expandPhysicalLinks}
+                        onChange={(e) => {
+                          const next = e.target.checked;
+                          setScaleBundleWidth(next);
+                          persistBoolFlag(SCALE_BUNDLE_WIDTH_KEY, next);
+                        }}
+                      />
+                      {t("topology.scaleBundleWidth")}
                     </label>
                   <label className="topo-display-toggles__item">
                     <input

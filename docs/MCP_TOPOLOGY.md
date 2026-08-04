@@ -80,7 +80,7 @@ oclaw：Install from JSON → Health → Sync Tools（应看到 **14** 个工具
 
 | 工具 | 作用 |
 |------|------|
-| `createTopologyFolder` | 新建**区域**文件夹（挂在根下）；返回 `id` 供建画布；并自动创建默认 physical 图 |
+| `createTopologyFolder` | 新建**区域**文件夹（挂在根下）；返回 `id`；**不**自动建画布，需再调 `createTopologyView` |
 | `createTopologyView` | 在 folder 下新建画布 |
 | `addTopologyViewNodes` | **优先**传 `keyword`/`role`/`vendor`/`link_status` + `limit`/`offset`，由 API 筛选落点；也可 `fabric_node_ids`。拒绝 managed/UME。返回摘要。 |
 | `removeTopologyViewNodes` | 筛选或 id 从画布移除（不删 Fabric），摘要 |
