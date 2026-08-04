@@ -202,7 +202,7 @@ body {
 
 .wb-hero__title {
   margin: 0;
-  font-family: Sora, "IBM Plex Sans", sans-serif;
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   font-size: clamp(20px, 2.2vw, 26px);
   font-weight: 700;
   letter-spacing: -0.02em;
@@ -248,7 +248,7 @@ body {
 }
 
 .wb-kpi__value {
-  font-family: Sora, "IBM Plex Sans", sans-serif;
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   font-size: 20px;
   font-weight: 700;
   color: #f1f5f9;
@@ -551,7 +551,7 @@ body {
   position: relative;
   z-index: 1;
   grid-area: 1 / 1;
-  font-family: Sora, "IBM Plex Sans", sans-serif;
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   font-size: 13px;
   font-weight: 700;
   color: #f8fafc;
@@ -7236,7 +7236,7 @@ pre {
   grid-template-columns: minmax(0, 1fr) var(--login-rail-w);
   align-items: stretch;
   background: #00050a;
-  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   color: var(--login-ink);
 }
 
@@ -7434,7 +7434,7 @@ pre {
 .login-card__brand,
 .login-card__title {
   margin: 0;
-  font-family: Sora, "IBM Plex Sans", sans-serif;
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   font-size: clamp(1.55rem, 4vw, 1.85rem);
   font-weight: 700;
   line-height: 1.15;
@@ -7565,7 +7565,7 @@ pre {
   border-radius: 9999px;
   background: linear-gradient(to right, #3b82f6, #2563eb, #2563eb);
   color: #fff;
-  font-family: Sora, "IBM Plex Sans", sans-serif;
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   font-size: 15px;
   font-weight: 600;
   letter-spacing: 0.04em;
@@ -8033,7 +8033,7 @@ pre {
   border-radius: 8px;
   background: #0b1220;
   color: #e2e8f0;
-  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: ui-monospace, SFMono-Regular, Consolas, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
   line-height: 1.45;
   resize: vertical;
@@ -8303,7 +8303,7 @@ pre {
 }
 
 .pt-log-item__if {
-  font-family: "IBM Plex Mono", "Cascadia Mono", Consolas, monospace;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Cascadia Mono", Consolas, monospace;
   color: #cbd5e1;
 }
 
@@ -9029,7 +9029,7 @@ pre {
   font-size: 22px;
   font-weight: 600;
   letter-spacing: 0.01em;
-  font-family: "IBM Plex Mono", "Cascadia Mono", Consolas, monospace;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Cascadia Mono", Consolas, monospace;
   color: #f8fafc;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -9081,7 +9081,7 @@ pre {
   font-size: 20px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
-  font-family: "IBM Plex Mono", "Cascadia Mono", Consolas, monospace;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Cascadia Mono", Consolas, monospace;
   line-height: 1.15;
   color: #f1f5f9;
 }
@@ -9126,7 +9126,7 @@ pre {
 
 .pt-wall__chart .uplot,
 .pt-wall__chart .u-wrap {
-  font-family: "IBM Plex Mono", "Cascadia Mono", Consolas, monospace;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Cascadia Mono", Consolas, monospace;
 }
 
 .pt-wall__tip {
@@ -9263,7 +9263,7 @@ pre {
 }
 
 .pt-wall__foot-value--mono {
-  font-family: "IBM Plex Mono", "Cascadia Mono", Consolas, monospace;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Cascadia Mono", Consolas, monospace;
   letter-spacing: 0.02em;
 }
 
