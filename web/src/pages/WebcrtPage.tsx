@@ -1901,6 +1901,10 @@ export function WebcrtPage() {
             ip_address: row.ip_address,
             vendor: row.vendor,
             device_type: row.device_type,
+            protocol: row.protocol || "ssh",
+            username: row.username || "",
+            has_password: Boolean(row.has_password),
+            hop_enabled: Boolean(row.hop_enabled),
             connect_status: row.connect_status,
             cli_profile_ready: true,
           });

@@ -89,6 +89,8 @@ class ManagedNeOut(BaseModel):
     port: int
     protocol: str
     username: str
+    # True when a non-empty password ciphertext is stored (never returns the secret).
+    has_password: bool = False
     connect_status: ConnectStatus
     connect_message: str
     connect_detail: str = ""

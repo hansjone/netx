@@ -201,6 +201,7 @@ def row_to_out(row: ManagedNE) -> ManagedNeOut:
         port=int(row.port or 22),
         protocol=str(row.protocol or "ssh"),
         username=str(row.username or ""),
+        has_password=bool(str(row.password_enc or "").strip()),
         connect_status=status,  # type: ignore[arg-type]
         connect_message=str(row.connect_message or "")[:500],
         connect_detail=str(row.connect_detail or "")[:8000],

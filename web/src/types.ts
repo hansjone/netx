@@ -182,6 +182,8 @@ export type ManagedNeItem = {
   port: number;
   protocol: string;
   username: string;
+  /** True when a password is stored server-side (secret never returned). */
+  has_password?: boolean;
   connect_status: ConnectStatus;
   connect_message: string;
   connect_detail: string;
