@@ -410,7 +410,12 @@ export function NePage() {
   });
 
   const vendors = metaQuery.data?.vendors ?? [];
-  const deviceTypes = metaQuery.data?.device_types ?? [];
+  const deviceTypes = useMemo(() => {
+    const base = metaQuery.data?.device_types ?? [];
+    const cur = String(form.device_type || "").trim();
+    if (cur && !base.includes(cur)) return [cur, ...base];
+    return base;
+  }, [metaQuery.data?.device_types, form.device_type]);
   const credsOk = metaQuery.data?.credentials_configured ?? false;
 
   const allSelected = useMemo(() => {
@@ -921,7 +926,22 @@ export function NePage() {
               </label>
               <label>
                 <FormLabel required>{t("managedNe.col.vendor")}</FormLabel>
-                <select required value={form.vendor} onChange={(e) => setForm({ ...form, vendor: e.target.value })}>
+                <select required value={form.vendor} onChange={(e) => {
+                  const vendor = e.target.value;
+                  setForm((prev) => {
+                    const next = { ...prev, vendor };
+                    const dt = String(prev.device_type || "").trim().toLowerCase();
+                    // LLDP/WebCRT placeholders use generic — pick a sensible driver when vendor is set.
+                    if (!dt || dt === "generic" || dt === "other" || dt === "linux") {
+                      if (vendor === "ZTE") next.device_type = "zte_zxros";
+                      else if (vendor === "Huawei") next.device_type = "huawei";
+                      else if (vendor === "Cisco") next.device_type = "cisco_ios";
+                      else if (vendor === "Juniper") next.device_type = "juniper_junos";
+                      else if (vendor === "Nokia") next.device_type = "nokia_sros";
+                    }
+                    return next;
+                  });
+                }}>
                   {vendors.map((v) => (
                     <option key={v} value={v}>
                       {v}

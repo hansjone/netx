@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from .device_types import LLDP_DISCOVERED_NE_SOURCE, SUPPORTED_DEVICE_TYPES, SUPPORTED_VENDORS
+from .device_types import LLDP_DISCOVERED_NE_SOURCE, SUPPORTED_DEVICE_TYPES, SUPPORTED_VENDORS, WEBCRT_DEVICE_TYPES
 from .models import ManagedNE
 from .ne_crypto import encrypt_secret
 from .ne_hop_templates import default_bastion_username_template, default_hop_command_template
@@ -32,6 +32,10 @@ from .ne_service_common import (
     _validate_hop_on_create,
     row_to_out,
 )
+
+# Inventory create stays strict; updates must also accept WebCRT/LLDP placeholder types
+# (generic/linux) so operators can open the form and promote them to zte_zxros etc.
+_ALLOWED_UPDATE_DEVICE_TYPES = frozenset(WEBCRT_DEVICE_TYPES)
 
 def list_managed_ne(
     db: Session,
@@ -135,9 +139,10 @@ def update_managed_ne(db: Session, ne_id: str, body: ManagedNeUpdate) -> Managed
             raise HTTPException(status_code=400, detail="ip_address_exists")
         row.ip_address = ip
     if "device_type" in data:
-        if data["device_type"] not in SUPPORTED_DEVICE_TYPES:
+        dt = str(data["device_type"] or "").strip()
+        if dt not in _ALLOWED_UPDATE_DEVICE_TYPES:
             raise HTTPException(status_code=400, detail="unsupported_device_type")
-        row.device_type = data["device_type"]
+        row.device_type = dt
     if "vendor" in data:
         v = str(data["vendor"] or "").strip()
         row.vendor = v if v in SUPPORTED_VENDORS else "Other"

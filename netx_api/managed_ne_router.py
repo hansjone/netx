@@ -59,7 +59,10 @@ def api_list_managed_ne(
 
 @router.get("/meta/device-types")
 def api_device_types():
-    return {"device_types": list(SUPPORTED_DEVICE_TYPES), "vendors": list(SUPPORTED_VENDORS)}
+    # Include generic/linux so LLDP/WebCRT placeholders can be edited without a bogus select value.
+    from .device_types import WEBCRT_DEVICE_TYPES
+
+    return {"device_types": list(WEBCRT_DEVICE_TYPES), "vendors": list(SUPPORTED_VENDORS)}
 
 
 @router.get("/meta/credentials-configured")
