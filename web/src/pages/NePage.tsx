@@ -1039,7 +1039,6 @@ export function NePage() {
                   required
                   value={form.ip_address}
                   onChange={(e) => setForm({ ...form, ip_address: e.target.value })}
-                  disabled={Boolean(editing)}
                 />
               </label>
               <label>
