@@ -1392,8 +1392,9 @@ const zh = {
     termConnect: {
       title: "补全登录信息",
       titleCreate: "新建网元并登录",
-      hint: "该网元尚未纳管或缺少登录信息，请填写 IP 与协议后连接（等同新建/补全网元）。",
+      hint: "该网元尚未纳管或缺少登录信息，请填写 IP、厂家与协议后连接（等同新建/补全网元）。",
       name: "名称",
+      vendor: "厂家",
       ip: "IP 地址",
       port: "端口",
       protocol: "协议",

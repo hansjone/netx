@@ -1398,8 +1398,9 @@ const en = {
     termConnect: {
       title: "Complete login",
       titleCreate: "Create NE and connect",
-      hint: "This node is not managed or lacks credentials. Enter IP and protocol to connect (same as creating/completing an NE).",
+      hint: "This node is not managed or lacks credentials. Enter IP, vendor, and protocol to connect (same as creating/completing an NE).",
       name: "Name",
+      vendor: "Vendor",
       ip: "IP address",
       port: "Port",
       protocol: "Protocol",

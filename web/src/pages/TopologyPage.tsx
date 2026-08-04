@@ -42,6 +42,7 @@ import {
   fetchLldpDiscoverJob,
   fetchManagedNe,
   fetchManagedNeById,
+  fetchManagedNeMeta,
   fetchTopologyGraph,
   fetchTopologyTree,
   fetchUmeNe,
@@ -298,6 +299,7 @@ type CtxMenu =
 type TermConnectDialog = {
   neId: string;
   name: string;
+  vendor: string;
   ip_address: string;
   port: number;
   protocol: "ssh" | "telnet";
@@ -835,6 +837,16 @@ export function TopologyPage() {
       };
     });
   }, [edges, expandPhysicalLinks, hidePorts, edgeFlow, edgeDefaults, selectedEdgeId]);
+
+  const neMetaQuery = useQuery({
+    queryKey: queryKeys.managedNeMeta,
+    queryFn: fetchManagedNeMeta,
+    enabled: Boolean(termDialog),
+    staleTime: 60_000,
+  });
+  const termVendors = neMetaQuery.data?.vendors?.length
+    ? neMetaQuery.data.vendors
+    : ["ZTE", "Huawei", "Cisco", "H3C", "Juniper", "Nokia", "Other"];
 
   const treeQuery = useQuery({
     queryKey: queryKeys.topologyTree,
@@ -1893,6 +1905,7 @@ export function TopologyPage() {
           setTermDialog({
             neId: managedId,
             name: String(ne.name || node.data.label || "").trim(),
+            vendor: String(ne.vendor || node.data.vendor || "Other").trim() || "Other",
             ip_address: hintIp,
             port: Number(ne.port) || (proto === "telnet" ? 23 : 22),
             protocol: proto,
@@ -1918,6 +1931,7 @@ export function TopologyPage() {
     setTermDialog({
       neId: "",
       name: String(node.data.label || "").trim(),
+      vendor: String(node.data.vendor || "Other").trim() || "Other",
       ip_address: String(node.data.ne_ip || "").trim(),
       port: 22,
       protocol: "ssh",
@@ -1945,12 +1959,14 @@ export function TopologyPage() {
     }
     const port = Number(termDialog.port) || (protocol === "telnet" ? 23 : 22);
     const name = termDialog.name.trim() || ip;
+    const vendor = String(termDialog.vendor || "Other").trim() || "Other";
     setTermBusy(true);
     try {
       let neId = termDialog.neId;
       if (neId) {
         await updateManagedNe(neId, {
           name,
+          vendor,
           ip_address: ip,
           port,
           protocol,
@@ -1960,14 +1976,22 @@ export function TopologyPage() {
         setNodes((ns) =>
           ns.map((n) =>
             String(n.data.managed_ne_id || "") === neId
-              ? { ...n, data: { ...n.data, ne_ip: ip, label: name || n.data.label } }
+              ? {
+                  ...n,
+                  data: {
+                    ...n.data,
+                    ne_ip: ip,
+                    vendor,
+                    label: name || n.data.label,
+                  },
+                }
               : n,
           ),
         );
       } else {
         const created = await createManagedNe({
           name,
-          vendor: "Other",
+          vendor,
           device_type: "generic",
           ip_address: ip,
           port,
@@ -1979,6 +2003,7 @@ export function TopologyPage() {
       }
       setTermDialog(null);
       showOk(t("topology.termConnect.saved"));
+      void queryClient.invalidateQueries({ queryKey: queryKeys.managedNeAll });
       openOrFocusModule({
         moduleId: "webcrt",
         path: `/webcrt?ne_id=${encodeURIComponent(neId)}`,
@@ -3908,6 +3933,31 @@ export function TopologyPage() {
                   disabled={termBusy}
                   onChange={(e) => setTermDialog({ ...termDialog, name: e.target.value })}
                 />
+              </label>
+              <label>
+                <span className="form-label">
+                  {t("topology.termConnect.vendor")}
+                  <span className="form-label__required" aria-hidden="true">
+                    {" "}
+                    *
+                  </span>
+                </span>
+                <select
+                  value={
+                    termVendors.includes(termDialog.vendor) ? termDialog.vendor : termDialog.vendor || "Other"
+                  }
+                  disabled={termBusy}
+                  onChange={(e) => setTermDialog({ ...termDialog, vendor: e.target.value })}
+                >
+                  {!termVendors.includes(termDialog.vendor) && termDialog.vendor ? (
+                    <option value={termDialog.vendor}>{termDialog.vendor}</option>
+                  ) : null}
+                  {termVendors.map((v) => (
+                    <option key={v} value={v}>
+                      {v}
+                    </option>
+                  ))}
+                </select>
               </label>
               <label>
                 <span className="form-label">
