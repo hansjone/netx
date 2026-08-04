@@ -111,6 +111,12 @@ def _run_discover_job(job_id: str, body: FabricDiscoverRequest) -> None:
                 job.edges_updated = updated
                 job.updated_at = _utcnow()
                 db.commit()
+                # Keep Fabric KPI cache roughly in sync during long runs (dashboard polls job).
+                if int(job.done or 0) % 50 == 0:
+                    try:
+                        refresh_fabric_stats(db)
+                    except Exception:  # noqa: BLE001
+                        db.rollback()
 
         # Absent on a successfully scanned endpoint → missing; purge after N cycles.
         if scanned_ok:

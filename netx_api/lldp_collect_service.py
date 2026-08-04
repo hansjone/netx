@@ -20,6 +20,7 @@ from .topology_service import (
     get_discover_job,
     prune_discover_jobs,
     reclaim_stale_discover_jobs,
+    refresh_fabric_stats,
     start_discover_job,
 )
 
@@ -256,8 +257,16 @@ def start_collect(db: Session, *, trigger_mode: str = "manual") -> dict:
 
 def get_dashboard(db: Session) -> LldpCollectDashboardOut:
     policy = ensure_policy(db)
-    stats = db.get(TopoFabricStats, "global")
     running = has_running_job(db)
+    # While a collect job is writing Fabric, refresh KPIs from live tables so the
+    # board tracks mid-job growth (job.edges_added already moves; cached stats did not).
+    # Missing marks are still applied only at job end — stale/missing may lag until then.
+    if running is not None:
+        stats = refresh_fabric_stats(db)
+    else:
+        stats = db.get(TopoFabricStats, "global")
+        if stats is None:
+            stats = refresh_fabric_stats(db)
     last = last_finished_job(db)
     return LldpCollectDashboardOut(
         policy=_policy_out(policy),
