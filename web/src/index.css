@@ -6728,6 +6728,37 @@ pre {
   font-size: 11px;
 }
 
+.topo-edge-label {
+  font-size: 11px;
+  color: #475569;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+
+.topo-edge-label.is-selected {
+  color: #1d4ed8;
+  border-color: #93c5fd;
+  font-weight: 600;
+}
+
+.topo-ctx__member-list {
+  margin: 0 0 8px;
+  padding: 0 0 0 16px;
+  font-size: 12px;
+  color: #334155;
+  max-height: 120px;
+  overflow: auto;
+}
+
+.topo-ctx__style-members {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 6px;
+}
+
 @media (max-width: 960px) {
   .topo-page,
   .topo-page.is-sidebar-collapsed {

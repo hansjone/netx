@@ -76,6 +76,15 @@ import type {
   TopologyViewRole,
 } from "../types";
 import { alignNodes, layoutGraph, type LayoutKind } from "./topology/layoutGraph";
+import { ParallelEdge } from "./topology/ParallelEdge";
+import {
+  buildLinkDisplayEdges,
+  formatPortPairLabel,
+  isAggregateEdgeId,
+  physicalIdsForDisplayEdge,
+  type LinkEdgeData,
+  type LinkMember,
+} from "./topology/linkDisplay";
 import { behaviorForMode, toolModeFromKey, type ToolMode } from "./topology/toolMode";
 
 const LAST_LEAF_KEY = "netx.topology.lastLeafViewId";
@@ -435,16 +444,9 @@ const NeNode = memo(function NeNode({ data, selected }: NodeProps<Node<NeNodeDat
 });
 
 const nodeTypes = { neNode: NeNode };
+const edgeTypes = { topoParallel: ParallelEdge };
 
-type EdgeStyleData = {
-  source?: string;
-  source_port?: string;
-  target_port?: string;
-  stroke_color?: string;
-  stroke_width?: number;
-  line_style?: string;
-  discovered_at?: string | null;
-};
+type EdgeStyleData = LinkEdgeData;
 
 type EdgeLineStyle = "solid" | "dashed" | "dotted";
 type EdgeSourceKind = "manual" | "discovered" | "stale";
@@ -603,7 +605,7 @@ function graphToFlow(
   const rfEdges: Edge[] = edges.map((e) => {
     const src =
       e.status === "stale" || e.status === "missing" ? "stale" : e.source || "manual";
-    const label = [e.a_port, e.b_port].filter(Boolean).join(SEP);
+    const label = formatPortPairLabel(e.a_port || "", e.b_port || "");
     const data: EdgeStyleData = {
       source: src,
       source_port: e.a_port || "",
@@ -705,6 +707,8 @@ export function TopologyPage() {
   const [hideIp, setHideIp] = useState(true);
   const [hideVendor, setHideVendor] = useState(true);
   const [hidePorts, setHidePorts] = useState(true);
+  /** Default: logical aggregate of parallel links; expand to see each physical edge. */
+  const [expandPhysicalLinks, setExpandPhysicalLinks] = useState(false);
   const [edgeFlow, setEdgeFlow] = useState(false);
   const [edgeDefaults, setEdgeDefaults] = useState<EdgeDefaults>(() => loadEdgeDefaults());
   const [toolMode, setToolMode] = useState<ToolMode>("select");
@@ -812,15 +816,25 @@ export function TopologyPage() {
     () => ({ hideIp, hideVendor, hidePorts, connectMode: toolMode === "connect" }),
     [hideIp, hideVendor, hidePorts, toolMode],
   );
-  const displayEdges = useMemo(
-    () =>
-      edges.map((e) => ({
+  const displayEdges = useMemo(() => {
+    const built = buildLinkDisplayEdges(edges, expandPhysicalLinks).map((e) =>
+      withEdgeVisual(e, edgeDefaults),
+    );
+    return built.map((e) => {
+      const d = (e.data || {}) as EdgeStyleData;
+      const count = Number(d.member_count || 1);
+      const keepCountLabel = !expandPhysicalLinks && count > 1;
+      const selected =
+        e.id === selectedEdgeId ||
+        Boolean(d.members?.some((m: LinkMember) => m.id === selectedEdgeId));
+      return {
         ...e,
-        label: hidePorts ? undefined : e.label,
+        selected,
+        label: hidePorts && !keepCountLabel ? undefined : e.label,
         animated: edgeFlow,
-      })),
-    [edges, hidePorts, edgeFlow],
-  );
+      };
+    });
+  }, [edges, expandPhysicalLinks, hidePorts, edgeFlow, edgeDefaults, selectedEdgeId]);
 
   const treeQuery = useQuery({
     queryKey: queryKeys.topologyTree,
@@ -1593,12 +1607,18 @@ export function TopologyPage() {
   const selectedNodes = useMemo(() => nodes.filter((n) => n.selected), [nodes]);
   const selectedNode = selectedNodes[0] || null;
   const selectedNodeIds = useMemo(() => selectedNodes.map((n) => n.id), [selectedNodes]);
-  const selectedEdge = useMemo(
-    () => (selectedEdgeId ? edges.find((e) => e.id === selectedEdgeId) || null : null),
-    [edges, selectedEdgeId],
-  );
+  const selectedEdge = useMemo(() => {
+    if (!selectedEdgeId) return null;
+    return (
+      displayEdges.find((e) => e.id === selectedEdgeId) ||
+      edges.find((e) => e.id === selectedEdgeId) ||
+      null
+    );
+  }, [selectedEdgeId, displayEdges, edges]);
   const selectedEdgeData = (selectedEdge?.data || {}) as EdgeStyleData;
   const selectedEdgeResolved = selectedEdge ? resolveEdgeStyle(selectedEdgeData, edgeDefaults) : null;
+  const selectedEdgeSourceNode = selectedEdge ? nodes.find((n) => n.id === selectedEdge.source) : null;
+  const selectedEdgeTargetNode = selectedEdge ? nodes.find((n) => n.id === selectedEdge.target) : null;
 
   const patchSelectedEdgeStyle = useCallback(
     (
@@ -1608,10 +1628,20 @@ export function TopologyPage() {
       opts?: { skipHistory?: boolean },
     ) => {
       if (!selectedEdgeId || !mapId) return;
+      const display = displayEdges.find((e) => e.id === selectedEdgeId) || selectedEdge;
+      const targetIds = physicalIdsForDisplayEdge(display, edges);
+      if (!targetIds.length) return;
+      // Port edits only make sense on a single physical link.
+      if (
+        (isAggregateEdgeId(selectedEdgeId) || targetIds.length > 1) &&
+        (patch.source_port !== undefined || patch.target_port !== undefined)
+      ) {
+        return;
+      }
       if (!opts?.skipHistory) pushHistory();
       setEdges((eds) =>
         eds.map((e) => {
-          if (e.id !== selectedEdgeId) return e;
+          if (!targetIds.includes(e.id)) return e;
           const prev = (e.data || {}) as EdgeStyleData;
           const data: EdgeStyleData = {
             ...prev,
@@ -1622,21 +1652,23 @@ export function TopologyPage() {
             source_port: patch.source_port !== undefined ? patch.source_port : prev.source_port || "",
             target_port: patch.target_port !== undefined ? patch.target_port : prev.target_port || "",
           };
-          const portLabel = [data.source_port, data.target_port].filter(Boolean).join(SEP);
+          const portLabel = formatPortPairLabel(data.source_port || "", data.target_port || "");
           return withEdgeVisual({ ...e, data, label: portLabel || undefined }, edgeDefaults);
         }),
       );
-      const edge = edges.find((e) => e.id === selectedEdgeId);
+      const edge = edges.find((e) => e.id === targetIds[0]);
       const prev = (edge?.data || {}) as EdgeStyleData;
-      void patchTopologyEdgeStyle(mapId, {
-        fabric_edge_id: selectedEdgeId,
-        stroke_color: patch.stroke_color !== undefined ? patch.stroke_color : prev.stroke_color || "",
-        stroke_width:
-          patch.stroke_width !== undefined ? Number(patch.stroke_width || 0) : Number(prev.stroke_width || 0),
-        line_style: patch.line_style !== undefined ? patch.line_style : prev.line_style || "",
-      }).catch((err) => showError(String(err)));
+      for (const fabricEdgeId of targetIds) {
+        void patchTopologyEdgeStyle(mapId, {
+          fabric_edge_id: fabricEdgeId,
+          stroke_color: patch.stroke_color !== undefined ? patch.stroke_color : prev.stroke_color || "",
+          stroke_width:
+            patch.stroke_width !== undefined ? Number(patch.stroke_width || 0) : Number(prev.stroke_width || 0),
+          line_style: patch.line_style !== undefined ? patch.line_style : prev.line_style || "",
+        }).catch((err) => showError(String(err)));
+      }
     },
-    [selectedEdgeId, mapId, edges, setEdges, pushHistory, edgeDefaults, showError],
+    [selectedEdgeId, selectedEdge, mapId, edges, displayEdges, setEdges, pushHistory, edgeDefaults, showError],
   );
 
   const renameSelectedNode = useCallback(() => {
@@ -1822,8 +1854,11 @@ export function TopologyPage() {
   const removeEdgeById = (edgeId: string) => {
     pushHistory();
     markDirty();
-    setEdges((es) => es.filter((e) => e.id !== edgeId));
-    setSelectedEdgeId((cur) => (cur === edgeId ? null : cur));
+    const display = displayEdges.find((e) => e.id === edgeId);
+    const ids = new Set(physicalIdsForDisplayEdge(display, edges));
+    if (!ids.size) ids.add(edgeId);
+    setEdges((es) => es.filter((e) => !ids.has(e.id)));
+    setSelectedEdgeId((cur) => (cur && (ids.has(cur) || cur === edgeId) ? null : cur));
     closeCtxMenu();
   };
 
@@ -2215,7 +2250,8 @@ export function TopologyPage() {
     (edgeId: string) => {
       setSelectedEdgeId(edgeId);
       setNodes((ns) => ns.map((n) => ({ ...n, selected: false })));
-      setEdges((es) => es.map((e) => ({ ...e, selected: e.id === edgeId })));
+      // Selection is applied in displayEdges; keep store flags clear.
+      setEdges((es) => es.map((e) => ({ ...e, selected: false })));
     },
     [setNodes, setEdges],
   );
@@ -2780,14 +2816,22 @@ export function TopologyPage() {
                     />
                     {t("topology.hideVendor")}
                   </label>
-                  <label className="topo-display-toggles__item">
-                    <input
-                      type="checkbox"
-                      checked={hidePorts}
-                      onChange={(e) => setHidePorts(e.target.checked)}
-                    />
-                    {t("topology.hidePorts")}
-                  </label>
+                    <label className="topo-display-toggles__item">
+                      <input
+                        type="checkbox"
+                        checked={hidePorts}
+                        onChange={(e) => setHidePorts(e.target.checked)}
+                      />
+                      {t("topology.hidePorts")}
+                    </label>
+                    <label className="topo-display-toggles__item">
+                      <input
+                        type="checkbox"
+                        checked={expandPhysicalLinks}
+                        onChange={(e) => setExpandPhysicalLinks(e.target.checked)}
+                      />
+                      {t("topology.expandPhysicalLinks")}
+                    </label>
                   <label className="topo-display-toggles__item">
                     <input
                       type="checkbox"
@@ -3312,6 +3356,7 @@ export function TopologyPage() {
                   )}
                   edges={displayEdges}
                   nodeTypes={nodeTypes}
+                  edgeTypes={edgeTypes}
                   onlyRenderVisibleElements
                   connectionMode={ConnectionMode.Loose}
                   defaultEdgeOptions={{ type: "straight" }}
@@ -3342,10 +3387,15 @@ export function TopologyPage() {
                     onNodesChange(changes);
                   }}
                   onEdgesChange={(changes) => {
-                    if (changes.some((c) => c.type !== "select")) {
+                    const physical = changes.filter((c) => {
+                      if (c.type === "select") return false;
+                      if ("id" in c && isAggregateEdgeId(String(c.id))) return false;
+                      return true;
+                    });
+                    if (physical.some((c) => c.type !== "select")) {
                       markDirty();
                     }
-                    onEdgesChange(changes);
+                    if (physical.length) onEdgesChange(physical);
                   }}
                   onConnect={onConnect}
                   isValidConnection={isValidConnection}
@@ -3676,13 +3726,49 @@ export function TopologyPage() {
                   <div className="topo-ctx__style-title">{t("topology.edgeStyle")}</div>
                   {selectedEdgeResolved ? (
                     <div className="topo-ctx__style-grid">
+                      {Number(selectedEdgeData.member_count || 1) > 1 ? (
+                        <div className="topo-ctx__style-members">
+                          <div className="topo-ctx__style-title">
+                            {t("topology.linkMembers").replace(
+                              "{{count}}",
+                              String(selectedEdgeData.member_count || 0),
+                            )}
+                          </div>
+                          <ul className="topo-ctx__member-list">
+                            {(selectedEdgeData.members || []).map((m) => (
+                              <li key={m.id}>
+                                {formatPortPairLabel(m.a_port, m.b_port) || m.id.slice(0, 8)}
+                              </li>
+                            ))}
+                          </ul>
+                          {!expandPhysicalLinks ? (
+                            <button
+                              type="button"
+                              className="btn btn--sm"
+                              onClick={() => {
+                                setExpandPhysicalLinks(true);
+                                closeCtxMenu();
+                              }}
+                            >
+                              {t("topology.expandPhysicalLinks")}
+                            </button>
+                          ) : null}
+                        </div>
+                      ) : null}
                       <label className="topo-ctx__style-row">
-                        <span>{t("topology.sourcePort")}</span>
+                        <span>
+                          {(selectedEdgeSourceNode?.data.label ||
+                            selectedEdgeSourceNode?.data.ne_ip ||
+                            t("topology.endpointA")) +
+                            " · " +
+                            t("topology.port")}
+                        </span>
                         <input
                           type="text"
                           className="topo-ctx__style-input"
                           value={selectedEdgeData.source_port || ""}
                           placeholder="?"
+                          disabled={Number(selectedEdgeData.member_count || 1) > 1 && !expandPhysicalLinks}
                           onFocus={() => pushHistory()}
                           onChange={(e) =>
                             patchSelectedEdgeStyle({ source_port: e.target.value }, { skipHistory: true })
@@ -3690,12 +3776,19 @@ export function TopologyPage() {
                         />
                       </label>
                       <label className="topo-ctx__style-row">
-                        <span>{t("topology.targetPort")}</span>
+                        <span>
+                          {(selectedEdgeTargetNode?.data.label ||
+                            selectedEdgeTargetNode?.data.ne_ip ||
+                            t("topology.endpointB")) +
+                            " · " +
+                            t("topology.port")}
+                        </span>
                         <input
                           type="text"
                           className="topo-ctx__style-input"
                           value={selectedEdgeData.target_port || ""}
                           placeholder="?"
+                          disabled={Number(selectedEdgeData.member_count || 1) > 1 && !expandPhysicalLinks}
                           onFocus={() => pushHistory()}
                           onChange={(e) =>
                             patchSelectedEdgeStyle({ target_port: e.target.value }, { skipHistory: true })

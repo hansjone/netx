@@ -217,8 +217,11 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
   const pasteQueueRef = useRef<Promise<void>>(Promise.resolve());
   /** Updated whenever device stdout arrives; used to pace paste by echo, not fixed sleep. */
   const lastStdoutAtRef = useRef(0);
+  /** Snapshot selection when opening the context menu — click on menu clears xterm selection. */
+  const menuSelectionRef = useRef("");
   const keywordHighlightRef = useRef(keywordHighlight);
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
+  const [clipStatus, setClipStatus] = useState<string | null>(null);
   const [findOpen, setFindOpen] = useState(false);
   const [findQuery, setFindQuery] = useState("");
   const [pasteStatus, setPasteStatus] = useState<{ done: number; total: number } | null>(null);
@@ -635,6 +638,40 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
         return;
       }
 
+      // CRT-style clipboard: Ctrl+Shift+C / Ctrl+Insert copy; Ctrl+Shift+V / Shift+Insert paste.
+      const mod = e.ctrlKey || e.metaKey;
+      if (mod && e.shiftKey && (e.key === "C" || e.key === "c")) {
+        e.preventDefault();
+        e.stopPropagation();
+        const text = term.getSelection() || "";
+        if (text && navigator.clipboard?.writeText) {
+          void navigator.clipboard.writeText(text).catch(() => undefined);
+        }
+        return;
+      }
+      if ((mod && e.shiftKey && (e.key === "V" || e.key === "v")) || (e.shiftKey && e.key === "Insert")) {
+        e.preventDefault();
+        e.stopPropagation();
+        void (async () => {
+          try {
+            const text = await navigator.clipboard.readText();
+            if (text) sendStdinThrottled(text);
+          } catch {
+            /* permission denied */
+          }
+        })();
+        return;
+      }
+      if (mod && e.key === "Insert") {
+        e.preventDefault();
+        e.stopPropagation();
+        const text = term.getSelection() || "";
+        if (text && navigator.clipboard?.writeText) {
+          void navigator.clipboard.writeText(text).catch(() => undefined);
+        }
+        return;
+      }
+
       if (e.key === "Backspace") {
         e.preventDefault();
       }
@@ -656,6 +693,7 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
 
     const onContextMenu = (e: MouseEvent) => {
       e.preventDefault();
+      menuSelectionRef.current = term.getSelection() || "";
       setCtxMenu({ x: e.clientX, y: e.clientY });
     };
     host.addEventListener("contextmenu", onContextMenu);
@@ -723,20 +761,30 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
   const pasteFromClipboard = async () => {
     try {
       const text = await navigator.clipboard.readText();
-      sendStdinThrottled(text);
+      if (text) sendStdinThrottled(text);
+      else setClipStatus(t("webcrt.term.pasteEmpty"));
     } catch {
-      /* ignore */
+      setClipStatus(t("webcrt.term.pasteFailed"));
     }
     setCtxMenu(null);
     focusTerminal();
+    window.setTimeout(() => setClipStatus(null), 2200);
   };
 
   const copySelection = async () => {
-    const text = termRef.current?.getSelection() || "";
-    if (text && navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
+    const text = menuSelectionRef.current || termRef.current?.getSelection() || "";
+    try {
+      if (text && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        setClipStatus(t("webcrt.actions.copied"));
+      } else {
+        setClipStatus(t("webcrt.actions.copyEmpty"));
+      }
+    } catch {
+      setClipStatus(t("webcrt.actions.copyFailed"));
     }
     setCtxMenu(null);
+    window.setTimeout(() => setClipStatus(null), 2200);
   };
 
   return (
@@ -744,6 +792,11 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
       {pasteStatus ? (
         <div className="webcrt-paste-status" role="status" aria-live="polite">
           {t("webcrt.term.pasting", { done: pasteStatus.done, total: pasteStatus.total })}
+        </div>
+      ) : null}
+      {clipStatus ? (
+        <div className="webcrt-paste-status" role="status" aria-live="polite">
+          {clipStatus}
         </div>
       ) : null}
       {findOpen ? (
