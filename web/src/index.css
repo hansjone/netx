@@ -926,7 +926,7 @@ a {
 }
 
 .muted {
-  color: #64748b;
+  color: #94a3b8;
 }
 
 table {
@@ -1044,7 +1044,7 @@ pre {
 }
 
 .link-btn--danger {
-  color: #c62828;
+  color: #f87171;
 }
 
 .link-btn:disabled {
@@ -1242,26 +1242,26 @@ pre {
   bottom: 20px;
   padding: 12px 16px;
   border-radius: 8px;
-  border: 1px solid #cbd5e1;
-  background: #fff;
-  color: #1e293b;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: #0f172a;
+  color: #e2e8f0;
   font-size: 14px;
   line-height: 1.45;
   z-index: 60;
   max-width: 420px;
-  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.14);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4);
 }
 
 .toast--ok {
-  border-color: #81c784;
-  background: #e8f5e9;
-  color: #1b5e20;
+  border-color: rgba(74, 222, 128, 0.35);
+  background: rgba(20, 83, 45, 0.85);
+  color: #bbf7d0;
 }
 
 .toast--error {
-  border-color: #ef9a9a;
-  background: #ffebee;
-  color: #b71c1c;
+  border-color: rgba(248, 113, 113, 0.4);
+  background: rgba(127, 29, 29, 0.85);
+  color: #fecaca;
 }
 
 .inline-spinner {
@@ -1368,15 +1368,15 @@ pre {
   z-index: 40;
   width: min(360px, 80vw);
   padding: 10px 12px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid rgba(148, 163, 184, 0.28);
   border-radius: 8px;
-  background: #fff;
-  color: #334155;
+  background: #0f172a;
+  color: #e2e8f0;
   font-size: 13px;
   font-weight: 400;
   line-height: 1.45;
   white-space: pre-line;
-  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
 }
 
 .help-hint--align-end .help-hint__popover {
@@ -1410,10 +1410,11 @@ pre {
 }
 
 .stat-card {
-  border: 1px solid var(--border, #e2e8f0);
+  border: 1px solid var(--border, rgba(148, 163, 184, 0.22));
   border-radius: 8px;
   padding: 12px 14px;
-  background: var(--panel-bg, #fff);
+  background: var(--panel-bg, rgba(15, 23, 42, 0.72));
+  color: var(--nm-text, #e2e8f0);
 }
 
 .stat-card strong {
@@ -2088,9 +2089,9 @@ pre {
 }
 
 .panel--warn {
-  border-color: #ffe082;
-  background: #fff8e1;
-  color: #5d4037;
+  border-color: rgba(251, 191, 36, 0.4);
+  background: rgba(120, 53, 15, 0.35);
+  color: #fde68a;
 }
 
 .panel__toolbar {
@@ -2114,13 +2115,14 @@ pre {
 }
 
 .btn--danger {
-  color: #b71c1c;
-  border-color: #ef9a9a;
-  background: #ffebee;
+  color: #fca5a5;
+  border-color: rgba(248, 113, 113, 0.35);
+  background: rgba(127, 29, 29, 0.35);
 }
 
 .btn--danger:hover:not(:disabled) {
-  background: #ffcdd2;
+  background: rgba(153, 27, 27, 0.5);
+  color: #fecaca;
 }
 
 .btn--danger:disabled {
@@ -2323,7 +2325,7 @@ pre {
   display: block;
   margin: 0;
   font-size: 12px;
-  color: #64748b;
+  color: #94a3b8;
   text-align: left;
 }
 
@@ -2332,7 +2334,7 @@ pre {
   flex-direction: column;
   gap: 4px;
   font-size: 12px;
-  color: #64748b;
+  color: #94a3b8;
 }
 
 .form-grid input,
@@ -2373,7 +2375,7 @@ pre {
   gap: 8px;
   margin-bottom: 12px;
   font-size: 13px;
-  color: #334155;
+  color: #cbd5e1;
   width: fit-content;
   max-width: 100%;
 }
@@ -2409,7 +2411,7 @@ pre {
 .panel__hint {
   margin: 0 0 12px;
   font-size: 13px;
-  color: #64748b;
+  color: #94a3b8;
   line-height: 1.45;
 }
 
@@ -2424,14 +2426,16 @@ pre {
   font-size: 13px;
   line-height: 1.4;
   padding: 10px;
-  border: 1px solid #cbd5e1;
+  border: 1px solid rgba(148, 163, 184, 0.28);
   border-radius: 6px;
+  background: #0b1220;
+  color: #e2e8f0;
   resize: vertical;
 }
 
 .collect-meta {
   font-size: 13px;
-  color: #64748b;
+  color: #94a3b8;
   margin-right: auto;
 }
 
@@ -2447,14 +2451,14 @@ pre {
   margin: 0;
   font-size: 15px;
   font-weight: 600;
-  color: #334155;
+  color: #f1f5f9;
 }
 
 .collect-selected-block,
 .collect-pick-block {
   margin-top: 20px;
   padding-top: 16px;
-  border-top: 1px solid #e2e8f0;
+  border-top: 1px solid rgba(148, 163, 184, 0.18);
 }
 
 .collect-selected-block__head {
@@ -2480,9 +2484,10 @@ pre {
   justify-content: space-between;
   gap: 12px;
   padding: 8px 12px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid rgba(148, 163, 184, 0.22);
   border-radius: 8px;
+  color: #e2e8f0;
 }
 
 .collect-selected-chip__main {
@@ -2494,7 +2499,7 @@ pre {
 
 .collect-selected-chip__meta {
   font-size: 12px;
-  color: #64748b;
+  color: #94a3b8;
 }
 
 .collect-pick-filters {
@@ -2503,13 +2508,15 @@ pre {
 
 .collect-cmd-preview {
   font-size: 12px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
+  background: rgba(2, 8, 23, 0.55);
+  border: 1px solid rgba(148, 163, 184, 0.22);
   border-radius: 6px;
   padding: 10px;
   max-height: 120px;
   overflow: auto;
   white-space: pre-wrap;
+  color: #cbd5e1;
+  font-family: ui-monospace, Consolas, monospace;
 }
 
 .collect-runs-panel {
@@ -2530,23 +2537,25 @@ pre {
   align-items: center;
   gap: 8px;
   font-size: 13px;
-  color: #475569;
+  color: #94a3b8;
 }
 
 .collect-runs-filter select {
   min-width: 140px;
   padding: 6px 8px;
-  border: 1px solid #cbd5e1;
+  border: 1px solid rgba(148, 163, 184, 0.28);
   border-radius: 6px;
-  background: #fff;
+  background: #0b1220;
+  color: #e2e8f0;
 }
 
 .collect-runs-filter input {
   min-width: 180px;
   padding: 6px 8px;
-  border: 1px solid #cbd5e1;
+  border: 1px solid rgba(148, 163, 184, 0.28);
   border-radius: 6px;
-  background: #fff;
+  background: #0b1220;
+  color: #e2e8f0;
 }
 
 .collect-run-message {
@@ -2557,10 +2566,10 @@ pre {
   word-break: break-word;
   font-size: 12px;
   line-height: 1.45;
-  color: #334155;
+  color: #cbd5e1;
   padding: 6px 8px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
+  background: rgba(2, 8, 23, 0.55);
+  border: 1px solid rgba(148, 163, 184, 0.22);
   border-radius: 6px;
 }
 
@@ -7912,7 +7921,8 @@ pre {
   background: var(--nm-chrome);
 }
 
-.network-main > .panel {
+.network-main > .panel,
+.network-main .page-stack > .panel {
   padding: 16px 18px 18px;
   border-color: var(--nm-panel-border);
   box-shadow: 0 1px 2px rgba(15, 27, 45, 0.06);
@@ -7921,7 +7931,7 @@ pre {
 .network-main .panel__toolbar {
   margin-bottom: 14px;
   padding-bottom: 12px;
-  border-bottom: 1px solid #d7dee8;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
 }
 
 .network-main .panel__toolbar h2 {
@@ -8120,7 +8130,7 @@ pre {
 .network-placeholder__list {
   margin: 12px 0 0;
   padding-left: 1.25rem;
-  color: #475569;
+  color: #94a3b8;
   line-height: 1.6;
 }
 
@@ -8133,9 +8143,9 @@ pre {
 }
 
 .pt-wizard__step {
-  border: 1px solid #cbd5e1;
-  background: #f8fafc;
-  color: #334155;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: rgba(15, 23, 42, 0.75);
+  color: #cbd5e1;
   border-radius: 6px;
   padding: 6px 10px;
   font-size: 13px;
@@ -8143,15 +8153,15 @@ pre {
 }
 
 .pt-wizard__step.is-active {
-  border-color: #0f766e;
-  background: #ccfbf1;
-  color: #115e59;
+  border-color: rgba(45, 212, 191, 0.45);
+  background: rgba(15, 118, 110, 0.28);
+  color: #5eead4;
 }
 
 .pt-wizard__ne-block {
   margin-bottom: 16px;
   padding-bottom: 12px;
-  border-bottom: 1px solid #e2e8f0;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
 }
 
 .pt-wizard__confirm-list {
@@ -8159,7 +8169,7 @@ pre {
   padding-left: 1.2rem;
   max-height: 220px;
   overflow: auto;
-  color: #334155;
+  color: #cbd5e1;
 }
 
 .pt-list {
@@ -8242,22 +8252,22 @@ pre {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 12px;
-  color: #b91c1c;
+  color: #fca5a5;
 }
 
 /* Beat .app-main button { color/background } so error state shows without hover. */
 .app-main .pt-list-log-btn--error,
 .pt-list-actions .pt-list-log-btn--error {
-  color: #b91c1c;
-  border-color: #fecaca;
-  background: #fef2f2;
+  color: #fca5a5;
+  border-color: rgba(248, 113, 113, 0.35);
+  background: rgba(127, 29, 29, 0.35);
   font-weight: 600;
 }
 
 .app-main .pt-list-log-btn--error:hover,
 .pt-list-actions .pt-list-log-btn--error:hover {
-  color: #991b1b;
-  background: #fee2e2;
+  color: #fecaca;
+  background: rgba(153, 27, 27, 0.5);
 }
 
 .pt-log-modal__head {
@@ -8369,14 +8379,14 @@ pre {
 }
 
 .pt-rebind-row--same-ip {
-  background: #fffbeb;
+  background: rgba(120, 53, 15, 0.35);
 }
 
 .pt-rebind-same-ip {
   margin-left: 8px;
   font-size: 11px;
   font-weight: 600;
-  color: #b45309;
+  color: #fbbf24;
 }
 
 .pt-list-status {
