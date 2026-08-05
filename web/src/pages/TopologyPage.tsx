@@ -304,6 +304,8 @@ type TopoDisplayOpts = {
   hideVendor: boolean;
   hidePorts: boolean;
   connectMode: boolean;
+  /** Show TOPO/LLDP placeholder corner badge on nodes. */
+  showPlaceholderBadge: boolean;
 };
 
 type CtxMenu =
@@ -317,6 +319,7 @@ const TopoDisplayContext = createContext<TopoDisplayOpts>({
   hideVendor: true,
   hidePorts: true,
   connectMode: false,
+  showPlaceholderBadge: false,
 });
 
 function newId(): string {
@@ -418,9 +421,10 @@ function isPlaceholderSource(source: string | undefined, neIp: string): boolean 
 }
 
 const NeNode = memo(function NeNode({ data, selected }: NodeProps<Node<NeNodeData>>) {
-  const { hideIp, hideVendor, connectMode } = useContext(TopoDisplayContext);
+  const { hideIp, hideVendor, connectMode, showPlaceholderBadge } = useContext(TopoDisplayContext);
   const tone = nodeIconTone(data.vendor, data.managed_ne_id, data.ume_ne_id);
   const placeholder = isPlaceholderSource(data.managed_source, data.ne_ip);
+  const showBadge = placeholder && showPlaceholderBadge;
   const name = data.label || (!hideIp ? data.ne_ip : "") || "NE";
   const secondary = [
     hideIp || !data.ne_ip || data.ne_ip === name ? "" : data.ne_ip,
@@ -430,8 +434,8 @@ const NeNode = memo(function NeNode({ data, selected }: NodeProps<Node<NeNodeDat
     <div
       className={`topo-node topo-node--${tone}${selected ? " is-selected" : ""}${
         connectMode ? " is-connect-mode" : ""
-      }${placeholder ? " is-placeholder" : ""}`}
-      title={placeholder ? data.managed_source || "placeholder" : undefined}
+      }${showBadge ? " is-placeholder" : ""}`}
+      title={showBadge ? data.managed_source || "placeholder" : undefined}
     >
       <div className="topo-node__glyph">
         <Handle
@@ -447,7 +451,7 @@ const NeNode = memo(function NeNode({ data, selected }: NodeProps<Node<NeNodeDat
           isConnectable={connectMode}
         />
         <RouterIcon />
-        {placeholder ? (
+        {showBadge ? (
           <span className="topo-node__badge" aria-hidden>
             {String(data.managed_source || "ph").slice(0, 4)}
           </span>
@@ -484,7 +488,7 @@ const AUTO_LAYOUT_DISCOVER_KEY = "netx.topology.autoLayoutAfterDiscover";
 const DISCOVER_AUTO_ADD_KEY = "netx.topology.discoverAutoAddUnmatched.v2";
 const DISCOVER_PROJECT_NEIGHBORS_KEY = "netx.topology.discoverProjectNeighbors.v2";
 const SCALE_BUNDLE_WIDTH_KEY = "netx.topology.scaleBundleWidth";
-const SHOW_PLACEHOLDERS_KEY = "netx.topology.showPlaceholders";
+const SHOW_PLACEHOLDER_BADGE_KEY = "netx.topology.showPlaceholderBadge";
 const CANVAS_BG_KEY = "netx.topology.canvasBg";
 const DEFAULT_CANVAS_BG = "#0f172a";
 /** Previous light default — migrate so existing sessions pick up dark canvas. */
@@ -861,9 +865,9 @@ export function TopologyPage() {
   const [scaleBundleWidth, setScaleBundleWidth] = useState(() =>
     loadBoolFlag(SCALE_BUNDLE_WIDTH_KEY, false),
   );
-  /** Topology/LLDP placeholders hidden by default; toggle in Display menu. */
-  const [showPlaceholders, setShowPlaceholders] = useState(() =>
-    loadBoolFlag(SHOW_PLACEHOLDERS_KEY, false),
+  /** TOPO/LLDP corner badge hidden by default; toggle in Display menu. */
+  const [showPlaceholderBadge, setShowPlaceholderBadge] = useState(() =>
+    loadBoolFlag(SHOW_PLACEHOLDER_BADGE_KEY, false),
   );
   const [edgeFlow, setEdgeFlow] = useState(false);
   const [edgeDefaults, setEdgeDefaults] = useState<EdgeDefaults>(() => loadEdgeDefaults());
@@ -919,21 +923,6 @@ export function TopologyPage() {
   const findJustLocatedRef = useRef(false);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<NeNodeData>>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
-
-  useEffect(() => {
-    if (showPlaceholders) return;
-    setNodes((ns) => {
-      let changed = false;
-      const next = ns.map((n) => {
-        if (!n.selected) return n;
-        if (!isPlaceholderSource(n.data.managed_source, n.data.ne_ip)) return n;
-        changed = true;
-        return { ...n, selected: false };
-      });
-      return changed ? next : ns;
-    });
-  }, [showPlaceholders, setNodes]);
-
   const rfRef = useRef<ReactFlowInstance<Node<NeNodeData>, Edge> | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const dirtyRef = useRef(false);
@@ -1032,8 +1021,14 @@ export function TopologyPage() {
 
   const toolBehavior = useMemo(() => behaviorForMode(toolMode), [toolMode]);
   const displayOpts = useMemo(
-    () => ({ hideIp, hideVendor, hidePorts, connectMode: toolMode === "connect" }),
-    [hideIp, hideVendor, hidePorts, toolMode],
+    () => ({
+      hideIp,
+      hideVendor,
+      hidePorts,
+      connectMode: toolMode === "connect",
+      showPlaceholderBadge,
+    }),
+    [hideIp, hideVendor, hidePorts, toolMode, showPlaceholderBadge],
   );
   const displayEdges = useMemo(() => {
     const built = buildLinkDisplayEdges(edges, expandPhysicalLinks, hidePorts, scaleBundleWidth).map((e) =>
@@ -1053,33 +1048,6 @@ export function TopologyPage() {
       };
     });
   }, [edges, expandPhysicalLinks, hidePorts, scaleBundleWidth, edgeFlow, edgeDefaults, selectedEdgeId]);
-
-  const hiddenPlaceholderIds = useMemo(() => {
-    if (showPlaceholders) return new Set<string>();
-    return new Set(
-      nodes
-        .filter((n) => isPlaceholderSource(n.data.managed_source, n.data.ne_ip))
-        .map((n) => n.id),
-    );
-  }, [nodes, showPlaceholders]);
-
-  const flowNodes = useMemo(() => {
-    const list = hiddenPlaceholderIds.size
-      ? nodes.filter((n) => !hiddenPlaceholderIds.has(n.id))
-      : nodes;
-    return list.map((n) =>
-      searchHitIds.includes(n.id)
-        ? { ...n, className: "is-search-hit" }
-        : { ...n, className: undefined },
-    );
-  }, [nodes, hiddenPlaceholderIds, searchHitIds]);
-
-  const flowEdges = useMemo(() => {
-    if (!hiddenPlaceholderIds.size) return displayEdges;
-    return displayEdges.filter(
-      (e) => !hiddenPlaceholderIds.has(e.source) && !hiddenPlaceholderIds.has(e.target),
-    );
-  }, [displayEdges, hiddenPlaceholderIds]);
 
   const treeQuery = useQuery({
     queryKey: queryKeys.topologyTree,
@@ -2717,12 +2685,8 @@ export function TopologyPage() {
   const canvasHits = useMemo(() => {
     const q = canvasQuery.trim();
     if (!q) return [];
-    return nodes.filter(
-      (n) =>
-        nodeMatchesQuery(n, q) &&
-        (showPlaceholders || !isPlaceholderSource(n.data.managed_source, n.data.ne_ip)),
-    );
-  }, [canvasQuery, nodes, showPlaceholders]);
+    return nodes.filter((n) => nodeMatchesQuery(n, q));
+  }, [canvasQuery, nodes]);
 
   useEffect(() => {
     const q = canvasQuery.trim();
@@ -3416,14 +3380,14 @@ export function TopologyPage() {
                     <label className="topo-display-toggles__item">
                       <input
                         type="checkbox"
-                        checked={showPlaceholders}
+                        checked={showPlaceholderBadge}
                         onChange={(e) => {
                           const next = e.target.checked;
-                          setShowPlaceholders(next);
-                          persistBoolFlag(SHOW_PLACEHOLDERS_KEY, next);
+                          setShowPlaceholderBadge(next);
+                          persistBoolFlag(SHOW_PLACEHOLDER_BADGE_KEY, next);
                         }}
                       />
-                      {t("topology.showPlaceholders")}
+                      {t("topology.showPlaceholderBadge")}
                     </label>
                     <label className="topo-display-toggles__item">
                       <input
@@ -4157,8 +4121,12 @@ export function TopologyPage() {
             {treeRoot ? (
               <TopoDisplayContext.Provider value={displayOpts}>
                 <ReactFlow
-                  nodes={flowNodes}
-                  edges={flowEdges}
+                  nodes={nodes.map((n) =>
+                    searchHitIds.includes(n.id)
+                      ? { ...n, className: "is-search-hit" }
+                      : { ...n, className: undefined },
+                  )}
+                  edges={displayEdges}
                   nodeTypes={nodeTypes}
                   edgeTypes={edgeTypes}
                   onlyRenderVisibleElements

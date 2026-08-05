@@ -1566,7 +1566,7 @@ const en = {
     },
     hideIp: "Hide IP",
     hideVendor: "Hide vendor",
-    showPlaceholders: "Show placeholders (TOPO/LLDP)",
+    showPlaceholderBadge: "Show placeholder badge (TOPO/LLDP)",
     hidePorts: "Hide ports",
     edgeFlow: "Edge flow",
     collapseSidebar: "Collapse sidebar",
