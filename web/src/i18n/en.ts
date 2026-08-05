@@ -648,6 +648,7 @@ const en = {
       fail: "fail",
       expand: "Details",
       collapse: "Hide",
+      detailTitle: "Job details",
       pause: "Pause",
       start: "Start",
       starting: "Starting…",

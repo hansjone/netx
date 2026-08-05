@@ -16,7 +16,7 @@ import {
 import { queryKeys } from "../constants/queryKeys";
 import { useI18n } from "../i18n";
 import { useToast } from "../hooks/useToast";
-import type { CollectionJobDetail, CollectionJobItem, EligibleNeItem } from "../types";
+import type { CollectionJobItem, EligibleNeItem } from "../types";
 import { pageCount } from "../utils/display";
 import { formatSystemTime } from "../utils/time";
 
@@ -498,9 +498,7 @@ export function CollectPage() {
                     <JobRow
                       key={job.id}
                       job={job}
-                      expanded={expandedJobId === job.id}
-                      detail={expandedJobId === job.id ? detailQuery.data : undefined}
-                      onToggle={() => setExpandedJobId(expandedJobId === job.id ? "" : job.id)}
+                      onOpenDetail={() => setExpandedJobId(job.id)}
                       onPause={() => pauseMutation.mutate(job.id)}
                       onStart={() => startJobMutation.mutate(job.id)}
                       onRetryFailed={() => retryFailedMutation.mutate(job.id)}
@@ -534,15 +532,65 @@ export function CollectPage() {
           </div>
         </div>
       </section>
+
+      {expandedJobId ? (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={() => setExpandedJobId("")}
+        >
+          <div
+            className="modal modal--wide ops-detail-modal ops-detail-modal--xl"
+            role="dialog"
+            aria-modal="true"
+            aria-label={t("collect.jobs.detailTitle")}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="ops-detail-modal__head">
+              <div className="ops-detail-modal__title">
+                <h3>{t("collect.jobs.detailTitle")}</h3>
+                <p className="muted">
+                  {(() => {
+                    const job = jobs.find((j) => j.id === expandedJobId) || detailQuery.data?.job;
+                    return job
+                      ? `${job.title} · ${job.status} · ${job.success_count}/${job.ne_count}`
+                      : expandedJobId.slice(0, 8);
+                  })()}
+                </p>
+              </div>
+              <div className="btn-row ops-detail-modal__actions">
+                <button type="button" onClick={() => setExpandedJobId("")}>
+                  {t("networkConfigs.close")}
+                </button>
+              </div>
+            </div>
+            {detailQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
+            <JobRunsPanel
+              jobId={expandedJobId}
+              jobStatus={
+                jobs.find((j) => j.id === expandedJobId)?.status ||
+                detailQuery.data?.job.status ||
+                ""
+              }
+              failCount={
+                jobs.find((j) => j.id === expandedJobId)?.fail_count ??
+                detailQuery.data?.job.fail_count ??
+                0
+              }
+              commands={detailQuery.data?.job.commands ?? ""}
+              onRetryFailed={() => retryFailedMutation.mutate(expandedJobId)}
+              retryPending={actionPending}
+            />
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
 
 function JobRow({
   job,
-  expanded,
-  detail,
-  onToggle,
+  onOpenDetail,
   onPause,
   onStart,
   onRetryFailed,
@@ -551,9 +599,7 @@ function JobRow({
   startPending,
 }: {
   job: CollectionJobItem;
-  expanded: boolean;
-  detail?: CollectionJobDetail;
-  onToggle: () => void;
+  onOpenDetail: () => void;
   onPause: () => void;
   onStart: () => void;
   onRetryFailed: () => void;
@@ -572,64 +618,48 @@ function JobRow({
     window.location.assign(collectionJobDownloadUrl(job.id));
   };
   return (
-    <>
-      <tr>
-        <td>{job.title}</td>
-        <td>{job.status}</td>
-        <td>
-          {job.success_count}/{job.ne_count} {t("collect.jobs.ok")}, {job.fail_count} {t("collect.jobs.fail")}
-        </td>
-        <td>{formatSystemTime(job.created_at)}</td>
-        <td>{job.last_run_at ? formatSystemTime(job.last_run_at) : t("common.empty")}</td>
-        <td className="table-actions">
-          <button type="button" className="link-btn" onClick={onToggle}>
-            {expanded ? t("collect.jobs.collapse") : t("collect.jobs.expand")}
+    <tr>
+      <td>{job.title}</td>
+      <td>{job.status}</td>
+      <td>
+        {job.success_count}/{job.ne_count} {t("collect.jobs.ok")}, {job.fail_count} {t("collect.jobs.fail")}
+      </td>
+      <td>{formatSystemTime(job.created_at)}</td>
+      <td>{job.last_run_at ? formatSystemTime(job.last_run_at) : t("common.empty")}</td>
+      <td className="table-actions">
+        <button type="button" className="link-btn" onClick={onOpenDetail}>
+          {t("collect.jobs.expand")}
+        </button>
+        {canPause ? (
+          <button type="button" className="link-btn" disabled={actionPending} onClick={onPause}>
+            {t("collect.jobs.pause")}
           </button>
-          {canPause ? (
-            <button type="button" className="link-btn" disabled={actionPending} onClick={onPause}>
-              {t("collect.jobs.pause")}
-            </button>
-          ) : null}
-          {canStart ? (
-            <button type="button" className="link-btn" disabled={actionPending} onClick={onStart}>
-              {startPending ? t("collect.jobs.starting") : t("collect.jobs.start")}
-            </button>
-          ) : null}
-          {canRetryFailed ? (
-            <button type="button" className="link-btn" disabled={actionPending} onClick={onRetryFailed}>
-              {t("collect.jobs.retryFailed")}
-            </button>
-          ) : null}
-          <button
-            type="button"
-            className="link-btn"
-            disabled={actionPending || !hasResults}
-            onClick={downloadResults}
-          >
-            {t("collect.jobs.downloadResults")}
+        ) : null}
+        {canStart ? (
+          <button type="button" className="link-btn" disabled={actionPending} onClick={onStart}>
+            {startPending ? t("collect.jobs.starting") : t("collect.jobs.start")}
           </button>
-          {canDelete ? (
-            <button type="button" className="link-btn link-btn--danger" disabled={actionPending} onClick={onDelete}>
-              {t("collect.jobs.delete")}
-            </button>
-          ) : null}
-        </td>
-      </tr>
-      {expanded ? (
-        <tr>
-          <td colSpan={6}>
-            <JobRunsPanel
-              jobId={job.id}
-              jobStatus={job.status}
-              failCount={job.fail_count}
-              commands={detail?.job.commands ?? ""}
-              onRetryFailed={onRetryFailed}
-              retryPending={actionPending}
-            />
-          </td>
-        </tr>
-      ) : null}
-    </>
+        ) : null}
+        {canRetryFailed ? (
+          <button type="button" className="link-btn" disabled={actionPending} onClick={onRetryFailed}>
+            {t("collect.jobs.retryFailed")}
+          </button>
+        ) : null}
+        <button
+          type="button"
+          className="link-btn"
+          disabled={actionPending || !hasResults}
+          onClick={downloadResults}
+        >
+          {t("collect.jobs.downloadResults")}
+        </button>
+        {canDelete ? (
+          <button type="button" className="link-btn link-btn--danger" disabled={actionPending} onClick={onDelete}>
+            {t("collect.jobs.delete")}
+          </button>
+        ) : null}
+      </td>
+    </tr>
   );
 }
 
@@ -681,111 +711,117 @@ function JobRunsPanel({
   const runs = runsQuery.data?.items ?? [];
 
   return (
-    <div className="collect-runs-panel">
+    <>
       {jobStatus === "running" ? (
         <p className="panel__hint panel__hint--live">{t("collect.jobs.runsInProgress")}</p>
       ) : null}
-      {commands ? <pre className="collect-cmd-preview">{commands}</pre> : null}
-      <div className="collect-runs-toolbar">
-        <label className="collect-runs-filter">
-          {t("collect.runs.filterDevice")}
-          <input
-            type="search"
-            value={runKeyword}
-            placeholder={t("collect.runs.deviceKeywordPh")}
-            onChange={(e) => {
-              setRunKeyword(e.target.value);
-              setRunPage(1);
-            }}
-          />
-        </label>
-        <label className="collect-runs-filter">
-          {t("collect.runs.filterStatus")}
-          <select
-            value={runStatus}
-            onChange={(e) => {
-              setRunStatus(e.target.value);
-              setRunPage(1);
-            }}
-          >
-            <option value="">{t("collect.runs.allStatus")}</option>
-            {RUN_STATUS_OPTIONS.map((st) => (
-              <option key={st} value={st}>
-                {st}
-              </option>
-            ))}
-          </select>
-        </label>
+      {commands ? <pre className="collect-cmd-preview collect-cmd-preview--modal">{commands}</pre> : null}
+      <div className="ops-detail-modal__toolbar filter-inline collect-runs-toolbar">
+        <input
+          type="search"
+          value={runKeyword}
+          placeholder={t("collect.runs.deviceKeywordPh")}
+          onChange={(e) => {
+            setRunKeyword(e.target.value);
+            setRunPage(1);
+          }}
+        />
+        <select
+          value={runStatus}
+          onChange={(e) => {
+            setRunStatus(e.target.value);
+            setRunPage(1);
+          }}
+        >
+          <option value="">{t("collect.runs.allStatus")}</option>
+          {RUN_STATUS_OPTIONS.map((st) => (
+            <option key={st} value={st}>
+              {st}
+            </option>
+          ))}
+        </select>
         {runStatus || runKeyword ? (
-          <button type="button" className="link-btn" onClick={clearRunFilters}>
+          <button type="button" onClick={clearRunFilters}>
             {t("common.clearFilters")}
           </button>
         ) : null}
         {jobStatus !== "running" && failCount > 0 ? (
-          <button type="button" className="link-btn" disabled={retryPending} onClick={onRetryFailed}>
+          <button type="button" disabled={retryPending} onClick={onRetryFailed}>
             {t("collect.jobs.retryFailed")}
           </button>
         ) : null}
       </div>
-      {runsQuery.isLoading ? <p>{t("common.refreshing")}</p> : null}
-      {!runsQuery.isLoading && runs.length === 0 ? <p>{t("common.empty")}</p> : null}
-      {runs.length > 0 ? (
-        <table>
-          <thead>
-            <tr>
-              <th>{t("managedNe.col.source")}</th>
-              <th>{t("managedNe.col.name")}</th>
-              <th>{t("managedNe.col.ip")}</th>
-              <th>{t("collect.runs.status")}</th>
-              <th>{t("collect.runs.message")}</th>
-              <th>{t("collect.runs.download")}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {runs.map((run) => (
-              <tr key={run.id}>
-                <td>
-                  <span className="table-tag">{run.ne_source || "managed"}</span>
-                </td>
-                <td>{run.ne_name}</td>
-                <td>{run.ne_ip}</td>
-                <td>{run.status}</td>
-                <td>
-                  {run.message ? (
-                    <div className="collect-run-message" title={run.message}>
-                      {run.message}
-                    </div>
-                  ) : (
-                    t("common.empty")
-                  )}
-                </td>
-                <td>
-                  {run.has_output ? (
-                    <a className="link-btn" href={collectionRunDownloadUrl(run.id)} target="_blank" rel="noreferrer">
-                      {t("collect.runs.downloadFile")}
-                    </a>
-                  ) : (
-                    t("common.empty")
-                  )}
-                </td>
+      {runsQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
+      <div className="ops-detail-modal__scroll">
+        <div className="pt-list-table-wrap">
+          <table className="data-table pt-list-table">
+            <thead>
+              <tr>
+                <th>{t("managedNe.col.source")}</th>
+                <th>{t("managedNe.col.name")}</th>
+                <th>{t("managedNe.col.ip")}</th>
+                <th>{t("collect.runs.status")}</th>
+                <th>{t("collect.runs.message")}</th>
+                <th>{t("collect.runs.download")}</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      ) : null}
-      {runTotal > 0 ? (
-        <div className="pager">
-          <div className="pager__meta">{t("common.pagerMeta", { total: runTotal, page: runPage, pages: runPages })}</div>
-          <div className="pager__controls">
-            <button className="pager__btn" disabled={runPage <= 1} onClick={() => setRunPage(runPage - 1)}>
-              {t("common.prevPage")}
-            </button>
-            <button className="pager__btn" disabled={runPage >= runPages} onClick={() => setRunPage(runPage + 1)}>
-              {t("common.nextPage")}
-            </button>
-          </div>
+            </thead>
+            <tbody>
+              {runs.map((run) => (
+                <tr key={run.id}>
+                  <td>
+                    <span className="table-tag">{run.ne_source || "managed"}</span>
+                  </td>
+                  <td>{run.ne_name}</td>
+                  <td>{run.ne_ip}</td>
+                  <td>{run.status}</td>
+                  <td>
+                    {run.message ? (
+                      <div className="collect-run-message" title={run.message}>
+                        {run.message}
+                      </div>
+                    ) : (
+                      t("common.empty")
+                    )}
+                  </td>
+                  <td>
+                    {run.has_output ? (
+                      <a className="link-btn" href={collectionRunDownloadUrl(run.id)} target="_blank" rel="noreferrer">
+                        {t("collect.runs.downloadFile")}
+                      </a>
+                    ) : (
+                      t("common.empty")
+                    )}
+                  </td>
+                </tr>
+              ))}
+              {!runsQuery.isLoading && runs.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="muted">
+                    {t("common.empty")}
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
         </div>
-      ) : null}
-    </div>
+      </div>
+      <div className="ops-detail-modal__foot">
+        <span className="muted">
+          {t("common.pagerMeta", {
+            total: String(runTotal),
+            page: String(runPage),
+            pages: String(runPages),
+          })}
+        </span>
+        <div className="btn-row">
+          <button type="button" disabled={runPage <= 1} onClick={() => setRunPage(runPage - 1)}>
+            {t("common.prevPage")}
+          </button>
+          <button type="button" disabled={runPage >= runPages} onClick={() => setRunPage(runPage + 1)}>
+            {t("common.nextPage")}
+          </button>
+        </div>
+      </div>
+    </>
   );
 }

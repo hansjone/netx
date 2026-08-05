@@ -2519,6 +2519,12 @@ pre {
   font-family: ui-monospace, Consolas, monospace;
 }
 
+.collect-cmd-preview--modal {
+  flex: 0 0 auto;
+  margin: 0 0 10px;
+  max-height: 88px;
+}
+
 .collect-runs-panel {
   display: flex;
   flex-direction: column;

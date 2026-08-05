@@ -644,6 +644,7 @@ const zh = {
       fail: "失败",
       expand: "详情",
       collapse: "收起",
+      detailTitle: "任务明细",
       pause: "暂停",
       start: "开始",
       starting: "启动中…",
