@@ -967,10 +967,14 @@ def project_fabric_neighbors_to_view(
 
     Optional seeds limit expansion to neighbors of those fabric nodes (must
     already be on the view). Empty seeds → expand from every canvas node.
+
+    dry_run=True returns the projected graph without persisting placements.
     """
     merge_duplicate_fabric_nodes(db)
     view = _get_view_or_404(db, view_id)
     mem = _membership_for_view(view)
+    req = body or ViewProjectNeighborsRequest()
+    dry_run = bool(req.dry_run)
     if bool(mem.get("frozen")):
         g = get_view_graph(db, view.id)
         g.truncated = True
@@ -981,7 +985,6 @@ def project_fabric_neighbors_to_view(
     hops = int(mem.get("expand_hops") or 1)
     filt = dict(view.filter or {})
     layer = str(filt.get("layer") or "physical").strip() or "physical"
-    req = body or ViewProjectNeighborsRequest()
 
     vnodes = db.query(TopoViewNode).filter(TopoViewNode.view_id == view.id).all()
     fids_on_view = [vn.fabric_node_id for vn in vnodes]
@@ -995,7 +998,7 @@ def project_fabric_neighbors_to_view(
     )
     # Drop placements pointing at missing fabric rows only (keep LLDP placeholders).
     orphan_vns = [vn for vn in vnodes if vn.fabric_node_id not in fabric_on_view]
-    if orphan_vns:
+    if orphan_vns and not dry_run:
         for vn in orphan_vns:
             db.delete(vn)
         view.updated_at = _utcnow()
@@ -1064,6 +1067,25 @@ def project_fabric_neighbors_to_view(
     room = max(0, max_nodes - len(existing))
     to_add = eligible[:room]
     truncated = len(eligible) > len(to_add)
+
+    if dry_run:
+        if to_add:
+            nested = db.begin_nested()
+            try:
+                _place_fabric_ids_on_view(
+                    db, view, to_add, existing=set(existing), near_fabric_ids=seed_ids
+                )
+                db.flush()
+                g = get_view_graph(db, view.id)
+            finally:
+                nested.rollback()
+        else:
+            g = get_view_graph(db, view.id)
+        if truncated:
+            g.truncated = True
+            g.truncate_reason = g.truncate_reason or "membership_cap"
+        return g
+
     if to_add:
         _place_fabric_ids_on_view(
             db, view, to_add, existing=existing, near_fabric_ids=seed_ids

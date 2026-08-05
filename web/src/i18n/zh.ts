@@ -1484,7 +1484,7 @@ const zh = {
     snapGrid: "网格吸附",
     autoLayoutDiscover: "发现后自动布局",
     discoverAutoAddUnmatched: "发现时自动入库未匹配网元（占位）",
-    discoverProjectNeighbors: "发现后将本次扫描网元的直连邻居加入画布",
+    discoverProjectNeighbors: "发现后将本次扫描网元的直连邻居加入画布（需保存才永久保留）",
     undo: "撤销",
     redo: "重做",
     discoverSelected: "发现选中 ({{count}})",
@@ -1608,7 +1608,7 @@ const zh = {
     removeStale: "清除未发现 ({{count}})",
     removeStaleHint: "标记删除红色未发现链路（保存后生效）；周期采集连续 4 次未发现也会自动清理",
     staleRemoved: "已标记删除 {{count}} 条未发现链路（保存后生效）",
-    connectHint: "连线模式：依次点击源节点 → 目标节点（Esc 或切回选择退出）",
+    connectHint: "连线模式：从节点四边锚点拖到目标网元（Esc 或切回选择退出）",
   },
   topoClassify: {
     title: "分类与切片",

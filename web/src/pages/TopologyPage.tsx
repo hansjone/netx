@@ -23,6 +23,7 @@ import {
   useNodesState,
   Handle,
   Position,
+  ConnectionLineType,
   ConnectionMode,
   SelectionMode,
   type Connection,
@@ -430,6 +431,12 @@ const NeNode = memo(function NeNode({ data, selected }: NodeProps<Node<NeNodeDat
     hideIp || !data.ne_ip || data.ne_ip === name ? "" : data.ne_ip,
     hideVendor || !data.vendor ? "" : data.vendor,
   ].filter(Boolean);
+  const handlePositions = [
+    { id: "n", position: Position.Top },
+    { id: "e", position: Position.Right },
+    { id: "s", position: Position.Bottom },
+    { id: "w", position: Position.Left },
+  ] as const;
   return (
     <div
       className={`topo-node topo-node--${tone}${selected ? " is-selected" : ""}${
@@ -438,18 +445,16 @@ const NeNode = memo(function NeNode({ data, selected }: NodeProps<Node<NeNodeDat
       title={showBadge ? data.managed_source || "placeholder" : undefined}
     >
       <div className="topo-node__glyph">
-        <Handle
-          type="target"
-          position={Position.Left}
-          className="topo-node__handle topo-node__handle--center"
-          isConnectable={connectMode}
-        />
-        <Handle
-          type="source"
-          position={Position.Right}
-          className="topo-node__handle topo-node__handle--center"
-          isConnectable={connectMode}
-        />
+        {handlePositions.map(({ id, position }) => (
+          <Handle
+            key={id}
+            id={id}
+            type="source"
+            position={position}
+            className={`topo-node__handle topo-node__handle--${id}`}
+            isConnectable={connectMode}
+          />
+        ))}
         <RouterIcon />
         {showBadge ? (
           <span className="topo-node__badge" aria-hidden>
@@ -738,11 +743,13 @@ function graphToFlow(
     position: { x: n.x || 0, y: n.y || 0 },
     width: TOPO_NODE_W,
     height: TOPO_NODE_H,
-    // Predetermined handles must match DOM anchors (icon center), not the 160px box edges —
-    // otherwise edges float in the gap and never touch the router glyph.
+    // Predetermined handles must match DOM anchors on the router glyph (56×56, top-centered).
+    // ConnectionMode.Loose treats these source handles as connectable targets too.
     handles: [
-      { type: "target", position: Position.Left, x: TOPO_HANDLE_X, y: TOPO_HANDLE_Y },
-      { type: "source", position: Position.Right, x: TOPO_HANDLE_X, y: TOPO_HANDLE_Y },
+      { type: "source", position: Position.Top, id: "n", x: TOPO_HANDLE_X, y: 0 },
+      { type: "source", position: Position.Right, id: "e", x: TOPO_HANDLE_X + TOPO_ICON / 2, y: TOPO_HANDLE_Y },
+      { type: "source", position: Position.Bottom, id: "s", x: TOPO_HANDLE_X, y: TOPO_ICON },
+      { type: "source", position: Position.Left, id: "w", x: TOPO_HANDLE_X - TOPO_ICON / 2, y: TOPO_HANDLE_Y },
     ],
     data: {
       label: n.label || n.name || n.ip || n.fabric_node_id,
@@ -772,7 +779,7 @@ function graphToFlow(
         id: e.id,
         source: e.a_node_id,
         target: e.b_node_id,
-        type: "straight",
+        type: "smoothstep",
         label: label || undefined,
         animated: false,
         data,
@@ -1536,12 +1543,18 @@ export function TopologyPage() {
         await deleteFabricEdges(pendingEdges);
         pendingEdgeDeletesRef.current.clear();
       }
-      // Positions patch only updates listed nodes; sync canvas removals first.
       const serverIds = (graphQuery.data?.nodes || [])
         .map((n) => n.fabric_node_id)
         .filter(Boolean);
-      const localIds = new Set(nodes.map((n) => n.id));
-      const toRemove = serverIds.filter((id) => !localIds.has(id));
+      const localIds = nodes.map((n) => n.id);
+      const localSet = new Set(localIds);
+      const serverSet = new Set(serverIds);
+      const toAdd = localIds.filter((id) => !serverSet.has(id));
+      const toRemove = serverIds.filter((id) => !localSet.has(id));
+      // Add first so a save that both adds and removes never flashes an empty view.
+      if (toAdd.length) {
+        await addTopologyViewNodes(mapId, { fabric_node_ids: toAdd });
+      }
       if (toRemove.length) {
         await removeTopologyViewNodes(mapId, toRemove);
       }
@@ -1596,8 +1609,14 @@ export function TopologyPage() {
           const serverIds = (graphQuery.data?.nodes || [])
             .map((n) => n.fabric_node_id)
             .filter(Boolean);
-          const localIds = new Set(nodes.map((n) => n.id));
-          const toRemove = serverIds.filter((id) => !localIds.has(id));
+          const localIds = nodes.map((n) => n.id);
+          const localSet = new Set(localIds);
+          const serverSet = new Set(serverIds);
+          const toAdd = localIds.filter((id) => !serverSet.has(id));
+          const toRemove = serverIds.filter((id) => !localSet.has(id));
+          if (toAdd.length) {
+            await addTopologyViewNodes(mapId, { fabric_node_ids: toAdd });
+          }
           if (toRemove.length) {
             await removeTopologyViewNodes(mapId, toRemove);
           }
@@ -1673,12 +1692,16 @@ export function TopologyPage() {
         } catch {
           /* keep last polled job */
         }
+        // Refresh base graph from server (LLDP may have new edges), then dry-run project.
+        const baseGraph = await fetchTopologyGraph(mapId);
         const projected = discoverProjectNeighbors
           ? await projectTopologyNeighbors(mapId, {
               seed_fabric_node_ids: scoped.map((n) => n.id),
+              dry_run: true,
             })
-          : await fetchTopologyGraph(mapId);
-        queryClient.setQueryData(queryKeys.topologyGraph(mapId), projected);
+          : baseGraph;
+        // Keep server query as committed graph (dry_run must not poison cache as persisted).
+        queryClient.setQueryData(queryKeys.topologyGraph(mapId), baseGraph);
         if (discoverProjectNeighbors && projected.truncate_reason === "membership_frozen") {
           showError(t("topology.truncatedFrozen"));
         }
@@ -1687,6 +1710,7 @@ export function TopologyPage() {
         // Keep existing node positions when we did not auto-layout.
         const localPos = new Map(nodes.map((n) => [n.id, n.position]));
         const beforeIds = new Set(nodes.map((n) => n.id));
+        const serverNodeIds = new Set((baseGraph.nodes || []).map((n) => n.fabric_node_id));
         rfNodes = rfNodes.map((n) => {
           const p = localPos.get(n.id);
           return p ? { ...n, position: { ...p } } : n;
@@ -1695,21 +1719,18 @@ export function TopologyPage() {
         if (autoLayoutAfterDiscover && rfNodes.length > 1) {
           rfNodes = layoutGraph(rfNodes, rfEdges, "hierarchical-tb");
           didAutoLayout = true;
-          try {
-            const graph = await patchTopologyPositions(mapId, flowToPositions(rfNodes));
-            queryClient.setQueryData(queryKeys.topologyGraph(mapId), graph);
-            clearDirty();
-          } catch {
-            markDirty();
-          }
-        } else {
-          clearDirty();
         }
         historyLockRef.current = true;
         setNodes(rfNodes);
         setEdges(rfEdges);
         historyLockRef.current = false;
         const addedNodes = rfNodes.filter((n) => !beforeIds.has(n.id)).length;
+        const localOnly = rfNodes.some((n) => !serverNodeIds.has(n.id));
+        if (localOnly || didAutoLayout) {
+          markDirty();
+        } else {
+          clearDirty();
+        }
         if (didAutoLayout || addedNodes > 0) {
           needsInitialFitRef.current = true;
           scheduleFitView(FIT_VIEW_OPTS);
@@ -2195,35 +2216,32 @@ export function TopologyPage() {
     if (!mapId) return;
     try {
       const before = nodes.length;
-      const projected = await projectTopologyNeighbors(mapId);
-      queryClient.setQueryData(queryKeys.topologyGraph(mapId), projected);
-      appliedMapIdRef.current = mapId;
-      const localPos = new Map(nodes.map((n) => [n.id, n.position]));
-      historyLockRef.current = true;
-      applyViewGraph(projected, edgeDefaults, setNodes, setEdges, localPos);
-      historyLockRef.current = false;
-      clearDirty();
+      const projected = await projectTopologyNeighbors(mapId, { dry_run: true });
       if (projected.truncate_reason === "membership_frozen") {
         showError(t("topology.truncatedFrozen"));
         return;
       }
+      const localPos = new Map(nodes.map((n) => [n.id, n.position]));
+      historyLockRef.current = true;
+      applyViewGraph(projected, edgeDefaults, setNodes, setEdges, localPos);
+      historyLockRef.current = false;
       const added = Math.max(0, projected.nodes.length - before);
-      showOk(t("topology.projectedNeighbors").replace("{{count}}", String(added)));
       if (added > 0) {
+        markDirty();
         needsInitialFitRef.current = true;
         scheduleFitView(FIT_VIEW_OPTS);
       }
+      showOk(t("topology.projectedNeighbors").replace("{{count}}", String(added)));
     } catch (err) {
       showError(String(err));
     }
   }, [
     mapId,
     nodes,
-    queryClient,
     edgeDefaults,
     setNodes,
     setEdges,
-    clearDirty,
+    markDirty,
     showOk,
     showError,
     t,
@@ -2769,22 +2787,11 @@ export function TopologyPage() {
   const onNodeClick = useCallback(
     (e: React.MouseEvent, node: Node<NeNodeData>) => {
       setCtxMenu(null);
-      if (toolMode === "connect") {
-        const prev = connectClickRef.current;
-        if (!prev) {
-          connectClickRef.current = node.id;
-          focusNode(node.id, false);
-          return;
-        }
-        if (prev !== node.id) {
-          onConnect({ source: prev, target: node.id, sourceHandle: null, targetHandle: null });
-        }
-        connectClickRef.current = null;
-        return;
-      }
+      // Connect mode uses Visio-style drag from handles (onConnect), not click-click.
+      if (toolMode === "connect") return;
       focusNode(node.id, e.shiftKey || e.metaKey || e.ctrlKey);
     },
-    [toolMode, focusNode, onConnect],
+    [toolMode, focusNode],
   );
 
   const outsidePeers = graphQuery.data?.outside_peers || [];
@@ -3478,7 +3485,6 @@ export function TopologyPage() {
                       }}
                     />
                     {t("topology.discoverProjectNeighbors")}
-                    <span className="muted"> ({t("topology.localBrowserOnly")})</span>
                   </label>
                   <div className="topo-display-defaults topo-display-defaults--canvas-bg topo-display-defaults--colors">
                     <div className="topo-display-defaults__head">
@@ -4131,7 +4137,9 @@ export function TopologyPage() {
                   edgeTypes={edgeTypes}
                   onlyRenderVisibleElements
                   connectionMode={ConnectionMode.Loose}
-                  defaultEdgeOptions={{ type: "straight", labelShowBg: false }}
+                  connectionLineType={ConnectionLineType.SmoothStep}
+                  connectionLineStyle={{ stroke: "#38bdf8", strokeWidth: 2 }}
+                  defaultEdgeOptions={{ type: "smoothstep", labelShowBg: false }}
                   proOptions={{ hideAttribution: true }}
                   minZoom={0.05}
                   maxZoom={4}

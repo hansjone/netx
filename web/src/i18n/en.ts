@@ -1493,7 +1493,8 @@ const en = {
     snapGrid: "Snap to grid",
     autoLayoutDiscover: "Auto-layout after discover",
     discoverAutoAddUnmatched: "Auto-add unmatched NEs as placeholders on discover",
-    discoverProjectNeighbors: "After discover, project neighbors of scanned NEs onto the canvas",
+    discoverProjectNeighbors:
+      "After discover, project neighbors of scanned NEs onto the canvas (Save to keep permanently)",
     undo: "Undo",
     redo: "Redo",
     discoverSelected: "Discover selected ({{count}})",
@@ -1621,7 +1622,7 @@ const en = {
     removeStaleHint:
       "Queue delete of red missing edges (applies on Save); scheduled collect also purges after 4 consecutive misses",
     staleRemoved: "Queued {{count}} missing edge delete(s) — Save to apply",
-    connectHint: "Connect mode: click source node, then target (Esc or Select to exit)",
+    connectHint: "Connect mode: drag from a node's side anchors to the target NE (Esc or Select to exit)",
   },
   topoClassify: {
     title: "Classify & slices",

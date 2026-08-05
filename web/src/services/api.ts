@@ -1086,7 +1086,7 @@ export const removeTopologyViewNodes = (viewId: string, fabricNodeIds: string[])
 
 export const projectTopologyNeighbors = (
   viewId: string,
-  body?: { seed_fabric_node_ids?: string[]; managed_ne_ids?: string[] },
+  body?: { seed_fabric_node_ids?: string[]; managed_ne_ids?: string[]; dry_run?: boolean },
 ) =>
   apiPost<TopologyViewGraph>(
     `/v1/topology/views/${encodeURIComponent(viewId)}/project-neighbors`,

@@ -244,10 +244,14 @@ class ViewProjectNeighborsRequest(BaseModel):
     When seed ids are omitted, expand from every node already on the canvas.
     When provided, expand only from those seeds (resolved to fabric nodes that
     are already placed on the view).
+
+    dry_run=True: return the would-be graph without writing placements (canvas
+    can apply locally and persist on Save).
     """
 
     seed_fabric_node_ids: list[str] = Field(default_factory=list)
     managed_ne_ids: list[str] = Field(default_factory=list)
+    dry_run: bool = False
 
 
 class ViewNodeIn(BaseModel):

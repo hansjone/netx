@@ -116,7 +116,7 @@ export function buildLinkDisplayEdges(
         const portLabel = formatPortPairLabel(data.source_port || "", data.target_port || "");
         out.push({
           ...e,
-          type: count > 1 ? "topoParallel" : e.type || "straight",
+          type: count > 1 ? "topoParallel" : e.type || "smoothstep",
           // Never fall back to a stale e.label — it may still contain ports.
           label: hidePorts ? undefined : portLabel || undefined,
           data,
@@ -137,7 +137,7 @@ export function buildLinkDisplayEdges(
       const portLabel = formatPortPairLabel(data.source_port || "", data.target_port || "");
       out.push({
         ...e,
-        type: "straight",
+        type: "smoothstep",
         label: hidePorts ? undefined : portLabel || undefined,
         data,
       });
@@ -162,7 +162,7 @@ export function buildLinkDisplayEdges(
     out.push({
       ...primary,
       id: aggregateIdForPair(primary.source, primary.target),
-      type: "straight",
+      type: "smoothstep",
       label: formatBundleLabel(
         list.length,
         { a_port: data.source_port, b_port: data.target_port },

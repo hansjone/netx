@@ -724,6 +724,58 @@ class FabricTopologyTests(unittest.TestCase):
         self.assertLessEqual(pop.candidate_count, 4)
         self.assertTrue(pop.truncated or pop.candidate_count <= 2 or pop.would_add <= 2)
 
+    def test_project_neighbors_dry_run_does_not_persist(self) -> None:
+        suffix = uuid4().hex[:8]
+        nes = []
+        for i in range(3):
+            ne = ManagedNE(
+                id=f"dry-{suffix}-{i}",
+                name=f"D{i}-{suffix}",
+                vendor="Cisco",
+                device_type="cisco_ios",
+                ip_address=f"10.19.{(int(suffix[:2], 16) % 200)}.{i + 1}",
+            )
+            self.db.add(ne)
+            nes.append(ne)
+        self.db.commit()
+        nodes = [svc.ensure_fabric_node_for_managed(self.db, ne) for ne in nes]
+        self.db.commit()
+        for a, b in ((0, 1), (1, 2)):
+            svc.upsert_fabric_edge(
+                self.db,
+                a_node_id=nodes[a].id,
+                b_node_id=nodes[b].id,
+                a_port=f"Gi0/{a}",
+                b_port=f"Gi0/{b}",
+                source="lldp",
+            )
+        self.db.commit()
+        view = svc.create_view(
+            self.db,
+            TopologyViewCreate(
+                name=f"Dry-{suffix}",
+                folder_id=self._region(f"DryR-{suffix}"),
+                role="core",
+                filter={"membership": {"expand_hops": 1, "max_nodes": 50, "frozen": False}},
+            ),
+        )
+        svc.add_nodes_to_view(self.db, view.id, ViewNodesAdd(managed_ne_ids=[nes[0].id]))
+        before = (
+            self.db.query(TopoViewNode).filter(TopoViewNode.view_id == view.id).count()
+        )
+        g = svc.project_fabric_neighbors_to_view(
+            self.db,
+            view.id,
+            ViewProjectNeighborsRequest(seed_fabric_node_ids=[nodes[0].id], dry_run=True),
+        )
+        ids = {n.fabric_node_id for n in g.nodes}
+        self.assertIn(nodes[0].id, ids)
+        self.assertIn(nodes[1].id, ids)
+        after = (
+            self.db.query(TopoViewNode).filter(TopoViewNode.view_id == view.id).count()
+        )
+        self.assertEqual(after, before)
+
     def test_lldp_discover_writes_fabric_edge(self) -> None:
         suffix = uuid4().hex[:8]
         ne_a = ManagedNE(

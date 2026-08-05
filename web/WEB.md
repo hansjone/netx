@@ -131,7 +131,8 @@ src/
 - 事实库：`topo_fabric_node` / `topo_fabric_edge`（按 5 万网元 / 100 万链路设计；物理层仅 LLDP）
 - 站点树：`topo_folder`（系统隐藏 `root`；用户新建站点/区域，无默认「未分区」）
 - 拓扑图：`topo_view.kind=physical|custom`（同站点下平级；建区域后需手工/MCP 建画布）+ `topo_view_node`
-- 边界：图 `filter.membership`（max_nodes / expand_hops / frozen）；`project-neighbors` / `populate` 不得无界灌全网
+- 边界：图 `filter.membership`（max_nodes / expand_hops / frozen）；`project-neighbors` / `populate` 不得无界灌全网。画布「投影邻居 / 发现后投影」默认 `dry_run`：只进本地脏图，**保存**时 `addTopologyViewNodes` 才落库。
+- 连线模式：Visio 式四边锚点拖拽连线（非点选两点）；默认折线 `smoothstep`。
 - API：`/v1/topology/tree`、`/folders*`、`/fabric/*`、`/views*`（含 `populate`、`kind`）
 - 前端：左侧站点→物理/自定义图；右侧目录浏览，打开本图进设备画布；「添加网元」支持勾选批量上图（也可拖放单台）
 - MCP：以 `queryTopologyEdges` 为主查询 Fabric；画布编辑走 Web
