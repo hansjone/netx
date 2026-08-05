@@ -338,6 +338,9 @@ export function LldpLinksPage() {
             <input type="checkbox" checked={autoAdd} onChange={(e) => setAutoAdd(e.target.checked)} />
             <span>{t("lldpLinks.autoAddUnmatched")}</span>
           </label>
+          <p className="muted" style={{ margin: "0 0 8px", gridColumn: "1 / -1" }}>
+            {t("lldpLinks.autoAddUnmatchedHint")}
+          </p>
           <label className="config-sync-policy-field">
             <span>{t("lldpLinks.interval")}</span>
             <input

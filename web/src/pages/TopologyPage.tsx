@@ -40,6 +40,7 @@ import {
   createTopologyView,
   deleteTopologyFolder,
   deleteTopologyMap,
+  fetchLldpCollectDashboard,
   fetchLldpDiscoverJob,
   fetchManagedNe,
   fetchManagedNeById,
@@ -52,6 +53,7 @@ import {
   removeTopologyViewNodes,
   searchFabricNodes,
   startLldpDiscover,
+  updateLldpCollectPolicy,
   updateTopologyFolder,
   updateTopologyMap,
 } from "../services/api";
@@ -458,8 +460,8 @@ type EdgeDefaults = Record<EdgeSourceKind, EdgeDefaultStyle>;
 
 const EDGE_DEFAULTS_KEY = "netx.topology.edgeDefaults";
 const AUTO_LAYOUT_DISCOVER_KEY = "netx.topology.autoLayoutAfterDiscover";
-const DISCOVER_AUTO_ADD_KEY = "netx.topology.discoverAutoAddUnmatched";
-const DISCOVER_PROJECT_NEIGHBORS_KEY = "netx.topology.discoverProjectNeighbors";
+const DISCOVER_AUTO_ADD_KEY = "netx.topology.discoverAutoAddUnmatched.v2";
+const DISCOVER_PROJECT_NEIGHBORS_KEY = "netx.topology.discoverProjectNeighbors.v2";
 const SCALE_BUNDLE_WIDTH_KEY = "netx.topology.scaleBundleWidth";
 const CANVAS_BG_KEY = "netx.topology.canvasBg";
 const DEFAULT_CANVAS_BG = "#0f172a";
@@ -845,10 +847,10 @@ export function TopologyPage() {
   const [snapToGrid, setSnapToGrid] = useState(true);
   const [autoLayoutAfterDiscover, setAutoLayoutAfterDiscover] = useState(loadAutoLayoutAfterDiscover);
   const [discoverAutoAddUnmatched, setDiscoverAutoAddUnmatched] = useState(() =>
-    loadBoolFlag(DISCOVER_AUTO_ADD_KEY, false),
+    loadBoolFlag(DISCOVER_AUTO_ADD_KEY, true),
   );
   const [discoverProjectNeighbors, setDiscoverProjectNeighbors] = useState(() =>
-    loadBoolFlag(DISCOVER_PROJECT_NEIGHBORS_KEY, false),
+    loadBoolFlag(DISCOVER_PROJECT_NEIGHBORS_KEY, true),
   );
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [addNeOpen, setAddNeOpen] = useState(false);
@@ -1048,6 +1050,24 @@ export function TopologyPage() {
       /* ignore */
     }
   }, [mapId]);
+
+  // Keep canvas "auto placeholder" in sync with topology LLDP collect policy (shared strategy).
+  useEffect(() => {
+    let alive = true;
+    void fetchLldpCollectDashboard()
+      .then((dash) => {
+        if (!alive || !dash?.policy) return;
+        const next = Boolean(dash.policy.auto_add_unmatched);
+        setDiscoverAutoAddUnmatched(next);
+        persistBoolFlag(DISCOVER_AUTO_ADD_KEY, next);
+      })
+      .catch(() => {
+        /* keep local default */
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const neQuery = useQuery({
     queryKey: [...queryKeys.managedNeAll, "topology-add-ne", debouncedKeyword],
@@ -3097,6 +3117,15 @@ export function TopologyPage() {
                         const next = e.target.checked;
                         setDiscoverAutoAddUnmatched(next);
                         persistBoolFlag(DISCOVER_AUTO_ADD_KEY, next);
+                        void updateLldpCollectPolicy({ auto_add_unmatched: next })
+                          .then(() => {
+                            void queryClient.invalidateQueries({
+                              queryKey: queryKeys.lldpCollectDashboard,
+                            });
+                          })
+                          .catch(() => {
+                            /* local toggle still applies to this canvas discover */
+                          });
                       }}
                     />
                     {t("topology.discoverAutoAddUnmatched")}
