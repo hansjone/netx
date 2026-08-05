@@ -1,4 +1,4 @@
-﻿import {
+import {
   createContext,
   memo,
   useCallback,
@@ -122,8 +122,15 @@ const SNAP_GRID: [number, number] = [16, 16];
  */
 const FIT_VIEW_OPTS = { padding: 0.2, includeHiddenNodes: true } as const;
 const FIT_VIEW_OPTS_FS = { padding: 0.15, includeHiddenNodes: true } as const;
+type FitViewOpts = typeof FIT_VIEW_OPTS | typeof FIT_VIEW_OPTS_FS;
 const UNDO_MAX = 40;
 const PALETTE_DND = "application/x-netx-topo-palette";
+
+/** Pane must be laid out before fitView; zero-size panes produce a corner-zoom viewport. */
+function canvasPaneReady(el: HTMLElement | null | undefined): boolean {
+  if (!el) return false;
+  return el.clientWidth >= 40 && el.clientHeight >= 40;
+}
 
 function FullscreenIcon({ exit }: { exit?: boolean }) {
   if (exit) {
@@ -878,6 +885,9 @@ export function TopologyPage() {
   const appliedMapIdRef = useRef("");
   const appliedGraphFpRef = useRef("");
   const nodesRef = useRef<Node<NeNodeData>[]>([]);
+  /** True until the first successful fitView after opening / switching a canvas. */
+  const needsInitialFitRef = useRef(false);
+  const fitGenRef = useRef(0);
   const historyRef = useRef<HistorySnap[]>([]);
   const redoRef = useRef<HistorySnap[]>([]);
   const historyLockRef = useRef(false);
@@ -886,6 +896,39 @@ export function TopologyPage() {
   const canRedo = historyTick >= 0 && redoRef.current.length > 0;
 
   nodesRef.current = nodes;
+
+  const scheduleFitView = useCallback((opts: FitViewOpts = FIT_VIEW_OPTS) => {
+    const gen = ++fitGenRef.current;
+    const attempt = (n: number) => {
+      if (gen !== fitGenRef.current) return;
+      const inst = rfRef.current;
+      const paneOk = canvasPaneReady(canvasRef.current);
+      if (!inst || !paneOk || nodesRef.current.length === 0) {
+        if (n < 80) window.setTimeout(() => attempt(n + 1), 40);
+        return;
+      }
+      // Double rAF: wait for flex layout + React Flow pane measurement.
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (gen !== fitGenRef.current) return;
+          if (!canvasPaneReady(canvasRef.current) || !rfRef.current) {
+            if (n < 80) window.setTimeout(() => attempt(n + 1), 40);
+            return;
+          }
+          rfRef.current.fitView({ ...opts });
+          // Late layout (fonts / sidebar) on slower hosts — one deferred refit.
+          window.setTimeout(() => {
+            if (gen !== fitGenRef.current) return;
+            if (canvasPaneReady(canvasRef.current) && rfRef.current && nodesRef.current.length > 0) {
+              rfRef.current.fitView({ ...opts });
+              needsInitialFitRef.current = false;
+            }
+          }, 160);
+        });
+      });
+    };
+    attempt(0);
+  }, []);
 
   const markDirty = useCallback(() => {
     dirtyRef.current = true;
@@ -1041,6 +1084,28 @@ export function TopologyPage() {
   }, [mapId, selectedFolderId, treeRoot, regions]);
 
   const canvasMode = Boolean(mapId);
+
+  // If the pane was 0×0 when nodes arrived (common on remote Linux), fit once it grows.
+  useEffect(() => {
+    if (!canvasMode) return;
+    const el = canvasRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    let prevW = el.clientWidth;
+    let prevH = el.clientHeight;
+    const ro = new ResizeObserver(() => {
+      const w = el.clientWidth;
+      const h = el.clientHeight;
+      const becameReady = (prevW < 40 || prevH < 40) && w >= 40 && h >= 40;
+      prevW = w;
+      prevH = h;
+      if (becameReady && needsInitialFitRef.current && nodesRef.current.length > 0) {
+        scheduleFitView(FIT_VIEW_OPTS);
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [canvasMode, mapId, scheduleFitView]);
+
   const activeRegion = useMemo(() => {
     if (!selectedFolderId) return null;
     return regions.find((c) => c.id === selectedFolderId) || null;
@@ -1148,10 +1213,11 @@ export function TopologyPage() {
       redoRef.current = [];
       clearDirty();
       bumpHistory();
-      window.setTimeout(() => rfRef.current?.fitView({ ...FIT_VIEW_OPTS }), 50);
+      needsInitialFitRef.current = true;
+      scheduleFitView(FIT_VIEW_OPTS);
     }
     historyLockRef.current = false;
-  }, [canvasMode, mapId, graphQuery.data, edgeDefaults, setNodes, setEdges, clearDirty, bumpHistory]);
+  }, [canvasMode, mapId, graphQuery.data, edgeDefaults, setNodes, setEdges, clearDirty, bumpHistory, scheduleFitView]);
 
   useEffect(() => {
     setEdges((eds) => eds.map((e) => withEdgeVisual(e, edgeDefaults)));
@@ -1235,7 +1301,7 @@ export function TopologyPage() {
       const next = layoutGraph(nodes, edges, kind, { onlyIds });
       setNodes(next);
       markDirty();
-      window.setTimeout(() => rfRef.current?.fitView({ ...FIT_VIEW_OPTS }), 40);
+      window.setTimeout(() => scheduleFitView(FIT_VIEW_OPTS), 40);
       if (opts?.persist && mapId) {
         try {
           const graph = await patchTopologyPositions(mapId, flowToPositions(next));
@@ -1246,7 +1312,7 @@ export function TopologyPage() {
         }
       }
     },
-    [nodes, edges, setNodes, pushHistory, mapId, queryClient, showError, t, markDirty, clearDirty],
+    [nodes, edges, setNodes, pushHistory, mapId, queryClient, showError, t, markDirty, clearDirty, scheduleFitView],
   );
 
   const applyAlign = useCallback(
@@ -1501,7 +1567,8 @@ export function TopologyPage() {
         setEdges(rfEdges);
         historyLockRef.current = false;
         if (didAutoLayout) {
-          window.setTimeout(() => rfRef.current?.fitView({ ...FIT_VIEW_OPTS }), 50);
+          needsInitialFitRef.current = true;
+          scheduleFitView(FIT_VIEW_OPTS);
         }
         const out: TopologyDiscoverOut = {
           map_id: mapId,
@@ -1814,12 +1881,13 @@ export function TopologyPage() {
       const active = Boolean(el && document.fullscreenElement === el);
       setFullscreen(active);
       if (active) {
-        window.setTimeout(() => rfRef.current?.fitView({ ...FIT_VIEW_OPTS_FS }), 80);
+        needsInitialFitRef.current = true;
+        scheduleFitView(FIT_VIEW_OPTS_FS);
       }
     };
     document.addEventListener("fullscreenchange", syncFs);
     return () => document.removeEventListener("fullscreenchange", syncFs);
-  }, []);
+  }, [scheduleFitView]);
 
   const toggleFullscreen = useCallback(async () => {
     const el = canvasRef.current;
@@ -3671,12 +3739,11 @@ export function TopologyPage() {
                   onMoveStart={closeCtxMenu}
                   onInit={(inst) => {
                     rfRef.current = inst as ReactFlowInstance<Node<NeNodeData>, Edge>;
-                    if (nodesRef.current.length > 0) {
-                      window.setTimeout(() => inst.fitView({ ...FIT_VIEW_OPTS }), 0);
+                    if (needsInitialFitRef.current || nodesRef.current.length > 0) {
+                      scheduleFitView(FIT_VIEW_OPTS);
                     }
                   }}
-                  fitView
-                  fitViewOptions={{ ...FIT_VIEW_OPTS }}
+                  fitView={false}
                   deleteKeyCode={null}
                   edgesFocusable
                 >
