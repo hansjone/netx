@@ -26,6 +26,7 @@ from .topology_schemas import (
     ClassifyRuleCreate,
     ClassifyRuleUpdate,
     FabricDiscoverRequest,
+    FabricEdgesDeleteRequest,
     FabricManualEdgeIn,
     FabricNodesBulkTagRequest,
     FabricNodesDeleteRequest,
@@ -45,6 +46,8 @@ from .topology_schemas import (
 )
 from .topology_discover import get_discover_job, start_discover_job
 from .topology_fabric import (
+    delete_fabric_edge,
+    delete_fabric_edges,
     get_fabric_neighborhood,
     get_fabric_summary,
     list_fabric_edges,
@@ -173,6 +176,21 @@ def api_fabric_manual_edge(
             "status": edge.status,
         },
     }
+
+
+@router.delete("/fabric/edges/{edge_id}")
+def api_fabric_delete_edge(edge_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    out = delete_fabric_edge(db, edge_id)
+    return {"ok": True, **out}
+
+
+@router.post("/fabric/edges/delete")
+def api_fabric_delete_edges(
+    body: FabricEdgesDeleteRequest,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    out = delete_fabric_edges(db, body.edge_ids)
+    return {"ok": True, **out}
 
 
 @router.post("/fabric/discover")

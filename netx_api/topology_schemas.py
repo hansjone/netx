@@ -259,6 +259,7 @@ class ViewNodeOut(BaseModel):
     vendor: str = ""
     device_type: str = ""
     connect_status: str = ""
+    managed_source: str = ""  # manual | ume_sync | lldp | topology | webcrt | …
 
 
 class ViewEdgeOut(BaseModel):
@@ -388,6 +389,14 @@ class FabricManualEdgeIn(BaseModel):
     b_node_id: str = Field(min_length=1, max_length=64)
     a_port: str = ""
     b_port: str = ""
+
+
+class FabricEdgesDeleteRequest(BaseModel):
+    edge_ids: list[str] = Field(default_factory=list, min_length=1)
+
+
+class FabricEdgesDeleteOut(BaseModel):
+    deleted: int = 0
 
 
 # ---------------------------------------------------------------------------

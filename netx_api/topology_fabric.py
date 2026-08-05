@@ -4,6 +4,8 @@ from __future__ import annotations
 from .topology_fabric_links import (
     _apply_missing_and_purge,
     _mark_replaced_port_peers,
+    delete_fabric_edge,
+    delete_fabric_edges,
     merge_duplicate_fabric_nodes,
     upsert_fabric_edge,
 )
@@ -37,6 +39,8 @@ __all__ = [
     "_match_hit_to_fabric_node",
     "_node_out",
     "_nodes_by_ids",
+    "delete_fabric_edge",
+    "delete_fabric_edges",
     "ensure_fabric_node_for_managed",
     "ensure_fabric_node_for_ume",
     "ensure_lldp_discovered_managed_ne",

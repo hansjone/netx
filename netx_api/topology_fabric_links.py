@@ -511,4 +511,39 @@ def merge_duplicate_fabric_nodes(db: Session) -> dict[str, int]:
     return {"merged": merged, "placeholders_removed": placeholders_removed}
 
 
+def delete_fabric_edges(db: Session, edge_ids: list[str]) -> dict[str, int]:
+    """Hard-delete fabric edges and any per-view edge styles."""
+    ids = [str(x).strip() for x in (edge_ids or []) if str(x).strip()]
+    # De-dupe while preserving order.
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for i in ids:
+        if i in seen:
+            continue
+        seen.add(i)
+        ordered.append(i)
+    if not ordered:
+        raise HTTPException(status_code=400, detail="edge_ids_required")
+    rows = db.query(TopoFabricEdge).filter(TopoFabricEdge.id.in_(ordered)).all()
+    found_ids = [str(r.id) for r in rows]
+    if not found_ids:
+        raise HTTPException(status_code=404, detail="fabric_edge_not_found")
+    db.query(TopoViewEdgeStyle).filter(
+        TopoViewEdgeStyle.fabric_edge_id.in_(found_ids)
+    ).delete(synchronize_session=False)
+    db.query(TopoFabricEdge).filter(TopoFabricEdge.id.in_(found_ids)).delete(
+        synchronize_session=False
+    )
+    db.commit()
+    try:
+        refresh_fabric_stats(db)
+    except Exception:  # noqa: BLE001
+        pass
+    return {"deleted": len(found_ids)}
+
+
+def delete_fabric_edge(db: Session, edge_id: str) -> dict[str, int]:
+    return delete_fabric_edges(db, [edge_id])
+
+
 

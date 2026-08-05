@@ -509,6 +509,7 @@ export type TopologyViewNodeItem = {
   vendor: string;
   device_type: string;
   connect_status: string;
+  managed_source?: string;
 };
 
 export type TopologyViewEdgeItem = {

@@ -1693,6 +1693,59 @@ Management Addresses:
         self.assertGreaterEqual(removed.removed, 1)
         self.assertLess(removed.view_node_count, 5)
 
+    def test_delete_fabric_edge_removes_from_view_graph(self) -> None:
+        suffix = uuid4().hex[:8]
+        ne_a = ManagedNE(
+            id=f"dea-{suffix}",
+            name=f"DEA-{suffix}",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address=f"10.77.{(int(suffix[:2], 16) % 200) + 1}.1",
+            source="manual",
+        )
+        ne_b = ManagedNE(
+            id=f"deb-{suffix}",
+            name=f"DEB-{suffix}",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address=f"10.77.{(int(suffix[:2], 16) % 200) + 1}.2",
+            source="manual",
+        )
+        self.db.add(ne_a)
+        self.db.add(ne_b)
+        self.db.commit()
+        fa = svc.ensure_fabric_node_for_managed(self.db, ne_a)
+        fb = svc.ensure_fabric_node_for_managed(self.db, ne_b)
+        self.db.commit()
+        edge, _ = svc.upsert_fabric_edge(
+            self.db,
+            a_node_id=fa.id,
+            b_node_id=fb.id,
+            a_port="Gi0/0",
+            b_port="Gi0/1",
+            source="manual",
+        )
+        self.db.commit()
+        region_id = self._region(f"DelEdge-{suffix}")
+        view = svc.create_view(
+            self.db,
+            TopologyViewCreate(name=f"DE-{suffix}", folder_id=region_id),
+        )
+        svc.add_nodes_to_view(
+            self.db, view.id, ViewNodesAdd(managed_ne_ids=[ne_a.id, ne_b.id])
+        )
+        graph = svc.get_view_graph(self.db, view.id)
+        self.assertTrue(any(e.id == edge.id for e in graph.edges))
+        self.assertTrue(any(n.managed_source == "manual" for n in graph.nodes))
+
+        edge_id = edge.id
+        out = svc.delete_fabric_edges(self.db, [edge_id])
+        self.assertEqual(out["deleted"], 1)
+        self.db.expire_all()
+        self.assertIsNone(self.db.get(TopoFabricEdge, edge_id))
+        graph2 = svc.get_view_graph(self.db, view.id)
+        self.assertFalse(any(e.id == edge_id for e in graph2.edges))
+
 
 if __name__ == "__main__":
     unittest.main()

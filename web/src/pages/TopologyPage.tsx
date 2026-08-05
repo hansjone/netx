@@ -38,6 +38,7 @@ import {
   createTopologyFolder,
   createTopologyPlaceholder,
   createTopologyView,
+  deleteFabricEdges,
   deleteTopologyFolder,
   deleteTopologyMap,
   fetchLldpCollectDashboard,
@@ -53,6 +54,7 @@ import {
   removeTopologyViewNodes,
   searchFabricNodes,
   startLldpDiscover,
+  stopLldpCollectJob,
   updateLldpCollectPolicy,
   updateTopologyFolder,
   updateTopologyMap,
@@ -266,6 +268,7 @@ type NeNodeData = {
   ne_ip: string;
   vendor: string;
   connect_status: string;
+  managed_source?: string;
   /** Canvas navigation node (not a fabric NE). */
   kind?: "ne" | "region" | "layer";
   folder_id?: string;
@@ -403,9 +406,16 @@ const TOPO_ICON = 56;
 const TOPO_HANDLE_X = TOPO_NODE_W / 2;
 const TOPO_HANDLE_Y = TOPO_ICON / 2;
 
+function isPlaceholderSource(source: string | undefined, neIp: string): boolean {
+  const src = String(source || "").trim().toLowerCase();
+  if (src === "lldp" || src === "topology") return true;
+  return !String(neIp || "").trim() && Boolean(src);
+}
+
 const NeNode = memo(function NeNode({ data, selected }: NodeProps<Node<NeNodeData>>) {
   const { hideIp, hideVendor, connectMode } = useContext(TopoDisplayContext);
   const tone = nodeIconTone(data.vendor, data.managed_ne_id, data.ume_ne_id);
+  const placeholder = isPlaceholderSource(data.managed_source, data.ne_ip);
   const name = data.label || (!hideIp ? data.ne_ip : "") || "NE";
   const secondary = [
     hideIp || !data.ne_ip || data.ne_ip === name ? "" : data.ne_ip,
@@ -415,7 +425,8 @@ const NeNode = memo(function NeNode({ data, selected }: NodeProps<Node<NeNodeDat
     <div
       className={`topo-node topo-node--${tone}${selected ? " is-selected" : ""}${
         connectMode ? " is-connect-mode" : ""
-      }`}
+      }${placeholder ? " is-placeholder" : ""}`}
+      title={placeholder ? data.managed_source || "placeholder" : undefined}
     >
       <div className="topo-node__glyph">
         <Handle
@@ -431,6 +442,11 @@ const NeNode = memo(function NeNode({ data, selected }: NodeProps<Node<NeNodeDat
           isConnectable={connectMode}
         />
         <RouterIcon />
+        {placeholder ? (
+          <span className="topo-node__badge" aria-hidden>
+            {String(data.managed_source || "ph").slice(0, 4)}
+          </span>
+        ) : null}
       </div>
       <div className="topo-node__caption">
         <span className="topo-node__caption-name">{name}</span>
@@ -725,6 +741,7 @@ function graphToFlow(
       ne_ip: n.ip || "",
       vendor: n.vendor || "",
       connect_status: n.connect_status || "",
+      managed_source: n.managed_source || "",
     },
   }));
   const rfEdges: Edge[] = edges.map((e) => {
@@ -877,6 +894,8 @@ export function TopologyPage() {
     edgesUpdated: 0,
   });
   const [discoverError, setDiscoverError] = useState("");
+  const [discoverJobId, setDiscoverJobId] = useState("");
+  const discoverAbortRef = useRef(false);
   const [fullscreen, setFullscreen] = useState(false);
   /** Opt-in poll so MCP / other clients painting the open map can be watched. Off by default. */
   const [liveSync, setLiveSync] = useState(false);
@@ -1516,6 +1535,8 @@ export function TopologyPage() {
       setDiscoverReport(null);
       setDiscoverLiveResults([]);
       setDiscoverError("");
+      setDiscoverJobId("");
+      discoverAbortRef.current = false;
       const scannable = nodes.filter((n) => Boolean(n.data.managed_ne_id || n.data.ume_ne_id));
       const scoped = scannable.filter(
         (n) =>
@@ -1546,9 +1567,19 @@ export function TopologyPage() {
           auto_add_unmatched: discoverAutoAddUnmatched,
           trigger_mode: "topology",
         });
+        setDiscoverJobId(jobStart.id);
         let job: TopologyDiscoverJob = jobStart;
+        let cancelled = false;
         for (let i = 0; i < 600; i++) {
+          if (discoverAbortRef.current) {
+            cancelled = true;
+            break;
+          }
           await new Promise((r) => window.setTimeout(r, 500));
+          if (discoverAbortRef.current) {
+            cancelled = true;
+            break;
+          }
           job = await fetchLldpDiscoverJob(jobStart.id);
           setDiscoverProgress((p) => ({
             ...p,
@@ -1560,7 +1591,30 @@ export function TopologyPage() {
             neIp: job.items?.[job.items.length - 1]?.ne_ip || p.neIp,
           }));
           setDiscoverLiveResults((job.items || []) as TopologyDiscoverNeResult[]);
-          if (job.status === "done" || job.status === "failed") break;
+          if (
+            job.status === "done" ||
+            job.status === "failed" ||
+            job.status === "cancelled" ||
+            job.status === "stopped"
+          ) {
+            if (job.status === "cancelled" || job.status === "stopped") cancelled = true;
+            break;
+          }
+        }
+        if (cancelled || discoverAbortRef.current) {
+          setDiscoverError(t("topology.discoverCancelled"));
+          setDiscoverReport({
+            map_id: mapId,
+            protocol: "lldp",
+            job_id: job.id,
+            scanned: job.done,
+            edges_added: job.edges_added,
+            edges_updated: job.edges_updated,
+            edges_stale: job.edges_missing ?? job.edges_stale,
+            results: (job.items || []) as TopologyDiscoverNeResult[],
+            graph: null,
+          });
+          return;
         }
         if (job.status === "failed") {
           throw new Error(job.error || "discover_failed");
@@ -1620,14 +1674,30 @@ export function TopologyPage() {
             .replace("{{stale}}", String(out.edges_stale || 0)),
         );
       } catch (err) {
-        setDiscoverError(String(err));
-        showError(t("topology.discoverFail").replace("{{detail}}", String(err)));
+        if (discoverAbortRef.current) {
+          setDiscoverError(t("topology.discoverCancelled"));
+        } else {
+          setDiscoverError(String(err));
+          showError(t("topology.discoverFail").replace("{{detail}}", String(err)));
+        }
       } finally {
         setDiscovering(false);
       }
     },
-    [mapId, discovering, nodes, queryClient, setNodes, setEdges, showOk, showError, t, autoLayoutAfterDiscover, discoverAutoAddUnmatched, discoverProjectNeighbors, edgeDefaults, clearDirty, markDirty],
+    [mapId, discovering, nodes, queryClient, setNodes, setEdges, showOk, showError, t, autoLayoutAfterDiscover, discoverAutoAddUnmatched, discoverProjectNeighbors, edgeDefaults, clearDirty, markDirty, scheduleFitView],
   );
+
+  const cancelDiscover = useCallback(async () => {
+    discoverAbortRef.current = true;
+    const jobId = discoverJobId;
+    if (jobId) {
+      try {
+        await stopLldpCollectJob(jobId);
+      } catch {
+        /* best-effort stop; local poll also exits */
+      }
+    }
+  }, [discoverJobId]);
 
   const discoverResults = discoverReport?.results?.length
     ? discoverReport.results
@@ -1946,35 +2016,143 @@ export function TopologyPage() {
     setEdges((es) => es.map((e) => ({ ...e, selected: false })));
   }, [setNodes, setEdges]);
 
-  const removeSelected = useCallback(async () => {
-    if (!mapId) return;
-    const nodeIds = nodes.filter((n) => n.selected).map((n) => n.id);
-    const edgeIds = new Set(edges.filter((e) => e.selected).map((e) => e.id));
-    if (!nodeIds.length && !edgeIds.size) return;
-    pushHistory();
-    try {
-      if (nodeIds.length) {
-        if (dirtyRef.current) {
-          await patchTopologyPositions(mapId, flowToPositions(nodes));
-          clearDirty();
-        }
-        const localPos = new Map(nodes.map((n) => [n.id, n.position]));
-        const graph = await removeTopologyViewNodes(mapId, nodeIds);
+  const persistDeleteEdges = useCallback(
+    async (edgeIds: string[], opts?: { confirmKey?: string; okKey?: string }) => {
+      if (!mapId || !edgeIds.length) return false;
+      const confirmMsg = t(opts?.confirmKey || "topology.deleteEdgeConfirm");
+      if (!window.confirm(confirmMsg)) return false;
+      pushHistory();
+      try {
+        await deleteFabricEdges(edgeIds);
+        const graph = await fetchTopologyGraph(mapId);
         queryClient.setQueryData(queryKeys.topologyGraph(mapId), graph);
         appliedMapIdRef.current = mapId;
+        const localPos = new Map(nodes.map((n) => [n.id, n.position]));
         historyLockRef.current = true;
         applyViewGraph(graph, edgeDefaults, setNodes, setEdges, localPos);
         historyLockRef.current = false;
         clearDirty();
-      } else if (edgeIds.size) {
-        setEdges((eds) => eds.filter((e) => !edgeIds.has(e.id)));
-        markDirty();
+        setSelectedEdgeId((cur) => (cur && edgeIds.includes(cur) ? null : cur));
+        showOk(
+          t(opts?.okKey || "topology.edgeDeleted").replace("{{count}}", String(edgeIds.length)),
+        );
+        return true;
+      } catch (err) {
+        showError(String(err));
+        return false;
       }
+    },
+    [mapId, nodes, setNodes, setEdges, pushHistory, queryClient, edgeDefaults, clearDirty, showOk, showError, t],
+  );
+
+  const removeSelected = useCallback(async () => {
+    if (!mapId) return;
+    const nodeIds = nodes.filter((n) => n.selected).map((n) => n.id);
+    const selectedDisplay = displayEdges.filter((e) => e.selected);
+    const edgeIds = new Set<string>();
+    for (const de of selectedDisplay) {
+      for (const id of physicalIdsForDisplayEdge(de, edges)) edgeIds.add(id);
+    }
+    for (const e of edges) {
+      if (e.selected) edgeIds.add(e.id);
+    }
+    if (!nodeIds.length && !edgeIds.size) return;
+    if (!nodeIds.length && edgeIds.size) {
+      await persistDeleteEdges([...edgeIds]);
+      return;
+    }
+    pushHistory();
+    try {
+      if (dirtyRef.current) {
+        await patchTopologyPositions(mapId, flowToPositions(nodes));
+        clearDirty();
+      }
+      const localPos = new Map(nodes.map((n) => [n.id, n.position]));
+      const graph = await removeTopologyViewNodes(mapId, nodeIds);
+      queryClient.setQueryData(queryKeys.topologyGraph(mapId), graph);
+      appliedMapIdRef.current = mapId;
+      historyLockRef.current = true;
+      applyViewGraph(graph, edgeDefaults, setNodes, setEdges, localPos);
+      historyLockRef.current = false;
+      clearDirty();
       setSelectedEdgeId(null);
     } catch (err) {
       showError(String(err));
     }
-  }, [mapId, nodes, edges, setNodes, setEdges, pushHistory, queryClient, edgeDefaults, clearDirty, markDirty, showError]);
+  }, [
+    mapId,
+    nodes,
+    edges,
+    displayEdges,
+    setNodes,
+    setEdges,
+    pushHistory,
+    queryClient,
+    edgeDefaults,
+    clearDirty,
+    showError,
+    persistDeleteEdges,
+  ]);
+
+  const removeEdgeById = (edgeId: string) => {
+    const display = displayEdges.find((e) => e.id === edgeId);
+    const ids = physicalIdsForDisplayEdge(display, edges);
+    const list = ids.length ? ids : [edgeId];
+    void persistDeleteEdges(list);
+    closeCtxMenu();
+  };
+
+  const staleEdgeIds = useMemo(() => {
+    return edges
+      .filter((e) => {
+        const src = String((e.data as EdgeStyleData | undefined)?.source || "");
+        return src === "stale";
+      })
+      .map((e) => e.id);
+  }, [edges]);
+
+  const removeStaleEdges = useCallback(async () => {
+    if (!staleEdgeIds.length) return;
+    await persistDeleteEdges(staleEdgeIds, {
+      confirmKey: "topology.removeStaleHint",
+      okKey: "topology.staleRemoved",
+    });
+  }, [staleEdgeIds, persistDeleteEdges]);
+
+  const projectOutsidePeers = useCallback(async () => {
+    if (!mapId) return;
+    try {
+      const before = nodes.length;
+      const projected = await projectTopologyNeighbors(mapId);
+      queryClient.setQueryData(queryKeys.topologyGraph(mapId), projected);
+      appliedMapIdRef.current = mapId;
+      const localPos = new Map(nodes.map((n) => [n.id, n.position]));
+      historyLockRef.current = true;
+      applyViewGraph(projected, edgeDefaults, setNodes, setEdges, localPos);
+      historyLockRef.current = false;
+      clearDirty();
+      const added = Math.max(0, projected.nodes.length - before);
+      showOk(t("topology.projectedNeighbors").replace("{{count}}", String(added)));
+      if (added > 0) {
+        needsInitialFitRef.current = true;
+        scheduleFitView(FIT_VIEW_OPTS);
+      }
+    } catch (err) {
+      showError(String(err));
+    }
+  }, [
+    mapId,
+    nodes,
+    queryClient,
+    edgeDefaults,
+    setNodes,
+    setEdges,
+    clearDirty,
+    showOk,
+    showError,
+    t,
+    scheduleFitView,
+  ]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -2021,7 +2199,7 @@ export function TopologyPage() {
       if (e.key === "Delete" || e.key === "Backspace") {
         if (nodes.some((n) => n.selected) || edges.some((ed) => ed.selected)) {
           e.preventDefault();
-          removeSelected();
+          void removeSelected();
         }
       }
     };
@@ -2065,17 +2243,6 @@ export function TopologyPage() {
     } catch (err) {
       showError(String(err));
     }
-  };
-
-  const removeEdgeById = (edgeId: string) => {
-    pushHistory();
-    markDirty();
-    const display = displayEdges.find((e) => e.id === edgeId);
-    const ids = new Set(physicalIdsForDisplayEdge(display, edges));
-    if (!ids.size) ids.add(edgeId);
-    setEdges((es) => es.filter((e) => !ids.has(e.id)));
-    setSelectedEdgeId((cur) => (cur && (ids.has(cur) || cur === edgeId) ? null : cur));
-    closeCtxMenu();
   };
 
   const openNeInventory = (opts: {
@@ -2492,6 +2659,15 @@ export function TopologyPage() {
   );
 
   const outsidePeers = graphQuery.data?.outside_peers || [];
+  const graphTruncated = Boolean(graphQuery.data?.truncated);
+  const truncateReason = String(graphQuery.data?.truncate_reason || "").trim();
+  const truncateBannerText = useMemo(() => {
+    if (!graphTruncated) return "";
+    if (truncateReason === "membership_cap") return t("topology.truncatedMembership");
+    if (truncateReason === "too_many_view_nodes") return t("topology.truncatedNodes");
+    if (truncateReason === "too_many_edges") return t("topology.truncatedEdges");
+    return t("topology.truncatedGeneric");
+  }, [graphTruncated, truncateReason, t]);
   const activeLeafName = useMemo(() => {
     if (!mapId) return "";
     if (activeView?.name) return activeView.name;
@@ -2880,9 +3056,18 @@ export function TopologyPage() {
                 </ul>
               )}
               {mapId && outsidePeers.length > 0 && (
-                <p className="panel__hint">
-                  {t("topology.outsidePeers").replace("{{count}}", String(outsidePeers.length))}
-                </p>
+                <div className="topo-outside-peers">
+                  <p className="panel__hint">
+                    {t("topology.outsidePeers").replace("{{count}}", String(outsidePeers.length))}
+                  </p>
+                  <button
+                    type="button"
+                    className="btn btn--sm"
+                    onClick={() => void projectOutsidePeers()}
+                  >
+                    {t("topology.projectNeighbors")}
+                  </button>
+                </div>
               )}
             </div>
           </>
@@ -3009,6 +3194,15 @@ export function TopologyPage() {
                 onClick={() => rfRef.current?.fitView({ ...FIT_VIEW_OPTS })}
               >
                 {t("topology.fit")}
+              </button>
+              <button
+                type="button"
+                className="btn btn--sm btn--ghost"
+                disabled={!staleEdgeIds.length}
+                title={t("topology.removeStaleHint")}
+                onClick={() => void removeStaleEdges()}
+              >
+                {t("topology.removeStale").replace("{{count}}", String(staleEdgeIds.length))}
               </button>
             </div>
           </div>
@@ -3142,6 +3336,7 @@ export function TopologyPage() {
                       }}
                     />
                     {t("topology.discoverProjectNeighbors")}
+                    <span className="muted"> ({t("topology.localBrowserOnly")})</span>
                   </label>
                   <div className="topo-display-defaults topo-display-defaults--canvas-bg topo-display-defaults--colors">
                     <div className="topo-display-defaults__head">
@@ -3486,7 +3681,8 @@ export function TopologyPage() {
                 className="btn btn--sm btn--ghost"
                 onClick={() => {
                   if (discovering) {
-                                        return;
+                    void cancelDiscover();
+                    return;
                   }
                   setDiscoverOpen(false);
                 }}
@@ -3733,6 +3929,11 @@ export function TopologyPage() {
             onDragOver={onCanvasDragOver}
             onDrop={onCanvasDrop}
           >
+            {truncateBannerText ? (
+              <div className="topo-truncate-banner" role="status">
+                {truncateBannerText}
+              </div>
+            ) : null}
             {fullscreen ? (
               <div className="topo-fs-toolbar" role="toolbar" aria-label={t("topology.toolModes")}>
                 {(

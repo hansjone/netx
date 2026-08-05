@@ -1268,6 +1268,16 @@ export const createFabricManualEdge = (body: {
   b_port?: string;
 }) => apiPost<{ ok: boolean; action: string; edge: Record<string, unknown> }>("/v1/topology/fabric/edges", body);
 
+export const deleteFabricEdges = (edgeIds: string[]) =>
+  apiPost<{ ok: boolean; deleted: number }>("/v1/topology/fabric/edges/delete", {
+    edge_ids: edgeIds,
+  });
+
+export const deleteFabricEdge = (edgeId: string) =>
+  apiDelete<{ ok: boolean; deleted: number }>(
+    `/v1/topology/fabric/edges/${encodeURIComponent(edgeId)}`,
+  );
+
 /** Back-compat aliases used by older call sites during cutover. */
 export const fetchTopologyMaps = fetchTopologyViews;
 export const createTopologyMap = createTopologyView;

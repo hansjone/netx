@@ -99,6 +99,14 @@ def _connect_status_for_node(db: Session, n: TopoFabricNode) -> str:
     return ""
 
 
+def _managed_source_for_node(db: Session, n: TopoFabricNode) -> str:
+    if n.managed_ne_id:
+        ne = db.get(ManagedNE, n.managed_ne_id)
+        if ne is not None:
+            return str(ne.source or "").strip()
+    return ""
+
+
 def get_view_graph(db: Session, view_id: str) -> TopologyViewGraphOut:
     view = _get_view_or_404(db, view_id)
     vnodes = db.query(TopoViewNode).filter(TopoViewNode.view_id == view.id).all()
@@ -135,6 +143,7 @@ def get_view_graph(db: Session, view_id: str) -> TopologyViewGraphOut:
                 vendor=(fn.vendor if fn else "") or "",
                 device_type=(fn.device_type if fn else "") or "",
                 connect_status=_connect_status_for_node(db, fn) if fn else "",
+                managed_source=_managed_source_for_node(db, fn) if fn else "",
             )
         )
     edges_out: list[ViewEdgeOut] = []

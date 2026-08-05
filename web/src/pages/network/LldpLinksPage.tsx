@@ -742,10 +742,14 @@ export function LldpLinksPage() {
                 <h3>{t("lldpLinks.jobDetailTitle")}</h3>
                 <p className="muted">
                   {(() => {
-                    const job = jobs.find((j) => j.id === expandedJobId);
-                    return job
-                      ? `${job.id.slice(0, 8)} · ${job.status} · ${job.done}/${job.total}`
-                      : expandedJobId.slice(0, 8);
+                    const job = jobDetailQuery.data;
+                    if (job) {
+                      return `${job.id.slice(0, 8)} · ${job.status} · ${job.done}/${job.total}`;
+                    }
+                    if (jobDetailQuery.isLoading) {
+                      return `${expandedJobId.slice(0, 8)} · …`;
+                    }
+                    return expandedJobId.slice(0, 8);
                   })()}
                 </p>
               </div>
