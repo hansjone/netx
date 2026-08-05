@@ -6339,11 +6339,15 @@ pre {
 }
 
 .topo-node.is-connect-mode .topo-node__handle {
-  width: 12px !important;
-  height: 12px !important;
-  opacity: 1 !important;
-  background: #0ea5e9 !important;
-  border: 2px solid #fff !important;
+  width: 28px !important;
+  height: 28px !important;
+  min-width: 28px !important;
+  min-height: 28px !important;
+  opacity: 0.9 !important;
+  background: rgba(14, 165, 233, 0.35) !important;
+  border: 2px solid #38bdf8 !important;
+  border-radius: 50% !important;
+  z-index: 5;
 }
 
 .react-flow__selection {
@@ -7042,74 +7046,14 @@ pre {
 
 .topo-node.is-connect-mode .topo-node__handle {
   pointer-events: all;
-  opacity: 1 !important;
-  width: 12px !important;
-  height: 12px !important;
-  min-width: 12px !important;
-  min-height: 12px !important;
-  background: #f8fafc !important;
-  border: 2px solid #38bdf8 !important;
-  border-radius: 2px !important;
-  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.35);
-  z-index: 5;
 }
 
-.topo-node.is-connect-mode .topo-node__handle:hover {
-  background: #38bdf8 !important;
-  border-color: #e0f2fe !important;
-  transform: scale(1.15);
-}
-
-.topo-node__handle--n {
+.topo-node__handle--center {
   left: 50% !important;
-  top: 0 !important;
-  right: auto !important;
-  bottom: auto !important;
-  transform: translate(-50%, -50%) !important;
-}
-
-.topo-node__handle--e {
-  left: auto !important;
-  top: 50% !important;
-  right: 0 !important;
-  bottom: auto !important;
-  transform: translate(50%, -50%) !important;
-}
-
-.topo-node__handle--s {
-  left: 50% !important;
-  top: auto !important;
-  right: auto !important;
-  bottom: 0 !important;
-  transform: translate(-50%, 50%) !important;
-}
-
-.topo-node__handle--w {
-  left: 0 !important;
   top: 50% !important;
   right: auto !important;
   bottom: auto !important;
   transform: translate(-50%, -50%) !important;
-}
-
-.topo-node.is-connect-mode .topo-node__handle--n:hover,
-.topo-node.is-connect-mode .topo-node__handle--e:hover,
-.topo-node.is-connect-mode .topo-node__handle--s:hover,
-.topo-node.is-connect-mode .topo-node__handle--w:hover {
-  /* keep side translate while scaling */
-}
-
-.topo-node.is-connect-mode .topo-node__handle--n:hover {
-  transform: translate(-50%, -50%) scale(1.15) !important;
-}
-.topo-node.is-connect-mode .topo-node__handle--e:hover {
-  transform: translate(50%, -50%) scale(1.15) !important;
-}
-.topo-node.is-connect-mode .topo-node__handle--s:hover {
-  transform: translate(-50%, 50%) scale(1.15) !important;
-}
-.topo-node.is-connect-mode .topo-node__handle--w:hover {
-  transform: translate(-50%, -50%) scale(1.15) !important;
 }
 
 .topo-node.is-selected .topo-node__glyph {

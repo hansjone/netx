@@ -1608,7 +1608,7 @@ const zh = {
     removeStale: "清除未发现 ({{count}})",
     removeStaleHint: "标记删除红色未发现链路（保存后生效）；周期采集连续 4 次未发现也会自动清理",
     staleRemoved: "已标记删除 {{count}} 条未发现链路（保存后生效）",
-    connectHint: "连线模式：从节点四边锚点拖到目标网元（Esc 或切回选择退出）",
+    connectHint: "连线模式：从网元中心锚点拖到目标网元（Esc 或切回选择退出）",
   },
   topoClassify: {
     title: "分类与切片",

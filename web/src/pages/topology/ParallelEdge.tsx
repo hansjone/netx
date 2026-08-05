@@ -1,14 +1,12 @@
-import { BaseEdge, EdgeLabelRenderer, getSmoothStepPath, type EdgeProps } from "@xyflow/react";
+import { BaseEdge, EdgeLabelRenderer, getStraightPath, type EdgeProps } from "@xyflow/react";
 
-/** Offset parallel physical links so they do not stack on one line (Visio-like elbows). */
+/** Offset parallel physical links so they do not stack on one line. */
 export function ParallelEdge({
   id,
   sourceX,
   sourceY,
   targetX,
   targetY,
-  sourcePosition,
-  targetPosition,
   style,
   markerEnd,
   label,
@@ -18,20 +16,17 @@ export function ParallelEdge({
 }: EdgeProps) {
   const index = Number((data as { parallelIndex?: number } | undefined)?.parallelIndex || 0);
   const count = Math.max(1, Number((data as { parallelCount?: number } | undefined)?.parallelCount || 1));
-  const offset = (index - (count - 1) / 2) * 12;
+  const offset = (index - (count - 1) / 2) * 10;
   const dx = targetX - sourceX;
   const dy = targetY - sourceY;
   const len = Math.hypot(dx, dy) || 1;
   const ox = (-dy / len) * offset;
   const oy = (dx / len) * offset;
-  const [path, labelX, labelY] = getSmoothStepPath({
+  const [path, labelX, labelY] = getStraightPath({
     sourceX: sourceX + ox,
     sourceY: sourceY + oy,
     targetX: targetX + ox,
     targetY: targetY + oy,
-    sourcePosition,
-    targetPosition,
-    borderRadius: 8,
   });
   return (
     <>

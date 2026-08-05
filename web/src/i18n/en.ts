@@ -1622,7 +1622,7 @@ const en = {
     removeStaleHint:
       "Queue delete of red missing edges (applies on Save); scheduled collect also purges after 4 consecutive misses",
     staleRemoved: "Queued {{count}} missing edge delete(s) — Save to apply",
-    connectHint: "Connect mode: drag from a node's side anchors to the target NE (Esc or Select to exit)",
+    connectHint: "Connect mode: drag from the NE center anchor to the target (Esc or Select to exit)",
   },
   topoClassify: {
     title: "Classify & slices",

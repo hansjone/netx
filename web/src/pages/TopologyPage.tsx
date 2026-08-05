@@ -284,6 +284,7 @@ type HistorySnap = {
   nodes: Node<NeNodeData>[];
   edges: Edge[];
   pendingEdgeDeletes: string[];
+  pendingEdgeCreates: string[];
 };
 
 type PaletteSource = "managed" | "ume";
@@ -328,6 +329,15 @@ function newId(): string {
     return crypto.randomUUID().replace(/-/g, "");
   }
   return `${Date.now().toString(16)}${Math.random().toString(16).slice(2, 10)}`;
+}
+
+/** Client-only edge id until Save calls createFabricManualEdge. */
+function newLocalEdgeId(): string {
+  return `local:${newId()}`;
+}
+
+function isLocalPendingEdgeId(id: string): boolean {
+  return String(id || "").startsWith("local:");
 }
 
 /**
@@ -431,12 +441,6 @@ const NeNode = memo(function NeNode({ data, selected }: NodeProps<Node<NeNodeDat
     hideIp || !data.ne_ip || data.ne_ip === name ? "" : data.ne_ip,
     hideVendor || !data.vendor ? "" : data.vendor,
   ].filter(Boolean);
-  const handlePositions = [
-    { id: "n", position: Position.Top },
-    { id: "e", position: Position.Right },
-    { id: "s", position: Position.Bottom },
-    { id: "w", position: Position.Left },
-  ] as const;
   return (
     <div
       className={`topo-node topo-node--${tone}${selected ? " is-selected" : ""}${
@@ -445,16 +449,19 @@ const NeNode = memo(function NeNode({ data, selected }: NodeProps<Node<NeNodeDat
       title={showBadge ? data.managed_source || "placeholder" : undefined}
     >
       <div className="topo-node__glyph">
-        {handlePositions.map(({ id, position }) => (
-          <Handle
-            key={id}
-            id={id}
-            type="source"
-            position={position}
-            className={`topo-node__handle topo-node__handle--${id}`}
-            isConnectable={connectMode}
-          />
-        ))}
+        {/* Single center anchors on the router glyph — same attachment as discovered edges. */}
+        <Handle
+          type="target"
+          position={Position.Left}
+          className="topo-node__handle topo-node__handle--center"
+          isConnectable={connectMode}
+        />
+        <Handle
+          type="source"
+          position={Position.Right}
+          className="topo-node__handle topo-node__handle--center"
+          isConnectable={connectMode}
+        />
         <RouterIcon />
         {showBadge ? (
           <span className="topo-node__badge" aria-hidden>
@@ -743,13 +750,11 @@ function graphToFlow(
     position: { x: n.x || 0, y: n.y || 0 },
     width: TOPO_NODE_W,
     height: TOPO_NODE_H,
-    // Predetermined handles must match DOM anchors on the router glyph (56×56, top-centered).
-    // ConnectionMode.Loose treats these source handles as connectable targets too.
+    // Predetermined handles must match DOM anchors (icon center), not the 160px box edges —
+    // otherwise edges float in the gap and never touch the router glyph.
     handles: [
-      { type: "source", position: Position.Top, id: "n", x: TOPO_HANDLE_X, y: 0 },
-      { type: "source", position: Position.Right, id: "e", x: TOPO_HANDLE_X + TOPO_ICON / 2, y: TOPO_HANDLE_Y },
-      { type: "source", position: Position.Bottom, id: "s", x: TOPO_HANDLE_X, y: TOPO_ICON },
-      { type: "source", position: Position.Left, id: "w", x: TOPO_HANDLE_X - TOPO_ICON / 2, y: TOPO_HANDLE_Y },
+      { type: "target", position: Position.Left, x: TOPO_HANDLE_X, y: TOPO_HANDLE_Y },
+      { type: "source", position: Position.Right, x: TOPO_HANDLE_X, y: TOPO_HANDLE_Y },
     ],
     data: {
       label: n.label || n.name || n.ip || n.fabric_node_id,
@@ -779,7 +784,7 @@ function graphToFlow(
         id: e.id,
         source: e.a_node_id,
         target: e.b_node_id,
-        type: "smoothstep",
+        type: "straight",
         label: label || undefined,
         animated: false,
         data,
@@ -944,6 +949,8 @@ export function TopologyPage() {
   const historyLockRef = useRef(false);
   /** Fabric edge ids removed locally; flushed on Save (not when only removing nodes from view). */
   const pendingEdgeDeletesRef = useRef<Set<string>>(new Set());
+  /** Local `local:*` edge ids added on canvas; flushed on Save via createFabricManualEdge. */
+  const pendingEdgeCreatesRef = useRef<Set<string>>(new Set());
   const connectClickRef = useRef<string | null>(null);
   const canUndo = historyTick >= 0 && historyRef.current.length > 0;
   const canRedo = historyTick >= 0 && redoRef.current.length > 0;
@@ -1289,6 +1296,7 @@ export function TopologyPage() {
       historyRef.current = [];
       redoRef.current = [];
       pendingEdgeDeletesRef.current = new Set();
+      pendingEdgeCreatesRef.current = new Set();
       clearDirty();
       bumpHistory();
       needsInitialFitRef.current = true;
@@ -1330,6 +1338,7 @@ export function TopologyPage() {
         nodes: nodes.map((n) => ({ ...n, position: { ...n.position }, data: { ...n.data } })),
         edges: edges.map((e) => ({ ...e })),
         pendingEdgeDeletes: [...pendingEdgeDeletesRef.current],
+        pendingEdgeCreates: [...pendingEdgeCreatesRef.current],
       },
     ];
     redoRef.current = [];
@@ -1343,11 +1352,13 @@ export function TopologyPage() {
       nodes: nodes.map((n) => ({ ...n, position: { ...n.position }, data: { ...n.data } })),
       edges: edges.map((e) => ({ ...e })),
       pendingEdgeDeletes: [...pendingEdgeDeletesRef.current],
+      pendingEdgeCreates: [...pendingEdgeCreatesRef.current],
     });
     historyLockRef.current = true;
     setNodes(prev.nodes);
     setEdges(prev.edges);
     pendingEdgeDeletesRef.current = new Set(prev.pendingEdgeDeletes);
+    pendingEdgeCreatesRef.current = new Set(prev.pendingEdgeCreates || []);
     markDirty();
     bumpHistory();
     historyLockRef.current = false;
@@ -1360,11 +1371,13 @@ export function TopologyPage() {
       nodes: nodes.map((n) => ({ ...n, position: { ...n.position }, data: { ...n.data } })),
       edges: edges.map((e) => ({ ...e })),
       pendingEdgeDeletes: [...pendingEdgeDeletesRef.current],
+      pendingEdgeCreates: [...pendingEdgeCreatesRef.current],
     });
     historyLockRef.current = true;
     setNodes(next.nodes);
     setEdges(next.edges);
     pendingEdgeDeletesRef.current = new Set(next.pendingEdgeDeletes);
+    pendingEdgeCreatesRef.current = new Set(next.pendingEdgeCreates || []);
     markDirty();
     bumpHistory();
     historyLockRef.current = false;
@@ -1388,7 +1401,10 @@ export function TopologyPage() {
       if (opts?.persist && mapId) {
         try {
           const graph = await patchTopologyPositions(mapId, flowToPositions(next));
-          if (pendingEdgeDeletesRef.current.size === 0) {
+          if (
+            pendingEdgeDeletesRef.current.size === 0 &&
+            pendingEdgeCreatesRef.current.size === 0
+          ) {
             clearDirty();
           }
           queryClient.setQueryData(queryKeys.topologyGraph(mapId), graph);
@@ -1538,11 +1554,24 @@ export function TopologyPage() {
   const saveMut = useMutation({
     mutationFn: async () => {
       if (!mapId) throw new Error(t("topology.selectMap"));
-      const pendingEdges = [...pendingEdgeDeletesRef.current];
+      const createIds = [...pendingEdgeCreatesRef.current];
+      for (const id of createIds) {
+        const e = edges.find((x) => x.id === id);
+        if (!e) continue;
+        const d = (e.data || {}) as EdgeStyleData;
+        await createFabricManualEdge({
+          a_node_id: e.source,
+          b_node_id: e.target,
+          a_port: String(d.source_port || ""),
+          b_port: String(d.target_port || ""),
+        });
+      }
+      pendingEdgeCreatesRef.current.clear();
+      const pendingEdges = [...pendingEdgeDeletesRef.current].filter((id) => !isLocalPendingEdgeId(id));
       if (pendingEdges.length) {
         await deleteFabricEdges(pendingEdges);
-        pendingEdgeDeletesRef.current.clear();
       }
+      pendingEdgeDeletesRef.current.clear();
       const serverIds = (graphQuery.data?.nodes || [])
         .map((n) => n.fabric_node_id)
         .filter(Boolean);
@@ -1601,11 +1630,26 @@ export function TopologyPage() {
       });
       try {
         if (dirtyRef.current) {
-          const pendingEdges = [...pendingEdgeDeletesRef.current];
+          const createIds = [...pendingEdgeCreatesRef.current];
+          for (const id of createIds) {
+            const e = edges.find((x) => x.id === id);
+            if (!e) continue;
+            const d = (e.data || {}) as EdgeStyleData;
+            await createFabricManualEdge({
+              a_node_id: e.source,
+              b_node_id: e.target,
+              a_port: String(d.source_port || ""),
+              b_port: String(d.target_port || ""),
+            });
+          }
+          pendingEdgeCreatesRef.current.clear();
+          const pendingEdges = [...pendingEdgeDeletesRef.current].filter(
+            (id) => !isLocalPendingEdgeId(id),
+          );
           if (pendingEdges.length) {
             await deleteFabricEdges(pendingEdges);
-            pendingEdgeDeletesRef.current.clear();
           }
+          pendingEdgeDeletesRef.current.clear();
           const serverIds = (graphQuery.data?.nodes || [])
             .map((n) => n.fabric_node_id)
             .filter(Boolean);
@@ -1831,29 +1875,40 @@ export function TopologyPage() {
   const onConnect = useCallback(
     (connection: Connection) => {
       if (!mapId || !isValidConnection(connection)) return;
+      const source = String(connection.source || "");
+      const target = String(connection.target || "");
+      if (!source || !target) return;
       pushHistory();
       connectClickRef.current = null;
-      void (async () => {
-        try {
-          await createFabricManualEdge({
-            a_node_id: String(connection.source || ""),
-            b_node_id: String(connection.target || ""),
-            a_port: "",
-            b_port: "",
-          });
-          const graph = await fetchTopologyGraph(mapId);
-          queryClient.setQueryData(queryKeys.topologyGraph(mapId), graph);
-          historyLockRef.current = true;
-          applyViewGraph(graph, edgeDefaults, setNodes, setEdges);
-          historyLockRef.current = false;
-          pendingEdgeDeletesRef.current = new Set();
-          clearDirty();
-        } catch (err) {
-          showError(String(err));
-        }
-      })();
+      const id = newLocalEdgeId();
+      const data: EdgeStyleData = {
+        source: "manual",
+        source_port: "",
+        target_port: "",
+        stroke_color: "",
+        stroke_width: 0,
+        line_style: "",
+        discovered_at: null,
+      };
+      const edge = withEdgeVisual(
+        {
+          id,
+          source,
+          target,
+          // Center anchors only — omit handle ids so attach matches discovered edges after Save.
+          sourceHandle: null,
+          targetHandle: null,
+          type: "straight",
+          animated: false,
+          data,
+        },
+        edgeDefaults,
+      );
+      pendingEdgeCreatesRef.current.add(id);
+      setEdges((es) => [...es, edge]);
+      markDirty();
     },
-    [setEdges, setNodes, pushHistory, edgeDefaults, isValidConnection, mapId, queryClient, clearDirty, showError],
+    [mapId, isValidConnection, pushHistory, edgeDefaults, setEdges, markDirty],
   );
 
   const addPaletteItems = useCallback(
@@ -2110,7 +2165,13 @@ export function TopologyPage() {
         if (!window.confirm(confirmMsg)) return false;
       }
       pushHistory();
-      for (const id of edgeIds) pendingEdgeDeletesRef.current.add(id);
+      for (const id of edgeIds) {
+        if (pendingEdgeCreatesRef.current.has(id) || isLocalPendingEdgeId(id)) {
+          pendingEdgeCreatesRef.current.delete(id);
+        } else {
+          pendingEdgeDeletesRef.current.add(id);
+        }
+      }
       const idSet = new Set(edgeIds);
       setEdges((es) => es.filter((e) => !idSet.has(e.id)));
       setSelectedEdgeId((cur) => (cur && idSet.has(cur) ? null : cur));
@@ -2143,7 +2204,13 @@ export function TopologyPage() {
       if (!window.confirm(msg)) return;
       pushHistory();
       const nodeSet = new Set(nodeIds);
-      for (const id of edgeIds) pendingEdgeDeletesRef.current.add(id);
+      for (const id of edgeIds) {
+        if (pendingEdgeCreatesRef.current.has(id) || isLocalPendingEdgeId(id)) {
+          pendingEdgeCreatesRef.current.delete(id);
+        } else {
+          pendingEdgeDeletesRef.current.add(id);
+        }
+      }
       setNodes((ns) => ns.filter((n) => !nodeSet.has(n.id)));
       setEdges((es) =>
         es.filter(
@@ -2170,7 +2237,14 @@ export function TopologyPage() {
     const nodeSet = new Set(nodeIds);
     setNodes((ns) => ns.filter((n) => !nodeSet.has(n.id)));
     // Drop incident edges from the canvas only — do not queue Fabric deletes.
-    setEdges((es) => es.filter((e) => !nodeSet.has(e.source) && !nodeSet.has(e.target)));
+    setEdges((es) => {
+      const next = es.filter((e) => !nodeSet.has(e.source) && !nodeSet.has(e.target));
+      for (const e of es) {
+        if (next.some((x) => x.id === e.id)) continue;
+        pendingEdgeCreatesRef.current.delete(e.id);
+      }
+      return next;
+    });
     setSelectedEdgeId(null);
     markDirty();
   }, [
@@ -2322,7 +2396,14 @@ export function TopologyPage() {
     pushHistory();
     closeCtxMenu();
     setNodes((ns) => ns.filter((n) => n.id !== nodeId));
-    setEdges((es) => es.filter((e) => e.source !== nodeId && e.target !== nodeId));
+    setEdges((es) => {
+      const next = es.filter((e) => e.source !== nodeId && e.target !== nodeId);
+      for (const e of es) {
+        if (next.some((x) => x.id === e.id)) continue;
+        pendingEdgeCreatesRef.current.delete(e.id);
+      }
+      return next;
+    });
     markDirty();
   };
 
@@ -2337,11 +2418,26 @@ export function TopologyPage() {
       closeCtxMenu();
       try {
         if (dirtyRef.current) {
-          const pendingEdges = [...pendingEdgeDeletesRef.current];
+          const createIds = [...pendingEdgeCreatesRef.current];
+          for (const id of createIds) {
+            const e = edges.find((x) => x.id === id);
+            if (!e || e.source === nodeId || e.target === nodeId) continue;
+            const d = (e.data || {}) as EdgeStyleData;
+            await createFabricManualEdge({
+              a_node_id: e.source,
+              b_node_id: e.target,
+              a_port: String(d.source_port || ""),
+              b_port: String(d.target_port || ""),
+            });
+          }
+          pendingEdgeCreatesRef.current.clear();
+          const pendingEdges = [...pendingEdgeDeletesRef.current].filter(
+            (id) => !isLocalPendingEdgeId(id),
+          );
           if (pendingEdges.length) {
             await deleteFabricEdges(pendingEdges);
-            pendingEdgeDeletesRef.current.clear();
           }
+          pendingEdgeDeletesRef.current.clear();
           const serverIds = (graphQuery.data?.nodes || [])
             .map((n) => n.fabric_node_id)
             .filter(Boolean);
@@ -2366,6 +2462,7 @@ export function TopologyPage() {
         applyViewGraph(graph, edgeDefaults, setNodes, setEdges, localPos);
         historyLockRef.current = false;
         pendingEdgeDeletesRef.current = new Set();
+        pendingEdgeCreatesRef.current = new Set();
         historyRef.current = [];
         redoRef.current = [];
         bumpHistory();
@@ -2378,6 +2475,7 @@ export function TopologyPage() {
     [
       mapId,
       nodes,
+      edges,
       graphQuery.data,
       closeCtxMenu,
       queryClient,
@@ -2787,8 +2885,11 @@ export function TopologyPage() {
   const onNodeClick = useCallback(
     (e: React.MouseEvent, node: Node<NeNodeData>) => {
       setCtxMenu(null);
-      // Connect mode uses Visio-style drag from handles (onConnect), not click-click.
-      if (toolMode === "connect") return;
+      // Connect mode: drag from center handle (onConnect). Clicks only select the NE.
+      if (toolMode === "connect") {
+        focusNode(node.id, false);
+        return;
+      }
       focusNode(node.id, e.shiftKey || e.metaKey || e.ctrlKey);
     },
     [toolMode, focusNode],
@@ -4137,9 +4238,9 @@ export function TopologyPage() {
                   edgeTypes={edgeTypes}
                   onlyRenderVisibleElements
                   connectionMode={ConnectionMode.Loose}
-                  connectionLineType={ConnectionLineType.SmoothStep}
+                  connectionLineType={ConnectionLineType.Straight}
                   connectionLineStyle={{ stroke: "#38bdf8", strokeWidth: 2 }}
-                  defaultEdgeOptions={{ type: "smoothstep", labelShowBg: false }}
+                  defaultEdgeOptions={{ type: "straight", labelShowBg: false }}
                   proOptions={{ hideAttribution: true }}
                   minZoom={0.05}
                   maxZoom={4}
