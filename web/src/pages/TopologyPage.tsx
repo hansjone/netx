@@ -2956,7 +2956,7 @@ export function TopologyPage() {
                     />
                     {t("topology.discoverProjectNeighbors")}
                   </label>
-                  <div className="topo-display-defaults topo-display-defaults--canvas-bg">
+                  <div className="topo-display-defaults topo-display-defaults--canvas-bg topo-display-defaults--colors">
                     <div className="topo-display-defaults__head">
                       <strong>{t("topology.canvasBg")}</strong>
                       <button
@@ -3001,7 +3001,7 @@ export function TopologyPage() {
                       />
                     </div>
                   </div>
-                  <div className="topo-display-defaults topo-display-defaults--canvas-bg">
+                  <div className="topo-display-defaults topo-display-defaults--canvas-bg topo-display-defaults--colors">
                     <div className="topo-display-defaults__head">
                       <strong>{t("topology.textColors")}</strong>
                       <button
@@ -3054,7 +3054,7 @@ export function TopologyPage() {
                       </div>
                     ))}
                   </div>
-                  <div className="topo-display-defaults topo-display-defaults--canvas-bg">
+                  <div className="topo-display-defaults topo-display-defaults--canvas-bg topo-display-defaults--colors">
                     <div className="topo-display-defaults__head">
                       <strong>{t("topology.vendorColors")}</strong>
                       <button
