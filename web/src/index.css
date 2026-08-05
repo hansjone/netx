@@ -8100,25 +8100,61 @@ pre {
   color: #94a3b8;
 }
 
-.network-main .nm-config-view {
-  margin-top: 14px;
-  padding-top: 14px;
-  border-top: 1px solid #e2e8f0;
+.nm-config-modal {
+  display: flex;
+  flex-direction: column;
+  width: min(960px, 100%);
+  max-height: min(90vh, 840px);
+  overflow: hidden;
 }
 
-.network-main .nm-config-view textarea {
+.nm-config-modal__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.nm-config-modal__title h3 {
+  margin: 0 0 4px;
+}
+
+.nm-config-modal__title .muted {
+  margin: 0;
+  font-size: 13px;
+}
+
+.nm-config-modal__actions {
+  flex: 0 0 auto;
+}
+
+.nm-config-modal__tabs {
+  margin-bottom: 10px;
+}
+
+.nm-config-modal__body {
+  flex: 1 1 auto;
   width: 100%;
-  min-height: 420px;
+  min-height: min(52vh, 480px);
   margin: 0;
   padding: 12px 14px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid rgba(148, 163, 184, 0.22);
   border-radius: 8px;
-  background: #0b1220;
-  color: #e2e8f0;
-  font-family: ui-monospace, SFMono-Regular, Consolas, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: #0b1220 !important;
+  color: #e2e8f0 !important;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
   font-size: 12px;
   line-height: 1.45;
   resize: vertical;
+  overflow: auto;
+}
+
+.nm-config-modal__meta {
+  margin: 10px 0 0;
+  font-size: 12px;
+  word-break: break-all;
 }
 
 .network-main:has(.topo-page),

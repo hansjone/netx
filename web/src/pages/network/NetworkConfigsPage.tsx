@@ -216,17 +216,29 @@ export function NetworkConfigsPage() {
             </button>
           </div>
         </div>
+      </div>
 
-        {selected ? (
-          <div className="nm-config-view">
-            <div className="panel__toolbar">
-              <h3>
-                {detail?.ne_name || selected.id}{" "}
-                <span className="muted">
-                  ({selected.source} / {detail?.ne_ip || "—"})
-                </span>
-              </h3>
-              <div className="btn-row">
+      {selected ? (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={() => setSelected(null)}
+        >
+          <div
+            className="modal modal--wide nm-config-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label={t("networkConfigs.view")}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="nm-config-modal__head">
+              <div className="nm-config-modal__title">
+                <h3>{detail?.ne_name || selected.id}</h3>
+                <p className="muted">
+                  {selected.source} · {detail?.ne_ip || "—"} · {detail?.vendor || "—"}
+                </p>
+              </div>
+              <div className="btn-row nm-config-modal__actions">
                 <button
                   type="button"
                   disabled={Boolean(exporting)}
@@ -254,9 +266,11 @@ export function NetworkConfigsPage() {
                 </button>
               </div>
             </div>
+
             {detailQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
+
             {showAlt ? (
-              <div className="btn-row" style={{ marginBottom: 8 }}>
+              <div className="btn-row nm-config-modal__tabs">
                 <button
                   type="button"
                   className={tab === "primary" ? "btn-primary" : undefined}
@@ -273,17 +287,20 @@ export function NetworkConfigsPage() {
                 </button>
               </div>
             ) : null}
+
             <textarea
+              className="nm-config-modal__body"
               readOnly
+              spellCheck={false}
               value={tab === "alt" ? detail?.config_alt_text || "" : detail?.config_text || ""}
             />
-            <p className="muted" style={{ marginTop: 8 }}>
+            <p className="muted nm-config-modal__meta">
               SHA-256: {tab === "alt" ? detail?.config_alt_sha256 : detail?.config_sha256} ·{" "}
               {fmtBytes(tab === "alt" ? detail?.plain_alt_size || 0 : detail?.plain_size || 0)}
             </p>
           </div>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
     </section>
   );
 }
