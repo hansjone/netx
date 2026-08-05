@@ -1,12 +1,9 @@
 import { lazy, Suspense } from "react";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
 import { AppLayout } from "./layout/AppLayout";
-import { queryKeys } from "./constants/queryKeys";
 import { WorkbenchPage } from "./pages/WorkbenchPage";
 import { LoginPage } from "./pages/LoginPage";
 import { ForceChangePasswordPage } from "./pages/ForceChangePasswordPage";
-import { fetchIntegrationStatus } from "./services/api";
 import { useAuth } from "./auth/AuthContext";
 
 const CollectPage = lazy(() => import("./pages/CollectPage").then((m) => ({ default: m.CollectPage })));
@@ -84,13 +81,6 @@ function PageFallback() {
 
 function ProtectedApp() {
   const { ready, user } = useAuth();
-  const integrationsQuery = useQuery({
-    queryKey: queryKeys.integrationsStatus,
-    queryFn: fetchIntegrationStatus,
-    refetchInterval: 10_000,
-    staleTime: 5_000,
-    enabled: ready && Boolean(user) && !user?.must_change_password,
-  });
 
   if (!ready) {
     return (
@@ -107,32 +97,7 @@ function ProtectedApp() {
   }
 
   return (
-    <AppLayout
-      connections={{
-        netxApi: integrationsQuery.data?.netx_api?.status ?? (integrationsQuery.isError ? "down" : "unknown"),
-        netxApiLatencyMs:
-          typeof integrationsQuery.data?.db?.latency_ms === "number" ? integrationsQuery.data.db.latency_ms : undefined,
-        oclawBridge:
-          integrationsQuery.data?.oclaw_bridge?.status ?? (integrationsQuery.isError ? "down" : "unknown"),
-        oclawBridgeLatencyMs: undefined,
-        oclawBridgeErrorKind:
-          typeof integrationsQuery.data?.oclaw_bridge?.error_kind === "string"
-            ? integrationsQuery.data.oclaw_bridge.error_kind
-            : undefined,
-        oclawBridgeError:
-          typeof integrationsQuery.data?.oclaw_bridge?.error === "string"
-            ? integrationsQuery.data.oclaw_bridge.error
-            : undefined,
-        oclawBridgeQueueSize:
-          typeof integrationsQuery.data?.oclaw_bridge?.queue_size === "number"
-            ? integrationsQuery.data.oclaw_bridge.queue_size
-            : undefined,
-        oclawBridgePublishedOk:
-          typeof integrationsQuery.data?.oclaw_bridge?.published_ok === "number"
-            ? integrationsQuery.data.oclaw_bridge.published_ok
-            : undefined,
-      }}
-    >
+    <AppLayout>
       <Suspense fallback={<PageFallback />}>
         <Routes>
           <Route path="/" element={<WorkbenchPage />} />

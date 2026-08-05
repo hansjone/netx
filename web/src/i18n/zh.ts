@@ -1645,6 +1645,7 @@ const zh = {
         detached: "已断开(宽限)",
         pending: "排队",
         paused: "暂停",
+        idle: "空闲",
         error: "错误",
         failed: "失败",
       },

@@ -7116,7 +7116,7 @@ pre {
 }
 
 .topo-node.is-selected .topo-node__glyph {
-  outline: 2px solid #334155;
+  outline: 2px solid #60a5fa;
   outline-offset: 3px;
   border-radius: 4px;
 }
@@ -7127,8 +7127,12 @@ pre {
 }
 
 .topo-node.is-selected .topo-node__caption {
-  color: #0f172a;
+  color: #f8fafc;
   font-weight: 700;
+}
+
+.topo-node.is-selected .topo-node__caption-name {
+  color: #93c5fd;
 }
 
 /* Selected link: light highlight only (do not alter geometry / arrows). */
@@ -7155,10 +7159,13 @@ pre {
   align-items: center;
   gap: 1px;
   margin-top: 3px;
-  color: #334155;
+  color: #e2e8f0;
   line-height: 1.2;
   max-width: 160px;
   pointer-events: none;
+  text-shadow:
+    0 0 3px rgba(15, 23, 42, 0.95),
+    0 1px 2px rgba(15, 23, 42, 0.85);
 }
 
 .topo-node__caption-name {
@@ -7166,7 +7173,7 @@ pre {
   max-width: 100%;
   font-size: 11px;
   font-weight: 700;
-  color: #0f172a;
+  color: #f1f5f9;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -7176,7 +7183,7 @@ pre {
   display: block;
   max-width: 100%;
   font-size: 10px;
-  color: #64748b;
+  color: #94a3b8;
   font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
   white-space: nowrap;
   overflow: hidden;
@@ -7194,17 +7201,19 @@ pre {
 
 .topo-edge-label {
   font-size: 11px;
-  color: #cbd5e1;
-  background: rgba(15, 23, 42, 0.92);
-  border: 1px solid rgba(148, 163, 184, 0.28);
-  border-radius: 4px;
-  padding: 1px 6px;
+  color: #e2e8f0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
   white-space: nowrap;
+  text-shadow:
+    0 0 3px rgba(15, 23, 42, 0.95),
+    0 1px 2px rgba(15, 23, 42, 0.85);
 }
 
 .topo-edge-label.is-selected {
   color: #93c5fd;
-  border-color: rgba(59, 130, 246, 0.55);
   font-weight: 600;
 }
 

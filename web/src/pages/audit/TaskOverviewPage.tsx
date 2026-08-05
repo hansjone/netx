@@ -10,7 +10,7 @@ const POLL_MS = 4000;
 function statusTone(status: string): string {
   const s = status.toLowerCase();
   if (s === "collecting" || s === "running" || s === "connecting" || s === "testing") return "running";
-  if (s === "ready") return "ok";
+  if (s === "ready" || s === "idle") return "ok";
   if (s === "paused" || s === "pending" || s === "detached") return "paused";
   if (s === "failed" || s === "error") return "stopped";
   return "other";
@@ -36,9 +36,20 @@ function triggerLabel(trigger: string, t: (k: string, vars?: Record<string, stri
   return tr === key ? raw : tr;
 }
 
+function runtimeTaskSubject(
+  taskId: string,
+  t: (k: string, vars?: Record<string, string | number>) => string,
+): string {
+  const key = `ume.tasks.runtimeTask.${taskId}`;
+  const label = t(key);
+  return label === key ? taskId : label;
+}
+
 function taskTitle(row: OpsTaskItem, t: (k: string, vars?: Record<string, string | number>) => string): string {
   const kind = kindLabel(row.kind, t);
-  const subject = String(row.title || "").trim();
+  const subjectRaw = String(row.title || row.id || "").trim();
+  const subject =
+    row.kind === "ume_runtime" && subjectRaw ? runtimeTaskSubject(subjectRaw, t) : subjectRaw;
   if (!subject) return kind;
   // Avoid "Kind · Kind · x" if an old backend still prefixed the localized kind.
   if (subject === kind || subject.startsWith(`${kind} · `) || subject.startsWith(`${kind}·`)) {

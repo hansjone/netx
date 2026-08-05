@@ -30,6 +30,7 @@ from .runtime_task_messages import (
     RT_UME_WS_DISABLED_NO_BASE_URL,
     RT_WSS_ACTIVE_SKIP_REST,
 )
+from .oclaw_alarm_forwarder import is_forwarder_enabled
 from .ume_alarm_ws import (
     begin_startup_alarm_sync_gate,
     complete_startup_alarm_sync_gate,

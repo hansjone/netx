@@ -1654,6 +1654,7 @@ const en = {
         detached: "Detached (grace)",
         pending: "Pending",
         paused: "Paused",
+        idle: "Idle",
         error: "Error",
         failed: "Failed",
       },

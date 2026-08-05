@@ -334,7 +334,7 @@ export function UmePage() {
       setKeyAlertNeTypes([]);
       showOk(t("ume.keyAlert.addOk"));
       await queryClient.invalidateQueries({ queryKey: queryKeys.umeKeyAlertMonitorAll });
-      await queryClient.invalidateQueries({ queryKey: queryKeys.integrationsStatus });
+      await queryClient.invalidateQueries({ queryKey: ["opsTasks"] });
     },
     onError: (err) => {
       const msg = String(err);
@@ -349,7 +349,7 @@ export function UmePage() {
     onSuccess: async () => {
       showOk(t("ume.keyAlert.deleteOk"));
       await queryClient.invalidateQueries({ queryKey: queryKeys.umeKeyAlertMonitorAll });
-      await queryClient.invalidateQueries({ queryKey: queryKeys.integrationsStatus });
+      await queryClient.invalidateQueries({ queryKey: ["opsTasks"] });
     },
     onError: (err) => {
       const msg = String(err);

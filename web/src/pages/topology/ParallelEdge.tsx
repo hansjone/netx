@@ -11,7 +11,6 @@ export function ParallelEdge({
   markerEnd,
   label,
   labelStyle,
-  labelBgStyle,
   data,
   selected,
 }: EdgeProps) {
@@ -41,7 +40,6 @@ export function ParallelEdge({
               transform: `translate(-50%, -50%) translate(${labelX}px,${labelY}px)`,
               pointerEvents: "none",
               ...labelStyle,
-              ...(labelBgStyle || {}),
             }}
           >
             {label}

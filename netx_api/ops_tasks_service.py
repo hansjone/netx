@@ -332,13 +332,50 @@ def _ne_connect_items(db: Session, actors: dict[str, str]) -> list[dict[str, Any
 
 def _ume_runtime_items() -> list[dict[str, Any]]:
     try:
-        from .main import _list_runtime_tasks
+        from .ume_support import _list_runtime_tasks
     except Exception:
         return []
+    fwd: dict[str, Any] | None = None
+    try:
+        from .oclaw_alarm_forwarder import forwarder_status
+
+        fwd = forwarder_status()
+    except Exception:
+        fwd = None
+    ws_conn: dict[str, Any] | None = None
+    try:
+        from .ume_alarm_ws import get_ws_connection_status
+
+        ws_conn = get_ws_connection_status()
+    except Exception:
+        ws_conn = None
     items: list[dict[str, Any]] = []
     for row in _list_runtime_tasks():
         task = str(row.get("task") or "")
         status = str(row.get("status") or "unknown")
+        progress = str(row.get("interval_label") or "")
+        detail = str(row.get("last_error") or "")[:240]
+        if task == "oclaw_alarm_forwarder" and isinstance(fwd, dict):
+            bits: list[str] = []
+            if not bool(fwd.get("enabled")):
+                bits.append("disabled")
+            elif bool(fwd.get("paused")):
+                bits.append("paused")
+            elif bool(fwd.get("connected")):
+                bits.append("connected")
+            else:
+                bits.append("disconnected")
+            q = int(fwd.get("queue_size") or 0)
+            if q > 0:
+                bits.append(f"q={q}")
+            pub_ok = int(fwd.get("published_ok") or 0)
+            if pub_ok > 0:
+                bits.append(f"pub={pub_ok}")
+            progress = " · ".join([p for p in (progress, *bits) if p])
+        elif task == "alarms_current_ws_consumer" and isinstance(ws_conn, dict):
+            state = str(ws_conn.get("state") or ws_conn.get("status") or "").strip()
+            if state:
+                progress = " · ".join([p for p in (progress, state) if p])
         # Always show UME background loops so ops can see paused/idle too.
         items.append(
             _item(
@@ -350,8 +387,8 @@ def _ume_runtime_items() -> list[dict[str, Any]]:
                 actor="system",
                 started_at=None,
                 updated_at=None,
-                progress=str(row.get("interval_label") or ""),
-                detail=str(row.get("last_error") or "")[:240],
+                progress=progress,
+                detail=detail,
                 href="/ume",
             )
         )
@@ -437,6 +474,7 @@ def list_ops_tasks(db: Session) -> dict[str, Any]:
             "collecting",
             "pending",
             "paused",
+            "idle",
             "connecting",
             "ready",
             "testing",
@@ -451,9 +489,10 @@ def list_ops_tasks(db: Session) -> dict[str, Any]:
         "connecting": 3,
         "pending": 4,
         "paused": 5,
-        "ready": 6,
-        "detached": 7,
-        "error": 8,
+        "idle": 6,
+        "ready": 7,
+        "detached": 8,
+        "error": 9,
     }
     items.sort(
         key=lambda x: (
