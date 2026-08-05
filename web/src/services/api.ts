@@ -1225,8 +1225,17 @@ export const startLldpDiscover = (body?: {
   trigger_mode?: "manual" | "schedule" | "topology";
 }) => apiPost<TopologyDiscoverJob>("/v1/topology/fabric/discover", body || {});
 
-export const fetchLldpDiscoverJob = (jobId: string) =>
-  apiGet<TopologyDiscoverJob>(`/v1/topology/fabric/discover/${encodeURIComponent(jobId)}`);
+export const fetchLldpDiscoverJob = (
+  jobId: string,
+  params?: { page?: number; pageSize?: number },
+) => {
+  const p = new URLSearchParams();
+  p.set("page", String(Math.max(1, Number(params?.page || 1))));
+  p.set("page_size", String(Math.max(1, Math.min(100, Number(params?.pageSize || 20)))));
+  return apiGet<TopologyDiscoverJob>(
+    `/v1/topology/fabric/discover/${encodeURIComponent(jobId)}?${p.toString()}`,
+  );
+};
 
 export const fetchLldpCollectDashboard = () =>
   apiGet<LldpCollectDashboard>("/v1/topology/lldp-collect/dashboard");

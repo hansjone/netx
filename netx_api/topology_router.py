@@ -224,8 +224,13 @@ def api_fabric_reconcile_links(db: Session = Depends(get_db)) -> dict[str, Any]:
 
 
 @router.get("/fabric/discover/{job_id}")
-def api_fabric_discover_job(job_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
-    return get_discover_job(db, job_id).model_dump()
+def api_fabric_discover_job(
+    job_id: str,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    return get_discover_job(db, job_id, page=page, page_size=page_size).model_dump()
 
 
 # --- Tree / folders ---------------------------------------------------------

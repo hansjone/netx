@@ -24,6 +24,8 @@ from .topology_common import (
     ROOT_FOLDER_NAME,
     VIEW_GRAPH_EDGE_HARD_CAP,
     VIEW_GRAPH_NODE_HARD_CAP,
+    _EDGE_STATUS_MISSING,
+    _EDGE_STATUS_MISSING_COMPAT,
     _LEGACY_UNASSIGNED_NAME,
     _normalize_edge_status,
     _utcnow,
@@ -108,6 +110,39 @@ def _managed_source_for_node(db: Session, n: TopoFabricNode) -> str:
     return ""
 
 
+def _batch_ne_lookups(
+    db: Session, fabric_nodes: dict[str, TopoFabricNode]
+) -> tuple[dict[str, ManagedNE], dict[str, UmeInventoryNE]]:
+    mids = sorted(
+        {
+            str(fn.managed_ne_id or "").strip()
+            for fn in fabric_nodes.values()
+            if str(fn.managed_ne_id or "").strip()
+        }
+    )
+    uids = sorted(
+        {
+            str(fn.ume_ne_id or "").strip()
+            for fn in fabric_nodes.values()
+            if str(fn.ume_ne_id or "").strip()
+        }
+    )
+    managed = (
+        {str(n.id): n for n in db.query(ManagedNE).filter(ManagedNE.id.in_(mids)).all()}
+        if mids
+        else {}
+    )
+    ume = (
+        {
+            str(u.ne_id): u
+            for u in db.query(UmeInventoryNE).filter(UmeInventoryNE.ne_id.in_(uids)).all()
+        }
+        if uids
+        else {}
+    )
+    return managed, ume
+
+
 def get_view_graph(db: Session, view_id: str) -> TopologyViewGraphOut:
     view = _get_view_or_404(db, view_id)
     vnodes = db.query(TopoViewNode).filter(TopoViewNode.view_id == view.id).all()
@@ -121,6 +156,7 @@ def get_view_graph(db: Session, view_id: str) -> TopologyViewGraphOut:
     fabric_nodes = {
         n.id: n for n in db.query(TopoFabricNode).filter(TopoFabricNode.id.in_(fids)).all()
     } if fids else {}
+    managed_by_id, ume_by_id = _batch_ne_lookups(db, fabric_nodes)
     filt = dict(view.filter or {})
     layer = str(filt.get("layer") or "physical").strip() or "physical"
     status = str(filt.get("status") or "").strip().lower()
@@ -130,6 +166,17 @@ def get_view_graph(db: Session, view_id: str) -> TopologyViewGraphOut:
         label = (vn.label or "").strip()
         if not label and fn is not None:
             label = (fn.name or fn.ip or vn.fabric_node_id)[:256]
+        connect_status = ""
+        managed_source = ""
+        if fn is not None:
+            mid = str(fn.managed_ne_id or "").strip()
+            uid = str(fn.ume_ne_id or "").strip()
+            if mid and mid in managed_by_id:
+                mne = managed_by_id[mid]
+                connect_status = mne.connect_status or ""
+                managed_source = str(mne.source or "").strip()
+            elif uid and uid in ume_by_id:
+                connect_status = ume_by_id[uid].connection_status or ""
         nodes_out.append(
             ViewNodeOut(
                 fabric_node_id=vn.fabric_node_id,
@@ -143,8 +190,8 @@ def get_view_graph(db: Session, view_id: str) -> TopologyViewGraphOut:
                 ip=(fn.ip if fn else "") or "",
                 vendor=(fn.vendor if fn else "") or "",
                 device_type=(fn.device_type if fn else "") or "",
-                connect_status=_connect_status_for_node(db, fn) if fn else "",
-                managed_source=_managed_source_for_node(db, fn) if fn else "",
+                connect_status=connect_status,
+                managed_source=managed_source,
             )
         )
     edges_out: list[ViewEdgeOut] = []
@@ -925,7 +972,10 @@ def project_fabric_neighbors_to_view(
     view = _get_view_or_404(db, view_id)
     mem = _membership_for_view(view)
     if bool(mem.get("frozen")):
-        return get_view_graph(db, view.id)
+        g = get_view_graph(db, view.id)
+        g.truncated = True
+        g.truncate_reason = "membership_frozen"
+        return g
 
     max_nodes = int(mem.get("max_nodes") or 300)
     hops = int(mem.get("expand_hops") or 1)
@@ -934,14 +984,34 @@ def project_fabric_neighbors_to_view(
     req = body or ViewProjectNeighborsRequest()
 
     vnodes = db.query(TopoViewNode).filter(TopoViewNode.view_id == view.id).all()
+    fids_on_view = [vn.fabric_node_id for vn in vnodes]
+    fabric_on_view = (
+        {
+            n.id: n
+            for n in db.query(TopoFabricNode).filter(TopoFabricNode.id.in_(fids_on_view)).all()
+        }
+        if fids_on_view
+        else {}
+    )
     # Drop placements pointing at missing fabric rows only (keep LLDP placeholders).
-    orphan_vns = [vn for vn in vnodes if db.get(TopoFabricNode, vn.fabric_node_id) is None]
+    orphan_vns = [vn for vn in vnodes if vn.fabric_node_id not in fabric_on_view]
     if orphan_vns:
         for vn in orphan_vns:
             db.delete(vn)
         view.updated_at = _utcnow()
         db.commit()
         vnodes = db.query(TopoViewNode).filter(TopoViewNode.view_id == view.id).all()
+        fids_on_view = [vn.fabric_node_id for vn in vnodes]
+        fabric_on_view = (
+            {
+                n.id: n
+                for n in db.query(TopoFabricNode)
+                .filter(TopoFabricNode.id.in_(fids_on_view))
+                .all()
+            }
+            if fids_on_view
+            else {}
+        )
 
     existing = {vn.fabric_node_id for vn in vnodes}
     if not existing:
@@ -955,13 +1025,12 @@ def project_fabric_neighbors_to_view(
     seed_ids: set[str] = {
         str(x).strip() for x in (req.seed_fabric_node_ids or []) if str(x).strip()
     }
-    for mid in req.managed_ne_ids or []:
-        mid_s = str(mid or "").strip()
-        if not mid_s:
-            continue
-        for fid in existing:
-            fn = db.get(TopoFabricNode, fid)
-            if fn is not None and str(fn.managed_ne_id or "").strip() == mid_s:
+    want_mids = {
+        str(mid or "").strip() for mid in (req.managed_ne_ids or []) if str(mid or "").strip()
+    }
+    if want_mids:
+        for fid, fn in fabric_on_view.items():
+            if str(fn.managed_ne_id or "").strip() in want_mids:
                 seed_ids.add(fid)
     if seed_ids:
         seed_ids &= existing
@@ -971,22 +1040,30 @@ def project_fabric_neighbors_to_view(
         seed_ids = set(existing)
 
     peer_ids = _neighbor_ids(db, seed_ids=seed_ids, layer=layer, hops=hops)
-    to_add: list[str] = []
+    peer_rows = (
+        {
+            n.id: n
+            for n in db.query(TopoFabricNode).filter(TopoFabricNode.id.in_(list(peer_ids))).all()
+        }
+        if peer_ids
+        else {}
+    )
+    eligible: list[str] = []
     for peer in sorted(peer_ids):
         if peer in existing:
             continue
-        fn = db.get(TopoFabricNode, peer)
+        fn = peer_rows.get(peer)
         if fn is None or not _is_inventory_node(fn):
             continue
         if _fabric_match_score(db, fn) < 2:
             continue
         if not _fabric_in_hard_scope(db, fn, mem):
             continue
-        to_add.append(peer)
-        if len(existing) + len(to_add) >= max_nodes:
-            break
+        eligible.append(peer)
 
-    truncated = len(peer_ids) > len(to_add)
+    room = max(0, max_nodes - len(existing))
+    to_add = eligible[:room]
+    truncated = len(eligible) > len(to_add)
     if to_add:
         _place_fabric_ids_on_view(
             db, view, to_add, existing=existing, near_fabric_ids=seed_ids

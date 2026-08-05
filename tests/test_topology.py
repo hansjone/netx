@@ -705,6 +705,14 @@ class FabricTopologyTests(unittest.TestCase):
         self.assertIn(nodes[2].id, ids2)
         self.assertNotIn(nodes[3].id, ids2)
 
+        # Peers already on canvas must not raise a false truncated banner.
+        g3 = svc.project_fabric_neighbors_to_view(
+            self.db,
+            view2.id,
+            ViewProjectNeighborsRequest(seed_fabric_node_ids=[nodes[0].id]),
+        )
+        self.assertFalse(g3.truncated)
+
         pop = svc.populate_view(
             self.db,
             view.id,

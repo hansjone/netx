@@ -1413,9 +1413,13 @@ const en = {
     edgeDeleted: "Deleted {{count}} link(s)",
     discoverCancelled: "Discovery cancelled",
     truncatedMembership: "Membership cap reached; some neighbors were not placed. Use classify/slices or a new map.",
+    truncatedFrozen: "This map membership is frozen; neighbors cannot be projected. Unfreeze in classify/slices or create a new map.",
     truncatedNodes: "Too many view nodes; display truncated. Narrow membership or create another map.",
     truncatedEdges: "Too many edges; display truncated. Filter status or create another map.",
     truncatedGeneric: "Graph data truncated. Narrow scope or create another map.",
+    deleteSelectionConfirm:
+      "Remove {{nodes}} NE(s) from this map and delete {{edges}} Fabric link(s)?",
+    selectionDeleted: "Removed {{nodes}} NE(s) and deleted {{edges}} link(s)",
     newMap: "New",
     newMapName: "New topology",
     rename: "Rename",

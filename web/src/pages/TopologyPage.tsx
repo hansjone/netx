@@ -1580,7 +1580,7 @@ export function TopologyPage() {
             cancelled = true;
             break;
           }
-          job = await fetchLldpDiscoverJob(jobStart.id);
+          job = await fetchLldpDiscoverJob(jobStart.id, { page: 1, pageSize: 5 });
           setDiscoverProgress((p) => ({
             ...p,
             index: job.done,
@@ -1619,12 +1619,21 @@ export function TopologyPage() {
         if (job.status === "failed") {
           throw new Error(job.error || "discover_failed");
         }
+        // Final page: pull a fuller item slice for the summary panel.
+        try {
+          job = await fetchLldpDiscoverJob(jobStart.id, { page: 1, pageSize: 100 });
+        } catch {
+          /* keep last polled job */
+        }
         const projected = discoverProjectNeighbors
           ? await projectTopologyNeighbors(mapId, {
               seed_fabric_node_ids: scoped.map((n) => n.id),
             })
           : await fetchTopologyGraph(mapId);
         queryClient.setQueryData(queryKeys.topologyGraph(mapId), projected);
+        if (discoverProjectNeighbors && projected.truncate_reason === "membership_frozen") {
+          showError(t("topology.truncatedFrozen"));
+        }
         appliedMapIdRef.current = mapId;
         let { rfNodes, rfEdges } = graphToFlow(projected.nodes, projected.edges, edgeDefaults);
         // Keep existing node positions when we did not auto-layout.
@@ -2021,10 +2030,15 @@ export function TopologyPage() {
   }, [setNodes, setEdges]);
 
   const persistDeleteEdges = useCallback(
-    async (edgeIds: string[], opts?: { confirmKey?: string; okKey?: string }) => {
+    async (
+      edgeIds: string[],
+      opts?: { confirmKey?: string; okKey?: string; skipConfirm?: boolean },
+    ) => {
       if (!mapId || !edgeIds.length) return false;
-      const confirmMsg = t(opts?.confirmKey || "topology.deleteEdgeConfirm");
-      if (!window.confirm(confirmMsg)) return false;
+      if (!opts?.skipConfirm) {
+        const confirmMsg = t(opts?.confirmKey || "topology.deleteEdgeConfirm");
+        if (!window.confirm(confirmMsg)) return false;
+      }
       pushHistory();
       try {
         await deleteFabricEdges(edgeIds);
@@ -2061,10 +2075,44 @@ export function TopologyPage() {
       if (e.selected) edgeIds.add(e.id);
     }
     if (!nodeIds.length && !edgeIds.size) return;
+
+    if (nodeIds.length && edgeIds.size) {
+      const msg = t("topology.deleteSelectionConfirm")
+        .replace("{{nodes}}", String(nodeIds.length))
+        .replace("{{edges}}", String(edgeIds.size));
+      if (!window.confirm(msg)) return;
+      pushHistory();
+      try {
+        if (dirtyRef.current) {
+          await patchTopologyPositions(mapId, flowToPositions(nodes));
+          clearDirty();
+        }
+        await deleteFabricEdges([...edgeIds]);
+        const localPos = new Map(nodes.map((n) => [n.id, n.position]));
+        const graph = await removeTopologyViewNodes(mapId, nodeIds);
+        queryClient.setQueryData(queryKeys.topologyGraph(mapId), graph);
+        appliedMapIdRef.current = mapId;
+        historyLockRef.current = true;
+        applyViewGraph(graph, edgeDefaults, setNodes, setEdges, localPos);
+        historyLockRef.current = false;
+        clearDirty();
+        setSelectedEdgeId(null);
+        showOk(
+          t("topology.selectionDeleted")
+            .replace("{{nodes}}", String(nodeIds.length))
+            .replace("{{edges}}", String(edgeIds.size)),
+        );
+      } catch (err) {
+        showError(String(err));
+      }
+      return;
+    }
+
     if (!nodeIds.length && edgeIds.size) {
       await persistDeleteEdges([...edgeIds]);
       return;
     }
+
     pushHistory();
     try {
       if (dirtyRef.current) {
@@ -2095,7 +2143,9 @@ export function TopologyPage() {
     edgeDefaults,
     clearDirty,
     showError,
+    showOk,
     persistDeleteEdges,
+    t,
   ]);
 
   const removeEdgeById = (edgeId: string) => {
@@ -2135,6 +2185,10 @@ export function TopologyPage() {
       applyViewGraph(projected, edgeDefaults, setNodes, setEdges, localPos);
       historyLockRef.current = false;
       clearDirty();
+      if (projected.truncate_reason === "membership_frozen") {
+        showError(t("topology.truncatedFrozen"));
+        return;
+      }
       const added = Math.max(0, projected.nodes.length - before);
       showOk(t("topology.projectedNeighbors").replace("{{count}}", String(added)));
       if (added > 0) {
@@ -2668,6 +2722,7 @@ export function TopologyPage() {
   const truncateBannerText = useMemo(() => {
     if (!graphTruncated) return "";
     if (truncateReason === "membership_cap") return t("topology.truncatedMembership");
+    if (truncateReason === "membership_frozen") return t("topology.truncatedFrozen");
     if (truncateReason === "too_many_view_nodes") return t("topology.truncatedNodes");
     if (truncateReason === "too_many_edges") return t("topology.truncatedEdges");
     return t("topology.truncatedGeneric");
