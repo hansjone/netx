@@ -6877,7 +6877,7 @@ pre {
   min-height: 0;
   background: var(--topo-canvas-bg, #0f172a);
   --xy-edge-label-background-color: transparent;
-  --xy-edge-label-color: #e2e8f0;
+  --xy-edge-label-color: var(--topo-edge-label-color, #e2e8f0);
 }
 
 .topo-canvas:fullscreen,
@@ -7023,50 +7023,39 @@ pre {
   box-shadow: none;
   font-size: 11px;
   text-align: center;
-  /* Base asset /topo/ne-router.png is navy-blue; tints approximate brand hues. */
-  --topo-icon-filter: none;
+  --topo-icon-color: var(--topo-vendor-gray, #94a3b8);
 }
 
-/* Cisco — cyan / light blue (#049FD9) */
 .topo-node--cisco {
-  --topo-icon-filter: hue-rotate(-18deg) saturate(1.25) brightness(1.08);
+  --topo-icon-color: var(--topo-vendor-cisco, #049fd9);
 }
-/* Huawei — red (#CF0A2C); was incorrectly greenish at 155deg */
 .topo-node--huawei {
-  --topo-icon-filter: hue-rotate(128deg) saturate(1.85) brightness(1.02);
+  --topo-icon-color: var(--topo-vendor-huawei, #cf0a2c);
 }
-/* ZTE — keep navy-blue base (#0091DA family) */
 .topo-node--zte {
-  --topo-icon-filter: saturate(1.15) brightness(1.02);
+  --topo-icon-color: var(--topo-vendor-zte, #0091da);
 }
-/* Juniper — green (#84B135) */
 .topo-node--juniper {
-  --topo-icon-filter: hue-rotate(78deg) saturate(1.35) brightness(1.05);
+  --topo-icon-color: var(--topo-vendor-juniper, #84b135);
 }
-/* Nokia / Alcatel — deep blue-purple (#124191) */
 .topo-node--nokia {
-  --topo-icon-filter: hue-rotate(-35deg) saturate(1.2) brightness(0.92);
+  --topo-icon-color: var(--topo-vendor-nokia, #124191);
 }
-/* Ericsson — dark navy */
 .topo-node--ericsson {
-  --topo-icon-filter: hue-rotate(-8deg) saturate(1.1) brightness(0.82);
+  --topo-icon-color: var(--topo-vendor-ericsson, #1e3a5f);
 }
-/* H3C — green (#7AC143) */
 .topo-node--h3c {
-  --topo-icon-filter: hue-rotate(88deg) saturate(1.45) brightness(1.06);
+  --topo-icon-color: var(--topo-vendor-h3c, #7ac143);
 }
-/* Ruijie — purple */
 .topo-node--ruijie {
-  --topo-icon-filter: hue-rotate(45deg) saturate(1.4) brightness(1.0);
+  --topo-icon-color: var(--topo-vendor-ruijie, #7c3aed);
 }
-/* MikroTik — red-orange */
 .topo-node--mikrotik {
-  --topo-icon-filter: hue-rotate(145deg) saturate(1.7) brightness(1.05);
+  --topo-icon-color: var(--topo-vendor-mikrotik, #ea580c);
 }
-/* Unmanaged / unknown vendor */
 .topo-node--gray,
 .topo-node--other {
-  --topo-icon-filter: grayscale(1) brightness(0.92) contrast(0.95);
+  --topo-icon-color: var(--topo-vendor-gray, #94a3b8);
 }
 
 .topo-node__glyph {
@@ -7125,16 +7114,15 @@ pre {
 
 .topo-node.is-selected .topo-node__icon {
   transform: none;
-  filter: var(--topo-icon-filter, none);
 }
 
 .topo-node.is-selected .topo-node__caption {
-  color: #f8fafc;
   font-weight: 700;
 }
 
 .topo-node.is-selected .topo-node__caption-name {
-  color: #93c5fd;
+  color: var(--topo-label-color, #f1f5f9);
+  filter: brightness(1.12);
 }
 
 /* Selected link: light highlight only (do not alter geometry / arrows). */
@@ -7148,11 +7136,18 @@ pre {
   width: 56px;
   height: 56px;
   margin: 0;
-  object-fit: contain;
   pointer-events: none;
   user-select: none;
-  filter: var(--topo-icon-filter, none);
-  transition: transform 0.12s ease, filter 0.12s ease;
+  background-color: var(--topo-icon-color, #3b82f6);
+  -webkit-mask-image: url(/topo/ne-router.png);
+  mask-image: url(/topo/ne-router.png);
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  transition: transform 0.12s ease, background-color 0.12s ease;
 }
 
 .topo-node__caption {
@@ -7161,7 +7156,7 @@ pre {
   align-items: center;
   gap: 1px;
   margin-top: 3px;
-  color: #e2e8f0;
+  color: var(--topo-label-color, #f1f5f9);
   line-height: 1.2;
   max-width: 160px;
   pointer-events: none;
@@ -7175,7 +7170,7 @@ pre {
   max-width: 100%;
   font-size: 11px;
   font-weight: 700;
-  color: #f1f5f9;
+  color: var(--topo-label-color, #f1f5f9);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -7185,7 +7180,7 @@ pre {
   display: block;
   max-width: 100%;
   font-size: 10px;
-  color: #94a3b8;
+  color: color-mix(in srgb, var(--topo-label-color, #f1f5f9) 55%, #64748b);
   font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
   white-space: nowrap;
   overflow: hidden;
@@ -7198,7 +7193,7 @@ pre {
 }
 
 .topo-canvas .react-flow__edge-text {
-  fill: #e2e8f0;
+  fill: var(--topo-edge-label-color, #e2e8f0);
   font-size: 11px;
   paint-order: stroke;
   stroke: rgba(15, 23, 42, 0.85);
@@ -7207,7 +7202,7 @@ pre {
 
 .topo-edge-label {
   font-size: 11px;
-  color: #e2e8f0;
+  color: var(--topo-edge-label-color, #e2e8f0);
   background: transparent !important;
   border: 0 !important;
   border-radius: 0;
@@ -7220,8 +7215,9 @@ pre {
 }
 
 .topo-edge-label.is-selected {
-  color: #93c5fd;
+  color: var(--topo-edge-label-color, #e2e8f0);
   font-weight: 600;
+  filter: brightness(1.15);
 }
 
 .topo-ctx__member-list {

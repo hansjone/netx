@@ -7,6 +7,7 @@
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
 } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -370,17 +371,9 @@ function nodeMatchesQuery(n: Node<NeNodeData>, query: string): boolean {
   return tokens.every((tok) => bits.some((b) => fuzzyIncludes(String(b || ""), tok)));
 }
 
-/** Asset: /topo/ne-router.png (navy blue base); vendors tint via CSS filters. */
+/** Silhouette via CSS mask; fill color comes from --topo-icon-color (vendor palette). */
 function RouterIcon() {
-  return (
-    <img
-      className="topo-node__icon"
-      src="/topo/ne-router.png"
-      alt=""
-      draggable={false}
-      aria-hidden="true"
-    />
-  );
+  return <span className="topo-node__icon" aria-hidden="true" />;
 }
 
 /** Fixed box for onlyRenderVisibleElements (xyflow skips off-screen mount when sized + handles set). */
@@ -455,6 +448,46 @@ const CANVAS_BG_KEY = "netx.topology.canvasBg";
 const DEFAULT_CANVAS_BG = "#0f172a";
 /** Previous light default — migrate so existing sessions pick up dark canvas. */
 const LEGACY_CANVAS_BG = "#dbeafe";
+const LABEL_COLORS_KEY = "netx.topology.labelColors";
+const VENDOR_COLORS_KEY = "netx.topology.vendorColors";
+
+const VENDOR_TONE_KEYS = [
+  "cisco",
+  "huawei",
+  "zte",
+  "juniper",
+  "nokia",
+  "ericsson",
+  "h3c",
+  "ruijie",
+  "mikrotik",
+  "gray",
+] as const;
+type VendorToneKey = (typeof VENDOR_TONE_KEYS)[number];
+type VendorColors = Record<VendorToneKey, string>;
+type LabelColors = { name: string; edgeLabel: string };
+
+const DEFAULT_LABEL_COLORS: LabelColors = {
+  name: "#f1f5f9",
+  edgeLabel: "#e2e8f0",
+};
+
+const DEFAULT_VENDOR_COLORS: VendorColors = {
+  cisco: "#049fd9",
+  huawei: "#cf0a2c",
+  zte: "#0091da",
+  juniper: "#84b135",
+  nokia: "#124191",
+  ericsson: "#1e3a5f",
+  h3c: "#7ac143",
+  ruijie: "#7c3aed",
+  mikrotik: "#ea580c",
+  gray: "#94a3b8",
+};
+
+function isHexColor(value: string): boolean {
+  return /^#[0-9a-fA-F]{6}$/.test(value);
+}
 
 function loadCanvasBg(): string {
   try {
@@ -463,7 +496,7 @@ function loadCanvasBg(): string {
       persistCanvasBg(DEFAULT_CANVAS_BG);
       return DEFAULT_CANVAS_BG;
     }
-    if (/^#[0-9a-fA-F]{6}$/i.test(raw)) return raw;
+    if (isHexColor(raw)) return raw;
   } catch {
     /* ignore */
   }
@@ -473,6 +506,54 @@ function loadCanvasBg(): string {
 function persistCanvasBg(value: string) {
   try {
     localStorage.setItem(CANVAS_BG_KEY, value);
+  } catch {
+    /* ignore */
+  }
+}
+
+function loadLabelColors(): LabelColors {
+  try {
+    const raw = localStorage.getItem(LABEL_COLORS_KEY);
+    if (!raw) return { ...DEFAULT_LABEL_COLORS };
+    const parsed = JSON.parse(raw) as Partial<LabelColors>;
+    return {
+      name: isHexColor(String(parsed.name || "")) ? String(parsed.name).toLowerCase() : DEFAULT_LABEL_COLORS.name,
+      edgeLabel: isHexColor(String(parsed.edgeLabel || ""))
+        ? String(parsed.edgeLabel).toLowerCase()
+        : DEFAULT_LABEL_COLORS.edgeLabel,
+    };
+  } catch {
+    return { ...DEFAULT_LABEL_COLORS };
+  }
+}
+
+function persistLabelColors(value: LabelColors) {
+  try {
+    localStorage.setItem(LABEL_COLORS_KEY, JSON.stringify(value));
+  } catch {
+    /* ignore */
+  }
+}
+
+function loadVendorColors(): VendorColors {
+  try {
+    const raw = localStorage.getItem(VENDOR_COLORS_KEY);
+    if (!raw) return { ...DEFAULT_VENDOR_COLORS };
+    const parsed = JSON.parse(raw) as Partial<VendorColors>;
+    const out = { ...DEFAULT_VENDOR_COLORS };
+    for (const key of VENDOR_TONE_KEYS) {
+      const c = String(parsed?.[key] || "").trim().toLowerCase();
+      if (isHexColor(c)) out[key] = c;
+    }
+    return out;
+  } catch {
+    return { ...DEFAULT_VENDOR_COLORS };
+  }
+}
+
+function persistVendorColors(value: VendorColors) {
+  try {
+    localStorage.setItem(VENDOR_COLORS_KEY, JSON.stringify(value));
   } catch {
     /* ignore */
   }
@@ -741,6 +822,8 @@ export function TopologyPage() {
   const [edgeFlow, setEdgeFlow] = useState(false);
   const [edgeDefaults, setEdgeDefaults] = useState<EdgeDefaults>(() => loadEdgeDefaults());
   const [canvasBg, setCanvasBg] = useState(loadCanvasBg);
+  const [labelColors, setLabelColors] = useState<LabelColors>(() => loadLabelColors());
+  const [vendorColors, setVendorColors] = useState<VendorColors>(() => loadVendorColors());
   const [toolMode, setToolMode] = useState<ToolMode>("select");
   const [snapToGrid, setSnapToGrid] = useState(true);
   const [autoLayoutAfterDiscover, setAutoLayoutAfterDiscover] = useState(loadAutoLayoutAfterDiscover);
@@ -2900,15 +2983,121 @@ export function TopologyPage() {
                           const raw = e.target.value.trim();
                           if (!/^#[0-9a-fA-F]{0,6}$/.test(raw)) return;
                           setCanvasBg(raw);
-                          if (/^#[0-9a-fA-F]{6}$/.test(raw)) persistCanvasBg(raw.toLowerCase());
+                          if (isHexColor(raw)) persistCanvasBg(raw.toLowerCase());
                         }}
                         onBlur={() => {
-                          if (!/^#[0-9a-fA-F]{6}$/.test(canvasBg)) {
+                          if (!isHexColor(canvasBg)) {
                             setCanvasBg(loadCanvasBg());
                           }
                         }}
                       />
                     </div>
+                  </div>
+                  <div className="topo-display-defaults topo-display-defaults--canvas-bg">
+                    <div className="topo-display-defaults__head">
+                      <strong>{t("topology.textColors")}</strong>
+                      <button
+                        type="button"
+                        className="btn btn--sm btn--ghost"
+                        onClick={() => {
+                          setLabelColors({ ...DEFAULT_LABEL_COLORS });
+                          persistLabelColors({ ...DEFAULT_LABEL_COLORS });
+                        }}
+                      >
+                        {t("topology.textColorsReset")}
+                      </button>
+                    </div>
+                    {(
+                      [
+                        ["name", t("topology.labelColor")],
+                        ["edgeLabel", t("topology.edgeLabelColor")],
+                      ] as const
+                    ).map(([key, label]) => (
+                      <div key={key} className="topo-display-defaults__row">
+                        <span className="topo-display-defaults__name">{label}</span>
+                        <input
+                          type="color"
+                          value={labelColors[key]}
+                          title={label}
+                          onChange={(e) => {
+                            const next = { ...labelColors, [key]: e.target.value.toLowerCase() };
+                            setLabelColors(next);
+                            persistLabelColors(next);
+                          }}
+                        />
+                        <input
+                          className="topo-toolbar__select topo-canvas-bg-hex"
+                          value={labelColors[key]}
+                          spellCheck={false}
+                          aria-label={label}
+                          onChange={(e) => {
+                            const raw = e.target.value.trim();
+                            if (!/^#[0-9a-fA-F]{0,6}$/.test(raw)) return;
+                            const next = { ...labelColors, [key]: raw };
+                            setLabelColors(next);
+                            if (isHexColor(raw)) persistLabelColors({ ...next, [key]: raw.toLowerCase() });
+                          }}
+                          onBlur={() => {
+                            if (!isHexColor(labelColors[key])) {
+                              setLabelColors(loadLabelColors());
+                            }
+                          }}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                  <div className="topo-display-defaults topo-display-defaults--canvas-bg">
+                    <div className="topo-display-defaults__head">
+                      <strong>{t("topology.vendorColors")}</strong>
+                      <button
+                        type="button"
+                        className="btn btn--sm btn--ghost"
+                        onClick={() => {
+                          setVendorColors({ ...DEFAULT_VENDOR_COLORS });
+                          persistVendorColors({ ...DEFAULT_VENDOR_COLORS });
+                        }}
+                      >
+                        {t("topology.vendorColorsReset")}
+                      </button>
+                    </div>
+                    {VENDOR_TONE_KEYS.map((key) => {
+                      const label = t(`topology.vendorTone.${key}`);
+                      return (
+                        <div key={key} className="topo-display-defaults__row">
+                          <span className="topo-display-defaults__name">{label}</span>
+                          <input
+                            type="color"
+                            value={vendorColors[key]}
+                            title={label}
+                            onChange={(e) => {
+                              const next = { ...vendorColors, [key]: e.target.value.toLowerCase() };
+                              setVendorColors(next);
+                              persistVendorColors(next);
+                            }}
+                          />
+                          <input
+                            className="topo-toolbar__select topo-canvas-bg-hex"
+                            value={vendorColors[key]}
+                            spellCheck={false}
+                            aria-label={label}
+                            onChange={(e) => {
+                              const raw = e.target.value.trim();
+                              if (!/^#[0-9a-fA-F]{0,6}$/.test(raw)) return;
+                              const next = { ...vendorColors, [key]: raw };
+                              setVendorColors(next);
+                              if (isHexColor(raw)) {
+                                persistVendorColors({ ...next, [key]: raw.toLowerCase() });
+                              }
+                            }}
+                            onBlur={() => {
+                              if (!isHexColor(vendorColors[key])) {
+                                setVendorColors(loadVendorColors());
+                              }
+                            }}
+                          />
+                        </div>
+                      );
+                    })}
                   </div>
                   <div className="topo-display-defaults">
                     <div className="topo-display-defaults__head">
@@ -3327,7 +3516,23 @@ export function TopologyPage() {
           <div
             className={`topo-canvas${fullscreen ? " is-fullscreen" : ""}${toolMode === "pan" ? " is-pan-mode" : ""}`}
             ref={canvasRef}
-            style={{ ["--topo-canvas-bg" as string]: canvasBg }}
+            style={
+              {
+                "--topo-canvas-bg": canvasBg,
+                "--topo-label-color": labelColors.name,
+                "--topo-edge-label-color": labelColors.edgeLabel,
+                "--topo-vendor-cisco": vendorColors.cisco,
+                "--topo-vendor-huawei": vendorColors.huawei,
+                "--topo-vendor-zte": vendorColors.zte,
+                "--topo-vendor-juniper": vendorColors.juniper,
+                "--topo-vendor-nokia": vendorColors.nokia,
+                "--topo-vendor-ericsson": vendorColors.ericsson,
+                "--topo-vendor-h3c": vendorColors.h3c,
+                "--topo-vendor-ruijie": vendorColors.ruijie,
+                "--topo-vendor-mikrotik": vendorColors.mikrotik,
+                "--topo-vendor-gray": vendorColors.gray,
+              } as CSSProperties
+            }
             onDragOver={onCanvasDragOver}
             onDrop={onCanvasDrop}
           >
