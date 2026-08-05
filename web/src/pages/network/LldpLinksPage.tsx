@@ -13,6 +13,7 @@ import {
   updateLldpCollectPolicy,
 } from "../../services/api";
 import { queryKeys } from "../../constants/queryKeys";
+import { HelpHint } from "../../components/HelpHint";
 import { useI18n } from "../../i18n";
 import { useToast } from "../../hooks/useToast";
 import type { CliTargetItem, ConfigSyncTargetRef, TopologyDiscoverJobItem } from "../../types";
@@ -328,7 +329,10 @@ export function LldpLinksPage() {
       </div>
 
       <div className="panel" style={{ marginBottom: 16 }}>
-        <h3>{t("lldpLinks.policyTitle")}</h3>
+        <h3 style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+          {t("lldpLinks.policyTitle")}
+          <HelpHint text={t("lldpLinks.autoAddUnmatchedHint")} ariaLabel={t("common.help")} />
+        </h3>
         <div className="config-sync-policy-row">
           <label className="config-sync-policy-check">
             <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
@@ -338,9 +342,6 @@ export function LldpLinksPage() {
             <input type="checkbox" checked={autoAdd} onChange={(e) => setAutoAdd(e.target.checked)} />
             <span>{t("lldpLinks.autoAddUnmatched")}</span>
           </label>
-          <p className="muted" style={{ margin: "0 0 8px", gridColumn: "1 / -1" }}>
-            {t("lldpLinks.autoAddUnmatchedHint")}
-          </p>
           <label className="config-sync-policy-field">
             <span>{t("lldpLinks.interval")}</span>
             <input
