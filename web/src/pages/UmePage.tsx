@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   apiPost,
@@ -123,12 +123,12 @@ export function UmePage() {
       }),
     staleTime: 3000,
     refetchInterval: 5000,
-    enabled: keyAlertPanelOpen,
   });
   const keyAlertNeTypesQuery = useQuery({
     queryKey: queryKeys.umeInventoryNeTypes,
     queryFn: () => fetchUmeInventoryNeTypes(),
     staleTime: 60_000,
+    enabled: keyAlertPanelOpen || Boolean(keyAlertEditRule),
   });
 
   const confirmClearLocalSubscription = (hint?: string) =>
@@ -405,6 +405,10 @@ export function UmePage() {
   const syncPages = pageCount(syncTotal, syncPageSize);
   const neTotal = Number(neQuery.data?.total || 0);
   const nePages = pageCount(neTotal, nePageSize);
+  const expandedNe = useMemo(
+    () => (neQuery.data?.items || []).find((x) => x.ne_id === expandedNeId) || null,
+    [neQuery.data, expandedNeId],
+  );
 
   const keyAlertForwarder = keyAlertMonitorQuery.data?.forwarder;
   const keyAlertRules = keyAlertMonitorQuery.data?.rules || [];
@@ -773,32 +777,33 @@ export function UmePage() {
           </div>
         </article>
 
-        <article className="panel">
+      </section>
+
+      <section className="ume-entry-grid">
+        <article className="panel ume-entry">
           <div className="panel__toolbar">
             <h2 className="card-title-with-hint">
               {t("ume.cli.title")}
               <HelpHint text={t("ume.cli.hint")} ariaLabel={t("common.help")} />
             </h2>
-            <button type="button" className="link-btn" onClick={() => setCliPanelOpen((x) => !x)}>
-              {cliPanelOpen ? t("ume.cli.hidePanel") : t("ume.cli.showPanel")}
+            <button type="button" className="btn btn--sm" onClick={() => setCliPanelOpen(true)}>
+              {t("ume.cli.showPanel")}
             </button>
           </div>
-          {cliPanelOpen ? <UmeCliConnectPanel embedded enabled /> : null}
+          <p className="ume-entry__summary muted">{t("ume.cli.hint")}</p>
         </article>
 
-        <article className="panel">
+        <article className="panel ume-entry">
           <div className="panel__toolbar">
             <h2 className="card-title-with-hint">
               {t("ume.keyAlert.title")}
               <HelpHint text={t("ume.keyAlert.help")} ariaLabel={t("common.help")} />
             </h2>
-            <button type="button" className="link-btn" onClick={() => setKeyAlertPanelOpen((x) => !x)}>
-              {keyAlertPanelOpen ? t("ume.keyAlert.hidePanel") : t("ume.keyAlert.showPanel")}
+            <button type="button" className="btn btn--sm" onClick={() => setKeyAlertPanelOpen(true)}>
+              {t("ume.keyAlert.showPanel")}
             </button>
           </div>
-          {keyAlertPanelOpen ? (
-          <>
-          <div className="actions-row actions-row--inline">
+          <div className="ume-entry__pills actions-row actions-row--inline">
             <span className={`conn-pill conn-pill--${oclawWsPill}`}>
               {t("ume.keyAlert.ws")}:{" "}
               {!keyAlertForwarder?.enabled
@@ -815,126 +820,220 @@ export function UmePage() {
                   {t("ume.keyAlert.publishedOk")}: {Number(keyAlertForwarder.published_ok || 0)}
                 </span>
                 <span className="conn-pill">
-                  {t("ume.keyAlert.publishedFail")}: {Number(keyAlertForwarder.published_fail || 0)}
-                </span>
-                <span className="conn-pill">
                   {t("ume.keyAlert.queue")}: {Number(keyAlertForwarder.queue_size || 0)}
                 </span>
               </>
             ) : null}
           </div>
-          <div style={{ marginTop: 10 }}>
-            <div
-              className="actions-row actions-row--inline"
-              style={{ flexWrap: "wrap", alignItems: "center", gap: 8 }}
+        </article>
+
+        <article className="panel ume-entry">
+          <div className="panel__toolbar">
+            <h2>{t("ume.syncStatus.title")}</h2>
+            <button type="button" className="btn btn--sm" onClick={() => setSyncStatusPanelOpen(true)}>
+              {t("ume.syncStatus.showPanel")}
+            </button>
+          </div>
+          <p className="ume-entry__summary muted">
+            {syncTotal
+              ? t("ume.syncStatus.summary", {
+                  total: String(syncTotal),
+                  running: String(runningTasks.length),
+                })
+              : t("ume.syncStatus.empty")}
+          </p>
+        </article>
+
+        <article className="panel ume-entry">
+          <div className="panel__toolbar">
+            <h2>{t("ume.ne.title")}</h2>
+            <button type="button" className="btn btn--sm" onClick={() => setNePanelOpen(true)}>
+              {t("ume.ne.showPanel")}
+            </button>
+          </div>
+          <p className="ume-entry__summary muted">
+            {t("ume.ne.summary", { total: String(neTotal) })}
+          </p>
+        </article>
+
+        <article className="panel ume-entry">
+          <div className="panel__toolbar">
+            <h2>{t("ume.alarms.title")}</h2>
+          </div>
+          <p className="ume-entry__summary muted">
+            {t("ume.alarms.movedHint")}{" "}
+            <a
+              href="/network/alarms"
+              onClick={(e) => {
+                e.preventDefault();
+                openOrFocusModule({ moduleId: "network", path: "/network/alarms" });
+              }}
             >
-              <label className="muted">{t("ume.keyAlert.matchType")}</label>
-              <select
-                className="input"
-                value={keyAlertMatchType}
-                onChange={(e) => {
-                  setKeyAlertMatchType(e.target.value === "keyword" ? "keyword" : "notification_id");
-                  setKeyAlertKeywordHints([]);
-                  setKeyAlertIdHints([]);
-                }}
-              >
-                <option value="notification_id">{t("ume.keyAlert.matchNotificationId")}</option>
-                <option value="keyword">{t("ume.keyAlert.matchKeyword")}</option>
-              </select>
-              <input
-                className="input"
-                style={{ flex: "1 1 180px", minWidth: 160 }}
-                placeholder={
-                  keyAlertMatchType === "keyword"
-                    ? t("ume.keyAlert.matchValuePhKeyword")
-                    : t("ume.keyAlert.matchValuePhNotificationId")
-                }
-                value={keyAlertMatchValue}
-                onChange={(e) => setKeyAlertMatchValue(e.target.value)}
-                list="ume-key-alert-match-options"
-              />
-              <input
-                className="input"
-                style={{ flex: "1 1 140px", minWidth: 120 }}
-                placeholder={t("ume.keyAlert.labelPh")}
-                value={keyAlertLabel}
-                onChange={(e) => setKeyAlertLabel(e.target.value)}
-              />
-              <datalist id="ume-key-alert-match-options">
-                {keyAlertMatchType === "keyword"
-                  ? keyAlertKeywordHints.map((kw) => <option key={kw} value={kw} />)
-                  : keyAlertIdHints.map((x) => (
-                      <option key={x.notification_id} value={x.notification_id}>
-                        {x.native_probable_cause_sample || x.notification_id}
-                      </option>
-                    ))}
-              </datalist>
-              <button
-                type="button"
-                onClick={async () => {
-                  try {
-                    if (keyAlertMatchType === "keyword") {
-                      const resp = await fetchUmeAlarmKeywords(100);
-                      const hints = (resp.items || []).map((x) => x.keyword).filter(Boolean);
-                      setKeyAlertKeywordHints(hints);
-                      if (hints.length && !keyAlertMatchValue.trim()) {
-                        setKeyAlertMatchValue(hints[0]);
-                      }
-                    } else {
-                      const resp = await fetchUmeNotificationIds(100);
-                      const items = resp.items || [];
-                      setKeyAlertIdHints(items);
-                      if (items.length && !keyAlertMatchValue.trim()) {
-                        const first = items[0];
-                        setKeyAlertMatchValue(first.notification_id);
-                        if (!keyAlertLabel.trim() && first.native_probable_cause_sample) {
-                          setKeyAlertLabel(first.native_probable_cause_sample);
+              {t("network.nav.alarms")}
+            </a>
+          </p>
+        </article>
+      </section>
+      </div>
+
+      {cliPanelOpen ? (
+        <div className="modal-backdrop" role="presentation" onClick={() => setCliPanelOpen(false)}>
+          <div
+            className="modal modal--wide ops-detail-modal ops-detail-modal--xl"
+            role="dialog"
+            aria-modal="true"
+            aria-label={t("ume.cli.title")}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="ops-detail-modal__head">
+              <div className="ops-detail-modal__title">
+                <h3>{t("ume.cli.title")}</h3>
+                <p className="muted">{t("ume.cli.hint")}</p>
+              </div>
+              <div className="btn-row ops-detail-modal__actions">
+                <button type="button" onClick={() => setCliPanelOpen(false)}>
+                  {t("networkConfigs.close")}
+                </button>
+              </div>
+            </div>
+            <div className="ops-detail-modal__scroll ops-detail-modal__scroll--pad">
+              <UmeCliConnectPanel embedded enabled />
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {keyAlertPanelOpen ? (
+        <div className="modal-backdrop" role="presentation" onClick={() => setKeyAlertPanelOpen(false)}>
+          <div
+            className="modal modal--wide ops-detail-modal ops-detail-modal--xl"
+            role="dialog"
+            aria-modal="true"
+            aria-label={t("ume.keyAlert.title")}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="ops-detail-modal__head">
+              <div className="ops-detail-modal__title">
+                <h3>{t("ume.keyAlert.title")}</h3>
+                <p className="muted">
+                  {t("ume.keyAlert.ws")}:{" "}
+                  {!keyAlertForwarder?.enabled
+                    ? t("ume.keyAlert.wsDisabled")
+                    : keyAlertForwarder.paused
+                      ? t("ume.keyAlert.wsPaused")
+                      : keyAlertForwarder.connected
+                        ? t("ume.keyAlert.wsConnected")
+                        : t("ume.keyAlert.wsDisconnected")}
+                  {keyAlertForwarder?.enabled
+                    ? ` · ${t("ume.keyAlert.publishedOk")} ${Number(keyAlertForwarder.published_ok || 0)} · ${t("ume.keyAlert.queue")} ${Number(keyAlertForwarder.queue_size || 0)}`
+                    : ""}
+                </p>
+              </div>
+              <div className="btn-row ops-detail-modal__actions">
+                <button
+                  type="button"
+                  onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeKeyAlertMonitorAll })}
+                  disabled={keyAlertMonitorQuery.isFetching}
+                >
+                  {keyAlertMonitorQuery.isFetching ? t("common.refreshing") : t("common.refresh")}
+                </button>
+                <button type="button" onClick={() => setKeyAlertPanelOpen(false)}>
+                  {t("networkConfigs.close")}
+                </button>
+              </div>
+            </div>
+
+            <div className="ume-modal-form">
+              <div className="ops-detail-modal__toolbar filter-inline">
+                <label className="muted">{t("ume.keyAlert.matchType")}</label>
+                <select
+                  className="input"
+                  value={keyAlertMatchType}
+                  onChange={(e) => {
+                    setKeyAlertMatchType(e.target.value === "keyword" ? "keyword" : "notification_id");
+                    setKeyAlertKeywordHints([]);
+                    setKeyAlertIdHints([]);
+                  }}
+                >
+                  <option value="notification_id">{t("ume.keyAlert.matchNotificationId")}</option>
+                  <option value="keyword">{t("ume.keyAlert.matchKeyword")}</option>
+                </select>
+                <input
+                  className="input ume-modal-form__grow"
+                  placeholder={
+                    keyAlertMatchType === "keyword"
+                      ? t("ume.keyAlert.matchValuePhKeyword")
+                      : t("ume.keyAlert.matchValuePhNotificationId")
+                  }
+                  value={keyAlertMatchValue}
+                  onChange={(e) => setKeyAlertMatchValue(e.target.value)}
+                  list="ume-key-alert-match-options"
+                />
+                <input
+                  className="input ume-modal-form__grow"
+                  placeholder={t("ume.keyAlert.labelPh")}
+                  value={keyAlertLabel}
+                  onChange={(e) => setKeyAlertLabel(e.target.value)}
+                />
+                <datalist id="ume-key-alert-match-options">
+                  {keyAlertMatchType === "keyword"
+                    ? keyAlertKeywordHints.map((kw) => <option key={kw} value={kw} />)
+                    : keyAlertIdHints.map((x) => (
+                        <option key={x.notification_id} value={x.notification_id}>
+                          {x.native_probable_cause_sample || x.notification_id}
+                        </option>
+                      ))}
+                </datalist>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      if (keyAlertMatchType === "keyword") {
+                        const resp = await fetchUmeAlarmKeywords(100);
+                        const hints = (resp.items || []).map((x) => x.keyword).filter(Boolean);
+                        setKeyAlertKeywordHints(hints);
+                        if (hints.length && !keyAlertMatchValue.trim()) {
+                          setKeyAlertMatchValue(hints[0]);
+                        }
+                      } else {
+                        const resp = await fetchUmeNotificationIds(100);
+                        const items = resp.items || [];
+                        setKeyAlertIdHints(items);
+                        if (items.length && !keyAlertMatchValue.trim()) {
+                          const first = items[0];
+                          setKeyAlertMatchValue(first.notification_id);
+                          if (!keyAlertLabel.trim() && first.native_probable_cause_sample) {
+                            setKeyAlertLabel(first.native_probable_cause_sample);
+                          }
                         }
                       }
+                    } catch (err) {
+                      showError(String(err));
                     }
-                  } catch (err) {
-                    showError(String(err));
+                  }}
+                >
+                  {t("ume.keyAlert.pickFromAlarms")}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => keyAlertAddMutation.mutate()}
+                  disabled={
+                    keyAlertAddMutation.isPending || !keyAlertMatchValue.trim() || !keyAlertLabel.trim()
                   }
-                }}
-              >
-                {t("ume.keyAlert.pickFromAlarms")}
-              </button>
-              <button
-                type="button"
-                onClick={() => keyAlertAddMutation.mutate()}
-                disabled={
-                  keyAlertAddMutation.isPending || !keyAlertMatchValue.trim() || !keyAlertLabel.trim()
-                }
-              >
-                {keyAlertAddMutation.isPending ? t("ume.keyAlert.adding") : t("ume.keyAlert.add")}
-              </button>
-            </div>
-            <div style={{ marginTop: 8 }}>
-              <div className="muted" style={{ marginBottom: 4 }}>
-                {t("ume.keyAlert.neTypesLabel")}
+                >
+                  {keyAlertAddMutation.isPending ? t("ume.keyAlert.adding") : t("ume.keyAlert.add")}
+                </button>
               </div>
+
+              <div className="muted ume-modal-form__label">{t("ume.keyAlert.neTypesLabel")}</div>
               {keyAlertNeTypesQuery.isLoading ? (
                 <span className="muted">{t("common.refreshing")}</span>
               ) : (keyAlertNeTypesQuery.data?.items || []).length === 0 ? (
                 <span className="muted">{t("ume.keyAlert.neTypesEmpty")}</span>
               ) : (
-                <div
-                  style={{
-                    display: "flex",
-                    flexWrap: "wrap",
-                    gap: "8px 16px",
-                    maxHeight: 120,
-                    overflowY: "auto",
-                    padding: "6px 8px",
-                    border: "1px solid var(--border, #ddd)",
-                    borderRadius: 4,
-                  }}
-                >
+                <div className="ume-ne-types">
                   {(keyAlertNeTypesQuery.data?.items || []).map((item) => (
-                    <label
-                      key={item.ne_type}
-                      style={{ display: "inline-flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}
-                    >
+                    <label key={item.ne_type} className="ume-ne-types__item">
                       <input
                         type="checkbox"
                         checked={keyAlertNeTypes.includes(item.ne_type)}
@@ -952,16 +1051,10 @@ export function UmePage() {
                   ))}
                 </div>
               )}
-              <div className="muted" style={{ marginTop: 4, fontSize: 12 }}>
-                {t("ume.keyAlert.neTypesHint")}
-              </div>
-            </div>
-            <div
-              className="actions-row actions-row--inline"
-              style={{ marginTop: 8, flexWrap: "wrap", alignItems: "center", justifyContent: "space-between" }}
-            >
-              <span style={{ display: "inline-flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}>
-                <label className="muted" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              <p className="muted ume-modal-form__hint">{t("ume.keyAlert.neTypesHint")}</p>
+
+              <div className="ops-detail-modal__toolbar ume-modal-form__opts">
+                <label className="ume-ne-types__item muted">
                   <input
                     type="checkbox"
                     checked={keyAlertForwardOnClear}
@@ -969,436 +1062,604 @@ export function UmePage() {
                     onChange={(e) => keyAlertConfigMutation.mutate(e.target.checked)}
                   />
                   {t("ume.keyAlert.forwardOnClear")}
+                  <HelpHint
+                    text={t("ume.keyAlert.forwardOnClearHelp")}
+                    ariaLabel={t("common.help")}
+                    align="start"
+                  />
                 </label>
-                <HelpHint
-                  text={t("ume.keyAlert.forwardOnClearHelp")}
-                  ariaLabel={t("common.help")}
-                  align="start"
-                />
-              </span>
-              <button
-                type="button"
-                onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeKeyAlertMonitorAll })}
-                disabled={keyAlertMonitorQuery.isFetching}
-              >
-                {keyAlertMonitorQuery.isFetching ? t("common.refreshing") : t("common.refresh")}
-              </button>
-            </div>
-          </div>
-          {keyAlertOpError ? (
-            <div className="pill pill--high" style={{ marginTop: 8 }}>
-              {t("common.opFailed")}: {keyAlertOpError}
-            </div>
-          ) : null}
-          <div className="filter-inline" style={{ marginTop: 12 }}>
-            <input
-              type="search"
-              placeholder={t("ume.keyAlert.filterKeywordPh")}
-              value={keyAlertFilterKeyword}
-              onChange={(e) => {
-                setKeyAlertFilterKeyword(e.target.value);
-                setKeyAlertPage(1);
-              }}
-            />
-            <select
-              value={keyAlertFilterMatchType}
-              onChange={(e) => {
-                setKeyAlertFilterMatchType(e.target.value as "" | "notification_id" | "keyword");
-                setKeyAlertPage(1);
-              }}
-            >
-              <option value="">{t("ume.keyAlert.filterMatchAll")}</option>
-              <option value="notification_id">{t("ume.keyAlert.matchNotificationId")}</option>
-              <option value="keyword">{t("ume.keyAlert.matchKeyword")}</option>
-            </select>
-            <select
-              value={keyAlertFilterEnabled}
-              onChange={(e) => {
-                setKeyAlertFilterEnabled(e.target.value as "" | "true" | "false");
-                setKeyAlertPage(1);
-              }}
-            >
-              <option value="">{t("ume.keyAlert.filterEnabledAll")}</option>
-              <option value="true">{t("ume.keyAlert.filterEnabledOn")}</option>
-              <option value="false">{t("ume.keyAlert.filterEnabledOff")}</option>
-            </select>
-          </div>
-          <div className="pt-list-table-wrap">
-<table className="data-table pt-list-table">
-            <thead>
-              <tr>
-                <th>{t("ume.keyAlert.colMonitor")}</th>
-                <th>{t("ume.keyAlert.colType")}</th>
-                <th>{t("ume.keyAlert.colMatch")}</th>
-                <th>{t("ume.keyAlert.colLabel")}</th>
-                <th>{t("ume.keyAlert.colNeTypes")}</th>
-                <th>{t("ume.keyAlert.colPublished")}</th>
-                <th>{t("ume.keyAlert.colAttempts")}</th>
-                <th>{t("ume.keyAlert.colLast")}</th>
-                <th>{t("ume.keyAlert.colActions")}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {keyAlertRules.map((rule) => (
-                <tr key={rule.notification_id} className={rule.enabled ? undefined : "row--muted"}>
-                  <td style={{ whiteSpace: "nowrap" }}>
-                    <label style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                      <input
-                        type="checkbox"
-                        checked={Boolean(rule.enabled)}
-                        disabled={keyAlertToggleMutation.isPending}
-                        onChange={(e) =>
-                          keyAlertToggleMutation.mutate({
-                            ruleKey: rule.notification_id,
-                            enabled: e.target.checked,
-                          })
-                        }
-                      />
-                      {rule.enabled ? t("ume.keyAlert.monitorOn") : t("ume.keyAlert.monitorOff")}
-                    </label>
-                  </td>
-                  <td>
-                    {rule.match_type === "keyword"
-                      ? t("ume.keyAlert.matchKeyword")
-                      : t("ume.keyAlert.matchNotificationId")}
-                  </td>
-                  <td>{rule.match_value || rule.notification_id}</td>
-                  <td>{rule.label || t("common.empty")}</td>
-                  <td>
-                    {rule.ne_types?.length
-                      ? rule.ne_types.join(", ")
-                      : t("ume.keyAlert.neTypesAll")}
-                  </td>
-                  <td>{Number(rule.forward_stats?.published_ok || 0)}</td>
-                  <td>{Number(rule.forward_stats?.attempts || 0)}</td>
-                  <td>
-                    {rule.forward_stats?.last_forwarded_at
-                      ? formatSystemTime(rule.forward_stats.last_forwarded_at)
-                      : t("common.empty")}
-                  </td>
-                  <td>
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setKeyAlertEditRule(rule);
-                          setKeyAlertEditNeTypes(rule.ne_types || []);
-                        }}
-                        disabled={keyAlertEditMutation.isPending}
-                      >
-                        {t("ume.keyAlert.edit")}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (window.confirm(t("ume.keyAlert.confirmDelete"))) {
-                            keyAlertDeleteMutation.mutate(rule.notification_id);
-                          }
-                        }}
-                        disabled={keyAlertDeleteMutation.isPending}
-                      >
-                        {t("ume.keyAlert.delete")}
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-              {!keyAlertMonitorQuery.isLoading && keyAlertRules.length === 0 ? (
-                <tr>
-                  <td colSpan={9}>{t("ume.keyAlert.emptyRules")}</td>
-                </tr>
+              </div>
+              {keyAlertOpError ? (
+                <p className="ops-detail-modal__error">
+                  {t("common.opFailed")}: {keyAlertOpError}
+                </p>
               ) : null}
-            </tbody>
-          </table>
-</div>
-          <div className="pager pt-list-pager">
-            <div className="muted">
-              {t("common.pagerMeta", { total: keyAlertTotal, page: keyAlertPage, pages: keyAlertPages })}
             </div>
-            <div className="btn-row">
-              <button
-                className="pager__btn"
-                onClick={() => setKeyAlertPage(Math.max(1, keyAlertPage - 1))}
-                disabled={keyAlertPage <= 1}
-              >
-                {t("common.prevPage")}
-              </button>
-              <button
-                className="pager__btn"
-                onClick={() => setKeyAlertPage(keyAlertPage + 1)}
-                disabled={keyAlertPage >= keyAlertPages}
-              >
-                {t("common.nextPage")}
-              </button>
-              <select
-                className="pager__size"
-                value={String(keyAlertPageSize)}
+
+            <div className="ops-detail-modal__toolbar filter-inline">
+              <input
+                type="search"
+                placeholder={t("ume.keyAlert.filterKeywordPh")}
+                value={keyAlertFilterKeyword}
                 onChange={(e) => {
-                  setKeyAlertPageSize(Number(e.target.value) || 20);
+                  setKeyAlertFilterKeyword(e.target.value);
+                  setKeyAlertPage(1);
+                }}
+              />
+              <select
+                value={keyAlertFilterMatchType}
+                onChange={(e) => {
+                  setKeyAlertFilterMatchType(e.target.value as "" | "notification_id" | "keyword");
                   setKeyAlertPage(1);
                 }}
               >
-                <option value="10">10 / page</option>
-                <option value="20">20 / page</option>
-                <option value="50">50 / page</option>
+                <option value="">{t("ume.keyAlert.filterMatchAll")}</option>
+                <option value="notification_id">{t("ume.keyAlert.matchNotificationId")}</option>
+                <option value="keyword">{t("ume.keyAlert.matchKeyword")}</option>
+              </select>
+              <select
+                value={keyAlertFilterEnabled}
+                onChange={(e) => {
+                  setKeyAlertFilterEnabled(e.target.value as "" | "true" | "false");
+                  setKeyAlertPage(1);
+                }}
+              >
+                <option value="">{t("ume.keyAlert.filterEnabledAll")}</option>
+                <option value="true">{t("ume.keyAlert.filterEnabledOn")}</option>
+                <option value="false">{t("ume.keyAlert.filterEnabledOff")}</option>
               </select>
             </div>
-          </div>
-          </>
-          ) : null}
-        </article>
-      </section>
 
-      <section className="panel">
-        <div className="panel__toolbar">
-          <h2>{t("ume.syncStatus.title")}</h2>
-          <button type="button" className="link-btn" onClick={() => setSyncStatusPanelOpen((x) => !x)}>
-            {syncStatusPanelOpen ? t("ume.syncStatus.hidePanel") : t("ume.syncStatus.showPanel")}
-          </button>
-        </div>
-        {syncStatusPanelOpen ? (
-        <div className="pt-list">
-        <div className="actions-row actions-row--inline">
-          <button type="button" onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeSyncStatusAll })} disabled={syncStatusQuery.isFetching}>
-            {t("common.refresh")}
-          </button>
-        </div>
-        <div className="pt-list-table-wrap">
-<table className="data-table pt-list-table">
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>domain</th>
-              <th>status</th>
-              <th>pulled</th>
-              <th>inserted</th>
-              <th>updated</th>
-              <th title={t("ume.tasks.deletedTitle")}>deleted</th>
-              <th>started_at</th>
-              <th>ended_at</th>
-              <th>error</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(syncStatusQuery.data?.items || []).map((x) => (
-              <tr key={x.id}>
-                <td>{x.id}</td>
-                <td>{x.domain}</td>
-                <td>{x.status}</td>
-                <td>{x.pulled_count}</td>
-                <td>{x.inserted_count}</td>
-                <td>{x.updated_count}</td>
-                <td>{Number(x.deleted ?? 0)}</td>
-                <td>{formatSystemTime(x.started_at)}</td>
-                <td>{x.ended_at ? formatSystemTime(x.ended_at) : t("common.empty")}</td>
-                <td>{x.error_message || t("common.empty")}</td>
-              </tr>
-            ))}
-            {!syncStatusQuery.isLoading && (syncStatusQuery.data?.items || []).length === 0 && (
-              <tr>
-                <td colSpan={10}>{t("ume.syncStatus.empty")}</td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-</div>
-        <div className="pager pt-list-pager">
-          <div className="muted">{t("common.pagerMeta", { total: syncTotal, page: syncPage, pages: syncPages })}</div>
-          <div className="btn-row">
-            <button className="pager__btn" onClick={() => setSyncPage(Math.max(1, syncPage - 1))} disabled={syncPage <= 1}>
-              {t("common.prevPage")}
-            </button>
-            <button className="pager__btn" onClick={() => setSyncPage(syncPage + 1)} disabled={syncPage >= syncPages}>
-              {t("common.nextPage")}
-            </button>
-            <select
-              className="pager__size"
-              value={String(syncPageSize)}
-              onChange={(e) => {
-                setSyncPageSize(Number(e.target.value) || 20);
-                setSyncPage(1);
-              }}
-            >
-              <option value="20">{perPage(20)}</option>
-              <option value="50">{perPage(50)}</option>
-              <option value="100">{perPage(100)}</option>
-              <option value="200">{perPage(200)}</option>
-            </select>
+            <div className="ops-detail-modal__scroll">
+              <div className="pt-list-table-wrap">
+                <table className="data-table pt-list-table">
+                  <thead>
+                    <tr>
+                      <th>{t("ume.keyAlert.colMonitor")}</th>
+                      <th>{t("ume.keyAlert.colType")}</th>
+                      <th>{t("ume.keyAlert.colMatch")}</th>
+                      <th>{t("ume.keyAlert.colLabel")}</th>
+                      <th>{t("ume.keyAlert.colNeTypes")}</th>
+                      <th>{t("ume.keyAlert.colPublished")}</th>
+                      <th>{t("ume.keyAlert.colAttempts")}</th>
+                      <th>{t("ume.keyAlert.colLast")}</th>
+                      <th>{t("ume.keyAlert.colActions")}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {keyAlertRules.map((rule) => (
+                      <tr key={rule.notification_id} className={rule.enabled ? undefined : "row--muted"}>
+                        <td className="nowrap">
+                          <label className="ume-ne-types__item">
+                            <input
+                              type="checkbox"
+                              checked={Boolean(rule.enabled)}
+                              disabled={keyAlertToggleMutation.isPending}
+                              onChange={(e) =>
+                                keyAlertToggleMutation.mutate({
+                                  ruleKey: rule.notification_id,
+                                  enabled: e.target.checked,
+                                })
+                              }
+                            />
+                            {rule.enabled ? t("ume.keyAlert.monitorOn") : t("ume.keyAlert.monitorOff")}
+                          </label>
+                        </td>
+                        <td>
+                          {rule.match_type === "keyword"
+                            ? t("ume.keyAlert.matchKeyword")
+                            : t("ume.keyAlert.matchNotificationId")}
+                        </td>
+                        <td>{rule.match_value || rule.notification_id}</td>
+                        <td>{rule.label || t("common.empty")}</td>
+                        <td>
+                          {rule.ne_types?.length ? rule.ne_types.join(", ") : t("ume.keyAlert.neTypesAll")}
+                        </td>
+                        <td>{Number(rule.forward_stats?.published_ok || 0)}</td>
+                        <td>{Number(rule.forward_stats?.attempts || 0)}</td>
+                        <td>
+                          {rule.forward_stats?.last_forwarded_at
+                            ? formatSystemTime(rule.forward_stats.last_forwarded_at)
+                            : t("common.empty")}
+                        </td>
+                        <td>
+                          <div className="btn-row">
+                            <button
+                              type="button"
+                              className="btn btn--sm"
+                              onClick={() => {
+                                setKeyAlertEditRule(rule);
+                                setKeyAlertEditNeTypes(rule.ne_types || []);
+                              }}
+                              disabled={keyAlertEditMutation.isPending}
+                            >
+                              {t("ume.keyAlert.edit")}
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn--sm"
+                              onClick={() => {
+                                if (window.confirm(t("ume.keyAlert.confirmDelete"))) {
+                                  keyAlertDeleteMutation.mutate(rule.notification_id);
+                                }
+                              }}
+                              disabled={keyAlertDeleteMutation.isPending}
+                            >
+                              {t("ume.keyAlert.delete")}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                    {!keyAlertMonitorQuery.isLoading && keyAlertRules.length === 0 ? (
+                      <tr>
+                        <td colSpan={9} className="muted">
+                          {t("ume.keyAlert.emptyRules")}
+                        </td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="ops-detail-modal__foot">
+              <span className="muted">
+                {t("common.pagerMeta", {
+                  total: String(keyAlertTotal),
+                  page: String(keyAlertPage),
+                  pages: String(keyAlertPages),
+                })}
+              </span>
+              <div className="btn-row">
+                <button
+                  type="button"
+                  disabled={keyAlertPage <= 1}
+                  onClick={() => setKeyAlertPage(Math.max(1, keyAlertPage - 1))}
+                >
+                  {t("common.prevPage")}
+                </button>
+                <button
+                  type="button"
+                  disabled={keyAlertPage >= keyAlertPages}
+                  onClick={() => setKeyAlertPage(keyAlertPage + 1)}
+                >
+                  {t("common.nextPage")}
+                </button>
+                <select
+                  className="pager__size"
+                  value={String(keyAlertPageSize)}
+                  onChange={(e) => {
+                    setKeyAlertPageSize(Number(e.target.value) || 20);
+                    setKeyAlertPage(1);
+                  }}
+                >
+                  <option value="10">{perPage(10)}</option>
+                  <option value="20">{perPage(20)}</option>
+                  <option value="50">{perPage(50)}</option>
+                </select>
+              </div>
+            </div>
           </div>
         </div>
-        </div>
-        ) : null}
-      </section>
+      ) : null}
 
-      <section className="panel">
-        <div className="panel__toolbar">
-          <h2>{t("ume.ne.title")}</h2>
-          <button type="button" className="link-btn" onClick={() => setNePanelOpen((x) => !x)}>
-            {nePanelOpen ? t("ume.ne.hidePanel") : t("ume.ne.showPanel")}
-          </button>
-        </div>
-        {nePanelOpen ? (
-          <div className="pt-list">
-        <div className="filter-inline">
-          <input value={neKeyword} placeholder={t("ume.ne.keywordPh")} onChange={(e) => setNeKeyword(e.target.value)} />
-          <button type="button" onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeNEAll })}>
-            {t("common.query")}
-          </button>
-          <button
-            type="button"
-            title={t("ume.ne.clearTitle")}
-            onClick={() => {
-              setNeKeyword("");
-              setNePage(1);
-            }}
-            disabled={!neKeyword.trim()}
+      {syncStatusPanelOpen ? (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={() => setSyncStatusPanelOpen(false)}
+        >
+          <div
+            className="modal modal--wide ops-detail-modal ops-detail-modal--xl"
+            role="dialog"
+            aria-modal="true"
+            aria-label={t("ume.syncStatus.title")}
+            onClick={(e) => e.stopPropagation()}
           >
-            {t("common.clearFilters")}
-          </button>
-        </div>
-        <div className="pt-list-table-wrap">
-<table className="data-table pt-list-table">
-          <thead>
-            <tr>
-              <th>ne_id</th>
-              <th>user_label</th>
-              <th>ip</th>
-              <th>type</th>
-              <th>device_level</th>
-              <th>host_name</th>
-              <th>{t("ume.ne.cliConnect")}</th>
-              <th>hw_ver</th>
-              <th>last_seen</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(neQuery.data?.items || []).map((x) => (
-              <Fragment key={x.ne_id}>
-                <tr>
-                  <td>
-                    <button
-                      className="link-btn"
-                      onClick={() => setExpandedNeId(expandedNeId === x.ne_id ? "" : x.ne_id)}
-                      title={expandedNeId === x.ne_id ? t("ume.ne.collapse") : t("ume.ne.expand")}
-                    >
-                      {x.ne_id}
-                    </button>
-                  </td>
-                  <td>{x.user_label}</td>
-                  <td>{x.ip_address}</td>
-                  <td>{x.ne_type}</td>
-                  <td>{x.device_level || t("common.empty")}</td>
-                  <td>{x.host_name || t("common.empty")}</td>
-                  <td>{cliStatusByNeId.get(x.ne_id) || "unknown"}</td>
-                  <td>{x.hardware_version || t("common.empty")}</td>
-                  <td>{x.last_seen_at ? formatSystemTime(x.last_seen_at) : t("common.empty")}</td>
-                </tr>
-                {expandedNeId === x.ne_id ? (
-                  <tr>
-                    <td colSpan={9}>
-                      <div style={{ fontSize: 12, display: "grid", gridTemplateColumns: "repeat(3, minmax(180px, 1fr))", gap: 8 }}>
-                        <div>consistent_state: {x.consistent_state || t("common.empty")}</div>
-                        <div>admin_status: {x.admin_status || t("common.empty")}</div>
-                        <div>connection_status: {x.connection_status || t("common.empty")}</div>
-                        <div>maintain_status: {x.maintain_status || t("common.empty")}</div>
-                        <div>address_type: {x.address_type || t("common.empty")}</div>
-                        <div>location: {x.location || t("common.empty")}</div>
-                        <div>loopback: {x.loopback || t("common.empty")}</div>
-                        <div>net_mask: {x.net_mask || t("common.empty")}</div>
-                        <div>mac: {x.mac || t("common.empty")}</div>
-                        <div>interface_version: {x.interface_version || t("common.empty")}</div>
-                        <div>create_time: {x.create_time || t("common.empty")}</div>
-                        <div>creator: {x.creator || t("common.empty")}</div>
-                      </div>
-                    </td>
-                  </tr>
-                ) : null}
-              </Fragment>
-            ))}
-          </tbody>
-        </table>
-</div>
-        <div className="pager pt-list-pager">
-          <div className="muted">{t("common.pagerMeta", { total: neTotal, page: nePage, pages: nePages })}</div>
-          <div className="btn-row">
-            <button className="pager__btn" onClick={() => setNePage(Math.max(1, nePage - 1))} disabled={nePage <= 1}>
-              {t("common.prevPage")}
-            </button>
-            <button className="pager__btn" onClick={() => setNePage(nePage + 1)} disabled={nePage >= nePages}>
-              {t("common.nextPage")}
-            </button>
-            <select
-              className="pager__size"
-              value={String(nePageSize)}
-              onChange={(e) => {
-                setNePageSize(Number(e.target.value) || 50);
-                setNePage(1);
-              }}
-            >
-              <option value="20">{perPage(20)}</option>
-              <option value="50">{perPage(50)}</option>
-              <option value="100">{perPage(100)}</option>
-              <option value="200">{perPage(200)}</option>
-              <option value="500">{perPage(500)}</option>
-            </select>
-          </div>
-        </div>
-          </div>
-        ) : null}
-      </section>
+            <div className="ops-detail-modal__head">
+              <div className="ops-detail-modal__title">
+                <h3>{t("ume.syncStatus.title")}</h3>
+                <p className="muted">
+                  {t("ume.syncStatus.summary", {
+                    total: String(syncTotal),
+                    running: String(runningTasks.length),
+                  })}
+                </p>
+              </div>
+              <div className="btn-row ops-detail-modal__actions">
+                <button
+                  type="button"
+                  onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeSyncStatusAll })}
+                  disabled={syncStatusQuery.isFetching}
+                >
+                  {syncStatusQuery.isFetching ? t("common.refreshing") : t("common.refresh")}
+                </button>
+                <button type="button" onClick={() => setSyncStatusPanelOpen(false)}>
+                  {t("networkConfigs.close")}
+                </button>
+              </div>
+            </div>
 
-      <section className="panel">
-        <div className="panel__toolbar">
-          <h2>{t("ume.alarms.title")}</h2>
+            <div className="ops-detail-modal__scroll">
+              <div className="pt-list-table-wrap">
+                <table className="data-table pt-list-table">
+                  <thead>
+                    <tr>
+                      <th>ID</th>
+                      <th>domain</th>
+                      <th>status</th>
+                      <th>pulled</th>
+                      <th>inserted</th>
+                      <th>updated</th>
+                      <th title={t("ume.tasks.deletedTitle")}>deleted</th>
+                      <th>started_at</th>
+                      <th>ended_at</th>
+                      <th>error</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(syncStatusQuery.data?.items || []).map((x) => (
+                      <tr key={x.id}>
+                        <td className="pt-list-num" title={String(x.id)}>
+                          {String(x.id).slice(0, 8)}
+                        </td>
+                        <td>{x.domain}</td>
+                        <td>{x.status}</td>
+                        <td>{x.pulled_count}</td>
+                        <td>{x.inserted_count}</td>
+                        <td>{x.updated_count}</td>
+                        <td>{Number(x.deleted ?? 0)}</td>
+                        <td>{formatSystemTime(x.started_at)}</td>
+                        <td>{x.ended_at ? formatSystemTime(x.ended_at) : t("common.empty")}</td>
+                        <td title={x.error_message || ""}>{x.error_message || t("common.empty")}</td>
+                      </tr>
+                    ))}
+                    {!syncStatusQuery.isLoading && (syncStatusQuery.data?.items || []).length === 0 ? (
+                      <tr>
+                        <td colSpan={10} className="muted">
+                          {t("ume.syncStatus.empty")}
+                        </td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="ops-detail-modal__foot">
+              <span className="muted">
+                {t("common.pagerMeta", {
+                  total: String(syncTotal),
+                  page: String(syncPage),
+                  pages: String(syncPages),
+                })}
+              </span>
+              <div className="btn-row">
+                <button
+                  type="button"
+                  disabled={syncPage <= 1}
+                  onClick={() => setSyncPage(Math.max(1, syncPage - 1))}
+                >
+                  {t("common.prevPage")}
+                </button>
+                <button
+                  type="button"
+                  disabled={syncPage >= syncPages}
+                  onClick={() => setSyncPage(syncPage + 1)}
+                >
+                  {t("common.nextPage")}
+                </button>
+                <select
+                  className="pager__size"
+                  value={String(syncPageSize)}
+                  onChange={(e) => {
+                    setSyncPageSize(Number(e.target.value) || 20);
+                    setSyncPage(1);
+                  }}
+                >
+                  <option value="20">{perPage(20)}</option>
+                  <option value="50">{perPage(50)}</option>
+                  <option value="100">{perPage(100)}</option>
+                  <option value="200">{perPage(200)}</option>
+                </select>
+              </div>
+            </div>
+          </div>
         </div>
-        <p className="muted">
-          {t("ume.alarms.movedHint")}{" "}
-          <a href="/network/alarms" onClick={(e) => {
-            e.preventDefault();
-            openOrFocusModule({ moduleId: "network", path: "/network/alarms" });
-          }}>
-            {t("network.nav.alarms")}
-          </a>
-        </p>
-      </section>
-      </div>
+      ) : null}
+
+      {nePanelOpen ? (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={() => {
+            setNePanelOpen(false);
+            setExpandedNeId("");
+          }}
+        >
+          <div
+            className="modal modal--wide ops-detail-modal ops-detail-modal--xl"
+            role="dialog"
+            aria-modal="true"
+            aria-label={t("ume.ne.title")}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="ops-detail-modal__head">
+              <div className="ops-detail-modal__title">
+                <h3>{t("ume.ne.title")}</h3>
+                <p className="muted">{t("ume.ne.summary", { total: String(neTotal) })}</p>
+              </div>
+              <div className="btn-row ops-detail-modal__actions">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setNePanelOpen(false);
+                    setExpandedNeId("");
+                  }}
+                >
+                  {t("networkConfigs.close")}
+                </button>
+              </div>
+            </div>
+
+            <div className="ops-detail-modal__toolbar filter-inline">
+              <input
+                value={neKeyword}
+                placeholder={t("ume.ne.keywordPh")}
+                onChange={(e) => {
+                  setNeKeyword(e.target.value);
+                  setNePage(1);
+                }}
+              />
+              <button type="button" onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeNEAll })}>
+                {t("common.query")}
+              </button>
+              <button
+                type="button"
+                title={t("ume.ne.clearTitle")}
+                onClick={() => {
+                  setNeKeyword("");
+                  setNePage(1);
+                }}
+                disabled={!neKeyword.trim()}
+              >
+                {t("common.clearFilters")}
+              </button>
+            </div>
+
+            <div className="ops-detail-modal__scroll">
+              <div className="pt-list-table-wrap">
+                <table className="data-table pt-list-table">
+                  <thead>
+                    <tr>
+                      <th>ne_id</th>
+                      <th>user_label</th>
+                      <th>ip</th>
+                      <th>type</th>
+                      <th>device_level</th>
+                      <th>host_name</th>
+                      <th>{t("ume.ne.cliConnect")}</th>
+                      <th>hw_ver</th>
+                      <th>last_seen</th>
+                      <th />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(neQuery.data?.items || []).map((x) => (
+                      <tr key={x.ne_id}>
+                        <td className="pt-list-num" title={x.ne_id}>
+                          {x.ne_id}
+                        </td>
+                        <td>{x.user_label}</td>
+                        <td>{x.ip_address}</td>
+                        <td>{x.ne_type}</td>
+                        <td>{x.device_level || t("common.empty")}</td>
+                        <td>{x.host_name || t("common.empty")}</td>
+                        <td>{cliStatusByNeId.get(x.ne_id) || "unknown"}</td>
+                        <td>{x.hardware_version || t("common.empty")}</td>
+                        <td>{x.last_seen_at ? formatSystemTime(x.last_seen_at) : t("common.empty")}</td>
+                        <td>
+                          <button
+                            type="button"
+                            className="btn btn--sm btn--ghost"
+                            onClick={() => setExpandedNeId(x.ne_id)}
+                          >
+                            {t("ume.ne.expand")}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                    {!neQuery.isLoading && !(neQuery.data?.items || []).length ? (
+                      <tr>
+                        <td colSpan={10} className="muted">
+                          {t("common.empty")}
+                        </td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="ops-detail-modal__foot">
+              <span className="muted">
+                {t("common.pagerMeta", {
+                  total: String(neTotal),
+                  page: String(nePage),
+                  pages: String(nePages),
+                })}
+              </span>
+              <div className="btn-row">
+                <button
+                  type="button"
+                  disabled={nePage <= 1}
+                  onClick={() => setNePage(Math.max(1, nePage - 1))}
+                >
+                  {t("common.prevPage")}
+                </button>
+                <button
+                  type="button"
+                  disabled={nePage >= nePages}
+                  onClick={() => setNePage(nePage + 1)}
+                >
+                  {t("common.nextPage")}
+                </button>
+                <select
+                  className="pager__size"
+                  value={String(nePageSize)}
+                  onChange={(e) => {
+                    setNePageSize(Number(e.target.value) || 50);
+                    setNePage(1);
+                  }}
+                >
+                  <option value="20">{perPage(20)}</option>
+                  <option value="50">{perPage(50)}</option>
+                  <option value="100">{perPage(100)}</option>
+                  <option value="200">{perPage(200)}</option>
+                  <option value="500">{perPage(500)}</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {expandedNe ? (
+        <div className="modal-backdrop" role="presentation" onClick={() => setExpandedNeId("")}>
+          <div
+            className="modal modal--wide ops-detail-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label={t("ume.ne.expand")}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="ops-detail-modal__head">
+              <div className="ops-detail-modal__title">
+                <h3>{expandedNe.user_label || expandedNe.ne_id}</h3>
+                <p className="muted">
+                  {expandedNe.ne_id}
+                  {expandedNe.ip_address ? ` · ${expandedNe.ip_address}` : ""}
+                  {expandedNe.ne_type ? ` · ${expandedNe.ne_type}` : ""}
+                </p>
+              </div>
+              <div className="btn-row ops-detail-modal__actions">
+                <button type="button" onClick={() => setExpandedNeId("")}>
+                  {t("networkConfigs.close")}
+                </button>
+              </div>
+            </div>
+            <div className="ops-detail-modal__scroll ops-detail-modal__scroll--pad">
+              <div className="ume-ne-detail-grid">
+                <div>
+                  <span className="muted">consistent_state</span>
+                  <div>{expandedNe.consistent_state || t("common.empty")}</div>
+                </div>
+                <div>
+                  <span className="muted">admin_status</span>
+                  <div>{expandedNe.admin_status || t("common.empty")}</div>
+                </div>
+                <div>
+                  <span className="muted">connection_status</span>
+                  <div>{expandedNe.connection_status || t("common.empty")}</div>
+                </div>
+                <div>
+                  <span className="muted">maintain_status</span>
+                  <div>{expandedNe.maintain_status || t("common.empty")}</div>
+                </div>
+                <div>
+                  <span className="muted">address_type</span>
+                  <div>{expandedNe.address_type || t("common.empty")}</div>
+                </div>
+                <div>
+                  <span className="muted">location</span>
+                  <div>{expandedNe.location || t("common.empty")}</div>
+                </div>
+                <div>
+                  <span className="muted">loopback</span>
+                  <div>{expandedNe.loopback || t("common.empty")}</div>
+                </div>
+                <div>
+                  <span className="muted">net_mask</span>
+                  <div>{expandedNe.net_mask || t("common.empty")}</div>
+                </div>
+                <div>
+                  <span className="muted">mac</span>
+                  <div>{expandedNe.mac || t("common.empty")}</div>
+                </div>
+                <div>
+                  <span className="muted">interface_version</span>
+                  <div>{expandedNe.interface_version || t("common.empty")}</div>
+                </div>
+                <div>
+                  <span className="muted">create_time</span>
+                  <div>{expandedNe.create_time || t("common.empty")}</div>
+                </div>
+                <div>
+                  <span className="muted">creator</span>
+                  <div>{expandedNe.creator || t("common.empty")}</div>
+                </div>
+                <div>
+                  <span className="muted">host_name</span>
+                  <div>{expandedNe.host_name || t("common.empty")}</div>
+                </div>
+                <div>
+                  <span className="muted">hardware_version</span>
+                  <div>{expandedNe.hardware_version || t("common.empty")}</div>
+                </div>
+                <div>
+                  <span className="muted">{t("ume.ne.cliConnect")}</span>
+                  <div>{cliStatusByNeId.get(expandedNe.ne_id) || "unknown"}</div>
+                </div>
+                <div>
+                  <span className="muted">last_seen</span>
+                  <div>
+                    {expandedNe.last_seen_at
+                      ? formatSystemTime(expandedNe.last_seen_at)
+                      : t("common.empty")}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {keyAlertEditRule ? (
         <div className="modal-backdrop" role="presentation" onClick={() => setKeyAlertEditRule(null)}>
-          <div className="modal" role="dialog" onClick={(e) => e.stopPropagation()}>
-            <h3>{t("ume.keyAlert.editTitle")}</h3>
-            <p className="form-hint muted">
-              {keyAlertEditRule.match_type === "keyword"
-                ? t("ume.keyAlert.matchKeyword")
-                : t("ume.keyAlert.matchNotificationId")}
-              : {keyAlertEditRule.match_value || keyAlertEditRule.notification_id}
-              {keyAlertEditRule.label ? ` · ${keyAlertEditRule.label}` : ""}
-            </p>
-            <div className="muted" style={{ marginBottom: 4 }}>
-              {t("ume.keyAlert.neTypesLabel")}
+          <div
+            className="modal modal--wide ops-detail-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label={t("ume.keyAlert.editTitle")}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="ops-detail-modal__head">
+              <div className="ops-detail-modal__title">
+                <h3>{t("ume.keyAlert.editTitle")}</h3>
+                <p className="muted">
+                  {keyAlertEditRule.match_type === "keyword"
+                    ? t("ume.keyAlert.matchKeyword")
+                    : t("ume.keyAlert.matchNotificationId")}
+                  : {keyAlertEditRule.match_value || keyAlertEditRule.notification_id}
+                  {keyAlertEditRule.label ? ` · ${keyAlertEditRule.label}` : ""}
+                </p>
+              </div>
+              <div className="btn-row ops-detail-modal__actions">
+                <button type="button" onClick={() => setKeyAlertEditRule(null)} disabled={keyAlertEditMutation.isPending}>
+                  {t("ume.keyAlert.cancel")}
+                </button>
+              </div>
             </div>
+            <div className="muted ume-modal-form__label">{t("ume.keyAlert.neTypesLabel")}</div>
             {keyAlertNeTypesQuery.isLoading ? (
               <span className="muted">{t("common.refreshing")}</span>
             ) : (keyAlertNeTypesQuery.data?.items || []).length === 0 ? (
               <span className="muted">{t("ume.keyAlert.neTypesEmpty")}</span>
             ) : (
-              <div
-                style={{
-                  display: "flex",
-                  flexWrap: "wrap",
-                  gap: "8px 16px",
-                  maxHeight: 240,
-                  overflowY: "auto",
-                  padding: "6px 8px",
-                  border: "1px solid var(--border, #ddd)",
-                  borderRadius: 4,
-                }}
-              >
+              <div className="ume-ne-types ume-ne-types--tall">
                 {(keyAlertNeTypesQuery.data?.items || []).map((item) => (
-                  <label
-                    key={item.ne_type}
-                    style={{ display: "inline-flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}
-                  >
+                  <label key={item.ne_type} className="ume-ne-types__item">
                     <input
                       type="checkbox"
                       checked={keyAlertEditNeTypes.includes(item.ne_type)}
@@ -1416,25 +1677,26 @@ export function UmePage() {
                 ))}
               </div>
             )}
-            <div className="muted" style={{ marginTop: 4, fontSize: 12 }}>
-              {t("ume.keyAlert.neTypesHint")}
-            </div>
-            <div className="actions-row actions-row--inline" style={{ marginTop: 16 }}>
-              <button
-                type="button"
-                onClick={() =>
-                  keyAlertEditMutation.mutate({
-                    ruleKey: keyAlertEditRule.notification_id,
-                    ne_types: keyAlertEditNeTypes,
-                  })
-                }
-                disabled={keyAlertEditMutation.isPending}
-              >
-                {keyAlertEditMutation.isPending ? t("ume.keyAlert.saving") : t("ume.keyAlert.save")}
-              </button>
-              <button type="button" onClick={() => setKeyAlertEditRule(null)} disabled={keyAlertEditMutation.isPending}>
-                {t("ume.keyAlert.cancel")}
-              </button>
+            <p className="muted ume-modal-form__hint">{t("ume.keyAlert.neTypesHint")}</p>
+            <div className="ops-detail-modal__foot">
+              <span />
+              <div className="btn-row">
+                <button
+                  type="button"
+                  onClick={() =>
+                    keyAlertEditMutation.mutate({
+                      ruleKey: keyAlertEditRule.notification_id,
+                      ne_types: keyAlertEditNeTypes,
+                    })
+                  }
+                  disabled={keyAlertEditMutation.isPending}
+                >
+                  {keyAlertEditMutation.isPending ? t("ume.keyAlert.saving") : t("ume.keyAlert.save")}
+                </button>
+                <button type="button" onClick={() => setKeyAlertEditRule(null)} disabled={keyAlertEditMutation.isPending}>
+                  {t("ume.keyAlert.cancel")}
+                </button>
+              </div>
             </div>
           </div>
         </div>

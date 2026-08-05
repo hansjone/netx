@@ -596,20 +596,19 @@ export function LldpLinksPage() {
           </thead>
           <tbody>
             {jobs.map((job) => {
-              const open = expandedJobId === job.id;
               return (
-                <tr key={job.id} className={open ? "is-expanded" : undefined}>
+                <tr key={job.id}>
                   <td>
                     <button
                       type="button"
                       className="btn btn--sm btn--ghost"
                       onClick={() => {
                         setItemDetail(null);
-                        setExpandedJobId(open ? "" : job.id);
+                        setExpandedJobId(job.id);
                         setItemPage(1);
                       }}
                     >
-                      {open ? "−" : "+"}
+                      {t("lldpLinks.expand")}
                     </button>
                   </td>
                   <td className="mono">{job.id.slice(0, 8)}</td>
@@ -700,83 +699,128 @@ export function LldpLinksPage() {
       </div>
 
       {expandedJobId ? (
-        <div className="panel" style={{ marginTop: 16 }}>
-          <h3>{t("lldpLinks.jobDetailTitle")}</h3>
-          {jobDetailQuery.isLoading ? <p className="muted">…</p> : null}
-          {jobDetailQuery.data?.error ? (
-            <p className="muted" style={{ color: "var(--danger, #b00)" }}>
-              {jobDetailQuery.data.error}
-            </p>
-          ) : null}
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>{t("lldpLinks.col.name")}</th>
-                <th>IP</th>
-                <th>{t("lldpLinks.col.status")}</th>
-                <th>{t("lldpLinks.col.neighbors")}</th>
-                <th>{t("lldpLinks.col.edges")}</th>
-                <th>{t("lldpLinks.col.error")}</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {detailItems.map((it) => {
-                const unmatchedCount = it.unmatched_count ?? (it.unmatched?.length || 0);
-                return (
-                  <tr key={it.id}>
-                    <td>{it.ne_name || it.ne_id || "—"}</td>
-                    <td>{it.ne_ip || "—"}</td>
-                    <td>
-                      {!it.ok ? "fail" : it.parser_stub || unmatchedCount > 0 ? "warn" : "ok"}
-                    </td>
-                    <td>{it.neighbors}</td>
-                    <td>
-                      +{it.edges_added} / ~{it.edges_updated}
-                      {unmatchedCount > 0
-                        ? ` · ${t("topology.discoverUnmatched").replace("{{count}}", String(unmatchedCount))}`
-                        : ""}
-                    </td>
-                    <td className="muted">{it.error || "—"}</td>
-                    <td>
-                      <button
-                        type="button"
-                        className="btn btn--sm btn--ghost"
-                        onClick={() => setItemDetail(it)}
-                      >
-                        {t("topology.discoverViewDetail")}
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-              {!detailItems.length && !jobDetailQuery.isLoading ? (
-                <tr>
-                  <td colSpan={7} className="muted">
-                    {t("common.empty")}
-                  </td>
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
-          <div className="pager">
-            <button type="button" disabled={itemPage <= 1} onClick={() => setItemPage((p) => p - 1)}>
-              {t("common.prevPage")}
-            </button>
-            <span className="muted">
-              {t("common.pagerMeta", {
-                total: String(itemTotal),
-                page: String(itemPage),
-                pages: String(itemPages),
-              })}
-            </span>
-            <button
-              type="button"
-              disabled={itemPage >= itemPages}
-              onClick={() => setItemPage((p) => p + 1)}
-            >
-              {t("common.nextPage")}
-            </button>
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={() => {
+            setExpandedJobId("");
+            setItemDetail(null);
+          }}
+        >
+          <div
+            className="modal modal--wide ops-detail-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label={t("lldpLinks.jobDetailTitle")}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="ops-detail-modal__head">
+              <div className="ops-detail-modal__title">
+                <h3>{t("lldpLinks.jobDetailTitle")}</h3>
+                <p className="muted">
+                  {(() => {
+                    const job = jobs.find((j) => j.id === expandedJobId);
+                    return job
+                      ? `${job.id.slice(0, 8)} · ${job.status} · ${job.done}/${job.total}`
+                      : expandedJobId.slice(0, 8);
+                  })()}
+                </p>
+              </div>
+              <div className="btn-row ops-detail-modal__actions">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setExpandedJobId("");
+                    setItemDetail(null);
+                  }}
+                >
+                  {t("networkConfigs.close")}
+                </button>
+              </div>
+            </div>
+
+            {jobDetailQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
+            {jobDetailQuery.data?.error ? (
+              <p className="ops-detail-modal__error">{jobDetailQuery.data.error}</p>
+            ) : null}
+
+            <div className="ops-detail-modal__scroll">
+              <div className="pt-list-table-wrap">
+                <table className="data-table pt-list-table">
+                  <thead>
+                    <tr>
+                      <th>{t("lldpLinks.col.name")}</th>
+                      <th>IP</th>
+                      <th>{t("lldpLinks.col.status")}</th>
+                      <th>{t("lldpLinks.col.neighbors")}</th>
+                      <th>{t("lldpLinks.col.edges")}</th>
+                      <th>{t("lldpLinks.col.error")}</th>
+                      <th />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {detailItems.map((it) => {
+                      const unmatchedCount = it.unmatched_count ?? (it.unmatched?.length || 0);
+                      return (
+                        <tr key={it.id}>
+                          <td>{it.ne_name || it.ne_id || "—"}</td>
+                          <td>{it.ne_ip || "—"}</td>
+                          <td>
+                            {!it.ok ? "fail" : it.parser_stub || unmatchedCount > 0 ? "warn" : "ok"}
+                          </td>
+                          <td>{it.neighbors}</td>
+                          <td>
+                            +{it.edges_added} / ~{it.edges_updated}
+                            {unmatchedCount > 0
+                              ? ` · ${t("topology.discoverUnmatched").replace("{{count}}", String(unmatchedCount))}`
+                              : ""}
+                          </td>
+                          <td className="muted">{it.error || "—"}</td>
+                          <td>
+                            <button
+                              type="button"
+                              className="btn btn--sm btn--ghost"
+                              onClick={() => setItemDetail(it)}
+                            >
+                              {t("topology.discoverViewDetail")}
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {!detailItems.length && !jobDetailQuery.isLoading ? (
+                      <tr>
+                        <td colSpan={7} className="muted">
+                          {t("common.empty")}
+                        </td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="ops-detail-modal__foot">
+              <span className="muted">
+                {t("common.pagerMeta", {
+                  total: String(itemTotal),
+                  page: String(itemPage),
+                  pages: String(itemPages),
+                })}
+              </span>
+              <div className="btn-row">
+                <button type="button" disabled={itemPage <= 1} onClick={() => setItemPage((p) => p - 1)}>
+                  {t("common.prevPage")}
+                </button>
+                <button
+                  type="button"
+                  disabled={itemPage >= itemPages}
+                  onClick={() => setItemPage((p) => p + 1)}
+                >
+                  {t("common.nextPage")}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       ) : null}

@@ -436,12 +436,15 @@ export function ConfigSyncPage() {
               <td>
                 <button
                   type="button"
+                  className="btn btn--sm btn--ghost"
                   onClick={() => {
-                    setExpandedCycleId((id) => (id === c.id ? "" : c.id));
+                    setExpandedCycleId(c.id);
                     setTaskPage(1);
+                    setTaskKeyword("");
+                    setTaskStatus("");
                   }}
                 >
-                  {expandedCycleId === c.id ? t("configSync.collapse") : t("configSync.expand")}
+                  {t("configSync.expand")}
                 </button>
               </td>
               <td title={c.id} className="pt-list-num">{c.id.slice(0, 8)}</td>
@@ -524,74 +527,127 @@ export function ConfigSyncPage() {
       </div>
 
       {expandedCycleId ? (
-        <div style={{ marginTop: 16 }}>
-          <h3>{t("configSync.tasksTitle")}</h3>
-          <div className="filter-inline">
-            <input
-              value={taskKeyword}
-              placeholder={t("configSync.taskKeywordPh")}
-              onChange={(e) => {
-                setTaskKeyword(e.target.value);
-                setTaskPage(1);
-              }}
-            />
-            <select
-              value={taskStatus}
-              onChange={(e) => {
-                setTaskStatus(e.target.value);
-                setTaskPage(1);
-              }}
-            >
-              <option value="">{t("configSync.allStatus")}</option>
-              <option value="pending">pending</option>
-              <option value="running">running</option>
-              <option value="success">success</option>
-              <option value="fail">fail</option>
-              <option value="skipped">skipped</option>
-            </select>
-          </div>
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>{t("configSync.col.name")}</th>
-                <th>IP</th>
-                <th>{t("configSync.col.vendor")}</th>
-                <th>{t("configSync.col.source")}</th>
-                <th>{t("configSync.col.status")}</th>
-                <th>{t("configSync.col.message")}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(tasksQuery.data?.items ?? []).map((task) => (
-                <tr key={task.id}>
-                  <td>{task.ne_name || task.target_id}</td>
-                  <td>{task.ne_ip}</td>
-                  <td>{task.vendor || "-"}</td>
-                  <td>{task.source}</td>
-                  <td>{task.status}</td>
-                  <td title={task.message}>{task.message || "-"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <div className="pager">
-            <button type="button" disabled={taskPage <= 1} onClick={() => setTaskPage((p) => p - 1)}>
-              {t("common.prevPage")}
-            </button>
-            <span className="muted">
-              {t("common.pagerMeta", {
-                total: String(tasksQuery.data?.total ?? 0),
-                page: String(taskPage),
-                pages: String(pageCount(Number(tasksQuery.data?.total || 0), 20)),
-              })}
-            </span>
-            <button
-              type="button"
-              disabled={taskPage >= pageCount(Number(tasksQuery.data?.total || 0), 20)}
-              onClick={() => setTaskPage((p) => p + 1)}
-            >
-              {t("common.nextPage")}
-            </button>
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={() => setExpandedCycleId("")}
+        >
+          <div
+            className="modal modal--wide ops-detail-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label={t("configSync.tasksTitle")}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="ops-detail-modal__head">
+              <div className="ops-detail-modal__title">
+                <h3>{t("configSync.tasksTitle")}</h3>
+                <p className="muted">
+                  {expandedCycleId.slice(0, 8)}
+                  {(() => {
+                    const c = cycles.find((x) => x.id === expandedCycleId);
+                    return c
+                      ? ` · ${c.trigger_mode} · ${c.status} · ${c.success_count}/${c.planned_count}`
+                      : "";
+                  })()}
+                </p>
+              </div>
+              <div className="btn-row ops-detail-modal__actions">
+                <button type="button" onClick={() => setExpandedCycleId("")}>
+                  {t("networkConfigs.close")}
+                </button>
+              </div>
+            </div>
+
+            <div className="ops-detail-modal__toolbar filter-inline">
+              <input
+                value={taskKeyword}
+                placeholder={t("configSync.taskKeywordPh")}
+                onChange={(e) => {
+                  setTaskKeyword(e.target.value);
+                  setTaskPage(1);
+                }}
+              />
+              <select
+                value={taskStatus}
+                onChange={(e) => {
+                  setTaskStatus(e.target.value);
+                  setTaskPage(1);
+                }}
+              >
+                <option value="">{t("configSync.allStatus")}</option>
+                <option value="pending">pending</option>
+                <option value="running">running</option>
+                <option value="success">success</option>
+                <option value="fail">fail</option>
+                <option value="skipped">skipped</option>
+              </select>
+            </div>
+
+            {tasksQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
+            {tasksQuery.isError ? (
+              <p className="ops-detail-modal__error">
+                {tasksQuery.error instanceof Error ? tasksQuery.error.message : String(tasksQuery.error)}
+              </p>
+            ) : null}
+
+            <div className="ops-detail-modal__scroll">
+              <div className="pt-list-table-wrap">
+                <table className="data-table pt-list-table">
+                  <thead>
+                    <tr>
+                      <th>{t("configSync.col.name")}</th>
+                      <th>IP</th>
+                      <th>{t("configSync.col.vendor")}</th>
+                      <th>{t("configSync.col.source")}</th>
+                      <th>{t("configSync.col.status")}</th>
+                      <th>{t("configSync.col.message")}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(tasksQuery.data?.items ?? []).map((task) => (
+                      <tr key={task.id}>
+                        <td>{task.ne_name || task.target_id}</td>
+                        <td>{task.ne_ip}</td>
+                        <td>{task.vendor || "-"}</td>
+                        <td>{task.source}</td>
+                        <td>{task.status}</td>
+                        <td title={task.message}>{task.message || "-"}</td>
+                      </tr>
+                    ))}
+                    {!tasksQuery.isLoading && !(tasksQuery.data?.items ?? []).length ? (
+                      <tr>
+                        <td colSpan={6} className="muted">
+                          {t("common.empty")}
+                        </td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="ops-detail-modal__foot">
+              <span className="muted">
+                {t("common.pagerMeta", {
+                  total: String(tasksQuery.data?.total ?? 0),
+                  page: String(taskPage),
+                  pages: String(pageCount(Number(tasksQuery.data?.total || 0), 20)),
+                })}
+              </span>
+              <div className="btn-row">
+                <button type="button" disabled={taskPage <= 1} onClick={() => setTaskPage((p) => p - 1)}>
+                  {t("common.prevPage")}
+                </button>
+                <button
+                  type="button"
+                  disabled={taskPage >= pageCount(Number(tasksQuery.data?.total || 0), 20)}
+                  onClick={() => setTaskPage((p) => p + 1)}
+                >
+                  {t("common.nextPage")}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       ) : null}
