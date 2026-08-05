@@ -1084,8 +1084,14 @@ export const removeTopologyViewNodes = (viewId: string, fabricNodeIds: string[])
     fabric_node_ids: fabricNodeIds,
   });
 
-export const projectTopologyNeighbors = (viewId: string) =>
-  apiPost<TopologyViewGraph>(`/v1/topology/views/${encodeURIComponent(viewId)}/project-neighbors`, {});
+export const projectTopologyNeighbors = (
+  viewId: string,
+  body?: { seed_fabric_node_ids?: string[]; managed_ne_ids?: string[] },
+) =>
+  apiPost<TopologyViewGraph>(
+    `/v1/topology/views/${encodeURIComponent(viewId)}/project-neighbors`,
+    body || {},
+  );
 
 export const patchTopologyEdgeStyle = (
   viewId: string,

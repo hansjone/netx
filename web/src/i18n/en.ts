@@ -1486,7 +1486,7 @@ const en = {
     snapGrid: "Snap to grid",
     autoLayoutDiscover: "Auto-layout after discover",
     discoverAutoAddUnmatched: "Auto-add unmatched NEs as placeholders on discover",
-    discoverProjectNeighbors: "Project direct neighbors onto canvas after discover",
+    discoverProjectNeighbors: "After discover, project neighbors of scanned NEs onto the canvas",
     undo: "Undo",
     redo: "Redo",
     discoverSelected: "Discover selected ({{count}})",

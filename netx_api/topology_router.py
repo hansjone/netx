@@ -43,6 +43,7 @@ from .topology_schemas import (
     ViewNodesRemove,
     ViewPopulateRequest,
     ViewPositionsPatch,
+    ViewProjectNeighborsRequest,
 )
 from .topology_discover import get_discover_job, start_discover_job
 from .topology_fabric import (
@@ -319,8 +320,14 @@ def api_create_topology_placeholder(
 
 
 @router.post("/views/{view_id}/project-neighbors")
-def api_project_neighbors(view_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
-    return project_fabric_neighbors_to_view(db, view_id).model_dump()
+def api_project_neighbors(
+    view_id: str,
+    body: ViewProjectNeighborsRequest | None = None,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    return project_fabric_neighbors_to_view(
+        db, view_id, body or ViewProjectNeighborsRequest()
+    ).model_dump()
 
 
 @router.post("/views/{view_id}/populate")

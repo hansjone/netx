@@ -1477,7 +1477,7 @@ const zh = {
     snapGrid: "网格吸附",
     autoLayoutDiscover: "发现后自动布局",
     discoverAutoAddUnmatched: "发现时自动入库未匹配网元（占位）",
-    discoverProjectNeighbors: "发现后将直连邻居加入画布",
+    discoverProjectNeighbors: "发现后将本次扫描网元的直连邻居加入画布",
     undo: "撤销",
     redo: "重做",
     discoverSelected: "发现选中 ({{count}})",

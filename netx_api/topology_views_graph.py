@@ -70,6 +70,7 @@ from .topology_schemas import (
     ViewPopulateOut,
     ViewPopulateRequest,
     ViewPositionsPatch,
+    ViewProjectNeighborsRequest,
 )
 
 # ---------------------------------------------------------------------------
@@ -288,18 +289,31 @@ def _place_fabric_ids_on_view(
     fabric_ids: list[str],
     *,
     existing: set[str],
+    near_fabric_ids: set[str] | None = None,
 ) -> int:
     now = _utcnow()
     added = 0
     vnodes = db.query(TopoViewNode).filter(TopoViewNode.view_id == view.id).all()
-    max_x = max((float(vn.x or 0) for vn in vnodes), default=40.0)
-    base_x = max_x + 200.0
+    anchor = None
+    near = {str(x).strip() for x in (near_fabric_ids or set()) if str(x).strip()}
+    if near:
+        for vn in vnodes:
+            if vn.fabric_node_id in near:
+                anchor = vn
+                break
+    if anchor is not None:
+        base_x = float(anchor.x or 0.0) + 200.0
+        base_y = float(anchor.y or 0.0)
+    else:
+        max_x = max((float(vn.x or 0) for vn in vnodes), default=40.0)
+        base_x = max_x + 200.0
+        base_y = 40.0
     cols = max(1, int(len(fabric_ids) ** 0.5) or 1)
     for i, fid in enumerate(fabric_ids):
         if fid in existing or db.get(TopoFabricNode, fid) is None:
             continue
         x = base_x + (i % cols) * 180.0
-        y = 40.0 + (i // cols) * 120.0
+        y = base_y + (i // cols) * 120.0
         db.add(
             TopoViewNode(
                 id=uuid4().hex,
@@ -897,8 +911,16 @@ def _neighbor_ids(
     return found
 
 
-def project_fabric_neighbors_to_view(db: Session, view_id: str) -> TopologyViewGraphOut:
-    """Add in-scope fabric neighbors onto the leaf view (bounded by membership)."""
+def project_fabric_neighbors_to_view(
+    db: Session,
+    view_id: str,
+    body: ViewProjectNeighborsRequest | None = None,
+) -> TopologyViewGraphOut:
+    """Add in-scope fabric neighbors onto the leaf view (bounded by membership).
+
+    Optional seeds limit expansion to neighbors of those fabric nodes (must
+    already be on the view). Empty seeds → expand from every canvas node.
+    """
     merge_duplicate_fabric_nodes(db)
     view = _get_view_or_404(db, view_id)
     mem = _membership_for_view(view)
@@ -909,6 +931,7 @@ def project_fabric_neighbors_to_view(db: Session, view_id: str) -> TopologyViewG
     hops = int(mem.get("expand_hops") or 1)
     filt = dict(view.filter or {})
     layer = str(filt.get("layer") or "physical").strip() or "physical"
+    req = body or ViewProjectNeighborsRequest()
 
     vnodes = db.query(TopoViewNode).filter(TopoViewNode.view_id == view.id).all()
     # Drop placements pointing at missing fabric rows only (keep LLDP placeholders).
@@ -929,7 +952,25 @@ def project_fabric_neighbors_to_view(db: Session, view_id: str) -> TopologyViewG
         g.truncate_reason = g.truncate_reason or "membership_cap"
         return g
 
-    peer_ids = _neighbor_ids(db, seed_ids=existing, layer=layer, hops=hops)
+    seed_ids: set[str] = {
+        str(x).strip() for x in (req.seed_fabric_node_ids or []) if str(x).strip()
+    }
+    for mid in req.managed_ne_ids or []:
+        mid_s = str(mid or "").strip()
+        if not mid_s:
+            continue
+        for fid in existing:
+            fn = db.get(TopoFabricNode, fid)
+            if fn is not None and str(fn.managed_ne_id or "").strip() == mid_s:
+                seed_ids.add(fid)
+    if seed_ids:
+        seed_ids &= existing
+        if not seed_ids:
+            return get_view_graph(db, view.id)
+    else:
+        seed_ids = set(existing)
+
+    peer_ids = _neighbor_ids(db, seed_ids=seed_ids, layer=layer, hops=hops)
     to_add: list[str] = []
     for peer in sorted(peer_ids):
         if peer in existing:
@@ -947,7 +988,9 @@ def project_fabric_neighbors_to_view(db: Session, view_id: str) -> TopologyViewG
 
     truncated = len(peer_ids) > len(to_add)
     if to_add:
-        _place_fabric_ids_on_view(db, view, to_add, existing=existing)
+        _place_fabric_ids_on_view(
+            db, view, to_add, existing=existing, near_fabric_ids=seed_ids
+        )
         db.commit()
     g = get_view_graph(db, view.id)
     if truncated:

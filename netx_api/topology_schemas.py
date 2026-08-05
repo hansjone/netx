@@ -238,6 +238,18 @@ class ViewPopulateRequest(BaseModel):
     freeze_after: bool = True
 
 
+class ViewProjectNeighborsRequest(BaseModel):
+    """Project fabric neighbors onto a view.
+
+    When seed ids are omitted, expand from every node already on the canvas.
+    When provided, expand only from those seeds (resolved to fabric nodes that
+    are already placed on the view).
+    """
+
+    seed_fabric_node_ids: list[str] = Field(default_factory=list)
+    managed_ne_ids: list[str] = Field(default_factory=list)
+
+
 class ViewNodeIn(BaseModel):
     fabric_node_id: str = Field(min_length=1, max_length=64)
     x: float = 0.0

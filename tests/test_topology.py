@@ -33,6 +33,7 @@ from netx_api.topology_schemas import (
     ViewNodesAdd,
     ViewPopulateRequest,
     ViewPositionsPatch,
+    ViewProjectNeighborsRequest,
     ViewNodeIn,
 )
 
@@ -678,6 +679,31 @@ class FabricTopologyTests(unittest.TestCase):
         g = svc.project_fabric_neighbors_to_view(self.db, view.id)
         self.assertLessEqual(len(g.nodes), 2)
         self.assertTrue(g.truncated or len(g.nodes) == 2)
+
+        # Seed-scoped project: expand only from node 0 → only node 1 among line peers.
+        view2 = svc.create_view(
+            self.db,
+            TopologyViewCreate(
+                name=f"CapSeed-{suffix}",
+                folder_id=self._region(f"CapSeedR-{suffix}"),
+                role="core",
+                filter={"membership": {"expand_hops": 1, "max_nodes": 50, "frozen": False}},
+            ),
+        )
+        # Place endpoints 0 and 2 (not adjacent); seed from 0 should add 1, not 3.
+        svc.add_nodes_to_view(
+            self.db, view2.id, ViewNodesAdd(managed_ne_ids=[nes[0].id, nes[2].id])
+        )
+        g2 = svc.project_fabric_neighbors_to_view(
+            self.db,
+            view2.id,
+            ViewProjectNeighborsRequest(seed_fabric_node_ids=[nodes[0].id]),
+        )
+        ids2 = {n.fabric_node_id for n in g2.nodes}
+        self.assertIn(nodes[0].id, ids2)
+        self.assertIn(nodes[1].id, ids2)
+        self.assertIn(nodes[2].id, ids2)
+        self.assertNotIn(nodes[3].id, ids2)
 
         pop = svc.populate_view(
             self.db,

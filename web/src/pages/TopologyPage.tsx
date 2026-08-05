@@ -1620,13 +1620,16 @@ export function TopologyPage() {
           throw new Error(job.error || "discover_failed");
         }
         const projected = discoverProjectNeighbors
-          ? await projectTopologyNeighbors(mapId)
+          ? await projectTopologyNeighbors(mapId, {
+              seed_fabric_node_ids: scoped.map((n) => n.id),
+            })
           : await fetchTopologyGraph(mapId);
         queryClient.setQueryData(queryKeys.topologyGraph(mapId), projected);
         appliedMapIdRef.current = mapId;
         let { rfNodes, rfEdges } = graphToFlow(projected.nodes, projected.edges, edgeDefaults);
         // Keep existing node positions when we did not auto-layout.
         const localPos = new Map(nodes.map((n) => [n.id, n.position]));
+        const beforeIds = new Set(nodes.map((n) => n.id));
         rfNodes = rfNodes.map((n) => {
           const p = localPos.get(n.id);
           return p ? { ...n, position: { ...p } } : n;
@@ -1649,7 +1652,8 @@ export function TopologyPage() {
         setNodes(rfNodes);
         setEdges(rfEdges);
         historyLockRef.current = false;
-        if (didAutoLayout) {
+        const addedNodes = rfNodes.filter((n) => !beforeIds.has(n.id)).length;
+        if (didAutoLayout || addedNodes > 0) {
           needsInitialFitRef.current = true;
           scheduleFitView(FIT_VIEW_OPTS);
         }

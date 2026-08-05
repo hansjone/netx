@@ -256,7 +256,14 @@ def _project_topology_neighbors(args: dict[str, Any]) -> dict[str, Any]:
     view_id = str(args.get("view_id") or "").strip()
     if not view_id:
         return {"ok": False, "error": "view_id_required"}
-    return _data(http_json("POST", f"/v1/topology/views/{view_id}/project-neighbors", body={}))
+    body: dict[str, Any] = {}
+    seeds = args.get("seed_fabric_node_ids") or args.get("fabric_node_ids") or []
+    if isinstance(seeds, list) and seeds:
+        body["seed_fabric_node_ids"] = [str(x).strip() for x in seeds if str(x).strip()]
+    mids = args.get("managed_ne_ids") or []
+    if isinstance(mids, list) and mids:
+        body["managed_ne_ids"] = [str(x).strip() for x in mids if str(x).strip()]
+    return _data(http_json("POST", f"/v1/topology/views/{view_id}/project-neighbors", body=body))
 
 
 def _get_topology_fabric_summary(_args: dict[str, Any]) -> dict[str, Any]:
@@ -515,11 +522,25 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
         "name": "projectTopologyNeighbors",
         "description": (
             "Project existing LLDP fabric neighbors of nodes already on the view onto the canvas. "
-            "Only places nodes that already exist in fabric."
+            "Only places nodes that already exist in fabric. "
+            "Optional seed_fabric_node_ids / managed_ne_ids limit expansion to those seeds; "
+            "omit to expand from every node on the view."
         ),
         "inputSchema": {
             "type": "object",
-            "properties": {"view_id": {"type": "string"}},
+            "properties": {
+                "view_id": {"type": "string"},
+                "seed_fabric_node_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional fabric node ids already on the view to expand from",
+                },
+                "managed_ne_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional managed NE ids to resolve to on-view fabric seeds",
+                },
+            },
             "required": ["view_id"],
             "additionalProperties": False,
         },
