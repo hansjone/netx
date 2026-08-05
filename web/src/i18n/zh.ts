@@ -600,8 +600,8 @@ const zh = {
       added: "已添加",
       create: "创建任务",
       creating: "创建中…",
-      expand: "展开",
-      collapse: "收起",
+      expand: "新建",
+      collapse: "关闭",
       meta: "已选 {{ne}} 台网元 · {{cmd}} 条命令",
     },
     eligible: {
@@ -654,6 +654,13 @@ const zh = {
       delete: "删除",
       autoRefresh: "任务进行中，每 2 秒自动刷新",
       runsInProgress: "部分网元仍在采集中，请稍候…",
+    },
+    kpi: {
+      jobs: "任务总数",
+      running: "进行中",
+      idle: "空闲",
+      last: "最近任务",
+      active: "活跃任务",
     },
     runs: {
       status: "状态",

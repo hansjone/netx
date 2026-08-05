@@ -316,6 +316,26 @@ export type CollectionJobItem = {
   last_run_at: string | null;
 };
 
+export type CollectionJobSummary = {
+  id: string;
+  title: string;
+  status: string;
+  ne_count: number;
+  success_count: number;
+  fail_count: number;
+  created_at?: string | null;
+  started_at?: string | null;
+  ended_at?: string | null;
+  last_run_at?: string | null;
+};
+
+export type CollectionDashboard = {
+  job_count: number;
+  active_count: number;
+  running_job: CollectionJobSummary | null;
+  last_job: CollectionJobSummary | null;
+};
+
 export type CollectionRunItem = {
   id: string;
   job_id: string;

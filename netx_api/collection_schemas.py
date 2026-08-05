@@ -41,3 +41,23 @@ class CollectionJobOut(BaseModel):
     started_at: datetime | None
     ended_at: datetime | None
     last_run_at: datetime | None = None
+
+
+class CollectionJobSummary(BaseModel):
+    id: str
+    title: str
+    status: str
+    ne_count: int
+    success_count: int
+    fail_count: int
+    created_at: datetime | None = None
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    last_run_at: datetime | None = None
+
+
+class CollectionDashboardOut(BaseModel):
+    job_count: int = 0
+    active_count: int = 0
+    running_job: CollectionJobSummary | None = None
+    last_job: CollectionJobSummary | None = None

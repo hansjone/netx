@@ -8,6 +8,7 @@ from .collection_service import (
     build_collection_job_zip,
     create_collection,
     delete_collection_job,
+    get_collection_dashboard,
     get_collection_job,
     list_collection_jobs,
     list_collection_runs,
@@ -34,6 +35,11 @@ def api_eligible_ne(
     db: Session = Depends(get_db),
 ):
     return list_eligible_ne(db, page=page, page_size=page_size, keyword=keyword)
+
+
+@router.get("/dashboard")
+def api_collection_dashboard(db: Session = Depends(get_db)):
+    return get_collection_dashboard(db).model_dump()
 
 
 @router.post("")

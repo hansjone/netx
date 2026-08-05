@@ -2525,6 +2525,16 @@ pre {
   max-height: 88px;
 }
 
+.collect-create-modal .collect-selected-block,
+.collect-create-modal .collect-pick-block {
+  margin-top: 16px;
+}
+
+.collect-create-modal .panel__toolbar {
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+}
+
 .collect-runs-panel {
   display: flex;
   flex-direction: column;

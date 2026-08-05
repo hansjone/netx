@@ -20,7 +20,13 @@ from .collection_job_state import (
     sync_job_progress,
     _sync_job_counts,
 )
-from .collection_schemas import CollectionJobCreate, CollectionJobOut, CollectionRunOut
+from .collection_schemas import (
+    CollectionDashboardOut,
+    CollectionJobCreate,
+    CollectionJobOut,
+    CollectionJobSummary,
+    CollectionRunOut,
+)
 from .ne_collection_paths import clear_run_output_files, collection_data_root
 
 _log = logging.getLogger("netx.collection")
@@ -91,6 +97,76 @@ def job_to_out(row: NeCollectionJob, *, output_count: int | None = None) -> Coll
         started_at=row.started_at,
         ended_at=row.ended_at,
         last_run_at=row.last_run_at,
+    )
+
+
+def job_to_summary(row: NeCollectionJob | None) -> CollectionJobSummary | None:
+    if row is None:
+        return None
+    return CollectionJobSummary(
+        id=str(row.id),
+        title=str(row.title or "").strip() or str(row.id)[:8],
+        status=str(row.status or "pending"),
+        ne_count=int(row.ne_count or 0),
+        success_count=int(row.success_count or 0),
+        fail_count=int(row.fail_count or 0),
+        created_at=row.created_at,
+        started_at=row.started_at,
+        ended_at=row.ended_at,
+        last_run_at=row.last_run_at,
+    )
+
+
+def has_active_collection_job(db: Session) -> NeCollectionJob | None:
+    return (
+        db.query(NeCollectionJob)
+        .filter(NeCollectionJob.status.in_(("pending", "running", "paused")))
+        .order_by(NeCollectionJob.created_at.desc())
+        .first()
+    )
+
+
+def last_finished_collection_job(db: Session) -> NeCollectionJob | None:
+    return (
+        db.query(NeCollectionJob)
+        .filter(NeCollectionJob.status.in_(("done", "failed")))
+        .order_by(NeCollectionJob.created_at.desc())
+        .first()
+    )
+
+
+def get_collection_dashboard(db: Session) -> CollectionDashboardOut:
+    job_count = int(db.query(NeCollectionJob).count() or 0)
+    active_count = int(
+        db.query(NeCollectionJob)
+        .filter(NeCollectionJob.status.in_(("pending", "running", "paused")))
+        .count()
+        or 0
+    )
+    running = has_active_collection_job(db)
+    if running is not None:
+        jid = str(running.id)
+        if str(running.status or "") not in ("done", "failed", "paused"):
+            reconcile_stale_collection_job(db, jid)
+            db.refresh(running)
+        if str(running.status or "") == "running":
+            sync_job_progress(db, jid)
+            finalize_collection_job(db, jid)
+            db.refresh(running)
+        if str(running.status or "") not in ("pending", "running", "paused"):
+            running = has_active_collection_job(db)
+            active_count = int(
+                db.query(NeCollectionJob)
+                .filter(NeCollectionJob.status.in_(("pending", "running", "paused")))
+                .count()
+                or 0
+            )
+    last = last_finished_collection_job(db)
+    return CollectionDashboardOut(
+        job_count=job_count,
+        active_count=active_count,
+        running_job=job_to_summary(running),
+        last_job=job_to_summary(last),
     )
 
 

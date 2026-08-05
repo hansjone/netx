@@ -604,8 +604,8 @@ const en = {
       added: "Added",
       create: "Create job",
       creating: "Creating…",
-      expand: "Expand",
-      collapse: "Collapse",
+      expand: "New",
+      collapse: "Close",
       meta: "{{ne}} NE(s) selected · {{cmd}} command(s)",
     },
     eligible: {
@@ -658,6 +658,13 @@ const en = {
       delete: "Delete",
       autoRefresh: "Auto-refresh every 2s while jobs are running",
       runsInProgress: "Some devices are still being collected…",
+    },
+    kpi: {
+      jobs: "Jobs",
+      running: "In progress",
+      idle: "Idle",
+      last: "Last job",
+      active: "Active jobs",
     },
     runs: {
       status: "Status",

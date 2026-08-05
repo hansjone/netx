@@ -1,6 +1,7 @@
 import type {
   CollectionJobDetail,
   CollectionJobItem,
+  CollectionDashboard,
   CollectionRunList,
   EligibleNeItem,
   IntegrationStatus,
@@ -557,6 +558,9 @@ export const fetchNeCollections = (params: { page: number; pageSize: number }) =
     `/v1/ne-collections?${p.toString()}`,
   );
 };
+
+export const fetchCollectionDashboard = () =>
+  apiGet<CollectionDashboard>("/v1/ne-collections/dashboard");
 
 export const fetchCollectionJob = (jobId: string) => apiGet<CollectionJobDetail>(`/v1/ne-collections/${jobId}`);
 

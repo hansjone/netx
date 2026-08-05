@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   createNeCollection,
   deleteCollectionJob,
+  fetchCollectionDashboard,
   fetchCollectionJob,
   fetchCollectionRuns,
   fetchEligibleNe,
@@ -58,6 +59,7 @@ export function CollectPage() {
     queryFn: () =>
       fetchEligibleNe({ page: nePage, pageSize: ELIGIBLE_PAGE_SIZE, keyword: neKeyword }),
     staleTime: 5000,
+    enabled: createOpen,
   });
 
   const jobsQuery = useQuery({
@@ -66,7 +68,20 @@ export function CollectPage() {
     staleTime: 1000,
     refetchInterval: (q) => {
       const items = q.state.data?.items ?? [];
-      return items.some((j) => j.status === "running") ? POLL_MS : false;
+      return items.some((j) => j.status === "running" || j.status === "pending") ? POLL_MS : false;
+    },
+  });
+
+  const dashQuery = useQuery({
+    queryKey: queryKeys.neCollectionDashboard,
+    queryFn: fetchCollectionDashboard,
+    staleTime: 1000,
+    refetchInterval: (q) => {
+      const running = q.state.data?.running_job;
+      return running &&
+        (running.status === "running" || running.status === "pending" || running.status === "paused")
+        ? POLL_MS
+        : false;
     },
   });
 
@@ -79,15 +94,24 @@ export function CollectPage() {
   });
 
   const jobs = jobsQuery.data?.items ?? [];
-  const jobActive = jobs.some((j) => j.status === "running");
+  const dash = dashQuery.data;
+  const running = dash?.running_job;
+  const last = dash?.last_job;
+  const jobActive = Boolean(
+    running && (running.status === "running" || running.status === "pending" || running.status === "paused"),
+  );
   const expandedJobRunning =
     Boolean(expandedJobId) &&
     (jobs.find((j) => j.id === expandedJobId)?.status === "running" || detailQuery.data?.job.status === "running");
   const autoPolling = jobActive || expandedJobRunning;
 
+  const invalidateOpsTasks = () => queryClient.invalidateQueries({ queryKey: ["opsTasks"] });
+
   const refreshAll = async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: queryKeys.neCollectionsAll }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.neCollectionDashboard }),
+      invalidateOpsTasks(),
       expandedJobId
         ? queryClient.invalidateQueries({ queryKey: queryKeys.neCollectionDetail(expandedJobId) })
         : Promise.resolve(),
@@ -99,6 +123,8 @@ export function CollectPage() {
 
   const invalidateJobs = async (jobId?: string) => {
     await queryClient.invalidateQueries({ queryKey: queryKeys.neCollectionsAll });
+    await queryClient.invalidateQueries({ queryKey: queryKeys.neCollectionDashboard });
+    await invalidateOpsTasks();
     if (jobId) {
       await queryClient.invalidateQueries({ queryKey: queryKeys.neCollectionDetail(jobId) });
       await queryClient.invalidateQueries({ queryKey: queryKeys.neCollectionRunsAll });
@@ -163,8 +189,7 @@ export function CollectPage() {
       showOk(t("collect.created", { id: job.id }));
       setCreateOpen(false);
       setExpandedJobId(job.id);
-      await queryClient.invalidateQueries({ queryKey: queryKeys.neCollectionsAll });
-      await queryClient.invalidateQueries({ queryKey: queryKeys.neCollectionDetail(job.id) });
+      await invalidateJobs(job.id);
     },
     onError: (err) => showError(String(err)),
   });
@@ -225,241 +250,6 @@ export function CollectPage() {
 
   return (
     <div className="page-stack">
-      <section className={`panel collect-create-panel${createOpen ? "" : " collect-create-panel--collapsed"}`}>
-        <div className="panel__toolbar collect-create-panel__head">
-          <div>
-            <h2>{t("collect.create.title")}</h2>
-            <p className="panel__hint">
-              {createOpen
-                ? t("collect.create.hint")
-                : t("collect.create.meta", { ne: selectedIds.length, cmd: commandLines })}
-            </p>
-          </div>
-          <button type="button" className="link-btn" onClick={() => setCreateOpen((open) => !open)}>
-            {createOpen ? t("collect.create.collapse") : t("collect.create.expand")}
-          </button>
-        </div>
-
-        {createOpen ? (
-          <>
-        <div className="form-grid form-grid--single">
-          <label className="form-grid__full">
-            {t("collect.form.jobTitle")}
-            <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={t("collect.form.jobTitlePh")} />
-          </label>
-          <label className="form-grid__full">
-            {t("collect.form.commands")}
-            <textarea
-              className="collect-commands"
-              rows={8}
-              value={commands}
-              onChange={(e) => setCommands(e.target.value)}
-              placeholder={t("collect.form.commandsPh")}
-            />
-          </label>
-        </div>
-        <p className="panel__hint">{t("collect.form.commandsHint")}</p>
-
-        <div className="collect-selected-block">
-          <div className="collect-selected-block__head">
-            <h3>{t("collect.create.selectedTitle")}</h3>
-            <span className="collect-meta">{t("collect.create.selectedCount", { count: selectedList.length })}</span>
-            {selectedList.length > 0 ? (
-              <button type="button" className="link-btn" onClick={clearSelected}>
-                {t("collect.create.clearSelected")}
-              </button>
-            ) : null}
-          </div>
-          {selectedList.length === 0 ? (
-            <p className="panel__hint">{t("collect.create.selectedEmpty")}</p>
-          ) : (
-            <div className="collect-selected-list">
-              {selectedList.map((row) => {
-                const key = eligibleKey(row);
-                const src = String(row.source || "managed").toLowerCase();
-                return (
-                <div key={key} className="collect-selected-chip">
-                  <span className="collect-selected-chip__main">
-                    <strong>{row.name || row.ip_address}</strong>
-                    <span className="collect-selected-chip__meta">
-                      {src}
-                      {row.ip_address ? ` · ${row.ip_address}` : ""}
-                      {row.vendor ? ` · ${row.vendor}` : ""}
-                    </span>
-                  </span>
-                  <button type="button" className="link-btn" onClick={() => removeNe(key)}>
-                    {t("collect.create.remove")}
-                  </button>
-                </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        <div className="collect-pick-block">
-          <div className="panel__toolbar">
-            <div>
-              <h3>{t("collect.create.pickTitle")}</h3>
-              <p className="panel__hint">{t("collect.create.pickHint")}</p>
-            </div>
-            <div className="table-actions">
-              <button
-                type="button"
-                className="link-btn"
-                disabled={batchPickCount === 0}
-                onClick={() => {
-                  const rows = eligibleItems.filter(
-                    (x) => pickSelectedIds.includes(eligibleKey(x)) && !selectedMap[eligibleKey(x)],
-                  );
-                  addBatchNe(rows);
-                  setPickSelectedIds([]);
-                }}
-              >
-                {t("collect.create.addBatch", { count: batchPickCount })}
-              </button>
-              <button type="button" onClick={() => eligibleQuery.refetch()} disabled={eligibleQuery.isFetching}>
-                {eligibleQuery.isFetching ? t("common.refreshing") : t("common.refresh")}
-              </button>
-            </div>
-          </div>
-          <div className="collect-pick-filters">
-            <label className="collect-runs-filter">
-              {t("collect.create.filterKeyword")}
-              <input
-                type="search"
-                value={neKeyword}
-                placeholder={t("collect.create.filterKeywordPh")}
-                onChange={(e) => {
-                  setNeKeyword(e.target.value);
-                  setNePage(1);
-                  setPickSelectedIds([]);
-                }}
-              />
-            </label>
-          </div>
-          {eligibleQuery.isLoading ? <p>{t("common.refreshing")}</p> : null}
-          {!eligibleQuery.isLoading && eligibleItems.length === 0 ? (
-            <p>{t("collect.create.pickEmpty")}</p>
-          ) : (
-            <table>
-              <thead>
-                <tr>
-                  <th>
-                    <input
-                      type="checkbox"
-                      checked={allPickSelected}
-                      onChange={(e) => {
-                        if (e.target.checked) {
-                          setPickSelectedIds(selectablePickItems.map((row) => eligibleKey(row)));
-                          return;
-                        }
-                        setPickSelectedIds([]);
-                      }}
-                      aria-label="pick all"
-                    />
-                  </th>
-                  <th>{t("managedNe.col.source")}</th>
-                  <th>{t("managedNe.col.name")}</th>
-                  <th>{t("managedNe.col.vendor")}</th>
-                  <th>{t("managedNe.col.ip")}</th>
-                  <th>{t("managedNe.col.connect")}</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {eligibleItems.map((row) => {
-                  const key = eligibleKey(row);
-                  const picked = Boolean(selectedMap[key]);
-                  const src = String(row.source || "managed").toLowerCase();
-                  return (
-                    <tr key={key}>
-                      <td>
-                        <input
-                          type="checkbox"
-                          checked={pickSelectedIds.includes(key)}
-                          disabled={picked}
-                          onChange={(e) => {
-                            if (picked) return;
-                            setPickSelectedIds((prev) =>
-                              e.target.checked ? [...new Set([...prev, key])] : prev.filter((id) => id !== key),
-                            );
-                          }}
-                        />
-                      </td>
-                      <td>
-                        <span className="table-tag">{src}</span>
-                      </td>
-                      <td>{row.name || row.ip_address}</td>
-                      <td>{row.vendor}</td>
-                      <td>{row.ip_address}</td>
-                      <td>
-                        <span className="conn-pill conn-pill--up">{row.connect_status}</span>
-                      </td>
-                      <td className="table-actions">
-                        <button
-                          type="button"
-                          className="link-btn"
-                          disabled={picked}
-                          onClick={() => {
-                            addNe(row);
-                            setPickSelectedIds((prev) => prev.filter((id) => id !== key));
-                          }}
-                        >
-                          {picked ? t("collect.create.added") : t("collect.create.add")}
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          )}
-          {neTotal > 0 ? (
-            <div className="pager">
-              <div className="pager__meta">
-                {t("common.pagerMeta", { total: neTotal, page: nePage, pages: nePages })}
-              </div>
-              <div className="pager__controls">
-                <button
-                  className="pager__btn"
-                  disabled={nePage <= 1}
-                  onClick={() => {
-                    setNePage(nePage - 1);
-                    setPickSelectedIds([]);
-                  }}
-                >
-                  {t("common.prevPage")}
-                </button>
-                <button
-                  className="pager__btn"
-                  disabled={nePage >= nePages}
-                  onClick={() => {
-                    setNePage(nePage + 1);
-                    setPickSelectedIds([]);
-                  }}
-                >
-                  {t("common.nextPage")}
-                </button>
-              </div>
-            </div>
-          ) : null}
-        </div>
-
-        <div className="panel__actions">
-          <span className="collect-meta">{t("collect.create.meta", { ne: selectedIds.length, cmd: commandLines })}</span>
-          <button
-            type="button"
-            disabled={selectedIds.length === 0 || commandLines === 0 || createMutation.isPending}
-            onClick={() => createMutation.mutate()}
-          >
-            {createMutation.isPending ? t("collect.create.creating") : t("collect.create.create")}
-          </button>
-        </div>
-          </>
-        ) : null}
-      </section>
-
       <section className="panel">
         <div className="panel__toolbar">
           <div>
@@ -467,14 +257,58 @@ export function CollectPage() {
             {autoPolling ? (
               <p className="panel__hint panel__hint--live">
                 {t("collect.jobs.autoRefresh")}
-                {jobsQuery.isFetching ? ` · ${t("common.refreshing")}` : ""}
+                {jobsQuery.isFetching || dashQuery.isFetching ? ` · ${t("common.refreshing")}` : ""}
               </p>
             ) : null}
           </div>
-          <button type="button" onClick={refreshAll} disabled={jobsQuery.isFetching}>
-            {jobsQuery.isFetching ? t("common.refreshing") : t("common.refresh")}
-          </button>
+          <div className="btn-row">
+            <button type="button" onClick={refreshAll} disabled={jobsQuery.isFetching || dashQuery.isFetching}>
+              {jobsQuery.isFetching || dashQuery.isFetching ? t("common.refreshing") : t("common.refresh")}
+            </button>
+            <button type="button" className="btn-primary" onClick={() => setCreateOpen(true)}>
+              {t("collect.create.expand")}
+            </button>
+            {running?.status === "running" || running?.status === "pending" ? (
+              <button
+                type="button"
+                onClick={() => pauseMutation.mutate(running.id)}
+                disabled={pauseMutation.isPending}
+              >
+                {t("collect.jobs.pause")}
+              </button>
+            ) : null}
+          </div>
         </div>
+
+        <div className="pt-list" style={{ marginBottom: 16 }}>
+          <div className="pt-list-kpis">
+            <div className="pt-list-kpi">
+              <div className="pt-list-kpi__label">{t("collect.kpi.jobs")}</div>
+              <div className="pt-list-kpi__value">{dash?.job_count ?? "—"}</div>
+            </div>
+            <div className={`pt-list-kpi${running ? " pt-list-kpi--live" : ""}`}>
+              <div className="pt-list-kpi__label">{t("collect.kpi.running")}</div>
+              <div className="pt-list-kpi__value" style={{ fontSize: running ? 15 : 22 }}>
+                {running
+                  ? `${running.status} · ${running.success_count}/${running.ne_count}`
+                  : t("collect.kpi.idle")}
+              </div>
+            </div>
+            <div className="pt-list-kpi">
+              <div className="pt-list-kpi__label">{t("collect.kpi.active")}</div>
+              <div className="pt-list-kpi__value">{dash?.active_count ?? "—"}</div>
+            </div>
+            <div className="pt-list-kpi">
+              <div className="pt-list-kpi__label">{t("collect.kpi.last")}</div>
+              <div className="pt-list-kpi__value" style={{ fontSize: 15 }}>
+                {last
+                  ? `${last.title} · ${last.status} · ok ${last.success_count} / fail ${last.fail_count}`
+                  : t("common.empty")}
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div className="pt-list">
           {!(jobsQuery.data?.items ?? []).length && !jobsQuery.isLoading ? (
             <div className="pt-list-empty">
@@ -532,6 +366,273 @@ export function CollectPage() {
           </div>
         </div>
       </section>
+
+      {createOpen ? (
+        <div className="modal-backdrop" role="presentation" onClick={() => setCreateOpen(false)}>
+          <div
+            className="modal modal--wide ops-detail-modal ops-detail-modal--xl"
+            role="dialog"
+            aria-modal="true"
+            aria-label={t("collect.create.title")}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="ops-detail-modal__head">
+              <div className="ops-detail-modal__title">
+                <h3>{t("collect.create.title")}</h3>
+                <p className="muted">{t("collect.create.hint")}</p>
+              </div>
+              <div className="btn-row ops-detail-modal__actions">
+                <button type="button" onClick={() => setCreateOpen(false)}>
+                  {t("networkConfigs.close")}
+                </button>
+              </div>
+            </div>
+
+            <div className="ops-detail-modal__scroll ops-detail-modal__scroll--pad collect-create-modal">
+              <div className="form-grid form-grid--single">
+                <label className="form-grid__full">
+                  {t("collect.form.jobTitle")}
+                  <input
+                    value={title}
+                    onChange={(e) => setTitle(e.target.value)}
+                    placeholder={t("collect.form.jobTitlePh")}
+                  />
+                </label>
+                <label className="form-grid__full">
+                  {t("collect.form.commands")}
+                  <textarea
+                    className="collect-commands"
+                    rows={6}
+                    value={commands}
+                    onChange={(e) => setCommands(e.target.value)}
+                    placeholder={t("collect.form.commandsPh")}
+                  />
+                </label>
+              </div>
+              <p className="panel__hint">{t("collect.form.commandsHint")}</p>
+
+              <div className="collect-selected-block">
+                <div className="collect-selected-block__head">
+                  <h3>{t("collect.create.selectedTitle")}</h3>
+                  <span className="collect-meta">
+                    {t("collect.create.selectedCount", { count: selectedList.length })}
+                  </span>
+                  {selectedList.length > 0 ? (
+                    <button type="button" className="link-btn" onClick={clearSelected}>
+                      {t("collect.create.clearSelected")}
+                    </button>
+                  ) : null}
+                </div>
+                {selectedList.length === 0 ? (
+                  <p className="panel__hint">{t("collect.create.selectedEmpty")}</p>
+                ) : (
+                  <div className="collect-selected-list">
+                    {selectedList.map((row) => {
+                      const key = eligibleKey(row);
+                      const src = String(row.source || "managed").toLowerCase();
+                      return (
+                        <div key={key} className="collect-selected-chip">
+                          <span className="collect-selected-chip__main">
+                            <strong>{row.name || row.ip_address}</strong>
+                            <span className="collect-selected-chip__meta">
+                              {src}
+                              {row.ip_address ? ` · ${row.ip_address}` : ""}
+                              {row.vendor ? ` · ${row.vendor}` : ""}
+                            </span>
+                          </span>
+                          <button type="button" className="link-btn" onClick={() => removeNe(key)}>
+                            {t("collect.create.remove")}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div className="collect-pick-block">
+                <div className="panel__toolbar">
+                  <div>
+                    <h3>{t("collect.create.pickTitle")}</h3>
+                    <p className="panel__hint">{t("collect.create.pickHint")}</p>
+                  </div>
+                  <div className="table-actions">
+                    <button
+                      type="button"
+                      className="link-btn"
+                      disabled={batchPickCount === 0}
+                      onClick={() => {
+                        const rows = eligibleItems.filter(
+                          (x) => pickSelectedIds.includes(eligibleKey(x)) && !selectedMap[eligibleKey(x)],
+                        );
+                        addBatchNe(rows);
+                        setPickSelectedIds([]);
+                      }}
+                    >
+                      {t("collect.create.addBatch", { count: batchPickCount })}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => eligibleQuery.refetch()}
+                      disabled={eligibleQuery.isFetching}
+                    >
+                      {eligibleQuery.isFetching ? t("common.refreshing") : t("common.refresh")}
+                    </button>
+                  </div>
+                </div>
+                <div className="ops-detail-modal__toolbar filter-inline">
+                  <input
+                    type="search"
+                    value={neKeyword}
+                    placeholder={t("collect.create.filterKeywordPh")}
+                    onChange={(e) => {
+                      setNeKeyword(e.target.value);
+                      setNePage(1);
+                      setPickSelectedIds([]);
+                    }}
+                  />
+                </div>
+                {eligibleQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
+                <div className="pt-list-table-wrap">
+                  <table className="data-table pt-list-table">
+                    <thead>
+                      <tr>
+                        <th>
+                          <input
+                            type="checkbox"
+                            checked={allPickSelected}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setPickSelectedIds(selectablePickItems.map((row) => eligibleKey(row)));
+                                return;
+                              }
+                              setPickSelectedIds([]);
+                            }}
+                            aria-label="pick all"
+                          />
+                        </th>
+                        <th>{t("managedNe.col.source")}</th>
+                        <th>{t("managedNe.col.name")}</th>
+                        <th>{t("managedNe.col.vendor")}</th>
+                        <th>{t("managedNe.col.ip")}</th>
+                        <th>{t("managedNe.col.connect")}</th>
+                        <th />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {eligibleItems.map((row) => {
+                        const key = eligibleKey(row);
+                        const picked = Boolean(selectedMap[key]);
+                        const src = String(row.source || "managed").toLowerCase();
+                        return (
+                          <tr key={key}>
+                            <td>
+                              <input
+                                type="checkbox"
+                                checked={pickSelectedIds.includes(key)}
+                                disabled={picked}
+                                onChange={(e) => {
+                                  if (picked) return;
+                                  setPickSelectedIds((prev) =>
+                                    e.target.checked
+                                      ? [...new Set([...prev, key])]
+                                      : prev.filter((id) => id !== key),
+                                  );
+                                }}
+                              />
+                            </td>
+                            <td>
+                              <span className="table-tag">{src}</span>
+                            </td>
+                            <td>{row.name || row.ip_address}</td>
+                            <td>{row.vendor}</td>
+                            <td>{row.ip_address}</td>
+                            <td>
+                              <span className="conn-pill conn-pill--up">{row.connect_status}</span>
+                            </td>
+                            <td className="table-actions">
+                              <button
+                                type="button"
+                                className="link-btn"
+                                disabled={picked}
+                                onClick={() => {
+                                  addNe(row);
+                                  setPickSelectedIds((prev) => prev.filter((id) => id !== key));
+                                }}
+                              >
+                                {picked ? t("collect.create.added") : t("collect.create.add")}
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {!eligibleQuery.isLoading && eligibleItems.length === 0 ? (
+                        <tr>
+                          <td colSpan={7} className="muted">
+                            {t("collect.create.pickEmpty")}
+                          </td>
+                        </tr>
+                      ) : null}
+                    </tbody>
+                  </table>
+                </div>
+                {neTotal > 0 ? (
+                  <div className="ops-detail-modal__foot" style={{ marginTop: 10 }}>
+                    <span className="muted">
+                      {t("common.pagerMeta", {
+                        total: String(neTotal),
+                        page: String(nePage),
+                        pages: String(nePages),
+                      })}
+                    </span>
+                    <div className="btn-row">
+                      <button
+                        type="button"
+                        disabled={nePage <= 1}
+                        onClick={() => {
+                          setNePage(nePage - 1);
+                          setPickSelectedIds([]);
+                        }}
+                      >
+                        {t("common.prevPage")}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={nePage >= nePages}
+                        onClick={() => {
+                          setNePage(nePage + 1);
+                          setPickSelectedIds([]);
+                        }}
+                      >
+                        {t("common.nextPage")}
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="ops-detail-modal__foot">
+              <span className="muted">
+                {t("collect.create.meta", { ne: selectedIds.length, cmd: commandLines })}
+              </span>
+              <div className="btn-row">
+                <button type="button" onClick={() => setCreateOpen(false)}>
+                  {t("networkConfigs.close")}
+                </button>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  disabled={selectedIds.length === 0 || commandLines === 0 || createMutation.isPending}
+                  onClick={() => createMutation.mutate()}
+                >
+                  {createMutation.isPending ? t("collect.create.creating") : t("collect.create.create")}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {expandedJobId ? (
         <div

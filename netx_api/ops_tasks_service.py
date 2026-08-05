@@ -185,6 +185,7 @@ def _collection_items(db: Session, actors: dict[str, str]) -> list[dict[str, Any
         ok = int(row.success_count or 0)
         fail = int(row.fail_count or 0)
         total = int(row.ne_count or 0)
+        done = ok + fail
         items.append(
             _item(
                 kind="ne_collect",
@@ -195,7 +196,7 @@ def _collection_items(db: Session, actors: dict[str, str]) -> list[dict[str, Any
                 actor=actor,
                 started_at=row.started_at or row.created_at,
                 updated_at=row.last_run_at or row.ended_at or row.started_at or row.created_at,
-                progress=f"{ok}/{fail}/{total}",
+                progress=f"{done}/{total}",
                 inflight=int(running),
                 detail=str(row.error_message or "")[:240],
                 href="/network/tasks/collect",
