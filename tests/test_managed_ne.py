@@ -12,7 +12,7 @@ from sqlalchemy.pool import StaticPool
 from netx_api.config import settings
 from netx_api.db import Base, get_db
 from netx_api.main import app
-from netx_api.models import CliConnectProfile, ManagedNE, UmeInventoryNE  # noqa: F401 — register table on Base
+from netx_api.models import CliConnectProfile, ManagedNE, TopoFabricNode, UmeInventoryNE  # noqa: F401 — register table on Base
 from netx_api.ne_connect import hostname_probe_command, parse_hostname_from_output
 from netx_api.ne_crypto import decrypt_secret, encrypt_secret
 from netx_api.cli_service import list_cli_targets
@@ -348,6 +348,7 @@ class WebcrtUpsertAndTargetsTests(unittest.TestCase):
         ManagedNE.__table__.create(bind=self.engine, checkfirst=True)
         UmeInventoryNE.__table__.create(bind=self.engine, checkfirst=True)
         CliConnectProfile.__table__.create(bind=self.engine, checkfirst=True)
+        TopoFabricNode.__table__.create(bind=self.engine, checkfirst=True)
         self.db = sessionmaker(bind=self.engine)()
 
     def tearDown(self):
@@ -515,6 +516,62 @@ class WebcrtUpsertAndTargetsTests(unittest.TestCase):
         self.assertEqual(b.name, "10.5.5.5 (1)")
         self.assertEqual(c.name, "10.5.5.5 (2)")
         self.assertEqual(a.ip_address, b.ip_address)
+
+    def test_claim_lldp_placeholder_promotes_to_webcrt(self):
+        from netx_api.device_types import LLDP_DISCOVERED_NE_SOURCE
+        from netx_api.ne_service_common import _now
+
+        now = _now()
+        row = ManagedNE(
+            name="SW-PEER-01",
+            vendor="Other",
+            device_type="generic",
+            ip_address="",
+            port=22,
+            protocol="ssh",
+            username="",
+            password_enc="",
+            enable_secret_enc="",
+            connect_status="unknown",
+            tags="",
+            remark="",
+            source=LLDP_DISCOVERED_NE_SOURCE,
+            source_ref="",
+            created_at=now,
+            updated_at=now,
+        )
+        self.db.add(row)
+        self.db.commit()
+        self.db.refresh(row)
+        ne_id = row.id
+
+        out, action = upsert_webcrt_session_host(
+            self.db,
+            ne_id=ne_id,
+            name="SW-PEER-01",
+            ip_address="10.9.9.9",
+            port=22,
+            protocol="ssh",
+            username="admin",
+            password="secret",
+            save_password=True,
+        )
+        self.assertEqual(action, "updated")
+        self.assertEqual(out.id, ne_id)
+        self.assertEqual(out.name, "SW-PEER-01")
+        self.assertEqual(out.ip_address, "10.9.9.9")
+        self.assertEqual(out.source, WEBCRT_NE_SOURCE)
+        refreshed = self.db.get(ManagedNE, ne_id)
+        self.assertEqual(refreshed.source, WEBCRT_NE_SOURCE)
+        self.assertTrue(str(refreshed.password_enc or "").strip())
+
+        managed = list_cli_targets(self.db, source="managed", page=1, page_size=50)
+        managed_ids = {x["id"] for x in managed["items"]}
+        self.assertNotIn(ne_id, managed_ids)
+        webcrt = list_cli_targets(self.db, source="webcrt", page=1, page_size=50)
+        hit = next(x for x in webcrt["items"] if x["id"] == ne_id)
+        self.assertEqual(hit["ne_source"], WEBCRT_NE_SOURCE)
+        self.assertEqual(hit["ip_address"], "10.9.9.9")
 
 
 if __name__ == "__main__":

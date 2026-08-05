@@ -1117,6 +1117,8 @@ const zh = {
     },
     newSession: {
       title: "新建会话",
+      claimTitle: "完善 LLDP 占位会话",
+      claimHint: "请填写可达地址；会话名默认使用 LLDP 占位名。连接成功后来源将更新为 WebCRT。",
       connect: "连接",
       connecting: "连接中…",
       protocol: "协议",

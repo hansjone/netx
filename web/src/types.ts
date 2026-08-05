@@ -262,11 +262,14 @@ export type CliTargetItem = {
   vendor?: string;
   device_type?: string;
   protocol?: string;
+  port?: number;
   username?: string;
   has_password?: boolean;
   hop_enabled?: boolean;
   connect_status: string;
   cli_profile_ready?: boolean;
+  /** ManagedNE.source (lldp / webcrt / ume_sync / …). */
+  ne_source?: string;
 };
 
 export type CliTargetListResponse = {

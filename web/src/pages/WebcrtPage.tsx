@@ -139,6 +139,8 @@ type AuthDialogState = {
   host: HostForm;
   /** When retrying an existing tree target (ne_id known). */
   target?: CliTargetItem;
+  /** Claim/promote this ManagedNE (LLDP placeholder) via quick-connect. */
+  claimNeId?: string;
   errorHint?: string;
 };
 
@@ -351,6 +353,24 @@ function isInventorySsh(target: Pick<CliTargetItem, "source" | "protocol">): boo
   const src = String(target.source || "").toLowerCase();
   if (src !== "webcrt" && src !== "managed") return false;
   return String(target.protocol || "ssh").toLowerCase() !== "telnet";
+}
+
+/** LLDP placeholders / incomplete inventory rows need New Session (host/IP) before auth. */
+function needsSessionSetup(
+  target: Pick<CliTargetItem, "source" | "ne_source" | "ip_address">,
+): boolean {
+  const listSrc = String(target.source || "").toLowerCase();
+  if (listSrc === "ume") return false;
+  if (listSrc !== "managed" && listSrc !== "webcrt") return false;
+  const neSrc = String(target.ne_source || "").trim().toLowerCase();
+  if (neSrc === "lldp") return true;
+  return !String(target.ip_address || "").trim();
+}
+
+function defaultPortForProtocol(protocol: "ssh" | "telnet", port?: number): number {
+  const n = Number(port) || 0;
+  if (n > 0) return n;
+  return protocol === "telnet" ? 23 : 22;
 }
 
 function isSessionGoneError(err: unknown): boolean {
@@ -746,6 +766,8 @@ export function WebcrtPage() {
   const [renameDialog, setRenameDialog] = useState<{ target: CliTargetItem; name: string } | null>(null);
   const [hostDialogOpen, setHostDialogOpen] = useState(false);
   const [hostForm, setHostForm] = useState<HostForm>(() => emptyHostForm());
+  /** When set, New Session claims this ManagedNE id instead of creating a duplicate. */
+  const [hostDialogClaimNeId, setHostDialogClaimNeId] = useState<string | null>(null);
   const [authDialog, setAuthDialog] = useState<AuthDialogState | null>(null);
   const [authForm, setAuthForm] = useState<AuthForm>(() => emptyAuthForm());
   const [sessionBusy, setSessionBusy] = useState(false);
@@ -920,12 +942,24 @@ export function WebcrtPage() {
       host: {
         name: target.name || "",
         ip_address: target.ip_address || "",
-        port: proto === "telnet" ? 23 : 22,
-        protocol: proto === "telnet" ? "telnet" : "ssh",
+        port: defaultPortForProtocol(proto, target.port),
+        protocol: proto,
       },
       target,
       errorHint,
     });
+  }, []);
+
+  const openSessionSetupForTarget = useCallback((target: CliTargetItem) => {
+    const proto = String(target.protocol || "ssh").toLowerCase() === "telnet" ? "telnet" : "ssh";
+    setHostDialogClaimNeId(target.id);
+    setHostForm({
+      name: String(target.name || "").trim(),
+      ip_address: String(target.ip_address || "").trim(),
+      port: defaultPortForProtocol(proto, target.port),
+      protocol: proto,
+    });
+    setHostDialogOpen(true);
   }, []);
 
   const openTarget = useCallback(
@@ -939,6 +973,12 @@ export function WebcrtPage() {
         return;
       }
       if (connectingKeysRef.current.has(key)) return;
+
+      // LLDP placeholders / no-IP rows → New Session dialog (host + session name).
+      if (needsSessionSetup(target) && !opts?.force) {
+        openSessionSetupForTarget(target);
+        return;
+      }
 
       // Managed / WebCRT SSH without saved password → credential popup.
       // Telnet stays interactive in the terminal (SecureCRT-style); UME uses shared profile.
@@ -1031,7 +1071,7 @@ export function WebcrtPage() {
         connectingKeysRef.current.delete(key);
       }
     },
-    [openAuthForTarget, showOk, showError, t, updateTab],
+    [openAuthForTarget, openSessionSetupForTarget, showOk, showError, t, updateTab],
   );
 
   /** Re-open WS to an existing backend session (within detach grace). */
@@ -1070,6 +1110,7 @@ export function WebcrtPage() {
       showError(t("webcrt.newSession.ipRequired"));
       return;
     }
+    const claimNeId = hostDialogClaimNeId || undefined;
     const host: HostForm = {
       ...hostForm,
       ip_address: ip,
@@ -1087,6 +1128,7 @@ export function WebcrtPage() {
             port: host.port,
             protocol: "telnet",
             save_password: false,
+            ne_id: claimNeId,
             cols: dims.cols,
             rows: dims.rows,
             encoding: dims.encoding,
@@ -1102,10 +1144,12 @@ export function WebcrtPage() {
             vendor: result.ne.vendor,
             device_type: result.ne.device_type,
             protocol: result.ne.protocol || "telnet",
+            port: host.port,
             username: result.ne.username || "",
             has_password: false,
             connect_status: result.ne.connect_status || "unknown",
             cli_profile_ready: true,
+            ne_source: "webcrt",
           };
           attachSessionResult(
             target,
@@ -1116,6 +1160,7 @@ export function WebcrtPage() {
           );
           setHostDialogOpen(false);
           setHostForm(emptyHostForm());
+          setHostDialogClaimNeId(null);
           setSource(listSource === "managed" ? "managed" : "webcrt");
           void queryClient.invalidateQueries({ queryKey: ["webcrtTargets"] });
         } catch (err) {
@@ -1128,8 +1173,16 @@ export function WebcrtPage() {
     }
     setHostDialogOpen(false);
     setAuthForm(emptyAuthForm());
-    setAuthDialog({ mode: "quick", host });
-  }, [attachSessionResult, hostForm, queryClient, sessionDims, showError, t]);
+    setAuthDialog({ mode: "quick", host, claimNeId });
+  }, [
+    attachSessionResult,
+    hostDialogClaimNeId,
+    hostForm,
+    queryClient,
+    sessionDims,
+    showError,
+    t,
+  ]);
 
   const submitAuthDialog = useCallback(async () => {
     if (!authDialog) return;
@@ -1192,6 +1245,7 @@ export function WebcrtPage() {
         username,
         password: authForm.password,
         save_password: authForm.savePassword,
+        ne_id: authDialog.claimNeId,
         cols: dims.cols,
         rows: dims.rows,
         encoding: dims.encoding,
@@ -1206,10 +1260,12 @@ export function WebcrtPage() {
         vendor: result.ne.vendor,
         device_type: result.ne.device_type,
         protocol: result.ne.protocol || "ssh",
+        port: host.port || 22,
         username: result.ne.username || username,
         has_password: authForm.savePassword,
         connect_status: result.ne.connect_status || "unknown",
         cli_profile_ready: true,
+        ne_source: "webcrt",
       };
       attachSessionResult(
         target,
@@ -1220,6 +1276,7 @@ export function WebcrtPage() {
       );
       setAuthDialog(null);
       setAuthForm(emptyAuthForm());
+      setHostDialogClaimNeId(null);
       setSource("webcrt");
       void queryClient.invalidateQueries({ queryKey: ["webcrtTargets"] });
     } catch (err) {
@@ -1247,6 +1304,7 @@ export function WebcrtPage() {
           errorHint: message,
         });
         setAuthForm((prev) => ({ ...prev, username, password: "" }));
+        setHostDialogClaimNeId(null);
         setSource("webcrt");
         void queryClient.invalidateQueries({ queryKey: ["webcrtTargets"] });
       } else {
@@ -1902,11 +1960,13 @@ export function WebcrtPage() {
             vendor: row.vendor,
             device_type: row.device_type,
             protocol: row.protocol || "ssh",
+            port: row.port,
             username: row.username || "",
             has_password: Boolean(row.has_password),
             hop_enabled: Boolean(row.hop_enabled),
             connect_status: row.connect_status,
             cli_profile_ready: true,
+            ne_source: row.source || "",
           });
         }
       } catch (err) {
@@ -2046,6 +2106,7 @@ export function WebcrtPage() {
               type="button"
               className="webcrt-sidebar__new-btn"
               onClick={() => {
+                setHostDialogClaimNeId(null);
                 setHostForm(emptyHostForm());
                 setHostDialogOpen(true);
               }}
@@ -3333,7 +3394,10 @@ export function WebcrtPage() {
           className="modal-backdrop"
           role="presentation"
           onClick={() => {
-            if (!sessionBusy) setHostDialogOpen(false);
+            if (!sessionBusy) {
+              setHostDialogOpen(false);
+              setHostDialogClaimNeId(null);
+            }
           }}
         >
           <div
@@ -3342,7 +3406,14 @@ export function WebcrtPage() {
             aria-labelledby="webcrt-new-session-title"
             onClick={(e) => e.stopPropagation()}
           >
-            <h3 id="webcrt-new-session-title">{t("webcrt.newSession.title")}</h3>
+            <h3 id="webcrt-new-session-title">
+              {hostDialogClaimNeId
+                ? t("webcrt.newSession.claimTitle")
+                : t("webcrt.newSession.title")}
+            </h3>
+            {hostDialogClaimNeId ? (
+              <p className="form-hint">{t("webcrt.newSession.claimHint")}</p>
+            ) : null}
             <div className="form-grid">
               <label>
                 <FormLabel required>{t("webcrt.newSession.protocol")}</FormLabel>
@@ -3394,7 +3465,14 @@ export function WebcrtPage() {
               </label>
             </div>
             <div className="modal__actions">
-              <button type="button" disabled={sessionBusy} onClick={() => setHostDialogOpen(false)}>
+              <button
+                type="button"
+                disabled={sessionBusy}
+                onClick={() => {
+                  setHostDialogOpen(false);
+                  setHostDialogClaimNeId(null);
+                }}
+              >
                 {t("webcrt.sessionOptionsCancel")}
               </button>
               <button type="button" disabled={sessionBusy} onClick={() => submitHostDialog()}>

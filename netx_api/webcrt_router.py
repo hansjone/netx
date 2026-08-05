@@ -75,6 +75,8 @@ class WebcrtQuickConnectBody(BaseModel):
     username: str = ""
     password: str = ""
     save_password: bool = False
+    # When set, claim/update an existing LLDP (or incomplete) ManagedNE → source=webcrt.
+    ne_id: str | None = None
     cols: int = Field(default=80, ge=20, le=500)
     rows: int = Field(default=24, ge=5, le=200)
     encoding: str = Field(default="utf-8")
@@ -190,6 +192,7 @@ def api_quick_connect(
         username=body.username,
         password=body.password,
         save_password=save_password,
+        ne_id=str(body.ne_id or "").strip() or None,
     )
     # Pass SSH credentials as one-shot overrides (covers unsaved password + reused inventory).
     pwd_override: str | None = None

@@ -1123,6 +1123,9 @@ const en = {
     },
     newSession: {
       title: "New Session",
+      claimTitle: "Complete LLDP placeholder",
+      claimHint:
+        "Enter a reachable host. Session name defaults to the LLDP placeholder. On success, source becomes WebCRT.",
       connect: "Connect",
       connecting: "Connecting…",
       protocol: "Protocol",

@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from .device_types import WEBCRT_DEVICE_TYPES, WEBCRT_NE_SOURCE
+from .device_types import LLDP_DISCOVERED_NE_SOURCE, WEBCRT_DEVICE_TYPES, WEBCRT_NE_SOURCE
 from .models import ManagedNE
 from .ne_crypto import encrypt_secret
 from .ne_schemas import ManagedNeCreate, ManagedNeOut
@@ -23,6 +23,16 @@ from .ne_service_common import (
     _validate_hop_on_create,
     row_to_out,
 )
+
+
+def _is_webcrt_claimable(row: ManagedNE) -> bool:
+    """LLDP placeholders / incomplete rows (no IP) can be promoted into WebCRT sessions."""
+    src = str(row.source or "").strip().lower()
+    if src in {LLDP_DISCOVERED_NE_SOURCE, "lldp"}:
+        return True
+    if src in {WEBCRT_NE_SOURCE, "webcrt", "ume_sync"}:
+        return False
+    return not str(row.ip_address or "").strip()
 
 def _normalize_webcrt_device_type(device_type: str) -> str:
     dt = str(device_type or "").strip()
@@ -145,12 +155,16 @@ def upsert_webcrt_session_host(
     username: str = "",
     password: str = "",
     save_password: bool = False,
+    ne_id: str | None = None,
 ) -> tuple[ManagedNeOut, str]:
-    """Create a WebCRT session host (linux, no hop). Always inserts a new row.
+    """Create a WebCRT session host, or claim an existing LLDP / incomplete ManagedNE.
 
-    Same IP is allowed; session name auto-suffixes ``(1)``, ``(2)``, … on collision.
+    Without ``ne_id``: always inserts a new row. Same IP is allowed; session name
+    auto-suffixes ``(1)``, ``(2)``, … on collision among WebCRT hosts.
+
+    With ``ne_id``: updates that claimable row in place and sets ``source=webcrt``.
     Telnet never persists a password. SSH persists password only when ``save_password``.
-    Returns ``(ne_out, \"created\")``.
+    Returns ``(ne_out, \"created\" | \"updated\")``.
     """
     _require_crypto()
     ip = _normalize_ip(ip_address)
@@ -165,11 +179,62 @@ def upsert_webcrt_session_host(
         raise HTTPException(status_code=400, detail="password_required")
 
     now = _now()
-    display_name = _next_webcrt_session_name(db, str(name or "").strip() or ip)
-
+    port_n = int(port or (23 if proto == "telnet" else 22))
     password_enc = ""
     if proto == "ssh" and save_password and pwd.strip():
         password_enc = encrypt_secret(pwd)
+
+    claim_id = str(ne_id or "").strip()
+    if claim_id:
+        row = db.get(ManagedNE, claim_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="managed_ne_not_found")
+        if not _is_webcrt_claimable(row):
+            raise HTTPException(status_code=400, detail="ne_not_claimable_for_webcrt")
+        preferred = str(name or "").strip() or str(row.name or "").strip() or ip
+        # Keep current name when unchanged; otherwise uniquify among other WebCRT names.
+        if preferred == str(row.name or "").strip():
+            display_name = preferred
+        else:
+            display_name = _next_webcrt_session_name(db, preferred)
+        row.name = display_name
+        row.ip_address = ip
+        row.port = port_n
+        row.protocol = proto
+        row.username = user
+        if proto == "ssh":
+            if save_password and password_enc:
+                row.password_enc = password_enc
+            elif not save_password:
+                # One-shot auth; clear incomplete placeholder creds.
+                row.password_enc = ""
+        else:
+            row.password_enc = ""
+        row.device_type = "generic"
+        if not str(row.vendor or "").strip():
+            row.vendor = "Other"
+        row.source = WEBCRT_NE_SOURCE
+        row.connect_status = "unknown"
+        row.updated_at = now
+        from .topology_fabric_nodes import ensure_fabric_node_for_managed
+
+        ensure_fabric_node_for_managed(db, row)
+        try:
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            from sqlalchemy.exc import IntegrityError
+
+            if isinstance(exc, IntegrityError):
+                raise HTTPException(
+                    status_code=409,
+                    detail="ip_address_conflict_restart_required",
+                ) from exc
+            raise
+        db.refresh(row)
+        return row_to_out(row), "updated"
+
+    display_name = _next_webcrt_session_name(db, str(name or "").strip() or ip)
 
     row = ManagedNE(
         name=display_name,
@@ -177,7 +242,7 @@ def upsert_webcrt_session_host(
         # generic → Netmiko terminal_server: SSH auth then raw PTY (no linux session prep).
         device_type="generic",
         ip_address=ip,
-        port=int(port or (23 if proto == "telnet" else 22)),
+        port=port_n,
         protocol=proto,
         username=user,
         password_enc=password_enc,

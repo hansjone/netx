@@ -645,6 +645,8 @@ export const quickConnectWebcrtSession = (body: {
   username?: string;
   password?: string;
   save_password?: boolean;
+  /** Claim existing LLDP / incomplete ManagedNE → promote to webcrt. */
+  ne_id?: string;
   cols?: number;
   rows?: number;
   encoding?: string;

@@ -274,20 +274,29 @@ def list_cli_targets(
     default_proto = str(getattr(default_profile, "protocol", "") or "ssh") if default_profile else "ssh"
 
     def _managed_item(row: Any, *, list_source: str = "managed") -> dict[str, Any]:
+        proto = str(getattr(row, "protocol", "") or "")
+        try:
+            port = int(getattr(row, "port", 0) or 0)
+        except (TypeError, ValueError):
+            port = 0
+        if port <= 0:
+            port = 23 if proto.lower() == "telnet" else 22
         return CliTargetOut(
             source=list_source,
             id=str(row.id),
             ume_ne_id=None,
             name=str(row.name or row.ip_address),
-            ip_address=str(row.ip_address),
+            ip_address=str(row.ip_address or ""),
             vendor=str(row.vendor),
             device_type=str(row.device_type),
-            protocol=str(getattr(row, "protocol", "") or ""),
+            protocol=proto,
+            port=port,
             username=str(getattr(row, "username", "") or ""),
             has_password=bool(str(getattr(row, "password_enc", "") or "").strip()),
             hop_enabled=bool(getattr(row, "hop_enabled", False)),
             connect_status=str(row.connect_status),
             cli_profile_ready=True,
+            ne_source=str(getattr(row, "source", "") or ""),
         ).model_dump()
 
     def _ume_item(inv: UmeInventoryNE, ov: UmeCliOverride | None) -> dict[str, Any]:
