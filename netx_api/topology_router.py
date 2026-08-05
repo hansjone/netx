@@ -205,20 +205,30 @@ def api_fabric_discover(
 @router.post("/fabric/cleanup-duplicates")
 def api_fabric_cleanup_duplicates(db: Session = Depends(get_db)) -> dict[str, Any]:
     """Merge duplicate fabric nodes (same managed/ume/name/ip) and retarget edges."""
-    from .topology_inventory_lifecycle import reconcile_dangling_fabric_links
+    from .topology_inventory_lifecycle import (
+        purge_fully_orphaned_fabric_nodes,
+        reconcile_dangling_fabric_links,
+    )
 
-    link_stats = reconcile_dangling_fabric_links(db)
+    # Detach dangling first but defer full orphan GC until after absorb/merge.
+    link_stats = reconcile_dangling_fabric_links(db, sweep_orphans=False)
     result = merge_duplicate_fabric_nodes(db)
+    gc = purge_fully_orphaned_fabric_nodes(db, None)
     db.commit()
-    return {"ok": True, **result, "reconcile_links": link_stats}
+    return {
+        "ok": True,
+        **result,
+        "reconcile_links": link_stats,
+        "purged_orphans": gc,
+    }
 
 
 @router.post("/fabric/reconcile-links")
 def api_fabric_reconcile_links(db: Session = Depends(get_db)) -> dict[str, Any]:
-    """Detach fabric refs whose managed/UME inventory rows no longer exist."""
+    """Detach fabric refs whose managed/UME inventory rows no longer exist; GC full orphans."""
     from .topology_inventory_lifecycle import reconcile_dangling_fabric_links
 
-    stats = reconcile_dangling_fabric_links(db)
+    stats = reconcile_dangling_fabric_links(db, sweep_orphans=True)
     db.commit()
     return {"ok": True, **stats}
 
@@ -465,6 +475,17 @@ def api_delete_fabric_nodes(
     from .topology_inventory_lifecycle import delete_fabric_nodes
 
     return delete_fabric_nodes(db, body.fabric_node_ids)
+
+
+@router.post("/fabric/nodes/purge-placeholders")
+def api_purge_placeholder_fabric_nodes(
+    body: FabricNodesDeleteRequest,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Hard-delete topology/LLDP placeholder ManagedNE + fabric node + incident edges."""
+    from .topology_inventory_lifecycle import purge_placeholder_fabric_nodes
+
+    return purge_placeholder_fabric_nodes(db, body.fabric_node_ids)
 
 
 @router.post("/slices/generate")

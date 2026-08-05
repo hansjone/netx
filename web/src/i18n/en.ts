@@ -718,10 +718,12 @@ const en = {
     edit: "Edit",
     delete: "Delete",
     openTerminal: "Terminal",
-    confirmDelete: "Delete this network element?",
+    confirmDelete:
+      "Delete this network element? If its Fabric node is managed-only (no UME binding), that node and its direct links will also be removed.",
     batchDelete: "Batch delete",
     batchDeleting: "Deleting…",
-    batchDeleteConfirm: "Delete {{n}} selected network element(s)? This cannot be undone.",
+    batchDeleteConfirm:
+      "Delete {{n}} selected network element(s)? Cannot be undone. Managed-only Fabric nodes cascade (node + direct links); nodes still bound to UME keep topology.",
     batchDeleteDone: "Deleted {{n}} network element(s)",
     batchDeleteSelectRequired: "Select network elements to delete",
     keywordPh: "name / IP / user / tags",
@@ -784,7 +786,8 @@ const en = {
       syncing: "Syncing…",
       delete: "Delete UME NEs",
       deleting: "Deleting…",
-      deleteConfirm: "Delete all managed NEs created from UME sync? This cannot be undone.",
+      deleteConfirm:
+        "Delete all managed NEs created from UME sync? Cannot be undone. Fabric nodes that become fully orphaned (no UME left) are removed with their direct links.",
       done: "UME sync done: {{inserted}} inserted, {{updated}} updated, {{deleted}} deleted, {{total}} inventory total",
       deletedDone: "Deleted {{n}} UME-synced NEs",
     },
@@ -1409,8 +1412,8 @@ const en = {
     projectedNeighbors: "Projected {{count}} neighbor(s) onto the map",
     localBrowserOnly: "this browser only",
     deleteEdgeConfirm:
-      "Delete selected link(s)? This removes them from Fabric globally; LLDP may recreate them on the next collect.",
-    edgeDeleted: "Deleted {{count}} link(s)",
+      "Remove selected link(s) from the canvas? They are deleted from Fabric only when you Save. LLDP may recreate them on the next collect.",
+    edgeDeleted: "Queued {{count}} link delete(s) — Save to apply",
     discoverCancelled: "Discovery cancelled",
     truncatedMembership: "Membership cap reached; some neighbors were not placed. Use classify/slices or a new map.",
     truncatedFrozen: "This map membership is frozen; neighbors cannot be projected. Unfreeze in classify/slices or create a new map.",
@@ -1418,8 +1421,8 @@ const en = {
     truncatedEdges: "Too many edges; display truncated. Filter status or create another map.",
     truncatedGeneric: "Graph data truncated. Narrow scope or create another map.",
     deleteSelectionConfirm:
-      "Remove {{nodes}} NE(s) from this map and delete {{edges}} Fabric link(s)?",
-    selectionDeleted: "Removed {{nodes}} NE(s) and deleted {{edges}} link(s)",
+      "Remove {{nodes}} NE(s) from this map and {{edges}} link(s)? Link deletes apply on Save; NE remove from map applies on Save.",
+    selectionDeleted: "Queued: remove {{nodes}} NE(s), delete {{edges}} link(s) — Save to apply",
     newMap: "New",
     newMapName: "New topology",
     rename: "Rename",
@@ -1498,6 +1501,10 @@ const en = {
     openWebcrt: "Open terminal",
     openNe: "NE details",
     removeNode: "Remove from canvas",
+    deletePlaceholder: "Delete placeholder",
+    deletePlaceholderConfirm:
+      "Permanently delete this placeholder NE (inventory + Fabric links)? This cannot be undone with canvas Undo.",
+    deletePlaceholderDone: "Placeholder deleted",
     removeEdge: "Delete edge",
     nodeMenu: "Node",
     paneMenu: "Canvas",
@@ -1610,8 +1617,9 @@ const en = {
     locateOnCanvas: "Click to locate on canvas",
     openPortTraffic: "Open port traffic",
     removeStale: "Clear missing ({{count}})",
-    removeStaleHint: "Manually delete red missing edges; scheduled collect also purges after 4 consecutive misses",
-    staleRemoved: "Removed {{count}} missing edge(s)",
+    removeStaleHint:
+      "Queue delete of red missing edges (applies on Save); scheduled collect also purges after 4 consecutive misses",
+    staleRemoved: "Queued {{count}} missing edge delete(s) — Save to apply",
     connectHint: "Connect mode: click source node, then target (Esc or Select to exit)",
   },
   topoClassify: {

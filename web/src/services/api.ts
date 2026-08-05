@@ -1176,6 +1176,18 @@ export const deleteFabricNodes = (fabricNodeIds: string[]) =>
     { fabric_node_ids: fabricNodeIds },
   );
 
+/** Hard-delete topology/LLDP placeholders (ManagedNE + fabric + edges). */
+export const purgePlaceholderFabricNodes = (fabricNodeIds: string[]) =>
+  apiPost<{
+    deleted: number;
+    edges_deleted: number;
+    placements_deleted: number;
+    managed_deleted: number;
+    membership_views: number;
+  }>("/v1/topology/fabric/nodes/purge-placeholders", {
+    fabric_node_ids: fabricNodeIds,
+  });
+
 export const generateTopologySlices = (body: {
   folder_id: string;
   template: "core_only" | "core_agg" | "agg_access";

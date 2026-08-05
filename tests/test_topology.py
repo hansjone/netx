@@ -1524,7 +1524,8 @@ Management Addresses:
         self.db.delete(ne_b)
         self.db.commit()
 
-    def test_delete_managed_detaches_fabric_keeps_topology(self) -> None:
+    def test_delete_managed_purges_orphan_fabric_and_edges(self) -> None:
+        """Managed-only delete → detach then purge fabric node + incident edges."""
         from netx_api import ne_service
         from netx_api.topology_inventory_lifecycle import reconcile_dangling_fabric_links
 
@@ -1551,6 +1552,7 @@ Management Addresses:
             id=f"peer-{suffix}",
             name=f"PEER-{suffix}",
             ip=f"10.66.{(int(suffix[:2], 16) % 200) + 1}.2",
+            ume_ne_id=f"ume-peer-{suffix}",
         )
         self.db.add(peer)
         self.db.commit()
@@ -1563,28 +1565,23 @@ Management Addresses:
             source="lldp",
         )
         self.db.commit()
+        edge_id = str(edge.id)
 
         ne_service.delete_managed_ne(self.db, ne.id)
+        self.db.expire_all()
 
-        fab = self.db.get(TopoFabricNode, fid)
-        self.assertIsNotNone(fab)
-        assert fab is not None
-        self.assertFalse(str(fab.managed_ne_id or "").strip())
+        self.assertIsNone(self.db.get(TopoFabricNode, fid))
+        self.assertIsNone(self.db.get(TopoFabricEdge, edge_id))
         self.assertEqual(
             self.db.query(TopoViewNode)
             .filter(TopoViewNode.view_id == view.id, TopoViewNode.fabric_node_id == fid)
             .count(),
-            1,
+            0,
         )
-        self.assertIsNotNone(self.db.get(TopoFabricEdge, edge.id))
+        # Peer still UME-linked — not purged.
+        self.assertIsNotNone(self.db.get(TopoFabricNode, peer.id))
 
-        orphaned = svc.list_fabric_nodes(self.db, link_status="orphaned", page_size=500)
-        self.assertTrue(any(x["id"] == fid for x in orphaned["items"]))
-        hit = next(x for x in orphaned["items"] if x["id"] == fid)
-        self.assertEqual(hit["link_status"], "orphaned")
-        self.assertFalse(hit["managed_alive"])
-
-        # Historical dangling ref (pre-lifecycle) is cleared by reconcile.
+        # Historical dangling ref → detach then purge (fully orphaned).
         ghost_id = f"ghost-{suffix}"
         dangling = TopoFabricNode(
             id=f"dang-{suffix}",
@@ -1596,9 +1593,122 @@ Management Addresses:
         self.db.commit()
         stats = reconcile_dangling_fabric_links(self.db)
         self.db.commit()
+        self.db.expire_all()
         self.assertGreaterEqual(int(stats["detached_managed_nodes"]), 1)
-        self.db.refresh(dangling)
-        self.assertFalse(str(dangling.managed_ne_id or "").strip())
+        self.assertGreaterEqual(int(stats["purged_orphans"]), 1)
+        self.assertIsNone(self.db.get(TopoFabricNode, dangling.id))
+
+    def test_both_bound_keeps_fabric_until_fully_orphaned(self) -> None:
+        from netx_api import ne_service
+        from netx_api.topology_inventory_lifecycle import detach_fabric_from_ume
+
+        suffix = uuid4().hex[:8]
+        ne = ManagedNE(
+            id=f"both-m-{suffix}",
+            name=f"BOTH-{suffix}",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address=f"10.67.{(int(suffix[:2], 16) % 200) + 1}.1",
+        )
+        self.db.add(ne)
+        self.db.commit()
+        fab = svc.ensure_fabric_node_for_managed(self.db, ne)
+        fab.ume_ne_id = f"ume-both-{suffix}"
+        self.db.commit()
+        peer = TopoFabricNode(
+            id=f"both-peer-{suffix}",
+            name=f"BP-{suffix}",
+            ip=f"10.67.{(int(suffix[:2], 16) % 200) + 1}.2",
+            ume_ne_id=f"ume-bp-{suffix}",
+        )
+        self.db.add(peer)
+        self.db.commit()
+        edge, _ = svc.upsert_fabric_edge(
+            self.db,
+            a_node_id=fab.id,
+            b_node_id=peer.id,
+            a_port="Gi1/0",
+            b_port="Gi1/1",
+            source="lldp",
+        )
+        self.db.commit()
+        edge_id = str(edge.id)
+        fab_id = str(fab.id)
+        ume_id = str(fab.ume_ne_id)
+
+        ne_service.delete_managed_ne(self.db, ne.id)
+        self.db.expire_all()
+        kept = self.db.get(TopoFabricNode, fab_id)
+        self.assertIsNotNone(kept)
+        assert kept is not None
+        self.assertFalse(str(kept.managed_ne_id or "").strip())
+        self.assertEqual(str(kept.ume_ne_id or "").strip(), ume_id)
+        self.assertIsNotNone(self.db.get(TopoFabricEdge, edge_id))
+
+        detach_fabric_from_ume(self.db, [ume_id])
+        self.db.commit()
+        self.db.expire_all()
+        self.assertIsNone(self.db.get(TopoFabricNode, fab_id))
+        self.assertIsNone(self.db.get(TopoFabricEdge, edge_id))
+
+    def test_ume_only_detach_purges_orphan(self) -> None:
+        from netx_api.topology_inventory_lifecycle import detach_fabric_from_ume
+
+        suffix = uuid4().hex[:8]
+        ume_id = f"ume-only-{suffix}"
+        fab = TopoFabricNode(
+            id=f"uo-{suffix}",
+            name=f"UO-{suffix}",
+            ip="10.68.0.1",
+            ume_ne_id=ume_id,
+        )
+        peer = TopoFabricNode(
+            id=f"uo-peer-{suffix}",
+            name=f"UOP-{suffix}",
+            ip="10.68.0.2",
+            ume_ne_id=f"ume-uop-{suffix}",
+        )
+        self.db.add(fab)
+        self.db.add(peer)
+        self.db.commit()
+        edge, _ = svc.upsert_fabric_edge(
+            self.db,
+            a_node_id=fab.id,
+            b_node_id=peer.id,
+            a_port="Eth1",
+            b_port="Eth2",
+            source="lldp",
+        )
+        self.db.commit()
+        edge_id = str(edge.id)
+        fab_id = str(fab.id)
+
+        out = detach_fabric_from_ume(self.db, [ume_id])
+        self.db.commit()
+        self.db.expire_all()
+        self.assertEqual(out["purged_orphans"], 1)
+        self.assertGreaterEqual(out["edges_deleted"], 1)
+        self.assertIsNone(self.db.get(TopoFabricNode, fab_id))
+        self.assertIsNone(self.db.get(TopoFabricEdge, edge_id))
+        self.assertIsNotNone(self.db.get(TopoFabricNode, peer.id))
+
+    def test_fabric_reconcile_scheduler_once_sweeps_orphans(self) -> None:
+        from netx_api.fabric_reconcile_scheduler import run_fabric_reconcile_once
+
+        suffix = uuid4().hex[:8]
+        orphan_id = f"gc-{suffix}"
+        orphan = TopoFabricNode(
+            id=orphan_id,
+            name=f"GC-{suffix}",
+            ip="10.69.0.1",
+        )
+        self.db.add(orphan)
+        self.db.commit()
+
+        stats = run_fabric_reconcile_once()
+        self.assertGreaterEqual(int(stats.get("purged_orphans") or 0), 1)
+        self.db.expire_all()
+        self.assertIsNone(self.db.get(TopoFabricNode, orphan_id))
 
     def test_delete_fabric_node_only_orphans_and_placeholders(self) -> None:
         from fastapi import HTTPException
@@ -1658,6 +1768,59 @@ Management Addresses:
         self.assertIsNotNone(self.db.get(TopoFabricNode, ume_only.id))
         self.assertIsNotNone(self.db.get(ManagedNE, real.id))
         self.assertIsNotNone(self.db.get(ManagedNE, ph.id))
+
+    def test_purge_placeholder_deletes_managed_and_edges(self) -> None:
+        from fastapi import HTTPException
+
+        from netx_api.topology_inventory_lifecycle import purge_placeholder_fabric_nodes
+
+        suffix = uuid4().hex[:8]
+        topo_ph = ManagedNE(
+            id=f"topo-{suffix}",
+            name=f"TOPO-{suffix}",
+            vendor="Other",
+            device_type="generic",
+            ip_address="",
+            source=TOPOLOGY_NE_SOURCE,
+        )
+        real = ManagedNE(
+            id=f"real2-{suffix}",
+            name=f"REAL2-{suffix}",
+            vendor="Cisco",
+            device_type="cisco_ios",
+            ip_address=f"10.78.{(int(suffix[:2], 16) % 200) + 1}.1",
+            source="",
+        )
+        self.db.add(topo_ph)
+        self.db.add(real)
+        self.db.commit()
+        fab_ph = svc.ensure_fabric_node_for_managed(self.db, topo_ph)
+        fab_real = svc.ensure_fabric_node_for_managed(self.db, real)
+        edge, _ = svc.upsert_fabric_edge(
+            self.db,
+            a_node_id=fab_ph.id,
+            b_node_id=fab_real.id,
+            a_port="Gi0/1",
+            b_port="Gi0/2",
+            source="manual",
+        )
+        self.db.commit()
+        edge_id = str(edge.id)
+
+        with self.assertRaises(HTTPException) as ctx:
+            purge_placeholder_fabric_nodes(self.db, [fab_real.id])
+        self.assertEqual(ctx.exception.status_code, 400)
+
+        out = purge_placeholder_fabric_nodes(self.db, [fab_ph.id])
+        self.assertEqual(out["deleted"], 1)
+        self.assertEqual(out["managed_deleted"], 1)
+        self.assertGreaterEqual(out["edges_deleted"], 1)
+        self.db.expire_all()
+        self.assertIsNone(self.db.get(TopoFabricNode, fab_ph.id))
+        self.assertIsNone(self.db.get(ManagedNE, topo_ph.id))
+        self.assertIsNone(self.db.get(TopoFabricEdge, edge_id))
+        self.assertIsNotNone(self.db.get(TopoFabricNode, fab_real.id))
+        self.assertIsNotNone(self.db.get(ManagedNE, real.id))
 
     def test_filter_bulk_add_layout_and_remove(self) -> None:
         from netx_api.topology_schemas import ViewMutationOut, ViewNodesRemove

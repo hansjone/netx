@@ -86,6 +86,10 @@ class Settings(BaseSettings):
     # Reclaim hung discover jobs (updated_at / created_at older than these).
     lldp_collect_stale_run_sec: int = 7200
     lldp_collect_pending_stale_sec: int = 300
+    # Fabric inventory lifecycle: detach dangling refs + purge fully orphaned nodes.
+    fabric_reconcile_scheduler_enabled: bool = True
+    # Default 6h — light full-table GC; deletes still purge orphans immediately on detach.
+    fabric_reconcile_interval_sec: int = 21600
     # Port traffic monitoring (CLI rate bit/s samples)
     port_traffic_scheduler_enabled: bool = True
     port_traffic_scheduler_tick_sec: int = 15
@@ -141,7 +145,7 @@ class Settings(BaseSettings):
     alembic_upgrade_on_start: bool = True
     # Optional dedicated SQLAlchemy URL for /v1/sql/* (read-only DB role recommended).
     sql_readonly_database_url: str = ""
-    # When true (default), API also runs config_sync / lldp / port_traffic schedulers.
+    # When true (default), API also runs config_sync / lldp / port_traffic / fabric_reconcile schedulers.
     # Production split: set false and run `python -m netx_api.worker` beside the API.
     run_inline_schedulers: bool = True
     # Worker→API heartbeat file (used when run_inline_schedulers=false).

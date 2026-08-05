@@ -115,39 +115,105 @@ def _strip_membership_ids(
 
 
 def detach_fabric_from_managed(db: Session, managed_ne_ids: list[str]) -> dict[str, int]:
-    """Clear fabric.managed_ne_id for deleted ManagedNEs; keep nodes/placements/edges."""
+    """Clear fabric.managed_ne_id for deleted ManagedNEs; purge nodes that become fully orphaned."""
     ids = _norm_ids(managed_ne_ids)
     if not ids:
-        return {"detached_nodes": 0, "membership_views": 0}
+        return {
+            "detached_nodes": 0,
+            "membership_views": 0,
+            "purged_orphans": 0,
+            "edges_deleted": 0,
+            "placements_deleted": 0,
+        }
     now = _utcnow()
     rows = (
         db.query(TopoFabricNode)
         .filter(TopoFabricNode.managed_ne_id.in_(ids))
         .all()
     )
+    fabric_ids = [str(r.id) for r in rows]
     for row in rows:
         row.managed_ne_id = None
         row.updated_at = now
     views = _strip_membership_ids(db, managed_ne_ids=set(ids))
-    return {"detached_nodes": len(rows), "membership_views": views}
+    db.flush()
+    purged = purge_fully_orphaned_fabric_nodes(db, fabric_ids)
+    return {
+        "detached_nodes": len(rows),
+        "membership_views": views,
+        "purged_orphans": int(purged.get("deleted") or 0),
+        "edges_deleted": int(purged.get("edges_deleted") or 0),
+        "placements_deleted": int(purged.get("placements_deleted") or 0),
+    }
 
 
 def detach_fabric_from_ume(db: Session, ume_ne_ids: list[str]) -> dict[str, int]:
-    """Clear fabric.ume_ne_id for deleted UME inventory rows; keep topology traces."""
+    """Clear fabric.ume_ne_id for deleted UME inventory rows; purge nodes that become fully orphaned."""
     ids = _norm_ids(ume_ne_ids)
     if not ids:
-        return {"detached_nodes": 0, "membership_views": 0}
+        return {
+            "detached_nodes": 0,
+            "membership_views": 0,
+            "purged_orphans": 0,
+            "edges_deleted": 0,
+            "placements_deleted": 0,
+        }
     now = _utcnow()
     rows = db.query(TopoFabricNode).filter(TopoFabricNode.ume_ne_id.in_(ids)).all()
+    fabric_ids = [str(r.id) for r in rows]
     for row in rows:
         row.ume_ne_id = None
         row.updated_at = now
     views = _strip_membership_ids(db, ume_ne_ids=set(ids))
-    return {"detached_nodes": len(rows), "membership_views": views}
+    db.flush()
+    purged = purge_fully_orphaned_fabric_nodes(db, fabric_ids)
+    return {
+        "detached_nodes": len(rows),
+        "membership_views": views,
+        "purged_orphans": int(purged.get("deleted") or 0),
+        "edges_deleted": int(purged.get("edges_deleted") or 0),
+        "placements_deleted": int(purged.get("placements_deleted") or 0),
+    }
 
 
-def reconcile_dangling_fabric_links(db: Session) -> dict[str, int]:
-    """Unbind fabric ids that no longer exist in managed_ne / ume_inventory_ne."""
+def purge_fully_orphaned_fabric_nodes(
+    db: Session,
+    fabric_node_ids: list[str] | None = None,
+) -> dict[str, int]:
+    """Hard-delete fabric nodes with no managed_ne_id and no ume_ne_id (cascades edges/placements).
+
+    When ``fabric_node_ids`` is None, sweeps the whole fabric table (GC).
+    Caller commits.
+    """
+    if fabric_node_ids is None:
+        rows = [
+            n
+            for n in db.query(TopoFabricNode).all()
+            if not str(n.managed_ne_id or "").strip() and not str(n.ume_ne_id or "").strip()
+        ]
+    else:
+        ids = _norm_ids(fabric_node_ids)
+        if not ids:
+            return {"deleted": 0, "edges_deleted": 0, "placements_deleted": 0}
+        candidates = db.query(TopoFabricNode).filter(TopoFabricNode.id.in_(ids)).all()
+        rows = [
+            n
+            for n in candidates
+            if not str(n.managed_ne_id or "").strip() and not str(n.ume_ne_id or "").strip()
+        ]
+    return _delete_fabric_node_rows(db, rows)
+
+
+def reconcile_dangling_fabric_links(
+    db: Session,
+    *,
+    sweep_orphans: bool = True,
+) -> dict[str, int]:
+    """Unbind fabric ids that no longer exist in managed_ne / ume_inventory_ne.
+
+    Detach paths purge nodes that become fully orphaned. When ``sweep_orphans`` is True
+    (default), also GC any remaining fully orphaned fabric nodes.
+    """
     managed_alive = {str(x[0]) for x in db.query(ManagedNE.id).all() if str(x[0] or "").strip()}
     ume_alive = {
         str(x[0]) for x in db.query(UmeInventoryNE.ne_id).all() if str(x[0] or "").strip()
@@ -163,6 +229,21 @@ def reconcile_dangling_fabric_links(db: Session) -> dict[str, int]:
             dangling_u.append(uid)
     m_stats = detach_fabric_from_managed(db, dangling_m)
     u_stats = detach_fabric_from_ume(db, dangling_u)
+    gc = (
+        purge_fully_orphaned_fabric_nodes(db, None)
+        if sweep_orphans
+        else {"deleted": 0, "edges_deleted": 0, "placements_deleted": 0}
+    )
+    purged = (
+        int(m_stats.get("purged_orphans") or 0)
+        + int(u_stats.get("purged_orphans") or 0)
+        + int(gc.get("deleted") or 0)
+    )
+    edges_deleted = (
+        int(m_stats.get("edges_deleted") or 0)
+        + int(u_stats.get("edges_deleted") or 0)
+        + int(gc.get("edges_deleted") or 0)
+    )
     return {
         "dangling_managed_refs": len(set(dangling_m)),
         "dangling_ume_refs": len(set(dangling_u)),
@@ -170,6 +251,9 @@ def reconcile_dangling_fabric_links(db: Session) -> dict[str, int]:
         "detached_ume_nodes": int(u_stats.get("detached_nodes") or 0),
         "membership_views": int(m_stats.get("membership_views") or 0)
         + int(u_stats.get("membership_views") or 0),
+        "purged_orphans": purged,
+        "edges_deleted": edges_deleted,
+        "gc_orphans": int(gc.get("deleted") or 0),
     }
 
 
@@ -218,23 +302,11 @@ def _strip_fabric_ids_from_membership(db: Session, fabric_ids: set[str]) -> int:
     return touched
 
 
-def delete_fabric_nodes(db: Session, fabric_node_ids: list[str]) -> dict[str, int]:
-    """Hard-delete fabric nodes (placements + edges). Does not touch managed/UME inventory."""
-    ids = _norm_ids(fabric_node_ids)
+def _delete_fabric_node_rows(db: Session, rows: list[TopoFabricNode]) -> dict[str, int]:
+    """Delete fabric rows + incident edges + placements. Caller commits."""
+    ids = [str(r.id) for r in rows]
     if not ids:
-        raise HTTPException(status_code=400, detail="fabric_node_ids_required")
-    rows = db.query(TopoFabricNode).filter(TopoFabricNode.id.in_(ids)).all()
-    found = {str(r.id): r for r in rows}
-    missing = [i for i in ids if i not in found]
-    if missing:
-        raise HTTPException(status_code=404, detail=f"fabric_node_not_found:{missing[0]}")
-    blocked = [i for i, r in found.items() if not fabric_node_is_deletable(db, r)]
-    if blocked:
-        raise HTTPException(
-            status_code=400,
-            detail=f"fabric_node_not_deletable:{blocked[0]}",
-        )
-
+        return {"deleted": 0, "edges_deleted": 0, "placements_deleted": 0}
     edge_ids = [
         str(e.id)
         for e in db.query(TopoFabricEdge)
@@ -258,6 +330,84 @@ def delete_fabric_nodes(db: Session, fabric_node_ids: list[str]) -> dict[str, in
     _strip_fabric_ids_from_membership(db, set(ids))
     for r in rows:
         db.delete(r)
+    return {
+        "deleted": len(rows),
+        "edges_deleted": len(edge_ids),
+        "placements_deleted": int(placements or 0),
+    }
+
+
+def delete_fabric_nodes(db: Session, fabric_node_ids: list[str]) -> dict[str, int]:
+    """Hard-delete fabric nodes (placements + edges). Does not touch managed/UME inventory."""
+    ids = _norm_ids(fabric_node_ids)
+    if not ids:
+        raise HTTPException(status_code=400, detail="fabric_node_ids_required")
+    rows = db.query(TopoFabricNode).filter(TopoFabricNode.id.in_(ids)).all()
+    found = {str(r.id): r for r in rows}
+    missing = [i for i in ids if i not in found]
+    if missing:
+        raise HTTPException(status_code=404, detail=f"fabric_node_not_found:{missing[0]}")
+    blocked = [i for i, r in found.items() if not fabric_node_is_deletable(db, r)]
+    if blocked:
+        raise HTTPException(
+            status_code=400,
+            detail=f"fabric_node_not_deletable:{blocked[0]}",
+        )
+
+    out = _delete_fabric_node_rows(db, rows)
+    db.commit()
+    try:
+        from .topology_service import refresh_fabric_stats
+
+        refresh_fabric_stats(db)
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
+def purge_placeholder_fabric_nodes(db: Session, fabric_node_ids: list[str]) -> dict[str, int]:
+    """Hard-delete LLDP/topology placeholders: ManagedNE + fabric node + edges + placements.
+
+    Rejects real inventory (manual / ume_sync), WebCRT sessions, and UME-only fabric rows.
+    """
+    ids = _norm_ids(fabric_node_ids)
+    if not ids:
+        raise HTTPException(status_code=400, detail="fabric_node_ids_required")
+    rows = db.query(TopoFabricNode).filter(TopoFabricNode.id.in_(ids)).all()
+    found = {str(r.id): r for r in rows}
+    missing = [i for i in ids if i not in found]
+    if missing:
+        raise HTTPException(status_code=404, detail=f"fabric_node_not_found:{missing[0]}")
+
+    managed_rows: list[ManagedNE] = []
+    managed_ids: set[str] = set()
+    for fid, fab in found.items():
+        mid = str(fab.managed_ne_id or "").strip()
+        uid = str(fab.ume_ne_id or "").strip()
+        if not mid:
+            if uid:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"fabric_node_not_placeholder:{fid}",
+                )
+            # Orphan fabric — allow purge (same as fabric delete).
+            continue
+        mrow = db.get(ManagedNE, mid)
+        if mrow is None:
+            continue
+        if not is_placeholder_ne_source(mrow.source):
+            raise HTTPException(
+                status_code=400,
+                detail=f"fabric_node_not_placeholder:{fid}",
+            )
+        if mid not in managed_ids:
+            managed_ids.add(mid)
+            managed_rows.append(mrow)
+
+    out = _delete_fabric_node_rows(db, rows)
+    for mrow in managed_rows:
+        db.delete(mrow)
+    membership_views = _strip_membership_ids(db, managed_ne_ids=managed_ids)
     db.commit()
     try:
         from .topology_service import refresh_fabric_stats
@@ -266,9 +416,9 @@ def delete_fabric_nodes(db: Session, fabric_node_ids: list[str]) -> dict[str, in
     except Exception:  # noqa: BLE001
         pass
     return {
-        "deleted": len(rows),
-        "edges_deleted": len(edge_ids),
-        "placements_deleted": int(placements or 0),
+        **out,
+        "managed_deleted": len(managed_rows),
+        "membership_views": membership_views,
     }
 
 

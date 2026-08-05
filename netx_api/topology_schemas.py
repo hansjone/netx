@@ -522,6 +522,14 @@ class FabricNodesDeleteOut(BaseModel):
     placements_deleted: int = 0
 
 
+class FabricPlaceholderPurgeOut(BaseModel):
+    deleted: int = 0
+    edges_deleted: int = 0
+    placements_deleted: int = 0
+    managed_deleted: int = 0
+    membership_views: int = 0
+
+
 class SliceGenerateRequest(BaseModel):
     folder_id: str
     template: str = Field(description="core_only | core_agg | agg_access")

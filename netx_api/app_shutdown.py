@@ -39,6 +39,13 @@ def shutdown_runtime(*, reason: str = "lifespan") -> None:
         _log.exception("stop_port_traffic_scheduler failed")
 
     try:
+        from .fabric_reconcile_scheduler import stop_fabric_reconcile_scheduler
+
+        stop_fabric_reconcile_scheduler()
+    except Exception:  # noqa: BLE001
+        _log.exception("stop_fabric_reconcile_scheduler failed")
+
+    try:
         import netx_api.ume_support as ume_support
 
         if ume_support._UME_WS_STOP_EVENT is not None:

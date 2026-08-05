@@ -49,6 +49,7 @@ _schedule_log = logging.getLogger("netx.ume.schedule")
 def start_device_schedulers() -> None:
     """Start device-facing periodic collectors (safe to call once per process)."""
     from .config_sync_scheduler import start_config_sync_scheduler
+    from .fabric_reconcile_scheduler import start_fabric_reconcile_scheduler
     from .lldp_collect_scheduler import start_lldp_collect_scheduler
     from .port_traffic_scheduler import start_port_traffic_scheduler
     from .scheduler_heartbeat import start_scheduler_heartbeat_publisher
@@ -56,6 +57,7 @@ def start_device_schedulers() -> None:
     start_config_sync_scheduler()
     start_lldp_collect_scheduler()
     start_port_traffic_scheduler()
+    start_fabric_reconcile_scheduler()
     # Publish status so API /metrics can see collectors when run in a split worker.
     role = "api_inline" if bool(getattr(settings, "run_inline_schedulers", True)) else "worker"
     start_scheduler_heartbeat_publisher(role=role)

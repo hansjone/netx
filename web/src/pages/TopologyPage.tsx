@@ -39,6 +39,7 @@ import {
   createTopologyPlaceholder,
   createTopologyView,
   deleteFabricEdges,
+  purgePlaceholderFabricNodes,
   deleteTopologyFolder,
   deleteTopologyMap,
   fetchLldpCollectDashboard,
@@ -278,7 +279,11 @@ type NeNodeData = {
   node_count?: number;
 };
 
-type HistorySnap = { nodes: Node<NeNodeData>[]; edges: Edge[] };
+type HistorySnap = {
+  nodes: Node<NeNodeData>[];
+  edges: Edge[];
+  pendingEdgeDeletes: string[];
+};
 
 type PaletteSource = "managed" | "ume";
 
@@ -921,6 +926,8 @@ export function TopologyPage() {
   const historyRef = useRef<HistorySnap[]>([]);
   const redoRef = useRef<HistorySnap[]>([]);
   const historyLockRef = useRef(false);
+  /** Fabric edge ids removed locally; flushed on Save (not when only removing nodes from view). */
+  const pendingEdgeDeletesRef = useRef<Set<string>>(new Set());
   const connectClickRef = useRef<string | null>(null);
   const canUndo = historyTick >= 0 && historyRef.current.length > 0;
   const canRedo = historyTick >= 0 && redoRef.current.length > 0;
@@ -1259,6 +1266,7 @@ export function TopologyPage() {
       appliedMapIdRef.current = mapId;
       historyRef.current = [];
       redoRef.current = [];
+      pendingEdgeDeletesRef.current = new Set();
       clearDirty();
       bumpHistory();
       needsInitialFitRef.current = true;
@@ -1299,6 +1307,7 @@ export function TopologyPage() {
       {
         nodes: nodes.map((n) => ({ ...n, position: { ...n.position }, data: { ...n.data } })),
         edges: edges.map((e) => ({ ...e })),
+        pendingEdgeDeletes: [...pendingEdgeDeletesRef.current],
       },
     ];
     redoRef.current = [];
@@ -1311,10 +1320,12 @@ export function TopologyPage() {
     redoRef.current.push({
       nodes: nodes.map((n) => ({ ...n, position: { ...n.position }, data: { ...n.data } })),
       edges: edges.map((e) => ({ ...e })),
+      pendingEdgeDeletes: [...pendingEdgeDeletesRef.current],
     });
     historyLockRef.current = true;
     setNodes(prev.nodes);
     setEdges(prev.edges);
+    pendingEdgeDeletesRef.current = new Set(prev.pendingEdgeDeletes);
     markDirty();
     bumpHistory();
     historyLockRef.current = false;
@@ -1326,10 +1337,12 @@ export function TopologyPage() {
     historyRef.current.push({
       nodes: nodes.map((n) => ({ ...n, position: { ...n.position }, data: { ...n.data } })),
       edges: edges.map((e) => ({ ...e })),
+      pendingEdgeDeletes: [...pendingEdgeDeletesRef.current],
     });
     historyLockRef.current = true;
     setNodes(next.nodes);
     setEdges(next.edges);
+    pendingEdgeDeletesRef.current = new Set(next.pendingEdgeDeletes);
     markDirty();
     bumpHistory();
     historyLockRef.current = false;
@@ -1353,7 +1366,9 @@ export function TopologyPage() {
       if (opts?.persist && mapId) {
         try {
           const graph = await patchTopologyPositions(mapId, flowToPositions(next));
-          clearDirty();
+          if (pendingEdgeDeletesRef.current.size === 0) {
+            clearDirty();
+          }
           queryClient.setQueryData(queryKeys.topologyGraph(mapId), graph);
         } catch (err) {
           showError(String(err));
@@ -1501,6 +1516,11 @@ export function TopologyPage() {
   const saveMut = useMutation({
     mutationFn: async () => {
       if (!mapId) throw new Error(t("topology.selectMap"));
+      const pendingEdges = [...pendingEdgeDeletesRef.current];
+      if (pendingEdges.length) {
+        await deleteFabricEdges(pendingEdges);
+        pendingEdgeDeletesRef.current.clear();
+      }
       // Positions patch only updates listed nodes; sync canvas removals first.
       const serverIds = (graphQuery.data?.nodes || [])
         .map((n) => n.fabric_node_id)
@@ -1553,6 +1573,19 @@ export function TopologyPage() {
       });
       try {
         if (dirtyRef.current) {
+          const pendingEdges = [...pendingEdgeDeletesRef.current];
+          if (pendingEdges.length) {
+            await deleteFabricEdges(pendingEdges);
+            pendingEdgeDeletesRef.current.clear();
+          }
+          const serverIds = (graphQuery.data?.nodes || [])
+            .map((n) => n.fabric_node_id)
+            .filter(Boolean);
+          const localIds = new Set(nodes.map((n) => n.id));
+          const toRemove = serverIds.filter((id) => !localIds.has(id));
+          if (toRemove.length) {
+            await removeTopologyViewNodes(mapId, toRemove);
+          }
           await patchTopologyPositions(mapId, flowToPositions(nodes));
           clearDirty();
         }
@@ -1697,7 +1730,7 @@ export function TopologyPage() {
         setDiscovering(false);
       }
     },
-    [mapId, discovering, nodes, queryClient, setNodes, setEdges, showOk, showError, t, autoLayoutAfterDiscover, discoverAutoAddUnmatched, discoverProjectNeighbors, edgeDefaults, clearDirty, markDirty, scheduleFitView],
+    [mapId, discovering, nodes, queryClient, setNodes, setEdges, showOk, showError, t, autoLayoutAfterDiscover, discoverAutoAddUnmatched, discoverProjectNeighbors, edgeDefaults, clearDirty, markDirty, scheduleFitView, graphQuery.data],
   );
 
   const cancelDiscover = useCallback(async () => {
@@ -1777,6 +1810,7 @@ export function TopologyPage() {
           historyLockRef.current = true;
           applyViewGraph(graph, edgeDefaults, setNodes, setEdges);
           historyLockRef.current = false;
+          pendingEdgeDeletesRef.current = new Set();
           clearDirty();
         } catch (err) {
           showError(String(err));
@@ -2029,41 +2063,31 @@ export function TopologyPage() {
     setEdges((es) => es.map((e) => ({ ...e, selected: false })));
   }, [setNodes, setEdges]);
 
-  const persistDeleteEdges = useCallback(
-    async (
+  const queueDeleteEdges = useCallback(
+    (
       edgeIds: string[],
       opts?: { confirmKey?: string; okKey?: string; skipConfirm?: boolean },
     ) => {
-      if (!mapId || !edgeIds.length) return false;
+      if (!edgeIds.length) return false;
       if (!opts?.skipConfirm) {
         const confirmMsg = t(opts?.confirmKey || "topology.deleteEdgeConfirm");
         if (!window.confirm(confirmMsg)) return false;
       }
       pushHistory();
-      try {
-        await deleteFabricEdges(edgeIds);
-        const graph = await fetchTopologyGraph(mapId);
-        queryClient.setQueryData(queryKeys.topologyGraph(mapId), graph);
-        appliedMapIdRef.current = mapId;
-        const localPos = new Map(nodes.map((n) => [n.id, n.position]));
-        historyLockRef.current = true;
-        applyViewGraph(graph, edgeDefaults, setNodes, setEdges, localPos);
-        historyLockRef.current = false;
-        clearDirty();
-        setSelectedEdgeId((cur) => (cur && edgeIds.includes(cur) ? null : cur));
-        showOk(
-          t(opts?.okKey || "topology.edgeDeleted").replace("{{count}}", String(edgeIds.length)),
-        );
-        return true;
-      } catch (err) {
-        showError(String(err));
-        return false;
-      }
+      for (const id of edgeIds) pendingEdgeDeletesRef.current.add(id);
+      const idSet = new Set(edgeIds);
+      setEdges((es) => es.filter((e) => !idSet.has(e.id)));
+      setSelectedEdgeId((cur) => (cur && idSet.has(cur) ? null : cur));
+      markDirty();
+      showOk(
+        t(opts?.okKey || "topology.edgeDeleted").replace("{{count}}", String(edgeIds.length)),
+      );
+      return true;
     },
-    [mapId, nodes, setNodes, setEdges, pushHistory, queryClient, edgeDefaults, clearDirty, showOk, showError, t],
+    [pushHistory, setEdges, markDirty, showOk, t],
   );
 
-  const removeSelected = useCallback(async () => {
+  const removeSelected = useCallback(() => {
     if (!mapId) return;
     const nodeIds = nodes.filter((n) => n.selected).map((n) => n.id);
     const selectedDisplay = displayEdges.filter((e) => e.selected);
@@ -2082,55 +2106,37 @@ export function TopologyPage() {
         .replace("{{edges}}", String(edgeIds.size));
       if (!window.confirm(msg)) return;
       pushHistory();
-      try {
-        if (dirtyRef.current) {
-          await patchTopologyPositions(mapId, flowToPositions(nodes));
-          clearDirty();
-        }
-        await deleteFabricEdges([...edgeIds]);
-        const localPos = new Map(nodes.map((n) => [n.id, n.position]));
-        const graph = await removeTopologyViewNodes(mapId, nodeIds);
-        queryClient.setQueryData(queryKeys.topologyGraph(mapId), graph);
-        appliedMapIdRef.current = mapId;
-        historyLockRef.current = true;
-        applyViewGraph(graph, edgeDefaults, setNodes, setEdges, localPos);
-        historyLockRef.current = false;
-        clearDirty();
-        setSelectedEdgeId(null);
-        showOk(
-          t("topology.selectionDeleted")
-            .replace("{{nodes}}", String(nodeIds.length))
-            .replace("{{edges}}", String(edgeIds.size)),
-        );
-      } catch (err) {
-        showError(String(err));
-      }
+      const nodeSet = new Set(nodeIds);
+      for (const id of edgeIds) pendingEdgeDeletesRef.current.add(id);
+      setNodes((ns) => ns.filter((n) => !nodeSet.has(n.id)));
+      setEdges((es) =>
+        es.filter(
+          (e) =>
+            !edgeIds.has(e.id) && !nodeSet.has(e.source) && !nodeSet.has(e.target),
+        ),
+      );
+      setSelectedEdgeId(null);
+      markDirty();
+      showOk(
+        t("topology.selectionDeleted")
+          .replace("{{nodes}}", String(nodeIds.length))
+          .replace("{{edges}}", String(edgeIds.size)),
+      );
       return;
     }
 
     if (!nodeIds.length && edgeIds.size) {
-      await persistDeleteEdges([...edgeIds]);
+      queueDeleteEdges([...edgeIds]);
       return;
     }
 
     pushHistory();
-    try {
-      if (dirtyRef.current) {
-        await patchTopologyPositions(mapId, flowToPositions(nodes));
-        clearDirty();
-      }
-      const localPos = new Map(nodes.map((n) => [n.id, n.position]));
-      const graph = await removeTopologyViewNodes(mapId, nodeIds);
-      queryClient.setQueryData(queryKeys.topologyGraph(mapId), graph);
-      appliedMapIdRef.current = mapId;
-      historyLockRef.current = true;
-      applyViewGraph(graph, edgeDefaults, setNodes, setEdges, localPos);
-      historyLockRef.current = false;
-      clearDirty();
-      setSelectedEdgeId(null);
-    } catch (err) {
-      showError(String(err));
-    }
+    const nodeSet = new Set(nodeIds);
+    setNodes((ns) => ns.filter((n) => !nodeSet.has(n.id)));
+    // Drop incident edges from the canvas only — do not queue Fabric deletes.
+    setEdges((es) => es.filter((e) => !nodeSet.has(e.source) && !nodeSet.has(e.target)));
+    setSelectedEdgeId(null);
+    markDirty();
   }, [
     mapId,
     nodes,
@@ -2139,12 +2145,9 @@ export function TopologyPage() {
     setNodes,
     setEdges,
     pushHistory,
-    queryClient,
-    edgeDefaults,
-    clearDirty,
-    showError,
+    markDirty,
     showOk,
-    persistDeleteEdges,
+    queueDeleteEdges,
     t,
   ]);
 
@@ -2152,7 +2155,7 @@ export function TopologyPage() {
     const display = displayEdges.find((e) => e.id === edgeId);
     const ids = physicalIdsForDisplayEdge(display, edges);
     const list = ids.length ? ids : [edgeId];
-    void persistDeleteEdges(list);
+    queueDeleteEdges(list);
     closeCtxMenu();
   };
 
@@ -2165,13 +2168,13 @@ export function TopologyPage() {
       .map((e) => e.id);
   }, [edges]);
 
-  const removeStaleEdges = useCallback(async () => {
+  const removeStaleEdges = useCallback(() => {
     if (!staleEdgeIds.length) return;
-    await persistDeleteEdges(staleEdgeIds, {
+    queueDeleteEdges(staleEdgeIds, {
       confirmKey: "topology.removeStaleHint",
       okKey: "topology.staleRemoved",
     });
-  }, [staleEdgeIds, persistDeleteEdges]);
+  }, [staleEdgeIds, queueDeleteEdges]);
 
   const projectOutsidePeers = useCallback(async () => {
     if (!mapId) return;
@@ -2281,27 +2284,80 @@ export function TopologyPage() {
     };
   }, [ctxMenu, closeCtxMenu]);
 
-  const removeNodeById = async (nodeId: string) => {
+  const removeNodeById = (nodeId: string) => {
     if (!mapId) return;
     pushHistory();
     closeCtxMenu();
-    try {
-      if (dirtyRef.current) {
-        await patchTopologyPositions(mapId, flowToPositions(nodes));
-        clearDirty();
-      }
-      const localPos = new Map(nodes.map((n) => [n.id, n.position]));
-      const graph = await removeTopologyViewNodes(mapId, [nodeId]);
-      queryClient.setQueryData(queryKeys.topologyGraph(mapId), graph);
-      appliedMapIdRef.current = mapId;
-      historyLockRef.current = true;
-      applyViewGraph(graph, edgeDefaults, setNodes, setEdges, localPos);
-      historyLockRef.current = false;
-      clearDirty();
-    } catch (err) {
-      showError(String(err));
-    }
+    setNodes((ns) => ns.filter((n) => n.id !== nodeId));
+    setEdges((es) => es.filter((e) => e.source !== nodeId && e.target !== nodeId));
+    markDirty();
   };
+
+  const purgePlaceholderById = useCallback(
+    async (nodeId: string) => {
+      if (!mapId) return;
+      const node = nodes.find((n) => n.id === nodeId);
+      if (!node || !isPlaceholderSource(node.data.managed_source, node.data.ne_ip)) {
+        return;
+      }
+      if (!window.confirm(t("topology.deletePlaceholderConfirm"))) return;
+      closeCtxMenu();
+      try {
+        if (dirtyRef.current) {
+          const pendingEdges = [...pendingEdgeDeletesRef.current];
+          if (pendingEdges.length) {
+            await deleteFabricEdges(pendingEdges);
+            pendingEdgeDeletesRef.current.clear();
+          }
+          const serverIds = (graphQuery.data?.nodes || [])
+            .map((n) => n.fabric_node_id)
+            .filter(Boolean);
+          const localIds = new Set(nodes.map((n) => n.id));
+          const toRemove = serverIds.filter((id) => !localIds.has(id) && id !== nodeId);
+          if (toRemove.length) {
+            await removeTopologyViewNodes(mapId, toRemove);
+          }
+          await patchTopologyPositions(
+            mapId,
+            flowToPositions(nodes.filter((n) => n.id !== nodeId)),
+          );
+        }
+        await purgePlaceholderFabricNodes([nodeId]);
+        const graph = await fetchTopologyGraph(mapId);
+        queryClient.setQueryData(queryKeys.topologyGraph(mapId), graph);
+        appliedMapIdRef.current = mapId;
+        const localPos = new Map(
+          nodes.filter((n) => n.id !== nodeId).map((n) => [n.id, n.position]),
+        );
+        historyLockRef.current = true;
+        applyViewGraph(graph, edgeDefaults, setNodes, setEdges, localPos);
+        historyLockRef.current = false;
+        pendingEdgeDeletesRef.current = new Set();
+        historyRef.current = [];
+        redoRef.current = [];
+        bumpHistory();
+        clearDirty();
+        showOk(t("topology.deletePlaceholderDone"));
+      } catch (err) {
+        showError(String(err));
+      }
+    },
+    [
+      mapId,
+      nodes,
+      graphQuery.data,
+      closeCtxMenu,
+      queryClient,
+      edgeDefaults,
+      setNodes,
+      setEdges,
+      clearDirty,
+      bumpHistory,
+      showOk,
+      showError,
+      t,
+    ],
+  );
 
   const openNeInventory = (opts: {
     neId?: string;
@@ -4521,6 +4577,19 @@ export function TopologyPage() {
                 </button>
               </li>
               <li className="topo-ctx__sep" aria-hidden />
+              {selectedNode &&
+              isPlaceholderSource(selectedNode.data.managed_source, selectedNode.data.ne_ip) ? (
+                <li role="none">
+                  <button
+                    type="button"
+                    className="topo-ctx__item topo-ctx__item--danger"
+                    role="menuitem"
+                    onClick={() => void purgePlaceholderById(ctxMenu.id)}
+                  >
+                    {t("topology.deletePlaceholder")}
+                  </button>
+                </li>
+              ) : null}
               <li role="none">
                 <button
                   type="button"

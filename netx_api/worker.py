@@ -4,7 +4,7 @@ Optional when ``NETX_RUN_INLINE_SCHEDULERS=false`` (API does not start collector
 
     python -m netx_api.worker
 
-Starts: config_sync, lldp_collect, port_traffic tick loops.
+Starts: config_sync, lldp_collect, port_traffic, fabric_reconcile tick loops.
 UME WS / keepalive remain in the API process (token + alarm coordination).
 By default the API runs collectors inline — no separate worker needed.
 """
@@ -45,7 +45,9 @@ def main() -> None:
         log_runtime_budget(role="worker")
     except Exception:
         _log.exception("worker runtime budget log failed")
-    _log.info("netx worker schedulers started (config_sync, lldp_collect, port_traffic)")
+    _log.info(
+        "netx worker schedulers started (config_sync, lldp_collect, port_traffic, fabric_reconcile)"
+    )
 
     while not stop.is_set():
         time.sleep(1.0)

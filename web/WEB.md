@@ -126,7 +126,8 @@ src/
 ## 拓扑管理（Fabric + 站点目录，对齐厂商）
 
 - 三层库存：**运维** `managed_ne`（凭据/采集/WebCRT）· **EMS** `ume_inventory_ne` · **拓扑投影** `topo_fabric_node`（上图/LLDP/分类）。Fabric 由 ensure 按需创建，与运维表不是同一张表。
-- 删除运维网元：解绑 `fabric.managed_ne_id`（及 view membership），**不删**上图点/边；UME 库存 reconcile 对称解绑 `ume_ne_id`。历史悬空引用：`POST /fabric/reconcile-links`（亦并入 `cleanup-duplicates`）。
+- 删除运维网元（手工 / WebCRT / `ume_sync` ManagedNE 同一路径）：先解绑 `fabric.managed_ne_id`（及 view membership）。若该 Fabric 节点同时仍绑 UME → 变为 UME-only，**保留**节点与直连边；若解绑后已无 managed 且无 UME（完全孤儿）→ **硬删** Fabric 节点并级联直连边 / placements。UME 库存 reconcile 对称解绑 `ume_ne_id`，同样在完全孤儿时 purge。历史悬空引用与孤儿 GC：`POST /fabric/reconcile-links`（`cleanup-duplicates` 先 merge/absorb 再扫孤儿）；后台默认每 6h 跑一次（`fabric_reconcile_scheduler_*`，可关）。
+- 画布：移出本图仅影响 placement（保存落库）；删边本地排队、**保存**才删 Fabric（Undo 仅保存前有效）；topology/lldp 占位可右键硬删（ManagedNE+Fabric+边）。未匹配且未建占位的对端不上 Fabric 边。
 - 事实库：`topo_fabric_node` / `topo_fabric_edge`（按 5 万网元 / 100 万链路设计；物理层仅 LLDP）
 - 站点树：`topo_folder`（系统隐藏 `root`；用户新建站点/区域，无默认「未分区」）
 - 拓扑图：`topo_view.kind=physical|custom`（同站点下平级；建区域后需手工/MCP 建画布）+ `topo_view_node`

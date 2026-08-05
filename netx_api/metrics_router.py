@@ -110,12 +110,19 @@ def _prom_lines(metrics: dict[str, Any]) -> str:
         ("config_sync", "netx_config_sync_scheduler_running"),
         ("lldp_collect", "netx_lldp_collect_scheduler_running"),
         ("port_traffic", "netx_port_traffic_scheduler_running"),
+        ("fabric_reconcile", "netx_fabric_reconcile_scheduler_running"),
     ):
         block = sched.get(name) or metrics.get(name) or {}
         if "running" in block:
             lines.append(f'{key} {1 if block.get("running") else 0}')
-        if block.get("last_tick_age_sec") is not None:
-            lines.append(f"netx_{name}_tick_age_seconds {block['last_tick_age_sec']}")
+        age_key = "last_run_age_sec" if name == "fabric_reconcile" else "last_tick_age_sec"
+        if block.get(age_key) is not None:
+            metric_age = (
+                "netx_fabric_reconcile_run_age_seconds"
+                if name == "fabric_reconcile"
+                else f"netx_{name}_tick_age_seconds"
+            )
+            lines.append(f"{metric_age} {block[age_key]}")
     pt = metrics.get("port_traffic") or {}
     if pt.get("last_purge_age_sec") is not None:
         lines.append(f'netx_port_traffic_purge_age_seconds {pt["last_purge_age_sec"]}')
