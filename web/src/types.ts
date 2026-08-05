@@ -636,6 +636,7 @@ export type TopologyDiscoverNeResult = TopologyDiscoverJobItem & {
 export type TopologyDiscoverOut = {
   map_id?: string;
   protocol?: string;
+  job_id?: string;
   scanned: number;
   edges_added: number;
   edges_updated: number;

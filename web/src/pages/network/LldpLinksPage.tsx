@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSearchParams } from "react-router-dom";
 import {
   fetchCliTargets,
   fetchFabricEdges,
@@ -28,6 +29,7 @@ export function LldpLinksPage() {
   const { t } = useI18n();
   const { showOk, showError } = useToast();
   const queryClient = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const [jobPage, setJobPage] = useState(1);
   const [expandedJobId, setExpandedJobId] = useState("");
@@ -90,6 +92,23 @@ export function LldpLinksPage() {
     setSelectedMap(map);
     setPolicyHydrated(true);
   }, [dashQuery.data, policyHydrated]);
+
+  // Deep link from topology canvas: /network/topology/lldp?job_id=…
+  useEffect(() => {
+    const jobId = String(searchParams.get("job_id") || "").trim();
+    if (!jobId) return;
+    setItemDetail(null);
+    setItemPage(1);
+    setExpandedJobId(jobId);
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (next.get("job_id") === jobId) next.delete("job_id");
+        return next;
+      },
+      { replace: true },
+    );
+  }, [searchParams, setSearchParams]);
 
   const jobsQuery = useQuery({
     queryKey: queryKeys.lldpCollectJobs(jobPage),

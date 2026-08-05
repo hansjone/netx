@@ -1602,6 +1602,7 @@ export function TopologyPage() {
         const out: TopologyDiscoverOut = {
           map_id: mapId,
           protocol: "lldp",
+          job_id: job.id,
           scanned: job.done,
           edges_added: job.edges_added,
           edges_updated: job.edges_updated,
@@ -3533,12 +3534,14 @@ export function TopologyPage() {
                   <button
                     type="button"
                     className="btn btn--sm btn--ghost"
-                    onClick={() =>
+                    onClick={() => {
+                      const jobId = String(discoverReport?.job_id || "").trim();
+                      const qs = jobId ? `?job_id=${encodeURIComponent(jobId)}` : "";
                       openOrFocusModule({
                         moduleId: "network",
-                        path: "/network/topology/lldp",
-                      })
-                    }
+                        path: `/network/topology/lldp${qs}`,
+                      });
+                    }}
                   >
                     {t("topology.discoverGoLldp")}
                   </button>
