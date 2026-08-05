@@ -910,7 +910,7 @@ const en = {
       wsLogsEmpty: "No logs yet (connect WSS after establishing subscription)",
     },
     keyAlert: {
-      title: "AI alarm monitor (OClaw WhatsApp)",
+      title: "AI alarm monitor",
       showPanel: "Details",
       hidePanel: "Close",
       help: "Exact match by notificationId, or substring match on alarm description (case-insensitive; nativeProbableCause, etc.). Optionally restrict to UME inventory ne_type values (multi-select; empty = all devices). Pushed via OClaw WebSocket. Shares NETX_OCLAW_ANALYZE_TOKEN.",

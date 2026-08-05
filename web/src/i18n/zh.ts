@@ -904,7 +904,7 @@ const zh = {
       wsLogsEmpty: "暂无日志（建立订阅并连接 WSS 后会出现连接、收包、重连等记录）",
     },
     keyAlert: {
-      title: "AI 告警监控（OClaw WhatsApp）",
+      title: "AI 告警监控",
       showPanel: "详情",
       hidePanel: "关闭",
       help: "按 notificationId 精确匹配，或按告警描述关键字模糊匹配（不区分大小写，匹配 nativeProbableCause 等字段）；可选限定 UME Inventory 中的网元类型 (ne_type)，不选则匹配全部设备。经 OClaw WebSocket 推送到 WhatsApp 群。鉴权与 NETX_OCLAW_ANALYZE_TOKEN 共用。",
