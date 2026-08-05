@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from . import ume_alarm_ws_state as ws_state
 from .config import settings
+from .db import SessionLocal
 from .ume_alarm_subscription_store import (
     DEFAULT_SUBSCRIPTION_KEY,
     clear_subscription,
