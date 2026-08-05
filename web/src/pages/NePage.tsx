@@ -112,10 +112,12 @@ function applyHopTemplate(prev: FormState, protocol: string, vrf: string, force 
   return { hop_command_template: defaultHopTemplate(prev.hop_vendor, protocol, vrf) };
 }
 
-function managedSourceKey(source: string | undefined): "manual" | "ume_sync" | "webcrt" | "lldp" | "" {
+function managedSourceKey(
+  source: string | undefined,
+): "manual" | "ume_sync" | "webcrt" | "lldp" | "topology" | "" {
   const s = String(source || "").trim().toLowerCase();
   if (!s) return "manual";
-  if (s === "ume_sync" || s === "webcrt" || s === "lldp") return s;
+  if (s === "ume_sync" || s === "webcrt" || s === "lldp" || s === "topology") return s;
   return "";
 }
 

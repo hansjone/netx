@@ -7,7 +7,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from .cli_resolve import get_default_profile, infer_device_type_vendor
-from .device_types import LLDP_DISCOVERED_NE_SOURCE
+from .device_types import is_placeholder_ne_source
 from .models import ManagedNE, TopoDiscoverJob, TopoDiscoverJobItem, UmeInventoryNE
 from .topology_common import _RAW_PREVIEW_MAX
 from .topology_schemas import (
@@ -26,8 +26,8 @@ def _raw_preview(raw: str, *, limit: int = _RAW_PREVIEW_MAX) -> str:
 
 
 def _is_lldp_placeholder_ne(ne: ManagedNE) -> bool:
-    """LLDP SSH placeholders have no credentials until the operator promotes them."""
-    return str(ne.source or "").strip().lower() in {LLDP_DISCOVERED_NE_SOURCE, "lldp"}
+    """Incomplete placeholders (LLDP / topology) must not be used as discover targets."""
+    return is_placeholder_ne_source(ne.source)
 
 
 def _managed_target_dict(ne: ManagedNE) -> dict[str, str]:

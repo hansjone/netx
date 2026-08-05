@@ -573,6 +573,46 @@ class WebcrtUpsertAndTargetsTests(unittest.TestCase):
         self.assertEqual(hit["ne_source"], WEBCRT_NE_SOURCE)
         self.assertEqual(hit["ip_address"], "10.9.9.9")
 
+    def test_claim_topology_placeholder_promotes_to_webcrt(self):
+        from netx_api.device_types import TOPOLOGY_NE_SOURCE
+        from netx_api.ne_service_common import _now
+
+        now = _now()
+        row = ManagedNE(
+            name="TOPO-PH-01",
+            vendor="Other",
+            device_type="generic",
+            ip_address="",
+            port=22,
+            protocol="ssh",
+            username="",
+            password_enc="",
+            enable_secret_enc="",
+            connect_status="unknown",
+            tags="",
+            remark="",
+            source=TOPOLOGY_NE_SOURCE,
+            source_ref="",
+            created_at=now,
+            updated_at=now,
+        )
+        self.db.add(row)
+        self.db.commit()
+        self.db.refresh(row)
+        out, action = upsert_webcrt_session_host(
+            self.db,
+            ne_id=row.id,
+            name="TOPO-PH-01",
+            ip_address="10.9.9.10",
+            protocol="ssh",
+            username="admin",
+            password="secret",
+            save_password=True,
+        )
+        self.assertEqual(action, "updated")
+        self.assertEqual(out.id, row.id)
+        self.assertEqual(out.source, WEBCRT_NE_SOURCE)
+
 
 if __name__ == "__main__":
     unittest.main()

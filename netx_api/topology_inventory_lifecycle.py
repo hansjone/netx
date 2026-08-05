@@ -9,7 +9,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
-from .device_types import LLDP_DISCOVERED_NE_SOURCE, WEBCRT_NE_SOURCE
+from .device_types import LLDP_DISCOVERED_NE_SOURCE, WEBCRT_NE_SOURCE, is_placeholder_ne_source
 from .models import (
     ManagedNE,
     TopoFabricEdge,
@@ -28,6 +28,7 @@ _NON_INVENTORY_MANAGED_SOURCES = frozenset(
         WEBCRT_NE_SOURCE,
         "lldp",
         "webcrt",
+        "topology",
     }
 )
 
@@ -64,7 +65,9 @@ def managed_source_label(source: str | None) -> str:
     src = str(source or "").strip().lower()
     if src == UME_SYNC_SOURCE:
         return "ume_sync"
-    if src == LLDP_DISCOVERED_NE_SOURCE or src == "lldp":
+    if is_placeholder_ne_source(src):
+        if src in {"topology"}:
+            return "topology"
         return "lldp"
     if src == WEBCRT_NE_SOURCE or src == "webcrt":
         return "webcrt"

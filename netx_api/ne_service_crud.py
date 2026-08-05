@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from .device_types import LLDP_DISCOVERED_NE_SOURCE, SUPPORTED_DEVICE_TYPES, SUPPORTED_VENDORS, WEBCRT_DEVICE_TYPES
+from .device_types import SUPPORTED_DEVICE_TYPES, SUPPORTED_VENDORS, WEBCRT_DEVICE_TYPES, is_placeholder_ne_source
 from .models import ManagedNE
 from .ne_crypto import encrypt_secret
 from .ne_hop_templates import default_bastion_username_template, default_hop_command_template
@@ -175,9 +175,9 @@ def update_managed_ne(db: Session, ne_id: str, body: ManagedNeUpdate) -> Managed
     )
     if any(k in data for k in hop_keys):
         _apply_hop_update(row, data)
-    # Filling IP on an LLDP placeholder promotes it into real inventory.
+    # Filling IP on an LLDP / topology placeholder promotes it into real inventory.
     if "ip_address" in data and str(row.ip_address or "").strip():
-        if str(row.source or "").strip().lower() in {LLDP_DISCOVERED_NE_SOURCE, "lldp"}:
+        if is_placeholder_ne_source(row.source):
             row.source = ""
     row.updated_at = _now()
     # Keep linked fabric node identity in sync (name / IP / vendor).

@@ -356,6 +356,15 @@ class ViewNodesAdd(BaseModel):
     return_graph: bool = True
 
 
+class TopologyPlaceholderCreate(BaseModel):
+    """Create a canvas placeholder ManagedNE (source=topology) and place it on the view."""
+
+    name: str = Field(min_length=1, max_length=256)
+    ip_address: str = ""
+    x: float = 0.0
+    y: float = 0.0
+
+
 class ViewNodesRemove(BaseModel):
     """Remove placements from a view (does not delete fabric). Filter and/or id list."""
 

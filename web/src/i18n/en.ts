@@ -737,6 +737,7 @@ const en = {
       ume_sync: "UME sync",
       webcrt: "WebCRT",
       lldp: "LLDP placeholder",
+      topology: "Topology placeholder",
     },
     connect: {
       run: "Connectivity test",
@@ -1123,9 +1124,9 @@ const en = {
     },
     newSession: {
       title: "New Session",
-      claimTitle: "Complete LLDP placeholder",
+      claimTitle: "Complete placeholder session",
       claimHint:
-        "Enter a reachable host. Session name defaults to the LLDP placeholder. On success, source becomes WebCRT.",
+        "Enter a reachable host. Session name defaults to the placeholder name. On success, source becomes WebCRT.",
       connect: "Connect",
       connecting: "Connecting…",
       protocol: "Protocol",
@@ -1454,6 +1455,18 @@ const en = {
     removeNode: "Remove from canvas",
     removeEdge: "Delete edge",
     nodeMenu: "Node",
+    paneMenu: "Canvas",
+    createNe: "Create NE",
+    createNeTitle: "Create topology placeholder NE",
+    createNeHint:
+      "Source is topology placeholder. Complete login via WebCRT, or promote in NE management.",
+    createNeName: "Name",
+    createNeNamePh: "e.g. SW-CORE-01",
+    createNeNameRequired: "NE name is required",
+    createNeIp: "IP (optional)",
+    createNeIpPh: "Can fill later during setup",
+    createNeDone: "Created placeholder {{name}}",
+    createNeBusy: "Creating…",
     selectionMenu: "Selection",
     edgeStyle: "Edge style",
     edgeColor: "Color",

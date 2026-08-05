@@ -12,7 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .cli_resolve import get_default_profile, infer_device_type_vendor
-from .device_types import LLDP_DISCOVERED_NE_SOURCE, WEBCRT_NE_SOURCE
+from .device_types import LLDP_DISCOVERED_NE_SOURCE, WEBCRT_NE_SOURCE, is_placeholder_ne_source
 from .models import (
     ManagedNE,
     TopoFabricEdge,
@@ -70,11 +70,11 @@ def _managed_source(db: Session, ne_id: str | None) -> str:
 
 
 def _ne_inventory_score(ne: ManagedNE) -> int:
-    """Prefer real inventory over LLDP placeholders; never prefer WebCRT twins."""
+    """Prefer real inventory over placeholders; never prefer WebCRT twins."""
     src = str(ne.source or "").strip().lower()
     if src == WEBCRT_NE_SOURCE:
         return 0
-    if src == LLDP_DISCOVERED_NE_SOURCE:
+    if is_placeholder_ne_source(src):
         return 1
     return 2
 
@@ -84,7 +84,7 @@ def _fabric_match_score(db: Session, n: TopoFabricNode) -> int:
 
     WebCRT quick-connect intentionally allows duplicate IPs as separate ManagedNE
     rows; those must lose to real inventory NEs with the same address.
-    LLDP placeholders (SSH shell, empty creds) rank above WebCRT, below real NEs.
+    LLDP / topology placeholders (SSH shell, empty creds) rank above WebCRT, below real NEs.
     """
     if str(n.ume_ne_id or "").strip():
         return 3
@@ -94,7 +94,7 @@ def _fabric_match_score(db: Session, n: TopoFabricNode) -> int:
     src = _managed_source(db, mid)
     if src == WEBCRT_NE_SOURCE:
         return 1
-    if src == LLDP_DISCOVERED_NE_SOURCE:
+    if is_placeholder_ne_source(src):
         return 2
     return 4
 

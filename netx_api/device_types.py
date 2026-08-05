@@ -53,3 +53,20 @@ WEBCRT_NE_SOURCE = "webcrt"
 
 # ManagedNE.source for LLDP-discovered peers not yet in inventory (SSH shell, empty creds).
 LLDP_DISCOVERED_NE_SOURCE = "lldp"
+
+# ManagedNE.source for placeholders created manually on a topology canvas.
+TOPOLOGY_NE_SOURCE = "topology"
+
+# Incomplete hosts that need setup (NE edit / WebCRT New Session claim) before ops use.
+PLACEHOLDER_NE_SOURCES = frozenset(
+    {
+        LLDP_DISCOVERED_NE_SOURCE,
+        "lldp",
+        TOPOLOGY_NE_SOURCE,
+        "topology",
+    }
+)
+
+
+def is_placeholder_ne_source(source: str | None) -> bool:
+    return str(source or "").strip().lower() in PLACEHOLDER_NE_SOURCES

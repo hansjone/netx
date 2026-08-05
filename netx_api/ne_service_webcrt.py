@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from .device_types import LLDP_DISCOVERED_NE_SOURCE, WEBCRT_DEVICE_TYPES, WEBCRT_NE_SOURCE
+from .device_types import WEBCRT_DEVICE_TYPES, WEBCRT_NE_SOURCE, is_placeholder_ne_source
 from .models import ManagedNE
 from .ne_crypto import encrypt_secret
 from .ne_schemas import ManagedNeCreate, ManagedNeOut
@@ -26,13 +26,14 @@ from .ne_service_common import (
 
 
 def _is_webcrt_claimable(row: ManagedNE) -> bool:
-    """LLDP placeholders / incomplete rows (no IP) can be promoted into WebCRT sessions."""
+    """LLDP / topology placeholders / incomplete rows (no IP) can be promoted into WebCRT sessions."""
     src = str(row.source or "").strip().lower()
-    if src in {LLDP_DISCOVERED_NE_SOURCE, "lldp"}:
+    if is_placeholder_ne_source(src):
         return True
     if src in {WEBCRT_NE_SOURCE, "webcrt", "ume_sync"}:
         return False
     return not str(row.ip_address or "").strip()
+
 
 def _normalize_webcrt_device_type(device_type: str) -> str:
     dt = str(device_type or "").strip()

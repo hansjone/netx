@@ -52,6 +52,7 @@ from .topology_schemas import (
     TopologyFolderCreate,
     TopologyFolderOut,
     TopologyFolderUpdate,
+    TopologyPlaceholderCreate,
     TopologyTreeFolderOut,
     TopologyTreeOut,
     TopologyTreeViewOut,
@@ -782,6 +783,80 @@ def add_nodes_to_view(
         truncated=truncated or (next_offset is not None),
         next_offset=next_offset,
     )
+
+
+def create_topology_placeholder_on_view(
+    db: Session,
+    view_id: str,
+    body: TopologyPlaceholderCreate,
+) -> TopologyViewGraphOut:
+    """Create a ManagedNE with source=topology, ensure fabric node, place on the view."""
+    from .device_types import TOPOLOGY_NE_SOURCE
+    from .ne_service_common import _normalize_ip
+
+    view = _get_view_or_404(db, view_id)
+    mem = _membership_for_view(view)
+    max_nodes = int(mem.get("max_nodes") or 300)
+    existing_count = (
+        db.query(func.count(TopoViewNode.id)).filter(TopoViewNode.view_id == view.id).scalar() or 0
+    )
+    if int(existing_count) >= max_nodes:
+        raise HTTPException(status_code=400, detail="membership_max_nodes")
+
+    display = str(body.name or "").strip()[:256]
+    if not display:
+        raise HTTPException(status_code=400, detail="name_required")
+    ip = _normalize_ip(body.ip_address)[:128]
+    now = _utcnow()
+    ne = ManagedNE(
+        id=uuid4().hex,
+        name=display,
+        vendor="Other",
+        device_type="generic",
+        ip_address=ip,
+        port=22,
+        protocol="ssh",
+        username="",
+        password_enc="",
+        enable_secret_enc="",
+        connect_status="unknown",
+        tags="",
+        remark="Created on topology canvas",
+        source=TOPOLOGY_NE_SOURCE,
+        source_ref="",
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(ne)
+    db.flush()
+    fabric = ensure_fabric_node_for_managed(db, ne)
+
+    already = (
+        db.query(TopoViewNode)
+        .filter(TopoViewNode.view_id == view.id, TopoViewNode.fabric_node_id == fabric.id)
+        .one_or_none()
+    )
+    if already is None:
+        db.add(
+            TopoViewNode(
+                id=uuid4().hex,
+                view_id=view.id,
+                fabric_node_id=fabric.id,
+                x=float(body.x or 0.0),
+                y=float(body.y or 0.0),
+                label="",
+                locked=False,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    else:
+        already.x = float(body.x or already.x or 0.0)
+        already.y = float(body.y or already.y or 0.0)
+        already.updated_at = now
+    view.updated_at = now
+    db.commit()
+    return get_view_graph(db, view.id)
 
 
 def _neighbor_ids(

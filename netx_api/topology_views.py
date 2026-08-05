@@ -4,6 +4,7 @@ from __future__ import annotations
 from .topology_views_graph import (
     _place_fabric_ids_on_view,
     add_nodes_to_view,
+    create_topology_placeholder_on_view,
     get_view_graph,
     patch_view_edge_style,
     patch_view_positions,
@@ -29,6 +30,7 @@ __all__ = [
     "add_nodes_to_view",
     "bootstrap_topology_tree",
     "create_folder",
+    "create_topology_placeholder_on_view",
     "create_view",
     "delete_folder",
     "delete_view",

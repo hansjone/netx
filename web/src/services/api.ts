@@ -1070,6 +1070,15 @@ export const addTopologyViewNodes = (
   },
 ) => apiPost<TopologyViewGraph>(`/v1/topology/views/${encodeURIComponent(viewId)}/nodes`, body);
 
+export const createTopologyPlaceholder = (
+  viewId: string,
+  body: { name: string; ip_address?: string; x?: number; y?: number },
+) =>
+  apiPost<TopologyViewGraph>(
+    `/v1/topology/views/${encodeURIComponent(viewId)}/nodes/create-placeholder`,
+    body,
+  );
+
 export const removeTopologyViewNodes = (viewId: string, fabricNodeIds: string[]) =>
   apiPost<TopologyViewGraph>(`/v1/topology/views/${encodeURIComponent(viewId)}/nodes/remove`, {
     fabric_node_ids: fabricNodeIds,

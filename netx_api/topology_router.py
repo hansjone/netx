@@ -34,6 +34,7 @@ from .topology_schemas import (
     SliceGenerateRequest,
     TopologyFolderCreate,
     TopologyFolderUpdate,
+    TopologyPlaceholderCreate,
     TopologyViewCreate,
     TopologyViewUpdate,
     ViewEdgeStylePatch,
@@ -56,6 +57,7 @@ from .topology_views import (
     add_nodes_to_view,
     bootstrap_topology_tree,
     create_folder,
+    create_topology_placeholder_on_view,
     create_view,
     delete_folder,
     delete_view,
@@ -287,6 +289,15 @@ def api_add_nodes(
     view_id: str, body: ViewNodesAdd, db: Session = Depends(get_db)
 ) -> dict[str, Any]:
     return add_nodes_to_view(db, view_id, body).model_dump()
+
+
+@router.post("/views/{view_id}/nodes/create-placeholder")
+def api_create_topology_placeholder(
+    view_id: str,
+    body: TopologyPlaceholderCreate,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    return create_topology_placeholder_on_view(db, view_id, body).model_dump()
 
 
 @router.post("/views/{view_id}/project-neighbors")

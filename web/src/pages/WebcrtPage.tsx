@@ -355,7 +355,7 @@ function isInventorySsh(target: Pick<CliTargetItem, "source" | "protocol">): boo
   return String(target.protocol || "ssh").toLowerCase() !== "telnet";
 }
 
-/** LLDP placeholders / incomplete inventory rows need New Session (host/IP) before auth. */
+/** LLDP / topology placeholders / incomplete inventory rows need New Session (host/IP) before auth. */
 function needsSessionSetup(
   target: Pick<CliTargetItem, "source" | "ne_source" | "ip_address">,
 ): boolean {
@@ -363,7 +363,7 @@ function needsSessionSetup(
   if (listSrc === "ume") return false;
   if (listSrc !== "managed" && listSrc !== "webcrt") return false;
   const neSrc = String(target.ne_source || "").trim().toLowerCase();
-  if (neSrc === "lldp") return true;
+  if (neSrc === "lldp" || neSrc === "topology") return true;
   return !String(target.ip_address || "").trim();
 }
 

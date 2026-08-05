@@ -34,7 +34,7 @@ function isFabricNodeDeletable(n: FabricNodeSearchHit): boolean {
   }
   if (n.managed_alive === false) return true;
   const src = String(n.managed_source || "").toLowerCase();
-  return src === "lldp" || src === "webcrt";
+  return src === "lldp" || src === "topology" || src === "webcrt";
 }
 
 export function TopologyClassifyPage() {

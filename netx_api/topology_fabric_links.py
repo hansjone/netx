@@ -12,7 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .cli_resolve import get_default_profile, infer_device_type_vendor
-from .device_types import LLDP_DISCOVERED_NE_SOURCE, WEBCRT_NE_SOURCE
+from .device_types import LLDP_DISCOVERED_NE_SOURCE, WEBCRT_NE_SOURCE, is_placeholder_ne_source
 from .models import (
     ManagedNE,
     TopoFabricEdge,
@@ -477,7 +477,7 @@ def merge_duplicate_fabric_nodes(db: Session) -> dict[str, int]:
         _absorb(canon, [p])
         db.flush()
         # Drop placeholder ManagedNE if nothing else references it.
-        if ph_ne is not None and str(ph_ne.source or "").strip().lower() == LLDP_DISCOVERED_NE_SOURCE:
+        if ph_ne is not None and is_placeholder_ne_source(ph_ne.source):
             still = (
                 db.query(TopoFabricNode)
                 .filter(TopoFabricNode.managed_ne_id == ph_ne.id)

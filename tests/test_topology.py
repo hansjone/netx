@@ -13,7 +13,7 @@ from sqlalchemy.exc import OperationalError
 from netx_api import topology_lldp as lldp
 from netx_api import topology_service as svc
 from netx_api.db import Base, SessionLocal, engine
-from netx_api.device_types import LLDP_DISCOVERED_NE_SOURCE, WEBCRT_NE_SOURCE
+from netx_api.device_types import LLDP_DISCOVERED_NE_SOURCE, TOPOLOGY_NE_SOURCE, WEBCRT_NE_SOURCE
 from netx_api.models import (
     ManagedNE,
     TopoDiscoverJob,
@@ -28,6 +28,7 @@ from netx_api.models import (
 from netx_api.topology_schemas import (
     FabricDiscoverRequest,
     TopologyFolderCreate,
+    TopologyPlaceholderCreate,
     TopologyViewCreate,
     ViewNodesAdd,
     ViewPopulateRequest,
@@ -356,6 +357,30 @@ class FabricTopologyTests(unittest.TestCase):
         svc.delete_view(self.db, view.id)
         self.db.delete(ne)
         self.db.commit()
+
+    def test_create_topology_placeholder_on_view(self) -> None:
+        suffix = uuid4().hex[:8]
+        view = svc.create_view(
+            self.db,
+            TopologyViewCreate(name=f"Vph-{suffix}", folder_id=self._region(f"Rph-{suffix}")),
+        )
+        graph = svc.create_topology_placeholder_on_view(
+            self.db,
+            view.id,
+            TopologyPlaceholderCreate(name=f"SW-{suffix}", ip_address="", x=42, y=77),
+        )
+        self.assertEqual(len(graph.nodes), 1)
+        node = graph.nodes[0]
+        self.assertEqual(node.name, f"SW-{suffix}")
+        self.assertEqual(node.x, 42)
+        self.assertEqual(node.y, 77)
+        self.assertTrue(node.managed_ne_id)
+        ne = self.db.get(ManagedNE, node.managed_ne_id)
+        self.assertIsNotNone(ne)
+        assert ne is not None
+        self.assertEqual(ne.source, TOPOLOGY_NE_SOURCE)
+        self.assertEqual(ne.ip_address, "")
+        self.assertEqual(ne.device_type, "generic")
 
     def test_topology_tree_root_region_and_leaf(self) -> None:
         tree = svc.get_topology_tree(self.db)

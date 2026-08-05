@@ -36,6 +36,7 @@ import {
   addTopologyViewNodes,
   createFabricManualEdge,
   createTopologyFolder,
+  createTopologyPlaceholder,
   createTopologyView,
   deleteTopologyFolder,
   deleteTopologyMap,
@@ -298,7 +299,8 @@ type TopoDisplayOpts = {
 type CtxMenu =
   | { kind: "node"; id: string; x: number; y: number }
   | { kind: "edge"; id: string; x: number; y: number }
-  | { kind: "selection"; x: number; y: number };
+  | { kind: "selection"; x: number; y: number }
+  | { kind: "pane"; x: number; y: number; flowX: number; flowY: number };
 
 const TopoDisplayContext = createContext<TopoDisplayOpts>({
   hideIp: true,
@@ -853,6 +855,13 @@ export function TopologyPage() {
   const [paletteSource, setPaletteSource] = useState<PaletteSource>("managed");
   const [paletteSelectedKeys, setPaletteSelectedKeys] = useState<string[]>([]);
   const [paletteAdding, setPaletteAdding] = useState(false);
+  const [createNeDialog, setCreateNeDialog] = useState<{
+    flowX: number;
+    flowY: number;
+    name: string;
+    ip_address: string;
+  } | null>(null);
+  const [createNeBusy, setCreateNeBusy] = useState(false);
   const [discoverOpen, setDiscoverOpen] = useState(false);
   const [discovering, setDiscovering] = useState(false);
   const [discoverReport, setDiscoverReport] = useState<TopologyDiscoverOut | null>(null);
@@ -2084,8 +2093,8 @@ export function TopologyPage() {
           const src = String(ne.source || "").trim().toLowerCase();
           const hasIp = Boolean(String(ne.ip_address || "").trim());
           // Ready inventory hosts: reuse stored credentials (incl. hop/proxy).
-          // LLDP placeholders / incomplete rows → full NE edit form (vendor, hop, etc.).
-          const needsSetup = !hasIp || src === "lldp";
+          // LLDP / topology placeholders / incomplete rows → full NE edit form.
+          const needsSetup = !hasIp || src === "lldp" || src === "topology";
           if (!needsSetup) {
             openOrFocusModule({
               moduleId: "webcrt",
@@ -2180,6 +2189,11 @@ export function TopologyPage() {
     void runDiscover([id]);
   };
 
+  const openCreateNeAt = (flowX: number, flowY: number) => {
+    closeCtxMenu();
+    setCreateNeDialog({ flowX, flowY, name: "", ip_address: "" });
+  };
+
   const placeCtxMenu = (clientX: number, clientY: number, size?: { w?: number; h?: number }): { x: number; y: number } => {
     const pad = 8;
     const w = size?.w ?? 200;
@@ -2205,6 +2219,58 @@ export function TopologyPage() {
     },
     [setNodes, setEdges],
   );
+
+  const submitCreateNe = useCallback(async () => {
+    if (!mapId || !createNeDialog) return;
+    const name = createNeDialog.name.trim();
+    if (!name) {
+      showError(t("topology.createNeNameRequired"));
+      return;
+    }
+    setCreateNeBusy(true);
+    try {
+      const graph = await createTopologyPlaceholder(mapId, {
+        name,
+        ip_address: createNeDialog.ip_address.trim(),
+        x: createNeDialog.flowX,
+        y: createNeDialog.flowY,
+      });
+      queryClient.setQueryData(queryKeys.topologyGraph(mapId), graph);
+      historyLockRef.current = true;
+      applyViewGraph(graph, edgeDefaults, setNodes, setEdges);
+      historyLockRef.current = false;
+      clearDirty();
+      const created = graph.nodes.find(
+        (n) =>
+          String(n.name || "").trim() === name &&
+          Math.abs(Number(n.x) - createNeDialog.flowX) < 0.5 &&
+          Math.abs(Number(n.y) - createNeDialog.flowY) < 0.5,
+      );
+      if (created?.fabric_node_id) {
+        focusNode(created.fabric_node_id, false);
+      }
+      setCreateNeDialog(null);
+      showOk(t("topology.createNeDone").replace("{{name}}", name));
+      void queryClient.invalidateQueries({ queryKey: ["managedNe"] });
+      void queryClient.invalidateQueries({ queryKey: ["webcrtTargets"] });
+    } catch (err) {
+      showError(String(err));
+    } finally {
+      setCreateNeBusy(false);
+    }
+  }, [
+    mapId,
+    createNeDialog,
+    queryClient,
+    edgeDefaults,
+    setNodes,
+    setEdges,
+    clearDirty,
+    showError,
+    showOk,
+    t,
+    focusNode,
+  ]);
 
   const locateNode = useCallback(
     (nodeId: string) => {
@@ -2857,6 +2923,29 @@ export function TopologyPage() {
                 }}
               >
                 {t("topology.addNe")}
+              </button>
+              <button
+                type="button"
+                className="btn btn--sm"
+                onClick={() => {
+                  let flowX = 80 + nodes.length * 24;
+                  let flowY = 80 + nodes.length * 24;
+                  if (rfRef.current) {
+                    const pane = document.querySelector(".react-flow__pane");
+                    const rect = pane?.getBoundingClientRect();
+                    if (rect && rect.width > 0 && rect.height > 0) {
+                      const center = rfRef.current.screenToFlowPosition({
+                        x: rect.left + rect.width / 2,
+                        y: rect.top + rect.height / 2,
+                      });
+                      flowX = center.x;
+                      flowY = center.y;
+                    }
+                  }
+                  openCreateNeAt(flowX, flowY);
+                }}
+              >
+                {t("topology.createNe")}
               </button>
               <button type="button" className="btn btn--sm btn--ghost" onClick={() => goBackBrowse()}>
                 {t("topology.backUp")}
@@ -3736,6 +3825,21 @@ export function TopologyPage() {
                     const pos = placeCtxMenu(e.clientX, e.clientY);
                     setCtxMenu({ kind: "selection", ...pos });
                   }}
+                  onPaneContextMenu={(e) => {
+                    e.preventDefault();
+                    if (!rfRef.current) return;
+                    const flow = rfRef.current.screenToFlowPosition({
+                      x: e.clientX,
+                      y: e.clientY,
+                    });
+                    const pos = placeCtxMenu(e.clientX, e.clientY, { w: 180, h: 100 });
+                    setCtxMenu({
+                      kind: "pane",
+                      ...pos,
+                      flowX: flow.x,
+                      flowY: flow.y,
+                    });
+                  }}
                   onMoveStart={closeCtxMenu}
                   onInit={(inst) => {
                     rfRef.current = inst as ReactFlowInstance<Node<NeNodeData>, Edge>;
@@ -3778,6 +3882,94 @@ export function TopologyPage() {
           </div>
         )}
       </main>
+
+      {createNeDialog && canvasMode ? (
+        <div
+          className="topo-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="topo-create-ne-title"
+        >
+          <div
+            className="topo-modal__backdrop"
+            onClick={() => {
+              if (createNeBusy) return;
+              setCreateNeDialog(null);
+            }}
+          />
+          <div className="topo-modal__panel" style={{ maxWidth: 420 }}>
+            <div className="topo-modal__head">
+              <strong id="topo-create-ne-title">{t("topology.createNeTitle")}</strong>
+              <button
+                type="button"
+                className="btn btn--sm btn--ghost"
+                disabled={createNeBusy}
+                onClick={() => setCreateNeDialog(null)}
+              >
+                {t("topology.discoverClose")}
+              </button>
+            </div>
+            <p className="panel__hint topo-modal__hint">{t("topology.createNeHint")}</p>
+            <div className="form-grid" style={{ padding: "0 16px 8px" }}>
+              <label>
+                <span className="form-label">
+                  {t("topology.createNeName")}
+                  <span className="form-label__required" aria-hidden="true">
+                    {" "}
+                    *
+                  </span>
+                </span>
+                <input
+                  autoFocus
+                  value={createNeDialog.name}
+                  placeholder={t("topology.createNeNamePh")}
+                  disabled={createNeBusy}
+                  onChange={(e) =>
+                    setCreateNeDialog((prev) => (prev ? { ...prev, name: e.target.value } : prev))
+                  }
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void submitCreateNe();
+                  }}
+                />
+              </label>
+              <label>
+                <span className="form-label">{t("topology.createNeIp")}</span>
+                <input
+                  value={createNeDialog.ip_address}
+                  placeholder={t("topology.createNeIpPh")}
+                  disabled={createNeBusy}
+                  onChange={(e) =>
+                    setCreateNeDialog((prev) =>
+                      prev ? { ...prev, ip_address: e.target.value } : prev,
+                    )
+                  }
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void submitCreateNe();
+                  }}
+                />
+              </label>
+            </div>
+            <div className="topo-modal__foot">
+              <button
+                type="button"
+                className="btn btn--ghost"
+                disabled={createNeBusy}
+                onClick={() => setCreateNeDialog(null)}
+              >
+                {t("topology.discoverClose")}
+              </button>
+              <button
+                type="button"
+                className="btn btn--primary"
+                disabled={createNeBusy}
+                onClick={() => void submitCreateNe()}
+              >
+                {createNeBusy ? t("topology.createNeBusy") : t("topology.createNe")}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {addNeOpen && canvasMode ? (
         <div className="topo-modal" role="dialog" aria-modal="true" aria-label={t("topology.addNe")}>
@@ -3971,6 +4163,22 @@ export function TopologyPage() {
                   onClick={() => removeSelected()}
                 >
                   {t("topology.removeSelected").replace("{{count}}", String(selectedNodes.length))}
+                </button>
+              </li>
+            </>
+          ) : ctxMenu.kind === "pane" ? (
+            <>
+              <li className="topo-ctx__head" role="presentation">
+                {t("topology.paneMenu")}
+              </li>
+              <li role="none">
+                <button
+                  type="button"
+                  className="topo-ctx__item"
+                  role="menuitem"
+                  onClick={() => openCreateNeAt(ctxMenu.flowX, ctxMenu.flowY)}
+                >
+                  {t("topology.createNe")}
                 </button>
               </li>
             </>
