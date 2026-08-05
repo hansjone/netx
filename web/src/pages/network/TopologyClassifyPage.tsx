@@ -37,6 +37,27 @@ function isFabricNodeDeletable(n: FabricNodeSearchHit): boolean {
   return src === "lldp" || src === "topology" || src === "webcrt";
 }
 
+const ROLE_OPTIONS = ["core", "aggregation", "access", "unknown"] as const;
+
+function roleLabel(t: (k: string) => string, role: string): string {
+  const s = String(role || "").trim().toLowerCase();
+  if (s === "core") return t("topoClassify.roleCore");
+  if (s === "aggregation") return t("topoClassify.roleAggregation");
+  if (s === "access") return t("topoClassify.roleAccess");
+  if (s === "unknown") return t("topoClassify.roleUnknown");
+  return role || "-";
+}
+
+function managedSourceLabel(t: (k: string) => string, source: string): string {
+  const s = String(source || "").trim().toLowerCase();
+  if (s === "manual") return t("topoClassify.sourceManual");
+  if (s === "ume_sync") return t("topoClassify.sourceUmeSync");
+  if (s === "lldp") return t("topoClassify.sourceLldp");
+  if (s === "topology") return t("topoClassify.sourceTopology");
+  if (s === "webcrt") return t("topoClassify.sourceWebcrt");
+  return source;
+}
+
 export function TopologyClassifyPage() {
   const { t } = useI18n();
   const { showOk, showError } = useToast();
@@ -285,10 +306,11 @@ export function TopologyClassifyPage() {
             }}
           >
             <option value="">{t("topoClassify.filterRoleAll")}</option>
-            <option value="core">core</option>
-            <option value="aggregation">aggregation</option>
-            <option value="access">access</option>
-            <option value="unknown">unknown</option>
+            {ROLE_OPTIONS.map((r) => (
+              <option key={r} value={r}>
+                {roleLabel(t, r)}
+              </option>
+            ))}
           </select>
           <select
             className="input"
@@ -380,10 +402,11 @@ export function TopologyClassifyPage() {
               value={assignRole}
               onChange={(e) => setAssignRole(e.target.value)}
             >
-              <option value="core">core</option>
-              <option value="aggregation">aggregation</option>
-              <option value="access">access</option>
-              <option value="unknown">unknown</option>
+              {ROLE_OPTIONS.map((r) => (
+                <option key={r} value={r}>
+                  {roleLabel(t, r)}
+                </option>
+              ))}
             </select>
           ) : null}
           {assignWhat !== "role" ? (
@@ -476,7 +499,7 @@ export function TopologyClassifyPage() {
                   <td>{n.ip}</td>
                   <td>
                     {linkLabel(n.link_status)}
-                    {n.managed_source ? ` · ${n.managed_source}` : ""}
+                    {n.managed_source ? ` · ${managedSourceLabel(t, n.managed_source)}` : ""}
                   </td>
                   <td>
                     {editing ? (
@@ -486,13 +509,14 @@ export function TopologyClassifyPage() {
                         onChange={(e) => setEditRole(e.target.value)}
                       >
                         <option value="">-</option>
-                        <option value="core">core</option>
-                        <option value="aggregation">aggregation</option>
-                        <option value="access">access</option>
-                        <option value="unknown">unknown</option>
+                        {ROLE_OPTIONS.map((r) => (
+                          <option key={r} value={r}>
+                            {roleLabel(t, r)}
+                          </option>
+                        ))}
                       </select>
                     ) : (
-                      n.role || "-"
+                      roleLabel(t, n.role || "")
                     )}
                   </td>
                   <td>
@@ -681,7 +705,7 @@ export function TopologyClassifyPage() {
                     <li key={m.name}>
                       <strong>{m.name}</strong>
                       {" · "}
-                      {m.role}
+                      {roleLabel(t, m.role)}
                       {" · "}
                       {t("topoClassify.nodeCount").replace("{{count}}", String(m.node_count))}
                     </li>

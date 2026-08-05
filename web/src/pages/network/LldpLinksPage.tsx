@@ -25,6 +25,51 @@ const POLL_MS = 2500;
 const TARGET_PAGE_SIZE = 20;
 const SEP = " · ";
 
+function lldpJobStatusLabel(t: (k: string) => string, status: string): string {
+  const s = String(status || "").trim().toLowerCase();
+  const key = `lldpLinks.jobStatus.${s}`;
+  const label = t(key);
+  return label === key ? status || "—" : label;
+}
+
+function lldpTriggerLabel(t: (k: string) => string, mode: string): string {
+  const s = String(mode || "").trim().toLowerCase();
+  const key = `lldpLinks.triggerMode.${s}`;
+  const label = t(key);
+  return label === key ? mode || "—" : label;
+}
+
+function lldpScopeLabel(t: (k: string) => string, scope: string): string {
+  const s = String(scope || "").trim().toLowerCase();
+  const key = `lldpLinks.jobScope.${s}`;
+  const label = t(key);
+  return label === key ? scope || "—" : label;
+}
+
+function lldpItemResultLabel(
+  t: (k: string) => string,
+  it: { ok?: boolean; parser_stub?: boolean | string | null; unmatched_count?: number; unmatched?: unknown[] },
+): string {
+  if (!it.ok) return t("lldpLinks.itemResult.fail");
+  const unmatchedCount = it.unmatched_count ?? (it.unmatched?.length || 0);
+  if (it.parser_stub || unmatchedCount > 0) return t("lldpLinks.itemResult.warn");
+  return t("lldpLinks.itemResult.ok");
+}
+
+function lldpEdgeStatusLabel(t: (k: string) => string, status: string): string {
+  const s = status === "stale" ? "missing" : String(status || "").trim().toLowerCase();
+  if (s === "active") return t("lldpLinks.edgeStatusActive");
+  if (s === "missing") return t("lldpLinks.edgeStatusMissing");
+  return status || "—";
+}
+
+function lldpEdgeSourceLabel(t: (k: string) => string, source: string): string {
+  const s = String(source || "").trim().toLowerCase();
+  const key = `lldpLinks.edgeSource.${s}`;
+  const label = t(key);
+  return label === key ? source || "—" : label;
+}
+
 export function LldpLinksPage() {
   const { t } = useI18n();
   const { showOk, showError } = useToast();
@@ -545,7 +590,7 @@ export function LldpLinksPage() {
               const st = e.status === "stale" ? "missing" : e.status;
               return (
                 <tr key={e.id}>
-                  <td>{st}</td>
+                  <td>{lldpEdgeStatusLabel(t, st)}</td>
                   <td>
                     <div>{aLabel}</div>
                     {e.a_ip && e.a_name ? <div className="muted">{e.a_ip}</div> : null}
@@ -556,7 +601,7 @@ export function LldpLinksPage() {
                     {e.b_ip && e.b_name ? <div className="muted">{e.b_ip}</div> : null}
                   </td>
                   <td>{e.b_port || "—"}</td>
-                  <td>{e.source}</td>
+                  <td>{lldpEdgeSourceLabel(t, e.source)}</td>
                   <td>
                     {missCount || (st === "missing" ? 1 : 0)}
                     {replaced ? (
@@ -635,8 +680,8 @@ export function LldpLinksPage() {
                     </button>
                   </td>
                   <td className="mono">{job.id.slice(0, 8)}</td>
-                  <td>{job.trigger_mode}</td>
-                  <td>{job.scope}</td>
+                  <td>{lldpTriggerLabel(t, job.trigger_mode)}</td>
+                  <td>{lldpScopeLabel(t, job.scope)}</td>
                   <td>
                     <span
                       className={
@@ -647,7 +692,7 @@ export function LldpLinksPage() {
                             : undefined
                       }
                     >
-                      {job.status}
+                      {lldpJobStatusLabel(t, job.status)}
                     </span>
                   </td>
                   <td>
@@ -744,7 +789,7 @@ export function LldpLinksPage() {
                   {(() => {
                     const job = jobDetailQuery.data;
                     if (job) {
-                      return `${job.id.slice(0, 8)} · ${job.status} · ${job.done}/${job.total}`;
+                      return `${job.id.slice(0, 8)} · ${lldpJobStatusLabel(t, job.status)} · ${job.done}/${job.total}`;
                     }
                     if (jobDetailQuery.isLoading) {
                       return `${expandedJobId.slice(0, 8)} · …`;
@@ -793,7 +838,7 @@ export function LldpLinksPage() {
                           <td>{it.ne_name || it.ne_id || "—"}</td>
                           <td>{it.ne_ip || "—"}</td>
                           <td>
-                            {!it.ok ? "fail" : it.parser_stub || unmatchedCount > 0 ? "warn" : "ok"}
+                            {lldpItemResultLabel(t, it)}
                           </td>
                           <td>{it.neighbors}</td>
                           <td>
