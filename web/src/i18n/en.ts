@@ -1456,8 +1456,8 @@ const en = {
     removeEdge: "Delete edge",
     nodeMenu: "Node",
     paneMenu: "Canvas",
-    createNe: "Create NE",
-    createNeTitle: "Create topology placeholder NE",
+    createNe: "New NE",
+    createNeTitle: "New topology placeholder NE",
     createNeHint:
       "Source is topology placeholder. Complete login via WebCRT, or promote in NE management.",
     createNeName: "Name",
