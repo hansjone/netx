@@ -484,6 +484,7 @@ const AUTO_LAYOUT_DISCOVER_KEY = "netx.topology.autoLayoutAfterDiscover";
 const DISCOVER_AUTO_ADD_KEY = "netx.topology.discoverAutoAddUnmatched.v2";
 const DISCOVER_PROJECT_NEIGHBORS_KEY = "netx.topology.discoverProjectNeighbors.v2";
 const SCALE_BUNDLE_WIDTH_KEY = "netx.topology.scaleBundleWidth";
+const SHOW_PLACEHOLDERS_KEY = "netx.topology.showPlaceholders";
 const CANVAS_BG_KEY = "netx.topology.canvasBg";
 const DEFAULT_CANVAS_BG = "#0f172a";
 /** Previous light default — migrate so existing sessions pick up dark canvas. */
@@ -860,6 +861,10 @@ export function TopologyPage() {
   const [scaleBundleWidth, setScaleBundleWidth] = useState(() =>
     loadBoolFlag(SCALE_BUNDLE_WIDTH_KEY, false),
   );
+  /** Topology/LLDP placeholders hidden by default; toggle in Display menu. */
+  const [showPlaceholders, setShowPlaceholders] = useState(() =>
+    loadBoolFlag(SHOW_PLACEHOLDERS_KEY, false),
+  );
   const [edgeFlow, setEdgeFlow] = useState(false);
   const [edgeDefaults, setEdgeDefaults] = useState<EdgeDefaults>(() => loadEdgeDefaults());
   const [canvasBg, setCanvasBg] = useState(loadCanvasBg);
@@ -914,6 +919,21 @@ export function TopologyPage() {
   const findJustLocatedRef = useRef(false);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<NeNodeData>>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+
+  useEffect(() => {
+    if (showPlaceholders) return;
+    setNodes((ns) => {
+      let changed = false;
+      const next = ns.map((n) => {
+        if (!n.selected) return n;
+        if (!isPlaceholderSource(n.data.managed_source, n.data.ne_ip)) return n;
+        changed = true;
+        return { ...n, selected: false };
+      });
+      return changed ? next : ns;
+    });
+  }, [showPlaceholders, setNodes]);
+
   const rfRef = useRef<ReactFlowInstance<Node<NeNodeData>, Edge> | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const dirtyRef = useRef(false);
@@ -1033,6 +1053,33 @@ export function TopologyPage() {
       };
     });
   }, [edges, expandPhysicalLinks, hidePorts, scaleBundleWidth, edgeFlow, edgeDefaults, selectedEdgeId]);
+
+  const hiddenPlaceholderIds = useMemo(() => {
+    if (showPlaceholders) return new Set<string>();
+    return new Set(
+      nodes
+        .filter((n) => isPlaceholderSource(n.data.managed_source, n.data.ne_ip))
+        .map((n) => n.id),
+    );
+  }, [nodes, showPlaceholders]);
+
+  const flowNodes = useMemo(() => {
+    const list = hiddenPlaceholderIds.size
+      ? nodes.filter((n) => !hiddenPlaceholderIds.has(n.id))
+      : nodes;
+    return list.map((n) =>
+      searchHitIds.includes(n.id)
+        ? { ...n, className: "is-search-hit" }
+        : { ...n, className: undefined },
+    );
+  }, [nodes, hiddenPlaceholderIds, searchHitIds]);
+
+  const flowEdges = useMemo(() => {
+    if (!hiddenPlaceholderIds.size) return displayEdges;
+    return displayEdges.filter(
+      (e) => !hiddenPlaceholderIds.has(e.source) && !hiddenPlaceholderIds.has(e.target),
+    );
+  }, [displayEdges, hiddenPlaceholderIds]);
 
   const treeQuery = useQuery({
     queryKey: queryKeys.topologyTree,
@@ -2670,8 +2717,12 @@ export function TopologyPage() {
   const canvasHits = useMemo(() => {
     const q = canvasQuery.trim();
     if (!q) return [];
-    return nodes.filter((n) => nodeMatchesQuery(n, q));
-  }, [canvasQuery, nodes]);
+    return nodes.filter(
+      (n) =>
+        nodeMatchesQuery(n, q) &&
+        (showPlaceholders || !isPlaceholderSource(n.data.managed_source, n.data.ne_ip)),
+    );
+  }, [canvasQuery, nodes, showPlaceholders]);
 
   useEffect(() => {
     const q = canvasQuery.trim();
@@ -3362,6 +3413,18 @@ export function TopologyPage() {
                     />
                     {t("topology.hideVendor")}
                   </label>
+                    <label className="topo-display-toggles__item">
+                      <input
+                        type="checkbox"
+                        checked={showPlaceholders}
+                        onChange={(e) => {
+                          const next = e.target.checked;
+                          setShowPlaceholders(next);
+                          persistBoolFlag(SHOW_PLACEHOLDERS_KEY, next);
+                        }}
+                      />
+                      {t("topology.showPlaceholders")}
+                    </label>
                     <label className="topo-display-toggles__item">
                       <input
                         type="checkbox"
@@ -4094,12 +4157,8 @@ export function TopologyPage() {
             {treeRoot ? (
               <TopoDisplayContext.Provider value={displayOpts}>
                 <ReactFlow
-                  nodes={nodes.map((n) =>
-                    searchHitIds.includes(n.id)
-                      ? { ...n, className: "is-search-hit" }
-                      : { ...n, className: undefined },
-                  )}
-                  edges={displayEdges}
+                  nodes={flowNodes}
+                  edges={flowEdges}
                   nodeTypes={nodeTypes}
                   edgeTypes={edgeTypes}
                   onlyRenderVisibleElements

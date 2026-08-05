@@ -1555,6 +1555,7 @@ const zh = {
     },
     hideIp: "隐藏 IP",
     hideVendor: "隐藏厂商",
+    showPlaceholders: "显示占位网元（TOPO/LLDP）",
     hidePorts: "隐藏端口",
     edgeFlow: "链路流动",
     collapseSidebar: "折叠侧栏",
