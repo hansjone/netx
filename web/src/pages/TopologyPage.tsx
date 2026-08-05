@@ -371,9 +371,17 @@ function nodeMatchesQuery(n: Node<NeNodeData>, query: string): boolean {
   return tokens.every((tok) => bits.some((b) => fuzzyIncludes(String(b || ""), tok)));
 }
 
-/** Silhouette via CSS mask; fill color comes from --topo-icon-color (vendor palette). */
+/**
+ * Keep the PNG’s white texture/highlights; tint brand color via mix-blend-mode.
+ * Color comes from --topo-icon-color (vendor palette in Display settings).
+ */
 function RouterIcon() {
-  return <span className="topo-node__icon" aria-hidden="true" />;
+  return (
+    <span className="topo-node__icon" aria-hidden="true">
+      <img className="topo-node__icon-art" src="/topo/ne-router.png" alt="" draggable={false} />
+      <span className="topo-node__icon-tint" />
+    </span>
+  );
 }
 
 /** Fixed box for onlyRenderVisibleElements (xyflow skips off-screen mount when sized + handles set). */
