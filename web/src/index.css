@@ -6876,6 +6876,8 @@ pre {
   flex: 1;
   min-height: 0;
   background: var(--topo-canvas-bg, #0f172a);
+  --xy-edge-label-background-color: transparent;
+  --xy-edge-label-color: #e2e8f0;
 }
 
 .topo-canvas:fullscreen,
@@ -7190,22 +7192,27 @@ pre {
   text-overflow: ellipsis;
 }
 
-.react-flow__edge-textbg {
-  fill: #0f172a;
+.topo-canvas .react-flow__edge-textbg {
+  fill: none !important;
+  display: none !important;
 }
 
-.react-flow__edge-text {
-  fill: #cbd5e1;
+.topo-canvas .react-flow__edge-text {
+  fill: #e2e8f0;
   font-size: 11px;
+  paint-order: stroke;
+  stroke: rgba(15, 23, 42, 0.85);
+  stroke-width: 3px;
 }
 
 .topo-edge-label {
   font-size: 11px;
   color: #e2e8f0;
-  background: transparent;
-  border: 0;
+  background: transparent !important;
+  border: 0 !important;
   border-radius: 0;
-  padding: 0;
+  padding: 0 !important;
+  box-shadow: none !important;
   white-space: nowrap;
   text-shadow:
     0 0 3px rgba(15, 23, 42, 0.95),

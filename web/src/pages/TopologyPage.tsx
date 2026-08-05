@@ -597,7 +597,8 @@ function resolveEdgeStyle(
 function withEdgeVisual(edge: Edge, defaults: EdgeDefaults): Edge {
   const data = (edge.data || {}) as EdgeStyleData;
   const style = resolveEdgeStyle(data, defaults);
-  return { ...edge, style, markerEnd: undefined };
+  // RF EdgeText defaults labelShowBg=true with a white rect — keep digits only.
+  return { ...edge, style, markerEnd: undefined, labelShowBg: false };
 }
 
 function graphToFlow(
@@ -3385,7 +3386,7 @@ export function TopologyPage() {
                   edgeTypes={edgeTypes}
                   onlyRenderVisibleElements
                   connectionMode={ConnectionMode.Loose}
-                  defaultEdgeOptions={{ type: "straight" }}
+                  defaultEdgeOptions={{ type: "straight", labelShowBg: false }}
                   proOptions={{ hideAttribution: true }}
                   minZoom={0.05}
                   maxZoom={4}
