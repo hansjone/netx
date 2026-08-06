@@ -6408,13 +6408,13 @@ pre {
 }
 
 .topo-node.is-connect-mode .topo-node__handle {
-  width: 28px !important;
-  height: 28px !important;
-  min-width: 28px !important;
-  min-height: 28px !important;
+  width: 14px !important;
+  height: 14px !important;
+  min-width: 14px !important;
+  min-height: 14px !important;
   opacity: 0.9 !important;
   background: rgba(14, 165, 233, 0.35) !important;
-  border: 2px solid #38bdf8 !important;
+  border: 1px solid #38bdf8 !important;
   border-radius: 50% !important;
   z-index: 5;
 }
@@ -7149,15 +7149,70 @@ pre {
 }
 
 .topo-node {
-  min-width: 72px;
-  max-width: 160px;
+  position: relative;
+  width: 80px;
+  min-width: 0;
+  max-width: none;
+  height: 25px;
   padding: 0;
   border: 0;
   background: transparent;
   box-shadow: none;
-  font-size: 11px;
+  font-size: 8px;
   text-align: center;
   --topo-icon-color: var(--topo-vendor-gray, #94a3b8);
+}
+
+/* Flat-world LOD: pixel / pin overview (Google-Earth style). */
+.topo-node--dot,
+.topo-node--pin {
+  min-width: 0;
+  max-width: none;
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  color: var(--topo-icon-color, #94a3b8);
+  pointer-events: auto;
+}
+
+.topo-node__pixel {
+  display: block;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.35);
+}
+
+.topo-node--dot.is-selected .topo-node__pixel {
+  width: 6px;
+  height: 6px;
+  box-shadow: 0 0 0 2px #38bdf8;
+}
+
+.topo-node__pin {
+  display: block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: currentColor;
+  border: 1px solid rgba(15, 23, 42, 0.45);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+
+.topo-node--pin.is-selected .topo-node__pin {
+  box-shadow: 0 0 0 2px #38bdf8;
+}
+
+.topo-node__handle--dot {
+  opacity: 0 !important;
+  width: 1px !important;
+  height: 1px !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  border: 0 !important;
+  pointer-events: none !important;
 }
 
 .topo-node.is-placeholder .topo-node__glyph {
@@ -7168,16 +7223,16 @@ pre {
 
 .topo-node__badge {
   position: absolute;
-  top: -4px;
-  right: -6px;
+  top: -3px;
+  right: -4px;
   z-index: 2;
-  min-width: 22px;
-  padding: 1px 4px;
-  border-radius: 4px;
+  min-width: 14px;
+  padding: 0 2px;
+  border-radius: 2px;
   background: rgba(15, 23, 42, 0.92);
   border: 1px solid rgba(148, 163, 184, 0.45);
   color: #fbbf24;
-  font-size: 9px;
+  font-size: 6px;
   font-weight: 700;
   line-height: 1.2;
   text-transform: uppercase;
@@ -7271,43 +7326,89 @@ pre {
   gap: 2px;
 }
 
+.topo-node.is-region {
+  height: 17px;
+}
+
 .topo-node__glyph {
   position: relative;
-  width: 56px;
-  height: 56px;
+  width: 25px;
+  height: 25px;
   margin: 0 auto;
 }
 
 .topo-node.is-region .topo-node__glyph {
-  width: 56px;
-  height: 38px;
-}
-
-.topo-node.is-region .topo-node__caption {
-  margin-top: 8px;
+  width: 25px;
+  height: 17px;
 }
 
 .topo-node__icon--region {
-  width: 56px;
-  height: 38px;
+  width: 25px;
+  height: 17px;
 }
 
-.react-flow__node.is-search-hit .topo-node__glyph {
-  box-shadow: none;
-  outline: 2px solid rgba(245, 158, 11, 0.95);
+.react-flow__node.is-search-hit {
+  z-index: 1000 !important;
+}
+
+.react-flow__node.is-search-hit .topo-node {
+  --topo-icon-color: #fbbf24;
+  filter: drop-shadow(0 0 8px rgba(251, 191, 36, 0.95));
+  animation: topo-search-flash 0.7s ease-in-out infinite;
+}
+
+.react-flow__node.is-search-hit .topo-node__glyph,
+.react-flow__node.is-search-hit .topo-node__pixel,
+.react-flow__node.is-search-hit .topo-node__pin {
+  outline: 3px solid #fbbf24;
   outline-offset: 3px;
-  border-radius: 4px;
-  animation: topo-search-pulse 0.85s ease 2;
+  border-radius: 50%;
 }
 
-@keyframes topo-search-pulse {
+.react-flow__node.is-search-hit .topo-node__pixel,
+.react-flow__node.is-search-hit .topo-node__pin {
+  background: #fbbf24 !important;
+  color: #fbbf24;
+  box-shadow: 0 0 10px rgba(251, 191, 36, 0.95);
+}
+
+.react-flow__node.is-search-hit .topo-node__icon-tint {
+  background-color: #fbbf24 !important;
+}
+
+.react-flow__node.is-search-hit .topo-node__caption {
+  opacity: 1;
+  z-index: 6;
+}
+
+.react-flow__node.is-search-hit .topo-node__caption-name {
+  color: #fde68a;
+  font-weight: 700;
+  font-size: 10px;
+  max-width: 140px;
+  text-shadow:
+    0 0 4px rgba(0, 0, 0, 1),
+    0 0 8px rgba(251, 191, 36, 0.85);
+}
+
+@keyframes topo-search-flash {
   0%,
   100% {
-    outline-color: rgba(245, 158, 11, 0.95);
+    filter: drop-shadow(0 0 4px rgba(251, 191, 36, 0.7));
+    opacity: 1;
+    transform: scale(1);
   }
   50% {
-    outline-color: rgba(245, 158, 11, 0.35);
+    filter: drop-shadow(0 0 14px rgba(251, 191, 36, 1));
+    opacity: 0.72;
+    transform: scale(1.18);
   }
+}
+
+.topo-node.is-selected .topo-node__glyph {
+  outline: 2px solid #38bdf8;
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 
 .topo-node__handle {
@@ -7333,12 +7434,6 @@ pre {
   transform: translate(-50%, -50%) !important;
 }
 
-.topo-node.is-selected .topo-node__glyph {
-  outline: 2px solid #60a5fa;
-  outline-offset: 3px;
-  border-radius: 4px;
-}
-
 .topo-node.is-selected .topo-node__icon {
   transform: none;
 }
@@ -7361,8 +7456,8 @@ pre {
 .topo-node__icon {
   position: relative;
   display: block;
-  width: 56px;
-  height: 56px;
+  width: 25px;
+  height: 25px;
   margin: 0;
   pointer-events: none;
   user-select: none;
@@ -7395,25 +7490,31 @@ pre {
 }
 
 .topo-node__caption {
+  position: absolute;
+  left: 50%;
+  top: calc(100% + 1px);
+  transform: translateX(-50%);
+  z-index: 2;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 1px;
-  margin-top: 3px;
+  gap: 0;
+  margin-top: 0;
   color: var(--topo-label-color, #f1f5f9);
-  line-height: 1.2;
-  max-width: 160px;
+  line-height: 1.15;
+  width: max-content;
+  max-width: 80px;
   pointer-events: none;
   text-shadow:
-    0 0 3px rgba(15, 23, 42, 0.95),
-    0 1px 2px rgba(15, 23, 42, 0.85);
+    0 0 2px rgba(15, 23, 42, 0.95),
+    0 1px 1px rgba(15, 23, 42, 0.85);
 }
 
 .topo-node__caption-name {
   display: block;
   max-width: 100%;
-  font-size: 11px;
-  font-weight: 700;
+  font-size: 8px;
+  font-weight: 600;
   color: var(--topo-label-color, #f1f5f9);
   white-space: nowrap;
   overflow: hidden;
@@ -7423,7 +7524,7 @@ pre {
 .topo-node__caption-meta {
   display: block;
   max-width: 100%;
-  font-size: 10px;
+  font-size: 7px;
   color: color-mix(in srgb, var(--topo-label-color, #f1f5f9) 55%, #64748b);
   font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
   white-space: nowrap;

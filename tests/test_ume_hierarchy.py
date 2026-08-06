@@ -287,6 +287,52 @@ class UmeHierarchyTests(unittest.TestCase):
             )
         self.assertEqual(ctx.exception.detail, "world_map_no_direct_nes")
 
+    def test_flat_lod_overview_and_detail(self):
+        from netx_api.ume_topology_world import get_world_flat_view
+        from netx_api.ume_topology_world_graph import (
+            WORLD_FLAT_DETAIL_CAP,
+            WORLD_FLAT_OVERVIEW_CAP,
+            get_flat_view_graph,
+        )
+
+        self._seed_tree()
+        apply_ume_topology_to_fabric(self.db)
+        ensure_ume_world_and_sbn_folders(self.db)
+        recompute_flat_world_coords(self.db)
+        flat = get_world_flat_view(self.db)
+        self.assertIsNotNone(flat)
+
+        overview = get_flat_view_graph(self.db, flat, lod="overview")
+        self.assertIsNotNone(overview.world_transform)
+        self.assertEqual(overview.world_transform.lod, "overview")
+        self.assertGreater(len(overview.nodes), 0)
+        self.assertLessEqual(len(overview.nodes), WORLD_FLAT_OVERVIEW_CAP)
+        self.assertEqual(len(overview.edges), 0)
+        self.assertEqual(float(overview.world_transform.scale or 0), 1.0)
+        # Intra-block spacing matches UME local deltas (1:1, not crushed).
+        a1 = next(n for n in overview.nodes if n.ume_ne_id == "me-a1" or n.name == "A1")
+        a2 = next(n for n in overview.nodes if n.ume_ne_id == "me-a2" or n.name == "A2")
+        self.assertAlmostEqual(float(a2.x) - float(a1.x), 40.0)
+
+        # Viewport around an existing overview node (display coords).
+        hit = overview.nodes[0]
+        detail = get_flat_view_graph(
+            self.db,
+            flat,
+            lod="detail",
+            min_x=float(hit.x) - 50,
+            max_x=float(hit.x) + 50,
+            min_y=float(hit.y) - 50,
+            max_y=float(hit.y) + 50,
+        )
+        self.assertEqual(detail.world_transform.lod, "detail")
+        self.assertGreater(len(detail.nodes), 0)
+        self.assertLessEqual(len(detail.nodes), WORLD_FLAT_DETAIL_CAP)
+        self.assertTrue(any(n.fabric_node_id == hit.fabric_node_id for n in detail.nodes))
+
+        auto = get_flat_view_graph(self.db, flat, lod="auto")
+        self.assertEqual(auto.world_transform.lod, "overview")
+
     def test_flat_drag_override_survives_recompute(self):
         from netx_api.topology_schemas import ViewNodeIn, ViewPositionsPatch
         from netx_api.topology_views_graph import patch_view_positions

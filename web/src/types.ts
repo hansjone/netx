@@ -467,6 +467,8 @@ export type FabricNodeSearchHit = {
   ume_ne_id?: string;
   role?: string;
   region_folder_id?: string | null;
+  world_x?: number | null;
+  world_y?: number | null;
   link_status?: "managed" | "ume" | "both" | "orphaned" | string;
   managed_alive?: boolean;
   ume_alive?: boolean;
@@ -540,6 +542,18 @@ export type TopologyOutsidePeer = {
   via_node_id: string;
 };
 
+export type TopologyWorldTransform = {
+  origin_x: number;
+  origin_y: number;
+  scale: number;
+  full_min_x: number;
+  full_max_x: number;
+  full_min_y: number;
+  full_max_y: number;
+  total: number;
+  lod: string;
+};
+
 export type TopologyViewGraph = {
   view: TopologyViewItem;
   nodes: TopologyViewNodeItem[];
@@ -547,6 +561,7 @@ export type TopologyViewGraph = {
   truncated?: boolean;
   truncate_reason?: string;
   outside_peers?: TopologyOutsidePeer[];
+  world_transform?: TopologyWorldTransform | null;
 };
 
 export type FabricSummary = {

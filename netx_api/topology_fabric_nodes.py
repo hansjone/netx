@@ -68,6 +68,8 @@ def _node_out(n: TopoFabricNode) -> FabricNodeOut:
         device_type=n.device_type or "",
         attrs=dict(n.attrs or {}),
         last_seen_at=n.last_seen_at,
+        world_x=float(n.world_x) if n.world_x is not None else None,
+        world_y=float(n.world_y) if n.world_y is not None else None,
     )
 
 

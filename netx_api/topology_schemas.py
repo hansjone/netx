@@ -27,6 +27,8 @@ class FabricNodeOut(BaseModel):
     region_source: str = ""
     attrs: dict[str, Any] = Field(default_factory=dict)
     last_seen_at: datetime | None = None
+    world_x: float | None = None
+    world_y: float | None = None
     # Inventory link diagnostics (list/enrich); empty when not enriched.
     link_status: str = ""  # managed | ume | both | orphaned
     managed_alive: bool = False
@@ -300,6 +302,20 @@ class ViewEdgeOut(BaseModel):
     discovered_at: datetime | None = None
 
 
+class WorldTransformOut(BaseModel):
+    """Flat world map: display = (world - origin) * scale. scale is 1.0 (1:1)."""
+
+    origin_x: float = 0.0
+    origin_y: float = 0.0
+    scale: float = 1.0
+    full_min_x: float = 0.0
+    full_max_x: float = 0.0
+    full_min_y: float = 0.0
+    full_max_y: float = 0.0
+    total: int = 0
+    lod: str = "overview"
+
+
 class TopologyViewGraphOut(BaseModel):
     view: TopologyViewOut
     nodes: list[ViewNodeOut]
@@ -307,6 +323,7 @@ class TopologyViewGraphOut(BaseModel):
     truncated: bool = False
     truncate_reason: str = ""
     outside_peers: list[dict[str, str]] = Field(default_factory=list)
+    world_transform: WorldTransformOut | None = None
 
 
 class ViewPopulateOut(BaseModel):

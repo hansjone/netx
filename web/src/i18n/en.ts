@@ -1404,6 +1404,8 @@ const en = {
     treeSearchEmpty: "No matching NEs",
     treeSearchNoViews: "Not on any map",
     treeSearchNotOnMap: "This NE is not placed on any topology map yet",
+    locateNotOnCanvas:
+      "This NE is missing from the world-map sample and has no world coordinates. Open a region map instead.",
     treeSearchViewCount: "{{count}} map(s)",
     treeSearchTruncated: "Showing first 30 of {{total}}",
     rootName: "Roots",

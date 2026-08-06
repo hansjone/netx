@@ -81,6 +81,7 @@ import type {
   TopologyViewGraph,
   TopologyViewNodeItem,
   TopologyViewRole,
+  TopologyWorldTransform,
 } from "../types";
 import { alignNodes, layoutGraph, type LayoutKind } from "./topology/layoutGraph";
 import { ParallelEdge } from "./topology/ParallelEdge";
@@ -179,6 +180,13 @@ function isWorldFlatViewName(name: string | undefined | null): boolean {
   return String(name || "").trim() === "完整世界地图";
 }
 
+/** Visual LOD for 1:1 world coords (~1e5 span). fitView overview is ~0.01. */
+function worldVisualLodFromZoom(zoom: number): "dot" | "pin" | "full" {
+  if (zoom < 0.04) return "dot";
+  if (zoom < 0.12) return "pin";
+  return "full";
+}
+
 /**
  * Region row IS the canvas for nested / UME SBN / World drill.
  * Top-level under Network root (and UME World container) are hex-nav only — same as UME World.
@@ -238,6 +246,68 @@ const SNAP_GRID: [number, number] = [16, 16];
  * skips those. includeHiddenNodes uses declared width/height so fit still works.
  */
 const FIT_VIEW_OPTS = { padding: 0.2, includeHiddenNodes: true } as const;
+/** Zoom after locate on flat world — neighborhood visible with full icons, not a lone pin. */
+const WORLD_LOCATE_ZOOM = 0.22;
+/** Half-extent (display/world units) fetched around the target on locate. */
+const WORLD_LOCATE_HALF = 12000;
+/** Soft cap for accumulated flat-world tiles (Google-Earth style keep-alive). */
+const WORLD_FLAT_ACCUM_CAP = 8000;
+
+/** Merge newly fetched flat LOD into the existing cache so visited areas stay. */
+function mergeFlatWorldGraph(
+  prev: TopologyViewGraph | undefined,
+  next: TopologyViewGraph,
+  opts?: { centerX?: number; centerY?: number },
+): TopologyViewGraph {
+  if (!prev?.nodes?.length) return next;
+  if (!next?.nodes?.length) {
+    return {
+      ...prev,
+      world_transform: next.world_transform ?? prev.world_transform,
+    };
+  }
+
+  const nodeMap = new Map<string, TopologyViewNodeItem>();
+  for (const n of prev.nodes) nodeMap.set(String(n.fabric_node_id), n);
+  for (const n of next.nodes) nodeMap.set(String(n.fabric_node_id), n);
+
+  const edgeMap = new Map<string, TopologyViewEdgeItem>();
+  for (const e of prev.edges || []) edgeMap.set(String(e.id), e);
+  for (const e of next.edges || []) edgeMap.set(String(e.id), e);
+
+  let nodes = [...nodeMap.values()];
+  const cx = opts?.centerX;
+  const cy = opts?.centerY;
+  if (nodes.length > WORLD_FLAT_ACCUM_CAP && cx != null && cy != null) {
+    const prefer = new Set(next.nodes.map((n) => String(n.fabric_node_id)));
+    const kept = next.nodes.slice();
+    const extras = nodes
+      .filter((n) => !prefer.has(String(n.fabric_node_id)))
+      .sort((a, b) => {
+        const da = (Number(a.x) - cx) ** 2 + (Number(a.y) - cy) ** 2;
+        const db = (Number(b.x) - cx) ** 2 + (Number(b.y) - cy) ** 2;
+        return da - db;
+      });
+    const room = Math.max(0, WORLD_FLAT_ACCUM_CAP - kept.length);
+    nodes = kept.concat(extras.slice(0, room));
+  }
+
+  const idSet = new Set(nodes.map((n) => String(n.fabric_node_id)));
+  const edges = [...edgeMap.values()].filter(
+    (e) => idSet.has(String(e.a_node_id)) && idSet.has(String(e.b_node_id)),
+  );
+
+  return {
+    ...next,
+    view: next.view || prev.view,
+    nodes,
+    edges,
+    world_transform: next.world_transform ?? prev.world_transform,
+    truncated: Boolean(prev.truncated || next.truncated),
+    truncate_reason: next.truncate_reason || prev.truncate_reason || "",
+    outside_peers: next.outside_peers?.length ? next.outside_peers : prev.outside_peers,
+  };
+}
 const UNDO_MAX = 40;
 const PALETTE_DND = "application/x-netx-topo-palette";
 
@@ -410,6 +480,8 @@ type TopoDisplayOpts = {
   connectMode: boolean;
   /** Show TOPO/LLDP placeholder corner badge on nodes. */
   showPlaceholderBadge: boolean;
+  /** Flat world map visual LOD (Google-Earth style). */
+  worldVisualLod: "dot" | "pin" | "full";
 };
 
 type CtxMenu =
@@ -424,6 +496,7 @@ const TopoDisplayContext = createContext<TopoDisplayOpts>({
   hidePorts: true,
   connectMode: false,
   showPlaceholderBadge: false,
+  worldVisualLod: "full",
 });
 
 function newId(): string {
@@ -533,25 +606,52 @@ function RegionCanvasIcon() {
   );
 }
 
-/** Fixed box for onlyRenderVisibleElements (xyflow skips off-screen mount when sized + handles set). */
-const TOPO_NODE_W = 160;
-const TOPO_NODE_H = 88;
-/** Must match `.topo-node__glyph` (56×56, top-centered) + `--center` handles. */
-const TOPO_ICON = 56;
+/** Fixed box for onlyRenderVisibleElements (xyflow skips off-screen mount when sized + handles set).
+ * Caption is absolutely positioned under the glyph so the RF box is icon-only. */
+const TOPO_NODE_W = 80;
+const TOPO_NODE_H = 25;
+/** Must match `.topo-node__glyph` (25×25, top-centered) + `--center` handles. */
+const TOPO_ICON = 25;
 /** region-building.png is 195×133 — keep aspect so icon center == handle. */
-const TOPO_REGION_ICON_H = Math.round((56 * 133) / 195); // 38
+const TOPO_REGION_ICON_H = Math.round((TOPO_ICON * 133) / 195);
 const TOPO_HANDLE_X = TOPO_NODE_W / 2;
 const TOPO_HANDLE_Y = TOPO_ICON / 2;
 const TOPO_REGION_HANDLE_X = TOPO_NODE_W / 2;
 const TOPO_REGION_HANDLE_Y = TOPO_REGION_ICON_H / 2;
 
-/** Region API x/y is icon center; RF position is top-left of the node box. */
+/** API x/y is icon center; RF position is top-left of the node box. */
+function iconFlowPosition(
+  apiX: number,
+  apiY: number,
+  handleX: number,
+  handleY: number,
+): { x: number; y: number } {
+  return { x: apiX - handleX, y: apiY - handleY };
+}
+
+function iconApiPosition(
+  flowX: number,
+  flowY: number,
+  handleX: number,
+  handleY: number,
+): { x: number; y: number } {
+  return { x: flowX + handleX, y: flowY + handleY };
+}
+
 function regionFlowPosition(apiX: number, apiY: number): { x: number; y: number } {
-  return { x: apiX - TOPO_REGION_HANDLE_X, y: apiY - TOPO_REGION_HANDLE_Y };
+  return iconFlowPosition(apiX, apiY, TOPO_REGION_HANDLE_X, TOPO_REGION_HANDLE_Y);
 }
 
 function regionApiPosition(flowX: number, flowY: number): { x: number; y: number } {
-  return { x: flowX + TOPO_REGION_HANDLE_X, y: flowY + TOPO_REGION_HANDLE_Y };
+  return iconApiPosition(flowX, flowY, TOPO_REGION_HANDLE_X, TOPO_REGION_HANDLE_Y);
+}
+
+function neFlowPosition(apiX: number, apiY: number): { x: number; y: number } {
+  return iconFlowPosition(apiX, apiY, TOPO_HANDLE_X, TOPO_HANDLE_Y);
+}
+
+function neApiPosition(flowX: number, flowY: number): { x: number; y: number } {
+  return iconApiPosition(flowX, flowY, TOPO_HANDLE_X, TOPO_HANDLE_Y);
 }
 
 function isPlaceholderSource(source: string | undefined, neIp: string): boolean {
@@ -561,7 +661,8 @@ function isPlaceholderSource(source: string | undefined, neIp: string): boolean 
 }
 
 const NeNode = memo(function NeNode({ data, selected }: NodeProps<Node<NeNodeData>>) {
-  const { hideIp, hideVendor, connectMode, showPlaceholderBadge } = useContext(TopoDisplayContext);
+  const { hideIp, hideVendor, connectMode, showPlaceholderBadge, worldVisualLod } =
+    useContext(TopoDisplayContext);
   const isRegion = data.kind === "region";
   const tone = isRegion ? "region" : nodeIconTone(data.vendor, data.managed_ne_id, data.ume_ne_id);
   const placeholder = !isRegion && isPlaceholderSource(data.managed_source, data.ne_ip);
@@ -574,6 +675,32 @@ const NeNode = memo(function NeNode({ data, selected }: NodeProps<Node<NeNodeDat
         hideIp || !data.ne_ip || data.ne_ip === name ? "" : data.ne_ip,
         hideVendor || !data.vendor ? "" : data.vendor,
       ].filter(Boolean);
+
+  if (!isRegion && worldVisualLod === "dot") {
+    return (
+      <div
+        className={`topo-node topo-node--dot topo-node--${tone}${selected ? " is-selected" : ""}`}
+        title={name}
+      >
+        <Handle type="target" position={Position.Left} className="topo-node__handle topo-node__handle--dot" />
+        <Handle type="source" position={Position.Right} className="topo-node__handle topo-node__handle--dot" />
+        <span className="topo-node__pixel" aria-hidden="true" />
+      </div>
+    );
+  }
+  if (!isRegion && worldVisualLod === "pin") {
+    return (
+      <div
+        className={`topo-node topo-node--pin topo-node--${tone}${selected ? " is-selected" : ""}`}
+        title={name}
+      >
+        <Handle type="target" position={Position.Left} className="topo-node__handle topo-node__handle--dot" />
+        <Handle type="source" position={Position.Right} className="topo-node__handle topo-node__handle--dot" />
+        <span className="topo-node__pin" aria-hidden="true" />
+      </div>
+    );
+  }
+
   return (
     <div
       className={`topo-node topo-node--${tone}${selected ? " is-selected" : ""}${
@@ -584,7 +711,7 @@ const NeNode = memo(function NeNode({ data, selected }: NodeProps<Node<NeNodeDat
           ? "Open region canvas"
           : showBadge
             ? data.managed_source || "placeholder"
-            : undefined
+            : name
       }
     >
       <div className="topo-node__glyph">
@@ -887,8 +1014,10 @@ function graphToFlow(
       n.kind === "region" || n.device_type === "region" || String(n.fabric_node_id || "").startsWith("region:");
     const apiX = Number(n.x) || 0;
     const apiY = Number(n.y) || 0;
-    // Region coords are icon-center; NE coords stay top-left of the node box (legacy).
-    const position = isRegion ? regionFlowPosition(apiX, apiY) : { x: apiX, y: apiY };
+    // API coords are icon-center (UME + region); RF position is top-left of the icon box.
+    const position = isRegion
+      ? regionFlowPosition(apiX, apiY)
+      : neFlowPosition(apiX, apiY);
     const hx = isRegion ? TOPO_REGION_HANDLE_X : TOPO_HANDLE_X;
     const hy = isRegion ? TOPO_REGION_HANDLE_Y : TOPO_HANDLE_Y;
     return {
@@ -896,9 +1025,8 @@ function graphToFlow(
     type: "neNode",
     position,
     width: TOPO_NODE_W,
-    height: TOPO_NODE_H,
-    // Predetermined handles must match DOM anchors (icon center), not the 160px box edges —
-    // otherwise edges float in the gap and never touch the router glyph.
+    height: isRegion ? TOPO_REGION_ICON_H : TOPO_NODE_H,
+    // Predetermined handles must match DOM anchors (icon center).
     handles: [
       { type: "target", position: Position.Left, x: hx, y: hy },
       { type: "source", position: Position.Right, x: hx, y: hy },
@@ -952,7 +1080,7 @@ function flowToPositions(nodes: Node<NeNodeData>[]) {
     const isRegion = n.data.kind === "region" || String(n.id || "").startsWith("region:");
     const pos = isRegion
       ? regionApiPosition(n.position.x, n.position.y)
-      : { x: n.position.x, y: n.position.y };
+      : neApiPosition(n.position.x, n.position.y);
     return {
       fabric_node_id: n.id,
       x: pos.x,
@@ -975,7 +1103,7 @@ function graphFingerprint(graph: TopologyViewGraph): string {
     .map((e) => `${e.id}:${e.a_node_id}:${e.b_node_id}:${e.a_port || ""}:${e.b_port || ""}:${e.status || ""}`)
     .sort()
     .join("|");
-  return `${nodes}#${edges}#${graph.outside_peers?.length || 0}`;
+  return `${nodes}#${edges}#${graph.outside_peers?.length || 0}#${graph.world_transform?.lod || ""}`;
 }
 
 function applyViewGraph(
@@ -1155,6 +1283,60 @@ export function TopologyPage() {
   }, []);
 
   const toolBehavior = useMemo(() => behaviorForMode(toolMode), [toolMode]);
+  const [canvasZoom, setCanvasZoom] = useState(1);
+  const worldTransformRef = useRef<TopologyWorldTransform | null>(null);
+  const flatLodFetchGenRef = useRef(0);
+  const flatLodTimerRef = useRef<number | null>(null);
+  const isWorldFlatCanvasRef = useRef(false);
+  const mapIdRef = useRef(mapId);
+
+  const treeQuery = useQuery({
+    queryKey: queryKeys.topologyTree,
+    queryFn: fetchTopologyTree,
+    staleTime: liveSync ? 0 : 30_000,
+    refetchOnWindowFocus: liveSync,
+    refetchInterval: liveSync ? 5000 : false,
+    refetchIntervalInBackground: false,
+  });
+
+  const treeFlatMap = useMemo(() => {
+    if (!mapId) return false;
+    const kids = treeQuery.data?.root?.children || [];
+    return isWorldFlatViewName(findViewInRegion(kids, mapId)?.view?.name);
+  }, [mapId, treeQuery.data?.root?.children]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedTreeNeQuery(treeNeQuery.trim()), 200);
+    return () => window.clearTimeout(timer);
+  }, [treeNeQuery]);
+
+  const treeNeSearchQuery = useQuery({
+    queryKey: queryKeys.fabricNodeSearch(debouncedTreeNeQuery, 1),
+    queryFn: () => searchFabricNodes({ q: debouncedTreeNeQuery, page: 1, pageSize: 30 }),
+    enabled: debouncedTreeNeQuery.length >= 1,
+  });
+
+  const graphQuery = useQuery({
+    queryKey: queryKeys.topologyGraph(mapId),
+    queryFn: () =>
+      fetchTopologyGraph(mapId, treeFlatMap ? { lod: "overview" } : undefined),
+    enabled: Boolean(mapId),
+    staleTime: liveSync ? 0 : 30_000,
+    refetchOnWindowFocus: liveSync && !treeFlatMap,
+    refetchInterval: liveSync && mapId && !treeFlatMap ? 3000 : false,
+    refetchIntervalInBackground: false,
+  });
+
+  const isWorldFlatCanvas =
+    treeFlatMap ||
+    isWorldFlatViewName(graphQuery.data?.view?.name) ||
+    Boolean(graphQuery.data?.view?.filter?.world_flat);
+
+  isWorldFlatCanvasRef.current = isWorldFlatCanvas;
+  mapIdRef.current = mapId;
+
+  const worldVisualLod = isWorldFlatCanvas ? worldVisualLodFromZoom(canvasZoom) : "full";
+
   const displayOpts = useMemo(
     () => ({
       hideIp,
@@ -1162,10 +1344,13 @@ export function TopologyPage() {
       hidePorts,
       connectMode: toolMode === "connect",
       showPlaceholderBadge,
+      worldVisualLod,
     }),
-    [hideIp, hideVendor, hidePorts, toolMode, showPlaceholderBadge],
+    [hideIp, hideVendor, hidePorts, toolMode, showPlaceholderBadge, worldVisualLod],
   );
+
   const displayEdges = useMemo(() => {
+    if (isWorldFlatCanvas && worldVisualLod !== "full") return [];
     const built = buildLinkDisplayEdges(edges, expandPhysicalLinks, hidePorts, scaleBundleWidth).map((e) =>
       withEdgeVisual(e, edgeDefaults),
     );
@@ -1182,37 +1367,88 @@ export function TopologyPage() {
         animated: edgeFlow,
       };
     });
-  }, [edges, expandPhysicalLinks, hidePorts, scaleBundleWidth, edgeFlow, edgeDefaults, selectedEdgeId]);
-
-  const treeQuery = useQuery({
-    queryKey: queryKeys.topologyTree,
-    queryFn: fetchTopologyTree,
-    staleTime: liveSync ? 0 : 30_000,
-    refetchOnWindowFocus: liveSync,
-    refetchInterval: liveSync ? 5000 : false,
-    refetchIntervalInBackground: false,
-  });
+  }, [
+    edges,
+    expandPhysicalLinks,
+    hidePorts,
+    scaleBundleWidth,
+    edgeFlow,
+    edgeDefaults,
+    selectedEdgeId,
+    isWorldFlatCanvas,
+    worldVisualLod,
+  ]);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => setDebouncedTreeNeQuery(treeNeQuery.trim()), 200);
-    return () => window.clearTimeout(timer);
-  }, [treeNeQuery]);
+    if (graphQuery.data?.world_transform) {
+      worldTransformRef.current = graphQuery.data.world_transform;
+    }
+  }, [graphQuery.data?.world_transform]);
 
-  const treeNeSearchQuery = useQuery({
-    queryKey: queryKeys.fabricNodeSearch(debouncedTreeNeQuery, 1),
-    queryFn: () => searchFabricNodes({ q: debouncedTreeNeQuery, page: 1, pageSize: 30 }),
-    enabled: debouncedTreeNeQuery.length >= 1,
-  });
+  const refreshFlatViewport = useCallback(async () => {
+    if (!mapId || !isWorldFlatCanvas || dirtyRef.current) return;
+    const inst = rfRef.current;
+    if (!inst) return;
+    const zoom = inst.getZoom();
+    setCanvasZoom(zoom);
+    const gen = ++flatLodFetchGenRef.current;
+    const commit = (g: TopologyViewGraph, centerX: number, centerY: number) => {
+      if (g.world_transform) worldTransformRef.current = g.world_transform;
+      queryClient.setQueryData(queryKeys.topologyGraph(mapId), (prev: TopologyViewGraph | undefined) =>
+        mergeFlatWorldGraph(prev, g, { centerX, centerY }),
+      );
+    };
+    try {
+      // Far out: keep accumulated detail tiles — don't wipe with a sparse overview.
+      if (zoom < 0.025) {
+        const prev = queryClient.getQueryData<TopologyViewGraph>(queryKeys.topologyGraph(mapId));
+        if (prev && prev.nodes.length > 1600) return;
+        const g = await fetchTopologyGraph(mapId, { lod: "overview" });
+        if (gen !== flatLodFetchGenRef.current || dirtyRef.current) return;
+        const cx =
+          g.nodes.reduce((s, n) => s + Number(n.x || 0), 0) / Math.max(1, g.nodes.length);
+        const cy =
+          g.nodes.reduce((s, n) => s + Number(n.y || 0), 0) / Math.max(1, g.nodes.length);
+        commit(g, cx, cy);
+        return;
+      }
+      const pane = canvasRef.current?.getBoundingClientRect();
+      const w = pane?.width || 1200;
+      const h = pane?.height || 800;
+      const vp = inst.getViewport();
+      const z = Math.max(vp.zoom || 0.01, 0.01);
+      const min_x = -vp.x / z;
+      const min_y = -vp.y / z;
+      const max_x = (w - vp.x) / z;
+      const max_y = (h - vp.y) / z;
+      const g = await fetchTopologyGraph(mapId, {
+        lod: "detail",
+        min_x,
+        max_x,
+        min_y,
+        max_y,
+      });
+      if (gen !== flatLodFetchGenRef.current || dirtyRef.current) return;
+      commit(g, (min_x + max_x) / 2, (min_y + max_y) / 2);
+    } catch {
+      /* keep last good sample */
+    }
+  }, [mapId, isWorldFlatCanvas, queryClient]);
 
-  const graphQuery = useQuery({
-    queryKey: queryKeys.topologyGraph(mapId),
-    queryFn: () => fetchTopologyGraph(mapId),
-    enabled: Boolean(mapId),
-    staleTime: liveSync ? 0 : 30_000,
-    refetchOnWindowFocus: liveSync,
-    refetchInterval: liveSync && mapId ? 3000 : false,
-    refetchIntervalInBackground: false,
-  });
+  const scheduleFlatViewportRefresh = useCallback(() => {
+    if (!isWorldFlatCanvas) return;
+    if (flatLodTimerRef.current) window.clearTimeout(flatLodTimerRef.current);
+    flatLodTimerRef.current = window.setTimeout(() => {
+      flatLodTimerRef.current = null;
+      void refreshFlatViewport();
+    }, 200);
+  }, [isWorldFlatCanvas, refreshFlatViewport]);
+
+  useEffect(() => {
+    return () => {
+      if (flatLodTimerRef.current) window.clearTimeout(flatLodTimerRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     try {
@@ -1338,11 +1574,6 @@ export function TopologyPage() {
       (activeRegion.views || []).find((v) => isWorldFlatViewName(v.name)) || null;
     return { drill, flatView };
   }, [activeRegion]);
-
-  const isWorldFlatCanvas =
-    isWorldFlatViewName(activeView?.name) ||
-    isWorldFlatViewName(graphQuery.data?.view?.name) ||
-    Boolean(graphQuery.data?.view?.filter?.world_flat);
 
   // Resolve World drill view id for shortcuts; do not auto-open canvas.
   useEffect(() => {
@@ -1607,13 +1838,15 @@ export function TopologyPage() {
       if (cancelled) return;
       const inst = rfRef.current;
       if (!inst) {
-        if (tries++ < 20) window.setTimeout(run, 50);
+        if (tries++ < 40) window.setTimeout(run, 40);
         return;
       }
       pendingFitRef.current = false;
-      inst.fitView({ ...FIT_VIEW_OPTS, duration: 200 });
+      // duration 0 — animated fit with 400+ nodes often never paints the first frame.
+      inst.fitView({ ...FIT_VIEW_OPTS, duration: 0 });
+      setCanvasZoom(inst.getZoom());
     };
-    const t = window.setTimeout(run, 40);
+    const t = window.setTimeout(run, 0);
     return () => {
       cancelled = true;
       window.clearTimeout(t);
@@ -3294,11 +3527,90 @@ export function TopologyPage() {
     focusNode,
   ]);
 
+  const focusWorldAround = useCallback(
+    async (nodeId: string, displayX: number, displayY: number) => {
+      const viewId = mapIdRef.current;
+      if (!viewId || !isWorldFlatCanvasRef.current || dirtyRef.current) return;
+      if (flatLodTimerRef.current) {
+        window.clearTimeout(flatLodTimerRef.current);
+        flatLodTimerRef.current = null;
+      }
+      const gen = ++flatLodFetchGenRef.current;
+      // Zoom immediately so the user isn't stuck on overview while detail loads.
+      const inst = rfRef.current;
+      if (inst) {
+        setCanvasZoom(WORLD_LOCATE_ZOOM);
+        inst.setCenter(displayX, displayY, { zoom: WORLD_LOCATE_ZOOM, duration: 200 });
+      }
+      const half = WORLD_LOCATE_HALF;
+      try {
+        const g = await fetchTopologyGraph(viewId, {
+          lod: "detail",
+          min_x: displayX - half,
+          max_x: displayX + half,
+          min_y: displayY - half,
+          max_y: displayY + half,
+        });
+        if (gen !== flatLodFetchGenRef.current || dirtyRef.current) return;
+        if (g.world_transform) worldTransformRef.current = g.world_transform;
+        queryClient.setQueryData(queryKeys.topologyGraph(viewId), (prev: TopologyViewGraph | undefined) =>
+          mergeFlatWorldGraph(prev, g, { centerX: displayX, centerY: displayY }),
+        );
+      } catch {
+        /* keep last sample */
+      }
+      if (gen !== flatLodFetchGenRef.current) return;
+      // Re-center after graph replace (fit/apply can nudge viewport) and re-select.
+      window.requestAnimationFrame(() => {
+        if (flatLodFetchGenRef.current !== gen) return;
+        rfRef.current?.setCenter(displayX, displayY, { zoom: WORLD_LOCATE_ZOOM, duration: 0 });
+        setCanvasZoom(WORLD_LOCATE_ZOOM);
+        focusNode(nodeId, false);
+        setSearchHitIds([nodeId]);
+        if (searchHitTimerRef.current) window.clearTimeout(searchHitTimerRef.current);
+        searchHitTimerRef.current = window.setTimeout(() => {
+          setSearchHitIds((cur) => (cur.length === 1 && cur[0] === nodeId ? [] : cur));
+          searchHitTimerRef.current = null;
+        }, 8000);
+      });
+    },
+    [queryClient, focusNode],
+  );
+
   const locateNode = useCallback(
-    (nodeId: string) => {
+    (nodeId: string, opts?: { worldX?: number; worldY?: number }) => {
+      const onCanvas = nodesRef.current.find((n) => n.id === nodeId);
+      const wt = worldTransformRef.current;
+      const originX = Number(wt?.origin_x) || 0;
+      const originY = Number(wt?.origin_y) || 0;
+      const scale = Math.max(Number(wt?.scale) || 1, 1e-9);
+
+      let displayX: number | undefined;
+      let displayY: number | undefined;
+      if (onCanvas) {
+        displayX = onCanvas.position.x + TOPO_HANDLE_X;
+        displayY = onCanvas.position.y + TOPO_HANDLE_Y;
+      } else if (opts?.worldX != null && opts?.worldY != null) {
+        displayX = (Number(opts.worldX) - originX) * scale;
+        displayY = (Number(opts.worldY) - originY) * scale;
+      } else {
+        showError(t("topology.locateNotOnCanvas"));
+        return;
+      }
+
       focusNode(nodeId, false);
       setSearchHitIds([nodeId]);
       if (searchHitTimerRef.current) window.clearTimeout(searchHitTimerRef.current);
+      searchHitTimerRef.current = window.setTimeout(() => {
+        setSearchHitIds((cur) => (cur.length === 1 && cur[0] === nodeId ? [] : cur));
+        searchHitTimerRef.current = null;
+      }, 8000);
+
+      if (isWorldFlatCanvasRef.current) {
+        void focusWorldAround(nodeId, displayX, displayY);
+        return;
+      }
+
       window.setTimeout(() => {
         rfRef.current?.fitView({
           nodes: [{ id: nodeId }],
@@ -3307,13 +3619,15 @@ export function TopologyPage() {
           includeHiddenNodes: true,
         });
       }, 30);
-      searchHitTimerRef.current = window.setTimeout(() => {
-        setSearchHitIds((cur) => (cur.length === 1 && cur[0] === nodeId ? [] : cur));
-        searchHitTimerRef.current = null;
-      }, 2200);
     },
-    [focusNode],
+    [focusNode, focusWorldAround, showError, t],
   );
+
+  const pendingLocateWorldRef = useRef<{
+    id: string;
+    worldX?: number;
+    worldY?: number;
+  } | null>(null);
 
   const jumpToTreeSearchHit = useCallback(
     (
@@ -3321,11 +3635,19 @@ export function TopologyPage() {
       view?: NonNullable<FabricNodeSearchHit["views"]>[number],
     ) => {
       const views = hit.views || [];
+      const worldCoords =
+        hit.world_x != null && hit.world_y != null
+          ? { worldX: Number(hit.world_x), worldY: Number(hit.world_y) }
+          : undefined;
       const onCurrent =
         Boolean(mapId) &&
-        (views.some((v) => v.view_id === mapId) || nodes.some((n) => n.id === hit.id));
+        (views.some((v) => v.view_id === mapId) ||
+          nodes.some((n) => n.id === hit.id) ||
+          (isWorldFlatCanvasRef.current && worldCoords != null));
       if (onCurrent && mapId && (!view || view.view_id === mapId)) {
-        if (nodes.some((n) => n.id === hit.id)) {
+        if (isWorldFlatCanvasRef.current) {
+          locateNode(hit.id, worldCoords);
+        } else if (nodes.some((n) => n.id === hit.id)) {
           locateNode(hit.id);
         } else {
           setPendingHighlightNe(hit.id);
@@ -3337,6 +3659,7 @@ export function TopologyPage() {
       }
       const target =
         view ||
+        views.find((v) => isWorldFlatViewName(v.view_name)) ||
         views.find((v) => String(v.kind) === "physical") ||
         views[0] ||
         null;
@@ -3349,6 +3672,11 @@ export function TopologyPage() {
       if (regionId) {
         setSelectedFolderId(regionId);
         setExpandedIds((p) => ({ ...p, [regionId]: true }));
+      }
+      if (isWorldFlatViewName(target.view_name) && worldCoords) {
+        pendingLocateWorldRef.current = { id: hit.id, ...worldCoords };
+      } else {
+        pendingLocateWorldRef.current = null;
       }
       setMapId(target.view_id);
       setPendingHighlightNe(hit.id);
@@ -3380,12 +3708,32 @@ export function TopologyPage() {
   }, [treeSearchOpen]);
 
   useEffect(() => {
-    if (!pendingHighlightNe || !canvasMode || !nodes.length) return;
+    if (!pendingHighlightNe || !canvasMode) return;
     const nodeId = pendingHighlightNe;
-    if (!nodes.some((n) => n.id === nodeId)) return;
+    const pendingWorld = pendingLocateWorldRef.current;
+    if (
+      pendingWorld &&
+      pendingWorld.id === nodeId &&
+      isWorldFlatCanvasRef.current &&
+      rfRef.current
+    ) {
+      pendingLocateWorldRef.current = null;
+      setPendingHighlightNe("");
+      window.setTimeout(
+        () =>
+          locateNode(nodeId, {
+            worldX: pendingWorld.worldX,
+            worldY: pendingWorld.worldY,
+          }),
+        80,
+      );
+      return;
+    }
+    if (!nodes.length || !nodes.some((n) => n.id === nodeId)) return;
+    pendingLocateWorldRef.current = null;
     setPendingHighlightNe("");
     window.setTimeout(() => locateNode(nodeId), 80);
-  }, [pendingHighlightNe, canvasMode, nodes, locateNode]);
+  }, [pendingHighlightNe, canvasMode, nodes, locateNode, mapId, graphQuery.data]);
 
   const canvasHits = useMemo(() => {
     const q = canvasQuery.trim();
@@ -4838,23 +5186,41 @@ export function TopologyPage() {
             {treeRoot ? (
               <TopoDisplayContext.Provider value={displayOpts}>
                 <ReactFlow
-                  nodes={nodes.map((n) =>
-                    searchHitIds.includes(n.id)
-                      ? { ...n, className: "is-search-hit" }
-                      : { ...n, className: undefined },
-                  )}
+                  nodes={nodes.map((n) => {
+                    const isRegion = n.data.kind === "region";
+                    const lod = isWorldFlatCanvas ? worldVisualLod : "full";
+                    const sized =
+                      !isRegion && lod === "dot"
+                        ? { ...n, width: 6, height: 6 }
+                        : !isRegion && lod === "pin"
+                          ? { ...n, width: 14, height: 14 }
+                          : n;
+                    return searchHitIds.includes(n.id)
+                      ? {
+                          ...sized,
+                          selected: true,
+                          className: "is-search-hit",
+                        }
+                      : { ...sized, className: undefined };
+                  })}
                   edges={displayEdges}
                   nodeTypes={nodeTypes}
                   edgeTypes={edgeTypes}
-                  onlyRenderVisibleElements
+                  onlyRenderVisibleElements={
+                    isWorldFlatCanvas ? worldVisualLod === "dot" : true
+                  }
                   connectionMode={ConnectionMode.Loose}
                   connectionLineType={ConnectionLineType.Straight}
                   connectionLineStyle={{ stroke: "#38bdf8", strokeWidth: 2 }}
                   defaultEdgeOptions={{ type: "straight", labelShowBg: false }}
                   proOptions={{ hideAttribution: true }}
-                  minZoom={isWorldFlatCanvas ? 0.005 : 0.05}
-                  maxZoom={4}
-                  nodesDraggable={toolBehavior.nodesDraggable}
+                  minZoom={isWorldFlatCanvas ? 0.002 : 0.05}
+                  maxZoom={isWorldFlatCanvas ? 12 : 4}
+                  nodesDraggable={
+                    isWorldFlatCanvas
+                      ? worldVisualLod === "full" && toolBehavior.nodesDraggable
+                      : toolBehavior.nodesDraggable
+                  }
                   nodesConnectable={toolBehavior.nodesConnectable}
                   elementsSelectable={toolBehavior.elementsSelectable}
                   panOnDrag={toolBehavior.panOnDrag}
@@ -4936,8 +5302,24 @@ export function TopologyPage() {
                     });
                   }}
                   onMoveStart={closeCtxMenu}
+                  onMove={(_e, vp) => {
+                    if (isWorldFlatCanvas) setCanvasZoom(vp.zoom);
+                  }}
+                  onMoveEnd={(_e, vp) => {
+                    if (!isWorldFlatCanvas) return;
+                    setCanvasZoom(vp.zoom);
+                    scheduleFlatViewportRefresh();
+                  }}
                   onInit={(inst) => {
                     rfRef.current = inst as ReactFlowInstance<Node<NeNodeData>, Edge>;
+                    if (pendingFitRef.current && nodesRef.current.length > 0) {
+                      pendingFitRef.current = false;
+                      // Defer one frame so RF has committed node internals.
+                      window.requestAnimationFrame(() => {
+                        inst.fitView({ ...FIT_VIEW_OPTS, duration: 0 });
+                        setCanvasZoom(inst.getZoom());
+                      });
+                    }
                   }}
                   fitView={false}
                   deleteKeyCode={null}
@@ -4965,7 +5347,7 @@ export function TopologyPage() {
                       <FullscreenIcon exit={fullscreen} />
                     </ControlButton>
                   </Controls>
-                  <MiniMap pannable zoomable />
+                  {!isWorldFlatCanvas ? <MiniMap pannable zoomable /> : null}
                 </ReactFlow>
               </TopoDisplayContext.Provider>
             ) : (

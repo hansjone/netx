@@ -1115,7 +1115,7 @@ export const fetchTopologyViewGraph = (
     max_y?: number;
     sbn_id?: string;
     folder_id?: string;
-    lod?: "auto" | "sbn" | "me";
+    lod?: "auto" | "sbn" | "me" | "overview" | "detail";
     status?: string;
   },
 ) => {

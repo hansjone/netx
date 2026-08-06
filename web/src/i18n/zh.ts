@@ -1395,6 +1395,7 @@ const zh = {
     treeSearchEmpty: "没有匹配的网元",
     treeSearchNoViews: "未上图",
     treeSearchNotOnMap: "该网元尚未出现在任何拓扑图上",
+    locateNotOnCanvas: "当前世界地图抽样中没有该网元，且缺少世界坐标，请到下级区域画布查找。",
     treeSearchViewCount: "{{count}} 张图",
     treeSearchTruncated: "仅显示前 30 条（共 {{total}}）",
     rootName: "根",
