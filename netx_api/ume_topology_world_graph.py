@@ -525,6 +525,9 @@ def get_flat_view_graph(
     )
     if region_folder_ids is not None:
         q = q.filter(TopoFabricNode.region_folder_id.in_(list(region_folder_ids)))
+
+    truncated = False
+    reason = ""
     if sbn_id.strip():
         sid = sbn_id.strip()
         # Attr JSON filter is rare; keep Python filter but only after a bounded fetch.
@@ -535,16 +538,34 @@ def get_flat_view_graph(
             if str((n.attrs or {}).get("ume_sbn_id") or "") == sid
             or str(n.region_folder_id or "") == sid
         ]
+        if len(nodes) > WORLD_NODE_SOFT_CAP:
+            nodes = nodes[:WORLD_NODE_SOFT_CAP]
+            truncated = True
+            reason = "too_many_viewport_nodes"
     else:
-        # Cap in SQL so we never hydrate 15k ORM rows for a single browser canvas.
-        nodes = q.order_by(TopoFabricNode.id.asc()).limit(WORLD_NODE_SOFT_CAP + 1).all()
-
-    truncated = False
-    reason = ""
-    if len(nodes) > WORLD_NODE_SOFT_CAP:
-        nodes = nodes[:WORLD_NODE_SOFT_CAP]
-        truncated = True
-        reason = "too_many_viewport_nodes"
+        # Cap so we never hydrate 15k ORM rows. Stride across world-order so the
+        # overview is spread out (id-prefix order clumps one corner of the map).
+        id_rows = (
+            q.with_entities(TopoFabricNode.id)
+            .order_by(TopoFabricNode.world_x.asc(), TopoFabricNode.world_y.asc())
+            .all()
+        )
+        total = len(id_rows)
+        if total <= WORLD_NODE_SOFT_CAP:
+            pick_ids = [str(r[0]) for r in id_rows]
+        else:
+            stride = max(1, total // WORLD_NODE_SOFT_CAP)
+            pick_ids = [str(r[0]) for r in id_rows[::stride][:WORLD_NODE_SOFT_CAP]]
+            truncated = True
+            reason = "too_many_viewport_nodes"
+        nodes = (
+            db.query(TopoFabricNode).filter(TopoFabricNode.id.in_(pick_ids)).all()
+            if pick_ids
+            else []
+        )
+        # Preserve world-order for stable layout / fitView.
+        order = {nid: i for i, nid in enumerate(pick_ids)}
+        nodes.sort(key=lambda n: order.get(str(n.id), 0))
 
     fids = [n.id for n in nodes]
     fid_set = set(fids)

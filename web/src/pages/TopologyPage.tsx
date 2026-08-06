@@ -1095,6 +1095,8 @@ export function TopologyPage() {
   const dirtyRef = useRef(false);
   const appliedMapIdRef = useRef("");
   const appliedGraphFpRef = useRef("");
+  /** Fit once after graph hydrate — world coords are far outside the default viewport. */
+  const pendingFitRef = useRef(false);
   const nodesRef = useRef<Node<NeNodeData>[]>([]);
   const historyRef = useRef<HistorySnap[]>([]);
   const redoRef = useRef<HistorySnap[]>([]);
@@ -1337,7 +1339,10 @@ export function TopologyPage() {
     return { drill, flatView };
   }, [activeRegion]);
 
-  const isWorldFlatCanvas = isWorldFlatViewName(activeView?.name);
+  const isWorldFlatCanvas =
+    isWorldFlatViewName(activeView?.name) ||
+    isWorldFlatViewName(graphQuery.data?.view?.name) ||
+    Boolean(graphQuery.data?.view?.filter?.world_flat);
 
   // Resolve World drill view id for shortcuts; do not auto-open canvas.
   useEffect(() => {
@@ -1587,10 +1592,33 @@ export function TopologyPage() {
       pendingEdgeCreatesRef.current = new Set();
       clearDirty();
       bumpHistory();
-      // Do not auto-fit on canvas switch — user clicks 适应画布.
+      // World / large canvases use absolute coords far outside the default RF
+      // viewport — without an initial fit the canvas looks empty after load.
+      pendingFitRef.current = nextNodes.length > 0;
     }
     historyLockRef.current = false;
   }, [canvasMode, mapId, graphQuery.data, edgeDefaults, setNodes, setEdges, clearDirty, bumpHistory]);
+
+  useEffect(() => {
+    if (!pendingFitRef.current || !nodes.length) return;
+    let cancelled = false;
+    let tries = 0;
+    const run = () => {
+      if (cancelled) return;
+      const inst = rfRef.current;
+      if (!inst) {
+        if (tries++ < 20) window.setTimeout(run, 50);
+        return;
+      }
+      pendingFitRef.current = false;
+      inst.fitView({ ...FIT_VIEW_OPTS, duration: 200 });
+    };
+    const t = window.setTimeout(run, 40);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t);
+    };
+  }, [nodes, mapId]);
 
   useEffect(() => {
     setEdges((eds) => eds.map((e) => withEdgeVisual(e, edgeDefaults)));
@@ -3495,13 +3523,15 @@ export function TopologyPage() {
   const truncateBannerText = useMemo(() => {
     if (!graphTruncated) return "";
     // World map soft-caps viewport nodes; the banner is noise there.
-    if (isWorldFlatViewName(activeView?.name)) return "";
+    if (isWorldFlatViewName(activeView?.name) || Boolean(graphQuery.data?.view?.filter?.world_flat)) {
+      return "";
+    }
     if (truncateReason === "membership_cap") return t("topology.truncatedMembership");
     if (truncateReason === "membership_frozen") return t("topology.truncatedFrozen");
     if (truncateReason === "too_many_view_nodes") return t("topology.truncatedNodes");
     if (truncateReason === "too_many_edges") return t("topology.truncatedEdges");
     return t("topology.truncatedGeneric");
-  }, [graphTruncated, truncateReason, activeView?.name, t]);
+  }, [graphTruncated, truncateReason, activeView?.name, graphQuery.data?.view?.filter?.world_flat, t]);
   const activeLeafName = useMemo(() => {
     if (!mapId) return "";
     if (activeView?.name) return activeView.name;
@@ -4822,7 +4852,7 @@ export function TopologyPage() {
                   connectionLineStyle={{ stroke: "#38bdf8", strokeWidth: 2 }}
                   defaultEdgeOptions={{ type: "straight", labelShowBg: false }}
                   proOptions={{ hideAttribution: true }}
-                  minZoom={0.05}
+                  minZoom={isWorldFlatCanvas ? 0.005 : 0.05}
                   maxZoom={4}
                   nodesDraggable={toolBehavior.nodesDraggable}
                   nodesConnectable={toolBehavior.nodesConnectable}
