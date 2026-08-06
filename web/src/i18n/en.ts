@@ -45,6 +45,9 @@ const en = {
     gauge: {
       cpu: "CPU",
       mem: "Memory",
+      storage: "Storage",
+      storageUsed: "Used",
+      storageUnavailable: "Unavailable",
       cli: "CLI budget",
       db: "DB pool",
       webcrt: "WebCRT",

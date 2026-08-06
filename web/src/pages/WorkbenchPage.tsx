@@ -42,7 +42,26 @@ function formatBytes(n: number, locale: string): string {
   return `${(v / mib).toFixed(0)} MiB`;
 }
 
-function Gauge({ label, hint, pct }: { label: string; hint: string; pct: number }) {
+function formatBytesCompact(n: number): string {
+  const v = Math.max(0, Number(n) || 0);
+  const gib = 1024 ** 3;
+  const mib = 1024 ** 2;
+  if (v >= gib) return `${(v / gib).toFixed(v >= 10 * gib ? 0 : 1)}G`;
+  if (v >= mib) return `${(v / mib).toFixed(0)}M`;
+  return `${Math.max(1, Math.round(v / 1024))}K`;
+}
+
+function Gauge({
+  label,
+  hint,
+  pct,
+  valueText,
+}: {
+  label: string;
+  hint: string;
+  pct: number;
+  valueText?: string;
+}) {
   const tone = gaugeTone(pct);
   const safe = clampPct(pct);
   return (
@@ -54,7 +73,7 @@ function Gauge({ label, hint, pct }: { label: string; hint: string; pct: number 
             background: `conic-gradient(${tone} ${safe}%, rgba(148, 163, 184, 0.16) 0)`,
           }}
         >
-          <span className="wb-gauge__value">{safe}%</span>
+          <span className="wb-gauge__value">{valueText ?? `${safe}%`}</span>
         </div>
       </div>
       <div className="wb-gauge__label">{label}</div>
@@ -101,6 +120,15 @@ export function WorkbenchPage() {
   const memPct = clampPct(Number(host?.mem_percent ?? 0));
   const memUsed = Number(host?.mem_used_bytes || 0);
   const memTotal = Number(host?.mem_total_bytes || 0);
+
+  const storage = metrics?.db_storage;
+  const storageUsed = Number(storage?.used_bytes || 0);
+  const storageOk =
+    storageUsed > 0 || (storage?.source === "pg_database_size" && !storage?.error);
+  const storageHint = storageOk
+    ? `${t("workbench.gauge.storageUsed")} · ${formatBytes(storageUsed, locale)}`
+    : t("workbench.gauge.storageUnavailable");
+  const storageValue = storageOk ? formatBytesCompact(storageUsed) : "—";
 
   const cliUsed = Number(metrics?.cli_budget?.in_use || 0);
   const cliLimit = Math.max(1, Number(metrics?.cli_budget?.limit || 0));
@@ -155,6 +183,12 @@ export function WorkbenchPage() {
                   : loadHint(memPct, t)
               }
               pct={memPct}
+            />
+            <Gauge
+              label={t("workbench.gauge.storage")}
+              hint={storageHint}
+              pct={0}
+              valueText={storageValue}
             />
             <Gauge
               label={t("workbench.gauge.cli")}

@@ -252,6 +252,12 @@ export type RuntimeMetrics = {
     overflow?: number;
     size?: number;
   };
+  db_storage?: {
+    db_name?: string;
+    used_bytes?: number;
+    source?: string;
+    error?: string;
+  };
   cli_budget?: {
     limit?: number;
     in_use?: number;

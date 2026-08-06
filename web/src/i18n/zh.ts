@@ -45,6 +45,9 @@ const zh = {
     gauge: {
       cpu: "CPU",
       mem: "内存",
+      storage: "存储",
+      storageUsed: "已用",
+      storageUnavailable: "不可用",
       cli: "CLI 并发",
       db: "数据库连接",
       webcrt: "WebCRT",

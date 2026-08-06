@@ -12,6 +12,7 @@ from .audit_async import audit_queue_status
 from .cli_budget import cli_budget_status
 from .config import settings
 from .db import db_pool_status
+from .db_storage_metrics import collect_db_storage_metrics
 from .host_metrics import collect_host_metrics
 from .oclaw_alarm_forwarder import forwarder_status
 
@@ -26,6 +27,7 @@ def collect_runtime_metrics() -> dict[str, Any]:
         "pid": os.getpid(),
         "thread_count": threading.active_count(),
         "db_pool": db_pool_status(),
+        "db_storage": collect_db_storage_metrics(),
         "cli_budget": cli_budget_status(),
         "audit_queue": audit_queue_status(),
         "oclaw_forwarder": forwarder_status(),
@@ -142,6 +144,9 @@ def _prom_lines(metrics: dict[str, Any]) -> str:
         lines.append(f'netx_host_mem_used_bytes {host["mem_used_bytes"]}')
     if host.get("mem_total_bytes") is not None:
         lines.append(f'netx_host_mem_total_bytes {host["mem_total_bytes"]}')
+    storage = metrics.get("db_storage") or {}
+    if storage.get("used_bytes") is not None:
+        lines.append(f'netx_db_storage_used_bytes {int(storage.get("used_bytes") or 0)}')
     lines.append("")
     return "\n".join(lines)
 
