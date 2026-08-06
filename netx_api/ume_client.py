@@ -656,10 +656,11 @@ class UMEClient:
 
     def ws_auth_headers(self) -> dict[str, str]:
         """
-        Headers for WSS handshake — same fields as REST (_headers).
+        Headers for WSS handshake — accessToken only (no REST content-type).
         Does not login/renew; relies on shared token store (token_keepalive / other sync paths).
         """
         self._sync_token_from_store()
         if not self.has_valid_token():
             raise RuntimeError("ume_ws_no_valid_token")
-        return self._headers(include_token=True)
+        token = self._token_value.strip()
+        return {self.auth_header: token}

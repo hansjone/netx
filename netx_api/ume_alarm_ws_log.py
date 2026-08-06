@@ -23,6 +23,9 @@ _SUBSCRIPTION_MISSING_MARKERS: tuple[str, ...] = (
     "status-code: 404",
     "status-reason: subscription not found",
     "non-101 status: 503",
+    "non-101 status: 404",
+    "handshake status 404",
+    "handshake status 503",
 )
 
 

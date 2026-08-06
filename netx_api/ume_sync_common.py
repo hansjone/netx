@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from sqlalchemy import text as sql_text
 from sqlalchemy.orm import Session
 
 from .models import UmeAlarmCurrent, UmeAlarmHistory, UmeInventoryNE

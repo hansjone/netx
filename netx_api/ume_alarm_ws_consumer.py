@@ -29,6 +29,8 @@ from .ume_alarm_ws_subscription import (
 from .ume_client import UMEClient
 from .ume_sync_service import (
     _alarm_key,
+    _utc_now_naive,
+    apply_alarm_to_current,
     extract_alarm_from_notification,
     normalize_yang_alarm,
 )
