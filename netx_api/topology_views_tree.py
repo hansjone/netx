@@ -18,6 +18,7 @@ from .models import (
     TopoViewEdgeStyle,
     TopoViewNode,
     UmeInventoryNE,
+    UmeTopoNode,
 )
 from .topology_common import (
     PHYSICAL_VIEW_NAME,
@@ -28,6 +29,9 @@ from .topology_common import (
     _normalize_edge_status,
     _utcnow,
 )
+
+# Manual top-level「根」auto-spawns this unique L2 canvas (mirrors UME World / World).
+MANUAL_ROOT_MAP_NAME = "根图"
 from .topology_fabric import (
     _edge_out,
     _fabric_match_score,
@@ -261,6 +265,50 @@ def create_folder(db: Session, body: TopologyFolderCreate) -> TopologyFolderOut:
         parent = drill
         parent_kind = "region"
 
+    # Manual 根 (top-level nav): unique L2「根图」only — further creates remount under it.
+    if parent_kind == "region" and str(parent.parent_id or "") == str(root.id):
+        existing_l2 = (
+            db.query(TopoFolder)
+            .filter(TopoFolder.parent_id == parent.id, TopoFolder.kind == "region")
+            .order_by(TopoFolder.sort_order.asc(), TopoFolder.created_at.asc())
+            .all()
+        )
+        if existing_l2:
+            parent = existing_l2[0]
+            parent_kind = "region"
+        else:
+            # Legacy 根 without 根图 — heal then remount.
+            heal_now = _utcnow()
+            root_map = TopoFolder(
+                id=uuid4().hex,
+                parent_id=parent.id,
+                kind="region",
+                name=MANUAL_ROOT_MAP_NAME,
+                sort_order=0,
+                is_system=True,
+                created_at=heal_now,
+                updated_at=heal_now,
+            )
+            db.add(root_map)
+            db.flush()
+            db.add(
+                TopoView(
+                    id=uuid4().hex,
+                    folder_id=root_map.id,
+                    kind=VIEW_KIND_PHYSICAL,
+                    role="core",
+                    name=MANUAL_ROOT_MAP_NAME,
+                    remark="",
+                    sort_order=0,
+                    filter={},
+                    viewport={},
+                    created_at=heal_now,
+                    updated_at=heal_now,
+                )
+            )
+            db.flush()
+            parent = root_map
+            parent_kind = "region"
     now = _utcnow()
     row = TopoFolder(
         id=uuid4().hex,
@@ -274,26 +322,68 @@ def create_folder(db: Session, body: TopologyFolderCreate) -> TopologyFolderOut:
     )
     db.add(row)
     db.flush()
-    # Nested / any new region gets a blank physical canvas so the tree can open it.
-    phys = TopoView(
-        id=uuid4().hex,
-        folder_id=row.id,
-        kind=VIEW_KIND_PHYSICAL,
-        role="core",
-        name=name[:200] or "Topology",
-        remark="",
-        sort_order=0,
-        filter={},
-        viewport={},
-        created_at=now,
-        updated_at=now,
-    )
-    db.add(phys)
-    # Nested region: place a building icon on the parent's canvas (region === canvas).
-    if parent_kind == "region":
-        from .topology_region_canvas import place_child_region_on_parent_canvas
 
-        place_child_region_on_parent_canvas(db, parent, row)
+    if parent_kind == "root":
+        # 「根」nav container + auto unique「根图」canvas (UME World / World pattern).
+        root_map = TopoFolder(
+            id=uuid4().hex,
+            parent_id=row.id,
+            kind="region",
+            name=MANUAL_ROOT_MAP_NAME,
+            sort_order=0,
+            is_system=True,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(root_map)
+        db.flush()
+        db.add(
+            TopoView(
+                id=uuid4().hex,
+                folder_id=root_map.id,
+                kind=VIEW_KIND_PHYSICAL,
+                role="core",
+                name=MANUAL_ROOT_MAP_NAME,
+                remark="",
+                sort_order=0,
+                filter={},
+                viewport={},
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    elif parent_kind == "region":
+        # Nested under 根图 / deeper canvas: region === canvas + icon on parent.
+        phys = TopoView(
+            id=uuid4().hex,
+            folder_id=row.id,
+            kind=VIEW_KIND_PHYSICAL,
+            role="core",
+            name=name[:200] or "Topology",
+            remark="",
+            sort_order=0,
+            filter={},
+            viewport={},
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(phys)
+        db.flush()
+        parent_has_phys = (
+            db.query(TopoView.id)
+            .filter(TopoView.folder_id == parent.id, TopoView.kind == VIEW_KIND_PHYSICAL)
+            .first()
+            is not None
+        )
+        if parent_has_phys:
+            from .topology_region_canvas import place_child_region_on_parent_canvas
+
+            place_child_region_on_parent_canvas(db, parent, row)
+        else:
+            ensure_region_physical_view(db, parent.id, commit=False)
+            from .topology_region_canvas import place_child_region_on_parent_canvas
+
+            place_child_region_on_parent_canvas(db, parent, row)
     db.flush()
     reconcile_world_flat_view(db)
     db.commit()
@@ -338,28 +428,41 @@ def update_folder(db: Session, folder_id: str, body: TopologyFolderUpdate) -> To
 
 
 def delete_folder(db: Session, folder_id: str, *, force: bool = False) -> dict[str, Any]:
-    """Delete a region and cascade-delete its maps.
+    """Delete a region and cascade-delete nested regions + maps.
 
     ``force`` is accepted for API compatibility; cascade always runs.
+    System L2「根图」may be removed only as part of cascading from its parent「根」.
     """
     row = _get_folder_or_404(db, folder_id)
-    if str(row.kind or "") == "root" or bool(row.is_system):
+    if str(row.kind or "") == "root":
+        raise HTTPException(status_code=400, detail="cannot_delete_system_folder")
+    if bool(row.is_system):
         raise HTTPException(status_code=400, detail="cannot_delete_system_folder")
     _ = force
     from .topology_region_canvas import remove_region_canvas_placements
 
-    remove_region_canvas_placements(db, row.id)
-    views = db.query(TopoView).filter(TopoView.folder_id == row.id).all()
-    for v in views:
-        db.query(TopoViewEdgeStyle).filter(TopoViewEdgeStyle.view_id == v.id).delete(
-            synchronize_session=False
+    def _purge_folder(folder: TopoFolder) -> None:
+        kids = (
+            db.query(TopoFolder)
+            .filter(TopoFolder.parent_id == folder.id)
+            .all()
         )
-        db.query(TopoViewNode).filter(TopoViewNode.view_id == v.id).delete(
-            synchronize_session=False
-        )
-        db.delete(v)
-    db.flush()
-    db.delete(row)
+        for kid in kids:
+            _purge_folder(kid)
+        remove_region_canvas_placements(db, folder.id)
+        views = db.query(TopoView).filter(TopoView.folder_id == folder.id).all()
+        for v in views:
+            db.query(TopoViewEdgeStyle).filter(TopoViewEdgeStyle.view_id == v.id).delete(
+                synchronize_session=False
+            )
+            db.query(TopoViewNode).filter(TopoViewNode.view_id == v.id).delete(
+                synchronize_session=False
+            )
+            db.delete(v)
+        db.flush()
+        db.delete(folder)
+
+    _purge_folder(row)
     from .ume_topology_world import reconcile_world_flat_view
 
     reconcile_world_flat_view(db)
@@ -371,38 +474,61 @@ def get_topology_tree(db: Session) -> TopologyTreeOut:
     bootstrap_topology_tree(db)
     folders = db.query(TopoFolder).order_by(TopoFolder.sort_order.asc(), TopoFolder.name.asc()).all()
     views = db.query(TopoView).order_by(TopoView.sort_order.asc(), TopoView.name.asc()).all()
-    nc_map: dict[str, int] = {}
-    for vid, cnt in (
-        db.query(TopoViewNode.view_id, func.count(TopoViewNode.id))
-        .group_by(TopoViewNode.view_id)
-        .all()
-    ):
-        nc_map[str(vid)] = int(cnt or 0)
-    region_icon_map: dict[str, int] = {}
-    for vid, cnt in (
-        db.query(TopoViewNode.view_id, func.count(TopoViewNode.id))
-        .filter(TopoViewNode.fabric_node_id.like("region:%"))
-        .group_by(TopoViewNode.view_id)
-        .all()
-    ):
-        region_icon_map[str(vid)] = int(cnt or 0)
-
-    # UME canvases are virtual (no TopoViewNode membership) — count fabric MEs instead.
-    ume_ne_by_sbn: dict[str, int] = {}
-    ume_ne_by_folder: dict[str, int] = {}
-    ume_ne_total = 0
-    for fn in (
-        db.query(TopoFabricNode)
+    # Cheap directory counts — never hydrate 15k fabric rows (attrs JSON) on tree load.
+    # Full inventory scans belong only to the world flat map graph.
+    nc_map: dict[str, int] = {
+        str(vid): int(cnt or 0)
+        for vid, cnt in (
+            db.query(TopoViewNode.view_id, func.count(TopoViewNode.id))
+            .group_by(TopoViewNode.view_id)
+            .all()
+        )
+    }
+    region_icon_map: dict[str, int] = {
+        str(vid): int(cnt or 0)
+        for vid, cnt in (
+            db.query(TopoViewNode.view_id, func.count(TopoViewNode.id))
+            .filter(TopoViewNode.fabric_node_id.like("region:%"))
+            .group_by(TopoViewNode.view_id)
+            .all()
+        )
+    }
+    ume_ne_by_folder: dict[str, int] = {
+        str(fid): int(cnt or 0)
+        for fid, cnt in (
+            db.query(TopoFabricNode.region_folder_id, func.count(TopoFabricNode.id))
+            .filter(
+                TopoFabricNode.ume_ne_id.isnot(None),
+                TopoFabricNode.ume_ne_id != "",
+                TopoFabricNode.region_folder_id.isnot(None),
+                TopoFabricNode.region_folder_id != "",
+            )
+            .group_by(TopoFabricNode.region_folder_id)
+            .all()
+        )
+        if str(fid or "").strip()
+    }
+    # Direct ME counts by UME parent SBN (level-by-level; not full subtree rollup).
+    ume_ne_by_sbn: dict[str, int] = {
+        str(parent): int(cnt or 0)
+        for parent, cnt in (
+            db.query(UmeTopoNode.parent_node, func.count(UmeTopoNode.node_id))
+            .filter(
+                UmeTopoNode.node_type == "TOPO_NODE_ME",
+                UmeTopoNode.parent_node.isnot(None),
+                UmeTopoNode.parent_node != "",
+            )
+            .group_by(UmeTopoNode.parent_node)
+            .all()
+        )
+        if str(parent or "").strip()
+    }
+    ume_ne_total = int(
+        db.query(func.count(TopoFabricNode.id))
         .filter(TopoFabricNode.ume_ne_id.isnot(None), TopoFabricNode.ume_ne_id != "")
-        .all()
-    ):
-        ume_ne_total += 1
-        fid = str(fn.region_folder_id or "").strip()
-        if fid:
-            ume_ne_by_folder[fid] = ume_ne_by_folder.get(fid, 0) + 1
-        sid = str((fn.attrs or {}).get("ume_sbn_id") or "").strip()
-        if sid:
-            ume_ne_by_sbn[sid] = ume_ne_by_sbn.get(sid, 0) + 1
+        .scalar()
+        or 0
+    )
 
     def _view_node_count(v: TopoView) -> int:
         raw = int(nc_map.get(v.id, 0) or 0)
@@ -418,7 +544,7 @@ def get_topology_tree(db: Session) -> TopologyTreeOut:
             sid = str(filt.get("sbn_id") or "").strip()
             if sid:
                 return int(ume_ne_by_sbn.get(sid, 0))
-            # World drill root: all UME MEs.
+            # World drill root: directory hint only (open canvas for real graph).
             if str(filt.get("parent") or "") == "md":
                 return ume_ne_total
             if v.folder_id:

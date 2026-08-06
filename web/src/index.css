@@ -1,4 +1,4 @@
-﻿* {
+* {
   box-sizing: border-box;
 }
 
@@ -7003,10 +7003,119 @@ pre {
   color: var(--nm-muted, #5b6b7c);
 }
 
+.topo-canvas__status {
+  gap: 12px;
+  justify-items: center;
+  text-align: center;
+}
+
+.topo-canvas__status p {
+  margin: 0;
+  font-size: 13px;
+}
+
+.topo-loading-spinner {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(148, 163, 184, 0.28);
+  border-top-color: #60a5fa;
+  border-radius: 50%;
+  animation: topo-spin 0.7s linear infinite;
+}
+
+.topo-loading-spinner--lg {
+  width: 36px;
+  height: 36px;
+  border-width: 3px;
+}
+
+@keyframes topo-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.topo-canvas__overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 15;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+  padding: 24px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.topo-canvas__overlay--loading {
+  background: rgba(11, 18, 32, 0.55);
+  backdrop-filter: blur(2px);
+  pointer-events: auto;
+}
+
+.topo-canvas__overlay--empty {
+  background: transparent;
+  pointer-events: none;
+}
+
+.topo-canvas__overlay-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: #e2e8f0;
+}
+
+.topo-canvas__overlay--empty .topo-canvas__overlay-title {
+  color: #94a3b8;
+}
+
+.topo-canvas__overlay-hint {
+  margin: 0;
+  max-width: 320px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #94a3b8;
+}
+
+.topo-canvas__refresh {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  z-index: 21;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  transform: translateX(-50%);
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: rgba(15, 23, 42, 0.92);
+  color: #cbd5e1;
+  font-size: 12px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.28);
+  pointer-events: none;
+}
+
+.topo-browser__empty--loading {
+  gap: 12px;
+}
+
+.topo-browser__empty--loading p {
+  margin: 0;
+}
+
 .topo-sidebar .panel__hint {
   margin: 0;
   font-size: 12px;
   color: var(--nm-muted);
+}
+
+.topo-tree-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .topo-sidebar .input {

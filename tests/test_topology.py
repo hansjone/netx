@@ -319,9 +319,17 @@ class FabricTopologyTests(unittest.TestCase):
         self.assertEqual(action, "skipped_self_loop")
 
     def _region(self, name: str = "Test-Region") -> str:
-        return svc.create_folder(
+        """Return the unique L2「根图」canvas id under a new top-level「根」."""
+        top = svc.create_folder(
             self.db, TopologyFolderCreate(name=name, kind="region")
-        ).id
+        )
+        child = (
+            self.db.query(TopoFolder)
+            .filter(TopoFolder.parent_id == top.id, TopoFolder.kind == "region")
+            .order_by(TopoFolder.sort_order.asc(), TopoFolder.created_at.asc())
+            .first()
+        )
+        return child.id if child is not None else top.id
 
     def test_view_crud_and_positions(self) -> None:
         suffix = uuid4().hex[:8]
@@ -394,93 +402,96 @@ class FabricTopologyTests(unittest.TestCase):
         region = svc.create_folder(
             self.db, TopologyFolderCreate(name="East", kind="region")
         )
-        # Creating a region does not auto-create a map — user/MCP adds views.
+        # Top-level「根」is nav-only; unique L2「根图」holds the canvas.
         tree1 = svc.get_topology_tree(self.db)
         assert tree1.root is not None
         east0 = next(c for c in tree1.root.children if c.id == region.id)
         self.assertEqual(east0.views, [])
+        self.assertEqual(len(east0.children), 1)
+        root_map = east0.children[0]
+        self.assertEqual(root_map.name, "根图")
+        self.assertEqual(len(root_map.views), 1)
+        self.assertEqual(root_map.views[0].name, "根图")
 
         view = svc.create_view(
             self.db,
             TopologyViewCreate(
                 name="East-Custom",
-                folder_id=region.id,
+                folder_id=root_map.id,
                 kind="custom",
             ),
         )
-        self.assertEqual(view.folder_id, region.id)
+        self.assertEqual(view.folder_id, root_map.id)
         self.assertEqual(view.kind, "custom")
         self.assertIn("membership", view.filter)
 
         tree2 = svc.get_topology_tree(self.db)
         assert tree2.root is not None
         east = next(c for c in tree2.root.children if c.id == region.id)
-        self.assertTrue(any(v.id == view.id for v in east.views))
-        self.assertEqual(len(east.views), 1)
-        self.assertTrue(all(not getattr(v, "children", None) for v in east.views))
+        rm = east.children[0]
+        self.assertTrue(any(v.id == view.id for v in rm.views))
+        self.assertEqual(len(rm.views), 2)
+        self.assertTrue(all(not getattr(v, "children", None) for v in rm.views))
 
     def test_site_physical_and_custom_flat(self) -> None:
-        region = svc.create_folder(
+        top = svc.create_folder(
             self.db, TopologyFolderCreate(name="Site-R", kind="region")
         )
-        phys = svc.create_view(
-            self.db,
-            TopologyViewCreate(
-                name="Physical",
-                folder_id=region.id,
-                kind="physical",
-            ),
-        )
-        tree = svc.get_topology_tree(self.db)
-        assert tree.root is not None
-        reg = next(c for c in tree.root.children if c.id == region.id)
-        physicals = [v for v in reg.views if v.kind == "physical"]
-        self.assertEqual(len(physicals), 1)
-        self.assertEqual(physicals[0].id, phys.id)
+        tree0 = svc.get_topology_tree(self.db)
+        assert tree0.root is not None
+        nav = next(c for c in tree0.root.children if c.id == top.id)
+        root_map = nav.children[0]
+        self.assertEqual(root_map.name, "根图")
+        auto_phys = root_map.views[0]
+        self.assertEqual(auto_phys.kind, "physical")
 
         custom = svc.create_view(
             self.db,
             TopologyViewCreate(
                 name="Custom-A",
-                folder_id=region.id,
+                folder_id=root_map.id,
                 kind="custom",
             ),
         )
         tree2 = svc.get_topology_tree(self.db)
         assert tree2.root is not None
-        reg2 = next(c for c in tree2.root.children if c.id == region.id)
+        reg2 = next(c for c in tree2.root.children if c.id == top.id).children[0]
         ids = {v.id for v in reg2.views}
-        self.assertIn(phys.id, ids)
+        self.assertIn(auto_phys.id, ids)
         self.assertIn(custom.id, ids)
         # physical first
         self.assertEqual(reg2.views[0].kind, "physical")
 
         with self.assertRaises(Exception):
-            svc.delete_view(self.db, phys.id)
+            svc.delete_view(self.db, auto_phys.id)
         svc.delete_view(self.db, custom.id)
         # force-delete physical does not recreate another map
-        svc.delete_view(self.db, phys.id, force=True)
+        svc.delete_view(self.db, auto_phys.id, force=True)
         tree3 = svc.get_topology_tree(self.db)
         assert tree3.root is not None
-        reg3 = next(c for c in tree3.root.children if c.id == region.id)
+        reg3 = next(c for c in tree3.root.children if c.id == top.id).children[0]
         self.assertEqual(sum(1 for v in reg3.views if v.kind == "physical"), 0)
 
     def test_delete_region_cascades_views(self) -> None:
         region = svc.create_folder(
             self.db, TopologyFolderCreate(name="Del-Region", kind="region")
         )
+        tree0 = svc.get_topology_tree(self.db)
+        assert tree0.root is not None
+        nav = next(c for c in tree0.root.children if c.id == region.id)
+        root_map = nav.children[0]
         custom = svc.create_view(
             self.db,
             TopologyViewCreate(
                 name="Custom-Del",
-                folder_id=region.id,
+                folder_id=root_map.id,
                 kind="custom",
             ),
         )
         tree = svc.get_topology_tree(self.db)
         assert tree.root is not None
         reg = next(c for c in tree.root.children if c.id == region.id)
-        self.assertTrue(any(v.id == custom.id for v in reg.views))
+        self.assertTrue(any(v.id == custom.id for v in reg.children[0].views))
 
         out = svc.delete_folder(self.db, region.id)
         self.assertTrue(out.get("deleted"))
@@ -489,13 +500,20 @@ class FabricTopologyTests(unittest.TestCase):
         self.assertFalse(any(c.id == region.id for c in tree2.root.children))
         self.assertIsNone(self.db.get(TopoView, custom.id))
         self.assertEqual(
-            self.db.query(TopoView).filter(TopoView.folder_id == region.id).count(),
+            self.db.query(TopoView).filter(TopoView.folder_id == root_map.id).count(),
             0,
         )
 
     def test_nested_region_places_icon_on_parent_canvas(self) -> None:
+        # Top-level「根」is nav-only; canvas work happens under unique「根图」.
+        container = svc.create_folder(
+            self.db, TopologyFolderCreate(name="Site-Group", kind="region")
+        )
         parent = svc.create_folder(
-            self.db, TopologyFolderCreate(name="Parent-Canvas", kind="region")
+            self.db,
+            TopologyFolderCreate(
+                name="Parent-Canvas", kind="region", parent_id=container.id
+            ),
         )
         child = svc.create_folder(
             self.db,
@@ -503,7 +521,13 @@ class FabricTopologyTests(unittest.TestCase):
         )
         tree = svc.get_topology_tree(self.db)
         assert tree.root is not None
-        p = next(c for c in tree.root.children if c.id == parent.id)
+        group = next(c for c in tree.root.children if c.id == container.id)
+        self.assertEqual(group.views, [])
+        self.assertEqual(len(group.children), 1)
+        root_map = group.children[0]
+        self.assertEqual(root_map.name, "根图")
+        # Creating under the nav「根」remounts onto「根图」.
+        p = next(c for c in root_map.children if c.id == parent.id)
         self.assertTrue(p.views)
         graph = svc.get_view_graph(self.db, p.views[0].id)
         regions = [n for n in graph.nodes if n.kind == "region"]
@@ -539,6 +563,50 @@ class FabricTopologyTests(unittest.TestCase):
         svc.delete_folder(self.db, child.id)
         graph2 = svc.get_view_graph(self.db, p.views[0].id)
         self.assertFalse(any(n.kind == "region" for n in graph2.nodes))
+
+    def test_top_level_stays_nav_when_adding_child(self) -> None:
+        """Creating under「根」remounts onto unique「根图」; top stays nav-only."""
+        top = svc.create_folder(
+            self.db, TopologyFolderCreate(name="East-Nav", kind="region")
+        )
+        child = svc.create_folder(
+            self.db,
+            TopologyFolderCreate(name="Site-A", kind="region", parent_id=top.id),
+        )
+        tree = svc.get_topology_tree(self.db)
+        assert tree.root is not None
+        east = next(c for c in tree.root.children if c.id == top.id)
+        self.assertEqual(east.views, [])
+        self.assertEqual(len(east.children), 1)
+        root_map = east.children[0]
+        self.assertEqual(root_map.name, "根图")
+        self.assertEqual(len(root_map.views), 1)
+        site = next(c for c in root_map.children if c.id == child.id)
+        self.assertEqual(len(site.views), 1)
+        self.assertEqual(site.views[0].name, "Site-A")
+        self.assertNotEqual(site.views[0].name, "Physical topology")
+
+    def test_root_auto_spawns_unique_root_map(self) -> None:
+        top = svc.create_folder(
+            self.db, TopologyFolderCreate(name="West", kind="region")
+        )
+        # Second create under the same「根」must remount under existing「根图」.
+        a = svc.create_folder(
+            self.db,
+            TopologyFolderCreate(name="A", kind="region", parent_id=top.id),
+        )
+        b = svc.create_folder(
+            self.db,
+            TopologyFolderCreate(name="B", kind="region", parent_id=top.id),
+        )
+        tree = svc.get_topology_tree(self.db)
+        assert tree.root is not None
+        west = next(c for c in tree.root.children if c.id == top.id)
+        self.assertEqual(len(west.children), 1)
+        root_map = west.children[0]
+        self.assertEqual(root_map.name, "根图")
+        child_ids = {c.id for c in root_map.children}
+        self.assertEqual(child_ids, {a.id, b.id})
 
     def test_classify_role_region_and_slices(self) -> None:
         from netx_api import topology_classify as clf

@@ -123,16 +123,21 @@ def get_world_flat_view(db: Session) -> TopoView | None:
     return None
 
 
-def _folder_subtree_ids(db: Session, folder_id: str) -> set[str]:
-    all_folders = db.query(TopoFolder).all()
-    children: dict[str | None, list[str]] = {}
-    for f in all_folders:
-        children.setdefault(f.parent_id, []).append(f.id)
+def _folder_subtree_ids(
+    db: Session,
+    folder_id: str,
+    *,
+    children_map: dict[str | None, list[str]] | None = None,
+) -> set[str]:
+    if children_map is None:
+        children_map = {}
+        for fid, parent_id in db.query(TopoFolder.id, TopoFolder.parent_id).all():
+            children_map.setdefault(parent_id, []).append(fid)
     ids = {folder_id}
     stack = [folder_id]
     while stack:
         cur = stack.pop()
-        for cid in children.get(cur, []):
+        for cid in children_map.get(cur, []):
             if cid not in ids:
                 ids.add(cid)
                 stack.append(cid)
@@ -142,25 +147,28 @@ def _folder_subtree_ids(db: Session, folder_id: str) -> set[str]:
 def _child_region_has_nes(db: Session, child: TopoFolder) -> bool:
     """True when the child region subtree owns at least one fabric NE."""
     ids = _folder_subtree_ids(db, child.id)
-    n = (
-        db.query(TopoFabricNode)
+    if ids and (
+        db.query(TopoFabricNode.id)
         .filter(TopoFabricNode.region_folder_id.in_(list(ids)))
         .limit(1)
         .first()
-    )
-    if n is not None:
+        is not None
+    ):
         return True
+    # Cheap fallback: direct UME ME under this SBN (never scan all fabric attrs).
     ref = str(getattr(child, "external_ref", None) or "").strip()
     if ref and not ref.startswith("ume:"):
-        for fn in (
-            db.query(TopoFabricNode)
-            .filter(TopoFabricNode.ume_ne_id.isnot(None), TopoFabricNode.ume_ne_id != "")
-            .all()
+        if (
+            db.query(UmeTopoNode.node_id)
+            .filter(
+                UmeTopoNode.node_type == "TOPO_NODE_ME",
+                UmeTopoNode.parent_node == ref,
+            )
+            .limit(1)
+            .first()
+            is not None
         ):
-            if str((fn.attrs or {}).get("ume_sbn_id") or "") == ref:
-                return True
-            if str(fn.region_folder_id or "") == child.id:
-                return True
+            return True
     return False
 
 
@@ -180,7 +188,38 @@ def world_map_should_exist(db: Session) -> bool:
     )
     if not children:
         return False
-    return any(_child_region_has_nes(db, c) for c in children)
+    children_map: dict[str | None, list[str]] = {}
+    for fid, parent_id in db.query(TopoFolder.id, TopoFolder.parent_id).all():
+        children_map.setdefault(parent_id, []).append(fid)
+    all_ids: set[str] = set()
+    for c in children:
+        all_ids |= _folder_subtree_ids(db, c.id, children_map=children_map)
+    if all_ids and (
+        db.query(TopoFabricNode.id)
+        .filter(TopoFabricNode.region_folder_id.in_(list(all_ids)))
+        .limit(1)
+        .first()
+        is not None
+    ):
+        return True
+    refs = [
+        str(getattr(c, "external_ref", None) or "").strip()
+        for c in children
+        if str(getattr(c, "external_ref", None) or "").strip()
+        and not str(getattr(c, "external_ref", None) or "").startswith("ume:")
+    ]
+    if refs and (
+        db.query(UmeTopoNode.node_id)
+        .filter(
+            UmeTopoNode.node_type == "TOPO_NODE_ME",
+            UmeTopoNode.parent_node.in_(refs),
+        )
+        .limit(1)
+        .first()
+        is not None
+    ):
+        return True
+    return False
 
 
 def reconcile_world_flat_view(db: Session) -> TopoView | None:

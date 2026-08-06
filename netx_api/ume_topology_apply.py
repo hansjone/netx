@@ -68,7 +68,10 @@ def apply_ume_topology_to_fabric(db: Session) -> dict[str, Any]:
         .filter(UmeTopoNode.node_type == "TOPO_NODE_ME")
         .all()
     )
-    for tn in me_nodes:
+    # Advisory xact locks + nested savepoints accumulate; commit in batches or PG
+    # hits OutOfMemory / max_locks_per_transaction on ~15k MEs.
+    _NODE_BATCH = 250
+    for i, tn in enumerate(me_nodes, start=1):
         uid = str(tn.ume_ne_id or tn.node_id or "").strip()
         if not uid:
             continue
@@ -118,8 +121,12 @@ def apply_ume_topology_to_fabric(db: Session) -> dict[str, Any]:
             attrs["ume_sbn_id"] = str(tn.parent_node)[:128]
         fn.attrs = attrs
         fabric_by_ume[uid] = fn
+        if i % _NODE_BATCH == 0:
+            db.commit()
+            if i % 2000 == 0:
+                _log.info("ume topology apply nodes progress %s/%s", i, len(me_nodes))
 
-    db.flush()
+    db.commit()
 
     seen_edge_ids: set[str] = set()
     links = db.query(UmeTopoLink).all()
