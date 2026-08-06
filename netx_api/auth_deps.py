@@ -8,6 +8,7 @@ from typing import Annotated, Callable
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
+from .auth_cookies import read_access_cookie
 from .auth_scopes import (
     ALL_SCOPES,
     effective_token_scopes,
@@ -16,7 +17,7 @@ from .auth_scopes import (
     has_scope,
     normalize_scopes,
 )
-from .auth_service import get_user_by_id, resolve_api_token_row
+from .auth_service import get_auth_session, get_user_by_id, resolve_api_token_row, touch_auth_session
 from .auth_tokens import decode_access_token
 from .config import settings
 from .db import get_db
@@ -29,23 +30,25 @@ class AuthContext:
     auth_via: str  # jwt | api_token | disabled
     scopes: frozenset[str] = field(default_factory=frozenset)
     api_token_id: str = ""
+    session_jti: str = ""
 
 
 def _extract_bearer(request: Request) -> str:
     auth = str(request.headers.get("authorization") or "").strip()
     if auth.lower().startswith("bearer "):
         return auth[7:].strip()
-    # Prefer Header; query access_token is deprecated (WebSocket may still use short-lived tickets).
-    q = request.query_params.get("access_token")
-    return str(q or "").strip()
+    # Prefer Authorization; fall back to HttpOnly access cookie for browser sessions.
+    return read_access_cookie(request)
 
 
 def user_scopes(user: AppUser) -> frozenset[str]:
     return effective_user_scopes(role=str(user.role or "user"), override=getattr(user, "scopes", None) or [])
 
 
-def resolve_user_from_token(db: Session, token: str) -> tuple[AppUser, str, frozenset[str], str] | None:
-    """Return (user, via, scopes, api_token_id) or None."""
+def resolve_user_from_token(
+    db: Session, token: str
+) -> tuple[AppUser, str, frozenset[str], str, str] | None:
+    """Return (user, via, scopes, api_token_id, session_jti) or None."""
     raw = str(token or "").strip()
     if not raw:
         return None
@@ -60,17 +63,26 @@ def resolve_user_from_token(db: Session, token: str) -> tuple[AppUser, str, froz
             user_scopes=user_scopes(user),
             token_scopes=getattr(row, "scopes", None) or [],
         )
-        return user, "api_token", scopes, str(row.id)
+        return user, "api_token", scopes, str(row.id), ""
     try:
         payload = decode_access_token(raw)
     except Exception:
         return None
     if str(payload.get("typ") or "") not in ("", "access"):
         return None
+    jti = str(payload.get("jti") or "").strip()
+    if not jti:
+        return None
+    sess = get_auth_session(db, jti)
+    if sess is None:
+        return None
     user = get_user_by_id(db, str(payload.get("sub") or ""))
     if user is None or not user.is_active:
         return None
-    return user, "jwt", user_scopes(user), ""
+    if str(sess.user_id) != str(user.id):
+        return None
+    touch_auth_session(db, jti)
+    return user, "jwt", user_scopes(user), "", jti
 
 
 def get_optional_user(
@@ -86,19 +98,25 @@ def get_optional_user(
         if not isinstance(scopes, frozenset):
             scopes = user_scopes(cached)
         token_id = str(getattr(request.state, "auth_api_token_id", "") or "")
-        return AuthContext(user=cached, auth_via=via, scopes=scopes, api_token_id=token_id)
+        jti = str(getattr(request.state, "auth_session_jti", "") or "")
+        return AuthContext(
+            user=cached, auth_via=via, scopes=scopes, api_token_id=token_id, session_jti=jti
+        )
     token = _extract_bearer(request)
     if not token:
         return None
     resolved = resolve_user_from_token(db, token)
     if resolved is None:
         return None
-    user, via, scopes, token_id = resolved
+    user, via, scopes, token_id, jti = resolved
     request.state.auth_user = user
     request.state.auth_via = via
     request.state.auth_scopes = scopes
     request.state.auth_api_token_id = token_id
-    return AuthContext(user=user, auth_via=via, scopes=scopes, api_token_id=token_id)
+    request.state.auth_session_jti = jti
+    return AuthContext(
+        user=user, auth_via=via, scopes=scopes, api_token_id=token_id, session_jti=jti
+    )
 
 
 def require_user(

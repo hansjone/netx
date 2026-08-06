@@ -130,6 +130,16 @@ export const MODULES: readonly ModuleDefinition[] = [
     iconKind: "key",
     titleKey: "layout.titleApiKeys",
   },
+  {
+    moduleId: "sessions",
+    path: "/sessions",
+    section: "system",
+    labelKey: "workbench.cards.sessions",
+    descKey: "workbench.cards.sessionsDesc",
+    iconTone: "slate",
+    iconKind: "key",
+    titleKey: "layout.titleSessions",
+  },
 ] as const satisfies readonly ModuleDefinition[];
 
 export function getModuleById(moduleId: string): ModuleDefinition | undefined {

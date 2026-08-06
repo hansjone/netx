@@ -42,6 +42,9 @@ class WebcrtSession:
     cli_keymap: bool = True
     encoding: str = "utf-8"
     keepalive_sec: int = 0
+    # Owning netx user; empty = legacy unbound (tests / auth_disabled).
+    owner_user_id: str = ""
+    owner_username: str = ""
     conn: ConnectHandler | None = None
     created_at: float = field(default_factory=time.time)
     last_activity: float = field(default_factory=time.time)

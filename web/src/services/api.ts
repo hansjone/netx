@@ -50,42 +50,78 @@ import type {
 
 
 export const AUTH_TOKEN_KEY = "netx_access_token";
+export const AUTH_REFRESH_KEY = "netx_refresh_token";
 
-export const getAuthToken = (): string | null => {
-  try {
-    return localStorage.getItem(AUTH_TOKEN_KEY);
-  } catch {
-    return null;
-  }
-};
-
-export const setAuthToken = (token: string): void => {
-  localStorage.setItem(AUTH_TOKEN_KEY, String(token || ""));
-};
-
+/** Clear legacy localStorage tokens; browser auth now uses HttpOnly cookies. */
 export const clearAuthToken = (): void => {
   try {
     localStorage.removeItem(AUTH_TOKEN_KEY);
+    localStorage.removeItem(AUTH_REFRESH_KEY);
   } catch {
     // ignore
   }
 };
 
+/** @deprecated Cookie session — always null for browser UI. */
+export const getAuthToken = (): string | null => null;
+
+/** No-op kept for call-site compatibility during cookie migration. */
+export const setAuthToken = (_token: string): void => {
+  clearAuthToken();
+};
+
+export const setAuthTokens = (_access: string, _refresh?: string | null): void => {
+  clearAuthToken();
+};
+
+const fetchCreds: RequestCredentials = "include";
+
 const authHeaders = (extra?: Record<string, string>): Record<string, string> => {
-  const h: Record<string, string> = { accept: "application/json", ...(extra || {}) };
-  const tok = getAuthToken();
-  if (tok) h.authorization = `Bearer ${tok}`;
-  return h;
+  // Browser JWT rides HttpOnly cookies (credentials: include).
+  // Authorization Bearer is only needed for non-browser API tokens if ever injected.
+  return { accept: "application/json", ...(extra || {}) };
 };
 
 const handleUnauthorized = (path: string): void => {
-  if (path.startsWith("/v1/auth/login")) return;
+  if (path.startsWith("/v1/auth/login") || path.startsWith("/v1/auth/refresh")) return;
   clearAuthToken();
   if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
     const next = `${window.location.pathname}${window.location.search || ""}`;
     window.location.assign(`/login?next=${encodeURIComponent(next)}`);
   }
 };
+
+let refreshInFlight: Promise<boolean> | null = null;
+
+const tryRefreshAccessToken = async (): Promise<boolean> => {
+  if (!refreshInFlight) {
+    refreshInFlight = (async () => {
+      try {
+        // Refresh token comes from HttpOnly cookie when body is empty.
+        const res = await fetch("/v1/auth/refresh", {
+          method: "POST",
+          credentials: fetchCreds,
+          headers: { accept: "application/json", "content-type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        if (!res.ok) {
+          clearAuthToken();
+          return false;
+        }
+        return true;
+      } catch {
+        clearAuthToken();
+        return false;
+      } finally {
+        refreshInFlight = null;
+      }
+    })();
+  }
+  return refreshInFlight;
+};
+
+const shouldAttemptRefresh = (path: string): boolean =>
+  !path.startsWith("/v1/auth/login") && !path.startsWith("/v1/auth/refresh");
 
 const parseApiResponse = async (res: Response): Promise<Record<string, unknown>> => {
   const text = await res.text();
@@ -139,7 +175,10 @@ export function formatApiDetail(detail: unknown): string {
 }
 
 export const apiGet = async <T,>(path: string): Promise<T> => {
-  const res = await fetch(path, { headers: authHeaders() });
+  let res = await fetch(path, { headers: authHeaders(), credentials: fetchCreds });
+  if (res.status === 401 && shouldAttemptRefresh(path) && (await tryRefreshAccessToken())) {
+    res = await fetch(path, { headers: authHeaders(), credentials: fetchCreds });
+  }
   if (res.status === 401) {
     handleUnauthorized(path);
     throw new Error("401 unauthorized");
@@ -149,11 +188,17 @@ export const apiGet = async <T,>(path: string): Promise<T> => {
 };
 
 export const apiPost = async <T,>(path: string, body: unknown): Promise<T> => {
-  const res = await fetch(path, {
-    method: "POST",
-    headers: authHeaders({ "content-type": "application/json" }),
-    body: JSON.stringify(body),
-  });
+  const doFetch = () =>
+    fetch(path, {
+      method: "POST",
+      credentials: fetchCreds,
+      headers: authHeaders({ "content-type": "application/json" }),
+      body: JSON.stringify(body),
+    });
+  let res = await doFetch();
+  if (res.status === 401 && shouldAttemptRefresh(path) && (await tryRefreshAccessToken())) {
+    res = await doFetch();
+  }
   const data = await parseApiResponse(res);
   if (res.status === 401) {
     handleUnauthorized(path);
@@ -164,11 +209,17 @@ export const apiPost = async <T,>(path: string, body: unknown): Promise<T> => {
 };
 
 export const apiPatch = async <T,>(path: string, body: unknown): Promise<T> => {
-  const res = await fetch(path, {
-    method: "PATCH",
-    headers: authHeaders({ "content-type": "application/json" }),
-    body: JSON.stringify(body),
-  });
+  const doFetch = () =>
+    fetch(path, {
+      method: "PATCH",
+      credentials: fetchCreds,
+      headers: authHeaders({ "content-type": "application/json" }),
+      body: JSON.stringify(body),
+    });
+  let res = await doFetch();
+  if (res.status === 401 && shouldAttemptRefresh(path) && (await tryRefreshAccessToken())) {
+    res = await doFetch();
+  }
   const data = await parseApiResponse(res);
   if (res.status === 401) {
     handleUnauthorized(path);
@@ -179,7 +230,10 @@ export const apiPatch = async <T,>(path: string, body: unknown): Promise<T> => {
 };
 
 export const apiDelete = async <T,>(path: string): Promise<T> => {
-  const res = await fetch(path, { method: "DELETE", headers: authHeaders() });
+  let res = await fetch(path, { method: "DELETE", headers: authHeaders(), credentials: fetchCreds });
+  if (res.status === 401 && shouldAttemptRefresh(path) && (await tryRefreshAccessToken())) {
+    res = await fetch(path, { method: "DELETE", headers: authHeaders(), credentials: fetchCreds });
+  }
   const data = await parseApiResponse(res);
   if (res.status === 401) {
     handleUnauthorized(path);
@@ -190,11 +244,17 @@ export const apiDelete = async <T,>(path: string): Promise<T> => {
 };
 
 export const apiPut = async <T,>(path: string, body: unknown): Promise<T> => {
-  const res = await fetch(path, {
-    method: "PUT",
-    headers: authHeaders({ "content-type": "application/json" }),
-    body: JSON.stringify(body),
-  });
+  const doFetch = () =>
+    fetch(path, {
+      method: "PUT",
+      credentials: fetchCreds,
+      headers: authHeaders({ "content-type": "application/json" }),
+      body: JSON.stringify(body),
+    });
+  let res = await doFetch();
+  if (res.status === 401 && shouldAttemptRefresh(path) && (await tryRefreshAccessToken())) {
+    res = await doFetch();
+  }
   const data = await parseApiResponse(res);
   if (res.status === 401) {
     handleUnauthorized(path);
@@ -499,7 +559,7 @@ export const managedNeImportTemplateUrl = (format: "xlsx" | "csv" = "xlsx") =>
 
 export const downloadManagedNeImportTemplate = async (format: "xlsx" | "csv" = "xlsx"): Promise<void> => {
   const path = managedNeImportTemplateUrl(format);
-  const res = await fetch(path, { headers: authHeaders() });
+  const res = await fetch(path, { headers: authHeaders(), credentials: fetchCreds });
   if (res.status === 401) {
     handleUnauthorized(path);
     throw new Error("unauthorized");
@@ -527,7 +587,7 @@ export const importManagedNe = async (file: File): Promise<ManagedNeImportResult
   form.append("file", file);
   const path = "/v1/managed-ne/import";
   // Do not set content-type — browser must add multipart boundary.
-  const res = await fetch(path, { method: "POST", headers: authHeaders(), body: form });
+  const res = await fetch(path, { method: "POST", headers: authHeaders(), body: form, credentials: fetchCreds });
   if (res.status === 401) {
     handleUnauthorized(path);
     throw new Error("unauthorized");
@@ -673,7 +733,7 @@ export function closeWebcrtSessionsKeepalive(sessionIds: string[]): void {
   for (const id of ids) {
     const path = `/v1/webcrt/sessions/${encodeURIComponent(id)}`;
     try {
-      void fetch(path, { method: "DELETE", headers, keepalive: true });
+      void fetch(path, { method: "DELETE", headers, credentials: fetchCreds, keepalive: true });
     } catch {
       /* ignore unload failures */
     }
@@ -772,6 +832,7 @@ async function webcrtSftpDownloadOnce(
   const path = "/v1/webcrt/sftp/download";
   const res = await fetch(path, {
     method: "POST",
+    credentials: fetchCreds,
     headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(body),
     signal: opts?.signal,
@@ -863,8 +924,7 @@ function webcrtSftpUploadOnce(
       opts.signal.addEventListener("abort", onAbort, { once: true });
     }
     xhr.open("POST", path);
-    const tok = getAuthToken();
-    if (tok) xhr.setRequestHeader("Authorization", `Bearer ${tok}`);
+    xhr.withCredentials = true;
     xhr.responseType = "text";
     xhr.upload.onprogress = (ev) => {
       if (!opts?.onProgress) return;
@@ -1414,7 +1474,7 @@ export const downloadNeConfigSnapshot = async (
   const path =
     `/v1/config-sync/snapshots/${encodeURIComponent(source)}/${encodeURIComponent(targetId)}` +
     `/download?field=${encodeURIComponent(field)}`;
-  const res = await fetch(path, { headers: authHeaders() });
+  const res = await fetch(path, { headers: authHeaders(), credentials: fetchCreds });
   if (res.status === 401) {
     handleUnauthorized(path);
     throw new Error("unauthorized");

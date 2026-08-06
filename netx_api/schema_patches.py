@@ -91,6 +91,36 @@ def apply_auth_schema_patches(conn: Connection) -> None:
     _run_sql(conn, "ALTER TABLE app_user ADD COLUMN IF NOT EXISTS scopes JSON DEFAULT '[]'")
     _run_sql(conn, "ALTER TABLE api_token ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP")
     _run_sql(conn, "ALTER TABLE api_token ADD COLUMN IF NOT EXISTS scopes JSON DEFAULT '[]'")
+    _run_sql(
+        conn,
+        """
+        CREATE TABLE IF NOT EXISTS auth_session (
+            id VARCHAR(64) PRIMARY KEY,
+            user_id VARCHAR(64) NOT NULL,
+            created_at TIMESTAMP,
+            expires_at TIMESTAMP,
+            revoked_at TIMESTAMP,
+            client_ip VARCHAR(128) DEFAULT '',
+            user_agent VARCHAR(512) DEFAULT '',
+            last_seen_at TIMESTAMP
+        )
+        """,
+    )
+    _run_sql(conn, "CREATE INDEX IF NOT EXISTS ix_auth_session_user_id ON auth_session (user_id)")
+    _run_sql(conn, "CREATE INDEX IF NOT EXISTS ix_auth_session_expires_at ON auth_session (expires_at)")
+    _run_sql(conn, "CREATE INDEX IF NOT EXISTS ix_auth_session_revoked_at ON auth_session (revoked_at)")
+    _run_sql(
+        conn,
+        "ALTER TABLE auth_session ADD COLUMN IF NOT EXISTS refresh_token_hash VARCHAR(128) DEFAULT ''",
+    )
+    _run_sql(
+        conn,
+        "ALTER TABLE auth_session ADD COLUMN IF NOT EXISTS refresh_expires_at TIMESTAMP",
+    )
+    _run_sql(
+        conn,
+        "CREATE INDEX IF NOT EXISTS ix_auth_session_refresh_token_hash ON auth_session (refresh_token_hash)",
+    )
 
 
 def apply_key_alert_schema_patches(

@@ -97,6 +97,8 @@ class Settings(BaseSettings):
     ne_exec_max_commands: int = 5
     # WebCRT interactive terminal sessions (multi-operator concurrent terminals).
     webcrt_max_sessions: int = 40
+    # Per-user cap (0 = unlimited beyond global max).
+    webcrt_max_sessions_per_user: int = 5
     webcrt_idle_timeout_sec: int = 1800
     webcrt_connect_timeout_sec: int = 90
     webcrt_attach_timeout_sec: int = 60
@@ -126,7 +128,25 @@ class Settings(BaseSettings):
     # Set explicitly only when you want a shared/ops-managed secret.
     auth_secret: str = ""
     auth_secret_file: str = "data/auth/jwt_secret"
-    auth_token_ttl_sec: int = 86400
+    auth_token_ttl_sec: int = 3600
+    # Refresh token lifetime (default 7 days). Used with POST /v1/auth/refresh.
+    auth_refresh_ttl_sec: int = 604800
+    # When true, each login revokes other JWT sessions for that user (single active browser login).
+    auth_single_session: bool = True
+    # Login brute-force protection (in-process; resets on restart).
+    auth_login_max_failures: int = 10
+    auth_login_window_sec: int = 300
+    auth_login_lockout_sec: int = 900
+    auth_password_min_len: int = 8
+    # Idle revoke: if last_seen_at older than this, JWT session is revoked (0 = off).
+    auth_idle_timeout_sec: int = 7200
+    # Browser session cookies (HttpOnly). Bearer header still works for API tokens / scripts.
+    auth_cookie_enabled: bool = True
+    # None = auto (HTTPS / X-Forwarded-Proto); True/False force.
+    auth_cookie_secure: bool | None = None
+    auth_cookie_samesite: str = "lax"
+    # Optional Redis URL for shared login rate-limit (empty = in-process only).
+    auth_redis_url: str = ""
     bootstrap_admin_username: str = "admin"
     bootstrap_admin_password: str = "admin123"
     # Written on first boot for MCP; path relative to cwd / absolute

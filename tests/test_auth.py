@@ -30,11 +30,13 @@ class AuthUnitTests(unittest.TestCase):
         with patch("netx_api.auth_tokens.settings") as st:
             st.auth_secret = "test-secret-key-for-jwt"
             st.auth_token_ttl_sec = 3600
-            tok = issue_access_token(user_id="u1", username="admin", role="admin")
+            tok, jti, ttl = issue_access_token(user_id="u1", username="admin", role="admin")
             payload = decode_access_token(tok)
             self.assertEqual(payload["sub"], "u1")
             self.assertEqual(payload["username"], "admin")
             self.assertEqual(payload["role"], "admin")
+            self.assertEqual(payload["jti"], jti)
+            self.assertEqual(ttl, 3600)
 
 
 class AuthApiTests(unittest.TestCase):
@@ -81,6 +83,10 @@ class AuthApiTests(unittest.TestCase):
         db = self.Session()
         try:
             bootstrap_admin_if_needed(db)
+            # Most tests exercise normal APIs; password-change gate is covered separately.
+            admin = db.query(AppUser).filter(AppUser.username == "admin").one()
+            admin.must_change_password = False
+            db.commit()
         finally:
             db.close()
 
@@ -114,12 +120,17 @@ class AuthApiTests(unittest.TestCase):
         db = self.Session()
         try:
             admin = db.query(AppUser).filter(AppUser.username == "admin").one()
+            admin.must_change_password = True
+            db.commit()
             self.assertTrue(admin.must_change_password)
         finally:
             db.close()
         token = self._login()
         me = self.client.get("/v1/auth/me", headers={"Authorization": f"Bearer {token}"})
         self.assertTrue(me.json()["user"]["must_change_password"])
+        blocked = self.client.get("/v1/probe", headers={"Authorization": f"Bearer {token}"})
+        self.assertEqual(blocked.status_code, 403)
+        self.assertEqual(blocked.json()["detail"], "password_change_required")
         bad = self.client.post(
             "/v1/auth/change-password",
             headers={"Authorization": f"Bearer {token}"},
@@ -134,6 +145,154 @@ class AuthApiTests(unittest.TestCase):
         self.assertEqual(ok.status_code, 200, ok.text)
         me2 = self.client.get("/v1/auth/me", headers={"Authorization": f"Bearer {token}"})
         self.assertFalse(me2.json()["user"]["must_change_password"])
+        probe = self.client.get("/v1/probe", headers={"Authorization": f"Bearer {token}"})
+        self.assertEqual(probe.status_code, 200)
+
+    def test_logout_revokes_jwt(self) -> None:
+        token = self._login()
+        r = self.client.get("/v1/probe", headers={"Authorization": f"Bearer {token}"})
+        self.assertEqual(r.status_code, 200)
+        out = self.client.post("/v1/auth/logout", headers={"Authorization": f"Bearer {token}"})
+        self.assertEqual(out.status_code, 200, out.text)
+        self.assertGreaterEqual(int(out.json().get("revoked") or 0), 1)
+        r2 = self.client.get("/v1/probe", headers={"Authorization": f"Bearer {token}"})
+        self.assertEqual(r2.status_code, 401)
+
+    def test_refresh_rotates_tokens(self) -> None:
+        login = self.client.post("/v1/auth/login", json={"username": "admin", "password": "adminpass"})
+        self.assertEqual(login.status_code, 200, login.text)
+        body = login.json()
+        access = body["access_token"]
+        refresh = body["refresh_token"]
+        self.assertTrue(str(refresh).startswith("nxr_"))
+        # Access works
+        self.assertEqual(
+            self.client.get("/v1/probe", headers={"Authorization": f"Bearer {access}"}).status_code,
+            200,
+        )
+        rotated = self.client.post("/v1/auth/refresh", json={"refresh_token": refresh})
+        self.assertEqual(rotated.status_code, 200, rotated.text)
+        new_access = rotated.json()["access_token"]
+        new_refresh = rotated.json()["refresh_token"]
+        self.assertNotEqual(access, new_access)
+        self.assertNotEqual(refresh, new_refresh)
+        # Old access revoked
+        self.assertEqual(
+            self.client.get("/v1/probe", headers={"Authorization": f"Bearer {access}"}).status_code,
+            401,
+        )
+        # New access works
+        self.assertEqual(
+            self.client.get("/v1/probe", headers={"Authorization": f"Bearer {new_access}"}).status_code,
+            200,
+        )
+        # Old refresh cannot be reused
+        reuse = self.client.post("/v1/auth/refresh", json={"refresh_token": refresh})
+        self.assertEqual(reuse.status_code, 401)
+
+    def test_single_session_login_revokes_others(self) -> None:
+        token = self._login()
+        token2 = self._login()
+        # Default auth_single_session=True: first login is kicked.
+        self.assertEqual(
+            self.client.get("/v1/probe", headers={"Authorization": f"Bearer {token}"}).status_code,
+            401,
+        )
+        self.assertEqual(
+            self.client.get("/v1/probe", headers={"Authorization": f"Bearer {token2}"}).status_code,
+            200,
+        )
+        listed = self.client.get("/v1/auth/sessions", headers={"Authorization": f"Bearer {token2}"})
+        self.assertEqual(listed.status_code, 200, listed.text)
+        self.assertEqual(listed.json()["total"], 1)
+        self.assertTrue(listed.json()["items"][0].get("current"))
+
+    def test_list_and_revoke_sessions(self) -> None:
+        with patch("netx_api.auth_service.settings.auth_single_session", False):
+            token = self._login()
+            listed = self.client.get("/v1/auth/sessions", headers={"Authorization": f"Bearer {token}"})
+            self.assertEqual(listed.status_code, 200, listed.text)
+            items = listed.json()["items"]
+            self.assertGreaterEqual(len(items), 1)
+            self.assertTrue(any(i.get("current") for i in items))
+            # Multi-session mode: second login keeps the first alive.
+            token2 = self._login()
+            listed2 = self.client.get("/v1/auth/sessions", headers={"Authorization": f"Bearer {token2}"})
+            self.assertGreaterEqual(listed2.json()["total"], 2)
+            revoked = self.client.post(
+                "/v1/auth/sessions/revoke-others",
+                headers={"Authorization": f"Bearer {token2}"},
+            )
+            self.assertEqual(revoked.status_code, 200, revoked.text)
+            self.assertGreaterEqual(int(revoked.json().get("revoked") or 0), 1)
+            self.assertEqual(
+                self.client.get("/v1/probe", headers={"Authorization": f"Bearer {token}"}).status_code,
+                401,
+            )
+            self.assertEqual(
+                self.client.get("/v1/probe", headers={"Authorization": f"Bearer {token2}"}).status_code,
+                200,
+            )
+
+    def test_idle_timeout_revokes(self) -> None:
+        from datetime import timedelta
+
+        from netx_api.models import AuthSession
+        from netx_api.timeutil import utcnow_naive
+
+        token = self._login()
+        with patch("netx_api.auth_service.settings.auth_idle_timeout_sec", 60):
+            db = self.Session()
+            try:
+                row = db.query(AuthSession).filter(AuthSession.revoked_at.is_(None)).first()
+                self.assertIsNotNone(row)
+                row.last_seen_at = utcnow_naive() - timedelta(seconds=120)
+                db.commit()
+            finally:
+                db.close()
+            self.assertEqual(
+                self.client.get("/v1/probe", headers={"Authorization": f"Bearer {token}"}).status_code,
+                401,
+            )
+
+    def test_login_sets_auth_cookies(self) -> None:
+        r = self.client.post("/v1/auth/login", json={"username": "admin", "password": "adminpass"})
+        self.assertEqual(r.status_code, 200, r.text)
+        # Starlette TestClient exposes set cookies
+        self.assertIn("netx_at", r.cookies)
+        self.assertIn("netx_rt", r.cookies)
+        me = self.client.get("/v1/auth/me")  # cookie auth
+        self.assertEqual(me.status_code, 200, me.text)
+        self.assertEqual(me.json()["user"]["username"], "admin")
+
+    def test_query_access_token_rejected(self) -> None:
+        token = self._login()
+        # Drop HttpOnly session cookies so only the deprecated query param remains.
+        self.client.cookies.clear()
+        r = self.client.get(f"/v1/probe?access_token={token}")
+        self.assertEqual(r.status_code, 401)
+        # Same token still works via Bearer header.
+        r2 = self.client.get("/v1/probe", headers={"Authorization": f"Bearer {token}"})
+        self.assertEqual(r2.status_code, 200)
+
+    def test_login_lockout(self) -> None:
+        from netx_api.auth_rate_limit import reset_login_rate_limit_for_tests
+
+        reset_login_rate_limit_for_tests()
+        with patch("netx_api.auth_rate_limit.settings.auth_login_max_failures", 3):
+            with patch("netx_api.auth_rate_limit.settings.auth_login_lockout_sec", 120):
+                for _ in range(3):
+                    r = self.client.post(
+                        "/v1/auth/login", json={"username": "admin", "password": "wrong"}
+                    )
+                self.assertIn(r.status_code, (401, 429))
+                locked = self.client.post(
+                    "/v1/auth/login", json={"username": "admin", "password": "wrong"}
+                )
+                self.assertEqual(locked.status_code, 429)
+                detail = locked.json()["detail"]
+                self.assertEqual(detail["error"], "login_locked")
+        reset_login_rate_limit_for_tests()
 
     def test_login_and_me(self) -> None:
         token = self._login()
@@ -167,10 +326,10 @@ class AuthApiTests(unittest.TestCase):
         db = self.Session()
         try:
             admin = db.query(AppUser).filter(AppUser.username == "admin").one()
-            create_user(db, username="alice", password="alice12", role="user", actor=admin)
+            create_user(db, username="alice", password="alice123", role="user", actor=admin)
         finally:
             db.close()
-        token = self._login("alice", "alice12")
+        token = self._login("alice", "alice123")
         r = self.client.post(
             "/v1/users",
             headers={"Authorization": f"Bearer {token}"},
@@ -209,7 +368,7 @@ class AuthApiTests(unittest.TestCase):
         self.client.post(
             "/v1/users",
             headers={"Authorization": f"Bearer {token}"},
-            json={"username": "carol", "password": "carol12", "role": "user"},
+            json={"username": "carol", "password": "carol123", "role": "user"},
         )
         users = self.client.get("/v1/users", headers={"Authorization": f"Bearer {token}"})
         carol_id = next(u["id"] for u in users.json()["items"] if u["username"] == "carol")

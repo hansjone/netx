@@ -32,6 +32,7 @@ class SchemaPatchesTests(unittest.TestCase):
         self.assertIn("must_change_password", user_cols)
         self.assertIn("scopes", token_cols)
         self.assertIn("expires_at", token_cols)
+        self.assertIn("auth_session", insp.get_table_names())
 
     def test_domain_patches_do_not_raise(self) -> None:
         with self.engine.begin() as conn:
@@ -49,6 +50,8 @@ class SchemaPatchesTests(unittest.TestCase):
         files = sorted(p.name for p in versions.glob("*.py") if p.name != "__init__.py")
         self.assertIn("20260802_scopes.py", files)
         self.assertIn("20260802_legacy_schema.py", files)
+        self.assertIn("20260806_auth_session.py", files)
+        self.assertIn("20260806_auth_refresh.py", files)
         text_legacy = (versions / "20260802_legacy_schema.py").read_text(encoding="utf-8")
         self.assertIn('down_revision', text_legacy)
         self.assertIn("20260802_scopes", text_legacy)

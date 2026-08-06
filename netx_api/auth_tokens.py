@@ -81,18 +81,29 @@ def auth_secret() -> str:
     return ensure_auth_secret()
 
 
-def issue_access_token(*, user_id: str, username: str, role: str) -> str:
+def issue_access_token(
+    *,
+    user_id: str,
+    username: str,
+    role: str,
+    jti: str | None = None,
+) -> tuple[str, str, int]:
+    """Return (token, jti, ttl_sec). jti is required for server-side revocation."""
     ttl = max(300, int(settings.auth_token_ttl_sec or 86400))
     now = datetime.now(timezone.utc)
+    sid = str(jti or secrets.token_urlsafe(24)).strip()
+    if not sid:
+        sid = secrets.token_urlsafe(24)
     payload = {
         "sub": str(user_id),
         "username": str(username),
         "role": str(role),
         "typ": "access",
+        "jti": sid,
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(seconds=ttl)).timestamp()),
     }
-    return jwt.encode(payload, auth_secret(), algorithm="HS256")
+    return jwt.encode(payload, auth_secret(), algorithm="HS256"), sid, ttl
 
 
 def decode_access_token(token: str) -> dict[str, Any]:
@@ -100,13 +111,18 @@ def decode_access_token(token: str) -> dict[str, Any]:
         str(token or ""),
         auth_secret(),
         algorithms=["HS256"],
-        options={"require": ["exp", "sub"]},
+        options={"require": ["exp", "sub", "jti"]},
     )
 
 
 def new_api_token_plaintext() -> str:
     """Generate opaque API token (shown once). Prefix helps ops identify netx tokens."""
     return "nxt_" + secrets.token_urlsafe(32)
+
+
+def new_refresh_token_plaintext() -> str:
+    """Opaque refresh token (shown once). Prefix distinguishes from API tokens."""
+    return "nxr_" + secrets.token_urlsafe(32)
 
 
 def hash_api_token(plaintext: str) -> str:

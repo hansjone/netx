@@ -29,10 +29,21 @@ _PUBLIC_EXACT = frozenset(
         "/v1/metrics/json",
         "/favicon.ico",
         "/v1/auth/login",
+        "/v1/auth/refresh",
     }
 )
 _PUBLIC_PREFIXES = (
     "/assets",
+)
+
+# While must_change_password is true, only these authenticated endpoints are allowed.
+_PASSWORD_CHANGE_ALLOW = frozenset(
+    {
+        ("GET", "/v1/auth/me"),
+        ("POST", "/v1/auth/change-password"),
+        ("POST", "/v1/auth/logout"),
+        ("GET", "/v1/auth/sessions"),
+    }
 )
 
 
@@ -92,10 +103,11 @@ class AuthAuditMiddleware(BaseHTTPMiddleware):
         auth = str(request.headers.get("authorization") or "").strip()
         if auth.lower().startswith("bearer "):
             token = auth[7:].strip()
-        # Query access_token: only allow for non-webcrt paths as deprecated fallback;
-        # WebCRT HTTP must use Authorization header (see webcrt_router).
-        if not token and not path.startswith("/v1/webcrt"):
-            token = str(request.query_params.get("access_token") or "").strip()
+        if not token:
+            from .auth_cookies import read_access_cookie
+
+            token = read_access_cookie(request)
+        # Query-string access_token is no longer accepted (leaks via logs/proxies).
 
         db = SessionLocal()
         try:
@@ -112,7 +124,26 @@ class AuthAuditMiddleware(BaseHTTPMiddleware):
                     detail={},
                 )
                 return JSONResponse(status_code=401, content={"detail": "unauthorized"})
-            user, via, scopes, token_id = resolved
+            user, via, scopes, token_id, jti = resolved
+            if bool(getattr(user, "must_change_password", False)):
+                allow_key = (request.method.upper(), path.rstrip("/") if len(path) > 1 else path)
+                if allow_key not in _PASSWORD_CHANGE_ALLOW:
+                    write_audit(
+                        db,
+                        action="auth.password_change_required",
+                        actor_user_id=str(user.id),
+                        actor_username=str(user.username),
+                        method=request.method,
+                        path=path,
+                        status_code=403,
+                        client_ip=_client_ip(request),
+                        user_agent=str(request.headers.get("user-agent") or "")[:512],
+                        detail={"auth_via": via},
+                    )
+                    return JSONResponse(
+                        status_code=403,
+                        content={"detail": "password_change_required"},
+                    )
             need = required_scope_for_request(request.method, path)
             if need and not has_scope(scopes, need):
                 write_audit(
@@ -141,6 +172,7 @@ class AuthAuditMiddleware(BaseHTTPMiddleware):
             request.state.auth_via = via
             request.state.auth_scopes = scopes
             request.state.auth_api_token_id = token_id
+            request.state.auth_session_jti = jti
             actor_id = str(user.id)
             actor_name = str(user.username)
             auth_via = via

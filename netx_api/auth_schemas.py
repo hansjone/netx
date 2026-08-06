@@ -12,12 +12,17 @@ class LoginRequest(BaseModel):
 
 class ChangePasswordRequest(BaseModel):
     old_password: str = Field(min_length=1, max_length=256)
-    new_password: str = Field(min_length=6, max_length=256)
+    new_password: str = Field(min_length=8, max_length=256)
+
+
+class RefreshRequest(BaseModel):
+    # Optional when refresh token is sent via HttpOnly cookie.
+    refresh_token: str = Field(default="", max_length=512)
 
 
 class UserCreateRequest(BaseModel):
     username: str = Field(min_length=2, max_length=64)
-    password: str = Field(min_length=6, max_length=256)
+    password: str = Field(min_length=8, max_length=256)
     role: str = Field(default="user")
     scopes: list[str] | None = None
 
@@ -25,7 +30,7 @@ class UserCreateRequest(BaseModel):
 class UserUpdateRequest(BaseModel):
     is_active: bool | None = None
     role: str | None = None
-    password: str | None = Field(default=None, min_length=6, max_length=256)
+    password: str | None = Field(default=None, min_length=8, max_length=256)
     scopes: list[str] | None = None
 
 

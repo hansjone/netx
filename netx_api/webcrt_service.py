@@ -29,6 +29,7 @@ from .webcrt_session import (
     _webcrt_creds_ready,
     active_session_count,
     close_session,
+    close_sessions_for_user,
     create_session,
     detach_session,
     find_ssh_session_for_ne,
@@ -41,6 +42,7 @@ from .webcrt_session_registry import (
     _reap_sessions,
     _sessions,
     _sessions_lock,
+    session_access_allowed,
 )
 
 __all__ = [
@@ -63,6 +65,7 @@ __all__ = [
     "active_session_count",
     "channel_return",
     "close_session",
+    "close_sessions_for_user",
     "create_session",
     "detach_session",
     "find_ssh_session_for_ne",
@@ -76,6 +79,7 @@ __all__ = [
     "open_netmiko_connection",
     "prepare_bootstrap_output",
     "read_session_log_tail",
+    "session_access_allowed",
     "settings",
     "uses_network_cli_keymap",
     "wait_session_ready",

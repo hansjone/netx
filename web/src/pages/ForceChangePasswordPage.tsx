@@ -16,7 +16,7 @@ export function ForceChangePasswordPage() {
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setError("");
-    if (newPassword.length < 6) {
+    if (newPassword.length < 8) {
       setError(t("auth.passwordTooShort"));
       return;
     }
@@ -77,7 +77,7 @@ export function ForceChangePasswordPage() {
             onChange={(e) => setNewPassword(e.target.value)}
             disabled={busy}
             required
-            minLength={6}
+            minLength={8}
           />
         </label>
         <label className="login-card__label">
@@ -90,7 +90,7 @@ export function ForceChangePasswordPage() {
             onChange={(e) => setConfirm(e.target.value)}
             disabled={busy}
             required
-            minLength={6}
+            minLength={8}
           />
         </label>
         {error ? (

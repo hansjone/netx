@@ -7,14 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import {
-  AUTH_TOKEN_KEY,
-  apiGet,
-  apiPost,
-  clearAuthToken,
-  getAuthToken,
-  setAuthToken,
-} from "../services/api";
+import { apiGet, apiPost, clearAuthToken } from "../services/api";
 
 export type AuthUser = {
   id: string;
@@ -44,25 +37,19 @@ const AuthContext = createContext<AuthState | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
-  const [token, setToken] = useState<string | null>(() => getAuthToken());
+  // token is opaque for UI; cookie session means we only care about user presence.
+  const [token, setToken] = useState<string | null>(null);
   const [user, setUser] = useState<AuthUser | null>(null);
   const [scopes, setScopes] = useState<string[]>([]);
 
   const refreshMe = useCallback(async () => {
-    const tok = getAuthToken();
-    if (!tok) {
-      setToken(null);
-      setUser(null);
-      setScopes([]);
-      return;
-    }
+    clearAuthToken(); // drop any legacy localStorage tokens
     try {
       const data = await apiGet<{ user: AuthUser; scopes?: string[] }>("/v1/auth/me");
-      setToken(tok);
+      setToken("cookie");
       setUser(data.user);
       setScopes(data.scopes || data.user.scopes || []);
     } catch {
-      clearAuthToken();
       setToken(null);
       setUser(null);
       setScopes([]);
@@ -76,40 +63,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     })();
   }, [refreshMe]);
 
-  // Other tabs keep React auth state until they hear localStorage change.
-  // `storage` fires only in *other* documents — used to sync logout/login.
-  useEffect(() => {
-    const onStorage = (ev: StorageEvent) => {
-      if (ev.storageArea && ev.storageArea !== localStorage) return;
-      if (ev.key !== null && ev.key !== AUTH_TOKEN_KEY) return;
-      if (ev.key === null || ev.newValue == null || ev.newValue === "") {
-        setToken(null);
-        setUser(null);
-        setScopes([]);
-        return;
-      }
-      void refreshMe();
-    };
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, [refreshMe]);
-
   const login = useCallback(async (username: string, password: string) => {
-    const data = await apiPost<{ access_token: string; user: AuthUser }>("/v1/auth/login", {
+    const data = await apiPost<{ user: AuthUser }>("/v1/auth/login", {
       username,
       password,
     });
-    setAuthToken(data.access_token);
-    setToken(data.access_token);
+    clearAuthToken();
+    setToken("cookie");
     setUser(data.user);
     setScopes(data.user.scopes || []);
   }, []);
 
   const logout = useCallback(async () => {
     try {
-      if (getAuthToken()) {
-        await apiPost("/v1/auth/logout", {});
-      }
+      await apiPost("/v1/auth/logout", {});
     } catch {
       // ignore
     }

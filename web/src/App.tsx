@@ -54,6 +54,9 @@ const AuditPage = lazy(() => import("./pages/AuditPage").then((m) => ({ default:
 const ApiTokensPage = lazy(() =>
   import("./pages/ApiTokensPage").then((m) => ({ default: m.ApiTokensPage })),
 );
+const SessionsPage = lazy(() =>
+  import("./pages/SessionsPage").then((m) => ({ default: m.SessionsPage })),
+);
 
 /** Preserve query when redirecting legacy /network/webcrt → /webcrt. */
 function NetworkWebcrtRedirect() {
@@ -129,6 +132,7 @@ function ProtectedApp() {
             <Route path="logs" element={<AuditPage />} />
           </Route>
           <Route path="/api-keys" element={<ApiTokensPage />} />
+          <Route path="/sessions" element={<SessionsPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Suspense>

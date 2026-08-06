@@ -167,7 +167,9 @@ class RbacApiTests(unittest.TestCase):
         try:
             bootstrap_admin_if_needed(db)
             admin = db.query(AppUser).filter(AppUser.username == "admin").one()
-            create_user(db, username="alice", password="alice12", role="user", actor=admin)
+            admin.must_change_password = False
+            db.commit()
+            create_user(db, username="alice", password="alice123", role="user", actor=admin)
         finally:
             db.close()
         self.client = TestClient(self.app)
@@ -184,7 +186,7 @@ class RbacApiTests(unittest.TestCase):
         return str(r.json()["access_token"])
 
     def test_user_denied_webcrt_and_sql(self) -> None:
-        token = self._login("alice", "alice12")
+        token = self._login("alice", "alice123")
         h = {"Authorization": f"Bearer {token}"}
         self.assertEqual(self.client.post("/v1/webcrt/sessions", headers=h).status_code, 403)
         self.assertEqual(
@@ -209,7 +211,7 @@ class RbacApiTests(unittest.TestCase):
         self.assertNotEqual(r.status_code, 403)
 
     def test_me_returns_scopes(self) -> None:
-        token = self._login("alice", "alice12")
+        token = self._login("alice", "alice123")
         me = self.client.get("/v1/auth/me", headers={"Authorization": f"Bearer {token}"})
         self.assertEqual(me.status_code, 200)
         scopes = me.json()["scopes"]

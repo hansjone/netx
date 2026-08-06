@@ -61,3 +61,21 @@ class ApiToken(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class AuthSession(Base):
+    """Server-side JWT session (jti). Logout / password change can revoke without waiting for exp."""
+
+    __tablename__ = "auth_session"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # JWT jti
+    user_id: Mapped[str] = mapped_column(String(64), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    client_ip: Mapped[str] = mapped_column(String(128), default="")
+    user_agent: Mapped[str] = mapped_column(String(512), default="")
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Opaque refresh token (hashed); longer-lived than access JWT.
+    refresh_token_hash: Mapped[str] = mapped_column(String(128), default="", index=True)
+    refresh_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)

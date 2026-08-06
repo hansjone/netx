@@ -4,15 +4,17 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, Response
 from sqlalchemy.orm import Session
 
+from .auth_cookies import clear_auth_cookies, read_refresh_cookie, set_auth_cookies
 from .auth_deps import AuthContext, require_admin, require_user
 from .auth_schemas import (
     ApiTokenCreateRequest,
     ApiTokenUpdateRequest,
     ChangePasswordRequest,
     LoginRequest,
+    RefreshRequest,
     UserCreateRequest,
     UserUpdateRequest,
 )
@@ -23,13 +25,22 @@ from .auth_service import (
     create_user,
     list_api_tokens,
     list_audit_logs,
+    list_auth_sessions,
     list_users,
     login_issue_token,
+    refresh_login_tokens,
     revoke_api_token,
+    revoke_auth_session_for_user,
+    revoke_auth_sessions,
     update_api_token,
     update_user,
     user_public,
     write_audit,
+)
+from .auth_rate_limit import (
+    clear_login_failures,
+    login_lock_remaining,
+    register_login_failure,
 )
 from .db import get_db
 
@@ -42,11 +53,45 @@ def _client_meta(request: Request) -> tuple[str, str]:
     return ip, ua
 
 
+def _token_response(response: Response, request: Request, out: dict[str, Any]) -> dict[str, Any]:
+    access = str(out.get("access_token") or "")
+    refresh = str(out.get("refresh_token") or "")
+    if access and refresh:
+        set_auth_cookies(response, access_token=access, refresh_token=refresh, request=request)
+    # Keep tokens in JSON for API clients / scripts; browsers rely on HttpOnly cookies.
+    return out
+
+
 @router.post("/v1/auth/login")
-def api_login(body: LoginRequest, request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
+def api_login(
+    body: LoginRequest,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    from fastapi import HTTPException
+
     ip, ua = _client_meta(request)
+    locked = login_lock_remaining(body.username, ip)
+    if locked > 0:
+        write_audit(
+            db,
+            action="auth.login_locked",
+            actor_username=str(body.username or "").strip(),
+            method="POST",
+            path="/v1/auth/login",
+            status_code=429,
+            client_ip=ip,
+            user_agent=ua,
+            detail={"retry_after_sec": int(locked)},
+        )
+        raise HTTPException(
+            status_code=429,
+            detail={"error": "login_locked", "retry_after_sec": int(locked)},
+        )
     user = authenticate_user(db, body.username, body.password)
     if user is None:
+        remaining = register_login_failure(body.username, ip)
         write_audit(
             db,
             action="auth.login_failed",
@@ -56,12 +101,16 @@ def api_login(body: LoginRequest, request: Request, db: Session = Depends(get_db
             status_code=401,
             client_ip=ip,
             user_agent=ua,
-            detail={},
+            detail={"locked": remaining > 0, "retry_after_sec": int(remaining)},
         )
-        from fastapi import HTTPException
-
+        if remaining > 0:
+            raise HTTPException(
+                status_code=429,
+                detail={"error": "login_locked", "retry_after_sec": int(remaining)},
+            )
         raise HTTPException(status_code=401, detail="invalid_credentials")
-    out = login_issue_token(user)
+    clear_login_failures(body.username, ip)
+    out = login_issue_token(db, user, client_ip=ip, user_agent=ua)
     write_audit(
         db,
         action="auth.login",
@@ -74,16 +123,71 @@ def api_login(body: LoginRequest, request: Request, db: Session = Depends(get_db
         user_agent=ua,
         detail={"role": user.role},
     )
-    return out
+    return _token_response(response, request, out)
+
+
+@router.post("/v1/auth/refresh")
+def api_refresh(
+    body: RefreshRequest,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    from fastapi import HTTPException
+
+    ip, ua = _client_meta(request)
+    refresh = str(body.refresh_token or "").strip() or read_refresh_cookie(request)
+    if not refresh:
+        raise HTTPException(status_code=401, detail="invalid_refresh_token")
+    try:
+        out = refresh_login_tokens(db, refresh_token=refresh, client_ip=ip, user_agent=ua)
+    except Exception:
+        write_audit(
+            db,
+            action="auth.refresh_failed",
+            method="POST",
+            path="/v1/auth/refresh",
+            status_code=401,
+            client_ip=ip,
+            user_agent=ua,
+            detail={},
+        )
+        raise
+    user = out.get("user") or {}
+    write_audit(
+        db,
+        action="auth.refresh",
+        actor_user_id=str(user.get("id") or ""),
+        actor_username=str(user.get("username") or ""),
+        method="POST",
+        path="/v1/auth/refresh",
+        status_code=200,
+        client_ip=ip,
+        user_agent=ua,
+        detail={},
+    )
+    return _token_response(response, request, out)
 
 
 @router.post("/v1/auth/logout")
 def api_logout(
     request: Request,
+    response: Response,
     ctx: Annotated[AuthContext, Depends(require_user)],
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     ip, ua = _client_meta(request)
+    revoked = 0
+    if ctx.auth_via == "jwt" and ctx.session_jti:
+        revoked = revoke_auth_sessions(db, user_id=str(ctx.user.id), only_jti=ctx.session_jti)
+    closed_webcrt = 0
+    try:
+        from .webcrt_session_registry import close_sessions_for_user
+
+        closed_webcrt = close_sessions_for_user(str(ctx.user.id), reason="auth_logout")
+    except Exception:
+        pass
+    clear_auth_cookies(response, request=request)
     write_audit(
         db,
         action="auth.logout",
@@ -94,9 +198,75 @@ def api_logout(
         status_code=200,
         client_ip=ip,
         user_agent=ua,
-        detail={"auth_via": ctx.auth_via},
+        detail={"auth_via": ctx.auth_via, "revoked": revoked, "webcrt_closed": closed_webcrt},
     )
-    return {"ok": True}
+    return {"ok": True, "revoked": revoked, "webcrt_closed": closed_webcrt}
+
+
+@router.get("/v1/auth/sessions")
+def api_list_sessions(ctx: Annotated[AuthContext, Depends(require_user)], db: Session = Depends(get_db)) -> dict[str, Any]:
+    items = list_auth_sessions(db, user_id=str(ctx.user.id), current_jti=ctx.session_jti)
+    return {"items": items, "total": len(items)}
+
+
+@router.delete("/v1/auth/sessions/{session_id}")
+def api_revoke_session(
+    session_id: str,
+    request: Request,
+    ctx: Annotated[AuthContext, Depends(require_user)],
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    from fastapi import HTTPException
+
+    ok = revoke_auth_session_for_user(
+        db,
+        user_id=str(ctx.user.id),
+        session_id=session_id,
+        current_jti=ctx.session_jti,
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="session_not_found")
+    ip, ua = _client_meta(request)
+    write_audit(
+        db,
+        action="auth.session_revoke",
+        actor_user_id=ctx.user.id,
+        actor_username=ctx.user.username,
+        method="DELETE",
+        path=f"/v1/auth/sessions/{session_id}",
+        status_code=200,
+        client_ip=ip,
+        user_agent=ua,
+        detail={"session_id": session_id, "current": session_id == ctx.session_jti},
+    )
+    return {"ok": True, "revoked": True, "session_id": session_id}
+
+
+@router.post("/v1/auth/sessions/revoke-others")
+def api_revoke_other_sessions(
+    request: Request,
+    ctx: Annotated[AuthContext, Depends(require_user)],
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    if not ctx.session_jti:
+        # API-token auth has no JWT session to keep.
+        n = revoke_auth_sessions(db, user_id=str(ctx.user.id))
+    else:
+        n = revoke_auth_sessions(db, user_id=str(ctx.user.id), except_jti=ctx.session_jti)
+    ip, ua = _client_meta(request)
+    write_audit(
+        db,
+        action="auth.session_revoke_others",
+        actor_user_id=ctx.user.id,
+        actor_username=ctx.user.username,
+        method="POST",
+        path="/v1/auth/sessions/revoke-others",
+        status_code=200,
+        client_ip=ip,
+        user_agent=ua,
+        detail={"revoked": n},
+    )
+    return {"ok": True, "revoked": n}
 
 
 @router.get("/v1/auth/me")
@@ -118,7 +288,13 @@ def api_change_password(
     ctx: Annotated[AuthContext, Depends(require_user)],
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    change_password(db, user=ctx.user, old_password=body.old_password, new_password=body.new_password)
+    change_password(
+        db,
+        user=ctx.user,
+        old_password=body.old_password,
+        new_password=body.new_password,
+        keep_jti=ctx.session_jti or None,
+    )
     ip, ua = _client_meta(request)
     write_audit(
         db,

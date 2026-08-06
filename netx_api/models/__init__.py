@@ -8,7 +8,7 @@ from .alarms import (
     ImportErrorRow,
     ImportJob,
 )
-from .auth import ApiToken, AppUser, AuditLog
+from .auth import ApiToken, AppUser, AuditLog, AuthSession
 from .config_sync import (
     ConfigSyncCycle,
     ConfigSyncPolicy,
@@ -93,6 +93,7 @@ __all__ = [
     "AppUser",
     "AuditLog",
     "ApiToken",
+    "AuthSession",
     "ConfigSyncPolicy",
     "ConfigSyncCycle",
     "ConfigSyncTask",

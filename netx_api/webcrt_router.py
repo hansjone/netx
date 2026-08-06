@@ -26,6 +26,7 @@ from .webcrt_service import (
     list_sessions,
     mark_attached,
     read_session_log_tail,
+    session_access_allowed,
     wait_session_ready,
     _decode_bytes,
     _encode_text,
@@ -134,8 +135,9 @@ def _client_label(request: Request | None = None, websocket: WebSocket | None = 
 
 
 @router.get("/sessions")
-def api_list_sessions() -> dict[str, Any]:
-    return list_sessions()
+def api_list_sessions(ctx: AuthContext = Depends(require_user)) -> dict[str, Any]:
+    is_admin = str(ctx.user.role or "") == "admin"
+    return list_sessions(for_user_id=str(ctx.user.id), admin=is_admin)
 
 
 @router.get("/meta/device-types")
@@ -150,6 +152,7 @@ def api_create_session(
     body: WebcrtSessionCreate,
     request: Request,
     db: Session = Depends(get_db),
+    ctx: AuthContext = Depends(require_user),
 ) -> dict[str, Any]:
     mid = str(body.ne_id or "").strip()
     uid = str(body.ume_ne_id or "").strip()
@@ -168,6 +171,8 @@ def api_create_session(
         async_connect=bool(body.async_connect),
         username_override=body.username,
         password_override=body.password,
+        owner_user_id=str(ctx.user.id),
+        owner_username=str(ctx.user.username),
     )
 
 
@@ -176,6 +181,7 @@ def api_quick_connect(
     body: WebcrtQuickConnectBody,
     request: Request,
     db: Session = Depends(get_db),
+    ctx: AuthContext = Depends(require_user),
 ) -> dict[str, Any]:
     from .ne_service import upsert_webcrt_session_host
 
@@ -217,6 +223,8 @@ def api_quick_connect(
             async_connect=async_connect,
             username_override=user_override,
             password_override=pwd_override,
+            owner_user_id=str(ctx.user.id),
+            owner_username=str(ctx.user.username),
         )
     except HTTPException as exc:
         # NE row already exists; return it so the UI retries in place (no duplicate hosts).
@@ -241,7 +249,16 @@ def api_quick_connect(
 
 
 @router.delete("/sessions/{session_id}")
-def api_close_session(session_id: str, request: Request) -> dict[str, Any]:
+def api_close_session(
+    session_id: str,
+    request: Request,
+    ctx: AuthContext = Depends(require_user),
+) -> dict[str, Any]:
+    sess = get_session(session_id)
+    if sess is not None:
+        is_admin = str(ctx.user.role or "") == "admin"
+        if not session_access_allowed(sess, user_id=str(ctx.user.id), is_admin=is_admin):
+            raise HTTPException(status_code=403, detail="webcrt_session_forbidden")
     return close_session(session_id, reason="client_delete", client=_client_label(request=request))
 
 
@@ -359,6 +376,8 @@ async def api_sftp_upload(
 
 @router.websocket("/sessions/{session_id}/ws")
 async def websocket_session(websocket: WebSocket, session_id: str) -> None:
+    actor_user_id = ""
+    actor_is_admin = False
     if bool(settings.auth_enabled):
         # Prefer one-time ws_ticket (query). Bearer header also accepted (non-browser clients).
         # Long-lived access_token in query is rejected.
@@ -368,6 +387,8 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
             if info is None or not has_scope(info.scopes, SCOPE_WEBCRT):
                 await websocket.close(code=4403 if info is not None else 4401)
                 return
+            actor_user_id = str(info.user_id)
+            actor_is_admin = has_scope(info.scopes, "admin:users")
         else:
             if str(websocket.query_params.get("access_token") or "").strip():
                 await websocket.close(code=4401)
@@ -384,10 +405,21 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
             if resolved is None:
                 await websocket.close(code=4401)
                 return
-            _user, _via, scopes, _tid = resolved
+            user, _via, scopes, _tid, _jti = resolved
             if not has_scope(scopes, SCOPE_WEBCRT):
                 await websocket.close(code=4403)
                 return
+            actor_user_id = str(user.id)
+            actor_is_admin = str(user.role or "") == "admin" or has_scope(scopes, "admin:users")
+
+    # Ownership check before accept when session already exists.
+    existing = get_session(session_id)
+    if existing is not None and bool(settings.auth_enabled):
+        if not session_access_allowed(
+            existing, user_id=actor_user_id, is_admin=actor_is_admin
+        ):
+            await websocket.close(code=4403)
+            return
 
     await websocket.accept()
     attach_gen = 0
@@ -396,6 +428,13 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
     except HTTPException as exc:
         await websocket.send_json({"type": "status", "state": "error", "message": str(exc.detail)})
         await websocket.close(code=4404 if exc.status_code == 404 else 4409)
+        return
+
+    if bool(settings.auth_enabled) and not session_access_allowed(
+        sess, user_id=actor_user_id, is_admin=actor_is_admin
+    ):
+        await websocket.send_json({"type": "status", "state": "error", "message": "forbidden"})
+        await websocket.close(code=4403)
         return
 
     await websocket.send_json(

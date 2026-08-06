@@ -125,6 +125,37 @@ def active_session_count() -> int:
         return sum(1 for s in _sessions.values() if not s.closed)
 
 
+def active_session_count_for_user(user_id: str) -> int:
+    uid = str(user_id or "").strip()
+    if not uid:
+        return 0
+    with _sessions_lock:
+        return sum(
+            1
+            for s in _sessions.values()
+            if (not s.closed) and str(s.owner_user_id or "").strip() == uid
+        )
+
+
+def close_sessions_for_user(user_id: str, *, reason: str = "owner_logout") -> int:
+    """Close all WebCRT sessions owned by user_id. Returns count closed."""
+    uid = str(user_id or "").strip()
+    if not uid:
+        return 0
+    with _sessions_lock:
+        ids = [
+            sid
+            for sid, s in _sessions.items()
+            if (not s.closed) and str(s.owner_user_id or "").strip() == uid
+        ]
+    closed = 0
+    for sid in ids:
+        out = close_session(sid, reason=reason, client="auth_logout")
+        if out.get("closed"):
+            closed += 1
+    return closed
+
+
 def get_session(session_id: str) -> WebcrtSession | None:
     with _sessions_lock:
         sess = _sessions.get(session_id)
@@ -374,6 +405,8 @@ def create_session(
     async_connect: bool = True,
     username_override: str | None = None,
     password_override: str | None = None,
+    owner_user_id: str = "",
+    owner_username: str = "",
 ) -> dict[str, Any]:
     from .cli_resolve import resolve_cli_target
 
@@ -381,6 +414,10 @@ def create_session(
     max_sessions = max(1, int(settings.webcrt_max_sessions or 20))
     if active_session_count() >= max_sessions:
         raise HTTPException(status_code=429, detail="webcrt_session_limit")
+    owner_id = str(owner_user_id or "").strip()
+    per_user = int(getattr(settings, "webcrt_max_sessions_per_user", 5) or 0)
+    if owner_id and per_user > 0 and active_session_count_for_user(owner_id) >= per_user:
+        raise HTTPException(status_code=429, detail="webcrt_user_session_limit")
 
     mid = str(ne_id or "").strip()
     uid = str(ume_ne_id or "").strip()
@@ -425,6 +462,7 @@ def create_session(
     else:
         ka = max(0, min(600, int(keepalive_sec)))
 
+    owner_name = str(owner_username or "").strip()
     sess = WebcrtSession(
         session_id=session_id,
         ne_id=target_id,
@@ -438,6 +476,8 @@ def create_session(
         cli_keymap=cli_keymap,
         encoding=enc,
         keepalive_sec=ka,
+        owner_user_id=owner_id,
+        owner_username=owner_name,
         state="connecting",
         post_login_commands=list(post_login_commands or [])[:20],
     )
@@ -497,7 +537,24 @@ def create_session(
         "ws_path": f"/v1/webcrt/sessions/{session_id}/ws",
         "cli_hop": bool(sess.cli_hop_guard),
         "sftp_ready": bool(sess.sftp_ready),
+        "owner_user_id": sess.owner_user_id,
+        "owner_username": sess.owner_username,
     }
+
+
+def session_access_allowed(
+    sess: WebcrtSession,
+    *,
+    user_id: str,
+    is_admin: bool = False,
+) -> bool:
+    """Owner or admin may attach/close. Unbound sessions (empty owner) stay open for lab/tests."""
+    owner = str(sess.owner_user_id or "").strip()
+    if not owner:
+        return True
+    if is_admin:
+        return True
+    return owner == str(user_id or "").strip()
 
 
 def mark_attached(session_id: str) -> tuple[WebcrtSession, int]:
@@ -595,11 +652,20 @@ def close_all_sessions(*, reason: str = "shutdown") -> int:
     return closed
 
 
-def list_sessions() -> dict[str, Any]:
+def list_sessions(
+    *,
+    for_user_id: str | None = None,
+    admin: bool = False,
+) -> dict[str, Any]:
+    """List active sessions. Non-admin callers only see their own owned sessions."""
+    viewer = str(for_user_id or "").strip()
     with _sessions_lock:
         items = []
         for s in _sessions.values():
             if s.closed:
+                continue
+            owner = str(s.owner_user_id or "").strip()
+            if viewer and not admin and owner and owner != viewer:
                 continue
             state = str(s.state or "unknown")
             attached = bool(s.attached)
@@ -643,6 +709,8 @@ def list_sessions() -> dict[str, Any]:
                         if s.connect_finished_at
                         else None
                     ),
+                    "owner_user_id": s.owner_user_id,
+                    "owner_username": s.owner_username,
                 }
             )
     return {

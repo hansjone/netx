@@ -18,9 +18,14 @@ from .auth_scopes import (
     effective_user_scopes,
     normalize_scopes,
 )
-from .auth_tokens import hash_api_token, issue_access_token, new_api_token_plaintext
+from .auth_tokens import (
+    hash_api_token,
+    issue_access_token,
+    new_api_token_plaintext,
+    new_refresh_token_plaintext,
+)
 from .config import settings
-from .models import ApiToken, AppUser, AuditLog
+from .models import ApiToken, AppUser, AuditLog, AuthSession
 from .timeutil import utcnow_naive
 
 _log = logging.getLogger("netx.auth")
@@ -33,12 +38,24 @@ _SECRET_KEYS = frozenset(
         "hop_password",
         "enable_secret",
         "access_token",
+        "refresh_token",
         "token",
         "authorization",
         "secret",
         "credential_secret_key",
     }
 )
+
+
+def _password_min_len() -> int:
+    return max(8, int(getattr(settings, "auth_password_min_len", 8) or 8))
+
+
+def _require_password_strength(pwd: str) -> str:
+    raw = str(pwd or "")
+    if len(raw) < _password_min_len():
+        raise HTTPException(status_code=400, detail="password_too_short")
+    return raw
 
 
 def user_public(user: AppUser) -> dict[str, Any]:
@@ -256,13 +273,199 @@ def authenticate_user(db: Session, username: str, password: str) -> AppUser | No
     return user
 
 
-def login_issue_token(user: AppUser) -> dict[str, Any]:
-    token = issue_access_token(user_id=user.id, username=user.username, role=user.role)
+def revoke_auth_sessions(
+    db: Session,
+    *,
+    user_id: str,
+    except_jti: str | None = None,
+    only_jti: str | None = None,
+) -> int:
+    """Revoke JWT sessions. Returns count newly revoked."""
+    now = utcnow_naive()
+    q = db.query(AuthSession).filter(
+        AuthSession.user_id == str(user_id),
+        AuthSession.revoked_at.is_(None),
+    )
+    if only_jti:
+        q = q.filter(AuthSession.id == str(only_jti))
+    if except_jti:
+        q = q.filter(AuthSession.id != str(except_jti))
+    rows = q.all()
+    for row in rows:
+        row.revoked_at = now
+    if rows:
+        db.commit()
+    return len(rows)
+
+
+def get_auth_session(db: Session, jti: str) -> AuthSession | None:
+    sid = str(jti or "").strip()
+    if not sid:
+        return None
+    row = db.query(AuthSession).filter(AuthSession.id == sid).first()
+    if row is None:
+        return None
+    if row.revoked_at is not None:
+        return None
+    now = utcnow_naive()
+    exp = row.expires_at
+    if exp is not None and exp < now:
+        return None
+    idle = max(0, int(getattr(settings, "auth_idle_timeout_sec", 7200) or 0))
+    if idle > 0:
+        seen = row.last_seen_at or row.created_at
+        if seen is not None and (now - seen).total_seconds() > idle:
+            row.revoked_at = now
+            try:
+                db.commit()
+            except Exception:
+                db.rollback()
+            return None
+    return row
+
+
+def touch_auth_session(db: Session, jti: str) -> None:
+    row = db.query(AuthSession).filter(AuthSession.id == str(jti)).first()
+    if row is None or row.revoked_at is not None:
+        return
+    row.last_seen_at = utcnow_naive()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+
+
+def list_auth_sessions(db: Session, *, user_id: str, current_jti: str = "") -> list[dict[str, Any]]:
+    now = utcnow_naive()
+    rows = (
+        db.query(AuthSession)
+        .filter(AuthSession.user_id == str(user_id), AuthSession.revoked_at.is_(None))
+        .order_by(AuthSession.created_at.desc())
+        .limit(100)
+        .all()
+    )
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if row.expires_at is not None and row.expires_at < now:
+            continue
+        refresh_alive = bool(row.refresh_expires_at and row.refresh_expires_at >= now)
+        access_alive = bool(row.expires_at and row.expires_at >= now)
+        if not access_alive and not refresh_alive:
+            continue
+        out.append(
+            {
+                "id": row.id,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+                "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+                "refresh_expires_at": row.refresh_expires_at.isoformat() if row.refresh_expires_at else None,
+                "last_seen_at": row.last_seen_at.isoformat() if row.last_seen_at else None,
+                "client_ip": row.client_ip or "",
+                "user_agent": (row.user_agent or "")[:200],
+                "current": bool(current_jti) and row.id == str(current_jti),
+            }
+        )
+    return out
+
+
+def revoke_auth_session_for_user(
+    db: Session,
+    *,
+    user_id: str,
+    session_id: str,
+    current_jti: str = "",
+) -> bool:
+    """Revoke one session owned by user. Returns True if newly revoked."""
+    sid = str(session_id or "").strip()
+    if not sid:
+        return False
+    row = (
+        db.query(AuthSession)
+        .filter(
+            AuthSession.id == sid,
+            AuthSession.user_id == str(user_id),
+            AuthSession.revoked_at.is_(None),
+        )
+        .first()
+    )
+    if row is None:
+        return False
+    row.revoked_at = utcnow_naive()
+    db.commit()
+    return True
+
+
+def login_issue_token(
+    db: Session,
+    user: AppUser,
+    *,
+    client_ip: str = "",
+    user_agent: str = "",
+) -> dict[str, Any]:
+    token, jti, ttl = issue_access_token(
+        user_id=user.id, username=user.username, role=user.role
+    )
+    if bool(getattr(settings, "auth_single_session", False)):
+        revoke_auth_sessions(db, user_id=str(user.id), except_jti=jti)
+    refresh_ttl = max(3600, int(getattr(settings, "auth_refresh_ttl_sec", 604800) or 604800))
+    refresh_plain = new_refresh_token_plaintext()
+    now = utcnow_naive()
+    db.add(
+        AuthSession(
+            id=jti,
+            user_id=str(user.id),
+            created_at=now,
+            expires_at=now + timedelta(seconds=ttl),
+            client_ip=str(client_ip or "")[:128],
+            user_agent=str(user_agent or "")[:512],
+            last_seen_at=now,
+            refresh_token_hash=hash_api_token(refresh_plain),
+            refresh_expires_at=now + timedelta(seconds=refresh_ttl),
+        )
+    )
+    db.commit()
     return {
         "access_token": token,
+        "refresh_token": refresh_plain,
         "token_type": "bearer",
+        "expires_in": ttl,
+        "refresh_expires_in": refresh_ttl,
         "user": user_public(user),
     }
+
+
+def refresh_login_tokens(
+    db: Session,
+    *,
+    refresh_token: str,
+    client_ip: str = "",
+    user_agent: str = "",
+) -> dict[str, Any]:
+    """Rotate refresh token and mint a new access JWT (old session revoked)."""
+    raw = str(refresh_token or "").strip()
+    if not raw.startswith("nxr_"):
+        raise HTTPException(status_code=401, detail="invalid_refresh_token")
+    th = hash_api_token(raw)
+    now = utcnow_naive()
+    row = (
+        db.query(AuthSession)
+        .filter(AuthSession.refresh_token_hash == th, AuthSession.revoked_at.is_(None))
+        .first()
+    )
+    if row is None:
+        raise HTTPException(status_code=401, detail="invalid_refresh_token")
+    refresh_exp = row.refresh_expires_at
+    if refresh_exp is None or refresh_exp < now:
+        row.revoked_at = now
+        db.commit()
+        raise HTTPException(status_code=401, detail="refresh_token_expired")
+    user = get_user_by_id(db, str(row.user_id))
+    if user is None or not user.is_active:
+        row.revoked_at = now
+        db.commit()
+        raise HTTPException(status_code=401, detail="invalid_refresh_token")
+    row.revoked_at = now
+    db.commit()
+    return login_issue_token(db, user, client_ip=client_ip, user_agent=user_agent)
 
 
 def list_users(db: Session) -> list[dict[str, Any]]:
@@ -282,9 +485,7 @@ def create_user(
     name = str(username or "").strip()
     if not _USERNAME_RE.match(name):
         raise HTTPException(status_code=400, detail="invalid_username")
-    pwd = str(password or "")
-    if len(pwd) < 6:
-        raise HTTPException(status_code=400, detail="password_too_short")
+    pwd = _require_password_strength(password)
     role_n = str(role or "user").strip().lower()
     if role_n not in ("admin", "user"):
         raise HTTPException(status_code=400, detail="invalid_role")
@@ -327,29 +528,38 @@ def update_user(
         if user.id == actor.id and role_n != "admin":
             raise HTTPException(status_code=400, detail="cannot_demote_self")
         user.role = role_n
+    revoke_all = False
     if is_active is not None:
         user.is_active = bool(is_active)
+        if not user.is_active:
+            revoke_all = True
     if password is not None:
-        pwd = str(password)
-        if len(pwd) < 6:
-            raise HTTPException(status_code=400, detail="password_too_short")
+        pwd = _require_password_strength(password)
         user.password_hash = hash_password(pwd)
         user.must_change_password = True
+        revoke_all = True
     if scopes is not None:
         user.scopes = normalize_scopes(scopes)
     user.updated_at = utcnow_naive()
     db.commit()
     db.refresh(user)
+    if revoke_all:
+        revoke_auth_sessions(db, user_id=str(user.id))
     return user
 
 
-def change_password(db: Session, *, user: AppUser, old_password: str, new_password: str) -> None:
+def change_password(
+    db: Session,
+    *,
+    user: AppUser,
+    old_password: str,
+    new_password: str,
+    keep_jti: str | None = None,
+) -> None:
     row = get_user_by_id(db, str(user.id)) or user
     if not verify_password(old_password, row.password_hash):
         raise HTTPException(status_code=400, detail="old_password_incorrect")
-    pwd = str(new_password or "")
-    if len(pwd) < 6:
-        raise HTTPException(status_code=400, detail="password_too_short")
+    pwd = _require_password_strength(new_password)
     default_pwd = str(settings.bootstrap_admin_password or "admin123").strip() or "admin123"
     if pwd == default_pwd or pwd == old_password:
         raise HTTPException(status_code=400, detail="password_must_differ_from_default")
@@ -357,6 +567,8 @@ def change_password(db: Session, *, user: AppUser, old_password: str, new_passwo
     row.must_change_password = False
     row.updated_at = utcnow_naive()
     db.commit()
+    # Drop other browser sessions; keep current jti so force-change flow can continue.
+    revoke_auth_sessions(db, user_id=str(row.id), except_jti=keep_jti)
 
 
 def create_api_token(

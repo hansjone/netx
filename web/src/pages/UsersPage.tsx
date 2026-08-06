@@ -83,7 +83,7 @@ export function UsersPage() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
-              minLength={6}
+              minLength={8}
             />
             <select value={role} onChange={(e) => setRole(e.target.value)}>
               <option value="user">{t("auth.roleUser")}</option>
@@ -155,7 +155,7 @@ export function UsersPage() {
                           />
                           <button
                             type="button"
-                            disabled={!resetPwd[u.id] || resetPwd[u.id].length < 6}
+                            disabled={!resetPwd[u.id] || resetPwd[u.id].length < 8}
                             onClick={() => {
                               const pwd = resetPwd[u.id];
                               patchMut.mutate({ id: u.id, body: { password: pwd } });

@@ -43,3 +43,5 @@ If Alembic history was never stamped and you prefer to mark current without re-r
 |----------|---------|
 | `20260802_scopes` | `app_user.scopes` / `api_token.scopes` |
 | `20260802_legacy` | Shared brownfield patches (alarms, inventory, managed_ne, topology, port traffic, key-alert, …) |
+| `20260806_auth_session` | Revocable JWT login sessions (`auth_session`) |
+| `20260806_auth_refresh` | Refresh token columns on `auth_session` |
