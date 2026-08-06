@@ -38,7 +38,12 @@ from netx_api.ume_sync_service import (
     sync_inventory_full,
     sync_topology_full,
 )
-from netx_api.ume_sync_topology import extract_me_uuid, extract_ptp
+from netx_api.ume_sync_topology import (
+    extract_me_uuid,
+    extract_ptp,
+    extract_topo_object_uuid,
+    _node_id_from_row,
+)
 from fastapi import HTTPException
 
 
@@ -1108,6 +1113,73 @@ class UmeTopologySyncTests(unittest.TestCase):
             extract_me_uuid("TOPO_NODE_ME7e8ac1c7-9d34-42d3-adfb-b1031e7c145a"),
             "7e8ac1c7-9d34-42d3-adfb-b1031e7c145a",
         )
+
+    def test_onsite_fdn_name_without_node_id(self):
+        """Live UME often omits nodeId; name is MD=...;ME=<uuid> / SBN=<uuid>."""
+        me_name = "MD=ZTE/UME(BN);ME=0ab0b408-0910-483e-94ca-c3dde489d848"
+        sbn_name = "MD=ZTE/UME(BN);SBN=47173499-c8bb-4a51-bef3-aea04ecf5c4c"
+        self.assertEqual(extract_me_uuid(me_name), "0ab0b408-0910-483e-94ca-c3dde489d848")
+        self.assertEqual(extract_me_uuid(sbn_name), "")
+        self.assertEqual(extract_topo_object_uuid(me_name), "0ab0b408-0910-483e-94ca-c3dde489d848")
+        self.assertEqual(extract_topo_object_uuid(sbn_name), "47173499-c8bb-4a51-bef3-aea04ecf5c4c")
+        row = {
+            "xPos": -2082,
+            "parentNode": sbn_name,
+            "owner": "ZTE",
+            "yPos": -1521,
+            "userLabel": "KND-RAEA-EN1-Z20HS",
+            "name": me_name,
+            "nodeType": "TOPO_NODE_ME",
+        }
+        self.assertEqual(_node_id_from_row(row), "0ab0b408-0910-483e-94ca-c3dde489d848")
+
+    def test_sync_topology_onsite_fdn_payload(self):
+        class _Diag:
+            latency_ms = 1
+
+        me_uuid = "0ab0b408-0910-483e-94ca-c3dde489d848"
+        sbn_uuid = "47173499-c8bb-4a51-bef3-aea04ecf5c4c"
+
+        class _C:
+            def get_topo_nodes(self):
+                return (
+                    [
+                        {
+                            "name": f"MD=ZTE/UME(BN);SBN={sbn_uuid}",
+                            "nodeType": "TOPO_NODE_SBN",
+                            "owner": "ZTE",
+                            "userLabel": "subnet",
+                            "xPos": 1,
+                            "yPos": 2,
+                            "parentNode": "topLevel",
+                        },
+                        {
+                            "xPos": -2082,
+                            "parentNode": f"MD=ZTE/UME(BN);SBN={sbn_uuid}",
+                            "owner": "ZTE",
+                            "yPos": -1521,
+                            "userLabel": "KND-RAEA-EN1-Z20HS",
+                            "name": f"MD=ZTE/UME(BN);ME={me_uuid}",
+                            "nodeType": "TOPO_NODE_ME",
+                        },
+                    ],
+                    _Diag(),
+                )
+
+            def get_topological_links(self):
+                return ([], _Diag())
+
+        job = sync_topology_full(self.db, _C(), trigger_mode="manual")
+        self.assertEqual(job.status, "done")
+        self.assertEqual(job.inserted_count, 2)
+        sbn = self.db.get(UmeTopoNode, sbn_uuid)
+        me = self.db.get(UmeTopoNode, me_uuid)
+        self.assertIsNotNone(sbn)
+        self.assertIsNotNone(me)
+        self.assertEqual(me.ume_ne_id, me_uuid)
+        self.assertEqual(me.parent_node, sbn_uuid)
+        self.assertEqual(me.x_pos, -2082)
+        self.assertEqual(me.user_label, "KND-RAEA-EN1-Z20HS")
 
     def test_sync_topology_upsert_and_reconcile(self):
         class _Diag:

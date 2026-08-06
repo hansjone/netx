@@ -26,18 +26,34 @@ _TOPOLOGY_SYNC_LOCK = threading.Lock()
 _UUID_RE = re.compile(
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 )
+# Onsite FDN: MD=ZTE/UME(BN);ME=0ab0b408-... or ;SBN=47173499-...
+_ME_EQ_RE = re.compile(
+    r"(?:^|[;,/])ME=([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})",
+    re.IGNORECASE,
+)
+_SBN_EQ_RE = re.compile(
+    r"(?:^|[;,/])SBN=([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})",
+    re.IGNORECASE,
+)
 _ME_BRACE_RE = re.compile(
     r"ME\{([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\}",
+    re.IGNORECASE,
+)
+_SBN_BRACE_RE = re.compile(
+    r"SBN\{([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\}",
     re.IGNORECASE,
 )
 _PTP_RE = re.compile(r"PTP=\{([^}]*)\}", re.IGNORECASE)
 
 
 def extract_me_uuid(text: str) -> str:
-    """Extract managed-element uuid from TP ref or TOPO_NODE_ME* name."""
+    """Extract managed-element uuid from FDN / TP ref / TOPO_NODE_ME* name."""
     s = str(text or "").strip()
     if not s:
         return ""
+    m = _ME_EQ_RE.search(s)
+    if m:
+        return m.group(1)
     m = _ME_BRACE_RE.search(s)
     if m:
         return m.group(1)
@@ -48,6 +64,26 @@ def extract_me_uuid(text: str) -> str:
         m2 = _UUID_RE.search(rest)
         if m2:
             return m2.group(0)
+    return ""
+
+
+def extract_topo_object_uuid(text: str) -> str:
+    """Extract ME/SBN uuid from onsite FDN name (preferred stable node_id)."""
+    s = str(text or "").strip()
+    if not s:
+        return ""
+    for cre in (_ME_EQ_RE, _SBN_EQ_RE, _ME_BRACE_RE, _SBN_BRACE_RE):
+        m = cre.search(s)
+        if m:
+            return m.group(1)
+    low = s.upper()
+    for prefix in ("TOPO_NODE_ME", "TOPO_NODE_SBN"):
+        if prefix in low:
+            idx = low.find(prefix)
+            rest = s[idx + len(prefix) :]
+            m2 = _UUID_RE.search(rest)
+            if m2:
+                return m2.group(0)
     m3 = _UUID_RE.search(s)
     return m3.group(0) if m3 else ""
 
@@ -86,17 +122,27 @@ def _link_id_from_row(row: dict[str, Any]) -> str:
     name = _s(_pick(row, "name"))
     if not name:
         return ""
+    # Prefer endpoint ME uuids embedded in TL name when linkId is absent.
+    obj = extract_topo_object_uuid(name)
+    if obj:
+        # Keep uniqueness for nameless links by hashing full name but avoid bare name: when possible
+        digest = hashlib.sha1(name.encode("utf-8", errors="replace")).hexdigest()[:40]
+        return f"tl:{digest}"[:128]
     digest = hashlib.sha1(name.encode("utf-8", errors="replace")).hexdigest()[:40]
     return f"name:{digest}"[:128]
 
 
 def _node_id_from_row(row: dict[str, Any]) -> str:
+    """Stable PK: nodeId if present, else ME=/SBN= uuid from onsite FDN ``name``."""
     nid = _s(_pick(row, "nodeId", "node-id", "node_id", "id"))
     if nid:
         return nid[:128]
     name = _s(_pick(row, "name"))
     if not name:
         return ""
+    obj = extract_topo_object_uuid(name)
+    if obj:
+        return obj[:128]
     digest = hashlib.sha1(name.encode("utf-8", errors="replace")).hexdigest()[:40]
     return f"name:{digest}"[:128]
 
@@ -105,7 +151,16 @@ def _ume_ne_id_for_topo_node(*, node_type: str, name: str) -> str:
     nt = str(node_type or "").strip().upper()
     if nt != "TOPO_NODE_ME":
         return ""
-    return extract_me_uuid(name)
+    return extract_me_uuid(name) or extract_topo_object_uuid(name)
+
+
+def _normalize_parent_node(raw: str) -> str:
+    """Store parent as ME/SBN uuid when parentNode is an onsite FDN string."""
+    s = _s(raw)
+    if not s:
+        return ""
+    obj = extract_topo_object_uuid(s)
+    return (obj or s)[:512]
 
 
 def _stale_running_sec() -> int:
@@ -263,7 +318,9 @@ def _upsert_topo_node(work: Session, node_id: str, row: dict[str, Any], *, now) 
         existing.node_type = node_type[:64]
         existing.user_label = _s(_pick(row, "userLabel", "user-label", "user_label"))[:512]
         existing.owner = _s(_pick(row, "owner"))[:64]
-        existing.parent_node = _s(_pick(row, "parentNode", "parent-node", "parent_node"))[:512]
+        existing.parent_node = _normalize_parent_node(
+            _s(_pick(row, "parentNode", "parent-node", "parent_node"))
+        )
         existing.x_pos = _as_optional_int(_pick(row, "xPos", "x-pos", "x_pos"))
         existing.y_pos = _as_optional_int(_pick(row, "yPos", "y-pos", "y_pos"))
         existing.ume_ne_id = _ume_ne_id_for_topo_node(node_type=node_type, name=name)[:128]
