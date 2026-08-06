@@ -171,3 +171,45 @@ class UmeTokenCache(Base):
     lock_owner: Mapped[str] = mapped_column(String(128), default="", index=True)
     lock_expires_at_epoch_s: Mapped[int] = mapped_column(Integer, default=0, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
+
+
+class UmeTopoNode(Base):
+    """UME TopoNodes snapshot (coordinates / subnet tree). Phase-1 dock only."""
+
+    __tablename__ = "ume_topo_node"
+
+    node_id: Mapped[str] = mapped_column(String(128), primary_key=True, comment="UME nodeId")
+    name: Mapped[str] = mapped_column(String(512), default="", index=True)
+    node_type: Mapped[str] = mapped_column(String(64), default="", index=True, comment="TOPO_NODE_ME|TOPO_NODE_SBN")
+    user_label: Mapped[str] = mapped_column(String(512), default="", index=True)
+    owner: Mapped[str] = mapped_column(String(64), default="")
+    parent_node: Mapped[str] = mapped_column(String(512), default="", index=True)
+    x_pos: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    y_pos: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ume_ne_id: Mapped[str] = mapped_column(String(128), default="", index=True, comment="ME uuid when nodeType=ME")
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
+    raw_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class UmeTopoLink(Base):
+    """UME TopologicalLinks snapshot. Phase-1 dock only (no Fabric apply yet)."""
+
+    __tablename__ = "ume_topo_link"
+
+    link_id: Mapped[str] = mapped_column(String(128), primary_key=True, comment="UME linkId")
+    name: Mapped[str] = mapped_column(String(1024), default="", index=True)
+    user_label: Mapped[str] = mapped_column(Text, default="")
+    owner: Mapped[str] = mapped_column(String(64), default="")
+    direction: Mapped[str] = mapped_column(String(32), default="")
+    layer_rate: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    connection_status: Mapped[str] = mapped_column(String(64), default="", index=True)
+    a_end_tp_ref: Mapped[str] = mapped_column(Text, default="")
+    z_end_tp_ref: Mapped[str] = mapped_column(Text, default="")
+    a_ume_ne_id: Mapped[str] = mapped_column(String(128), default="", index=True)
+    z_ume_ne_id: Mapped[str] = mapped_column(String(128), default="", index=True)
+    a_ptp: Mapped[str] = mapped_column(String(256), default="")
+    z_ptp: Mapped[str] = mapped_column(String(256), default="")
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
+    raw_json: Mapped[str] = mapped_column(Text, default="{}")

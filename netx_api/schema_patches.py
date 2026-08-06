@@ -344,6 +344,48 @@ def apply_domain_schema_patches(conn: Connection) -> None:
             )
             """,
             "CREATE INDEX IF NOT EXISTS ix_ume_cli_override_connect_status ON ume_cli_override (connect_status)",
+            """
+            CREATE TABLE IF NOT EXISTS ume_topo_node (
+                node_id VARCHAR(128) PRIMARY KEY,
+                name VARCHAR(512) DEFAULT '',
+                node_type VARCHAR(64) DEFAULT '',
+                user_label VARCHAR(512) DEFAULT '',
+                owner VARCHAR(64) DEFAULT '',
+                parent_node VARCHAR(512) DEFAULT '',
+                x_pos INTEGER,
+                y_pos INTEGER,
+                ume_ne_id VARCHAR(128) DEFAULT '',
+                first_seen_at TIMESTAMP,
+                last_seen_at TIMESTAMP,
+                raw_json TEXT DEFAULT '{}'
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS ix_ume_topo_node_node_type ON ume_topo_node (node_type)",
+            "CREATE INDEX IF NOT EXISTS ix_ume_topo_node_ume_ne_id ON ume_topo_node (ume_ne_id)",
+            "CREATE INDEX IF NOT EXISTS ix_ume_topo_node_last_seen_at ON ume_topo_node (last_seen_at)",
+            """
+            CREATE TABLE IF NOT EXISTS ume_topo_link (
+                link_id VARCHAR(128) PRIMARY KEY,
+                name VARCHAR(1024) DEFAULT '',
+                user_label TEXT DEFAULT '',
+                owner VARCHAR(64) DEFAULT '',
+                direction VARCHAR(32) DEFAULT '',
+                layer_rate INTEGER,
+                connection_status VARCHAR(64) DEFAULT '',
+                a_end_tp_ref TEXT DEFAULT '',
+                z_end_tp_ref TEXT DEFAULT '',
+                a_ume_ne_id VARCHAR(128) DEFAULT '',
+                z_ume_ne_id VARCHAR(128) DEFAULT '',
+                a_ptp VARCHAR(256) DEFAULT '',
+                z_ptp VARCHAR(256) DEFAULT '',
+                first_seen_at TIMESTAMP,
+                last_seen_at TIMESTAMP,
+                raw_json TEXT DEFAULT '{}'
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS ix_ume_topo_link_a_ume_ne_id ON ume_topo_link (a_ume_ne_id)",
+            "CREATE INDEX IF NOT EXISTS ix_ume_topo_link_z_ume_ne_id ON ume_topo_link (z_ume_ne_id)",
+            "CREATE INDEX IF NOT EXISTS ix_ume_topo_link_last_seen_at ON ume_topo_link (last_seen_at)",
             "COMMENT ON TABLE ume_inventory_ne IS '网元对象详细信息'",
             "COMMENT ON COLUMN ume_inventory_ne.ne_id IS '网元uuid'",
             "COMMENT ON COLUMN ume_inventory_ne.ne_name IS '资源名称'",

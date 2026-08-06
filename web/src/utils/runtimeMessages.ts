@@ -9,6 +9,7 @@ const LEGACY_ZH_RUNTIME_ERROR: Record<string, string> = {
   "正在拉取 UME 当前告警…": "ume.tasks.runtimeError.pulling_alarms_current",
   "另一条当前告警 REST 同步进行中，已跳过": "ume.tasks.runtimeError.alarms_sync_in_progress_skip",
   "正在拉取 UME 网元清单…": "ume.tasks.runtimeError.pulling_inventory",
+  "正在拉取 UME 拓扑（节点/链路）…": "ume.tasks.runtimeError.pulling_topology",
   "未启用或未配置 UME_BASE_URL": "ume.tasks.runtimeError.ume_ws_disabled_no_base_url",
   "未启用或未配置 NETX_OCLAW_ALARM_WS / token / url": "ume.tasks.runtimeError.oclaw_fwd_disabled",
   "已恢复：将跳过本轮周期等待并尽快同步": "ume.tasks.runtimeError.resumed_sync_soon",

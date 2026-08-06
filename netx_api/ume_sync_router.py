@@ -34,7 +34,7 @@ from .ume_support import (
     _set_runtime_task,
     _ume_client,
 )
-from .ume_sync_service import sync_alarms_current, sync_alarms_history_full, sync_inventory_full
+from .ume_sync_service import sync_alarms_current, sync_alarms_history_full, sync_inventory_full, sync_topology_full
 
 _log = logging.getLogger("netx.ume.router")
 router = APIRouter(tags=["ume"])
@@ -58,6 +58,18 @@ def ume_sync(payload: dict[str, Any] | None = None, db: Session = Depends(get_db
             out["jobs"].append(
                 {
                     "domain": "inventory",
+                    "status": job.status,
+                    "pulled_count": int(job.pulled_count or 0),
+                    "inserted_count": int(job.inserted_count or 0),
+                    "updated_count": int(job.updated_count or 0),
+                    "error_message": str(job.error_message or ""),
+                }
+            )
+        if "topology" in domain_set:
+            job = sync_topology_full(db, client, trigger_mode=trigger_mode)
+            out["jobs"].append(
+                {
+                    "domain": "topology",
                     "status": job.status,
                     "pulled_count": int(job.pulled_count or 0),
                     "inserted_count": int(job.inserted_count or 0),
@@ -123,7 +135,7 @@ def _ume_sync_job_deleted_count(row: UmeSyncJob) -> int:
         return 0
     if not isinstance(obj, dict):
         return 0
-    inv = cur = 0
+    inv = cur = topo_n = topo_l = 0
     try:
         inv = max(0, int(obj.get("deleted_inventory_ne") or 0))
     except Exception:
@@ -132,7 +144,15 @@ def _ume_sync_job_deleted_count(row: UmeSyncJob) -> int:
         cur = max(0, int(obj.get("deleted_stale_current_alarms") or 0))
     except Exception:
         pass
-    return int(inv + cur)
+    try:
+        topo_n = max(0, int(obj.get("deleted_topo_nodes") or 0))
+    except Exception:
+        pass
+    try:
+        topo_l = max(0, int(obj.get("deleted_topo_links") or 0))
+    except Exception:
+        pass
+    return int(inv + cur + topo_n + topo_l)
 
 
 @router.get("/v1/ume/sync/status")

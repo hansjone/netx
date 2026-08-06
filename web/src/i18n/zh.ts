@@ -1048,6 +1048,7 @@ const zh = {
         pulling_alarms_current: "正在拉取 UME 当前告警…",
         alarms_sync_in_progress_skip: "另一条当前告警 REST 同步进行中，已跳过",
         pulling_inventory: "正在拉取 UME 网元清单…",
+        pulling_topology: "正在拉取 UME 拓扑（节点/链路）…",
         ume_ws_disabled_no_base_url: "未启用或未配置 UME_BASE_URL",
         oclaw_fwd_disabled: "未启用或未配置 NETX_OCLAW_ALARM_WS / token / url",
         resumed_sync_soon: "已恢复：将跳过本轮周期等待并尽快同步",
@@ -1085,6 +1086,7 @@ const zh = {
         alarms_current_ws_consumer: "UME 告警 WSS",
         oclaw_alarm_forwarder: "OClaw 关键告警 WSS",
         inventory_auto_sync: "Inventory 定时同步",
+        topology_auto_sync: "拓扑定时同步",
       },
     },
     syncStatus: {

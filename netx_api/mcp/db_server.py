@@ -8,7 +8,7 @@ from .db import Base, SessionLocal, engine
 from .importer import aggregate_alarms, query_alarms
 from .models import AlarmBatch, UmeAlarmCurrent, UmeAlarmHistory, UmeInventoryNE
 from .ume_client import UMEClient
-from .ume_sync_service import sync_alarms_current, sync_alarms_history_full, sync_inventory_full
+from .ume_sync_service import sync_alarms_current, sync_alarms_history_full, sync_inventory_full, sync_topology_full
 from .ume_token_store import (
     clear_shared_token,
     load_shared_token,
@@ -103,7 +103,7 @@ def _tool_list() -> list[dict[str, Any]]:
                 "properties": {
                     "domains": {
                         "type": "array",
-                        "items": {"type": "string", "enum": ["inventory", "alarms_current", "alarms_history"]},
+                        "items": {"type": "string", "enum": ["inventory", "alarms_current", "alarms_history", "topology"]},
                     },
                     "trigger_mode": {"type": "string", "enum": ["manual", "schedule"]},
                 },
@@ -293,6 +293,18 @@ def _call_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
                         "domain": "alarms_history",
                         "status": j.status,
                         "batch_id": str(b.batch_id),
+                        "pulled_count": int(j.pulled_count or 0),
+                        "inserted_count": int(j.inserted_count or 0),
+                        "updated_count": int(j.updated_count or 0),
+                        "error_message": str(j.error_message or ""),
+                    }
+                )
+            if "topology" in domains:
+                j = sync_topology_full(db, client, trigger_mode=trigger_mode)
+                results.append(
+                    {
+                        "domain": "topology",
+                        "status": j.status,
                         "pulled_count": int(j.pulled_count or 0),
                         "inserted_count": int(j.inserted_count or 0),
                         "updated_count": int(j.updated_count or 0),

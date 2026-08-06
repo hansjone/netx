@@ -96,6 +96,12 @@ class UMEClient:
         self.token_logout_path = str(token_logout_path if token_logout_path is not None else settings.ume_token_logout_path).strip()
         self.ne_path = str(ne_path if ne_path is not None else settings.ume_ne_path).strip()
         self.alarms_path = str(alarms_path if alarms_path is not None else settings.ume_alarms_path).strip()
+        self.topo_nodes_path = str(getattr(settings, "ume_topo_nodes_path", "") or "").strip() or (
+            "/restconf/data/zte-resources-module:TopoNodes"
+        )
+        self.topological_links_path = str(getattr(settings, "ume_topological_links_path", "") or "").strip() or (
+            "/restconf/data/zte-resources-module:TopologicalLinks"
+        )
         self.notification_establish_path = str(
             notification_establish_path
             if notification_establish_path is not None
@@ -231,11 +237,12 @@ class UMEClient:
                 headers[self.auth_header] = token
         return headers
 
-    def _client(self) -> httpx.Client:
+    def _client(self, *, timeout_s: float | None = None) -> httpx.Client:
         # Use explicit HTTPTransport to keep behavior consistent with onsite validation.
         # In this mode, requests run over HTTP/1.1 and avoid HTTP/2 negotiation issues.
         transport = httpx.HTTPTransport(verify=self.verify_tls, http2=False)
-        return httpx.Client(transport=transport, timeout=self.timeout_s)
+        to = self.timeout_s if timeout_s is None else max(3.0, float(timeout_s))
+        return httpx.Client(transport=transport, timeout=to)
         
 
     def _extract_token_and_ttl(self, payload: dict[str, Any]) -> tuple[str, int | None]:
@@ -462,6 +469,7 @@ class UMEClient:
         *,
         params: dict[str, Any] | None = None,
         body: dict[str, Any] | None = None,
+        timeout_s: float | None = None,
     ) -> tuple[dict[str, Any], RequestDiagnostics]:
         self.refresh_if_needed()
         url = self._build_url(path)
@@ -469,12 +477,12 @@ class UMEClient:
         retry_count = 0
         t0 = time()
         try:
-            with self._client() as client:
+            with self._client(timeout_s=timeout_s) as client:
                 resp = client.request(m, url, params=params, json=body, headers=self._headers(include_token=True))
             if resp.status_code in (401, 403):
                 retry_count = 1
                 self.login(force=True)
-                with self._client() as client:
+                with self._client(timeout_s=timeout_s) as client:
                     resp = client.request(m, url, params=params, json=body, headers=self._headers(include_token=True))
             marker = str(resp.headers.get("marker") or "").strip()
             is_end_raw = str(resp.headers.get("is-end-of-reply") or "").strip().lower()
@@ -603,6 +611,38 @@ class UMEClient:
         data, diag = self.request_json("GET", self.alarms_path, params=params)
         rows = self._extract_named_list(data, ["alarm-list", "alarm"])
         return rows, diag
+
+    def _topology_timeout_s(self) -> float:
+        base = float(getattr(settings, "ume_topology_timeout_s", 0) or 0)
+        if base > 0:
+            return max(3.0, base)
+        return max(self.timeout_s, 60.0)
+
+    def get_topo_nodes(self) -> tuple[list[dict[str, Any]], RequestDiagnostics]:
+        data, diag = self.request_json("GET", self.topo_nodes_path, timeout_s=self._topology_timeout_s())
+        rows = self._extract_named_list(data, ["TopoNodes", "TopoNode", "topo-nodes", "topo-node"])
+        if rows:
+            return rows, diag
+        for v in data.values():
+            lst = _coerce_list(v)
+            if lst and isinstance(lst[0], dict):
+                return [x for x in lst if isinstance(x, dict)], diag
+        return [], diag
+
+    def get_topological_links(self) -> tuple[list[dict[str, Any]], RequestDiagnostics]:
+        data, diag = self.request_json(
+            "GET", self.topological_links_path, timeout_s=self._topology_timeout_s()
+        )
+        rows = self._extract_named_list(
+            data, ["TopologicalLinks", "TopologicalLink", "topological-links", "topological-link"]
+        )
+        if rows:
+            return rows, diag
+        for v in data.values():
+            lst = _coerce_list(v)
+            if lst and isinstance(lst[0], dict):
+                return [x for x in lst if isinstance(x, dict)], diag
+        return [], diag
 
     def _extract_subscription_output(self, payload: dict[str, Any]) -> tuple[str, str]:
         sub_id = ""

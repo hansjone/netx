@@ -10,7 +10,7 @@ from sqlalchemy.orm import sessionmaker
 
 from netx_api.db import Base
 from netx_api.main import _extract_ume_raw_group_field, _serialize_ume_alarm_raw_row, sql_ume_query, ume_alarms_fields
-from netx_api.models import UmeAlarmCurrent, UmeInventoryNE
+from netx_api.models import UmeAlarmCurrent, UmeInventoryNE, UmeTopoLink, UmeTopoNode
 from netx_api.ume_client import UMEClient, _parse_json_response
 from netx_api import ume_alarm_ws
 from netx_api.models import UmeAlarmSubscription
@@ -36,7 +36,9 @@ from netx_api.ume_sync_service import (
     normalize_yang_alarm,
     sync_alarms_current,
     sync_inventory_full,
+    sync_topology_full,
 )
+from netx_api.ume_sync_topology import extract_me_uuid, extract_ptp
 from fastapi import HTTPException
 
 
@@ -1086,6 +1088,160 @@ class UmeAlarmNotificationTests(unittest.TestCase):
         self.assertEqual(action, "inserted")
         self.assertTrue(changed)
         self.assertIsNotNone(self.db.get(UmeAlarmCurrent, "AK-WS-3"))
+
+
+class UmeTopologySyncTests(unittest.TestCase):
+    def setUp(self):
+        engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+        TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+        Base.metadata.create_all(bind=engine)
+        self.db = TestingSessionLocal()
+
+    def tearDown(self):
+        self.db.close()
+
+    def test_extract_me_and_ptp(self):
+        tp = "ME{4e598e5d-fe42-4c79-9f62-7d3e5d4eb5b2},EQ={/r=0/sh=1/sl=1},PTP={/p=1_16}"
+        self.assertEqual(extract_me_uuid(tp), "4e598e5d-fe42-4c79-9f62-7d3e5d4eb5b2")
+        self.assertEqual(extract_ptp(tp), "/p=1_16")
+        self.assertEqual(
+            extract_me_uuid("TOPO_NODE_ME7e8ac1c7-9d34-42d3-adfb-b1031e7c145a"),
+            "7e8ac1c7-9d34-42d3-adfb-b1031e7c145a",
+        )
+
+    def test_sync_topology_upsert_and_reconcile(self):
+        class _Diag:
+            latency_ms = 1
+
+        class _CWide:
+            def get_topo_nodes(self):
+                return (
+                    [
+                        {
+                            "nodeId": "66e807c0-94b6-4c50-a02e-fcb56d08bdea",
+                            "name": "SBN{66e807c0-94b6-4c50-a02e-fcb56d08bdea}",
+                            "nodeType": "TOPO_NODE_SBN",
+                            "owner": "ZTE",
+                            "userLabel": "SC IPRAN Network",
+                            "yPos": 126,
+                            "xPos": 460,
+                            "parentNode": "topLevel",
+                        },
+                        {
+                            "nodeId": "me-node-1",
+                            "name": "TOPO_NODE_ME4e598e5d-fe42-4c79-9f62-7d3e5d4eb5b2",
+                            "nodeType": "TOPO_NODE_ME",
+                            "userLabel": "RMP01",
+                            "xPos": 10,
+                            "yPos": 20,
+                            "parentNode": "66e807c0-94b6-4c50-a02e-fcb56d08bdea",
+                        },
+                    ],
+                    _Diag(),
+                )
+
+            def get_topological_links(self):
+                return (
+                    [
+                        {
+                            "linkId": "415a0bbb-9387-4ff3-8de9-7e36846f4b6a",
+                            "name": "TL{/ME{4e598e5d-fe42-4c79-9f62-7d3e5d4eb5b2},EQ={/r=0/sh=1/sl=1},PTP={/p=1_16}_/ME{7508cb6c-59f6-45aa-9e62-4fda61d80553},EQ={/r=0/sh=0/sl=1/ssl=0},PTP={/p=1_20}}",
+                            "connection-status": "Connected",
+                            "owner": "ZTE",
+                            "aEndTpRefList": [
+                                "ME{4e598e5d-fe42-4c79-9f62-7d3e5d4eb5b2},EQ={/r=0/sh=1/sl=1},PTP={/p=1_16}"
+                            ],
+                            "userLabel": "sample-label",
+                            "direction": "BI",
+                            "layerRate": 113,
+                            "zEndTpRefList": [
+                                "ME{7508cb6c-59f6-45aa-9e62-4fda61d80553},EQ={/r=0/sh=0/sl=1/ssl=0},PTP={/p=1_20}"
+                            ],
+                        },
+                        {
+                            "linkId": "link-to-drop",
+                            "name": "TL-drop",
+                            "aEndTpRefList": ["ME{aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa},EQ={},PTP={/p=1}"],
+                            "zEndTpRefList": ["ME{bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb},EQ={},PTP={/p=2}"],
+                            "direction": "BI",
+                            "layerRate": 1,
+                        },
+                    ],
+                    _Diag(),
+                )
+
+        class _CNarrow:
+            def get_topo_nodes(self):
+                return (
+                    [
+                        {
+                            "nodeId": "me-node-1",
+                            "name": "TOPO_NODE_ME4e598e5d-fe42-4c79-9f62-7d3e5d4eb5b2",
+                            "nodeType": "TOPO_NODE_ME",
+                            "userLabel": "RMP01-upd",
+                            "xPos": 11,
+                            "yPos": 21,
+                            "parentNode": "topLevel",
+                        }
+                    ],
+                    _Diag(),
+                )
+
+            def get_topological_links(self):
+                return (
+                    [
+                        {
+                            "linkId": "415a0bbb-9387-4ff3-8de9-7e36846f4b6a",
+                            "name": "TL-keep",
+                            "connection-status": "Connected",
+                            "aEndTpRefList": [
+                                "ME{4e598e5d-fe42-4c79-9f62-7d3e5d4eb5b2},EQ={/r=0/sh=1/sl=1},PTP={/p=1_16}"
+                            ],
+                            "zEndTpRefList": [
+                                "ME{7508cb6c-59f6-45aa-9e62-4fda61d80553},EQ={/r=0/sh=0/sl=1/ssl=0},PTP={/p=1_20}"
+                            ],
+                            "direction": "BI",
+                            "layerRate": 113,
+                        }
+                    ],
+                    _Diag(),
+                )
+
+        job1 = sync_topology_full(self.db, _CWide(), trigger_mode="manual")
+        self.assertEqual(job1.status, "done")
+        self.assertEqual(job1.pulled_count, 4)
+        self.assertEqual(job1.inserted_count, 4)
+
+        sbn = self.db.get(UmeTopoNode, "66e807c0-94b6-4c50-a02e-fcb56d08bdea")
+        self.assertIsNotNone(sbn)
+        self.assertEqual(sbn.node_type, "TOPO_NODE_SBN")
+        self.assertEqual(sbn.x_pos, 460)
+        self.assertEqual(sbn.ume_ne_id, "")
+
+        me = self.db.get(UmeTopoNode, "me-node-1")
+        self.assertIsNotNone(me)
+        self.assertEqual(me.ume_ne_id, "4e598e5d-fe42-4c79-9f62-7d3e5d4eb5b2")
+
+        link = self.db.get(UmeTopoLink, "415a0bbb-9387-4ff3-8de9-7e36846f4b6a")
+        self.assertIsNotNone(link)
+        self.assertEqual(link.a_ume_ne_id, "4e598e5d-fe42-4c79-9f62-7d3e5d4eb5b2")
+        self.assertEqual(link.z_ume_ne_id, "7508cb6c-59f6-45aa-9e62-4fda61d80553")
+        self.assertEqual(link.a_ptp, "/p=1_16")
+        self.assertEqual(link.z_ptp, "/p=1_20")
+        self.assertEqual(link.connection_status, "Connected")
+        self.assertIsNotNone(self.db.get(UmeTopoLink, "link-to-drop"))
+
+        job2 = sync_topology_full(self.db, _CNarrow(), trigger_mode="manual")
+        self.assertEqual(job2.status, "done")
+        self.db.expire_all()
+        self.assertIsNone(self.db.get(UmeTopoNode, "66e807c0-94b6-4c50-a02e-fcb56d08bdea"))
+        self.assertIsNotNone(self.db.get(UmeTopoNode, "me-node-1"))
+        self.assertEqual(self.db.get(UmeTopoNode, "me-node-1").user_label, "RMP01-upd")
+        self.assertIsNone(self.db.get(UmeTopoLink, "link-to-drop"))
+        self.assertIsNotNone(self.db.get(UmeTopoLink, "415a0bbb-9387-4ff3-8de9-7e36846f4b6a"))
+        details = json.loads(job2.details_json or "{}")
+        self.assertEqual(details.get("deleted_topo_nodes"), 1)
+        self.assertEqual(details.get("deleted_topo_links"), 1)
 
 
 if __name__ == "__main__":

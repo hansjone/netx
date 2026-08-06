@@ -56,11 +56,16 @@ class Settings(BaseSettings):
     ume_notification_topic: str = "ALARM"
     ume_sync_inventory_auto_enabled: bool = True
     ume_sync_inventory_every_hours: int = 48
+    ume_sync_topology_auto_enabled: bool = True
+    ume_sync_topology_every_hours: int = 24
+    ume_topology_timeout_s: float = 120.0
     ume_token_path: str = "/restconf/operations/zte-security:oauth_token"
     ume_token_handshake_path: str = "/restconf/operations/zte-security:oauth_handshake"
     ume_token_logout_path: str = "/restconf/operations/zte-security:oauth_token"
     ume_ne_path: str = "/restconf/data/zte-resources-module:network-elements"
     ume_alarms_path: str = "/restconf/data/zte-alarms:alarms/alarm-list"
+    ume_topo_nodes_path: str = "/restconf/data/zte-resources-module:TopoNodes"
+    ume_topological_links_path: str = "/restconf/data/zte-resources-module:TopologicalLinks"
     ume_sync_alarms_history_every_hours: int = 24
     # Managed NE credentials (Fernet key; generate with cryptography.fernet.Fernet.generate_key())
     credential_secret_key: str = ""

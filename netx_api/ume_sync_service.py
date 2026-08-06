@@ -1,4 +1,4 @@
-"""UME sync service facade (inventory + alarms)."""
+"""UME sync service facade (inventory + alarms + topology)."""
 from __future__ import annotations
 
 from .config import settings
@@ -13,6 +13,7 @@ from .ume_alarm_apply import (
 )
 from .ume_sync_common import _pick, _s, _utc_now_naive
 from .ume_sync_pull import sync_alarms_current, sync_alarms_history_full, sync_inventory_full
+from .ume_sync_topology import sync_topology_full
 
 __all__ = [
     "_alarm_key",
@@ -29,4 +30,5 @@ __all__ = [
     "sync_alarms_current",
     "sync_alarms_history_full",
     "sync_inventory_full",
+    "sync_topology_full",
 ]

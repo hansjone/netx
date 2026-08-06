@@ -38,7 +38,7 @@ from .ume_alarm_ws import (
     is_wss_active_for_current_alarms,
 )
 from .ume_client import UMEClient
-from .ume_sync_service import sync_alarms_current, sync_inventory_full
+from .ume_sync_service import sync_alarms_current, sync_inventory_full, sync_topology_full
 from .ume_token_store import (
     clear_shared_token,
     load_shared_token,
@@ -66,6 +66,7 @@ _UME_RUNTIME_TASKS: dict[str, dict[str, Any]] = {
     "alarms_current_ws_consumer": {"task": "alarms_current_ws_consumer", "status": "init", "last_run_at": None, "last_error": ""},
     "oclaw_alarm_forwarder": {"task": "oclaw_alarm_forwarder", "status": "init", "last_run_at": None, "last_error": ""},
     "inventory_auto_sync": {"task": "inventory_auto_sync", "status": "init", "last_run_at": None, "last_error": ""},
+    "topology_auto_sync": {"task": "topology_auto_sync", "status": "init", "last_run_at": None, "last_error": ""},
 }
 _UME_WS_STOP_EVENT: threading.Event | None = None
 _UME_RUNTIME_PAUSED: dict[str, bool] = {}
@@ -182,6 +183,13 @@ def _runtime_task_interval_fields(task_id: str) -> tuple[int | None, str]:
         if not bool(getattr(settings, "ume_sync_inventory_auto_enabled", True)):
             return None, "disabled"
         hours = int(getattr(settings, "ume_sync_inventory_every_hours", 48) or 48)
+        hours = max(1, min(hours, 168))
+        eff = int(hours * 3600)
+        return eff, _format_runtime_interval_label(eff)
+    if task_id == "topology_auto_sync":
+        if not bool(getattr(settings, "ume_sync_topology_auto_enabled", True)):
+            return None, "disabled"
+        hours = int(getattr(settings, "ume_sync_topology_every_hours", 24) or 24)
         hours = max(1, min(hours, 168))
         eff = int(hours * 3600)
         return eff, _format_runtime_interval_label(eff)

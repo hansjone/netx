@@ -1055,6 +1055,7 @@ const en = {
         pulling_alarms_current: "Pulling UME current alarms…",
         alarms_sync_in_progress_skip: "Another current-alarm REST sync in progress; skipped",
         pulling_inventory: "Pulling UME inventory…",
+        pulling_topology: "Pulling UME topology (nodes/links)…",
         ume_ws_disabled_no_base_url: "Disabled or UME_BASE_URL not configured",
         oclaw_fwd_disabled: "Disabled or NETX_OCLAW_ALARM_WS / token / url not configured",
         resumed_sync_soon: "Resumed: skipping debounce wait, sync soon",
@@ -1092,6 +1093,7 @@ const en = {
         alarms_current_ws_consumer: "UME alarm WSS",
         oclaw_alarm_forwarder: "OClaw key-alert WSS",
         inventory_auto_sync: "Inventory auto sync",
+        topology_auto_sync: "Topology auto sync",
       },
     },
     syncStatus: {

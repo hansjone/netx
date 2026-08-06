@@ -56,6 +56,8 @@ from .ume import (
     UmeKeyAlertRule,
     UmeSyncJob,
     UmeTokenCache,
+    UmeTopoLink,
+    UmeTopoNode,
 )
 
 __all__ = [
@@ -74,6 +76,8 @@ __all__ = [
     "UmeKeyAlertForwardLog",
     "UmeAlarmSubscription",
     "UmeTokenCache",
+    "UmeTopoNode",
+    "UmeTopoLink",
     "ManagedNE",
     "CliConnectProfile",
     "UmeCliOverride",

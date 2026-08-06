@@ -24,13 +24,14 @@ from .ume_alarm_ws import (
     load_persisted_subscription,
     start_ume_alarm_ws_consumer,
 )
-from .ume_sync_service import sync_alarms_current, sync_inventory_full
+from .ume_sync_service import sync_alarms_current, sync_inventory_full, sync_topology_full
 from .runtime_task_messages import (
     RT_ALARMS_SYNC_IN_PROGRESS_SKIP,
     RT_KEEPALIVE_FAILED,
     RT_OCLAW_FWD_DISABLED,
     RT_PULLING_ALARMS_CURRENT,
     RT_PULLING_INVENTORY,
+    RT_PULLING_TOPOLOGY,
     RT_STARTUP_GATE_WAITING,
     RT_UME_WS_DISABLED_NO_BASE_URL,
     RT_WSS_ACTIVE_SKIP_REST,
@@ -282,6 +283,77 @@ def start_api_sideband_threads() -> None:
         _schedule_log.exception("startup: inventory_auto_sync thread init failed: %s", exc)
         ume_support._set_runtime_task(
             "inventory_auto_sync",
+            status="error",
+            last_run_at=datetime.now(timezone.utc),
+            last_error=f"startup_thread_init_failed: {str(exc)[:180]}",
+        )
+    try:
+        if bool(getattr(settings, "ume_sync_topology_auto_enabled", True)):
+            hours = int(getattr(settings, "ume_sync_topology_every_hours", 24) or 24)
+            hours = max(1, min(hours, 168))
+            topology_interval_s = int(hours * 3600)
+            ume_support._refresh_runtime_task_idle("topology_auto_sync", "topology")
+
+            def _topology_auto_sync_loop() -> None:
+                ume_support._refresh_runtime_task_idle("topology_auto_sync", "topology")
+                while True:
+                    try:
+                        _schedule_log.info(
+                            "topology_auto_sync: loop tick paused=%s",
+                            ume_support._runtime_is_paused("topology_auto_sync"),
+                        )
+                        if ume_support._runtime_is_paused("topology_auto_sync"):
+                            time.sleep(1)
+                            continue
+                        ume_support._maybe_wait_for_sync_interval(
+                            task_id="topology_auto_sync",
+                            domain="topology",
+                            interval_s=topology_interval_s,
+                            label="topology_auto_sync",
+                        )
+                        _schedule_log.info(
+                            "topology_auto_sync: iteration start (interval=%ss)",
+                            topology_interval_s,
+                        )
+                        ume_support._set_runtime_task(
+                            "topology_auto_sync",
+                            status="running",
+                            last_run_at=datetime.now(timezone.utc),
+                            last_error=RT_PULLING_TOPOLOGY,
+                        )
+                        db = SessionLocal()
+                        try:
+                            client = ume_support._ume_client()
+                            sync_topology_full(db, client, trigger_mode="schedule")
+                            _schedule_log.info("topology_auto_sync: sync finished ok")
+                            ume_support._set_runtime_task(
+                                "topology_auto_sync",
+                                status="running",
+                                last_run_at=datetime.now(timezone.utc),
+                                last_error="",
+                            )
+                        finally:
+                            db.close()
+                    except Exception as exc:
+                        _schedule_log.exception("topology_auto_sync: sync failed: %s", exc)
+                        ume_support._set_runtime_task(
+                            "topology_auto_sync",
+                            status="error",
+                            last_run_at=datetime.now(timezone.utc),
+                            last_error=str(exc)[:240],
+                        )
+
+            t_topo = threading.Thread(
+                target=_topology_auto_sync_loop, name="ume-topology-auto-sync", daemon=True
+            )
+            t_topo.start()
+            _schedule_log.info("started thread %s alive=%s", t_topo.name, t_topo.is_alive())
+            if not t_topo.is_alive():
+                _schedule_log.error("ume-topology-auto-sync thread exited immediately (check uncaught errors above)")
+    except Exception as exc:
+        _schedule_log.exception("startup: topology_auto_sync thread init failed: %s", exc)
+        ume_support._set_runtime_task(
+            "topology_auto_sync",
             status="error",
             last_run_at=datetime.now(timezone.utc),
             last_error=f"startup_thread_init_failed: {str(exc)[:180]}",
