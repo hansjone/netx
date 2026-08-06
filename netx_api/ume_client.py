@@ -237,16 +237,30 @@ class UMEClient:
                 headers[self.auth_header] = token
         return headers
 
-    def _client(self, *, timeout_s: float | None = None) -> httpx.Client:
+    def _client(
+        self,
+        *,
+        timeout_s: float | None = None,
+        timeout: httpx.Timeout | None = None,
+    ) -> httpx.Client:
         # Use explicit HTTPTransport to keep behavior consistent with onsite validation.
         # In this mode, requests run over HTTP/1.1 and avoid HTTP/2 negotiation issues.
         transport = httpx.HTTPTransport(verify=self.verify_tls, http2=False)
-        if timeout_s is None:
-            to: float | httpx.Timeout = self.timeout_s
+        if timeout is not None:
+            to: float | httpx.Timeout = timeout
+        elif timeout_s is None:
+            to = self.timeout_s
+        elif float(timeout_s) <= 0:
+            # No read/write deadline — keep waiting while the peer still streams.
+            to = httpx.Timeout(connect=30.0, read=None, write=None, pool=30.0)
         else:
-            # Large topology dumps need a long read window; connect stays short.
             read_s = max(3.0, float(timeout_s))
-            to = httpx.Timeout(connect=min(30.0, read_s), read=read_s, write=min(60.0, read_s), pool=30.0)
+            to = httpx.Timeout(
+                connect=min(30.0, read_s),
+                read=read_s,
+                write=min(60.0, read_s),
+                pool=30.0,
+            )
         return httpx.Client(transport=transport, timeout=to)
         
 
@@ -618,10 +632,11 @@ class UMEClient:
         return rows, diag
 
     def _topology_timeout_s(self) -> float:
+        """Read timeout seconds for topology dumps; ``0`` = wait while connected."""
         base = float(getattr(settings, "ume_topology_timeout_s", 0) or 0)
-        if base > 0:
-            return max(30.0, base)
-        return max(self.timeout_s, 600.0)
+        if base <= 0:
+            return 0.0
+        return max(30.0, base)
 
     @staticmethod
     def _extract_restconf_list(payload: dict[str, Any], *, containers: list[str], items: list[str]) -> list[dict[str, Any]]:

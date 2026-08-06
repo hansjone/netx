@@ -109,7 +109,7 @@ def _ume_ne_id_for_topo_node(*, node_type: str, name: str) -> str:
 
 
 def _stale_running_sec() -> int:
-    return max(300, int(getattr(settings, "ume_sync_topology_stale_running_sec", 1800) or 1800))
+    return max(3600, int(getattr(settings, "ume_sync_topology_stale_running_sec", 86400) or 86400))
 
 
 def fail_stale_topology_running_jobs(db: Session | None = None) -> int:

@@ -58,8 +58,10 @@ class Settings(BaseSettings):
     ume_sync_inventory_every_hours: int = 48
     ume_sync_topology_auto_enabled: bool = True
     ume_sync_topology_every_hours: int = 24
-    ume_topology_timeout_s: float = 600.0
-    ume_sync_topology_stale_running_sec: int = 1800
+    # Topology REST dump: 0 = no read timeout (wait while the connection stays up).
+    ume_topology_timeout_s: float = 0.0
+    # Do not reap a still-running topology pull until this age (long UME dumps).
+    ume_sync_topology_stale_running_sec: int = 86400
     ume_token_path: str = "/restconf/operations/zte-security:oauth_token"
     ume_token_handshake_path: str = "/restconf/operations/zte-security:oauth_handshake"
     ume_token_logout_path: str = "/restconf/operations/zte-security:oauth_token"
