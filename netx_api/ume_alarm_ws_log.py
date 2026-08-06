@@ -24,8 +24,11 @@ _SUBSCRIPTION_MISSING_MARKERS: tuple[str, ...] = (
     "status-reason: subscription not found",
     "non-101 status: 503",
     "non-101 status: 404",
+    "non-101 status: 500",
     "handshake status 404",
     "handshake status 503",
+    # ZTE UME often returns HTML 500 when the stream id is gone/invalid.
+    "handshake status 500",
 )
 
 

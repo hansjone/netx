@@ -753,6 +753,11 @@ class UmeAlarmNotificationTests(unittest.TestCase):
                 'ume_request_failed:DELETE ... 400:{"errorInfo":"subscription not exist!"}'
             )
         )
+        self.assertTrue(
+            is_ume_subscription_missing_error(
+                "Handshake status 500 Server Error -+-+- {'content-type': 'text/html'}"
+            )
+        )
 
     def test_cancel_returns_needs_cleanup_when_ume_missing(self):
         from time import time as _time
