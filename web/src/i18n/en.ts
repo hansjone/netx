@@ -1545,6 +1545,7 @@ const en = {
     removeEdge: "Delete edge",
     nodeMenu: "Node",
     paneMenu: "Canvas",
+    edgeMenu: "Edge",
     createNe: "New NE",
     createNeTitle: "New topology placeholder NE",
     createNeHint:

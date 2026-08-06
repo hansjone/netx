@@ -1533,6 +1533,7 @@ const zh = {
     removeEdge: "删除链路",
     nodeMenu: "网元",
     paneMenu: "画布",
+    edgeMenu: "链路",
     createNe: "新建网元",
     createNeTitle: "新建拓扑占位网元",
     createNeHint: "来源为拓扑占位；完善登录信息后可在 WebCRT 连接，或在网元管理升级为手工。",

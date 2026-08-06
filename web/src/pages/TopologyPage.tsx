@@ -10,6 +10,7 @@ import {
   type CSSProperties,
   type ReactNode,
 } from "react";
+import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -1083,6 +1084,7 @@ export function TopologyPage() {
   const searchHitTimerRef = useRef<number | null>(null);
   const findBoxRef = useRef<HTMLDivElement | null>(null);
   const displayMenuRef = useRef<HTMLDetailsElement | null>(null);
+  const [viewToolsToolbarSlot, setViewToolsToolbarSlot] = useState<HTMLDivElement | null>(null);
   const findJustLocatedRef = useRef(false);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<NeNodeData>>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -3929,453 +3931,15 @@ export function TopologyPage() {
                   </button>
                 ))}
               </div>
-              <details className="topo-toolbar__display" ref={displayMenuRef}>
-                <summary>{t("topology.display")}</summary>
-                <div className="topo-display-toggles" role="group" aria-label={t("topology.display")}>
-                  <label className="topo-display-toggles__item">
-                    <input type="checkbox" checked={hideIp} onChange={(e) => setHideIp(e.target.checked)} />
-                    {t("topology.hideIp")}
-                  </label>
-                  <label className="topo-display-toggles__item">
-                    <input
-                      type="checkbox"
-                      checked={hideVendor}
-                      onChange={(e) => setHideVendor(e.target.checked)}
-                    />
-                    {t("topology.hideVendor")}
-                  </label>
-                    <label className="topo-display-toggles__item">
-                      <input
-                        type="checkbox"
-                        checked={showPlaceholderBadge}
-                        onChange={(e) => {
-                          const next = e.target.checked;
-                          setShowPlaceholderBadge(next);
-                          persistBoolFlag(SHOW_PLACEHOLDER_BADGE_KEY, next);
-                        }}
-                      />
-                      {t("topology.showPlaceholderBadge")}
-                    </label>
-                    <label className="topo-display-toggles__item">
-                      <input
-                        type="checkbox"
-                        checked={hidePorts}
-                        onChange={(e) => setHidePorts(e.target.checked)}
-                      />
-                      {t("topology.hidePorts")}
-                    </label>
-                    <label className="topo-display-toggles__item">
-                      <input
-                        type="checkbox"
-                        checked={expandPhysicalLinks}
-                        onChange={(e) => setExpandPhysicalLinks(e.target.checked)}
-                      />
-                      {t("topology.expandPhysicalLinks")}
-                    </label>
-                    <label className="topo-display-toggles__item">
-                      <input
-                        type="checkbox"
-                        checked={scaleBundleWidth}
-                        disabled={expandPhysicalLinks}
-                        onChange={(e) => {
-                          const next = e.target.checked;
-                          setScaleBundleWidth(next);
-                          persistBoolFlag(SCALE_BUNDLE_WIDTH_KEY, next);
-                        }}
-                      />
-                      {t("topology.scaleBundleWidth")}
-                    </label>
-                  <label className="topo-display-toggles__item">
-                    <input
-                      type="checkbox"
-                      checked={edgeFlow}
-                      onChange={(e) => setEdgeFlow(e.target.checked)}
-                    />
-                    {t("topology.edgeFlow")}
-                  </label>
-                  <label className="topo-display-toggles__item">
-                    <input
-                      type="checkbox"
-                      checked={snapToGrid}
-                      onChange={(e) => setSnapToGrid(e.target.checked)}
-                    />
-                    {t("topology.snapGrid")}
-                  </label>
-                  <label className="topo-display-toggles__item">
-                    <input
-                      type="checkbox"
-                      checked={autoLayoutAfterDiscover}
-                      onChange={(e) => {
-                        const next = e.target.checked;
-                        setAutoLayoutAfterDiscover(next);
-                        persistAutoLayoutAfterDiscover(next);
-                      }}
-                    />
-                    {t("topology.autoLayoutDiscover")}
-                  </label>
-                  <label className="topo-display-toggles__item">
-                    <input
-                      type="checkbox"
-                      checked={discoverAutoAddUnmatched}
-                      onChange={(e) => {
-                        const next = e.target.checked;
-                        setDiscoverAutoAddUnmatched(next);
-                        persistBoolFlag(DISCOVER_AUTO_ADD_KEY, next);
-                        void updateLldpCollectPolicy({ auto_add_unmatched: next })
-                          .then(() => {
-                            void queryClient.invalidateQueries({
-                              queryKey: queryKeys.lldpCollectDashboard,
-                            });
-                          })
-                          .catch(() => {
-                            /* local toggle still applies to this canvas discover */
-                          });
-                      }}
-                    />
-                    {t("topology.discoverAutoAddUnmatched")}
-                  </label>
-                  <label className="topo-display-toggles__item">
-                    <input
-                      type="checkbox"
-                      checked={discoverProjectNeighbors}
-                      onChange={(e) => {
-                        const next = e.target.checked;
-                        setDiscoverProjectNeighbors(next);
-                        persistBoolFlag(DISCOVER_PROJECT_NEIGHBORS_KEY, next);
-                      }}
-                    />
-                    {t("topology.discoverProjectNeighbors")}
-                  </label>
-                  <div className="topo-display-defaults topo-display-defaults--canvas-bg topo-display-defaults--colors">
-                    <div className="topo-display-defaults__head">
-                      <strong>{t("topology.canvasBg")}</strong>
-                      <button
-                        type="button"
-                        className="btn btn--sm btn--ghost"
-                        onClick={() => {
-                          setCanvasBg(DEFAULT_CANVAS_BG);
-                          persistCanvasBg(DEFAULT_CANVAS_BG);
-                        }}
-                      >
-                        {t("topology.canvasBgReset")}
-                      </button>
-                    </div>
-                    <div className="topo-display-defaults__row">
-                      <span className="topo-display-defaults__name">{t("topology.canvasBgColor")}</span>
-                      <input
-                        type="color"
-                        value={canvasBg}
-                        title={t("topology.canvasBgColor")}
-                        onChange={(e) => {
-                          const next = e.target.value;
-                          setCanvasBg(next);
-                          persistCanvasBg(next);
-                        }}
-                      />
-                      <input
-                        className="topo-toolbar__select topo-canvas-bg-hex"
-                        value={canvasBg}
-                        spellCheck={false}
-                        aria-label={t("topology.canvasBgColor")}
-                        onChange={(e) => {
-                          const raw = e.target.value.trim();
-                          if (!/^#[0-9a-fA-F]{0,6}$/.test(raw)) return;
-                          setCanvasBg(raw);
-                          if (isHexColor(raw)) persistCanvasBg(raw.toLowerCase());
-                        }}
-                        onBlur={() => {
-                          if (!isHexColor(canvasBg)) {
-                            setCanvasBg(loadCanvasBg());
-                          }
-                        }}
-                      />
-                    </div>
-                  </div>
-                  <div className="topo-display-defaults topo-display-defaults--canvas-bg topo-display-defaults--colors">
-                    <div className="topo-display-defaults__head">
-                      <strong>{t("topology.textColors")}</strong>
-                      <button
-                        type="button"
-                        className="btn btn--sm btn--ghost"
-                        onClick={() => {
-                          setLabelColors({ ...DEFAULT_LABEL_COLORS });
-                          persistLabelColors({ ...DEFAULT_LABEL_COLORS });
-                        }}
-                      >
-                        {t("topology.textColorsReset")}
-                      </button>
-                    </div>
-                    {(
-                      [
-                        ["name", t("topology.labelColor")],
-                        ["edgeLabel", t("topology.edgeLabelColor")],
-                      ] as const
-                    ).map(([key, label]) => (
-                      <div key={key} className="topo-display-defaults__row">
-                        <span className="topo-display-defaults__name">{label}</span>
-                        <input
-                          type="color"
-                          value={labelColors[key]}
-                          title={label}
-                          onChange={(e) => {
-                            const next = { ...labelColors, [key]: e.target.value.toLowerCase() };
-                            setLabelColors(next);
-                            persistLabelColors(next);
-                          }}
-                        />
-                        <input
-                          className="topo-toolbar__select topo-canvas-bg-hex"
-                          value={labelColors[key]}
-                          spellCheck={false}
-                          aria-label={label}
-                          onChange={(e) => {
-                            const raw = e.target.value.trim();
-                            if (!/^#[0-9a-fA-F]{0,6}$/.test(raw)) return;
-                            const next = { ...labelColors, [key]: raw };
-                            setLabelColors(next);
-                            if (isHexColor(raw)) persistLabelColors({ ...next, [key]: raw.toLowerCase() });
-                          }}
-                          onBlur={() => {
-                            if (!isHexColor(labelColors[key])) {
-                              setLabelColors(loadLabelColors());
-                            }
-                          }}
-                        />
-                      </div>
-                    ))}
-                  </div>
-                  <div className="topo-display-defaults topo-display-defaults--canvas-bg topo-display-defaults--colors">
-                    <div className="topo-display-defaults__head">
-                      <strong>{t("topology.vendorColors")}</strong>
-                      <button
-                        type="button"
-                        className="btn btn--sm btn--ghost"
-                        onClick={() => {
-                          setVendorColors({ ...DEFAULT_VENDOR_COLORS });
-                          persistVendorColors({ ...DEFAULT_VENDOR_COLORS });
-                        }}
-                      >
-                        {t("topology.vendorColorsReset")}
-                      </button>
-                    </div>
-                    {VENDOR_TONE_KEYS.map((key) => {
-                      const label = t(`topology.vendorTone.${key}`);
-                      return (
-                        <div key={key} className="topo-display-defaults__row">
-                          <span className="topo-display-defaults__name">{label}</span>
-                          <input
-                            type="color"
-                            value={vendorColors[key]}
-                            title={label}
-                            onChange={(e) => {
-                              const next = { ...vendorColors, [key]: e.target.value.toLowerCase() };
-                              setVendorColors(next);
-                              persistVendorColors(next);
-                            }}
-                          />
-                          <input
-                            className="topo-toolbar__select topo-canvas-bg-hex"
-                            value={vendorColors[key]}
-                            spellCheck={false}
-                            aria-label={label}
-                            onChange={(e) => {
-                              const raw = e.target.value.trim();
-                              if (!/^#[0-9a-fA-F]{0,6}$/.test(raw)) return;
-                              const next = { ...vendorColors, [key]: raw };
-                              setVendorColors(next);
-                              if (isHexColor(raw)) {
-                                persistVendorColors({ ...next, [key]: raw.toLowerCase() });
-                              }
-                            }}
-                            onBlur={() => {
-                              if (!isHexColor(vendorColors[key])) {
-                                setVendorColors(loadVendorColors());
-                              }
-                            }}
-                          />
-                        </div>
-                      );
-                    })}
-                  </div>
-                  <div className="topo-display-defaults">
-                    <div className="topo-display-defaults__head">
-                      <strong>{t("topology.edgeDefaults")}</strong>
-                      <button type="button" className="btn btn--sm btn--ghost" onClick={resetEdgeDefaults}>
-                        {t("topology.edgeDefaultsReset")}
-                      </button>
-                    </div>
-                    {(
-                      [
-                        ["manual", t("topology.edgeManual")],
-                        ["discovered", t("topology.edgeDiscovered")],
-                        ["stale", t("topology.edgeStale")],
-                      ] as const
-                    ).map(([kind, label]) => {
-                      const d = edgeDefaults[kind];
-                      return (
-                        <div key={kind} className="topo-display-defaults__row">
-                          <span className="topo-display-defaults__name">{label}</span>
-                          <input
-                            type="color"
-                            value={d.stroke_color}
-                            title={t("topology.edgeColor")}
-                            onChange={(e) => updateEdgeDefault(kind, { stroke_color: e.target.value })}
-                          />
-                          <select
-                            className="topo-toolbar__select"
-                            aria-label={t("topology.edgeLineStyle")}
-                            value={d.line_style}
-                            onChange={(e) =>
-                              updateEdgeDefault(kind, {
-                                line_style: e.target.value as EdgeLineStyle,
-                              })
-                            }
-                          >
-                            <option value="solid">{t("topology.edgeLineSolid")}</option>
-                            <option value="dashed">{t("topology.edgeLineDashed")}</option>
-                            <option value="dotted">{t("topology.edgeLineDotted")}</option>
-                          </select>
-                          <select
-                            className="topo-toolbar__select"
-                            aria-label={t("topology.edgeWidth")}
-                            value={String(d.stroke_width)}
-                            onChange={(e) =>
-                              updateEdgeDefault(kind, { stroke_width: Number(e.target.value) || 2 })
-                            }
-                          >
-                            {[1, 2, 3, 4, 5, 6, 8].map((w) => (
-                              <option key={w} value={w}>
-                                {w}px
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              </details>
             </div>
-            <div className="topo-toolbar__group" aria-label={t("topology.layout")}>
-              <select
-                className="topo-toolbar__select"
-                aria-label={t("topology.layout")}
-                disabled={!mapId || nodes.length === 0}
-                defaultValue=""
-                onChange={(e) => {
-                  const v = e.target.value as LayoutKind | "selected-tb" | "";
-                  e.target.value = "";
-                  if (!v) return;
-                  if (v === "selected-tb") void applyLayout("hierarchical-tb", { onlySelected: true });
-                  else void applyLayout(v);
-                }}
-              >
-                <option value="" disabled>
-                  {t("topology.layout")}
-                </option>
-                <option value="hierarchical-tb">{t("topology.layoutHierarchicalTb")}</option>
-                <option value="hierarchical-lr">{t("topology.layoutHierarchicalLr")}</option>
-                <option value="force">{t("topology.layoutForce")}</option>
-                <option value="grid">{t("topology.layoutGrid")}</option>
-                <option value="radial">{t("topology.layoutRadial")}</option>
-                <option value="selected-tb">{t("topology.layoutSelected")}</option>
-              </select>
-              <select
-                className="topo-toolbar__select"
-                aria-label={t("topology.align")}
-                disabled={selectedNodes.length < 2}
-                defaultValue=""
-                onChange={(e) => {
-                  const v = e.target.value as Parameters<typeof alignNodes>[2] | "";
-                  e.target.value = "";
-                  if (v) applyAlign(v);
-                }}
-              >
-                <option value="" disabled>
-                  {t("topology.align")}
-                </option>
-                <option value="left">{t("topology.alignLeft")}</option>
-                <option value="right">{t("topology.alignRight")}</option>
-                <option value="top">{t("topology.alignTop")}</option>
-                <option value="bottom">{t("topology.alignBottom")}</option>
-                <option value="h-center">{t("topology.alignHCenter")}</option>
-                <option value="v-center">{t("topology.alignVCenter")}</option>
-                <option value="h-distribute">{t("topology.alignHDistribute")}</option>
-                <option value="v-distribute">{t("topology.alignVDistribute")}</option>
-              </select>
-            </div>
-            <div
-              className="topo-toolbar__group topo-toolbar__group--find"
-              aria-label={t("topology.findNode")}
-              ref={findBoxRef}
-            >
-              <input
-                className="topo-toolbar__find"
-                value={canvasQuery}
-                onChange={(e) => setCanvasQuery(e.target.value)}
-                onFocus={() => {
-                  if (canvasQuery.trim()) setFindOpen(true);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "ArrowDown") {
-                    e.preventDefault();
-                    if (!canvasHits.length) return;
-                    setFindOpen(true);
-                    setFindActiveIdx((i) => (i + 1) % canvasHits.length);
-                    return;
-                  }
-                  if (e.key === "ArrowUp") {
-                    e.preventDefault();
-                    if (!canvasHits.length) return;
-                    setFindOpen(true);
-                    setFindActiveIdx((i) => (i - 1 + canvasHits.length) % canvasHits.length);
-                    return;
-                  }
-                  if (e.key === "Escape") {
-                    setFindOpen(false);
-                    return;
-                  }
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    findOnCanvas();
-                  }
-                }}
-                placeholder={t("topology.findNodePh")}
-                disabled={!mapId || nodes.length === 0}
-                aria-label={t("topology.findNode")}
-                aria-autocomplete="list"
-                aria-expanded={findOpen}
+            {!fullscreen ? (
+              <div
+                className="topo-toolbar__panel topo-toolbar__panel--view"
+                role="toolbar"
+                aria-label={t("topology.display")}
+                ref={setViewToolsToolbarSlot}
               />
-              {findOpen && canvasQuery.trim() ? (
-                <div className="topo-find-suggest" role="listbox">
-                  {canvasHits.length === 0 ? (
-                    <div className="topo-find-suggest__empty">{t("topology.findNoMatch")}</div>
-                  ) : (
-                    canvasHits.slice(0, 12).map((n, idx) => (
-                      <button
-                        key={n.id}
-                        type="button"
-                        role="option"
-                        aria-selected={idx === findActiveIdx}
-                        className={`topo-find-suggest__item${idx === findActiveIdx ? " is-active" : ""}`}
-                        onMouseEnter={() => setFindActiveIdx(idx)}
-                        onClick={() => findOnCanvas(n.id)}
-                      >
-                        <span className="topo-find-suggest__name">{n.data.label || n.id}</span>
-                        <span className="topo-find-suggest__meta">
-                          {[n.data.ne_ip, n.data.vendor].filter(Boolean).join(SEP)}
-                        </span>
-                      </button>
-                    ))
-                  )}
-                  {canvasHits.length > 12 ? (
-                    <div className="topo-find-suggest__more">
-                      {t("topology.findMore").replace("{{count}}", String(canvasHits.length - 12))}
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
+            ) : null}
           </div>
         </div>
         ) : null}
@@ -4729,6 +4293,442 @@ export function TopologyPage() {
                 {truncateBannerText}
               </div>
             ) : null}
+            {(() => {
+              const viewToolsBody = (
+                <>
+              <details className="topo-toolbar__display" ref={displayMenuRef}>
+                <summary>{t("topology.display")}</summary>
+                <div className="topo-display-toggles" role="group" aria-label={t("topology.display")}>
+                  <label className="topo-display-toggles__item">
+                    <input type="checkbox" checked={hideIp} onChange={(e) => setHideIp(e.target.checked)} />
+                    {t("topology.hideIp")}
+                  </label>
+                  <label className="topo-display-toggles__item">
+                    <input
+                      type="checkbox"
+                      checked={hideVendor}
+                      onChange={(e) => setHideVendor(e.target.checked)}
+                    />
+                    {t("topology.hideVendor")}
+                  </label>
+                  <label className="topo-display-toggles__item">
+                    <input
+                      type="checkbox"
+                      checked={showPlaceholderBadge}
+                      onChange={(e) => {
+                        const next = e.target.checked;
+                        setShowPlaceholderBadge(next);
+                        persistBoolFlag(SHOW_PLACEHOLDER_BADGE_KEY, next);
+                      }}
+                    />
+                    {t("topology.showPlaceholderBadge")}
+                  </label>
+                  <label className="topo-display-toggles__item">
+                    <input
+                      type="checkbox"
+                      checked={hidePorts}
+                      onChange={(e) => setHidePorts(e.target.checked)}
+                    />
+                    {t("topology.hidePorts")}
+                  </label>
+                  <label className="topo-display-toggles__item">
+                    <input
+                      type="checkbox"
+                      checked={expandPhysicalLinks}
+                      onChange={(e) => setExpandPhysicalLinks(e.target.checked)}
+                    />
+                    {t("topology.expandPhysicalLinks")}
+                  </label>
+                  <label className="topo-display-toggles__item">
+                    <input
+                      type="checkbox"
+                      checked={scaleBundleWidth}
+                      disabled={expandPhysicalLinks}
+                      onChange={(e) => {
+                        const next = e.target.checked;
+                        setScaleBundleWidth(next);
+                        persistBoolFlag(SCALE_BUNDLE_WIDTH_KEY, next);
+                      }}
+                    />
+                    {t("topology.scaleBundleWidth")}
+                  </label>
+                  <label className="topo-display-toggles__item">
+                    <input
+                      type="checkbox"
+                      checked={edgeFlow}
+                      onChange={(e) => setEdgeFlow(e.target.checked)}
+                    />
+                    {t("topology.edgeFlow")}
+                  </label>
+                  <label className="topo-display-toggles__item">
+                    <input
+                      type="checkbox"
+                      checked={snapToGrid}
+                      onChange={(e) => setSnapToGrid(e.target.checked)}
+                    />
+                    {t("topology.snapGrid")}
+                  </label>
+                  <label className="topo-display-toggles__item">
+                    <input
+                      type="checkbox"
+                      checked={autoLayoutAfterDiscover}
+                      onChange={(e) => {
+                        const next = e.target.checked;
+                        setAutoLayoutAfterDiscover(next);
+                        persistAutoLayoutAfterDiscover(next);
+                      }}
+                    />
+                    {t("topology.autoLayoutDiscover")}
+                  </label>
+                  <label className="topo-display-toggles__item">
+                    <input
+                      type="checkbox"
+                      checked={discoverAutoAddUnmatched}
+                      onChange={(e) => {
+                        const next = e.target.checked;
+                        setDiscoverAutoAddUnmatched(next);
+                        persistBoolFlag(DISCOVER_AUTO_ADD_KEY, next);
+                        void updateLldpCollectPolicy({ auto_add_unmatched: next })
+                          .then(() => {
+                            void queryClient.invalidateQueries({
+                              queryKey: queryKeys.lldpCollectDashboard,
+                            });
+                          })
+                          .catch(() => {
+                            /* local toggle still applies to this canvas discover */
+                          });
+                      }}
+                    />
+                    {t("topology.discoverAutoAddUnmatched")}
+                  </label>
+                  <label className="topo-display-toggles__item">
+                    <input
+                      type="checkbox"
+                      checked={discoverProjectNeighbors}
+                      onChange={(e) => {
+                        const next = e.target.checked;
+                        setDiscoverProjectNeighbors(next);
+                        persistBoolFlag(DISCOVER_PROJECT_NEIGHBORS_KEY, next);
+                      }}
+                    />
+                    {t("topology.discoverProjectNeighbors")}
+                  </label>
+                  <div className="topo-display-defaults topo-display-defaults--canvas-bg topo-display-defaults--colors">
+                    <div className="topo-display-defaults__head">
+                      <strong>{t("topology.canvasBg")}</strong>
+                      <button
+                        type="button"
+                        className="btn btn--sm btn--ghost"
+                        onClick={() => {
+                          setCanvasBg(DEFAULT_CANVAS_BG);
+                          persistCanvasBg(DEFAULT_CANVAS_BG);
+                        }}
+                      >
+                        {t("topology.canvasBgReset")}
+                      </button>
+                    </div>
+                    <div className="topo-display-defaults__row">
+                      <span className="topo-display-defaults__name">{t("topology.canvasBgColor")}</span>
+                      <input
+                        type="color"
+                        value={canvasBg}
+                        title={t("topology.canvasBgColor")}
+                        onChange={(e) => {
+                          const next = e.target.value;
+                          setCanvasBg(next);
+                          persistCanvasBg(next);
+                        }}
+                      />
+                      <input
+                        className="topo-toolbar__select topo-canvas-bg-hex"
+                        value={canvasBg}
+                        spellCheck={false}
+                        aria-label={t("topology.canvasBgColor")}
+                        onChange={(e) => {
+                          const raw = e.target.value.trim();
+                          if (!/^#[0-9a-fA-F]{0,6}$/.test(raw)) return;
+                          setCanvasBg(raw);
+                          if (isHexColor(raw)) persistCanvasBg(raw.toLowerCase());
+                        }}
+                        onBlur={() => {
+                          if (!isHexColor(canvasBg)) {
+                            setCanvasBg(loadCanvasBg());
+                          }
+                        }}
+                      />
+                    </div>
+                  </div>
+                  <div className="topo-display-defaults topo-display-defaults--canvas-bg topo-display-defaults--colors">
+                    <div className="topo-display-defaults__head">
+                      <strong>{t("topology.textColors")}</strong>
+                      <button
+                        type="button"
+                        className="btn btn--sm btn--ghost"
+                        onClick={() => {
+                          setLabelColors({ ...DEFAULT_LABEL_COLORS });
+                          persistLabelColors({ ...DEFAULT_LABEL_COLORS });
+                        }}
+                      >
+                        {t("topology.textColorsReset")}
+                      </button>
+                    </div>
+                    {(
+                      [
+                        ["name", t("topology.labelColor")],
+                        ["edgeLabel", t("topology.edgeLabelColor")],
+                      ] as const
+                    ).map(([key, label]) => (
+                      <div key={key} className="topo-display-defaults__row">
+                        <span className="topo-display-defaults__name">{label}</span>
+                        <input
+                          type="color"
+                          value={labelColors[key]}
+                          title={label}
+                          onChange={(e) => {
+                            const next = { ...labelColors, [key]: e.target.value.toLowerCase() };
+                            setLabelColors(next);
+                            persistLabelColors(next);
+                          }}
+                        />
+                        <input
+                          className="topo-toolbar__select topo-canvas-bg-hex"
+                          value={labelColors[key]}
+                          spellCheck={false}
+                          aria-label={label}
+                          onChange={(e) => {
+                            const raw = e.target.value.trim();
+                            if (!/^#[0-9a-fA-F]{0,6}$/.test(raw)) return;
+                            const next = { ...labelColors, [key]: raw };
+                            setLabelColors(next);
+                            if (isHexColor(raw)) persistLabelColors({ ...next, [key]: raw.toLowerCase() });
+                          }}
+                          onBlur={() => {
+                            if (!isHexColor(labelColors[key])) {
+                              setLabelColors(loadLabelColors());
+                            }
+                          }}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                  <div className="topo-display-defaults topo-display-defaults--canvas-bg topo-display-defaults--colors">
+                    <div className="topo-display-defaults__head">
+                      <strong>{t("topology.vendorColors")}</strong>
+                      <button
+                        type="button"
+                        className="btn btn--sm btn--ghost"
+                        onClick={() => {
+                          setVendorColors({ ...DEFAULT_VENDOR_COLORS });
+                          persistVendorColors({ ...DEFAULT_VENDOR_COLORS });
+                        }}
+                      >
+                        {t("topology.vendorColorsReset")}
+                      </button>
+                    </div>
+                    {VENDOR_TONE_KEYS.map((key) => {
+                      const label = t(`topology.vendorTone.${key}`);
+                      return (
+                        <div key={key} className="topo-display-defaults__row">
+                          <span className="topo-display-defaults__name">{label}</span>
+                          <input
+                            type="color"
+                            value={vendorColors[key]}
+                            title={label}
+                            onChange={(e) => {
+                              const next = { ...vendorColors, [key]: e.target.value.toLowerCase() };
+                              setVendorColors(next);
+                              persistVendorColors(next);
+                            }}
+                          />
+                          <input
+                            className="topo-toolbar__select topo-canvas-bg-hex"
+                            value={vendorColors[key]}
+                            spellCheck={false}
+                            aria-label={label}
+                            onChange={(e) => {
+                              const raw = e.target.value.trim();
+                              if (!/^#[0-9a-fA-F]{0,6}$/.test(raw)) return;
+                              const next = { ...vendorColors, [key]: raw };
+                              setVendorColors(next);
+                              if (isHexColor(raw)) {
+                                persistVendorColors({ ...next, [key]: raw.toLowerCase() });
+                              }
+                            }}
+                            onBlur={() => {
+                              if (!isHexColor(vendorColors[key])) {
+                                setVendorColors(loadVendorColors());
+                              }
+                            }}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="topo-display-defaults">
+                    <div className="topo-display-defaults__head">
+                      <strong>{t("topology.edgeDefaults")}</strong>
+                      <button type="button" className="btn btn--sm btn--ghost" onClick={resetEdgeDefaults}>
+                        {t("topology.edgeDefaultsReset")}
+                      </button>
+                    </div>
+                    {(
+                      [
+                        ["manual", t("topology.edgeManual")],
+                        ["discovered", t("topology.edgeDiscovered")],
+                        ["stale", t("topology.edgeStale")],
+                      ] as const
+                    ).map(([kind, label]) => {
+                      const d = edgeDefaults[kind];
+                      return (
+                        <div key={kind} className="topo-display-defaults__row">
+                          <span className="topo-display-defaults__name">{label}</span>
+                          <input
+                            type="color"
+                            value={d.stroke_color}
+                            title={t("topology.edgeColor")}
+                            onChange={(e) => updateEdgeDefault(kind, { stroke_color: e.target.value })}
+                          />
+                          <select
+                            className="topo-toolbar__select"
+                            aria-label={t("topology.edgeLineStyle")}
+                            value={d.line_style}
+                            onChange={(e) =>
+                              updateEdgeDefault(kind, {
+                                line_style: e.target.value as EdgeLineStyle,
+                              })
+                            }
+                          >
+                            <option value="solid">{t("topology.edgeLineSolid")}</option>
+                            <option value="dashed">{t("topology.edgeLineDashed")}</option>
+                            <option value="dotted">{t("topology.edgeLineDotted")}</option>
+                          </select>
+                          <select
+                            className="topo-toolbar__select"
+                            aria-label={t("topology.edgeWidth")}
+                            value={String(d.stroke_width)}
+                            onChange={(e) =>
+                              updateEdgeDefault(kind, { stroke_width: Number(e.target.value) || 2 })
+                            }
+                          >
+                            {[1, 2, 3, 4, 5, 6, 8].map((w) => (
+                              <option key={w} value={w}>
+                                {w}px
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </details>
+              <select
+                className="topo-toolbar__select"
+                aria-label={t("topology.align")}
+                disabled={selectedNodes.length < 2}
+                defaultValue=""
+                onChange={(e) => {
+                  const v = e.target.value as Parameters<typeof alignNodes>[2] | "";
+                  e.target.value = "";
+                  if (v) applyAlign(v);
+                }}
+              >
+                <option value="" disabled>
+                  {t("topology.align")}
+                </option>
+                <option value="left">{t("topology.alignLeft")}</option>
+                <option value="right">{t("topology.alignRight")}</option>
+                <option value="top">{t("topology.alignTop")}</option>
+                <option value="bottom">{t("topology.alignBottom")}</option>
+                <option value="h-center">{t("topology.alignHCenter")}</option>
+                <option value="v-center">{t("topology.alignVCenter")}</option>
+                <option value="h-distribute">{t("topology.alignHDistribute")}</option>
+                <option value="v-distribute">{t("topology.alignVDistribute")}</option>
+              </select>
+              <div
+                className="topo-toolbar__group topo-toolbar__group--find"
+                aria-label={t("topology.findNode")}
+                ref={findBoxRef}
+              >
+                <input
+                  className="topo-toolbar__find"
+                  value={canvasQuery}
+                  onChange={(e) => setCanvasQuery(e.target.value)}
+                  onFocus={() => {
+                    if (canvasQuery.trim()) setFindOpen(true);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "ArrowDown") {
+                      e.preventDefault();
+                      if (!canvasHits.length) return;
+                      setFindOpen(true);
+                      setFindActiveIdx((i) => (i + 1) % canvasHits.length);
+                      return;
+                    }
+                    if (e.key === "ArrowUp") {
+                      e.preventDefault();
+                      if (!canvasHits.length) return;
+                      setFindOpen(true);
+                      setFindActiveIdx((i) => (i - 1 + canvasHits.length) % canvasHits.length);
+                      return;
+                    }
+                    if (e.key === "Escape") {
+                      setFindOpen(false);
+                      return;
+                    }
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      findOnCanvas();
+                    }
+                  }}
+                  placeholder={t("topology.findNodePh")}
+                  disabled={!mapId || nodes.length === 0}
+                  aria-label={t("topology.findNode")}
+                  aria-autocomplete="list"
+                  aria-expanded={findOpen}
+                />
+                {findOpen && canvasQuery.trim() ? (
+                  <div className="topo-find-suggest" role="listbox">
+                    {canvasHits.length === 0 ? (
+                      <div className="topo-find-suggest__empty">{t("topology.findNoMatch")}</div>
+                    ) : (
+                      canvasHits.slice(0, 12).map((n, idx) => (
+                        <button
+                          key={n.id}
+                          type="button"
+                          role="option"
+                          aria-selected={idx === findActiveIdx}
+                          className={`topo-find-suggest__item${idx === findActiveIdx ? " is-active" : ""}`}
+                          onMouseEnter={() => setFindActiveIdx(idx)}
+                          onClick={() => findOnCanvas(n.id)}
+                        >
+                          <span className="topo-find-suggest__name">{n.data.label || n.id}</span>
+                          <span className="topo-find-suggest__meta">
+                            {[n.data.ne_ip, n.data.vendor].filter(Boolean).join(SEP)}
+                          </span>
+                        </button>
+                      ))
+                    )}
+                    {canvasHits.length > 12 ? (
+                      <div className="topo-find-suggest__more">
+                        {t("topology.findMore").replace("{{count}}", String(canvasHits.length - 12))}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+                </>
+              );
+              if (!fullscreen) {
+                if (!viewToolsToolbarSlot) return null;
+                return createPortal(viewToolsBody, viewToolsToolbarSlot);
+              }
+              return (
+                <div className="topo-view-tools" role="toolbar" aria-label={t("topology.display")}>
+                  {viewToolsBody}
+                </div>
+              );
+            })()}
             {fullscreen ? (
               <div className="topo-fs-toolbar" role="toolbar" aria-label={t("topology.toolModes")}>
                 {(
@@ -5171,17 +5171,31 @@ export function TopologyPage() {
         </div>
       ) : null}
 
-      {ctxMenu ? (
-        <ul
-          className={`topo-ctx${ctxMenu.kind === "edge" ? " topo-ctx--edge" : ""}`}
-          style={{ left: ctxMenu.x, top: ctxMenu.y }}
-          role="menu"
-          onContextMenu={(e) => e.preventDefault()}
-        >
+      {ctxMenu
+        ? createPortal(
+            <ul
+              className={`topo-ctx${ctxMenu.kind === "edge" ? " topo-ctx--edge" : ""}`}
+              style={{ left: ctxMenu.x, top: ctxMenu.y }}
+              role="menu"
+              onContextMenu={(e) => e.preventDefault()}
+            >
           {ctxMenu.kind === "selection" ? (
             <>
               <li className="topo-ctx__head" role="presentation">
                 {t("topology.selectionMenu")}
+              </li>
+              <li role="none">
+                <button
+                  type="button"
+                  className="topo-ctx__item"
+                  role="menuitem"
+                  onClick={() => {
+                    closeCtxMenu();
+                    void toggleFullscreen();
+                  }}
+                >
+                  {fullscreen ? t("topology.exitFullscreen") : t("topology.fullscreen")}
+                </button>
               </li>
               <li role="none">
                 <button
@@ -5223,11 +5237,37 @@ export function TopologyPage() {
                   </button>
                 </li>
               ) : null}
+              <li role="none">
+                <button
+                  type="button"
+                  className="topo-ctx__item"
+                  role="menuitem"
+                  onClick={() => {
+                    closeCtxMenu();
+                    void toggleFullscreen();
+                  }}
+                >
+                  {fullscreen ? t("topology.exitFullscreen") : t("topology.fullscreen")}
+                </button>
+              </li>
             </>
           ) : ctxMenu.kind === "node" ? (
             <>
               <li className="topo-ctx__head" role="presentation">
                 {t("topology.nodeMenu")}
+              </li>
+              <li role="none">
+                <button
+                  type="button"
+                  className="topo-ctx__item"
+                  role="menuitem"
+                  onClick={() => {
+                    closeCtxMenu();
+                    void toggleFullscreen();
+                  }}
+                >
+                  {fullscreen ? t("topology.exitFullscreen") : t("topology.fullscreen")}
+                </button>
               </li>
               <li role="none">
                 <button
@@ -5297,6 +5337,22 @@ export function TopologyPage() {
             </>
           ) : (
             <>
+              <li className="topo-ctx__head" role="presentation">
+                {t("topology.edgeMenu")}
+              </li>
+              <li role="none">
+                <button
+                  type="button"
+                  className="topo-ctx__item"
+                  role="menuitem"
+                  onClick={() => {
+                    closeCtxMenu();
+                    void toggleFullscreen();
+                  }}
+                >
+                  {fullscreen ? t("topology.exitFullscreen") : t("topology.fullscreen")}
+                </button>
+              </li>
               <li className="topo-ctx__section" role="none">
                 <div className="topo-ctx__style" onMouseDown={(e) => e.stopPropagation()}>
                   <div className="topo-ctx__style-title">{t("topology.edgeStyle")}</div>
@@ -5454,8 +5510,10 @@ export function TopologyPage() {
               </li>
             </>
           )}
-        </ul>
-      ) : null}
+            </ul>,
+            canvasRef.current || document.body,
+          )
+        : null}
     </div>
   );
 }

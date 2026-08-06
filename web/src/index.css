@@ -1,4 +1,4 @@
-* {
+﻿* {
   box-sizing: border-box;
 }
 
@@ -6892,6 +6892,19 @@ pre {
   max-height: 14px;
 }
 
+.topo-toolbar__panel--view {
+  margin-left: 2px;
+  padding-left: 10px;
+  border-left: 1px solid rgba(148, 163, 184, 0.2);
+  gap: 8px;
+}
+
+.topo-toolbar__panel--view .topo-toolbar__group--find {
+  margin-left: 0;
+  padding-left: 0;
+  border-left: 0;
+}
+
 .topo-fs-toolbar {
   position: absolute;
   top: 12px;
@@ -6906,6 +6919,53 @@ pre {
   border: 1px solid rgba(148, 163, 184, 0.22);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
   pointer-events: auto;
+}
+
+.topo-view-tools {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 20;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.92);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  pointer-events: auto;
+  max-width: min(520px, calc(100% - 24px));
+}
+
+.topo-view-tools .topo-toolbar__display {
+  position: relative;
+}
+
+.topo-view-tools .topo-toolbar__display .topo-display-toggles {
+  right: 0;
+  left: auto;
+  max-height: min(70vh, 520px);
+  overflow: auto;
+}
+
+.topo-view-tools .topo-toolbar__group--find {
+  margin-left: 0;
+  padding-left: 0;
+  border-left: 0;
+  position: relative;
+}
+
+.topo-view-tools .topo-toolbar__find {
+  width: 140px;
+  min-width: 120px;
+}
+
+.topo-canvas.is-fullscreen .topo-view-tools,
+.topo-canvas:fullscreen .topo-view-tools {
+  top: 12px;
+  right: 12px;
 }
 
 .topo-fs-toolbar__btn {
