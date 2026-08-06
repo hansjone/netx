@@ -1243,6 +1243,49 @@ class UmeTopologySyncTests(unittest.TestCase):
         self.assertEqual(details.get("deleted_topo_nodes"), 1)
         self.assertEqual(details.get("deleted_topo_links"), 1)
 
+    def test_sync_topology_duplicate_ids_in_payload(self):
+        class _Diag:
+            latency_ms = 1
+
+        class _C:
+            def get_topo_nodes(self):
+                row = {
+                    "nodeId": "dup-node",
+                    "name": "TOPO_NODE_MEaaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                    "nodeType": "TOPO_NODE_ME",
+                    "userLabel": "v1",
+                    "xPos": 1,
+                    "yPos": 2,
+                }
+                row2 = dict(row)
+                row2["userLabel"] = "v2"
+                row2["xPos"] = 9
+                return ([row, row2], _Diag())
+
+            def get_topological_links(self):
+                link = {
+                    "linkId": "dup-link",
+                    "name": "TL-1",
+                    "aEndTpRefList": ["ME{aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa},PTP={/p=1}"],
+                    "zEndTpRefList": ["ME{bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb},PTP={/p=2}"],
+                    "direction": "BI",
+                    "layerRate": 1,
+                }
+                link2 = dict(link)
+                link2["layerRate"] = 2
+                return ([link, link2], _Diag())
+
+        job = sync_topology_full(self.db, _C(), trigger_mode="manual")
+        self.assertEqual(job.status, "done", job.error_message)
+        self.db.expire_all()
+        node = self.db.get(UmeTopoNode, "dup-node")
+        self.assertIsNotNone(node)
+        self.assertEqual(node.user_label, "v2")
+        self.assertEqual(node.x_pos, 9)
+        link = self.db.get(UmeTopoLink, "dup-link")
+        self.assertIsNotNone(link)
+        self.assertEqual(link.layer_rate, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

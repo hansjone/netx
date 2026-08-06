@@ -1049,6 +1049,7 @@ const zh = {
         alarms_sync_in_progress_skip: "另一条当前告警 REST 同步进行中，已跳过",
         pulling_inventory: "正在拉取 UME 网元清单…",
         pulling_topology: "正在拉取 UME 拓扑（节点/链路）…",
+        topology_sync_busy: "拓扑同步进行中，已跳过",
         ume_ws_disabled_no_base_url: "未启用或未配置 UME_BASE_URL",
         oclaw_fwd_disabled: "未启用或未配置 NETX_OCLAW_ALARM_WS / token / url",
         resumed_sync_soon: "已恢复：将跳过本轮周期等待并尽快同步",

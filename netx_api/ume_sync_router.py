@@ -66,17 +66,33 @@ def ume_sync(payload: dict[str, Any] | None = None, db: Session = Depends(get_db
                 }
             )
         if "topology" in domain_set:
-            job = sync_topology_full(db, client, trigger_mode=trigger_mode)
-            out["jobs"].append(
-                {
-                    "domain": "topology",
-                    "status": job.status,
-                    "pulled_count": int(job.pulled_count or 0),
-                    "inserted_count": int(job.inserted_count or 0),
-                    "updated_count": int(job.updated_count or 0),
-                    "error_message": str(job.error_message or ""),
-                }
-            )
+            try:
+                job = sync_topology_full(db, client, trigger_mode=trigger_mode)
+                out["jobs"].append(
+                    {
+                        "domain": "topology",
+                        "status": job.status,
+                        "pulled_count": int(job.pulled_count or 0),
+                        "inserted_count": int(job.inserted_count or 0),
+                        "updated_count": int(job.updated_count or 0),
+                        "error_message": str(job.error_message or ""),
+                    }
+                )
+            except RuntimeError as exc:
+                msg = str(exc)
+                if msg.startswith("topology_sync_busy"):
+                    out["jobs"].append(
+                        {
+                            "domain": "topology",
+                            "status": "skipped",
+                            "pulled_count": 0,
+                            "inserted_count": 0,
+                            "updated_count": 0,
+                            "error_message": msg[:240],
+                        }
+                    )
+                else:
+                    raise
         if "alarms" in domain_set or "alarms_current" in domain_set:
             paused_ws_for_sync = False
             if is_wss_active_for_current_alarms() and trigger_mode == "manual":

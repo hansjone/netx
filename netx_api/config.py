@@ -58,7 +58,8 @@ class Settings(BaseSettings):
     ume_sync_inventory_every_hours: int = 48
     ume_sync_topology_auto_enabled: bool = True
     ume_sync_topology_every_hours: int = 24
-    ume_topology_timeout_s: float = 120.0
+    ume_topology_timeout_s: float = 600.0
+    ume_sync_topology_stale_running_sec: int = 1800
     ume_token_path: str = "/restconf/operations/zte-security:oauth_token"
     ume_token_handshake_path: str = "/restconf/operations/zte-security:oauth_handshake"
     ume_token_logout_path: str = "/restconf/operations/zte-security:oauth_token"

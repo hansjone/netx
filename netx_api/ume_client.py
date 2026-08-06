@@ -241,7 +241,12 @@ class UMEClient:
         # Use explicit HTTPTransport to keep behavior consistent with onsite validation.
         # In this mode, requests run over HTTP/1.1 and avoid HTTP/2 negotiation issues.
         transport = httpx.HTTPTransport(verify=self.verify_tls, http2=False)
-        to = self.timeout_s if timeout_s is None else max(3.0, float(timeout_s))
+        if timeout_s is None:
+            to: float | httpx.Timeout = self.timeout_s
+        else:
+            # Large topology dumps need a long read window; connect stays short.
+            read_s = max(3.0, float(timeout_s))
+            to = httpx.Timeout(connect=min(30.0, read_s), read=read_s, write=min(60.0, read_s), pool=30.0)
         return httpx.Client(transport=transport, timeout=to)
         
 
@@ -615,11 +620,38 @@ class UMEClient:
     def _topology_timeout_s(self) -> float:
         base = float(getattr(settings, "ume_topology_timeout_s", 0) or 0)
         if base > 0:
-            return max(3.0, base)
-        return max(self.timeout_s, 60.0)
+            return max(30.0, base)
+        return max(self.timeout_s, 600.0)
+
+    @staticmethod
+    def _extract_restconf_list(payload: dict[str, Any], *, containers: list[str], items: list[str]) -> list[dict[str, Any]]:
+        """Fast path for TopoNodes/TopologicalLinks without O(n) json.dumps dedupe walks."""
+        container_keys = {str(k).lower() for k in containers}
+        item_keys = {str(k).lower() for k in items}
+        for ck, cv in payload.items():
+            if str(ck).lower() not in container_keys:
+                continue
+            if isinstance(cv, list):
+                return [x for x in cv if isinstance(x, dict)]
+            if isinstance(cv, dict):
+                for ik, iv in cv.items():
+                    if str(ik).lower() in item_keys and isinstance(iv, list):
+                        return [x for x in iv if isinstance(x, dict)]
+                # Some payloads nest once more under the same item key.
+                for iv in cv.values():
+                    if isinstance(iv, list) and iv and isinstance(iv[0], dict):
+                        return [x for x in iv if isinstance(x, dict)]
+        return []
 
     def get_topo_nodes(self) -> tuple[list[dict[str, Any]], RequestDiagnostics]:
         data, diag = self.request_json("GET", self.topo_nodes_path, timeout_s=self._topology_timeout_s())
+        rows = self._extract_restconf_list(
+            data,
+            containers=["TopoNodes", "topo-nodes", "topoNodes"],
+            items=["TopoNode", "topo-node", "topoNode"],
+        )
+        if rows:
+            return rows, diag
         rows = self._extract_named_list(data, ["TopoNodes", "TopoNode", "topo-nodes", "topo-node"])
         if rows:
             return rows, diag
@@ -633,6 +665,13 @@ class UMEClient:
         data, diag = self.request_json(
             "GET", self.topological_links_path, timeout_s=self._topology_timeout_s()
         )
+        rows = self._extract_restconf_list(
+            data,
+            containers=["TopologicalLinks", "topological-links", "topologicalLinks"],
+            items=["TopologicalLink", "topological-link", "topologicalLink"],
+        )
+        if rows:
+            return rows, diag
         rows = self._extract_named_list(
             data, ["TopologicalLinks", "TopologicalLink", "topological-links", "topological-link"]
         )

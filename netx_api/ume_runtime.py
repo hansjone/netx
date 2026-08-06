@@ -25,6 +25,7 @@ from .ume_alarm_ws import (
     start_ume_alarm_ws_consumer,
 )
 from .ume_sync_service import sync_alarms_current, sync_inventory_full, sync_topology_full
+from .ume_sync_topology import fail_stale_topology_running_jobs
 from .runtime_task_messages import (
     RT_ALARMS_SYNC_IN_PROGRESS_SKIP,
     RT_KEEPALIVE_FAILED,
@@ -323,6 +324,7 @@ def start_api_sideband_threads() -> None:
                         )
                         db = SessionLocal()
                         try:
+                            fail_stale_topology_running_jobs(db)
                             client = ume_support._ume_client()
                             sync_topology_full(db, client, trigger_mode="schedule")
                             _schedule_log.info("topology_auto_sync: sync finished ok")
@@ -334,6 +336,17 @@ def start_api_sideband_threads() -> None:
                             )
                         finally:
                             db.close()
+                    except RuntimeError as exc:
+                        if str(exc).startswith("topology_sync_busy"):
+                            _schedule_log.info("topology_auto_sync: skipped busy (%s)", exc)
+                            ume_support._refresh_runtime_task_idle(
+                                "topology_auto_sync",
+                                "topology",
+                                last_error="rt:topology_sync_busy",
+                            )
+                            time.sleep(30)
+                        else:
+                            raise
                     except Exception as exc:
                         _schedule_log.exception("topology_auto_sync: sync failed: %s", exc)
                         ume_support._set_runtime_task(
