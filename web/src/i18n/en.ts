@@ -1081,6 +1081,10 @@ const en = {
         disabled: "Disabled",
         connecting: "Connecting",
         connected: "Connected",
+        connect_refused: "OClaw gateway down or port 8787 refused",
+        connect_timeout: "Timed out connecting to OClaw gateway",
+        auth_failed: "OClaw netx-bridge auth failed (check shared token)",
+        disconnected: "OClaw WSS disconnected",
       },
       runtimeTask: {
         token_keepalive: "UME token keepalive",

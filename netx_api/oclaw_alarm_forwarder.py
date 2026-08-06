@@ -12,8 +12,32 @@ from typing import Any
 import websocket
 
 from .config import settings
+from .runtime_task_messages import fwd_state_code
 
 _log = logging.getLogger("netx.oclaw.alarm_forwarder")
+
+
+def _normalize_bridge_error(exc: BaseException | str) -> str:
+    """Map low-level WS errors to stable fwd:* codes for UI i18n."""
+    raw = str(exc or "").strip()
+    low = raw.lower()
+    name = type(exc).__name__ if isinstance(exc, BaseException) else ""
+    if (
+        "10061" in raw
+        or "actively refused" in low
+        or "积极拒绝" in raw
+        or "connection refused" in low
+        or name == "ConnectionRefusedError"
+    ):
+        return fwd_state_code("connect_refused")
+    if "timed out" in low or "timeout" in low or name in {"TimeoutError", "socket.timeout"}:
+        return fwd_state_code("connect_timeout")
+    if "auth failed" in low or "auth-fail" in low or "invalid_token" in low:
+        return fwd_state_code("auth_failed")
+    if raw:
+        return raw[:200]
+    return fwd_state_code("disconnected")
+
 
 _OUTBOUND_Q: "queue.Queue[dict[str, Any]] | None" = None
 _Q_LOCK = threading.Lock()
@@ -274,8 +298,8 @@ def _run_loop() -> None:
                     _outbound_q().task_done()
         except Exception as exc:
             _CONNECTED.clear()
-            err = str(exc)[:200]
-            _log.warning("oclaw netx-bridge disconnected: %s", err)
+            err = _normalize_bridge_error(exc)
+            _log.warning("oclaw netx-bridge disconnected: %s", str(exc)[:200])
             _notify_status(err)
             time.sleep(backoff_s)
             backoff_s = min(backoff_s * 1.5, 60.0)

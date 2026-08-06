@@ -1074,6 +1074,10 @@ const zh = {
         disabled: "未启用",
         connecting: "连接中",
         connected: "已连接",
+        connect_refused: "OClaw 网关未启动或 8787 拒绝连接",
+        connect_timeout: "连接 OClaw 网关超时",
+        auth_failed: "OClaw netx-bridge 鉴权失败（检查共享 token）",
+        disconnected: "OClaw WSS 已断开",
       },
       runtimeTask: {
         token_keepalive: "UME Token 保活",
