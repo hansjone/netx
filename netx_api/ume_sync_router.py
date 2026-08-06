@@ -1,69 +1,40 @@
 """UME sync jobs and runtime pause/resume."""
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from .config import settings
 from .db import get_db
-from .key_alert_config import (
-    get_key_alert_monitor_config,
-    invalidate_key_alert_config_cache,
-    set_key_alert_monitor_config,
-)
-from .key_alert_matcher import (
-    invalidate_key_alert_rule_cache,
-    normalize_match_type,
-    parse_rule_ne_types_payload,
-    rule_match_type,
-    rule_match_value,
-    rule_ne_types,
-    rule_storage_key,
-    serialize_rule_ne_types,
-)
-from .models import (
-    UmeAlarmCurrent,
-    UmeAlarmHistory,
-    UmeInventoryNE,
-    UmeKeyAlertForwardLog,
-    UmeKeyAlertRule,
-    UmeSyncJob,
-)
-from .oclaw_alarm_forwarder import (
-    forwarder_status,
-    request_forwarder_reconnect,
+from .models import UmeSyncJob
+from .oclaw_alarm_forwarder import request_forwarder_reconnect
+from .runtime_task_messages import (
+    RT_RESUMED,
+    RT_RESUMED_OCLAW_WSS_RECONNECT,
+    RT_RESUMED_SYNC_SOON,
+    RT_RESUMED_WSS_RECONNECT,
 )
 from .ume_alarm_ws import (
-    cancel_alarm_subscription_manual,
-    clear_local_alarm_subscription_manual,
-    establish_alarm_subscription_manual,
-    get_alarms_coordination_status,
     get_subscription_status,
-    get_ws_connection_status,
-    get_ws_logs,
+    is_wss_active_for_current_alarms,
     request_ws_reconnect,
 )
 from .ume_support import (
     UME_KNOWN_RUNTIME_TASKS,
-    _aggregate_rows,
+    _clear_force_resume_hints,
     _ensure_utc,
     _list_runtime_tasks,
     _request_force_sync_after_resume,
     _runtime_pause_task,
     _runtime_resume_task,
-    _ume_alarm_host_name,
-    _ume_alarm_ne_group_key,
+    _set_runtime_task,
     _ume_client,
-    _ume_error_kind,
-    _clear_force_resume_hints,
 )
 from .ume_sync_service import sync_alarms_current, sync_alarms_history_full, sync_inventory_full
-from .ume_token_store import clear_shared_token
 
 _log = logging.getLogger("netx.ume.router")
 router = APIRouter(tags=["ume"])

@@ -50,6 +50,7 @@ from .ume_alarm_ws import (
 )
 from .ume_support import (
     UME_KNOWN_RUNTIME_TASKS,
+    _UME_RUNTIME_TASKS,
     _aggregate_rows,
     _ensure_utc,
     _list_runtime_tasks,
