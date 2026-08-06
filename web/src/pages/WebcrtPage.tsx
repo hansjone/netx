@@ -16,6 +16,7 @@ import { useToast } from "../hooks/useToast";
 import {
   ApiRequestError,
   closeWebcrtSession,
+  closeWebcrtSessionsKeepalive,
   createWebcrtSession,
   deleteManagedNe,
   fetchCliTargets,
@@ -79,6 +80,7 @@ const LOG_COMPACT_CHUNKS = 1500;
 const LOG_MAX_CHARS = 8 * 1024 * 1024;
 /** Keep active + recent tabs mounted; colder tabs detach WS until focused (fresh ticket on remount). */
 const WARM_TAB_LIMIT = 8;
+/** Legacy key — cleared on load; sessions no longer auto-restore after leaving WebCRT. */
 const OPEN_TABS_STORAGE_KEY = "netx.webcrt.openTabs.v1";
 
 type ColorSchemeId = "dark" | "blackWhite" | "whiteBlack" | "greenBlack" | "amberBlack" | "custom";
@@ -688,42 +690,10 @@ export function WebcrtPage() {
   const [keywordInput, setKeywordInput] = useState("");
   const [keyword, setKeyword] = useState("");
   const [page, setPage] = useState(1);
-  const [tabs, setTabs] = useState<TermTab[]>(() => {
-    try {
-      const raw = sessionStorage.getItem(OPEN_TABS_STORAGE_KEY);
-      if (!raw) return [];
-      const parsed = JSON.parse(raw) as { tabs?: TermTab[] };
-      const items = Array.isArray(parsed.tabs) ? parsed.tabs : [];
-      return items
-        .filter((t) => t && t.key && t.target && t.sessionId)
-        .map((t) => ({
-          ...t,
-          // Force remount + fresh ticket after returning to the page.
-          status: "connecting" as const,
-          connectPhase: "authenticating" as const,
-          termEpoch: Number(t.termEpoch || 0) + 1,
-          wsUrl: "",
-          errorMessage: undefined,
-        }));
-    } catch {
-      return [];
-    }
-  });
-  const [activeTabKey, setActiveTabKey] = useState(() => {
-    try {
-      const raw = sessionStorage.getItem(OPEN_TABS_STORAGE_KEY);
-      if (!raw) return "";
-      const parsed = JSON.parse(raw) as { activeTabKey?: string; tabs?: TermTab[] };
-      const key = String(parsed.activeTabKey || "");
-      if (key && (parsed.tabs || []).some((t) => t.key === key && t.sessionId)) return key;
-      const first = (parsed.tabs || []).find((t) => t.sessionId);
-      return first?.key || "";
-    } catch {
-      return "";
-    }
-  });
+  const [tabs, setTabs] = useState<TermTab[]>([]);
+  const [activeTabKey, setActiveTabKey] = useState("");
   /** MRU tab keys for warm-mount (active always mounts via isActive even before this updates). */
-  const [warmOrder, setWarmOrder] = useState<string[]>(() => (activeTabKey ? [activeTabKey] : []));
+  const [warmOrder, setWarmOrder] = useState<string[]>([]);
   const [sftpOpen, setSftpOpen] = useState(false);
   const [sftpPath, setSftpPath] = useState(".");
   const [sftpBusy, setSftpBusy] = useState(false);
@@ -778,13 +748,58 @@ export function WebcrtPage() {
   /** Chunk lists avoid O(n²) string append while recording. */
   const logBuffersRef = useRef<Map<string, string[]>>(new Map());
   const lastQueueDropToastAtRef = useRef(0);
-  /** Limit silent WS remount retries per tab to avoid storms. */
-  const softWsRetryRef = useRef<Map<string, number>>(new Map());
   const optionsMenuRef = useRef<HTMLDivElement | null>(null);
   const tabMenuRef = useRef<HTMLDivElement | null>(null);
   const treeMenuRef = useRef<HTMLDivElement | null>(null);
   const sessionOptsRef = useRef(sessionOpts);
   sessionOptsRef.current = sessionOpts;
+  /** True while this page instance is mounted (StrictMode-safe leave close). */
+  const pageAliveRef = useRef(true);
+  const leaveCloseDoneRef = useRef(false);
+
+  useEffect(() => {
+    try {
+      sessionStorage.removeItem(OPEN_TABS_STORAGE_KEY);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const closeThisPageSessionsOnLeave = useCallback((mode: "keepalive" | "async") => {
+    if (leaveCloseDoneRef.current) return;
+    leaveCloseDoneRef.current = true;
+    // Only sessions owned by THIS WebCRT window (tabsRef), never other windows.
+    const ids = tabsRef.current
+      .map((t) => String(t.sessionId || "").trim())
+      .filter(Boolean);
+    if (!ids.length) return;
+    if (mode === "keepalive") {
+      closeWebcrtSessionsKeepalive(ids);
+      return;
+    }
+    for (const id of ids) {
+      void closeWebcrtSession(id).catch(() => undefined);
+    }
+  }, []);
+
+  // Close this window's sessions on leave; other WebCRT windows keep theirs.
+  useEffect(() => {
+    pageAliveRef.current = true;
+    leaveCloseDoneRef.current = false;
+    const onUnload = () => closeThisPageSessionsOnLeave("keepalive");
+    window.addEventListener("pagehide", onUnload);
+    window.addEventListener("beforeunload", onUnload);
+    return () => {
+      pageAliveRef.current = false;
+      window.removeEventListener("pagehide", onUnload);
+      window.removeEventListener("beforeunload", onUnload);
+      // Defer so React StrictMode remount can cancel; real leave closes after.
+      window.setTimeout(() => {
+        if (pageAliveRef.current) return;
+        closeThisPageSessionsOnLeave("async");
+      }, 400);
+    };
+  }, [closeThisPageSessionsOnLeave]);
 
   useEffect(() => {
     if (!activeTabKey) return;
@@ -792,32 +807,6 @@ export function WebcrtPage() {
   }, [activeTabKey]);
 
   const warmTabKeys = useMemo(() => new Set(warmOrder.slice(0, WARM_TAB_LIMIT)), [warmOrder]);
-
-  // Persist open tabs so leaving /webcrt and coming back can re-attach within detach grace.
-  useEffect(() => {
-    const slim = tabs
-      .filter((t) => t.sessionId)
-      .map((t) => ({
-        key: t.key,
-        sessionId: t.sessionId,
-        wsUrl: "",
-        termEpoch: t.termEpoch,
-        target: t.target,
-        status: t.status,
-        recording: t.recording,
-        encoding: t.encoding,
-        cliHop: t.cliHop,
-        sftpReady: t.sftpReady,
-      }));
-    try {
-      sessionStorage.setItem(
-        OPEN_TABS_STORAGE_KEY,
-        JSON.stringify({ tabs: slim, activeTabKey }),
-      );
-    } catch {
-      /* ignore quota */
-    }
-  }, [tabs, activeTabKey]);
 
   useEffect(() => {
     if (!optionsMenuOpen) return;
@@ -1396,7 +1385,7 @@ export function WebcrtPage() {
 
   const reconnectTab = useCallback(
     async (tab: TermTab) => {
-      // Prefer re-attach while the device PTY may still be in detach grace.
+      // Manual only: re-attach if backend session still exists, else full reconnect.
       const canReattach =
         Boolean(tab.sessionId) &&
         !isDeviceClosedMessage(tab.errorMessage) &&
@@ -2336,9 +2325,12 @@ export function WebcrtPage() {
               {tabs.map((tab) => {
                 const isActive = activeTabKey === tab.key;
                 // Cap concurrent xterm+WS: active always mounts; keep recent tabs warm.
-                // Colder tabs detach (server grace); remount mints a fresh ws_ticket via sessionId.
+                // Do not mount while disconnected — reconnect is manual (no silent remount).
                 const mountTerminal = Boolean(
-                  tab.sessionId && (isActive || warmTabKeys.has(tab.key)),
+                  tab.sessionId &&
+                    tab.status !== "closed" &&
+                    tab.status !== "error" &&
+                    (isActive || warmTabKeys.has(tab.key)),
                 );
                 return (
                 <div
@@ -2432,7 +2424,6 @@ export function WebcrtPage() {
                         }}
                         onStatus={(state, message, phase, meta) => {
                           if (state === "connected") {
-                            softWsRetryRef.current.delete(tab.key);
                             updateTab(tab.key, {
                               status: "connected",
                               connectPhase: undefined,
@@ -2469,40 +2460,14 @@ export function WebcrtPage() {
                           } else if (state === "error") {
                             const errMsg = message || t("webcrt.disconnectBannerError");
                             const sid = tab.sessionId;
-                            // Re-attach missed the grace window → create a fresh session.
+                            // Session gone / auth failure: stop here — user must click Reconnect.
                             if (sid && isSessionGoneError(errMsg)) {
                               updateTab(tab.key, {
-                                status: "connecting",
+                                status: "closed",
                                 sessionId: "",
                                 wsUrl: "",
-                                connectPhase: "creating",
-                                errorMessage: undefined,
-                              });
-                              void openTarget(tab.target, { force: true });
-                              return;
-                            }
-                            // Transient browser WS failures (tab switch / page leave / ticket race):
-                            // keep session_id and silently remount with a fresh ticket (once).
-                            const transientWs =
-                              /^(websocket_error|websocket_closed)/i.test(String(message || "")) ||
-                              String(message || "").toLowerCase().includes("websocket");
-                            if (transientWs && sid) {
-                              const retries = softWsRetryRef.current.get(tab.key) || 0;
-                              if (retries < 1) {
-                                softWsRetryRef.current.set(tab.key, retries + 1);
-                                updateTab(tab.key, {
-                                  status: "connecting",
-                                  connectPhase: "authenticating",
-                                  termEpoch: tab.termEpoch + 1,
-                                  errorMessage: undefined,
-                                });
-                                return;
-                              }
-                              softWsRetryRef.current.set(tab.key, 0);
-                              updateTab(tab.key, {
-                                status: "closed",
                                 connectPhase: undefined,
-                                errorMessage: t("webcrt.disconnectBanner"),
+                                errorMessage: webcrtErrorMessage(errMsg, t),
                               });
                               return;
                             }
@@ -2521,28 +2486,7 @@ export function WebcrtPage() {
                             }
                           } else if (state === "closed") {
                             const msg = String(message || "");
-                            // Local WS drop (unmount / navigate away): PTY stays in detach grace.
-                            // Remount with a fresh ticket instead of showing a hard disconnect.
-                            if (msg.startsWith("websocket_closed:") && tab.sessionId) {
-                              const retries = softWsRetryRef.current.get(tab.key) || 0;
-                              if (retries < 1) {
-                                softWsRetryRef.current.set(tab.key, retries + 1);
-                                updateTab(tab.key, {
-                                  status: "connecting",
-                                  connectPhase: "authenticating",
-                                  termEpoch: tab.termEpoch + 1,
-                                  errorMessage: undefined,
-                                });
-                                return;
-                              }
-                              softWsRetryRef.current.set(tab.key, 0);
-                              updateTab(tab.key, {
-                                status: "closed",
-                                connectPhase: undefined,
-                                errorMessage: t("webcrt.disconnectBanner"),
-                              });
-                              return;
-                            }
+                            // No silent remount / auto re-login — show banner; user clicks Reconnect.
                             const deviceGone = isDeviceClosedMessage(msg);
                             updateTab(tab.key, {
                               status: "closed",

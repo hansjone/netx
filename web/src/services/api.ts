@@ -665,6 +665,21 @@ export const closeWebcrtSession = (sessionId: string) =>
     `/v1/webcrt/sessions/${encodeURIComponent(sessionId)}`,
   );
 
+/** Best-effort close during tab/window unload (fetch keepalive survives navigation). */
+export function closeWebcrtSessionsKeepalive(sessionIds: string[]): void {
+  const ids = [...new Set(sessionIds.map((id) => String(id || "").trim()).filter(Boolean))];
+  if (!ids.length) return;
+  const headers = authHeaders();
+  for (const id of ids) {
+    const path = `/v1/webcrt/sessions/${encodeURIComponent(id)}`;
+    try {
+      void fetch(path, { method: "DELETE", headers, keepalive: true });
+    } catch {
+      /* ignore unload failures */
+    }
+  }
+}
+
 export type WebcrtSftpItem = {
   name: string;
   size: number;
