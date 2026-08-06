@@ -291,8 +291,69 @@ def api_create_view(body: TopologyViewCreate, db: Session = Depends(get_db)) -> 
 
 
 @router.get("/views/{view_id}")
-def api_get_view(view_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+def api_get_view(
+    view_id: str,
+    min_x: float | None = Query(default=None),
+    max_x: float | None = Query(default=None),
+    min_y: float | None = Query(default=None),
+    max_y: float | None = Query(default=None),
+    sbn_id: str = Query(default=""),
+    folder_id: str = Query(default=""),
+    lod: str = Query(default="auto", description="auto|sbn|me"),
+    status: str = Query(default="active"),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    from .topology_views_tree import _get_view_or_404
+    from .ume_topology_world import is_ume_canvas_view
+    from .ume_topology_world_graph import get_ume_canvas_graph
+
+    row = _get_view_or_404(db, view_id)
+    if is_ume_canvas_view(row):
+        return get_ume_canvas_graph(
+            db,
+            view_id,
+            min_x=min_x,
+            max_x=max_x,
+            min_y=min_y,
+            max_y=max_y,
+            sbn_id=sbn_id,
+            folder_id=folder_id,
+            lod=lod,
+            status=status,
+        ).model_dump()
     return get_view_graph(db, view_id).model_dump()
+
+
+@router.get("/folders/{folder_id}/bbox")
+def api_folder_bbox(folder_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    from .ume_topology_world import folder_bbox
+
+    box = folder_bbox(db, folder_id)
+    if box is None:
+        raise HTTPException(status_code=404, detail="bbox_unavailable")
+    return {"folder_id": folder_id, **box}
+
+
+@router.get("/world")
+def api_get_world(db: Session = Depends(get_db)) -> dict[str, Any]:
+    from .ume_topology_world import ensure_ume_world_and_sbn_folders, get_world_view
+
+    ensure_ume_world_and_sbn_folders(db)
+    view = get_world_view(db)
+    if view is None:
+        raise HTTPException(status_code=404, detail="world_view_missing")
+    return {"view_id": view.id, "folder_id": view.folder_id or "", "name": view.name}
+
+
+@router.post("/world/apply-ume")
+def api_apply_ume_world(db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Manual: dock tables → fabric coords/edges + SBN folders (does not pull UME)."""
+    from .ume_topology_apply import apply_ume_topology_to_fabric
+    from .ume_topology_world import ensure_ume_world_and_sbn_folders
+
+    apply_stats = apply_ume_topology_to_fabric(db)
+    world_stats = ensure_ume_world_and_sbn_folders(db)
+    return {"ok": True, "fabric_apply": apply_stats, "world": world_stats}
 
 
 @router.patch("/views/{view_id}")

@@ -413,6 +413,7 @@ export type TopologyTreeFolderItem = {
   name: string;
   sort_order: number;
   is_system: boolean;
+  external_ref?: string;
   views: TopologyTreeViewItem[];
   children: TopologyTreeFolderItem[];
 };
@@ -510,6 +511,11 @@ export type TopologyViewNodeItem = {
   device_type: string;
   connect_status: string;
   managed_source?: string;
+  /** ne | region — region drills into a child canvas */
+  kind?: string;
+  folder_id?: string;
+  view_id?: string;
+  node_count?: number;
 };
 
 export type TopologyViewEdgeItem = {

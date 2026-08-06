@@ -78,6 +78,9 @@ def upsert_fabric_edge(
     Self-loops are skipped (``(None, \"skipped_self_loop\")``) so LLDP discovery can
     ignore a device advertising itself without aborting the rest of the scan.
     Manual edge APIs should treat that action as a client error.
+
+    ``source`` may be ``lldp`` | ``manual`` | ``ume``. Provenance is tracked in
+    ``attrs.sources`` (union). Primary ``source`` column prefers manual > lldp > ume.
     """
     now = now or _utcnow()
     a, b, ap, bp = _normalize_endpoints(a_node_id, b_node_id, a_port, b_port)
@@ -87,7 +90,7 @@ def upsert_fabric_edge(
     src = str(source or "lldp").strip().lower() or "lldp"
     if src == "stale":
         src = "lldp"
-    if src not in {"lldp", "manual"}:
+    if src not in {"lldp", "manual", "ume"}:
         raise HTTPException(status_code=400, detail="invalid_edge_source")
     row = (
         db.query(TopoFabricEdge)
@@ -112,8 +115,8 @@ def upsert_fabric_edge(
                     b_port=bp,
                     source=src,
                     status="active",
-                    attrs={},
-                    discovered_at=now if src == "lldp" else None,
+                    attrs={"sources": [src]},
+                    discovered_at=now if src in {"lldp", "ume"} else None,
                     last_seen_at=now,
                     created_at=now,
                     updated_at=now,
@@ -135,16 +138,93 @@ def upsert_fabric_edge(
             )
             if row is None:
                 raise
-    if (row.source or "") == "manual" and src == "lldp":
+    # Manual edges keep primary source=manual; still record other sources.
+    attrs = _clear_miss_attrs(_edge_attrs(row))
+    sources = _sources_from_attrs(attrs, fallback=row.source or src)
+    sources.add(src)
+    attrs["sources"] = sorted(sources)
+    if (row.source or "") == "manual" and src != "manual":
+        row.attrs = attrs
+        row.status = "active"
+        row.last_seen_at = now
+        row.updated_at = now
         return row, "kept_manual"
-    row.source = src
+    row.source = _primary_source(sources)
     row.status = "active"
-    row.attrs = _clear_miss_attrs(_edge_attrs(row))
-    if src == "lldp":
+    row.attrs = attrs
+    if src in {"lldp", "ume"}:
         row.discovered_at = row.discovered_at or now
     row.last_seen_at = now
     row.updated_at = now
     return row, "updated"
+
+
+def _sources_from_attrs(attrs: dict[str, Any], *, fallback: str = "") -> set[str]:
+    raw = attrs.get("sources") if isinstance(attrs, dict) else None
+    out: set[str] = set()
+    if isinstance(raw, (list, tuple, set)):
+        for item in raw:
+            s = str(item or "").strip().lower()
+            if s in {"lldp", "manual", "ume"}:
+                out.add(s)
+    fb = str(fallback or "").strip().lower()
+    if fb in {"lldp", "manual", "ume"}:
+        out.add(fb)
+    elif fb == "stale":
+        out.add("lldp")
+    return out
+
+
+def _primary_source(sources: set[str]) -> str:
+    if "manual" in sources:
+        return "manual"
+    if "lldp" in sources:
+        return "lldp"
+    if "ume" in sources:
+        return "ume"
+    return "lldp"
+
+
+def find_fabric_edge_compatible(
+    db: Session,
+    *,
+    a_node_id: str,
+    b_node_id: str,
+    a_port: str,
+    b_port: str,
+    layer: str = "physical",
+) -> TopoFabricEdge | None:
+    """Exact match first, then same endpoints with compatible port names."""
+    from .ume_port_normalize import port_keys_compatible
+
+    a, b, ap, bp = _normalize_endpoints(a_node_id, b_node_id, a_port, b_port)
+    layer_v = str(layer or "physical").strip() or "physical"
+    exact = (
+        db.query(TopoFabricEdge)
+        .filter(
+            TopoFabricEdge.layer == layer_v,
+            TopoFabricEdge.a_node_id == a,
+            TopoFabricEdge.b_node_id == b,
+            TopoFabricEdge.a_port == ap,
+            TopoFabricEdge.b_port == bp,
+        )
+        .one_or_none()
+    )
+    if exact is not None:
+        return exact
+    candidates = (
+        db.query(TopoFabricEdge)
+        .filter(
+            TopoFabricEdge.layer == layer_v,
+            TopoFabricEdge.a_node_id == a,
+            TopoFabricEdge.b_node_id == b,
+        )
+        .all()
+    )
+    for e in candidates:
+        if port_keys_compatible(e.a_port, ap) and port_keys_compatible(e.b_port, bp):
+            return e
+    return None
 
 
 def _absorb_fabric_node(db: Session, canon: TopoFabricNode, dupe: TopoFabricNode) -> None:

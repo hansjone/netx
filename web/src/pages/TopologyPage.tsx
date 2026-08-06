@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type ReactNode,
 } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -49,6 +50,7 @@ import {
   fetchManagedNeById,
   fetchTopologyGraph,
   fetchTopologyTree,
+  fetchTopologyWorld,
   fetchUmeNe,
   patchTopologyEdgeStyle,
   patchTopologyPositions,
@@ -103,8 +105,113 @@ function findViewInRegion(
   for (const region of regions) {
     const view = (region.views || []).find((v) => v.id === viewId);
     if (view) return { region, view };
+    const nested = findViewInRegion(region.children || [], viewId);
+    if (nested) return nested;
   }
   return null;
+}
+
+function findFolderInTree(
+  folders: TopologyTreeFolderItem[],
+  folderId: string,
+): TopologyTreeFolderItem | null {
+  for (const folder of folders) {
+    if (folder.id === folderId) return folder;
+    const nested = findFolderInTree(folder.children || [], folderId);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+function indexFoldersById(
+  folders: TopologyTreeFolderItem[],
+  acc: Map<string, TopologyTreeFolderItem> = new Map(),
+): Map<string, TopologyTreeFolderItem> {
+  for (const folder of folders) {
+    acc.set(folder.id, folder);
+    indexFoldersById(folder.children || [], acc);
+  }
+  return acc;
+}
+
+/** Self + ancestors (rootward), for expanding the left tree path. */
+function folderPathIds(
+  folders: TopologyTreeFolderItem[],
+  folderId: string,
+): string[] {
+  const byId = indexFoldersById(folders);
+  const path: string[] = [];
+  let cur: string | undefined = folderId;
+  const seen = new Set<string>();
+  while (cur && !seen.has(cur)) {
+    seen.add(cur);
+    path.push(cur);
+    const folder = byId.get(cur);
+    const parent = String(folder?.parent_id || "").trim();
+    // Stop at topology root (kind=root) — regions list only contains region folders.
+    if (!folder || !parent || !byId.has(parent)) break;
+    cur = parent;
+  }
+  return path;
+}
+
+/** UME World container only — hex nav, not a canvas. */
+function isUmeWorldContainer(folder: TopologyTreeFolderItem | null | undefined): boolean {
+  if (!folder) return false;
+  const ext = String(folder.external_ref || "").trim();
+  return ext === "ume:world" || folder.name === "UME World";
+}
+
+/** UME World / SBN nav folders share drill canvases; manual regions keep their own maps. */
+function isUmeWorldNavFolder(folder: TopologyTreeFolderItem | null | undefined): boolean {
+  if (!folder) return false;
+  const ext = String(folder.external_ref || "").trim();
+  if (isUmeWorldContainer(folder) || ext === "ume:world:drill") return true;
+  return Boolean(ext);
+}
+
+function isWorldDrillFolder(folder: TopologyTreeFolderItem | null | undefined): boolean {
+  if (!folder) return false;
+  const ext = String(folder.external_ref || "").trim();
+  return ext === "ume:world:drill" || (folder.name === "World" && Boolean(folder.is_system));
+}
+
+function isWorldFlatViewName(name: string | undefined | null): boolean {
+  return String(name || "").trim() === "完整世界地图";
+}
+
+/**
+ * Region row IS the canvas (SBN / manual region / nested sub-region / World drill).
+ * UME World container is nav-only (hex browse for L2 + world map).
+ */
+function isRegionCanvasFolder(
+  folder: TopologyTreeFolderItem | null | undefined,
+): boolean {
+  if (!folder) return false;
+  if (isUmeWorldContainer(folder)) return false;
+  return true;
+}
+
+function ChevronIcon({ open }: { open: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="12"
+      height="12"
+      aria-hidden="true"
+      className="topo-svg-icon"
+      style={{ transform: open ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.12s ease" }}
+    >
+      <path
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M9 6l6 6-6 6"
+      />
+    </svg>
+  );
 }
 
 function regionDisplayName(region: TopologyTreeFolderItem | null | undefined): string {
@@ -128,16 +235,8 @@ const SNAP_GRID: [number, number] = [16, 16];
  * skips those. includeHiddenNodes uses declared width/height so fit still works.
  */
 const FIT_VIEW_OPTS = { padding: 0.2, includeHiddenNodes: true } as const;
-const FIT_VIEW_OPTS_FS = { padding: 0.15, includeHiddenNodes: true } as const;
-type FitViewOpts = typeof FIT_VIEW_OPTS | typeof FIT_VIEW_OPTS_FS;
 const UNDO_MAX = 40;
 const PALETTE_DND = "application/x-netx-topo-palette";
-
-/** Pane must be laid out before fitView; zero-size panes produce a corner-zoom viewport. */
-function canvasPaneReady(el: HTMLElement | null | undefined): boolean {
-  if (!el) return false;
-  return el.clientWidth >= 40 && el.clientHeight >= 40;
-}
 
 function FullscreenIcon({ exit }: { exit?: boolean }) {
   if (exit) {
@@ -417,13 +516,40 @@ function RouterIcon() {
   );
 }
 
+/** Canvas sub-region building art (UME-style); no vendor tint. */
+function RegionCanvasIcon() {
+  return (
+    <span className="topo-node__icon topo-node__icon--region" aria-hidden="true">
+      <img
+        className="topo-node__icon-art"
+        src="/topo/region-building.png"
+        alt=""
+        draggable={false}
+      />
+    </span>
+  );
+}
+
 /** Fixed box for onlyRenderVisibleElements (xyflow skips off-screen mount when sized + handles set). */
 const TOPO_NODE_W = 160;
 const TOPO_NODE_H = 88;
 /** Must match `.topo-node__glyph` (56×56, top-centered) + `--center` handles. */
 const TOPO_ICON = 56;
+/** region-building.png is 195×133 — keep aspect so icon center == handle. */
+const TOPO_REGION_ICON_H = Math.round((56 * 133) / 195); // 38
 const TOPO_HANDLE_X = TOPO_NODE_W / 2;
 const TOPO_HANDLE_Y = TOPO_ICON / 2;
+const TOPO_REGION_HANDLE_X = TOPO_NODE_W / 2;
+const TOPO_REGION_HANDLE_Y = TOPO_REGION_ICON_H / 2;
+
+/** Region API x/y is icon center; RF position is top-left of the node box. */
+function regionFlowPosition(apiX: number, apiY: number): { x: number; y: number } {
+  return { x: apiX - TOPO_REGION_HANDLE_X, y: apiY - TOPO_REGION_HANDLE_Y };
+}
+
+function regionApiPosition(flowX: number, flowY: number): { x: number; y: number } {
+  return { x: flowX + TOPO_REGION_HANDLE_X, y: flowY + TOPO_REGION_HANDLE_Y };
+}
 
 function isPlaceholderSource(source: string | undefined, neIp: string): boolean {
   const src = String(source || "").trim().toLowerCase();
@@ -433,36 +559,45 @@ function isPlaceholderSource(source: string | undefined, neIp: string): boolean 
 
 const NeNode = memo(function NeNode({ data, selected }: NodeProps<Node<NeNodeData>>) {
   const { hideIp, hideVendor, connectMode, showPlaceholderBadge } = useContext(TopoDisplayContext);
-  const tone = nodeIconTone(data.vendor, data.managed_ne_id, data.ume_ne_id);
-  const placeholder = isPlaceholderSource(data.managed_source, data.ne_ip);
+  const isRegion = data.kind === "region";
+  const tone = isRegion ? "region" : nodeIconTone(data.vendor, data.managed_ne_id, data.ume_ne_id);
+  const placeholder = !isRegion && isPlaceholderSource(data.managed_source, data.ne_ip);
   const showBadge = placeholder && showPlaceholderBadge;
-  const name = data.label || (!hideIp ? data.ne_ip : "") || "NE";
-  const secondary = [
-    hideIp || !data.ne_ip || data.ne_ip === name ? "" : data.ne_ip,
-    hideVendor || !data.vendor ? "" : data.vendor,
-  ].filter(Boolean);
+  const name = data.label || (!hideIp ? data.ne_ip : "") || (isRegion ? "Region" : "NE");
+  // Region count stays in the title "(N)"; do not repeat under the icon.
+  const secondary = isRegion
+    ? []
+    : [
+        hideIp || !data.ne_ip || data.ne_ip === name ? "" : data.ne_ip,
+        hideVendor || !data.vendor ? "" : data.vendor,
+      ].filter(Boolean);
   return (
     <div
       className={`topo-node topo-node--${tone}${selected ? " is-selected" : ""}${
-        connectMode ? " is-connect-mode" : ""
-      }${showBadge ? " is-placeholder" : ""}`}
-      title={showBadge ? data.managed_source || "placeholder" : undefined}
+        connectMode && !isRegion ? " is-connect-mode" : ""
+      }${showBadge ? " is-placeholder" : ""}${isRegion ? " is-region" : ""}`}
+      title={
+        isRegion
+          ? "Open region canvas"
+          : showBadge
+            ? data.managed_source || "placeholder"
+            : undefined
+      }
     >
       <div className="topo-node__glyph">
-        {/* Single center anchors on the router glyph — same attachment as discovered edges. */}
         <Handle
           type="target"
           position={Position.Left}
           className="topo-node__handle topo-node__handle--center"
-          isConnectable={connectMode}
+          isConnectable={connectMode && !isRegion}
         />
         <Handle
           type="source"
           position={Position.Right}
           className="topo-node__handle topo-node__handle--center"
-          isConnectable={connectMode}
+          isConnectable={connectMode && !isRegion}
         />
-        <RouterIcon />
+        {!isRegion ? <RouterIcon /> : <RegionCanvasIcon />}
         {showBadge ? (
           <span className="topo-node__badge" aria-hidden>
             {String(data.managed_source || "ph").slice(0, 4)}
@@ -744,17 +879,26 @@ function graphToFlow(
   edges: TopologyViewEdgeItem[],
   defaults: EdgeDefaults,
 ) {
-  const rfNodes: Node<NeNodeData>[] = nodes.map((n) => ({
+  const rfNodes: Node<NeNodeData>[] = nodes.map((n) => {
+    const isRegion =
+      n.kind === "region" || n.device_type === "region" || String(n.fabric_node_id || "").startsWith("region:");
+    const apiX = Number(n.x) || 0;
+    const apiY = Number(n.y) || 0;
+    // Region coords are icon-center; NE coords stay top-left of the node box (legacy).
+    const position = isRegion ? regionFlowPosition(apiX, apiY) : { x: apiX, y: apiY };
+    const hx = isRegion ? TOPO_REGION_HANDLE_X : TOPO_HANDLE_X;
+    const hy = isRegion ? TOPO_REGION_HANDLE_Y : TOPO_HANDLE_Y;
+    return {
     id: n.fabric_node_id,
     type: "neNode",
-    position: { x: n.x || 0, y: n.y || 0 },
+    position,
     width: TOPO_NODE_W,
     height: TOPO_NODE_H,
     // Predetermined handles must match DOM anchors (icon center), not the 160px box edges —
     // otherwise edges float in the gap and never touch the router glyph.
     handles: [
-      { type: "target", position: Position.Left, x: TOPO_HANDLE_X, y: TOPO_HANDLE_Y },
-      { type: "source", position: Position.Right, x: TOPO_HANDLE_X, y: TOPO_HANDLE_Y },
+      { type: "target", position: Position.Left, x: hx, y: hy },
+      { type: "source", position: Position.Right, x: hx, y: hy },
     ],
     data: {
       label: n.label || n.name || n.ip || n.fabric_node_id,
@@ -764,8 +908,13 @@ function graphToFlow(
       vendor: n.vendor || "",
       connect_status: n.connect_status || "",
       managed_source: n.managed_source || "",
+      kind: (n.kind as NeNodeData["kind"]) || (isRegion ? "region" : "ne"),
+      folder_id: n.folder_id || "",
+      view_id: n.view_id || "",
+      node_count: n.node_count || 0,
     },
-  }));
+  };
+  });
   const rfEdges: Edge[] = edges.map((e) => {
     const src =
       e.status === "stale" || e.status === "missing" ? "stale" : e.source || "manual";
@@ -796,12 +945,18 @@ function graphToFlow(
 }
 
 function flowToPositions(nodes: Node<NeNodeData>[]) {
-  return nodes.map((n) => ({
-    fabric_node_id: n.id,
-    x: n.position.x,
-    y: n.position.y,
-    label: n.data.label || "",
-  }));
+  return nodes.map((n) => {
+    const isRegion = n.data.kind === "region" || String(n.id || "").startsWith("region:");
+    const pos = isRegion
+      ? regionApiPosition(n.position.x, n.position.y)
+      : { x: n.position.x, y: n.position.y };
+    return {
+      fabric_node_id: n.id,
+      x: pos.x,
+      y: pos.y,
+      label: n.data.label || "",
+    };
+  });
 }
 
 /** Stable signature so live poll only re-applies when the server graph actually changed. */
@@ -846,18 +1001,14 @@ export function TopologyPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   // mapId set → fabric canvas; otherwise browse directory (region or view folder).
   const [mapId, setMapId] = useState<string>("");
+  /** When mapId is the World canvas, optional SBN region folder to zoom/filter. */
+  const [worldFocusFolderId, setWorldFocusFolderId] = useState<string>("");
+  const [worldViewId, setWorldViewId] = useState<string>("");
   const [selectedFolderId, setSelectedFolderId] = useState<string>("");
   /** Hover sync key between left tree and right hex browser: `region:<id>` | `view:<id>`. */
   const [hotBrowseKey, setHotBrowseKey] = useState("");
   const [pendingHighlightNe, setPendingHighlightNe] = useState("");
-  const [expandedIds, setExpandedIds] = useState<Record<string, boolean>>(() => {
-    try {
-      const raw = localStorage.getItem(TREE_EXPAND_KEY);
-      return raw ? (JSON.parse(raw) as Record<string, boolean>) : {};
-    } catch {
-      return {};
-    }
-  });
+  const [expandedIds, setExpandedIds] = useState<Record<string, boolean>>({});
   const [keyword, setKeyword] = useState("");
   const [debouncedKeyword, setDebouncedKeyword] = useState("");
   const [treeNeQuery, setTreeNeQuery] = useState("");
@@ -941,9 +1092,6 @@ export function TopologyPage() {
   const appliedMapIdRef = useRef("");
   const appliedGraphFpRef = useRef("");
   const nodesRef = useRef<Node<NeNodeData>[]>([]);
-  /** True until the first successful fitView after opening / switching a canvas. */
-  const needsInitialFitRef = useRef(false);
-  const fitGenRef = useRef(0);
   const historyRef = useRef<HistorySnap[]>([]);
   const redoRef = useRef<HistorySnap[]>([]);
   const historyLockRef = useRef(false);
@@ -956,39 +1104,6 @@ export function TopologyPage() {
   const canRedo = historyTick >= 0 && redoRef.current.length > 0;
 
   nodesRef.current = nodes;
-
-  const scheduleFitView = useCallback((opts: FitViewOpts = FIT_VIEW_OPTS) => {
-    const gen = ++fitGenRef.current;
-    const attempt = (n: number) => {
-      if (gen !== fitGenRef.current) return;
-      const inst = rfRef.current;
-      const paneOk = canvasPaneReady(canvasRef.current);
-      if (!inst || !paneOk || nodesRef.current.length === 0) {
-        if (n < 80) window.setTimeout(() => attempt(n + 1), 40);
-        return;
-      }
-      // Double rAF: wait for flex layout + React Flow pane measurement.
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          if (gen !== fitGenRef.current) return;
-          if (!canvasPaneReady(canvasRef.current) || !rfRef.current) {
-            if (n < 80) window.setTimeout(() => attempt(n + 1), 40);
-            return;
-          }
-          rfRef.current.fitView({ ...opts });
-          // Late layout (fonts / sidebar) on slower hosts — one deferred refit.
-          window.setTimeout(() => {
-            if (gen !== fitGenRef.current) return;
-            if (canvasPaneReady(canvasRef.current) && rfRef.current && nodesRef.current.length > 0) {
-              rfRef.current.fitView({ ...opts });
-              needsInitialFitRef.current = false;
-            }
-          }, 160);
-        });
-      });
-    };
-    attempt(0);
-  }, []);
 
   const markDirty = useCallback(() => {
     dirtyRef.current = true;
@@ -1169,30 +1284,9 @@ export function TopologyPage() {
 
   const canvasMode = Boolean(mapId);
 
-  // If the pane was 0×0 when nodes arrived (common on remote Linux), fit once it grows.
-  useEffect(() => {
-    if (!canvasMode) return;
-    const el = canvasRef.current;
-    if (!el || typeof ResizeObserver === "undefined") return;
-    let prevW = el.clientWidth;
-    let prevH = el.clientHeight;
-    const ro = new ResizeObserver(() => {
-      const w = el.clientWidth;
-      const h = el.clientHeight;
-      const becameReady = (prevW < 40 || prevH < 40) && w >= 40 && h >= 40;
-      prevW = w;
-      prevH = h;
-      if (becameReady && needsInitialFitRef.current && nodesRef.current.length > 0) {
-        scheduleFitView(FIT_VIEW_OPTS);
-      }
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [canvasMode, mapId, scheduleFitView]);
-
   const activeRegion = useMemo(() => {
     if (!selectedFolderId) return null;
-    return regions.find((c) => c.id === selectedFolderId) || null;
+    return findFolderInTree(regions, selectedFolderId);
   }, [regions, selectedFolderId]);
 
   const activeView = useMemo(() => {
@@ -1201,27 +1295,166 @@ export function TopologyPage() {
   }, [mapId, regions]);
 
   const browseEntries = useMemo(
-    (): TopologyTreeViewItem[] => activeRegion?.views || [],
+    (): TopologyTreeViewItem[] => {
+      // Region === canvas: no map subdirectory listing.
+      // UME World container: hex shows L2 + flat modules (handled separately).
+      if (!activeRegion || isRegionCanvasFolder(activeRegion) || isUmeWorldContainer(activeRegion)) {
+        return [];
+      }
+      return activeRegion.views || [];
+    },
     [activeRegion],
   );
+
+  const hexBrowseRegion = useMemo(() => {
+    // Root hex, or UME World container hex (L2 + world map modules).
+    if (!activeRegion) return null;
+    if (isUmeWorldContainer(activeRegion)) return activeRegion;
+    if (isRegionCanvasFolder(activeRegion)) return null;
+    return activeRegion;
+  }, [activeRegion]);
+
+  const umeWorldHexModules = useMemo(() => {
+    if (!activeRegion || !isUmeWorldContainer(activeRegion)) return null;
+    const drill =
+      (activeRegion.children || []).find((c) => isWorldDrillFolder(c)) || null;
+    const flatView =
+      (activeRegion.views || []).find((v) => isWorldFlatViewName(v.name)) || null;
+    return { drill, flatView };
+  }, [activeRegion]);
+
+  const isWorldFlatCanvas = isWorldFlatViewName(activeView?.name);
+
+  // Resolve World drill view id for shortcuts; do not auto-open canvas.
+  useEffect(() => {
+    let cancelled = false;
+    fetchTopologyWorld()
+      .then((w) => {
+        if (cancelled) return;
+        setWorldViewId(w.view_id);
+      })
+      .catch(() => {
+        /* world not seeded yet — keep classic browse */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const expandFolderPath = useCallback(
+    (folderId: string) => {
+      const path = folderPathIds(regions, folderId);
+      if (!path.length) return;
+      setExpandedIds((p) => {
+        const next = { ...p };
+        for (const id of path) next[id] = true;
+        return next;
+      });
+    },
+    [regions],
+  );
+
+  const goUmeWorldNav = useCallback(() => {
+    if (!confirmDiscardIfDirty()) return;
+    const container = regions.find(
+      (r) => r.external_ref === "ume:world" || r.name === "UME World",
+    );
+    if (!container) return;
+    setWorldFocusFolderId("");
+    setSelectedFolderId(container.id);
+    setExpandedIds((p) => ({ ...p, [container.id]: true }));
+    setMapId("");
+    clearDirty();
+  }, [confirmDiscardIfDirty, clearDirty, regions]);
+
+  const goWorld = useCallback(() => {
+    if (!confirmDiscardIfDirty()) return;
+    if (!worldViewId) return;
+    setWorldFocusFolderId("");
+    const container = regions.find(
+      (r) => r.external_ref === "ume:world" || r.name === "UME World",
+    );
+    let drillFolder =
+      (container?.children || []).find((c) => isWorldDrillFolder(c)) || null;
+    if (!drillFolder) {
+      for (const r of regions) {
+        if (isWorldDrillFolder(r)) {
+          drillFolder = r;
+          break;
+        }
+        const nested = (r.children || []).find((c) => isWorldDrillFolder(c));
+        if (nested) {
+          drillFolder = nested;
+          break;
+        }
+      }
+    }
+    if (drillFolder) {
+      setSelectedFolderId(drillFolder.id);
+    } else if (container) {
+      setSelectedFolderId(container.id);
+    }
+    setMapId(worldViewId);
+    clearDirty();
+  }, [confirmDiscardIfDirty, clearDirty, worldViewId, regions]);
+
+  const primaryViewOfFolder = useCallback((folder: TopologyTreeFolderItem | null | undefined) => {
+    if (!folder) return null;
+    const views = folder.views || [];
+    if (isWorldDrillFolder(folder)) {
+      return views.find((v) => v.name === "World") || views[0] || null;
+    }
+    // UME World container: World canvas lives on the drill child, not here.
+    if (folder.external_ref === "ume:world" || folder.name === "UME World") {
+      const drill = (folder.children || []).find((c) => isWorldDrillFolder(c));
+      if (drill) {
+        const dv = drill.views || [];
+        return dv.find((v) => v.name === "World") || dv[0] || null;
+      }
+      return views.find((v) => !isWorldFlatViewName(v.name)) || null;
+    }
+    return views[0] || null;
+  }, []);
 
   const goRegion = useCallback(
     (folderId: string) => {
       if (!confirmDiscardIfDirty()) return;
-      setMapId("");
       setSelectedFolderId(folderId);
-      setExpandedIds((p) => ({ ...p, [folderId]: true }));
+      expandFolderPath(folderId);
+      const folder = findFolderInTree(regions, folderId);
+      // Region === canvas: open its primary map (no map subdirectory / hex list).
+      if (isRegionCanvasFolder(folder)) {
+        setWorldFocusFolderId("");
+        const view = primaryViewOfFolder(folder);
+        if (view) {
+          setMapId(view.id);
+          clearDirty();
+          return;
+        }
+      }
+      // UME World container: fall through to empty selection (use goWorld from tree).
+      setMapId("");
+      setWorldFocusFolderId("");
       clearDirty();
       setNodes([]);
       setEdges([]);
     },
-    [confirmDiscardIfDirty, clearDirty, setNodes, setEdges],
+    [
+      confirmDiscardIfDirty,
+      clearDirty,
+      setNodes,
+      setEdges,
+      regions,
+      primaryViewOfFolder,
+      expandFolderPath,
+    ],
   );
 
   const goRoot = useCallback(() => {
     if (!confirmDiscardIfDirty()) return;
-    setMapId("");
     setSelectedFolderId("");
+    setWorldFocusFolderId("");
+    setMapId("");
     clearDirty();
     setNodes([]);
     setEdges([]);
@@ -1234,20 +1467,41 @@ export function TopologyPage() {
       const regionId = folderId || hit?.region.id || selectedFolderId;
       if (regionId) {
         setSelectedFolderId(regionId);
-        setExpandedIds((p) => ({ ...p, [regionId]: true }));
+        expandFolderPath(regionId);
       }
+      setWorldFocusFolderId("");
       setMapId(viewId);
     },
-    [confirmDiscardIfDirty, regions, selectedFolderId],
+    [confirmDiscardIfDirty, regions, selectedFolderId, expandFolderPath],
   );
 
   const goBackBrowse = useCallback(() => {
     if (!confirmDiscardIfDirty()) return;
+    const folder = findFolderInTree(regions, selectedFolderId);
+    // Leaving a region canvas under UME World → container hex nav.
+    if (folder) {
+      const path = folderPathIds(regions, folder.id);
+      const container = regions.find((r) => isUmeWorldContainer(r));
+      if (container && (folder.id === container.id || path.includes(container.id))) {
+        setSelectedFolderId(container.id);
+        setWorldFocusFolderId("");
+        setMapId("");
+        clearDirty();
+        setNodes([]);
+        setEdges([]);
+        return;
+      }
+    }
+    // Leaving other region canvases → root hex.
+    if (isRegionCanvasFolder(folder) || isUmeWorldNavFolder(folder)) {
+      setSelectedFolderId("");
+    }
+    setWorldFocusFolderId("");
     setMapId("");
     clearDirty();
     setNodes([]);
     setEdges([]);
-  }, [confirmDiscardIfDirty, clearDirty, setNodes, setEdges]);
+  }, [confirmDiscardIfDirty, clearDirty, setNodes, setEdges, regions, selectedFolderId]);
 
   // Deep link from classify search: /topology?view=&ne=
   useEffect(() => {
@@ -1267,6 +1521,19 @@ export function TopologyPage() {
     appliedMapIdRef.current = "";
     appliedGraphFpRef.current = "";
   }, [mapId]);
+
+  // Keep the left tree scrolled to the active view/folder after drill-down.
+  useEffect(() => {
+    if (!mapId && !selectedFolderId) return;
+    const root = document.querySelector(".topo-region-list");
+    if (!root) return;
+    const hit =
+      root.querySelector("li.is-active") ||
+      root.querySelector(".topo-region-list__block.is-branch-active");
+    if (hit && "scrollIntoView" in hit) {
+      (hit as HTMLElement).scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  }, [mapId, selectedFolderId, expandedIds]);
 
   useEffect(() => {
     if (!canvasMode) return;
@@ -1299,11 +1566,10 @@ export function TopologyPage() {
       pendingEdgeCreatesRef.current = new Set();
       clearDirty();
       bumpHistory();
-      needsInitialFitRef.current = true;
-      scheduleFitView(FIT_VIEW_OPTS);
+      // Do not auto-fit on canvas switch — user clicks 适应画布.
     }
     historyLockRef.current = false;
-  }, [canvasMode, mapId, graphQuery.data, edgeDefaults, setNodes, setEdges, clearDirty, bumpHistory, scheduleFitView]);
+  }, [canvasMode, mapId, graphQuery.data, edgeDefaults, setNodes, setEdges, clearDirty, bumpHistory]);
 
   useEffect(() => {
     setEdges((eds) => eds.map((e) => withEdgeVisual(e, edgeDefaults)));
@@ -1397,7 +1663,6 @@ export function TopologyPage() {
       const next = layoutGraph(nodes, edges, kind, { onlyIds });
       setNodes(next);
       markDirty();
-      window.setTimeout(() => scheduleFitView(FIT_VIEW_OPTS), 40);
       if (opts?.persist && mapId) {
         try {
           const graph = await patchTopologyPositions(mapId, flowToPositions(next));
@@ -1413,7 +1678,7 @@ export function TopologyPage() {
         }
       }
     },
-    [nodes, edges, setNodes, pushHistory, mapId, queryClient, showError, t, markDirty, clearDirty, scheduleFitView],
+    [nodes, edges, setNodes, pushHistory, mapId, queryClient, showError, t, markDirty, clearDirty],
   );
 
   const applyAlign = useCallback(
@@ -1452,17 +1717,48 @@ export function TopologyPage() {
   );
 
   const createRegionMut = useMutation({
-    mutationFn: (name: string) =>
+    mutationFn: (input: { name: string; parent_id?: string }) =>
       createTopologyFolder({
-        name,
+        name: input.name,
         kind: "region",
-        parent_id: treeQuery.data?.root?.id,
+        parent_id: input.parent_id || treeQuery.data?.root?.id,
       }),
-    onSuccess: async (folder) => {
+    onSuccess: async (folder, input) => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.topologyTree });
-      setSelectedFolderId(folder.id);
-      setMapId("");
-      setExpandedIds((prev) => ({ ...prev, [folder.id]: true }));
+      const tree = await fetchTopologyTree();
+      const regionsList = tree.root?.children || [];
+      const hit = findFolderInTree(regionsList, folder.id);
+      const parent = String(input.parent_id || folder.parent_id || hit?.parent_id || "").trim();
+      const rootId = String(tree.root?.id || "").trim();
+      const isNested = Boolean(parent && parent !== rootId);
+      setWorldFocusFolderId("");
+      setExpandedIds((prev) => {
+        const next = { ...prev, [folder.id]: true };
+        if (parent) next[parent] = true;
+        return next;
+      });
+      if (isNested) {
+        // Stay on parent canvas so the new region building icon is visible.
+        setSelectedFolderId(parent);
+        expandFolderPath(parent);
+        const parentHit = findFolderInTree(regionsList, parent);
+        const parentView =
+          primaryViewOfFolder(parentHit) ||
+          (parentHit?.views || []).find((v) => String(v.kind) === "physical") ||
+          (parentHit?.views || [])[0];
+        const stayViewId = mapId || parentView?.id || "";
+        if (stayViewId) {
+          setMapId(stayViewId);
+          await queryClient.invalidateQueries({
+            queryKey: queryKeys.topologyGraph(stayViewId),
+          });
+        }
+      } else {
+        setSelectedFolderId(folder.id);
+        const view = hit?.views?.[0];
+        if (view) setMapId(view.id);
+        else setMapId("");
+      }
       showOk(t("topology.regionCreated"));
     },
     onError: (err) => showError(String(err)),
@@ -1535,8 +1831,31 @@ export function TopologyPage() {
   const promptNewRegion = useCallback(() => {
     const name = window.prompt(t("topology.newRegionPrompt"), t("topology.newRegionName"));
     if (!name?.trim()) return;
-    createRegionMut.mutate(name.trim());
+    createRegionMut.mutate({ name: name.trim() });
   }, [createRegionMut, t]);
+
+  const promptNewSubRegion = useCallback(() => {
+    if (isWorldFlatViewName(activeView?.name)) {
+      showError(t("topology.subRegionNotOnFlat"));
+      return;
+    }
+    let parentId = selectedFolderId;
+    if (!parentId && worldViewId && mapId === worldViewId) {
+      const container = regions.find(
+        (r) => r.external_ref === "ume:world" || r.name === "UME World",
+      );
+      const drill = (container?.children || []).find((c) => isWorldDrillFolder(c));
+      parentId = drill?.id || container?.id || "";
+    }
+    if (!parentId) {
+      showError(t("topology.subRegionNeedParent"));
+      return;
+    }
+    const name = window.prompt(t("topology.newSubRegionPrompt"), t("topology.newSubRegionName"));
+    if (!name?.trim()) return;
+    createRegionMut.mutate({ name: name.trim(), parent_id: parentId });
+    setCtxMenu(null);
+  }, [activeView?.name, selectedFolderId, worldViewId, mapId, regions, createRegionMut, t, showError]);
 
   const promptNewCustom = useCallback(
     (folderId: string) => {
@@ -1549,6 +1868,257 @@ export function TopologyPage() {
       });
     },
     [createMapMut, t],
+  );
+
+  const renderWorldNavFolder = useCallback(
+    (folder: TopologyTreeFolderItem, depth: number): ReactNode => {
+      const kids = folder.children || [];
+      const containerFolder =
+        folder.external_ref === "ume:world" || folder.name === "UME World";
+      const drillFolder = isWorldDrillFolder(folder);
+      const umeNav = isUmeWorldNavFolder(folder);
+      // Region === canvas: hide physical/custom view rows; only child regions.
+      // UME World container: only「完整世界地图」as a sibling view.
+      const canvasRegion = isRegionCanvasFolder(folder);
+      const visibleViews = canvasRegion
+        ? []
+        : containerFolder
+          ? (folder.views || []).filter((v) => isWorldFlatViewName(v.name))
+          : folder.views || [];
+      const hasKids = kids.length > 0 || visibleViews.length > 0;
+      const open = Boolean(expandedIds[folder.id]);
+      const viewActiveUnder =
+        (folder.views || []).some((v) => v.id === mapId) ||
+        (drillFolder && Boolean(worldViewId) && mapId === worldViewId);
+      const isSelected = selectedFolderId === folder.id;
+      const focused = viewActiveUnder || (isSelected && Boolean(mapId));
+      const regionActive = isSelected && !mapId;
+      const hot = hotBrowseKey === `region:${folder.id}`;
+      const childCount = kids.length;
+
+      const renderViewRow = (v: TopologyTreeViewItem) => {
+        const isPhysical = String(v.kind) === "physical";
+        const viewHot = hotBrowseKey === `view:${v.id}`;
+        const viewActive = mapId === v.id;
+        return (
+          <li
+            key={v.id}
+            className={`topo-region-list__view${viewActive ? " is-active" : ""}${
+              viewHot ? " is-hot" : ""
+            }`}
+          >
+            <div
+              className="topo-map-list__row"
+              onMouseEnter={() => setHotBrowseKey(`view:${v.id}`)}
+              onMouseLeave={() =>
+                setHotBrowseKey((k) => (k === `view:${v.id}` ? "" : k))
+              }
+            >
+              {/* Same width as folder chevron so leaf canvas aligns under parent title. */}
+              <span className="topo-region-list__chevron-spacer" aria-hidden="true" />
+              <button
+                type="button"
+                className="topo-map-list__item"
+                onClick={() => {
+                  setWorldFocusFolderId("");
+                  goCanvas(v.id, folder.id);
+                }}
+                onDoubleClick={() =>
+                  !umeNav ? promptRenameMap(v.id, v.name) : undefined
+                }
+                title={!umeNav ? t("topology.renameHint") : undefined}
+              >
+                <span className="topo-map-list__name">
+                  <span
+                    className={`topo-region-list__glyph topo-dir__icon--${
+                      isPhysical ? "core" : "aggregation"
+                    }`}
+                    aria-hidden="true"
+                  >
+                    <LayerGlyph
+                      role={isPhysical ? "core" : "aggregation"}
+                      size={13}
+                    />
+                  </span>
+                  <span className="topo-map-list__title">
+                    {v.name}
+                    {viewActive && dirty ? " *" : ""}
+                  </span>
+                  {!umeNav ? (
+                    <span className="topo-map-list__count">{v.node_count || 0}N</span>
+                  ) : null}
+                </span>
+              </button>
+              {!umeNav ? (
+                <div className="topo-map-list__actions">
+                  <button
+                    type="button"
+                    className="topo-map-list__icon"
+                    title={t("topology.rename")}
+                    aria-label={t("topology.rename")}
+                    disabled={renameMapMut.isPending}
+                    onClick={() => promptRenameMap(v.id, v.name)}
+                  >
+                    <PencilIcon />
+                  </button>
+                  <button
+                    type="button"
+                    className="topo-map-list__icon"
+                    title={t("topology.deleteMap")}
+                    aria-label={t("topology.deleteMap")}
+                    disabled={isPhysical}
+                    onClick={() => {
+                      const msg = t("topology.deleteMapConfirm").replace(
+                        "{{name}}",
+                        v.name,
+                      );
+                      if (window.confirm(msg)) deleteMapMut.mutate(v.id);
+                    }}
+                  >
+                    <CloseIcon />
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          </li>
+        );
+      };
+
+      return (
+        <li
+          key={folder.id}
+          className={`topo-region-list__block${
+            focused ? " is-branch-active" : ""
+          }${regionActive ? " is-active" : ""}${hot ? " is-hot" : ""}`}
+        >
+          <div
+            className="topo-map-list__row topo-region-list__row"
+            onMouseEnter={() => setHotBrowseKey(`region:${folder.id}`)}
+            onMouseLeave={() =>
+              setHotBrowseKey((k) => (k === `region:${folder.id}` ? "" : k))
+            }
+          >
+            <button
+              type="button"
+              className="topo-map-list__icon topo-region-list__chevron"
+              title={open ? t("topology.collapseRegion") : t("topology.expandRegion")}
+              aria-label={open ? t("topology.collapseRegion") : t("topology.expandRegion")}
+              aria-expanded={open}
+              disabled={!hasKids}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (!hasKids) return;
+                setExpandedIds((p) => ({ ...p, [folder.id]: !open }));
+              }}
+            >
+              <ChevronIcon open={open} />
+            </button>
+            <button
+              type="button"
+              className="topo-map-list__item"
+              onClick={() => {
+                if (containerFolder) {
+                  // UME World: hex nav for L2 + world map (not auto-open canvas).
+                  goUmeWorldNav();
+                } else {
+                  goRegion(folder.id);
+                }
+              }}
+              title={t("topology.openRegion")}
+            >
+              <span className="topo-map-list__name">
+                <span className="topo-region-list__glyph" aria-hidden="true">
+                  <RegionGlyph size={14} />
+                </span>
+                <span className="topo-map-list__title">{regionDisplayName(folder)}</span>
+                <span className="topo-map-list__count">
+                  {(() => {
+                    if (containerFolder) {
+                      return t("topology.regionNodeHint").replace(
+                        "{{count}}",
+                        String(kids.length + visibleViews.length),
+                      );
+                    }
+                    const neCount = (folder.views || []).reduce(
+                      (sum, v) => sum + (Number(v.node_count) || 0),
+                      0,
+                    );
+                    // Prefer canvas NE count; fall back to child-region count.
+                    if (neCount > 0) return `${neCount}N`;
+                    if (childCount > 0) return String(childCount);
+                    return "";
+                  })()}
+                </span>
+              </span>
+            </button>
+            {!umeNav ? (
+              <div className="topo-map-list__actions">
+                <button
+                  type="button"
+                  className="topo-map-list__icon"
+                  title={t("topology.renameRegion")}
+                  aria-label={t("topology.renameRegion")}
+                  disabled={!!folder.is_system || renameRegionMut.isPending}
+                  onClick={() => promptRenameRegion(folder.id, folder.name)}
+                >
+                  <PencilIcon />
+                </button>
+                <button
+                  type="button"
+                  className="topo-map-list__icon"
+                  title={t("topology.deleteRegion")}
+                  aria-label={t("topology.deleteRegion")}
+                  disabled={!!folder.is_system}
+                  onClick={() => {
+                    const msg = t("topology.deleteRegionConfirm").replace(
+                      "{{name}}",
+                      folder.name,
+                    );
+                    if (window.confirm(msg)) deleteFolderMut.mutate(folder.id);
+                  }}
+                >
+                  <CloseIcon />
+                </button>
+              </div>
+            ) : null}
+          </div>
+          {open ? (
+            <ul className="topo-map-list topo-region-list__maps">
+              {containerFolder ? (
+                <>
+                  {kids.map((child) => renderWorldNavFolder(child, depth + 1))}
+                  {visibleViews.map(renderViewRow)}
+                </>
+              ) : (
+                <>
+                  {visibleViews.map(renderViewRow)}
+                  {kids.map((child) => renderWorldNavFolder(child, depth + 1))}
+                </>
+              )}
+            </ul>
+          ) : null}
+        </li>
+      );
+    },
+    [
+      expandedIds,
+      mapId,
+      worldViewId,
+      selectedFolderId,
+      hotBrowseKey,
+      dirty,
+      goUmeWorldNav,
+      goWorld,
+      goRegion,
+      goCanvas,
+      promptRenameRegion,
+      promptRenameMap,
+      renameRegionMut.isPending,
+      renameMapMut.isPending,
+      deleteFolderMut,
+      deleteMapMut,
+      t,
+    ],
   );
 
   const saveMut = useMutation({
@@ -1578,8 +2148,10 @@ export function TopologyPage() {
       const localIds = nodes.map((n) => n.id);
       const localSet = new Set(localIds);
       const serverSet = new Set(serverIds);
-      const toAdd = localIds.filter((id) => !serverSet.has(id));
-      const toRemove = serverIds.filter((id) => !localSet.has(id));
+      const isRegionNode = (id: string) => id.startsWith("region:");
+      const toAdd = localIds.filter((id) => !serverSet.has(id) && !isRegionNode(id));
+      const toRemove = serverIds.filter((id) => !localSet.has(id) && !isRegionNode(id));
+      // Region icons are synthetic placements — persist via positions only.
       // Add first so a save that both adds and removes never flashes an empty view.
       if (toAdd.length) {
         await addTopologyViewNodes(mapId, { fabric_node_ids: toAdd });
@@ -1753,7 +2325,6 @@ export function TopologyPage() {
         let { rfNodes, rfEdges } = graphToFlow(projected.nodes, projected.edges, edgeDefaults);
         // Keep existing node positions when we did not auto-layout.
         const localPos = new Map(nodes.map((n) => [n.id, n.position]));
-        const beforeIds = new Set(nodes.map((n) => n.id));
         const serverNodeIds = new Set((baseGraph.nodes || []).map((n) => n.fabric_node_id));
         rfNodes = rfNodes.map((n) => {
           const p = localPos.get(n.id);
@@ -1768,16 +2339,11 @@ export function TopologyPage() {
         setNodes(rfNodes);
         setEdges(rfEdges);
         historyLockRef.current = false;
-        const addedNodes = rfNodes.filter((n) => !beforeIds.has(n.id)).length;
         const localOnly = rfNodes.some((n) => !serverNodeIds.has(n.id));
         if (localOnly || didAutoLayout) {
           markDirty();
         } else {
           clearDirty();
-        }
-        if (didAutoLayout || addedNodes > 0) {
-          needsInitialFitRef.current = true;
-          scheduleFitView(FIT_VIEW_OPTS);
         }
         const out: TopologyDiscoverOut = {
           map_id: mapId,
@@ -1810,7 +2376,7 @@ export function TopologyPage() {
         setDiscovering(false);
       }
     },
-    [mapId, discovering, nodes, queryClient, setNodes, setEdges, showOk, showError, t, autoLayoutAfterDiscover, discoverAutoAddUnmatched, discoverProjectNeighbors, edgeDefaults, clearDirty, markDirty, scheduleFitView, graphQuery.data],
+    [mapId, discovering, nodes, queryClient, setNodes, setEdges, showOk, showError, t, autoLayoutAfterDiscover, discoverAutoAddUnmatched, discoverProjectNeighbors, edgeDefaults, clearDirty, markDirty, graphQuery.data],
   );
 
   const cancelDiscover = useCallback(async () => {
@@ -1917,6 +2483,10 @@ export function TopologyPage() {
         showError(t("topology.selectMap"));
         return false;
       }
+      if (isWorldFlatViewName(activeView?.name)) {
+        showError(t("topology.worldMapNoDirectNes"));
+        return false;
+      }
       if (items.length === 0 || paletteAdding) return false;
 
       const onCanvasManaged = new Set(nodes.map((n) => n.data.managed_ne_id).filter(Boolean));
@@ -1994,6 +2564,7 @@ export function TopologyPage() {
       queryClient,
       edgeDefaults,
       clearDirty,
+      activeView?.name,
     ],
   );
 
@@ -2118,14 +2689,10 @@ export function TopologyPage() {
       const el = canvasRef.current;
       const active = Boolean(el && document.fullscreenElement === el);
       setFullscreen(active);
-      if (active) {
-        needsInitialFitRef.current = true;
-        scheduleFitView(FIT_VIEW_OPTS_FS);
-      }
     };
     document.addEventListener("fullscreenchange", syncFs);
     return () => document.removeEventListener("fullscreenchange", syncFs);
-  }, [scheduleFitView]);
+  }, []);
 
   const toggleFullscreen = useCallback(async () => {
     const el = canvasRef.current;
@@ -2302,8 +2869,6 @@ export function TopologyPage() {
       const added = Math.max(0, projected.nodes.length - before);
       if (added > 0) {
         markDirty();
-        needsInitialFitRef.current = true;
-        scheduleFitView(FIT_VIEW_OPTS);
       }
       showOk(t("topology.projectedNeighbors").replace("{{count}}", String(added)));
     } catch (err) {
@@ -2319,7 +2884,6 @@ export function TopologyPage() {
     showOk,
     showError,
     t,
-    scheduleFitView,
   ]);
 
   useEffect(() => {
@@ -2623,6 +3187,10 @@ export function TopologyPage() {
   };
 
   const openCreateNeAt = (flowX: number, flowY: number) => {
+    if (isWorldFlatViewName(activeView?.name)) {
+      showError(t("topology.worldMapNoDirectNes"));
+      return;
+    }
     closeCtxMenu();
     setCreateNeDialog({ flowX, flowY, name: "", ip_address: "" });
   };
@@ -2885,14 +3453,38 @@ export function TopologyPage() {
   const onNodeClick = useCallback(
     (e: React.MouseEvent, node: Node<NeNodeData>) => {
       setCtxMenu(null);
-      // Connect mode: drag from center handle (onConnect). Clicks only select the NE.
+      if (node.data.kind === "region") {
+        const viewId = String(node.data.view_id || "").trim();
+        const folderId = String(node.data.folder_id || "").trim();
+        if (viewId) {
+          goCanvas(viewId, folderId || undefined);
+          return;
+        }
+        if (folderId) {
+          goRegion(folderId);
+          return;
+        }
+      }
       if (toolMode === "connect") {
         focusNode(node.id, false);
         return;
       }
       focusNode(node.id, e.shiftKey || e.metaKey || e.ctrlKey);
     },
-    [toolMode, focusNode],
+    [toolMode, focusNode, goCanvas, goRegion],
+  );
+
+  const onNodeDoubleClick = useCallback(
+    (_e: React.MouseEvent, node: Node<NeNodeData>) => {
+      // Regions already drill on single click; keep dblclick as no-op alias.
+      if (node.data.kind === "region") {
+        const viewId = String(node.data.view_id || "").trim();
+        const folderId = String(node.data.folder_id || "").trim();
+        if (viewId) goCanvas(viewId, folderId || undefined);
+        else if (folderId) goRegion(folderId);
+      }
+    },
+    [goCanvas, goRegion],
   );
 
   const outsidePeers = graphQuery.data?.outside_peers || [];
@@ -2900,12 +3492,14 @@ export function TopologyPage() {
   const truncateReason = String(graphQuery.data?.truncate_reason || "").trim();
   const truncateBannerText = useMemo(() => {
     if (!graphTruncated) return "";
+    // World map soft-caps viewport nodes; the banner is noise there.
+    if (isWorldFlatViewName(activeView?.name)) return "";
     if (truncateReason === "membership_cap") return t("topology.truncatedMembership");
     if (truncateReason === "membership_frozen") return t("topology.truncatedFrozen");
     if (truncateReason === "too_many_view_nodes") return t("topology.truncatedNodes");
     if (truncateReason === "too_many_edges") return t("topology.truncatedEdges");
     return t("topology.truncatedGeneric");
-  }, [graphTruncated, truncateReason, t]);
+  }, [graphTruncated, truncateReason, activeView?.name, t]);
   const activeLeafName = useMemo(() => {
     if (!mapId) return "";
     if (activeView?.name) return activeView.name;
@@ -3125,172 +3719,7 @@ export function TopologyPage() {
                 <p className="panel__hint">{t("topology.emptyMaps")}</p>
               ) : (
                 <ul className="topo-map-list topo-region-list">
-                  {regions.map((region) => {
-                    const open = expandedIds[region.id] ?? false;
-                    const regionActive = selectedFolderId === region.id && !mapId;
-                    const regionBranch = selectedFolderId === region.id && Boolean(mapId);
-                    const regionHot = hotBrowseKey === `region:${region.id}`;
-                    return (
-                      <li
-                        key={region.id}
-                        className={`topo-region-list__block${
-                          regionActive ? " is-active" : regionBranch ? " is-branch-active" : ""
-                        }${regionHot ? " is-hot" : ""}`}
-                      >
-                        <div
-                          className="topo-map-list__row topo-region-list__row"
-                          onMouseEnter={() => setHotBrowseKey(`region:${region.id}`)}
-                          onMouseLeave={() =>
-                            setHotBrowseKey((k) => (k === `region:${region.id}` ? "" : k))
-                          }
-                        >
-                          <button
-                            type="button"
-                            className="topo-map-list__item"
-                            onClick={() => {
-                              if (!confirmDiscardIfDirty()) return;
-                              const nextOpen = !(expandedIds[region.id] ?? false);
-                              setMapId("");
-                              setSelectedFolderId(region.id);
-                              setExpandedIds((p) => ({ ...p, [region.id]: nextOpen }));
-                              clearDirty();
-                              setNodes([]);
-                              setEdges([]);
-                            }}
-                            title={
-                              open
-                                ? t("topology.collapseRegion")
-                                : t("topology.expandRegion")
-                            }
-                          >
-                            <span className="topo-map-list__name">
-                              <span className="topo-region-list__glyph" aria-hidden="true">
-                                <RegionGlyph size={14} />
-                              </span>
-                              <span className="topo-map-list__title">
-                                {regionDisplayName(region)}
-                              </span>
-                              <span className="topo-map-list__count">
-                                {t("topology.regionNodeHint").replace(
-                                  "{{count}}",
-                                  String(region.views.length),
-                                )}
-                              </span>
-                            </span>
-                          </button>
-                          <div className="topo-map-list__actions">
-                            <button
-                              type="button"
-                              className="topo-map-list__icon"
-                              title={t("topology.renameRegion")}
-                              aria-label={t("topology.renameRegion")}
-                              disabled={!!region.is_system || renameRegionMut.isPending}
-                              onClick={() => promptRenameRegion(region.id, region.name)}
-                            >
-                              <PencilIcon />
-                            </button>
-                            <button
-                              type="button"
-                              className="topo-map-list__icon"
-                              title={t("topology.deleteRegion")}
-                              aria-label={t("topology.deleteRegion")}
-                              disabled={!!region.is_system}
-                              onClick={() => {
-                                const msg = t("topology.deleteRegionConfirm").replace(
-                                  "{{name}}",
-                                  region.name,
-                                );
-                                if (window.confirm(msg)) deleteFolderMut.mutate(region.id);
-                              }}
-                            >
-                              <CloseIcon />
-                            </button>
-                          </div>
-                        </div>
-                        {open ? (
-                          <ul className="topo-map-list topo-region-list__maps">
-                            {(region.views || []).map((v) => {
-                              const isPhysical = String(v.kind) === "physical";
-                              const viewHot = hotBrowseKey === `view:${v.id}`;
-                              return (
-                                <li
-                                  key={v.id}
-                                  className={`${mapId === v.id ? "is-active" : ""}${
-                                    viewHot ? " is-hot" : ""
-                                  }`}
-                                >
-                                  <div
-                                    className="topo-map-list__row"
-                                    onMouseEnter={() => setHotBrowseKey(`view:${v.id}`)}
-                                    onMouseLeave={() =>
-                                      setHotBrowseKey((k) => (k === `view:${v.id}` ? "" : k))
-                                    }
-                                  >
-                                    <button
-                                      type="button"
-                                      className="topo-map-list__item"
-                                      onClick={() => goCanvas(v.id, region.id)}
-                                      onDoubleClick={() => promptRenameMap(v.id, v.name)}
-                                      title={t("topology.renameHint")}
-                                    >
-                                      <span className="topo-map-list__name">
-                                        <span
-                                          className={`topo-region-list__glyph topo-dir__icon--${
-                                            isPhysical ? "core" : "aggregation"
-                                          }`}
-                                          aria-hidden="true"
-                                        >
-                                          <LayerGlyph
-                                            role={isPhysical ? "core" : "aggregation"}
-                                            size={13}
-                                          />
-                                        </span>
-                                        <span className="topo-map-list__title">
-                                          {v.name}
-                                          {mapId === v.id && dirty ? " *" : ""}
-                                        </span>
-                                        <span className="topo-map-list__count">
-                                          {v.node_count || 0}N
-                                        </span>
-                                      </span>
-                                    </button>
-                                    <div className="topo-map-list__actions">
-                                      <button
-                                        type="button"
-                                        className="topo-map-list__icon"
-                                        title={t("topology.rename")}
-                                        aria-label={t("topology.rename")}
-                                        disabled={renameMapMut.isPending}
-                                        onClick={() => promptRenameMap(v.id, v.name)}
-                                      >
-                                        <PencilIcon />
-                                      </button>
-                                      <button
-                                        type="button"
-                                        className="topo-map-list__icon"
-                                        title={t("topology.deleteMap")}
-                                        aria-label={t("topology.deleteMap")}
-                                        disabled={isPhysical}
-                                        onClick={() => {
-                                          const msg = t("topology.deleteMapConfirm").replace(
-                                            "{{name}}",
-                                            v.name,
-                                          );
-                                          if (window.confirm(msg)) deleteMapMut.mutate(v.id);
-                                        }}
-                                      >
-                                        <CloseIcon />
-                                      </button>
-                                    </div>
-                                  </div>
-                                </li>
-                              );
-                            })}
-                          </ul>
-                        ) : null}
-                      </li>
-                    );
-                  })}
+                  {regions.map((region) => renderWorldNavFolder(region, 0))}
                 </ul>
               )}
               {mapId && outsidePeers.length > 0 && (
@@ -3328,16 +3757,30 @@ export function TopologyPage() {
                 {activeRegion ? (
                   <>
                     <span className="topo-breadcrumb__sep">/</span>
-                    <button
-                      type="button"
-                      className="topo-breadcrumb__link"
-                      onClick={() => goRegion(activeRegion.id)}
-                    >
-                      {regionDisplayName(activeRegion)}
-                    </button>
+                    {activeView &&
+                    isRegionCanvasFolder(activeRegion) &&
+                    primaryViewOfFolder(activeRegion)?.id === activeView.id ? (
+                      <span className="topo-breadcrumb__current">
+                        {regionDisplayName(activeRegion)}
+                        {dirty ? " *" : ""}
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        className="topo-breadcrumb__link"
+                        onClick={() => goRegion(activeRegion.id)}
+                      >
+                        {regionDisplayName(activeRegion)}
+                      </button>
+                    )}
                   </>
                 ) : null}
-                {activeView ? (
+                {activeView &&
+                !(
+                  activeRegion &&
+                  isRegionCanvasFolder(activeRegion) &&
+                  primaryViewOfFolder(activeRegion)?.id === activeView.id
+                ) ? (
                   <>
                     <span className="topo-breadcrumb__sep">/</span>
                     <span className="topo-breadcrumb__current">
@@ -3360,7 +3803,15 @@ export function TopologyPage() {
               <button
                 type="button"
                 className="btn btn--sm"
+                disabled={isWorldFlatCanvas}
+                title={
+                  isWorldFlatCanvas ? t("topology.worldMapNoDirectNes") : undefined
+                }
                 onClick={() => {
+                  if (isWorldFlatCanvas) {
+                    showError(t("topology.worldMapNoDirectNes"));
+                    return;
+                  }
                   setKeyword("");
                   setPaletteSelectedKeys([]);
                   setAddNeOpen(true);
@@ -3371,7 +3822,15 @@ export function TopologyPage() {
               <button
                 type="button"
                 className="btn btn--sm"
+                disabled={isWorldFlatCanvas}
+                title={
+                  isWorldFlatCanvas ? t("topology.worldMapNoDirectNes") : undefined
+                }
                 onClick={() => {
+                  if (isWorldFlatCanvas) {
+                    showError(t("topology.worldMapNoDirectNes"));
+                    return;
+                  }
                   let flowX = 80 + nodes.length * 24;
                   let flowY = 80 + nodes.length * 24;
                   if (rfRef.current) {
@@ -4000,7 +4459,7 @@ export function TopologyPage() {
           <div className="topo-browser" aria-label={t("topology.browserTitle")}>
             <div className="topo-browser__head">
               <div>
-                {activeRegion ? (
+                {hexBrowseRegion ? (
                   <div className="topo-breadcrumb">
                     <button
                       type="button"
@@ -4010,17 +4469,25 @@ export function TopologyPage() {
                       {t("topology.rootName")}
                     </button>
                     <span className="topo-breadcrumb__sep">/</span>
-                    <span className="topo-breadcrumb__current">{regionDisplayName(activeRegion)}</span>
+                    <span className="topo-breadcrumb__current">{regionDisplayName(hexBrowseRegion)}</span>
                   </div>
                 ) : (
                   <strong>{titleText}</strong>
                 )}
                 <p className="topo-browser__sub">
-                  {activeRegion
-                    ? t("topology.browserRegionSub").replace(
-                        "{{count}}",
-                        String(browseEntries.length),
-                      )
+                  {hexBrowseRegion
+                    ? isUmeWorldContainer(hexBrowseRegion) && umeWorldHexModules
+                      ? t("topology.browserRegionSub").replace(
+                          "{{count}}",
+                          String(
+                            (umeWorldHexModules.drill ? 1 : 0) +
+                              (umeWorldHexModules.flatView ? 1 : 0),
+                          ),
+                        )
+                      : t("topology.browserRegionSub").replace(
+                          "{{count}}",
+                          String(browseEntries.length),
+                        )
                     : t("topology.browserRegionsSub").replace(
                         "{{count}}",
                         String(regions.length),
@@ -4037,7 +4504,7 @@ export function TopologyPage() {
                 {liveSync ? t("topology.liveSyncOn") : t("topology.liveSync")}
               </button>
             </div>
-            {!activeRegion ? (
+            {!hexBrowseRegion ? (
               regions.length === 0 ? (
                 <div className="topo-browser__empty">
                   <span className="topo-browser__empty-icon" aria-hidden="true">
@@ -4066,7 +4533,9 @@ export function TopologyPage() {
                       onMouseLeave={() =>
                         setHotBrowseKey((k) => (k === `region:${region.id}` ? "" : k))
                       }
-                      onClick={() => goRegion(region.id)}
+                      onClick={() =>
+                        isUmeWorldContainer(region) ? goUmeWorldNav() : goRegion(region.id)
+                      }
                       title={t("topology.openRegion")}
                     >
                       <span className="topo-region-hex__icon" aria-hidden="true">
@@ -4077,7 +4546,11 @@ export function TopologyPage() {
                         <span className="topo-region-hex__meta">
                           {t("topology.regionNodeHint").replace(
                             "{{count}}",
-                            String(region.views?.length || 0),
+                            String(
+                              isUmeWorldContainer(region)
+                                ? (region.children?.length || 0) + (region.views?.length || 0)
+                                : region.views?.length || 0,
+                            ),
                           )}
                         </span>
                       </span>
@@ -4097,12 +4570,85 @@ export function TopologyPage() {
                   </button>
                 </div>
               )
+            ) : isUmeWorldContainer(hexBrowseRegion) && umeWorldHexModules ? (
+              <div className="topo-browser__grid topo-browser__grid--regions">
+                {umeWorldHexModules.drill ? (
+                  <button
+                    key={umeWorldHexModules.drill.id}
+                    type="button"
+                    className={`topo-region-hex topo-region-hex--tone-0${
+                      hotBrowseKey === `region:${umeWorldHexModules.drill.id}` ? " is-hot" : ""
+                    }`}
+                    onMouseEnter={() =>
+                      setHotBrowseKey(`region:${umeWorldHexModules.drill!.id}`)
+                    }
+                    onMouseLeave={() =>
+                      setHotBrowseKey((k) =>
+                        k === `region:${umeWorldHexModules.drill!.id}` ? "" : k,
+                      )
+                    }
+                    onClick={() => goRegion(umeWorldHexModules.drill!.id)}
+                    title={t("topology.openRegion")}
+                  >
+                    <span className="topo-region-hex__icon" aria-hidden="true">
+                      <RegionGlyph size={22} />
+                    </span>
+                    <span className="topo-region-hex__title">
+                      <span className="topo-region-hex__name">
+                        {regionDisplayName(umeWorldHexModules.drill)}
+                      </span>
+                      <span className="topo-region-hex__meta">
+                        {t("topology.regionNodeHint").replace(
+                          "{{count}}",
+                          String(umeWorldHexModules.drill.children?.length || 0),
+                        )}
+                      </span>
+                    </span>
+                  </button>
+                ) : null}
+                {umeWorldHexModules.flatView ? (
+                  <button
+                    key={umeWorldHexModules.flatView.id}
+                    type="button"
+                    className={`topo-region-hex topo-region-hex--tone-1${
+                      hotBrowseKey === `view:${umeWorldHexModules.flatView.id}` ? " is-hot" : ""
+                    }`}
+                    onMouseEnter={() =>
+                      setHotBrowseKey(`view:${umeWorldHexModules.flatView!.id}`)
+                    }
+                    onMouseLeave={() =>
+                      setHotBrowseKey((k) =>
+                        k === `view:${umeWorldHexModules.flatView!.id}` ? "" : k,
+                      )
+                    }
+                    onClick={() =>
+                      goCanvas(umeWorldHexModules.flatView!.id, hexBrowseRegion.id)
+                    }
+                    title={t("topology.openMap")}
+                  >
+                    <span className="topo-region-hex__icon" aria-hidden="true">
+                      <RegionGlyph size={22} />
+                    </span>
+                    <span className="topo-region-hex__title">
+                      <span className="topo-region-hex__name">
+                        {umeWorldHexModules.flatView.name}
+                      </span>
+                      <span className="topo-region-hex__meta">
+                        {t("topology.regionNodeHint").replace(
+                          "{{count}}",
+                          String(umeWorldHexModules.flatView.node_count || 0),
+                        )}
+                      </span>
+                    </span>
+                  </button>
+                ) : null}
+              </div>
             ) : browseEntries.length === 0 ? (
               <div className="topo-browser__grid topo-browser__grid--regions">
                 <button
                   type="button"
                   className="topo-region-hex topo-region-hex--add"
-                  onClick={() => promptNewCustom(activeRegion.id)}
+                  onClick={() => promptNewCustom(hexBrowseRegion.id)}
                   title={t("topology.newCustom")}
                 >
                   <span className="topo-region-hex__plus" aria-hidden="true">
@@ -4143,7 +4689,7 @@ export function TopologyPage() {
                 <button
                   type="button"
                   className="topo-region-hex topo-region-hex--add"
-                  onClick={() => promptNewCustom(activeRegion.id)}
+                  onClick={() => promptNewCustom(hexBrowseRegion.id)}
                   title={t("topology.newCustom")}
                 >
                   <span className="topo-region-hex__plus" aria-hidden="true">
@@ -4281,6 +4827,7 @@ export function TopologyPage() {
                   onConnect={onConnect}
                   isValidConnection={isValidConnection}
                   onNodeClick={onNodeClick}
+                  onNodeDoubleClick={onNodeDoubleClick}
                   onEdgeClick={(_e, edge) => {
                     setCtxMenu(null);
                     focusEdge(edge.id);
@@ -4327,9 +4874,6 @@ export function TopologyPage() {
                   onMoveStart={closeCtxMenu}
                   onInit={(inst) => {
                     rfRef.current = inst as ReactFlowInstance<Node<NeNodeData>, Edge>;
-                    if (needsInitialFitRef.current || nodesRef.current.length > 0) {
-                      scheduleFitView(FIT_VIEW_OPTS);
-                    }
                   }}
                   fitView={false}
                   deleteKeyCode={null}
@@ -4660,11 +5204,25 @@ export function TopologyPage() {
                   type="button"
                   className="topo-ctx__item"
                   role="menuitem"
+                  disabled={isWorldFlatViewName(activeView?.name)}
                   onClick={() => openCreateNeAt(ctxMenu.flowX, ctxMenu.flowY)}
                 >
                   {t("topology.createNe")}
                 </button>
               </li>
+              {!isWorldFlatViewName(activeView?.name) ? (
+                <li role="none">
+                  <button
+                    type="button"
+                    className="topo-ctx__item"
+                    role="menuitem"
+                    disabled={createRegionMut.isPending}
+                    onClick={() => promptNewSubRegion()}
+                  >
+                    {t("topology.newSubRegion")}
+                  </button>
+                </li>
+              ) : null}
             </>
           ) : ctxMenu.kind === "node" ? (
             <>

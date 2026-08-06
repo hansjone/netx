@@ -1106,8 +1106,41 @@ export const populateTopologyView = (
     graph: TopologyViewGraph | null;
   }>(`/v1/topology/views/${encodeURIComponent(viewId)}/populate`, body || {});
 
-export const fetchTopologyViewGraph = (viewId: string) =>
-  apiGet<TopologyViewGraph>(`/v1/topology/views/${encodeURIComponent(viewId)}`);
+export const fetchTopologyViewGraph = (
+  viewId: string,
+  opts?: {
+    min_x?: number;
+    max_x?: number;
+    min_y?: number;
+    max_y?: number;
+    sbn_id?: string;
+    folder_id?: string;
+    lod?: "auto" | "sbn" | "me";
+    status?: string;
+  },
+) => {
+  const q = new URLSearchParams();
+  if (opts?.min_x != null) q.set("min_x", String(opts.min_x));
+  if (opts?.max_x != null) q.set("max_x", String(opts.max_x));
+  if (opts?.min_y != null) q.set("min_y", String(opts.min_y));
+  if (opts?.max_y != null) q.set("max_y", String(opts.max_y));
+  if (opts?.sbn_id) q.set("sbn_id", opts.sbn_id);
+  if (opts?.folder_id) q.set("folder_id", opts.folder_id);
+  if (opts?.lod) q.set("lod", opts.lod);
+  if (opts?.status) q.set("status", opts.status);
+  const qs = q.toString();
+  return apiGet<TopologyViewGraph>(
+    `/v1/topology/views/${encodeURIComponent(viewId)}${qs ? `?${qs}` : ""}`,
+  );
+};
+
+export const fetchTopologyWorld = () =>
+  apiGet<{ view_id: string; folder_id: string; name: string }>("/v1/topology/world");
+
+export const fetchTopologyFolderBBox = (folderId: string) =>
+  apiGet<{ folder_id: string; min_x: number; max_x: number; min_y: number; max_y: number; n: number }>(
+    `/v1/topology/folders/${encodeURIComponent(folderId)}/bbox`,
+  );
 
 export const updateTopologyView = (
   viewId: string,

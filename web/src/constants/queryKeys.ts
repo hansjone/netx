@@ -62,7 +62,8 @@ export const queryKeys = {
   fabricSummary: ["fabricSummary"] as const,
   /** @deprecated */
   topologyMaps: ["topologyViews"] as const,
-  topologyGraph: (viewId: string) => ["topologyViewGraph", viewId] as const,
+  topologyGraph: (viewId: string, focusFolderId = "") =>
+    ["topologyViewGraph", viewId, focusFolderId] as const,
   lldpCollectDashboard: ["lldpCollectDashboard"] as const,
   lldpCollectJobsAll: ["lldpCollectJobs"] as const,
   lldpCollectJobs: (page: number) => ["lldpCollectJobs", page] as const,

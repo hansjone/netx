@@ -1,4 +1,4 @@
-"""UME TopoNodes + TopologicalLinks sync (phase-1: local tables only)."""
+"""UME TopoNodes + TopologicalLinks sync, then apply into Fabric world map."""
 from __future__ import annotations
 
 import hashlib
@@ -17,6 +17,7 @@ from .db import SessionLocal
 from .models import UmeSyncJob, UmeTopoLink, UmeTopoNode
 from .ume_client import UMEClient
 from .ume_raw import dumps_ume_raw
+from .ume_port_normalize import resolve_link_ifnames
 from .ume_sync_common import _pick, _s, _utc_now_naive
 from .ume_sync_pull import _build_sync_job
 
@@ -371,6 +372,12 @@ def _upsert_topo_link(work: Session, link_id: str, row: dict[str, Any], *, now) 
         existing.z_ume_ne_id = extract_me_uuid(z_ref)[:128]
         existing.a_ptp = extract_ptp(a_ref)
         existing.z_ptp = extract_ptp(z_ref)
+        label = _s(_pick(row, "userLabel", "user-label", "user_label"))
+        a_if, z_if = resolve_link_ifnames(
+            a_end_tp_ref=a_ref, z_end_tp_ref=z_ref, user_label=label
+        )
+        existing.a_ifname = a_if[:128]
+        existing.z_ifname = z_if[:128]
         existing.last_seen_at = now
         existing.raw_json = dumps_ume_raw(row)
 
@@ -412,7 +419,7 @@ def _delete_missing_ids(work: Session, model, pk_col, seen_ids: set[str]) -> int
 
 
 def sync_topology_full(db: Session, client: UMEClient, *, trigger_mode: str = "manual") -> UmeSyncJob:
-    """Pull TopoNodes + TopologicalLinks into local tables (no Fabric apply)."""
+    """Pull TopoNodes + TopologicalLinks into dock tables, then apply into Fabric."""
     if not _TOPOLOGY_SYNC_LOCK.acquire(blocking=False):
         raise RuntimeError("topology_sync_busy")
 
@@ -522,6 +529,28 @@ def sync_topology_full(db: Session, client: UMEClient, *, trigger_mode: str = "m
                 links_del = _delete_missing_ids(work, UmeTopoLink, UmeTopoLink.link_id, seen_links)
                 work.commit()
 
+                apply_stats: dict[str, Any] = {}
+                try:
+                    from .ume_topology_apply import apply_ume_topology_to_fabric
+                    from .ume_topology_world import ensure_ume_world_and_sbn_folders
+
+                    _sync_log.info("topology sync job %s: applying dock → fabric…", job_id)
+                    apply_db = _session_factory_for(db)()
+                    try:
+                        apply_stats = apply_ume_topology_to_fabric(apply_db)
+                        world_stats = ensure_ume_world_and_sbn_folders(apply_db)
+                        apply_stats = {**apply_stats, "world": world_stats}
+                    finally:
+                        try:
+                            apply_db.close()
+                        except Exception:
+                            pass
+                except Exception:
+                    _sync_log.exception(
+                        "topology sync job %s: fabric apply failed (dock sync kept)",
+                        job_id,
+                    )
+
                 pulled = nodes_pulled + links_pulled
                 inserted = nodes_ins + links_ins
                 updated = nodes_upd + links_upd
@@ -547,6 +576,7 @@ def sync_topology_full(db: Session, client: UMEClient, *, trigger_mode: str = "m
                         },
                         "deleted_topo_nodes": nodes_del,
                         "deleted_topo_links": links_del,
+                        "fabric_apply": apply_stats,
                     },
                     ensure_ascii=False,
                 )

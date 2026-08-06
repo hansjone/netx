@@ -1,4 +1,4 @@
-﻿* {
+* {
   box-sizing: border-box;
 }
 
@@ -5558,9 +5558,11 @@ pre {
 
 .topo-region-list__block {
   margin: 0;
-  width: 100%;
+  width: auto;
+  max-width: 100%;
   min-width: 0;
   padding: 2px 0 4px;
+  box-sizing: border-box;
 }
 
 .topo-region-list__row {
@@ -5581,13 +5583,15 @@ pre {
 
 .topo-region-list .topo-map-list__row:hover,
 .topo-region-list__block.is-hot > .topo-region-list__row,
-.topo-region-list__maps > li.is-hot > .topo-map-list__row {
+.topo-region-list__maps > li.is-hot > .topo-map-list__row,
+.topo-region-list__view.is-hot > .topo-map-list__row {
   background: var(--nm-nav-hover, #152033);
 }
 
 /* Selected = deep wash + left accent */
 .topo-region-list__block.is-active > .topo-region-list__row,
-.topo-region-list__maps > li.is-active > .topo-map-list__row {
+.topo-region-list__maps > li.is-active > .topo-map-list__row,
+.topo-region-list__view.is-active > .topo-map-list__row {
   border: 0;
   background: var(--nm-nav-active, #1a2740);
   box-shadow: inset 3px 0 0 var(--nm-accent, #3b82f6);
@@ -5625,7 +5629,8 @@ pre {
 .topo-region-list__maps {
   position: relative;
   margin: 2px 0 0;
-  padding: 2px 0 2px 0;
+  /* One nest level = one indent; do not also set marginLeft on child blocks. */
+  padding: 2px 0 2px 14px;
   overflow: visible;
   flex: none;
 }
@@ -5633,7 +5638,7 @@ pre {
 .topo-region-list__maps::before {
   content: "";
   position: absolute;
-  left: 18px;
+  left: 6px;
   top: 0;
   bottom: 6px;
   width: 1px;
@@ -5642,8 +5647,10 @@ pre {
 
 .topo-region-list__maps > li {
   margin: 0;
-  width: 100%;
+  width: auto;
+  max-width: 100%;
   position: relative;
+  box-sizing: border-box;
 }
 
 .topo-region-list__maps > li + li {
@@ -5660,9 +5667,10 @@ pre {
   border-radius: 8px;
 }
 
+/* View rows use a chevron spacer — same padding as folder rows (no extra 36px). */
 .app-main .topo-region-list__maps .topo-map-list__item,
 .topo-region-list__maps .topo-map-list__item {
-  padding: 7px 6px 7px 36px;
+  padding: 8px 6px 8px 8px;
 }
 
 .topo-region-list .topo-map-list__item:hover,
@@ -7068,12 +7076,51 @@ pre {
 .topo-node--other {
   --topo-icon-color: var(--topo-vendor-gray, #94a3b8);
 }
+.topo-node--region {
+  --topo-icon-color: #38bdf8;
+}
+.topo-region-list__chevron {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
+  opacity: 0.75;
+}
+.topo-region-list__chevron:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+.topo-region-list__chevron-spacer {
+  flex: 0 0 auto;
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+}
+.topo-region-list .topo-map-list__row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
 
 .topo-node__glyph {
   position: relative;
   width: 56px;
   height: 56px;
   margin: 0 auto;
+}
+
+.topo-node.is-region .topo-node__glyph {
+  width: 56px;
+  height: 38px;
+}
+
+.topo-node.is-region .topo-node__caption {
+  margin-top: 8px;
+}
+
+.topo-node__icon--region {
+  width: 56px;
+  height: 38px;
 }
 
 .react-flow__node.is-search-hit .topo-node__glyph {

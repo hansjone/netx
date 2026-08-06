@@ -162,6 +162,7 @@ class TopologyFolderOut(BaseModel):
     name: str
     sort_order: int = 0
     is_system: bool = False
+    external_ref: str = ""
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -222,6 +223,7 @@ class TopologyTreeFolderOut(BaseModel):
     name: str
     sort_order: int = 0
     is_system: bool = False
+    external_ref: str = ""
     views: list[TopologyTreeViewOut] = Field(default_factory=list)
     children: list["TopologyTreeFolderOut"] = Field(default_factory=list)
 
@@ -276,6 +278,11 @@ class ViewNodeOut(BaseModel):
     device_type: str = ""
     connect_status: str = ""
     managed_source: str = ""  # manual | ume_sync | lldp | topology | webcrt | …
+    # ne | region — region nodes drill into child UME canvases
+    kind: str = "ne"
+    folder_id: str = ""
+    view_id: str = ""
+    node_count: int = 0
 
 
 class ViewEdgeOut(BaseModel):

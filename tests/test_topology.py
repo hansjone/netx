@@ -480,7 +480,7 @@ class FabricTopologyTests(unittest.TestCase):
         tree = svc.get_topology_tree(self.db)
         assert tree.root is not None
         reg = next(c for c in tree.root.children if c.id == region.id)
-        self.assertEqual(len(reg.views), 1)
+        self.assertTrue(any(v.id == custom.id for v in reg.views))
 
         out = svc.delete_folder(self.db, region.id)
         self.assertTrue(out.get("deleted"))
@@ -492,6 +492,53 @@ class FabricTopologyTests(unittest.TestCase):
             self.db.query(TopoView).filter(TopoView.folder_id == region.id).count(),
             0,
         )
+
+    def test_nested_region_places_icon_on_parent_canvas(self) -> None:
+        parent = svc.create_folder(
+            self.db, TopologyFolderCreate(name="Parent-Canvas", kind="region")
+        )
+        child = svc.create_folder(
+            self.db,
+            TopologyFolderCreate(name="Child-Icon", kind="region", parent_id=parent.id),
+        )
+        tree = svc.get_topology_tree(self.db)
+        assert tree.root is not None
+        p = next(c for c in tree.root.children if c.id == parent.id)
+        self.assertTrue(p.views)
+        graph = svc.get_view_graph(self.db, p.views[0].id)
+        regions = [n for n in graph.nodes if n.kind == "region"]
+        self.assertEqual(len(regions), 1)
+        self.assertEqual(regions[0].folder_id, child.id)
+        self.assertEqual(regions[0].label, "Child-Icon")
+        self.assertTrue(str(regions[0].fabric_node_id).startswith("region:"))
+
+        # Drag/save positions for synthetic region nodes.
+        moved = svc.patch_view_positions(
+            self.db,
+            p.views[0].id,
+            ViewPositionsPatch(
+                positions=[
+                    ViewNodeIn(
+                        fabric_node_id=regions[0].fabric_node_id, x=321, y=210
+                    )
+                ],
+                return_graph=True,
+            ),
+        )
+        if hasattr(moved, "nodes"):
+            hit = next(n for n in moved.nodes if n.kind == "region")
+        else:
+            hit = next(
+                n
+                for n in svc.get_view_graph(self.db, p.views[0].id).nodes
+                if n.kind == "region"
+            )
+        self.assertEqual(hit.x, 321)
+        self.assertEqual(hit.y, 210)
+
+        svc.delete_folder(self.db, child.id)
+        graph2 = svc.get_view_graph(self.db, p.views[0].id)
+        self.assertFalse(any(n.kind == "region" for n in graph2.nodes))
 
     def test_classify_role_region_and_slices(self) -> None:
         from netx_api import topology_classify as clf

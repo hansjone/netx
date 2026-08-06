@@ -144,7 +144,19 @@ def _batch_ne_lookups(
 
 
 def get_view_graph(db: Session, view_id: str) -> TopologyViewGraphOut:
+    from .topology_region_canvas import (
+        child_region_nodes_for_view,
+        is_region_canvas_node_id,
+        region_folder_id_from_node,
+        region_node_out,
+    )
+    from .ume_topology_world import is_ume_canvas_view
+    from .ume_topology_world_graph import get_ume_canvas_graph
+
     view = _get_view_or_404(db, view_id)
+    # Save/mutate return_graph must use the same UME synthetic graph as GET.
+    if is_ume_canvas_view(view):
+        return get_ume_canvas_graph(db, view_id)
     vnodes = db.query(TopoViewNode).filter(TopoViewNode.view_id == view.id).all()
     truncated = False
     reason = ""
@@ -152,7 +164,7 @@ def get_view_graph(db: Session, view_id: str) -> TopologyViewGraphOut:
         vnodes = vnodes[:VIEW_GRAPH_NODE_HARD_CAP]
         truncated = True
         reason = "too_many_view_nodes"
-    fids = [vn.fabric_node_id for vn in vnodes]
+    fids = [vn.fabric_node_id for vn in vnodes if not is_region_canvas_node_id(vn.fabric_node_id)]
     fabric_nodes = {
         n.id: n for n in db.query(TopoFabricNode).filter(TopoFabricNode.id.in_(fids)).all()
     } if fids else {}
@@ -161,7 +173,24 @@ def get_view_graph(db: Session, view_id: str) -> TopologyViewGraphOut:
     layer = str(filt.get("layer") or "physical").strip() or "physical"
     status = str(filt.get("status") or "").strip().lower()
     nodes_out: list[ViewNodeOut] = []
+    region_ids_seen: set[str] = set()
     for vn in vnodes:
+        if is_region_canvas_node_id(vn.fabric_node_id):
+            folder = db.get(TopoFolder, region_folder_id_from_node(vn.fabric_node_id))
+            if folder is None or str(folder.kind or "") != "region":
+                continue
+            region_ids_seen.add(folder.id)
+            nodes_out.append(
+                region_node_out(
+                    db,
+                    folder=folder,
+                    x=float(vn.x or 0),
+                    y=float(vn.y or 0),
+                    locked=bool(vn.locked),
+                    label=str(vn.label or folder.name or ""),
+                )
+            )
+            continue
         fn = fabric_nodes.get(vn.fabric_node_id)
         label = (vn.label or "").strip()
         if not label and fn is not None:
@@ -194,6 +223,12 @@ def get_view_graph(db: Session, view_id: str) -> TopologyViewGraphOut:
                 managed_source=managed_source,
             )
         )
+    # Child regions without a placement row still appear (legacy / missed create).
+    for rn in child_region_nodes_for_view(db, view):
+        fid = str(rn.folder_id or "").strip()
+        if fid and fid not in region_ids_seen:
+            nodes_out.append(rn)
+            region_ids_seen.add(fid)
     edges_out: list[ViewEdgeOut] = []
     if fids:
         q = db.query(TopoFabricEdge).filter(
@@ -648,7 +683,9 @@ def patch_view_positions(
             fid = str(p.fabric_node_id or "").strip()
             if not fid:
                 continue
-            if db.get(TopoFabricNode, fid) is None:
+            from .topology_region_canvas import is_region_canvas_node_id
+
+            if not is_region_canvas_node_id(fid) and db.get(TopoFabricNode, fid) is None:
                 raise HTTPException(status_code=400, detail=f"fabric_node_not_found:{fid}")
             row = existing.get(fid)
             if row is None:
@@ -695,6 +732,10 @@ def add_nodes_to_view(
     db: Session, view_id: str, body: ViewNodesAdd
 ) -> ViewMutationOut | TopologyViewGraphOut:
     view = _get_view_or_404(db, view_id)
+    from .ume_topology_world import is_world_flat_view
+
+    if is_world_flat_view(view):
+        raise HTTPException(status_code=400, detail="world_map_no_direct_nes")
     mem = _membership_for_view(view)
     max_nodes = int(mem.get("max_nodes") or 300)
     now = _utcnow()
@@ -865,6 +906,10 @@ def create_topology_placeholder_on_view(
     from .ne_service_common import _normalize_ip
 
     view = _get_view_or_404(db, view_id)
+    from .ume_topology_world import is_world_flat_view
+
+    if is_world_flat_view(view):
+        raise HTTPException(status_code=400, detail="world_map_no_direct_nes")
     mem = _membership_for_view(view)
     max_nodes = int(mem.get("max_nodes") or 300)
     existing_count = (

@@ -32,6 +32,9 @@ class TopoFabricNode(Base):
     # rule | manual | ""
     role_source: Mapped[str] = mapped_column(String(16), default="")
     region_source: Mapped[str] = mapped_column(String(16), default="")
+    # Composed flat-world coordinates (packed per-SBN local layouts). Not raw UME xPos/yPos.
+    world_x: Mapped[float | None] = mapped_column(Float, nullable=True, index=True)
+    world_y: Mapped[float | None] = mapped_column(Float, nullable=True, index=True)
     attrs: Mapped[dict] = mapped_column(_JsonType, default=dict)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
@@ -104,6 +107,8 @@ class TopoFolder(Base):
     name: Mapped[str] = mapped_column(String(256), default="", index=True)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     is_system: Mapped[bool] = mapped_column(Boolean, default=False)
+    # UME SBN uuid when folder is synced from TopoNodes; empty for manual regions.
+    external_ref: Mapped[str] = mapped_column(String(128), default="", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
 

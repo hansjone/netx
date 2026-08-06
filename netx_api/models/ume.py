@@ -210,6 +210,8 @@ class UmeTopoLink(Base):
     z_ume_ne_id: Mapped[str] = mapped_column(String(128), default="", index=True)
     a_ptp: Mapped[str] = mapped_column(String(256), default="")
     z_ptp: Mapped[str] = mapped_column(String(256), default="")
+    a_ifname: Mapped[str] = mapped_column(String(128), default="", comment="Normalized CLI-like ifname")
+    z_ifname: Mapped[str] = mapped_column(String(128), default="", comment="Normalized CLI-like ifname")
     first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
     raw_json: Mapped[str] = mapped_column(Text, default="{}")

@@ -82,6 +82,7 @@ def _folder_out(f: TopoFolder) -> TopologyFolderOut:
         name=f.name or "",
         sort_order=int(f.sort_order or 0),
         is_system=bool(f.is_system),
+        external_ref=str(getattr(f, "external_ref", None) or ""),
         created_at=f.created_at,
         updated_at=f.updated_at,
     )
@@ -238,12 +239,32 @@ def create_folder(db: Session, body: TopologyFolderCreate) -> TopologyFolderOut:
         raise HTTPException(status_code=500, detail="topology_root_missing")
     parent_id = str(body.parent_id or "").strip() or root.id
     parent = _get_folder_or_404(db, parent_id)
-    if str(parent.kind or "") != "root":
-        raise HTTPException(status_code=400, detail="region_must_hang_under_root")
+    parent_kind = str(parent.kind or "")
+    if parent_kind not in ("root", "region"):
+        raise HTTPException(status_code=400, detail="invalid_parent_folder")
+
+    # UME World container: only one L2 (system drill). New regions remount under drill.
+    from .ume_topology_world import (
+        ensure_ume_world_and_sbn_folders,
+        get_world_drill_folder,
+        is_ume_world_container,
+        reconcile_world_flat_view,
+    )
+
+    if is_ume_world_container(parent):
+        drill = get_world_drill_folder(db)
+        if drill is None:
+            ensure_ume_world_and_sbn_folders(db)
+            drill = get_world_drill_folder(db)
+        if drill is None:
+            raise HTTPException(status_code=500, detail="world_drill_missing")
+        parent = drill
+        parent_kind = "region"
+
     now = _utcnow()
     row = TopoFolder(
         id=uuid4().hex,
-        parent_id=root.id,
+        parent_id=parent.id,
         kind="region",
         name=name[:256],
         sort_order=int(body.sort_order or 0),
@@ -253,6 +274,28 @@ def create_folder(db: Session, body: TopologyFolderCreate) -> TopologyFolderOut:
     )
     db.add(row)
     db.flush()
+    # Nested / any new region gets a blank physical canvas so the tree can open it.
+    phys = TopoView(
+        id=uuid4().hex,
+        folder_id=row.id,
+        kind=VIEW_KIND_PHYSICAL,
+        role="core",
+        name=name[:200] or "Topology",
+        remark="",
+        sort_order=0,
+        filter={},
+        viewport={},
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(phys)
+    # Nested region: place a building icon on the parent's canvas (region === canvas).
+    if parent_kind == "region":
+        from .topology_region_canvas import place_child_region_on_parent_canvas
+
+        place_child_region_on_parent_canvas(db, parent, row)
+    db.flush()
+    reconcile_world_flat_view(db)
     db.commit()
     db.refresh(row)
     return _folder_out(row)
@@ -273,12 +316,20 @@ def update_folder(db: Session, folder_id: str, body: TopologyFolderUpdate) -> To
             raise HTTPException(status_code=400, detail="cannot_rename_system_folder")
         else:
             row.name = name[:256]
+            from .topology_region_canvas import region_canvas_node_id
+
+            nid = region_canvas_node_id(row.id)
+            for vn in (
+                db.query(TopoViewNode).filter(TopoViewNode.fabric_node_id == nid).all()
+            ):
+                vn.label = name[:256]
+                vn.updated_at = _utcnow()
     if body.sort_order is not None:
         row.sort_order = int(body.sort_order)
     if body.parent_id is not None and str(row.kind or "") == "region":
         parent = _get_folder_or_404(db, body.parent_id)
-        if str(parent.kind or "") != "root":
-            raise HTTPException(status_code=400, detail="region_must_hang_under_root")
+        if str(parent.kind or "") not in ("root", "region"):
+            raise HTTPException(status_code=400, detail="invalid_parent_folder")
         row.parent_id = parent.id
     row.updated_at = _utcnow()
     db.commit()
@@ -295,6 +346,9 @@ def delete_folder(db: Session, folder_id: str, *, force: bool = False) -> dict[s
     if str(row.kind or "") == "root" or bool(row.is_system):
         raise HTTPException(status_code=400, detail="cannot_delete_system_folder")
     _ = force
+    from .topology_region_canvas import remove_region_canvas_placements
+
+    remove_region_canvas_placements(db, row.id)
     views = db.query(TopoView).filter(TopoView.folder_id == row.id).all()
     for v in views:
         db.query(TopoViewEdgeStyle).filter(TopoViewEdgeStyle.view_id == v.id).delete(
@@ -306,6 +360,9 @@ def delete_folder(db: Session, folder_id: str, *, force: bool = False) -> dict[s
         db.delete(v)
     db.flush()
     db.delete(row)
+    from .ume_topology_world import reconcile_world_flat_view
+
+    reconcile_world_flat_view(db)
     db.commit()
     return {"ok": True, "folder_id": folder_id, "deleted": True}
 
@@ -321,6 +378,54 @@ def get_topology_tree(db: Session) -> TopologyTreeOut:
         .all()
     ):
         nc_map[str(vid)] = int(cnt or 0)
+    region_icon_map: dict[str, int] = {}
+    for vid, cnt in (
+        db.query(TopoViewNode.view_id, func.count(TopoViewNode.id))
+        .filter(TopoViewNode.fabric_node_id.like("region:%"))
+        .group_by(TopoViewNode.view_id)
+        .all()
+    ):
+        region_icon_map[str(vid)] = int(cnt or 0)
+
+    # UME canvases are virtual (no TopoViewNode membership) — count fabric MEs instead.
+    ume_ne_by_sbn: dict[str, int] = {}
+    ume_ne_by_folder: dict[str, int] = {}
+    ume_ne_total = 0
+    for fn in (
+        db.query(TopoFabricNode)
+        .filter(TopoFabricNode.ume_ne_id.isnot(None), TopoFabricNode.ume_ne_id != "")
+        .all()
+    ):
+        ume_ne_total += 1
+        fid = str(fn.region_folder_id or "").strip()
+        if fid:
+            ume_ne_by_folder[fid] = ume_ne_by_folder.get(fid, 0) + 1
+        sid = str((fn.attrs or {}).get("ume_sbn_id") or "").strip()
+        if sid:
+            ume_ne_by_sbn[sid] = ume_ne_by_sbn.get(sid, 0) + 1
+
+    def _view_node_count(v: TopoView) -> int:
+        raw = int(nc_map.get(v.id, 0) or 0)
+        ne_nc = max(0, raw - int(region_icon_map.get(v.id, 0) or 0))
+        if ne_nc:
+            return ne_nc
+        filt = dict(v.filter or {})
+        if filt.get("world_flat") or (
+            bool(filt.get("world")) and not filt.get("ume_level")
+        ):
+            return ume_ne_total
+        if filt.get("ume_level"):
+            sid = str(filt.get("sbn_id") or "").strip()
+            if sid:
+                return int(ume_ne_by_sbn.get(sid, 0))
+            # World drill root: all UME MEs.
+            if str(filt.get("parent") or "") == "md":
+                return ume_ne_total
+            if v.folder_id:
+                return int(ume_ne_by_folder.get(str(v.folder_id), 0))
+        if v.folder_id:
+            return int(ume_ne_by_folder.get(str(v.folder_id), 0))
+        return 0
 
     by_parent: dict[str, list[TopoFolder]] = {}
     root: TopoFolder | None = None
@@ -335,7 +440,19 @@ def get_topology_tree(db: Session) -> TopologyTreeOut:
     for v in views:
         views_by_folder.setdefault(str(v.folder_id or ""), []).append(v)
 
-    def _flat_views(folder_views: list[TopoView]) -> list[TopologyTreeViewOut]:
+    def _flat_views(folder: TopoFolder, folder_views: list[TopoView]) -> list[TopologyTreeViewOut]:
+        from .ume_topology_world import (
+            is_ume_world_container,
+            is_world_flat_view,
+            is_world_flat_visible,
+            world_map_should_exist,
+        )
+
+        # Soft-hide world map on UME World when rule 2A is not met.
+        show_flat = True
+        if is_ume_world_container(folder):
+            show_flat = world_map_should_exist(db)
+
         # physical first, then custom; stable by sort_order/name.
         ordered = sorted(
             folder_views,
@@ -346,18 +463,23 @@ def get_topology_tree(db: Session) -> TopologyTreeOut:
                 x.id,
             ),
         )
-        return [
-            TopologyTreeViewOut(
-                id=v.id,
-                name=v.name or "",
-                kind=normalize_view_kind(getattr(v, "kind", None)),
-                role=normalize_view_role(v.role),
-                sort_order=int(v.sort_order or 0),
-                node_count=nc_map.get(v.id, 0),
-                updated_at=v.updated_at,
+        out: list[TopologyTreeViewOut] = []
+        for v in ordered:
+            if is_world_flat_view(v):
+                if not show_flat or not is_world_flat_visible(v):
+                    continue
+            out.append(
+                TopologyTreeViewOut(
+                    id=v.id,
+                    name=v.name or "",
+                    kind=normalize_view_kind(getattr(v, "kind", None)),
+                    role=normalize_view_role(v.role),
+                    sort_order=int(v.sort_order or 0),
+                    node_count=_view_node_count(v),
+                    updated_at=v.updated_at,
+                )
             )
-            for v in ordered
-        ]
+        return out
 
     def _build(folder: TopoFolder) -> TopologyTreeFolderOut:
         kids = [_build(c) for c in by_parent.get(folder.id, [])]
@@ -368,7 +490,8 @@ def get_topology_tree(db: Session) -> TopologyTreeOut:
             name=folder.name or "",
             sort_order=int(folder.sort_order or 0),
             is_system=bool(folder.is_system),
-            views=_flat_views(views_by_folder.get(folder.id, [])),
+            external_ref=str(getattr(folder, "external_ref", None) or ""),
+            views=_flat_views(folder, views_by_folder.get(folder.id, [])),
             children=kids,
         )
 

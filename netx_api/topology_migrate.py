@@ -43,6 +43,10 @@ def ensure_topology_schema(conn: Connection) -> None:
                 "ALTER TABLE topo_fabric_node ADD COLUMN IF NOT EXISTS region_folder_id VARCHAR(64)",
                 "ALTER TABLE topo_fabric_node ADD COLUMN IF NOT EXISTS role_source VARCHAR(16) DEFAULT ''",
                 "ALTER TABLE topo_fabric_node ADD COLUMN IF NOT EXISTS region_source VARCHAR(16) DEFAULT ''",
+                "ALTER TABLE topo_fabric_node ADD COLUMN IF NOT EXISTS world_x DOUBLE PRECISION",
+                "ALTER TABLE topo_fabric_node ADD COLUMN IF NOT EXISTS world_y DOUBLE PRECISION",
+                "CREATE INDEX IF NOT EXISTS ix_topo_fabric_node_world_x ON topo_fabric_node (world_x)",
+                "CREATE INDEX IF NOT EXISTS ix_topo_fabric_node_world_y ON topo_fabric_node (world_y)",
                 """
                 CREATE TABLE IF NOT EXISTS topo_folder (
                     id VARCHAR(64) PRIMARY KEY,
