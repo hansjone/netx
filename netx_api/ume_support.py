@@ -334,14 +334,39 @@ def _run_startup_alarm_sync_before_ws() -> None:
         complete_startup_alarm_sync_gate()
 
 
-def _sleep_or_until_paused(task_id: str, total_s: float) -> None:
-    """Sleep up to total_s wall seconds; honor pause; wake early on resume (debounce interrupt)."""
+def _consume_force_sync_skip(task_id: str) -> bool:
+    """Return True once if resume/kick asked to skip the next debounce wait."""
+    with _UME_DEBOUNCE_MUTEX:
+        if task_id in _UME_SYNC_SKIP_DEBOUNCE:
+            _UME_SYNC_SKIP_DEBOUNCE.discard(task_id)
+            return True
+    return False
+
+
+def _has_force_sync_skip(task_id: str) -> bool:
+    with _UME_DEBOUNCE_MUTEX:
+        return task_id in _UME_SYNC_SKIP_DEBOUNCE
+
+
+def _sleep_or_until_paused(task_id: str, total_s: float) -> bool:
+    """Sleep up to total_s; honor pause; wake early on resume.
+
+    Returns True when the wait was interrupted for a forced sync (resume/kick).
+    """
+    if _has_force_sync_skip(task_id):
+        return True
     deadline = time.time() + max(0.0, float(total_s))
     ev = _debounce_wake_event(task_id)
-    ev.clear()
+    # Do not clear a wake that resume already set between skip-check and sleep.
     while time.time() < deadline:
+        if _has_force_sync_skip(task_id):
+            return True
         if _runtime_is_paused(task_id):
-            time.sleep(1)
+            # Pause must still be interruptible so resume is not stuck up to 1s+interval.
+            if ev.wait(timeout=1.0):
+                ev.clear()
+                if _has_force_sync_skip(task_id) or not _runtime_is_paused(task_id):
+                    return True
             continue
         remaining = deadline - time.time()
         if remaining <= 0:
@@ -350,11 +375,11 @@ def _sleep_or_until_paused(task_id: str, total_s: float) -> None:
         if ev.wait(timeout=timeout):
             ev.clear()
             _schedule_log.info("%s: debounce wait interrupted (resume)", task_id)
-            with _UME_DEBOUNCE_MUTEX:
-                _UME_SYNC_SKIP_DEBOUNCE.discard(task_id)
-            return
+            return True
     if ev.is_set():
         ev.clear()
+        return _has_force_sync_skip(task_id)
+    return False
 
 
 def _last_finished_job_ended_at(db: Session, domain: str) -> datetime | None:
@@ -416,17 +441,19 @@ def _maybe_wait_for_sync_interval(
     label: str,
 ) -> None:
     """Sleep until interval elapsed since last finished job (ended_at), if any."""
-    with _UME_DEBOUNCE_MUTEX:
-        if task_id in _UME_SYNC_SKIP_DEBOUNCE:
-            _UME_SYNC_SKIP_DEBOUNCE.discard(task_id)
-            _schedule_log.info("%s: debounce skipped (resume/kick)", label)
-            return
+    if _consume_force_sync_skip(task_id):
+        _schedule_log.info("%s: debounce skipped (resume/kick)", label)
+        return
     db = SessionLocal()
     try:
         elapsed = _seconds_since_last_finished_job(db, domain)
     finally:
         db.close()
     _refresh_runtime_task_idle(task_id, domain)
+    # Resume may arrive while we were computing elapsed / refreshing idle status.
+    if _consume_force_sync_skip(task_id):
+        _schedule_log.info("%s: debounce skipped after idle refresh (resume/kick)", label)
+        return
     if elapsed is None:
         # Topology dumps are heavy: do not pull on every process start when there is
         # no prior real finished job (e.g. only orphan cleanup rows). Wait one full
@@ -438,7 +465,9 @@ def _maybe_wait_for_sync_interval(
                 domain,
                 interval_s,
             )
-            _sleep_or_until_paused(task_id, float(interval_s))
+            if _sleep_or_until_paused(task_id, float(interval_s)):
+                _consume_force_sync_skip(task_id)
+                _schedule_log.info("%s: wait interrupted — sync now", label)
             return
         _schedule_log.info("%s: no prior finished job for %s, sync now", label, domain)
         return
@@ -447,7 +476,9 @@ def _maybe_wait_for_sync_interval(
         return
     wait_s = float(interval_s) - elapsed
     _schedule_log.info("%s: last finished %.0fs ago, wait %.0fs before sync", label, elapsed, wait_s)
-    _sleep_or_until_paused(task_id, wait_s)
+    if _sleep_or_until_paused(task_id, wait_s):
+        _consume_force_sync_skip(task_id)
+        _schedule_log.info("%s: wait interrupted — sync now", label)
 
 
 def _parse_time(text: str | None) -> datetime | None:

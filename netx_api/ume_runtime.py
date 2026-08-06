@@ -137,7 +137,7 @@ def start_api_sideband_threads() -> None:
                             ume_support._runtime_is_paused("alarms_current_auto_sync"),
                         )
                         if ume_support._runtime_is_paused("alarms_current_auto_sync"):
-                            time.sleep(1)
+                            ume_support._debounce_wake_event("alarms_current_auto_sync").wait(timeout=1.0)
                             continue
                         if is_startup_alarm_sync_pending():
                             ume_support._refresh_runtime_task_idle(
@@ -235,7 +235,7 @@ def start_api_sideband_threads() -> None:
                             ume_support._runtime_is_paused("inventory_auto_sync"),
                         )
                         if ume_support._runtime_is_paused("inventory_auto_sync"):
-                            time.sleep(1)
+                            ume_support._debounce_wake_event("inventory_auto_sync").wait(timeout=1.0)
                             continue
                         ume_support._maybe_wait_for_sync_interval(
                             task_id="inventory_auto_sync",
@@ -304,7 +304,7 @@ def start_api_sideband_threads() -> None:
                             ume_support._runtime_is_paused("topology_auto_sync"),
                         )
                         if ume_support._runtime_is_paused("topology_auto_sync"):
-                            time.sleep(1)
+                            ume_support._debounce_wake_event("topology_auto_sync").wait(timeout=1.0)
                             continue
                         ume_support._maybe_wait_for_sync_interval(
                             task_id="topology_auto_sync",
