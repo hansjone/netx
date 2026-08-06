@@ -305,17 +305,7 @@ class UMEClient:
                         self._lock_releaser()
                     except Exception:
                         pass
-                detail = str(exc)[:240]
-                if self.verify_tls and (
-                    "CERTIFICATE_VERIFY_FAILED" in detail
-                    or "certificate verify failed" in detail.lower()
-                    or "SSLCertVerificationError" in type(exc).__name__
-                ):
-                    detail = (
-                        f"{detail} (hint: set NETX_UME_VERIFY_TLS=false for lab "
-                        "self-signed UME, or pin a CA; restart API after change)"
-                    )
-                raise RuntimeError(f"ume_login_failed:{detail}") from exc
+                raise RuntimeError(f"ume_login_failed:{str(exc)[:240]}") from exc
 
             token, ttl = self._extract_token_and_ttl(data)
             if not token:

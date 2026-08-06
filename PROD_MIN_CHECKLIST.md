@@ -3,7 +3,7 @@
 ## Security
 - Prefer empty `NETX_AUTH_SECRET` so each install auto-writes `data/auth/jwt_secret` (do not commit that file). Set an explicit secret only for multi-node shared signing.
 - Leave `NETX_DOCS_ENABLED` unset/false so `/docs` and OpenAPI stay off (set `true` only in lab).
-- Keep `NETX_UME_VERIFY_TLS=true` (or pin a CA); avoid `false` on non-lab hosts.
+- Set `NETX_UME_VERIFY_TLS=true` (or pin a CA) in production; default is `false` for lab self-signed UME.
 - Binding `NETX_HOST` to a non-loopback address with lab defaults is refused unless `NETX_ALLOW_INSECURE_DEFAULTS=1`.
 - Prefer scoped API tokens (MCP default excludes `webcrt:session` / `sql:query`).
 - Keep `.env` and `oclaw/_local/system.env` out of Git (already ignored).

@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     ume_base_url: str = ""
     ume_username: str = ""
     ume_password: str = ""
-    ume_verify_tls: bool = True
+    ume_verify_tls: bool = False
     ume_timeout_s: float = 20.0
     ume_page_size: int = 1000
     ume_max_pages: int = 2000

@@ -37,7 +37,7 @@ def assert_secure_defaults_or_exit() -> None:
     pwd = str(settings.bootstrap_admin_password or "").strip()
     if pwd in {"", "admin123"}:
         problems.append("NETX_BOOTSTRAP_ADMIN_PASSWORD is still the lab default (admin123)")
-    if not bool(getattr(settings, "ume_verify_tls", True)):
+    if not bool(getattr(settings, "ume_verify_tls", False)):
         problems.append("NETX_UME_VERIFY_TLS=false while binding on a non-loopback interface")
     if problems:
         for p in problems:
