@@ -221,7 +221,7 @@ def ume_runtime_task_pause(task: str) -> dict[str, Any]:
     if tid not in UME_KNOWN_RUNTIME_TASKS:
         raise HTTPException(status_code=404, detail="unknown_runtime_task")
     _runtime_pause_task(tid)
-    if tid in ("alarms_current_auto_sync", "inventory_auto_sync"):
+    if tid in ("alarms_current_auto_sync", "inventory_auto_sync", "topology_auto_sync"):
         _clear_force_resume_hints(tid)
     if tid == "alarms_current_ws_consumer":
         request_ws_reconnect()
@@ -237,7 +237,7 @@ def ume_runtime_task_resume(task: str) -> dict[str, Any]:
     if tid not in UME_KNOWN_RUNTIME_TASKS:
         raise HTTPException(status_code=404, detail="unknown_runtime_task")
     _runtime_resume_task(tid)
-    if tid in ("alarms_current_auto_sync", "inventory_auto_sync"):
+    if tid in ("alarms_current_auto_sync", "inventory_auto_sync", "topology_auto_sync"):
         _request_force_sync_after_resume(tid)
         resume_hint = RT_RESUMED_SYNC_SOON
     elif tid == "alarms_current_ws_consumer":

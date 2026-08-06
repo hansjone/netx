@@ -358,20 +358,29 @@ def _sleep_or_until_paused(task_id: str, total_s: float) -> None:
 
 
 def _last_finished_job_ended_at(db: Session, domain: str) -> datetime | None:
-    """Latest finished sync job end time for domain (success or failed)."""
-    row = (
+    """Latest finished sync job end time for domain (success or failed).
+
+    Ignores startup/reaper cleanup rows (``stale_running_*``) so process restart
+    does not reset the schedule clock to "just now".
+    """
+    rows = (
         db.query(UmeSyncJob)
         .filter(
             UmeSyncJob.domain == domain,
             UmeSyncJob.ended_at.isnot(None),
         )
         .order_by(UmeSyncJob.ended_at.desc())
-        .limit(1)
-        .first()
+        .limit(50)
+        .all()
     )
-    if not row or row.ended_at is None:
-        return None
-    return _ensure_utc(row.ended_at)
+    for row in rows:
+        err = str(getattr(row, "error_message", "") or "")
+        if "stale_running" in err:
+            continue
+        if row.ended_at is None:
+            continue
+        return _ensure_utc(row.ended_at)
+    return None
 
 
 def _seconds_since_last_finished_job(db: Session, domain: str) -> float | None:
@@ -419,6 +428,18 @@ def _maybe_wait_for_sync_interval(
         db.close()
     _refresh_runtime_task_idle(task_id, domain)
     if elapsed is None:
+        # Topology dumps are heavy: do not pull on every process start when there is
+        # no prior real finished job (e.g. only orphan cleanup rows). Wait one full
+        # interval unless resume/kick skipped debounce above.
+        if domain == "topology":
+            _schedule_log.info(
+                "%s: no prior finished job for %s, wait full %ss (no startup pull)",
+                label,
+                domain,
+                interval_s,
+            )
+            _sleep_or_until_paused(task_id, float(interval_s))
+            return
         _schedule_log.info("%s: no prior finished job for %s, sync now", label, domain)
         return
     if elapsed >= float(interval_s):
