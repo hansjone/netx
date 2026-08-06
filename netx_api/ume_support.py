@@ -383,16 +383,18 @@ def _sleep_or_until_paused(task_id: str, total_s: float) -> bool:
 
 
 def _last_finished_job_ended_at(db: Session, domain: str) -> datetime | None:
-    """Latest finished sync job end time for domain (success or failed).
+    """Anchor for the sync interval clock: last *real* job completion.
 
-    Ignores startup/reaper cleanup rows (``stale_running_*``) so process restart
-    does not reset the schedule clock to "just now".
+    Uses the latest ``ended_at`` among done/failed rows, skipping startup/reaper
+    cleanup (``stale_running_*``). So: resume → sync now → after that job
+    finishes, the next wait is a full interval from *that* ``ended_at``.
     """
     rows = (
         db.query(UmeSyncJob)
         .filter(
             UmeSyncJob.domain == domain,
             UmeSyncJob.ended_at.isnot(None),
+            UmeSyncJob.status.in_(("done", "failed")),
         )
         .order_by(UmeSyncJob.ended_at.desc())
         .limit(50)
@@ -409,7 +411,7 @@ def _last_finished_job_ended_at(db: Session, domain: str) -> datetime | None:
 
 
 def _seconds_since_last_finished_job(db: Session, domain: str) -> float | None:
-    """Seconds since latest job with ended_at for domain (done or failed). None if none."""
+    """Seconds since latest real finished job. None if none."""
     end = _last_finished_job_ended_at(db, domain)
     if end is None:
         return None
@@ -417,7 +419,7 @@ def _seconds_since_last_finished_job(db: Session, domain: str) -> float | None:
 
 
 def _refresh_runtime_task_idle(task_id: str, domain: str, *, last_error: str | None = None) -> None:
-    """Mark scheduled sync task running; last_run_at = last finished job time (idle / debounce)."""
+    """Mark scheduled sync task idle; last_run_at = last real finished job time."""
     with _UME_RUNTIME_LOCK:
         prev_error = str((_UME_RUNTIME_TASKS.get(task_id) or {}).get("last_error") or "")
     db = SessionLocal()
@@ -440,9 +442,16 @@ def _maybe_wait_for_sync_interval(
     interval_s: int,
     label: str,
 ) -> None:
-    """Sleep until interval elapsed since last finished job (ended_at), if any."""
+    """Wait until ``interval_s`` since last real finished job, unless resume/kick.
+
+    Flow for topology (and inventory):
+    - Resume/kick → skip wait → sync immediately.
+    - After that sync ends (job ``ended_at`` written) → next loop waits a full
+      interval from that completion.
+    - Process restart does not invent a new anchor from stale cleanup rows.
+    """
     if _consume_force_sync_skip(task_id):
-        _schedule_log.info("%s: debounce skipped (resume/kick)", label)
+        _schedule_log.info("%s: debounce skipped (resume/kick) — sync now", label)
         return
     db = SessionLocal()
     try:
@@ -450,17 +459,15 @@ def _maybe_wait_for_sync_interval(
     finally:
         db.close()
     _refresh_runtime_task_idle(task_id, domain)
-    # Resume may arrive while we were computing elapsed / refreshing idle status.
     if _consume_force_sync_skip(task_id):
-        _schedule_log.info("%s: debounce skipped after idle refresh (resume/kick)", label)
+        _schedule_log.info("%s: debounce skipped after idle refresh (resume/kick) — sync now", label)
         return
     if elapsed is None:
-        # Topology dumps are heavy: do not pull on every process start when there is
-        # no prior real finished job (e.g. only orphan cleanup rows). Wait one full
-        # interval unless resume/kick skipped debounce above.
+        # No real sync yet (only stale cleanup or empty history): wait one full
+        # interval so API restart does not pull topology immediately.
         if domain == "topology":
             _schedule_log.info(
-                "%s: no prior finished job for %s, wait full %ss (no startup pull)",
+                "%s: no prior real sync for %s, wait full %ss",
                 label,
                 domain,
                 interval_s,
@@ -472,10 +479,20 @@ def _maybe_wait_for_sync_interval(
         _schedule_log.info("%s: no prior finished job for %s, sync now", label, domain)
         return
     if elapsed >= float(interval_s):
-        _schedule_log.info("%s: last finished %.0fs ago (>= %ss), sync now", label, elapsed, interval_s)
+        _schedule_log.info(
+            "%s: last real sync %.0fs ago (>= %ss), sync now",
+            label,
+            elapsed,
+            interval_s,
+        )
         return
     wait_s = float(interval_s) - elapsed
-    _schedule_log.info("%s: last finished %.0fs ago, wait %.0fs before sync", label, elapsed, wait_s)
+    _schedule_log.info(
+        "%s: last real sync %.0fs ago, wait %.0fs (next run = last ended_at + interval)",
+        label,
+        elapsed,
+        wait_s,
+    )
     if _sleep_or_until_paused(task_id, wait_s):
         _consume_force_sync_skip(task_id)
         _schedule_log.info("%s: wait interrupted — sync now", label)
