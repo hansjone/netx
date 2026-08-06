@@ -8,6 +8,7 @@ import {
   applyKeywordHighlight,
   type KeywordHighlightConfig,
 } from "../utils/webcrtKeywordHighlight";
+import { readClipboardText, writeClipboardText } from "../utils/clipboard";
 
 export type WebTerminalHandle = {
   clear: () => void;
@@ -225,6 +226,10 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
   const [findOpen, setFindOpen] = useState(false);
   const [findQuery, setFindQuery] = useState("");
   const [pasteStatus, setPasteStatus] = useState<{ done: number; total: number } | null>(null);
+  const [pasteBridgeOpen, setPasteBridgeOpen] = useState(false);
+  const pasteBridgeRef = useRef<HTMLTextAreaElement | null>(null);
+  const pasteBridgeOpenRef = useRef(false);
+  pasteBridgeOpenRef.current = pasteBridgeOpen;
   const findInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -356,16 +361,12 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
     },
     copyAll: async () => {
       const text = termRef.current ? serializeTerminal(termRef.current) : "";
-      if (text && navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
-      }
+      if (text) await writeClipboardText(text);
       return text;
     },
     copySelection: async () => {
       const text = termRef.current?.getSelection() || "";
-      if (text && navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
-      }
+      if (text) await writeClipboardText(text);
       return text;
     },
     getText: () => (termRef.current ? serializeTerminal(termRef.current) : ""),
@@ -621,9 +622,7 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
     const selDisposable = term.onSelectionChange(() => {
       if (!copyOnSelectRef.current) return;
       const sel = term.getSelection();
-      if (sel && navigator.clipboard?.writeText) {
-        void navigator.clipboard.writeText(sel).catch(() => undefined);
-      }
+      if (sel) void writeClipboardText(sel).catch(() => undefined);
     });
 
     const onKeyDownCapture = (e: KeyboardEvent) => {
@@ -644,21 +643,20 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
         e.preventDefault();
         e.stopPropagation();
         const text = term.getSelection() || "";
-        if (text && navigator.clipboard?.writeText) {
-          void navigator.clipboard.writeText(text).catch(() => undefined);
-        }
+        if (text) void writeClipboardText(text).catch(() => undefined);
         return;
       }
       if ((mod && e.shiftKey && (e.key === "V" || e.key === "v")) || (e.shiftKey && e.key === "Insert")) {
         e.preventDefault();
         e.stopPropagation();
         void (async () => {
-          try {
-            const text = await navigator.clipboard.readText();
-            if (text) sendStdinThrottled(text);
-          } catch {
-            /* permission denied */
+          const text = await readClipboardText();
+          if (text) {
+            sendStdinThrottled(text);
+            return;
           }
+          // http://LAN: Clipboard API blocked — open paste bridge (paste event still works).
+          setPasteBridgeOpen(true);
         })();
         return;
       }
@@ -666,9 +664,7 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
         e.preventDefault();
         e.stopPropagation();
         const text = term.getSelection() || "";
-        if (text && navigator.clipboard?.writeText) {
-          void navigator.clipboard.writeText(text).catch(() => undefined);
-        }
+        if (text) void writeClipboardText(text).catch(() => undefined);
         return;
       }
 
@@ -699,6 +695,7 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
     host.addEventListener("contextmenu", onContextMenu);
 
     const onPasteCapture = (e: ClipboardEvent) => {
+      if (pasteBridgeOpenRef.current) return;
       if (!autoFocusRef.current) return;
       if (host.closest("[hidden]")) return;
       if (isSidebarSearchTarget(e.target)) return;
@@ -759,33 +756,38 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
   }, [sessionId || wsUrl]);
 
   const pasteFromClipboard = async () => {
-    try {
-      const text = await navigator.clipboard.readText();
-      if (text) sendStdinThrottled(text);
-      else setClipStatus(t("webcrt.term.pasteEmpty"));
-    } catch {
-      setClipStatus(t("webcrt.term.pasteFailed"));
-    }
     setCtxMenu(null);
-    focusTerminal();
-    window.setTimeout(() => setClipStatus(null), 2200);
+    const text = await readClipboardText();
+    if (text) {
+      sendStdinThrottled(text);
+      focusTerminal();
+      return;
+    }
+    // Insecure http://IP cannot read clipboard via API — bridge via paste event.
+    setPasteBridgeOpen(true);
   };
 
   const copySelection = async () => {
     const text = menuSelectionRef.current || termRef.current?.getSelection() || "";
+    setCtxMenu(null);
+    if (!text) {
+      setClipStatus(t("webcrt.actions.copyEmpty"));
+      window.setTimeout(() => setClipStatus(null), 2200);
+      return;
+    }
     try {
-      if (text && navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
-        setClipStatus(t("webcrt.actions.copied"));
-      } else {
-        setClipStatus(t("webcrt.actions.copyEmpty"));
-      }
+      const ok = await writeClipboardText(text);
+      setClipStatus(ok ? t("webcrt.actions.copied") : t("webcrt.actions.copyFailed"));
     } catch {
       setClipStatus(t("webcrt.actions.copyFailed"));
     }
-    setCtxMenu(null);
     window.setTimeout(() => setClipStatus(null), 2200);
   };
+
+  useEffect(() => {
+    if (!pasteBridgeOpen) return;
+    window.setTimeout(() => pasteBridgeRef.current?.focus(), 0);
+  }, [pasteBridgeOpen]);
 
   return (
     <div className="webcrt-term-wrap">
@@ -797,6 +799,56 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
       {clipStatus ? (
         <div className="webcrt-paste-status" role="status" aria-live="polite">
           {clipStatus}
+        </div>
+      ) : null}
+      {pasteBridgeOpen ? (
+        <div className="webcrt-paste-bridge" role="dialog" aria-label={t("webcrt.term.paste")}>
+          <div className="webcrt-paste-bridge__card">
+            <p className="webcrt-paste-bridge__hint">{t("webcrt.term.pasteBridgeHint")}</p>
+            <textarea
+              ref={pasteBridgeRef}
+              className="webcrt-paste-bridge__input"
+              rows={4}
+              placeholder={t("webcrt.term.pasteBridgePh")}
+              onPaste={(e) => {
+                const text = e.clipboardData?.getData("text") || "";
+                if (!text) return;
+                e.preventDefault();
+                setPasteBridgeOpen(false);
+                sendStdinThrottled(text);
+                focusTerminal();
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setPasteBridgeOpen(false);
+                  focusTerminal();
+                }
+              }}
+            />
+            <div className="webcrt-paste-bridge__actions">
+              <button
+                type="button"
+                onClick={() => {
+                  const text = pasteBridgeRef.current?.value || "";
+                  setPasteBridgeOpen(false);
+                  if (text) sendStdinThrottled(text);
+                  focusTerminal();
+                }}
+              >
+                {t("webcrt.term.paste")}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setPasteBridgeOpen(false);
+                  focusTerminal();
+                }}
+              >
+                {t("webcrt.term.pasteBridgeCancel")}
+              </button>
+            </div>
+          </div>
         </div>
       ) : null}
       {findOpen ? (

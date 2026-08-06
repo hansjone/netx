@@ -1334,7 +1334,11 @@ const en = {
       copy: "Copy",
       paste: "Paste",
       pasteEmpty: "Clipboard is empty",
-      pasteFailed: "Cannot read clipboard (try Ctrl+Shift+V or check browser permission)",
+      pasteFailed: "Cannot read clipboard (on HTTP use the paste box, or Ctrl+V)",
+      pasteBridgeHint:
+        "This page is not HTTPS, so the browser blocks clipboard reads. Press Ctrl+V in this box to send text to the terminal.",
+      pasteBridgePh: "Press Ctrl+V here…",
+      pasteBridgeCancel: "Cancel",
       clear: "Clear",
       pasting: "Pasting {{done}}/{{total}} lines…",
       wsError: "[WebSocket error]",

@@ -3659,6 +3659,67 @@ pre {
   pointer-events: none;
 }
 
+.webcrt-paste-bridge {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(2, 6, 23, 0.55);
+  padding: 16px;
+}
+
+.webcrt-paste-bridge__card {
+  width: min(420px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 10px;
+  background: #0f172a;
+  border: 1px solid #334155;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+
+.webcrt-paste-bridge__hint {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: #cbd5e1;
+}
+
+.webcrt-paste-bridge__input {
+  width: 100%;
+  resize: vertical;
+  min-height: 88px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid #475569;
+  background: #020617;
+  color: #e2e8f0;
+  font: inherit;
+}
+
+.webcrt-paste-bridge__actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.webcrt-paste-bridge__actions button {
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid #475569;
+  background: #1e293b;
+  color: #e2e8f0;
+  cursor: pointer;
+}
+
+.webcrt-paste-bridge__actions button:hover {
+  background: #334155;
+}
+
 .webcrt-find {
   display: flex;
   gap: 4px;

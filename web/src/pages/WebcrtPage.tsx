@@ -33,6 +33,7 @@ import {
   type WebcrtSftpItem,
 } from "../services/api";
 import { pageCount } from "../utils/display";
+import { writeClipboardText } from "../utils/clipboard";
 import type { CliTargetItem, ManagedNeItem } from "../types";
 import {
   defaultKeywordHighlightConfig,
@@ -1374,8 +1375,9 @@ export function WebcrtPage() {
         return;
       }
       try {
-        await navigator.clipboard.writeText(ip);
-        showOk(t("webcrt.tabMenu.copyIpOk", { ip }));
+        const ok = await writeClipboardText(ip);
+        if (ok) showOk(t("webcrt.tabMenu.copyIpOk", { ip }));
+        else showError(t("webcrt.actions.copyFailed"));
       } catch {
         showError(t("webcrt.actions.copyFailed"));
       }
