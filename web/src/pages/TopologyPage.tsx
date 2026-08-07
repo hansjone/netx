@@ -297,34 +297,10 @@ function regionDisplayName(
   return raw;
 }
 
-/** Prefer the folder's primary canvas view (physical / world flat / World drill). */
-function primaryTreeView(
-  folder: TopologyTreeFolderItem | null | undefined,
-): TopologyTreeViewItem | null {
-  if (!folder) return null;
-  const views = folder.views || [];
-  if (!views.length) return null;
-  if (isWorldDrillFolder(folder)) {
-    return views.find((v) => v.name === "World") || views[0] || null;
-  }
-  if (isUmeWorldContainer(folder)) {
-    return views.find((v) => isWorldFlatViewName(v.name)) || views[0] || null;
-  }
-  return views[0] || null;
-}
-
-/**
- * Directory NE badge from API.
- * Manual canvases count view membership (placed NEs); UME World surfaces use inventory.
- */
+/** Directory NE badge: API already returns distinct-subtree ne_count. */
 function folderNeCount(folder: TopologyTreeFolderItem | null | undefined): number {
   if (!folder) return 0;
-  if (folder.ne_count != null && Number.isFinite(Number(folder.ne_count))) {
-    return Math.max(0, Math.floor(Number(folder.ne_count) || 0));
-  }
-  // Legacy fallback before API ne_count: primary view only (no recursive sum).
-  const primary = primaryTreeView(folder);
-  return primary ? Math.max(0, Math.floor(Number(primary.node_count) || 0)) : 0;
+  return Math.max(0, Math.floor(Number(folder.ne_count) || 0));
 }
 
 function formatNeCount(count: number): string {

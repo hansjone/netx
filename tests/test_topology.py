@@ -491,6 +491,105 @@ class FabricTopologyTests(unittest.TestCase):
         self.assertEqual(len(rm.views), 2)
         self.assertTrue(all(not getattr(v, "children", None) for v in rm.views))
 
+    def test_tree_ne_count_distinct_membership_and_home(self) -> None:
+        """Directory N = distinct fabric ids (membership ∪ region_folder_id); parent unions."""
+        site = svc.create_folder(
+            self.db, TopologyFolderCreate(name="NE-Count-Site", kind="region")
+        )
+        tree0 = svc.get_topology_tree(self.db)
+        assert tree0.root is not None
+        site_f = next(c for c in tree0.root.children if c.id == site.id)
+        root_map = site_f.children[0]
+        self.assertEqual(site_f.ne_count, 0)
+        self.assertEqual(root_map.ne_count, 0)
+        self.assertEqual(root_map.views[0].node_count, 0)
+
+        a = svc.create_folder(
+            self.db,
+            TopologyFolderCreate(name="Zone-A", kind="region", parent_id=site.id),
+        )
+        b = svc.create_folder(
+            self.db,
+            TopologyFolderCreate(name="Zone-B", kind="region", parent_id=site.id),
+        )
+        tree1 = svc.get_topology_tree(self.db)
+        assert tree1.root is not None
+        site1 = next(c for c in tree1.root.children if c.id == site.id)
+        rm1 = site1.children[0]
+        za = next(c for c in rm1.children if c.id == a.id)
+        zb = next(c for c in rm1.children if c.id == b.id)
+        # Empty nested regions (+ region icons on parent) still 0 NE.
+        self.assertEqual(za.ne_count, 0)
+        self.assertEqual(zb.ne_count, 0)
+        self.assertEqual(rm1.ne_count, 0)
+
+        suffix = uuid4().hex[:8]
+        shared = TopoFabricNode(
+            id=f"ne-shared-{suffix}",
+            name=f"Shared-{suffix}",
+            ip="10.66.0.1",
+            managed_ne_id=f"mne-shared-{suffix}",
+        )
+        only_a = TopoFabricNode(
+            id=f"ne-a-{suffix}",
+            name=f"OnlyA-{suffix}",
+            ip="10.66.0.2",
+            managed_ne_id=f"mne-a-{suffix}",
+        )
+        home_only = TopoFabricNode(
+            id=f"ne-home-{suffix}",
+            name=f"Home-{suffix}",
+            ip="10.66.0.3",
+            managed_ne_id=f"mne-home-{suffix}",
+            region_folder_id=a.id,
+        )
+        self.db.add_all([shared, only_a, home_only])
+        self.db.add(
+            TopoViewNode(
+                id=uuid4().hex,
+                view_id=za.views[0].id,
+                fabric_node_id=shared.id,
+                x=0,
+                y=0,
+            )
+        )
+        self.db.add(
+            TopoViewNode(
+                id=uuid4().hex,
+                view_id=zb.views[0].id,
+                fabric_node_id=shared.id,
+                x=1,
+                y=1,
+            )
+        )
+        self.db.add(
+            TopoViewNode(
+                id=uuid4().hex,
+                view_id=za.views[0].id,
+                fabric_node_id=only_a.id,
+                x=2,
+                y=2,
+            )
+        )
+        self.db.commit()
+
+        tree2 = svc.get_topology_tree(self.db)
+        assert tree2.root is not None
+        site2 = next(c for c in tree2.root.children if c.id == site.id)
+        rm2 = site2.children[0]
+        za2 = next(c for c in rm2.children if c.id == a.id)
+        zb2 = next(c for c in rm2.children if c.id == b.id)
+
+        # Zone-A: shared + only_a + home_only (region_folder_id, no membership)
+        self.assertEqual(za2.ne_count, 3)
+        self.assertEqual(za2.views[0].node_count, 2)
+        # Zone-B: shared only
+        self.assertEqual(zb2.ne_count, 1)
+        self.assertEqual(zb2.views[0].node_count, 1)
+        # Parent 根图: distinct union → shared, only_a, home_only = 3 (not 3+1)
+        self.assertEqual(rm2.ne_count, 3)
+        self.assertEqual(site2.ne_count, 3)
+
     def test_manual_root_map_name_follows_locale(self) -> None:
         """English UI creates Root map; zh (default) keeps 根图."""
         en_root = svc.create_folder(

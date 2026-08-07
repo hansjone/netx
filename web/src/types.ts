@@ -427,7 +427,7 @@ export type TopologyTreeFolderItem = {
   sort_order: number;
   is_system: boolean;
   external_ref?: string;
-  /** Real NE inventory under this folder (subtree). Region folders are not NEs. */
+  /** Distinct fabric NE count in this folder subtree (API). Region icons excluded. */
   ne_count?: number;
   views: TopologyTreeViewItem[];
   children: TopologyTreeFolderItem[];

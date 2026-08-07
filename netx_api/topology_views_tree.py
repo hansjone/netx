@@ -18,7 +18,6 @@ from .models import (
     TopoViewEdgeStyle,
     TopoViewNode,
     UmeInventoryNE,
-    UmeTopoNode,
 )
 from .topology_common import (
     PHYSICAL_VIEW_NAME,
@@ -659,82 +658,51 @@ def get_topology_tree(db: Session) -> TopologyTreeOut:
     bootstrap_topology_tree(db)
     folders = db.query(TopoFolder).order_by(TopoFolder.sort_order.asc(), TopoFolder.name.asc()).all()
     views = db.query(TopoView).order_by(TopoView.sort_order.asc(), TopoView.name.asc()).all()
-    # Cheap directory counts — never hydrate 15k fabric rows (attrs JSON) on tree load.
-    # Full inventory scans belong only to the world flat map graph.
-    nc_map: dict[str, int] = {
-        str(vid): int(cnt or 0)
-        for vid, cnt in (
-            db.query(TopoViewNode.view_id, func.count(TopoViewNode.id))
-            .group_by(TopoViewNode.view_id)
-            .all()
+
+    # --- NE badge: source-agnostic distinct fabric ids (membership ∪ region_folder_id) ---
+    # Cheap aggregates only — never hydrate attrs JSON on tree load.
+    membership_by_view: dict[str, set[str]] = {}
+    for vid, fid in (
+        db.query(TopoViewNode.view_id, TopoViewNode.fabric_node_id)
+        .filter(~TopoViewNode.fabric_node_id.like("region:%"))
+        .all()
+    ):
+        membership_by_view.setdefault(str(vid), set()).add(str(fid))
+
+    fabric_by_region: dict[str, set[str]] = {}
+    for fid, nid in (
+        db.query(TopoFabricNode.region_folder_id, TopoFabricNode.id)
+        .filter(
+            TopoFabricNode.region_folder_id.isnot(None),
+            TopoFabricNode.region_folder_id != "",
+            or_(
+                and_(TopoFabricNode.ume_ne_id.isnot(None), TopoFabricNode.ume_ne_id != ""),
+                and_(
+                    TopoFabricNode.managed_ne_id.isnot(None),
+                    TopoFabricNode.managed_ne_id != "",
+                ),
+            ),
         )
-    }
-    region_icon_map: dict[str, int] = {
-        str(vid): int(cnt or 0)
-        for vid, cnt in (
-            db.query(TopoViewNode.view_id, func.count(TopoViewNode.id))
-            .filter(TopoViewNode.fabric_node_id.like("region:%"))
-            .group_by(TopoViewNode.view_id)
-            .all()
-        )
-    }
-    # Skip heavy UME rollups on fresh installs (no UME folders / level views yet).
-    has_ume_dirs = any(
-        str(getattr(f, "external_ref", None) or "").strip()
-        for f in folders
-        if str(f.kind or "") == "region"
-    ) or any(
-        bool(
-            view_filter_dict(v.filter).get("ume_level")
-            or view_filter_dict(v.filter).get("world")
-            or view_filter_dict(v.filter).get("world_flat")
-        )
-        for v in views
-    )
-    # Fabric NE inventory by owning region folder (regions themselves are never fabric NEs).
-    ne_by_folder: dict[str, int] = {
-        str(fid): int(cnt or 0)
-        for fid, cnt in (
-            db.query(TopoFabricNode.region_folder_id, func.count(TopoFabricNode.id))
-            .filter(
-                TopoFabricNode.region_folder_id.isnot(None),
-                TopoFabricNode.region_folder_id != "",
-                or_(
-                    and_(TopoFabricNode.ume_ne_id.isnot(None), TopoFabricNode.ume_ne_id != ""),
-                    and_(
-                        TopoFabricNode.managed_ne_id.isnot(None),
-                        TopoFabricNode.managed_ne_id != "",
-                    ),
+        .all()
+    ):
+        key = str(fid or "").strip()
+        if key:
+            fabric_by_region.setdefault(key, set()).add(str(nid))
+
+    fabric_inventory_total = int(
+        db.query(func.count(TopoFabricNode.id))
+        .filter(
+            or_(
+                and_(TopoFabricNode.ume_ne_id.isnot(None), TopoFabricNode.ume_ne_id != ""),
+                and_(
+                    TopoFabricNode.managed_ne_id.isnot(None),
+                    TopoFabricNode.managed_ne_id != "",
                 ),
             )
-            .group_by(TopoFabricNode.region_folder_id)
-            .all()
         )
-        if str(fid or "").strip()
-    }
-    ume_ne_by_sbn: dict[str, int] = {}
-    ume_ne_total = 0
-    if has_ume_dirs:
-        ume_ne_by_sbn = {
-            str(parent): int(cnt or 0)
-            for parent, cnt in (
-                db.query(UmeTopoNode.parent_node, func.count(UmeTopoNode.node_id))
-                .filter(
-                    UmeTopoNode.node_type == "TOPO_NODE_ME",
-                    UmeTopoNode.parent_node.isnot(None),
-                    UmeTopoNode.parent_node != "",
-                )
-                .group_by(UmeTopoNode.parent_node)
-                .all()
-            )
-            if str(parent or "").strip()
-        }
-        ume_ne_total = int(
-            db.query(func.count(TopoFabricNode.id))
-            .filter(TopoFabricNode.ume_ne_id.isnot(None), TopoFabricNode.ume_ne_id != "")
-            .scalar()
-            or 0
-        )
+        .scalar()
+        or 0
+    )
 
     by_parent: dict[str, list[TopoFolder]] = {}
     folder_by_id: dict[str, TopoFolder] = {}
@@ -747,77 +715,60 @@ def get_topology_tree(db: Session) -> TopologyTreeOut:
         pid = str(f.parent_id or "")
         by_parent.setdefault(pid, []).append(f)
 
-    def _is_whole_network_folder(folder: TopoFolder) -> bool:
-        """UME World / World / 世界地图 — same UME inventory, different presentation.
-
-        Manual「根」/「根图」are separate canvases and must use their own subtree counts
-        (empty root map → 0N), never the UME thousands.
-        """
-        from .ume_topology_world import is_ume_world_container, is_world_drill_folder
-
-        return is_ume_world_container(folder) or is_world_drill_folder(folder)
-
     views_by_folder: dict[str, list[TopoView]] = {}
     for v in views:
         views_by_folder.setdefault(str(v.folder_id or ""), []).append(v)
 
-    def _view_membership_ne(v: TopoView) -> int:
-        """Canvas members that are real NEs (exclude region:* directory icons)."""
-        raw = int(nc_map.get(v.id, 0) or 0)
-        return max(0, raw - int(region_icon_map.get(v.id, 0) or 0))
+    def _is_virtual_full_network_folder(folder: TopoFolder) -> bool:
+        """UME World / World — alternate presentation of full fabric inventory."""
+        from .ume_topology_world import is_ume_world_container, is_world_drill_folder
 
-    def _own_canvas_ne(folder: TopoFolder) -> int:
-        """Manual canvas: prefer view membership; also honor fabric region ownership."""
-        mem = sum(
-            _view_membership_ne(v) for v in views_by_folder.get(str(folder.id), [])
-        )
-        fab = int(ne_by_folder.get(str(folder.id), 0))
-        return max(mem, fab)
+        return is_ume_world_container(folder) or is_world_drill_folder(folder)
 
-    def _subtree_inventory(folder_id: str) -> int:
-        """UME-synced directory: NEs owned by this folder + all descendant folders."""
-        total = int(ne_by_folder.get(folder_id, 0))
-        for child in by_parent.get(folder_id, []):
-            total += _subtree_inventory(str(child.id))
-        return total
-
-    def _is_ume_synced_folder(folder: TopoFolder) -> bool:
-        return bool(str(getattr(folder, "external_ref", None) or "").strip())
-
-    def _folder_ne_count(folder: TopoFolder) -> int:
-        if _is_whole_network_folder(folder):
-            return int(ume_ne_total or 0)
-        # UME SBN / synced dirs: fabric ownership tree (not empty manual canvases).
-        if _is_ume_synced_folder(folder):
-            return _subtree_inventory(str(folder.id))
-        # Manual 根/根图/子区域: count NEs placed on canvases (+ nested regions).
-        own = _own_canvas_ne(folder)
-        nested = sum(
-            _folder_ne_count(child) for child in by_parent.get(str(folder.id), [])
-        )
-        return own + nested
-
-    def _view_node_count(v: TopoView) -> int:
-        folder = folder_by_id.get(str(v.folder_id or ""))
-        if folder is not None and _is_whole_network_folder(folder):
-            return int(ume_ne_total or 0)
+    def _is_virtual_full_network_view(v: TopoView) -> bool:
         filt = view_filter_dict(v.filter)
         if filt.get("world_flat") or (
             bool(filt.get("world")) and not filt.get("ume_level")
         ):
-            return int(ume_ne_total or 0)
-        if filt.get("ume_level"):
-            sid = str(filt.get("sbn_id") or "").strip()
-            if sid:
-                return int(ume_ne_by_sbn.get(sid, 0))
-            if str(filt.get("parent") or "") == "md":
-                return int(ume_ne_total or 0)
-        mem = _view_membership_ne(v)
-        if mem:
-            return mem
-        if folder is not None:
-            return int(ne_by_folder.get(str(folder.id), 0))
-        return 0
+            return True
+        if filt.get("ume_level") and str(filt.get("parent") or "") == "md":
+            return True
+        folder = folder_by_id.get(str(v.folder_id or ""))
+        return bool(folder and _is_virtual_full_network_folder(folder))
+
+    def _own_ne_ids(folder: TopoFolder) -> set[str]:
+        """NEs on this folder's canvases ∪ fabric default-home on this folder."""
+        ids: set[str] = set(fabric_by_region.get(str(folder.id), set()))
+        for v in views_by_folder.get(str(folder.id), []):
+            ids |= membership_by_view.get(str(v.id), set())
+        return ids
+
+    # Bottom-up distinct union: folder_id -> ne id set (cached while building).
+    subtree_ne_ids: dict[str, set[str]] = {}
+
+    def _subtree_ne_ids(folder: TopoFolder) -> set[str]:
+        fid = str(folder.id)
+        if fid in subtree_ne_ids:
+            return subtree_ne_ids[fid]
+        if _is_virtual_full_network_folder(folder):
+            # Don't expand full inventory into a giant set; count handled separately.
+            subtree_ne_ids[fid] = set()
+            return subtree_ne_ids[fid]
+        ids = set(_own_ne_ids(folder))
+        for child in by_parent.get(fid, []):
+            ids |= _subtree_ne_ids(child)
+        subtree_ne_ids[fid] = ids
+        return ids
+
+    def _folder_ne_count(folder: TopoFolder) -> int:
+        if _is_virtual_full_network_folder(folder):
+            return fabric_inventory_total
+        return len(_subtree_ne_ids(folder))
+
+    def _view_node_count(v: TopoView) -> int:
+        if _is_virtual_full_network_view(v):
+            return fabric_inventory_total
+        return len(membership_by_view.get(str(v.id), set()))
 
     def _flat_views(folder: TopoFolder, folder_views: list[TopoView]) -> list[TopologyTreeViewOut]:
         from .ume_topology_world import (
