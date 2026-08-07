@@ -546,6 +546,8 @@ export type TopologyViewEdgeItem = {
   stroke_width?: number;
   line_style?: string;
   discovered_at?: string | null;
+  /** UME userLabel when no EQ+PTP ports. */
+  display_label?: string;
 };
 
 export type TopologyOutsidePeer = {

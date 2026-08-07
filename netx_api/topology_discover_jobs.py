@@ -251,7 +251,12 @@ def _run_discover_job(
         scanned_ok: set[str] = {
             str(it.fabric_node_id)
             for it in prior_items
-            if it.ok and str(it.fabric_node_id or "").strip()
+            # Resume: only prior items with trustworthy LLDP evidence can miss-judge.
+            if it.ok
+            and str(it.fabric_node_id or "").strip()
+            and not bool(it.parser_stub)
+            and str(it.error or "").strip()
+            not in {"parser_stub", "empty_cli_output", "vendor_or_device_type_required"}
         }
         touched_edges: set[str] = set()
         # After worker death we lost in-memory touched edges — skip miss to avoid false marks.
@@ -371,8 +376,21 @@ def _run_discover_job(
                     added, updated = _record_item(
                         db, job, job_id, result, added=added, updated=updated
                     )
-                    if result.get("ok") and result.get("scanned_node_id"):
+                    if (
+                        result.get("ok")
+                        and result.get("lldp_evidence_ok")
+                        and result.get("scanned_node_id")
+                    ):
                         scanned_ok.add(str(result["scanned_node_id"]))
+                    elif result.get("ok") and result.get("scanned_node_id"):
+                        # Backward-compatible: older workers only set scanned_node_id
+                        # when evidence was implied; still require no stub/empty errors.
+                        err = str(result.get("error") or "").strip()
+                        if not result.get("parser_stub") and err not in {
+                            "parser_stub",
+                            "empty_cli_output",
+                        }:
+                            scanned_ok.add(str(result["scanned_node_id"]))
                     for eid in result.get("touched_edge_ids") or []:
                         touched_edges.add(str(eid))
                     for eid in result.get("replaced_edge_ids") or []:

@@ -33,6 +33,21 @@ from .topology_common import (
 
 # Manual top-level「根」auto-spawns this unique L2 canvas (mirrors UME World / World).
 MANUAL_ROOT_MAP_NAME = "根图"
+MANUAL_ROOT_MAP_NAME_EN = "Root map"
+MANUAL_ROOT_MAP_NAMES = frozenset({MANUAL_ROOT_MAP_NAME, MANUAL_ROOT_MAP_NAME_EN})
+
+
+def manual_root_map_name(locale: str | None = None) -> str:
+    loc = str(locale or "").strip().lower()
+    if loc.startswith("en"):
+        return MANUAL_ROOT_MAP_NAME_EN
+    return MANUAL_ROOT_MAP_NAME
+
+
+def is_manual_root_map_name(name: str | None) -> bool:
+    return str(name or "").strip() in MANUAL_ROOT_MAP_NAMES
+
+
 from .topology_fabric import (
     _edge_out,
     _fabric_match_score,
@@ -166,7 +181,11 @@ def ensure_region_physical_view(db: Session, folder_id: str, *, commit: bool = T
 
 
 def _ensure_manual_root_map(
-    db: Session, top: TopoFolder, *, now: Any | None = None
+    db: Session,
+    top: TopoFolder,
+    *,
+    now: Any | None = None,
+    locale: str | None = None,
 ) -> tuple[TopoFolder, bool]:
     """Ensure a top-level manual「根」has unique L2「根图」; migrate legacy L1 canvas onto it.
 
@@ -175,19 +194,23 @@ def _ensure_manual_root_map(
     """
     stamp = now or _utcnow()
     changed = False
+    map_name = manual_root_map_name(locale)
     kids = (
         db.query(TopoFolder)
         .filter(TopoFolder.parent_id == top.id, TopoFolder.kind == "region")
         .order_by(TopoFolder.sort_order.asc(), TopoFolder.created_at.asc())
         .all()
     )
-    root_map = next((k for k in kids if str(k.name or "") == MANUAL_ROOT_MAP_NAME), None)
+    root_map = next((k for k in kids if is_manual_root_map_name(k.name)), None)
+    if root_map is None:
+        # Prefer an existing system child (renamed root map) before creating another.
+        root_map = next((k for k in kids if bool(k.is_system)), None)
     if root_map is None:
         root_map = TopoFolder(
             id=uuid4().hex,
             parent_id=top.id,
             kind="region",
-            name=MANUAL_ROOT_MAP_NAME,
+            name=map_name,
             sort_order=0,
             is_system=True,
             created_at=stamp,
@@ -226,7 +249,7 @@ def _ensure_manual_root_map(
                 folder_id=root_map.id,
                 kind=VIEW_KIND_PHYSICAL,
                 role="core",
-                name=MANUAL_ROOT_MAP_NAME,
+                name=str(root_map.name or map_name)[:256],
                 remark="",
                 sort_order=0,
                 filter={},
@@ -272,15 +295,18 @@ def _heal_manual_root_canvases(db: Session, root: TopoFolder) -> bool:
             .filter(TopoFolder.parent_id == top.id, TopoFolder.kind == "region")
             .all()
         )
-        has_root_map = any(str(k.name or "") == MANUAL_ROOT_MAP_NAME for k in kids)
+        has_root_map = any(is_manual_root_map_name(k.name) or bool(k.is_system) for k in kids)
         l1_view_cnt = (
             db.query(func.count(TopoView.id)).filter(TopoView.folder_id == top.id).scalar() or 0
         )
         # Already correct: unique 根图, no stray L1 views.
         if has_root_map and int(l1_view_cnt) == 0:
             # Still mark 根图 system if needed.
-            rm = next(k for k in kids if str(k.name or "") == MANUAL_ROOT_MAP_NAME)
-            if not bool(rm.is_system):
+            rm = next(
+                (k for k in kids if is_manual_root_map_name(k.name) or bool(k.is_system)),
+                None,
+            )
+            if rm is not None and not bool(rm.is_system):
                 rm.is_system = True
                 rm.updated_at = now
                 changed = True
@@ -417,10 +443,11 @@ def create_folder(db: Session, body: TopologyFolderCreate) -> TopologyFolderOut:
         and str(parent.parent_id or "") == str(root.id)
         and not is_ume_world_container(parent)
     ):
-        root_map, _ = _ensure_manual_root_map(db, parent)
+        root_map, _ = _ensure_manual_root_map(db, parent, locale=body.locale)
         parent = root_map
         parent_kind = "region"
     now = _utcnow()
+    map_name = manual_root_map_name(body.locale)
     row = TopoFolder(
         id=uuid4().hex,
         parent_id=parent.id,
@@ -440,7 +467,7 @@ def create_folder(db: Session, body: TopologyFolderCreate) -> TopologyFolderOut:
             id=uuid4().hex,
             parent_id=row.id,
             kind="region",
-            name=MANUAL_ROOT_MAP_NAME,
+            name=map_name,
             sort_order=0,
             is_system=True,
             created_at=now,
@@ -454,7 +481,7 @@ def create_folder(db: Session, body: TopologyFolderCreate) -> TopologyFolderOut:
                 folder_id=root_map.id,
                 kind=VIEW_KIND_PHYSICAL,
                 role="core",
-                name=MANUAL_ROOT_MAP_NAME,
+                name=map_name,
                 remark="",
                 sort_order=0,
                 filter={},

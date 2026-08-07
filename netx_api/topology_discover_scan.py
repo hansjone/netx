@@ -126,7 +126,10 @@ def _discover_one_target(
             device_type=device_type,
             command=cmd,
         )
-        stub_flag = bool(is_stub and raw.strip() and not hits)
+        # Stub / empty CLI body = maybe logged in, but not trustworthy LLDP evidence.
+        # Miss marking requires a real parser + non-empty command output.
+        stub_flag = bool(is_stub)
+        evidence_ok = (not stub_flag) and bool(raw.strip())
 
         apply_out = _apply_discover_hits(
             db,
@@ -141,9 +144,16 @@ def _discover_one_target(
                 "command": cmd,
                 "parser_key": pkey,
                 "parser_stub": stub_flag,
+                "lldp_evidence_ok": False,
                 "error": str(apply_out.get("error") or "apply_failed")[:500],
                 "raw_preview": _raw_preview(raw),
             }
+
+        err = ""
+        if stub_flag:
+            err = "parser_stub"
+        elif not raw.strip():
+            err = "empty_cli_output"
 
         return {
             **base,
@@ -156,11 +166,13 @@ def _discover_one_target(
             "unmatched": list(apply_out.get("unmatched") or []),
             "parser_key": pkey,
             "parser_stub": stub_flag,
-            "error": "parser_stub" if stub_flag else "",
+            "lldp_evidence_ok": evidence_ok,
+            "error": err,
             "raw_preview": _raw_preview(raw),
             "touched_edge_ids": list(apply_out.get("touched_edge_ids") or []),
             "replaced_edge_ids": list(apply_out.get("replaced_edge_ids") or []),
-            "scanned_node_id": fabric_node_id,
+            # Only evidence-ok scans participate in miss/purge judgment.
+            "scanned_node_id": fabric_node_id if evidence_ok else "",
         }
     except Exception as exc:  # noqa: BLE001
         db.rollback()

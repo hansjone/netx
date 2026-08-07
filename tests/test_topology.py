@@ -491,6 +491,26 @@ class FabricTopologyTests(unittest.TestCase):
         self.assertEqual(len(rm.views), 2)
         self.assertTrue(all(not getattr(v, "children", None) for v in rm.views))
 
+    def test_manual_root_map_name_follows_locale(self) -> None:
+        """English UI creates Root map; zh (default) keeps 根图."""
+        en_root = svc.create_folder(
+            self.db, TopologyFolderCreate(name="West-EN", kind="region", locale="en")
+        )
+        tree = svc.get_topology_tree(self.db)
+        assert tree.root is not None
+        west = next(c for c in tree.root.children if c.id == en_root.id)
+        self.assertEqual(len(west.children), 1)
+        self.assertEqual(west.children[0].name, "Root map")
+        self.assertEqual(west.children[0].views[0].name, "Root map")
+
+        zh_root = svc.create_folder(
+            self.db, TopologyFolderCreate(name="East-ZH", kind="region", locale="zh")
+        )
+        tree2 = svc.get_topology_tree(self.db)
+        assert tree2.root is not None
+        east = next(c for c in tree2.root.children if c.id == zh_root.id)
+        self.assertEqual(east.children[0].name, "根图")
+
     def test_site_physical_and_custom_flat(self) -> None:
         top = svc.create_folder(
             self.db, TopologyFolderCreate(name="Site-R", kind="region")
@@ -1774,6 +1794,76 @@ Management Addresses:
         self.db.delete(ne_b)
         self.db.commit()
 
+    def test_ume_edge_not_marked_missing_by_lldp_miss(self) -> None:
+        """Valid LLDP scan on endpoint must not red-line UME-authority edges."""
+        suffix = uuid4().hex[:8]
+        fa, fb, ne_a, ne_b = self._pair_nodes(suffix)
+        edge, _ = svc.upsert_fabric_edge(
+            self.db,
+            a_node_id=fa.id,
+            b_node_id=fb.id,
+            a_port="xxvgei-1/1/0/1",
+            b_port="xxvgei-1/1/0/2",
+            source="ume",
+        )
+        self.db.commit()
+        self.assertEqual(edge.source, "ume")
+
+        newly, purged = svc._apply_missing_and_purge(
+            self.db,
+            scanned_ok={fa.id},
+            touched_edge_ids=set(),
+        )
+        self.db.commit()
+        self.assertEqual(newly, 0)
+        self.assertEqual(purged, 0)
+        self.db.refresh(edge)
+        self.assertEqual(edge.status, "active")
+        self.assertEqual(edge.source, "ume")
+
+        # Dual provenance still UME-protected; LLDP mark is cleared.
+        edge.attrs = {"sources": ["lldp", "ume"]}
+        edge.source = "ume"
+        self.db.commit()
+        newly, purged = svc._apply_missing_and_purge(
+            self.db,
+            scanned_ok={fa.id},
+            touched_edge_ids=set(),
+        )
+        self.db.commit()
+        self.assertEqual(newly, 0)
+        self.db.refresh(edge)
+        self.assertEqual(edge.status, "active")
+        self.assertEqual(edge.source, "ume")
+        self.assertNotIn("lldp", (edge.attrs or {}).get("sources", []))
+        self.assertIn("ume", (edge.attrs or {}).get("sources", []))
+
+        # Pure LLDP on same node still miss-eligible.
+        lldp_edge, _ = svc.upsert_fabric_edge(
+            self.db,
+            a_node_id=fa.id,
+            b_node_id=fb.id,
+            a_port="Gi0/0",
+            b_port="Gi0/1",
+            source="lldp",
+        )
+        self.db.commit()
+        newly, purged = svc._apply_missing_and_purge(
+            self.db,
+            scanned_ok={fa.id},
+            touched_edge_ids=set(),
+        )
+        self.db.commit()
+        self.assertEqual(newly, 1)
+        self.db.refresh(lldp_edge)
+        self.assertEqual(lldp_edge.status, "missing")
+        self.db.refresh(edge)
+        self.assertEqual(edge.status, "active")
+
+        self.db.delete(ne_a)
+        self.db.delete(ne_b)
+        self.db.commit()
+
     def test_delete_managed_purges_orphan_fabric_and_edges(self) -> None:
         """Managed-only delete → detach then purge fabric node + incident edges."""
         from netx_api import ne_service
@@ -1879,7 +1969,7 @@ Management Addresses:
             b_node_id=peer.id,
             a_port="Gi1/0",
             b_port="Gi1/1",
-            source="lldp",
+            source="ume",
         )
         self.db.commit()
         edge_id = str(edge.id)
@@ -1927,7 +2017,7 @@ Management Addresses:
             b_node_id=peer.id,
             a_port="Eth1",
             b_port="Eth2",
-            source="lldp",
+            source="ume",
         )
         self.db.commit()
         edge_id = str(edge.id)

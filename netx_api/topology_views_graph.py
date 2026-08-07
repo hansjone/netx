@@ -261,6 +261,13 @@ def get_view_graph(db: Session, view_id: str) -> TopologyViewGraphOut:
             src = str(e.source or "lldp").strip().lower() or "lldp"
             if src == "stale":
                 src = "lldp"
+            attrs = e.attrs if isinstance(e.attrs, dict) else {}
+            display_label = str(attrs.get("display_label") or "").strip()
+            if not display_label and (
+                str(e.a_port or "").lower().startswith("label:")
+                or str(e.b_port or "").lower().startswith("label:")
+            ):
+                display_label = str(attrs.get("ume_link_id") or "")
             edges_out.append(
                 ViewEdgeOut(
                     id=e.id,
@@ -275,6 +282,7 @@ def get_view_graph(db: Session, view_id: str) -> TopologyViewGraphOut:
                     stroke_width=int(st.stroke_width if st else 0) or 0,
                     line_style=(st.line_style if st else "") or "",
                     discovered_at=e.discovered_at,
+                    display_label=display_label[:512],
                 )
             )
     outside = _outside_peers_for_view(db, view, member_ids=set(fids), layer=layer)

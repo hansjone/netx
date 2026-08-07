@@ -149,6 +149,8 @@ class TopologyFolderCreate(BaseModel):
     kind: str = Field(default="region", description="region only from API")
     parent_id: str | None = None
     sort_order: int = 0
+    # UI locale for auto-spawned「根图」/ Root map label (zh | en).
+    locale: str = Field(default="", max_length=16)
 
 
 class TopologyFolderUpdate(BaseModel):
@@ -300,6 +302,8 @@ class ViewEdgeOut(BaseModel):
     stroke_width: int = 0
     line_style: str = ""
     discovered_at: datetime | None = None
+    # UME links without EQ+PTP: show this instead of a_port↔b_port.
+    display_label: str = ""
 
 
 class WorldScatterPointOut(BaseModel):

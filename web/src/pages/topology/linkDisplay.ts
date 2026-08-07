@@ -5,6 +5,7 @@ export type LinkMember = {
   a_port: string;
   b_port: string;
   source: string;
+  display_label?: string;
 };
 
 export type LinkEdgeData = {
@@ -15,6 +16,8 @@ export type LinkEdgeData = {
   stroke_width?: number;
   line_style?: string;
   discovered_at?: string | null;
+  /** UME userLabel when ports are unavailable (no EQ+PTP). */
+  display_label?: string;
   /** Logical bundle of parallel physical links between the same NE pair. */
   aggregated?: boolean;
   member_count?: number;
@@ -35,24 +38,40 @@ export function aggregateIdForPair(a: string, b: string): string {
   return `agg:${pairKey(a, b)}`;
 }
 
+function isLabelPlaceholderPort(port: string): boolean {
+  return String(port || "")
+    .trim()
+    .toLowerCase()
+    .startsWith("label:");
+}
+
 /** Clear A↔B port label (not ambiguous "local/remote"). */
-export function formatPortPairLabel(aPort: string, bPort: string): string {
+export function formatPortPairLabel(aPort: string, bPort: string, displayLabel?: string): string {
+  const shown = String(displayLabel || "").trim();
+  if (shown) return shown;
   const a = String(aPort || "").trim();
   const b = String(bPort || "").trim();
+  if (isLabelPlaceholderPort(a) || isLabelPlaceholderPort(b)) return "";
   if (a && b) return `${a} ↔ ${b}`;
   return a || b || "";
 }
 
 export function formatBundleLabel(
   count: number,
-  sample?: { a_port?: string; b_port?: string },
+  sample?: { a_port?: string; b_port?: string; display_label?: string },
   opts?: { hidePorts?: boolean },
 ): string {
   if (count <= 1) {
-    return opts?.hidePorts ? "" : formatPortPairLabel(sample?.a_port || "", sample?.b_port || "");
+    return opts?.hidePorts
+      ? ""
+      : formatPortPairLabel(sample?.a_port || "", sample?.b_port || "", sample?.display_label);
   }
   if (opts?.hidePorts) return `×${count}`;
-  const sampleLabel = formatPortPairLabel(sample?.a_port || "", sample?.b_port || "");
+  const sampleLabel = formatPortPairLabel(
+    sample?.a_port || "",
+    sample?.b_port || "",
+    sample?.display_label,
+  );
   return sampleLabel ? `×${count} · ${sampleLabel}` : `×${count}`;
 }
 
@@ -63,6 +82,7 @@ function memberFrom(edge: Edge): LinkMember {
     a_port: String(d.source_port || "").trim(),
     b_port: String(d.target_port || "").trim(),
     source: String(d.source || "manual"),
+    display_label: String(d.display_label || "").trim(),
   };
 }
 
@@ -113,7 +133,11 @@ export function buildLinkDisplayEdges(
           parallelIndex: i,
           parallelCount: count,
         };
-        const portLabel = formatPortPairLabel(data.source_port || "", data.target_port || "");
+        const portLabel = formatPortPairLabel(
+          data.source_port || "",
+          data.target_port || "",
+          data.display_label,
+        );
         out.push({
           ...e,
           type: count > 1 ? "topoParallel" : e.type || "straight",
@@ -134,7 +158,11 @@ export function buildLinkDisplayEdges(
         member_count: 1,
         members: [memberFrom(e)],
       };
-      const portLabel = formatPortPairLabel(data.source_port || "", data.target_port || "");
+      const portLabel = formatPortPairLabel(
+        data.source_port || "",
+        data.target_port || "",
+        data.display_label,
+      );
       out.push({
         ...e,
         type: "straight",

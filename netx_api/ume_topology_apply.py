@@ -21,9 +21,14 @@ from .topology_fabric_links import (
     find_fabric_edge_compatible,
     upsert_fabric_edge,
 )
-from .topology_fabric_nodes import ensure_fabric_node_for_ume, refresh_fabric_stats
+from .ume_port_normalize import (
+    is_label_placeholder_port,
+    label_placeholder_ports,
+    prefer_richer_ifname,
+    resolve_link_ifnames,
+)
+from .topology_fabric_nodes import _normalize_endpoints, ensure_fabric_node_for_ume, refresh_fabric_stats
 from .topology_lldp import normalize_ifname
-from .ume_port_normalize import resolve_link_ifnames
 
 _log = logging.getLogger("netx.ume.topo_apply")
 
@@ -142,34 +147,54 @@ def apply_ume_topology_to_fabric(db: Session) -> dict[str, Any]:
         if a_fn is None or z_fn is None:
             stats["edges_skipped"] += 1
             continue
-        a_if = str(link.a_ifname or "").strip()
-        z_if = str(link.z_ifname or "").strip()
-        if not a_if or not z_if:
-            a_if, z_if = resolve_link_ifnames(
-                a_end_tp_ref=link.a_end_tp_ref or "",
-                z_end_tp_ref=link.z_end_tp_ref or "",
-                user_label=link.user_label or "",
-            )
-        a_if = normalize_ifname(a_if)
-        z_if = normalize_ifname(z_if)
-        if not a_if or not z_if:
-            stats["edges_skipped"] += 1
-            continue
-
-        existing = find_fabric_edge_compatible(
-            db,
-            a_node_id=a_fn.id,
-            b_node_id=z_fn.id,
-            a_port=a_if,
-            b_port=z_if,
+        # Always re-resolve from TP+userLabel (new normalize rules); keep richer
+        # of dock-stored vs fresh so Fabric ports stay aligned after ifname backfill.
+        fresh_a, fresh_z = resolve_link_ifnames(
+            a_end_tp_ref=link.a_end_tp_ref or "",
+            z_end_tp_ref=link.z_end_tp_ref or "",
+            user_label=link.user_label or "",
         )
+        stored_a = normalize_ifname(str(link.a_ifname or "").strip())
+        stored_z = normalize_ifname(str(link.z_ifname or "").strip())
+        fresh_a = normalize_ifname(fresh_a)
+        fresh_z = normalize_ifname(fresh_z)
+        a_if = prefer_richer_ifname(stored_a, fresh_a) or fresh_a or stored_a
+        z_if = prefer_richer_ifname(stored_z, fresh_z) or fresh_z or stored_z
+        if a_if != stored_a or z_if != stored_z:
+            link.a_ifname = (a_if or "")[:128]
+            link.z_ifname = (z_if or "")[:128]
+            link.last_seen_at = now
+        display_label = str(link.user_label or "").strip()
+        label_only = False
+        if not a_if or not z_if:
+            # No EQ+PTP → do not invent A/Z ports; show userLabel on canvas.
+            if not display_label:
+                stats["edges_skipped"] += 1
+                continue
+            a_if, z_if = label_placeholder_ports(str(link.link_id or ""))
+            label_only = True
+
+        existing = None
+        if not label_only:
+            existing = find_fabric_edge_compatible(
+                db,
+                a_node_id=a_fn.id,
+                b_node_id=z_fn.id,
+                a_port=a_if,
+                b_port=z_if,
+            )
         if existing is not None:
-            # Merge onto existing LLDP/manual edge (keep its port strings).
+            # Merge onto existing LLDP/manual edge; keep/upgrade to richer port strings.
+            _a, _b, nap, nbp = _normalize_endpoints(a_fn.id, z_fn.id, a_if, z_if)
+            existing.a_port = prefer_richer_ifname(existing.a_port, nap)[:128]
+            existing.b_port = prefer_richer_ifname(existing.b_port, nbp)[:128]
             attrs = _edge_attrs(existing)
             sources = _sources_from_attrs(attrs, fallback=existing.source or "")
             sources.add("ume")
             attrs["sources"] = sorted(sources)
             attrs["ume_link_id"] = str(link.link_id or "")[:128]
+            if display_label:
+                attrs["display_label"] = display_label[:512]
             existing.attrs = _clear_and_keep(attrs)
             if (existing.source or "") != "manual":
                 existing.source = _primary_source(sources)
@@ -196,6 +221,10 @@ def apply_ume_topology_to_fabric(db: Session) -> dict[str, Any]:
             continue
         attrs = _edge_attrs(edge)
         attrs["ume_link_id"] = str(link.link_id or "")[:128]
+        if display_label:
+            attrs["display_label"] = display_label[:512]
+        if label_only or is_label_placeholder_port(a_if):
+            attrs["label_only"] = True
         edge.attrs = attrs
         seen_edge_ids.add(edge.id)
         stats["edges_upserted"] += 1

@@ -183,8 +183,14 @@ function isWorldFlatViewName(name: string | undefined | null): boolean {
   return n === "世界地图" || n === "完整世界地图" || n === "World map";
 }
 
+function isManualRootMapName(name: string | undefined | null): boolean {
+  const n = String(name || "").trim();
+  return n === "根图" || n === "Root map";
+}
+
 function displayViewName(name: string | undefined | null, t: (key: string) => string): string {
   if (isWorldFlatViewName(name)) return t("topology.worldMapName");
+  if (isManualRootMapName(name)) return t("topology.rootMapName");
   return String(name || "").trim();
 }
 
@@ -267,9 +273,14 @@ function ChevronIcon({ open }: { open: boolean }) {
   );
 }
 
-function regionDisplayName(region: TopologyTreeFolderItem | null | undefined): string {
+function regionDisplayName(
+  region: TopologyTreeFolderItem | null | undefined,
+  t?: (key: string) => string,
+): string {
   if (!region) return "";
-  return region.name || "";
+  const raw = String(region.name || "").trim();
+  if (t && isManualRootMapName(raw)) return t("topology.rootMapName");
+  return raw;
 }
 
 function formatUpdatedAt(value?: string | null): string {
@@ -805,7 +816,7 @@ const edgeTypes = { topoParallel: ParallelEdge };
 type EdgeStyleData = LinkEdgeData;
 
 type EdgeLineStyle = "solid" | "dashed" | "dotted";
-type EdgeSourceKind = "manual" | "discovered" | "stale";
+type EdgeSourceKind = "manual" | "ume" | "discovered" | "stale";
 
 type EdgeDefaultStyle = {
   stroke_color: string;
@@ -973,14 +984,20 @@ function persistAutoLayoutAfterDiscover(value: boolean) {
 }
 
 const BUILTIN_EDGE_DEFAULTS: EdgeDefaults = {
-  manual: { stroke_color: "#64748b", stroke_width: 2, line_style: "solid" },
+  // UME is authority when present — solid blue.
+  ume: { stroke_color: "#2563eb", stroke_width: 2, line_style: "solid" },
+  // LLDP/CDP only (no UME) — dashed sky blue.
   discovered: { stroke_color: "#0ea5e9", stroke_width: 2, line_style: "dashed" },
+  // Gone / not seen — red dashed.
   stale: { stroke_color: "#dc2626", stroke_width: 2, line_style: "dashed" },
+  // Hand-drawn — gray solid.
+  manual: { stroke_color: "#64748b", stroke_width: 2, line_style: "solid" },
 };
 
 function sourceKind(source: string): EdgeSourceKind {
   const src = (source || "manual").toLowerCase();
   if (src === "stale" || src === "missing") return "stale";
+  if (src === "ume") return "ume";
   if (src === "lldp" || src === "cdp") return "discovered";
   return "manual";
 }
@@ -988,7 +1005,14 @@ function sourceKind(source: string): EdgeSourceKind {
 function loadEdgeDefaults(): EdgeDefaults {
   try {
     const raw = localStorage.getItem(EDGE_DEFAULTS_KEY);
-    if (!raw) return { ...BUILTIN_EDGE_DEFAULTS, manual: { ...BUILTIN_EDGE_DEFAULTS.manual }, discovered: { ...BUILTIN_EDGE_DEFAULTS.discovered }, stale: { ...BUILTIN_EDGE_DEFAULTS.stale } };
+    if (!raw) {
+      return {
+        ume: { ...BUILTIN_EDGE_DEFAULTS.ume },
+        discovered: { ...BUILTIN_EDGE_DEFAULTS.discovered },
+        stale: { ...BUILTIN_EDGE_DEFAULTS.stale },
+        manual: { ...BUILTIN_EDGE_DEFAULTS.manual },
+      };
+    }
     const parsed = JSON.parse(raw) as Partial<EdgeDefaults>;
     const pick = (kind: EdgeSourceKind): EdgeDefaultStyle => {
       const base = BUILTIN_EDGE_DEFAULTS[kind];
@@ -1000,12 +1024,18 @@ function loadEdgeDefaults(): EdgeDefaults {
         line === "dashed" || line === "dotted" || line === "solid" ? line : base.line_style;
       return { stroke_color: color, stroke_width: width, line_style };
     };
-    return { manual: pick("manual"), discovered: pick("discovered"), stale: pick("stale") };
+    return {
+      ume: pick("ume"),
+      discovered: pick("discovered"),
+      stale: pick("stale"),
+      manual: pick("manual"),
+    };
   } catch {
     return {
-      manual: { ...BUILTIN_EDGE_DEFAULTS.manual },
+      ume: { ...BUILTIN_EDGE_DEFAULTS.ume },
       discovered: { ...BUILTIN_EDGE_DEFAULTS.discovered },
       stale: { ...BUILTIN_EDGE_DEFAULTS.stale },
+      manual: { ...BUILTIN_EDGE_DEFAULTS.manual },
     };
   }
 }
@@ -1104,7 +1134,7 @@ function graphToFlow(
   const rfEdges: Edge[] = edges.map((e) => {
     const src =
       e.status === "stale" || e.status === "missing" ? "stale" : e.source || "manual";
-    const label = formatPortPairLabel(e.a_port || "", e.b_port || "");
+    const label = formatPortPairLabel(e.a_port || "", e.b_port || "", e.display_label || "");
     const data: EdgeStyleData = {
       source: src,
       source_port: e.a_port || "",
@@ -1113,6 +1143,7 @@ function graphToFlow(
       stroke_width: Number(e.stroke_width || 0),
       line_style: e.line_style || "",
       discovered_at: e.discovered_at ?? null,
+      display_label: e.display_label || "",
     };
     return withEdgeVisual(
       {
@@ -1181,7 +1212,7 @@ function applyViewGraph(
 }
 
 export function TopologyPage() {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const { showOk, showError } = useToast();
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -1964,9 +1995,10 @@ export function TopologyPage() {
 
   const resetEdgeDefaults = useCallback(() => {
     const next: EdgeDefaults = {
-      manual: { ...BUILTIN_EDGE_DEFAULTS.manual },
+      ume: { ...BUILTIN_EDGE_DEFAULTS.ume },
       discovered: { ...BUILTIN_EDGE_DEFAULTS.discovered },
       stale: { ...BUILTIN_EDGE_DEFAULTS.stale },
+      manual: { ...BUILTIN_EDGE_DEFAULTS.manual },
     };
     persistEdgeDefaults(next);
     setEdgeDefaults(next);
@@ -2096,10 +2128,11 @@ export function TopologyPage() {
     mutationFn: (input: { name: string; parent_id?: string }) => {
       const parentId = String(input.parent_id || "").trim();
       // Top-level root: omit parent_id so API bootstraps system root even if tree query failed.
+      // locale drives auto「根图」/ "Root map" label under a new root.
       return createTopologyFolder(
         parentId
-          ? { name: input.name, kind: "region", parent_id: parentId }
-          : { name: input.name, kind: "region" },
+          ? { name: input.name, kind: "region", parent_id: parentId, locale }
+          : { name: input.name, kind: "region", locale },
       );
     },
     onSuccess: async (folder, input) => {
@@ -2399,7 +2432,7 @@ export function TopologyPage() {
                 <span className="topo-region-list__glyph" aria-hidden="true">
                   <RegionGlyph size={14} />
                 </span>
-                <span className="topo-map-list__title">{regionDisplayName(folder)}</span>
+                <span className="topo-map-list__title">{regionDisplayName(folder, t)}</span>
                 <span className="topo-map-list__count">
                   {(() => {
                     if (containerFolder) {
@@ -3032,7 +3065,11 @@ export function TopologyPage() {
             source_port: patch.source_port !== undefined ? patch.source_port : prev.source_port || "",
             target_port: patch.target_port !== undefined ? patch.target_port : prev.target_port || "",
           };
-          const portLabel = formatPortPairLabel(data.source_port || "", data.target_port || "");
+          const portLabel = formatPortPairLabel(
+            data.source_port || "",
+            data.target_port || "",
+            data.display_label,
+          );
           return withEdgeVisual({ ...e, data, label: portLabel || undefined }, edgeDefaults);
         }),
       );
@@ -4028,7 +4065,7 @@ export function TopologyPage() {
 
   const titleText = useMemo(() => {
     if (canvasMode) return activeLeafName || t("topology.selectMap");
-    if (activeRegion) return regionDisplayName(activeRegion);
+    if (activeRegion) return regionDisplayName(activeRegion, t);
     return t("topology.rootName");
   }, [canvasMode, activeLeafName, activeRegion, t]);
   const onCanvasManagedIds = useMemo(
@@ -4308,7 +4345,7 @@ export function TopologyPage() {
                     isRegionCanvasFolder(activeRegion, rootFolderId) &&
                     primaryViewOfFolder(activeRegion)?.id === activeView.id ? (
                       <span className="topo-breadcrumb__current">
-                        {regionDisplayName(activeRegion)}
+                        {regionDisplayName(activeRegion, t)}
                         {dirty ? " *" : ""}
                       </span>
                     ) : (
@@ -4317,7 +4354,7 @@ export function TopologyPage() {
                         className="topo-breadcrumb__link"
                         onClick={() => goRegion(activeRegion.id)}
                       >
-                        {regionDisplayName(activeRegion)}
+                        {regionDisplayName(activeRegion, t)}
                       </button>
                     )}
                   </>
@@ -4578,7 +4615,7 @@ export function TopologyPage() {
                       {t("topology.rootName")}
                     </button>
                     <span className="topo-breadcrumb__sep">/</span>
-                    <span className="topo-breadcrumb__current">{regionDisplayName(hexBrowseRegion)}</span>
+                    <span className="topo-breadcrumb__current">{regionDisplayName(hexBrowseRegion, t)}</span>
                   </div>
                 ) : (
                   <strong>{titleText}</strong>
@@ -4677,7 +4714,7 @@ export function TopologyPage() {
                         <RegionGlyph size={22} />
                       </span>
                       <span className="topo-region-hex__title">
-                        <span className="topo-region-hex__name">{regionDisplayName(region)}</span>
+                        <span className="topo-region-hex__name">{regionDisplayName(region, t)}</span>
                         <span className="topo-region-hex__meta">
                           {t("topology.regionNodeHint").replace(
                             "{{count}}",
@@ -4730,7 +4767,7 @@ export function TopologyPage() {
                     </span>
                     <span className="topo-region-hex__title">
                       <span className="topo-region-hex__name">
-                        {regionDisplayName(umeWorldHexModules.drill)}
+                        {regionDisplayName(umeWorldHexModules.drill, t)}
                       </span>
                       <span className="topo-region-hex__meta">
                         {t("topology.regionNodeHint").replace(
@@ -4798,7 +4835,7 @@ export function TopologyPage() {
                       <RegionGlyph size={22} />
                     </span>
                     <span className="topo-region-hex__title">
-                      <span className="topo-region-hex__name">{regionDisplayName(region)}</span>
+                      <span className="topo-region-hex__name">{regionDisplayName(region, t)}</span>
                       <span className="topo-region-hex__meta">
                         {t("topology.regionNodeHint").replace(
                           "{{count}}",
@@ -5164,9 +5201,10 @@ export function TopologyPage() {
                     </div>
                     {(
                       [
-                        ["manual", t("topology.edgeManual")],
+                        ["ume", t("topology.edgeUme")],
                         ["discovered", t("topology.edgeDiscovered")],
                         ["stale", t("topology.edgeStale")],
+                        ["manual", t("topology.edgeManual")],
                       ] as const
                     ).map(([kind, label]) => {
                       const d = edgeDefaults[kind];
@@ -6158,7 +6196,8 @@ export function TopologyPage() {
                           <ul className="topo-ctx__member-list">
                             {(selectedEdgeData.members || []).map((m) => (
                               <li key={m.id}>
-                                {formatPortPairLabel(m.a_port, m.b_port) || m.id.slice(0, 8)}
+                                {formatPortPairLabel(m.a_port, m.b_port, m.display_label) || m.id.slice(0, 8)}
+
                               </li>
                             ))}
                           </ul>

@@ -1060,7 +1060,14 @@ export const fetchTopologyViews = () =>
 
 export const fetchTopologyTree = () => apiGet<TopologyTree>("/v1/topology/tree");
 
-export const createTopologyFolder = (body: { name: string; kind?: string; parent_id?: string; sort_order?: number }) =>
+export const createTopologyFolder = (body: {
+  name: string;
+  kind?: string;
+  parent_id?: string;
+  sort_order?: number;
+  /** UI locale so auto-spawned root map is「根图」or "Root map". */
+  locale?: string;
+}) =>
   apiPost<{
     id: string;
     parent_id: string;

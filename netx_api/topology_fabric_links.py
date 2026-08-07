@@ -73,15 +73,22 @@ def upsert_fabric_edge(
     layer: str = "physical",
     now: datetime | None = None,
 ) -> tuple[TopoFabricEdge | None, str]:
-    """Return (edge, action) where action is added|updated|kept_manual|skipped_self_loop.
+    """Return (edge, action) where action is added|updated|kept_manual|skipped_*.
 
     Self-loops are skipped (``(None, \"skipped_self_loop\")``) so LLDP discovery can
     ignore a device advertising itself without aborting the rest of the scan.
     Manual edge APIs should treat that action as a client error.
 
     ``source`` may be ``lldp`` | ``manual`` | ``ume``. Provenance is tracked in
-    ``attrs.sources`` (union). Primary ``source`` column prefers manual > lldp > ume.
+    ``attrs.sources`` (union). Primary ``source`` prefers manual > ume > lldp
+    (UME is authority when present; LLDP is the no-UME discovery path).
+
+    LLDP against an existing compatible edge upgrades bare UME ports to media-
+    prefixed names. When no compatible edge exists, LLDP may still create a new
+    edge even if both ends are UME inventory NEs (UME dump may omit the link).
     """
+    from .ume_port_normalize import prefer_richer_ifname
+
     now = now or _utcnow()
     a, b, ap, bp = _normalize_endpoints(a_node_id, b_node_id, a_port, b_port)
     if a == b:
@@ -92,6 +99,7 @@ def upsert_fabric_edge(
         src = "lldp"
     if src not in {"lldp", "manual", "ume"}:
         raise HTTPException(status_code=400, detail="invalid_edge_source")
+
     row = (
         db.query(TopoFabricEdge)
         .filter(
@@ -104,45 +112,64 @@ def upsert_fabric_edge(
         .one_or_none()
     )
     if row is None:
-        try:
-            with db.begin_nested():
-                row = TopoFabricEdge(
-                    id=uuid4().hex,
-                    layer=layer_v,
-                    a_node_id=a,
-                    b_node_id=b,
-                    a_port=ap,
-                    b_port=bp,
-                    source=src,
-                    status="active",
-                    attrs={"sources": [src]},
-                    discovered_at=now if src in {"lldp", "ume"} else None,
-                    last_seen_at=now,
-                    created_at=now,
-                    updated_at=now,
+        # Compatible ports (bare UME ↔ LLDP media) — merge, don't duplicate.
+        row = find_fabric_edge_compatible(
+            db, a_node_id=a, b_node_id=b, a_port=ap, b_port=bp, layer=layer_v
+        )
+        if row is not None:
+            new_ap = prefer_richer_ifname(row.a_port, ap)
+            new_bp = prefer_richer_ifname(row.b_port, bp)
+            if new_ap != normalize_ifname(row.a_port) or new_bp != normalize_ifname(row.b_port):
+                row.a_port = new_ap[:128]
+                row.b_port = new_bp[:128]
+        else:
+            try:
+                with db.begin_nested():
+                    row = TopoFabricEdge(
+                        id=uuid4().hex,
+                        layer=layer_v,
+                        a_node_id=a,
+                        b_node_id=b,
+                        a_port=ap,
+                        b_port=bp,
+                        source=src,
+                        status="active",
+                        attrs={"sources": [src]},
+                        discovered_at=now if src in {"lldp", "ume"} else None,
+                        last_seen_at=now,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    db.add(row)
+                    db.flush()
+                    return row, "added"
+            except IntegrityError:
+                row = (
+                    db.query(TopoFabricEdge)
+                    .filter(
+                        TopoFabricEdge.layer == layer_v,
+                        TopoFabricEdge.a_node_id == a,
+                        TopoFabricEdge.b_node_id == b,
+                        TopoFabricEdge.a_port == ap,
+                        TopoFabricEdge.b_port == bp,
+                    )
+                    .one_or_none()
                 )
-                db.add(row)
-                db.flush()
-                return row, "added"
-        except IntegrityError:
-            row = (
-                db.query(TopoFabricEdge)
-                .filter(
-                    TopoFabricEdge.layer == layer_v,
-                    TopoFabricEdge.a_node_id == a,
-                    TopoFabricEdge.b_node_id == b,
-                    TopoFabricEdge.a_port == ap,
-                    TopoFabricEdge.b_port == bp,
-                )
-                .one_or_none()
-            )
-            if row is None:
-                raise
+                if row is None:
+                    raise
+
     # Manual edges keep primary source=manual; still record other sources.
     attrs = _clear_miss_attrs(_edge_attrs(row))
     sources = _sources_from_attrs(attrs, fallback=row.source or src)
     sources.add(src)
     attrs["sources"] = sorted(sources)
+    # Enrich ports when a richer compatible name arrives (typically LLDP).
+    if src in {"lldp", "ume"}:
+        new_ap = prefer_richer_ifname(row.a_port, ap)
+        new_bp = prefer_richer_ifname(row.b_port, bp)
+        if new_ap != normalize_ifname(row.a_port) or new_bp != normalize_ifname(row.b_port):
+            row.a_port = new_ap[:128]
+            row.b_port = new_bp[:128]
     if (row.source or "") == "manual" and src != "manual":
         row.attrs = attrs
         row.status = "active"
@@ -176,12 +203,13 @@ def _sources_from_attrs(attrs: dict[str, Any], *, fallback: str = "") -> set[str
 
 
 def _primary_source(sources: set[str]) -> str:
+    """Paint / authority order: manual > ume > lldp."""
     if "manual" in sources:
         return "manual"
-    if "lldp" in sources:
-        return "lldp"
     if "ume" in sources:
         return "ume"
+    if "lldp" in sources:
+        return "lldp"
     return "lldp"
 
 
@@ -302,12 +330,14 @@ def _mark_replaced_port_peers(
         .all()
     )
     handled: list[str] = []
+    from .ume_port_normalize import port_keys_compatible
+
     for e in candidates:
         if e.a_node_id == self_id:
             e_local, e_peer = e.a_port or "", e.b_node_id
         else:
             e_local, e_peer = e.b_port or "", e.a_node_id
-        if normalize_ifname(e_local) != lp:
+        if not port_keys_compatible(e_local, lp):
             continue
         if e_peer == peer_id:
             continue
@@ -343,7 +373,7 @@ def _mark_replaced_port_peers(
             )
             for se in survivor:
                 se_local = se.a_port if se.a_node_id == self_id else se.b_port
-                if normalize_ifname(se_local or "") != lp:
+                if not port_keys_compatible(se_local or "", lp):
                     continue
                 se.status = "active"
                 se.attrs = _clear_miss_attrs(_edge_attrs(se))
@@ -364,7 +394,14 @@ def _apply_missing_and_purge(
     touched_edge_ids: set[str],
     now: datetime | None = None,
 ) -> tuple[int, int]:
-    """Rule A: endpoint scanned OK but edge absent → missing; purge after N cycles.
+    """Rule A: endpoint scanned with valid LLDP evidence but edge absent → missing.
+
+    ``scanned_ok`` must only contain nodes that actually logged in and produced
+    trustworthy LLDP output (not login failures / stub parsers / empty CLI).
+
+    Dual-source (ume+lldp): drop ``lldp`` provenance but keep the edge active under
+    UME. Pure UME edges are left untouched. Pure LLDP edges may be miss-marked.
+    Manual edges are excluded by the query filter.
 
     Returns (newly_marked_missing, purged).
     """
@@ -389,6 +426,20 @@ def _apply_missing_and_purge(
         if e.id in touched_edge_ids:
             continue
         if e.a_node_id not in scanned_ok and e.b_node_id not in scanned_ok:
+            continue
+        attrs = _edge_attrs(e)
+        sources = _sources_from_attrs(attrs, fallback=e.source or "")
+        has_ume = "ume" in sources or str(e.source or "").strip().lower() == "ume"
+        if has_ume:
+            # UME still claims the link — strip stale LLDP mark only.
+            if "lldp" in sources:
+                sources.discard("lldp")
+                attrs["sources"] = sorted(sources)
+                e.attrs = attrs
+                if str(e.source or "").strip().lower() != "manual":
+                    e.source = _primary_source(sources)
+                e.status = "active"
+                e.updated_at = now
             continue
         if _set_edge_missing(e, now):
             newly_marked += 1
