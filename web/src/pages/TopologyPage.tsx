@@ -2395,7 +2395,7 @@ export function TopologyPage() {
                 </span>
               </span>
             </button>
-            {!umeNav || containerFolder ? (
+            {!umeNav || containerFolder || Boolean(String(folder.external_ref || "").trim()) ? (
               <div className="topo-map-list__actions">
                 {!containerFolder ? (
                   <button
@@ -2416,7 +2416,9 @@ export function TopologyPage() {
                   aria-label={t("topology.deleteRegion")}
                   disabled={
                     deleteFolderMut.isPending ||
-                    (!!folder.is_system && !containerFolder)
+                    (!!folder.is_system &&
+                      !containerFolder &&
+                      !String(folder.external_ref || "").trim())
                   }
                   onClick={() => {
                     const msg = (

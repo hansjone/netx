@@ -413,6 +413,34 @@ class UmeHierarchyTests(unittest.TestCase):
         row = self.db.get(TopoFolder, out.id)
         self.assertEqual(row.parent_id, drill.id)
 
+    def test_ume_synced_sbn_folder_is_deletable(self):
+        from fastapi import HTTPException
+
+        from netx_api.topology_views_tree import delete_folder
+        from netx_api.ume_topology_world import get_world_drill_folder
+
+        self._seed_tree()
+        apply_ume_topology_to_fabric(self.db)
+        ensure_ume_world_and_sbn_folders(self.db)
+        drill = get_world_drill_folder(self.db)
+        self.assertIsNotNone(drill)
+        sbns = (
+            self.db.query(TopoFolder)
+            .filter(TopoFolder.parent_id == drill.id, TopoFolder.kind == "region")
+            .all()
+        )
+        self.assertGreater(len(sbns), 0)
+        target = next((f for f in sbns if str(f.external_ref or "").strip()), sbns[0])
+        self.assertTrue(bool(target.is_system))
+        self.assertTrue(str(target.external_ref or "").strip())
+        out = delete_folder(self.db, target.id)
+        self.assertTrue(out.get("ok"))
+        self.assertIsNone(self.db.get(TopoFolder, target.id))
+        # Manual system folder without UME ref stays protected.
+        with self.assertRaises(HTTPException) as ctx:
+            delete_folder(self.db, "nope-missing")
+        self.assertEqual(ctx.exception.status_code, 404)
+
     def test_flat_slots_do_not_overlap(self):
         self._seed_tree()
         apply_ume_topology_to_fabric(self.db)

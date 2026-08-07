@@ -549,9 +549,11 @@ def update_folder(db: Session, folder_id: str, body: TopologyFolderUpdate) -> To
 def delete_folder(db: Session, folder_id: str, *, force: bool = False) -> dict[str, Any]:
     """Delete a region and cascade-delete nested regions + maps.
 
-    System L2「根图」may be removed only as part of cascading from its parent「根」.
-    UME World container may be deleted explicitly (cascades all synced SBN folders);
-    a later UME apply / world ensure can recreate it.
+    System L2「根图」(manual, no UME external_ref) may be removed only as part of
+    cascading from its parent「根」.
+
+    UME World and UME-synced SBN folders (``external_ref`` set) are user-deletable —
+    they are synced inventory, not structural locks; a later UME apply can recreate them.
     """
     row = _get_folder_or_404(db, folder_id)
     if str(row.kind or "") == "root":
@@ -559,9 +561,10 @@ def delete_folder(db: Session, folder_id: str, *, force: bool = False) -> dict[s
 
     from .ume_topology_world import is_ume_world_container
 
-    # UME World container is system-marked but user-deletable (cascades SBN tree).
-    # Manual「根图」and other system folders stay protected except via parent cascade.
-    if bool(row.is_system) and not is_ume_world_container(row):
+    ext = str(getattr(row, "external_ref", None) or "").strip()
+    ume_synced = bool(ext)  # ume:world / ume:world:drill / SBN id
+    # Protect manual system folders (根图); allow UME World + synced children.
+    if bool(row.is_system) and not is_ume_world_container(row) and not ume_synced:
         raise HTTPException(status_code=400, detail="cannot_delete_system_folder")
     _ = force
     from .topology_region_canvas import remove_region_canvas_placements
