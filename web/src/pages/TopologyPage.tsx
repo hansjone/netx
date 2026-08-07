@@ -315,8 +315,8 @@ function primaryTreeView(
 
 /**
  * Directory NE badge from API: fabric inventory under the folder.
- * 根 / 根图 / UME World / World share the same whole-network total; nested regions
- * sum owned NEs in their subtree. Region folders themselves never count as NEs.
+ * UME World / World / 世界地图 share the UME total; manual 根/根图 use their own
+ * subtree (empty → 0). Region folders themselves never count as NEs.
  */
 function folderNeCount(folder: TopologyTreeFolderItem | null | undefined): number {
   if (!folder) return 0;

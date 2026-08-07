@@ -747,30 +747,15 @@ def get_topology_tree(db: Session) -> TopologyTreeOut:
         pid = str(f.parent_id or "")
         by_parent.setdefault(pid, []).append(f)
 
-    root_id = str(root.id) if root is not None else ""
-
-    def _is_manual_root_map(folder: TopoFolder) -> bool:
-        ext = str(getattr(folder, "external_ref", None) or "").strip()
-        if ext:
-            return False
-        if not bool(folder.is_system):
-            return False
-        return is_manual_root_map_name(folder.name)
-
     def _is_whole_network_folder(folder: TopoFolder) -> bool:
-        """根 / 根图 / UME World / World — same inventory, different presentation."""
+        """UME World / World / 世界地图 — same UME inventory, different presentation.
+
+        Manual「根」/「根图」are separate canvases and must use their own subtree counts
+        (empty root map → 0N), never the UME thousands.
+        """
         from .ume_topology_world import is_ume_world_container, is_world_drill_folder
 
-        if is_ume_world_container(folder) or is_world_drill_folder(folder):
-            return True
-        ext = str(getattr(folder, "external_ref", None) or "").strip()
-        if ext.startswith("ume:"):
-            return False
-        parent = str(folder.parent_id or "").strip()
-        # Top-level manual「根」(nav-only under system root).
-        if root_id and parent == root_id and not ext:
-            return True
-        return _is_manual_root_map(folder)
+        return is_ume_world_container(folder) or is_world_drill_folder(folder)
 
     def _subtree_inventory(folder_id: str) -> int:
         """Directory semantics: NEs owned by this folder + all descendant folders."""
