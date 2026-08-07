@@ -4494,10 +4494,11 @@ pre {
   max-height: min(360px, 50vh);
   overflow: auto;
   padding: 4px;
-  border: 1px solid #b8c4d2;
+  border: 1px solid rgba(148, 163, 184, 0.28);
   border-radius: 8px;
-  background: #fff;
-  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+  background: #0b1220;
+  color: #e2e8f0;
+  box-shadow: 0 8px 24px rgba(2, 8, 23, 0.55);
 }
 
 .topo-tree-search__item {
@@ -4510,7 +4511,7 @@ pre {
 
 .topo-tree-search__item + .topo-tree-search__item {
   margin-top: 2px;
-  border-top: 1px solid #eef2f6;
+  border-top: 1px solid rgba(148, 163, 184, 0.16);
   padding-top: 4px;
 }
 
@@ -4530,14 +4531,14 @@ pre {
 }
 
 .topo-tree-search__ne:hover {
-  background: #f1f5f9;
+  background: rgba(148, 163, 184, 0.12);
 }
 
 .topo-tree-search__name {
   grid-column: 1;
   font-size: 12px;
   font-weight: 600;
-  color: var(--nm-ink, #0f172a);
+  color: #e2e8f0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -4566,11 +4567,11 @@ pre {
 .topo-tree-search__view {
   max-width: 100%;
   padding: 2px 8px;
-  border: 1px solid #d0dae6;
+  border: 1px solid rgba(148, 163, 184, 0.28);
   border-radius: 999px;
-  background: #f8fafc;
+  background: rgba(30, 41, 59, 0.9);
   font-size: 11px;
-  color: var(--nm-brand, #1d4ed8);
+  color: #93c5fd;
   cursor: pointer;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4578,8 +4579,8 @@ pre {
 }
 
 .topo-tree-search__view:hover {
-  background: #e8eef8;
-  border-color: #9eb6d8;
+  background: rgba(51, 65, 85, 0.95);
+  border-color: rgba(96, 165, 250, 0.45);
 }
 
 .topo-tree-search__hint {
@@ -5561,12 +5562,29 @@ pre {
   flex-direction: column;
   gap: 2px;
   padding: 2px 0;
+  /* Allow deep indent + actions to extend; parent scroll shows a horizontal bar. */
+  width: max-content;
+  min-width: 100%;
+  max-width: none;
+  box-sizing: border-box;
+}
+
+.topo-region-list-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: auto;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 6px;
+  background: rgba(2, 8, 23, 0.45);
+  padding: 2px 0;
 }
 
 .topo-region-list__block {
   margin: 0;
   width: auto;
-  max-width: 100%;
+  max-width: none;
   min-width: 0;
   padding: 2px 0 4px;
   box-sizing: border-box;
@@ -5585,6 +5603,8 @@ pre {
   overflow: visible;
   gap: 2px;
   padding-right: 2px;
+  width: max-content;
+  min-width: 100%;
   transition: background 0.12s ease;
 }
 
@@ -5691,6 +5711,7 @@ pre {
 .topo-region-list .topo-map-list__actions {
   opacity: 0;
   pointer-events: none;
+  flex: 0 0 auto;
   border-left: 0;
   gap: 4px;
   padding-right: 4px;
@@ -5730,10 +5751,10 @@ pre {
 }
 
 .topo-region-list .topo-map-list__title {
-  min-width: 0;
-  flex: 1 1 auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  min-width: max-content;
+  flex: 0 1 auto;
+  overflow: visible;
+  text-overflow: clip;
   white-space: nowrap;
   font-size: 13px;
   font-weight: 650;

@@ -276,11 +276,23 @@ function mergeFlatWorldGraph(
   next: TopologyViewGraph,
   opts?: { centerX?: number; centerY?: number },
 ): TopologyViewGraph {
-  if (!prev?.nodes?.length) return next;
+  const scatter = next.scatter?.length ? next.scatter : prev?.scatter;
+  if (!prev?.nodes?.length) {
+    return scatter?.length && !next.scatter?.length ? { ...next, scatter } : next;
+  }
+  // Overview / zoom-out payloads have empty RF nodes — keep (or refresh) scatter,
+  // drop heavy tiles when the server intentionally cleared them.
   if (!next?.nodes?.length) {
     return {
       ...prev,
+      view: next.view || prev.view,
+      nodes: [],
+      edges: [],
+      scatter: scatter || [],
       world_transform: next.world_transform ?? prev.world_transform,
+      truncated: Boolean(next.truncated || prev.truncated),
+      truncate_reason: next.truncate_reason || prev.truncate_reason || "",
+      outside_peers: next.outside_peers?.length ? next.outside_peers : prev.outside_peers,
     };
   }
 
@@ -320,7 +332,7 @@ function mergeFlatWorldGraph(
     nodes,
     edges,
     world_transform: next.world_transform ?? prev.world_transform,
-    scatter: next.scatter?.length ? next.scatter : prev.scatter,
+    scatter: scatter || [],
     truncated: Boolean(prev.truncated || next.truncated),
     truncate_reason: next.truncate_reason || prev.truncate_reason || "",
     outside_peers: next.outside_peers?.length ? next.outside_peers : prev.outside_peers,
@@ -1428,12 +1440,14 @@ export function TopologyPage() {
           const cx = bounds ? bounds.x + bounds.width / 2 : 0;
           const cy = bounds ? bounds.y + bounds.height / 2 : 0;
           commit(g, cx, cy);
-        } else if (prev.nodes.length > 0 && zoom < 0.04) {
+        } else if (prev.nodes.length > 0) {
+          // Always shed RF tiles when leaving close-up so scatter is the sole layer.
           commit(
             {
               ...prev,
               nodes: [],
               edges: [],
+              scatter: prev.scatter,
               world_transform: prev.world_transform
                 ? { ...prev.world_transform, lod: "overview" }
                 : prev.world_transform,
@@ -4156,7 +4170,7 @@ export function TopologyPage() {
                                 </span>
                               )}
                             </button>
-                            {views.length > 1 ? (
+                            {views.length > 0 ? (
                               <div className="topo-tree-search__views">
                                 {views.map((v) => (
                                   <button
@@ -4166,7 +4180,9 @@ export function TopologyPage() {
                                     onClick={() => jumpToTreeSearchHit(hit, v)}
                                     title={`${v.folder_name ? `${v.folder_name} / ` : ""}${v.view_name}`}
                                   >
-                                    {v.view_name || v.view_id.slice(0, 8)}
+                                    {v.folder_name
+                                      ? `${v.folder_name} / ${v.view_name || v.view_id.slice(0, 8)}`
+                                      : v.view_name || v.view_id.slice(0, 8)}
                                   </button>
                                 ))}
                               </div>
@@ -4214,9 +4230,11 @@ export function TopologyPage() {
               ) : regions.length === 0 ? (
                 <p className="panel__hint">{t("topology.emptyMaps")}</p>
               ) : (
-                <ul className="topo-map-list topo-region-list">
-                  {regions.map((region) => renderWorldNavFolder(region, 0))}
-                </ul>
+                <div className="topo-region-list-scroll">
+                  <ul className="topo-map-list topo-region-list">
+                    {regions.map((region) => renderWorldNavFolder(region, 0))}
+                  </ul>
+                </div>
               )}
               {mapId && outsidePeers.length > 0 && (
                 <div className="topo-outside-peers">

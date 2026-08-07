@@ -297,17 +297,47 @@ def search_fabric_nodes_with_views(
     page: int = 1,
     page_size: int = 50,
 ) -> dict[str, Any]:
+    """Search fabric NEs and resolve which canvases they appear on.
+
+    Membership views (TopoViewNode) come first. UME synthetic canvases usually have
+    no membership rows — fall back to region_folder_id → primary canvas, and to the
+    world map when world_x/y are set.
+    """
+    from sqlalchemy import or_
+
+    from .models import UmeInventoryNE
+    from .topology_region_canvas import primary_canvas_view
     from .topology_service import _node_out
+    from .ume_topology_world import get_world_flat_view, is_world_flat_visible
 
     q = db.query(TopoFabricNode)
     kw = str(keyword or "").strip()
     if kw:
         like = f"%{kw}%"
-        q = q.filter(
-            (TopoFabricNode.name.ilike(like))
-            | (TopoFabricNode.ip.ilike(like))
-            | (TopoFabricNode.vendor.ilike(like))
-        )
+        inv_ids = [
+            str(r[0])
+            for r in db.query(UmeInventoryNE.ne_id)
+            .filter(
+                or_(
+                    UmeInventoryNE.user_label.ilike(like),
+                    UmeInventoryNE.ne_name.ilike(like),
+                    UmeInventoryNE.host_name.ilike(like),
+                    UmeInventoryNE.ip_address.ilike(like),
+                )
+            )
+            .limit(500)
+            .all()
+            if str(r[0] or "").strip()
+        ]
+        clauses = [
+            TopoFabricNode.name.ilike(like),
+            TopoFabricNode.ip.ilike(like),
+            TopoFabricNode.vendor.ilike(like),
+            TopoFabricNode.ume_ne_id.ilike(like),
+        ]
+        if inv_ids:
+            clauses.append(TopoFabricNode.ume_ne_id.in_(inv_ids))
+        q = q.filter(or_(*clauses))
     total = q.count()
     rows = (
         q.order_by(TopoFabricNode.name.asc())
@@ -317,6 +347,23 @@ def search_fabric_nodes_with_views(
     )
     node_ids = [n.id for n in rows]
     placements: dict[str, list[dict[str, Any]]] = {nid: [] for nid in node_ids}
+    seen: dict[str, set[str]] = {nid: set() for nid in node_ids}
+
+    def _add_view(nid: str, view: TopoView, folder: TopoFolder | None) -> None:
+        vid = str(view.id or "").strip()
+        if not vid or vid in seen.get(nid, set()):
+            return
+        seen.setdefault(nid, set()).add(vid)
+        placements.setdefault(nid, []).append(
+            {
+                "view_id": view.id,
+                "view_name": view.name,
+                "folder_id": view.folder_id or "",
+                "folder_name": (folder.name if folder else "") or "",
+                "kind": view.kind or "custom",
+            }
+        )
+
     if node_ids:
         vnodes = (
             db.query(TopoViewNode, TopoView, TopoFolder)
@@ -326,15 +373,31 @@ def search_fabric_nodes_with_views(
             .all()
         )
         for vn, view, folder in vnodes:
-            placements.setdefault(vn.fabric_node_id, []).append(
-                {
-                    "view_id": view.id,
-                    "view_name": view.name,
-                    "folder_id": view.folder_id or "",
-                    "folder_name": (folder.name if folder else "") or "",
-                    "kind": view.kind or "custom",
-                }
-            )
+            _add_view(vn.fabric_node_id, view, folder)
+
+        folder_ids = {
+            str(n.region_folder_id or "").strip()
+            for n in rows
+            if str(n.region_folder_id or "").strip()
+        }
+        folders_by_id: dict[str, TopoFolder] = {}
+        if folder_ids:
+            for f in db.query(TopoFolder).filter(TopoFolder.id.in_(list(folder_ids))).all():
+                folders_by_id[str(f.id)] = f
+
+        flat = get_world_flat_view(db)
+        flat_ok = flat is not None and is_world_flat_visible(flat)
+        flat_folder = db.get(TopoFolder, flat.folder_id) if flat_ok and flat and flat.folder_id else None
+
+        for n in rows:
+            rid = str(n.region_folder_id or "").strip()
+            if rid:
+                view = primary_canvas_view(db, rid)
+                if view is not None:
+                    _add_view(n.id, view, folders_by_id.get(rid))
+            if flat_ok and flat is not None and n.world_x is not None and n.world_y is not None:
+                _add_view(n.id, flat, flat_folder)
+
     items = []
     for n in rows:
         d = _node_out(n).model_dump()
