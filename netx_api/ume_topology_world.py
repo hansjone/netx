@@ -29,7 +29,9 @@ WORLD_FLAT_FILTER = {"world_flat": True}
 def _filt(view: TopoView | None) -> dict[str, Any]:
     if view is None:
         return {}
-    return dict(view.filter or {})
+    from .topology_common import view_filter_dict
+
+    return view_filter_dict(getattr(view, "filter", None))
 
 
 def is_ume_level_view(view: TopoView | None) -> bool:

@@ -248,12 +248,32 @@ def api_fabric_discover_job(
 
 @router.get("/tree")
 def api_topology_tree(db: Session = Depends(get_db)) -> dict[str, Any]:
-    return get_topology_tree(db).model_dump()
+    try:
+        return get_topology_tree(db).model_dump(mode="json")
+    except Exception as exc:
+        import logging
+
+        logging.getLogger("netx.topology").exception("GET /v1/topology/tree failed")
+        raise HTTPException(
+            status_code=500,
+            detail=f"topology_tree_failed:{type(exc).__name__}:{exc}",
+        ) from exc
 
 
 @router.post("/folders")
 def api_create_folder(body: TopologyFolderCreate, db: Session = Depends(get_db)) -> dict[str, Any]:
-    return create_folder(db, body).model_dump()
+    try:
+        return create_folder(db, body).model_dump(mode="json")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        import logging
+
+        logging.getLogger("netx.topology").exception("POST /v1/topology/folders failed")
+        raise HTTPException(
+            status_code=500,
+            detail=f"topology_folder_create_failed:{type(exc).__name__}:{exc}",
+        ) from exc
 
 
 @router.patch("/folders/{folder_id}")

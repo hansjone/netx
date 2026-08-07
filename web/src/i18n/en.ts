@@ -1441,6 +1441,8 @@ const en = {
     regionDeleted: "Deleted",
     deleteRegion: "Delete",
     deleteRegionConfirm: "Delete \"{{name}}\"? Its maps will also be deleted.",
+    deleteUmeWorldConfirm:
+      "Delete \"{{name}}\"? This cascades all UME regions and maps under it. A later UME topology apply may recreate it.",
     renameRegion: "Rename",
     renameRegionPrompt: "Name",
     regionRenamed: "Renamed",

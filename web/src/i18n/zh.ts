@@ -1431,6 +1431,8 @@ const zh = {
     regionDeleted: "已删除",
     deleteRegion: "删除",
     deleteRegionConfirm: "删除「{{name}}」？其下画布将一并删除。",
+    deleteUmeWorldConfirm:
+      "删除「{{name}}」？将级联删除其下全部 UME 区域与画布。之后若再跑 UME 拓扑同步/应用，可能重新生成。",
     renameRegion: "重命名",
     renameRegionPrompt: "名称",
     regionRenamed: "已重命名",

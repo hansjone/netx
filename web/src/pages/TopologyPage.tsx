@@ -2318,30 +2318,38 @@ export function TopologyPage() {
                 </span>
               </span>
             </button>
-            {!umeNav ? (
+            {!umeNav || containerFolder ? (
               <div className="topo-map-list__actions">
-                <button
-                  type="button"
-                  className="topo-map-list__icon"
-                  title={t("topology.renameRegion")}
-                  aria-label={t("topology.renameRegion")}
-                  disabled={!!folder.is_system || renameRegionMut.isPending}
-                  onClick={() => promptRenameRegion(folder.id, folder.name)}
-                >
-                  <PencilIcon />
-                </button>
+                {!containerFolder ? (
+                  <button
+                    type="button"
+                    className="topo-map-list__icon"
+                    title={t("topology.renameRegion")}
+                    aria-label={t("topology.renameRegion")}
+                    disabled={!!folder.is_system || renameRegionMut.isPending}
+                    onClick={() => promptRenameRegion(folder.id, folder.name)}
+                  >
+                    <PencilIcon />
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   className="topo-map-list__icon"
                   title={t("topology.deleteRegion")}
                   aria-label={t("topology.deleteRegion")}
-                  disabled={!!folder.is_system}
+                  disabled={
+                    deleteFolderMut.isPending ||
+                    (!!folder.is_system && !containerFolder)
+                  }
                   onClick={() => {
-                    const msg = t("topology.deleteRegionConfirm").replace(
-                      "{{name}}",
-                      folder.name,
-                    );
-                    if (window.confirm(msg)) deleteFolderMut.mutate(folder.id);
+                    const msg = (
+                      containerFolder
+                        ? t("topology.deleteUmeWorldConfirm")
+                        : t("topology.deleteRegionConfirm")
+                    ).replace("{{name}}", folder.name);
+                    if (window.confirm(msg)) {
+                      deleteFolderMut.mutate(folder.id);
+                    }
                   }}
                 >
                   <CloseIcon />
@@ -4116,7 +4124,10 @@ export function TopologyPage() {
                     </>
                   ) : treeFailed ? (
                     <>
-                      {t("topology.treeLoadFailed")}{" "}
+                      {t("topology.treeLoadFailed")}
+                      {treeQuery.error ? (
+                        <span className="muted"> ({String(treeQuery.error)})</span>
+                      ) : null}{" "}
                       <button
                         type="button"
                         className="btn btn--sm btn--ghost"

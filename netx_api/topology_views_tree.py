@@ -28,6 +28,7 @@ from .topology_common import (
     _LEGACY_UNASSIGNED_NAME,
     _normalize_edge_status,
     _utcnow,
+    view_filter_dict,
 )
 
 # Manual top-level「根」auto-spawns this unique L2 canvas (mirrors UME World / World).
@@ -101,7 +102,7 @@ def _view_out(v: TopoView, *, node_count: int = 0) -> TopologyViewOut:
         kind=normalize_view_kind(getattr(v, "kind", None)),
         role=normalize_view_role(v.role),
         sort_order=int(v.sort_order or 0),
-        filter=dict(v.filter or {}),
+        filter=view_filter_dict(v.filter),
         viewport=dict(v.viewport or {}),
         node_count=node_count,
         created_at=v.created_at,
@@ -357,7 +358,7 @@ def bootstrap_topology_tree(db: Session) -> dict[str, str]:
         if not str(v.role or "").strip():
             v.role = "core"
             changed = True
-        filt = dict(v.filter or {})
+        filt = view_filter_dict(v.filter)
         if "membership" not in filt:
             v.filter = merge_filter_with_membership(
                 filt, role=normalize_view_role(v.role), kind=kind
@@ -548,13 +549,19 @@ def update_folder(db: Session, folder_id: str, body: TopologyFolderUpdate) -> To
 def delete_folder(db: Session, folder_id: str, *, force: bool = False) -> dict[str, Any]:
     """Delete a region and cascade-delete nested regions + maps.
 
-    ``force`` is accepted for API compatibility; cascade always runs.
     System L2「根图」may be removed only as part of cascading from its parent「根」.
+    UME World container may be deleted explicitly (cascades all synced SBN folders);
+    a later UME apply / world ensure can recreate it.
     """
     row = _get_folder_or_404(db, folder_id)
     if str(row.kind or "") == "root":
         raise HTTPException(status_code=400, detail="cannot_delete_system_folder")
-    if bool(row.is_system):
+
+    from .ume_topology_world import is_ume_world_container
+
+    # UME World container is system-marked but user-deletable (cascades SBN tree).
+    # Manual「根图」and other system folders stay protected except via parent cascade.
+    if bool(row.is_system) and not is_ume_world_container(row):
         raise HTTPException(status_code=400, detail="cannot_delete_system_folder")
     _ = force
     from .topology_region_canvas import remove_region_canvas_placements
@@ -583,7 +590,14 @@ def delete_folder(db: Session, folder_id: str, *, force: bool = False) -> dict[s
     _purge_folder(row)
     from .ume_topology_world import reconcile_world_flat_view
 
-    reconcile_world_flat_view(db)
+    try:
+        reconcile_world_flat_view(db)
+    except Exception:
+        import logging
+
+        logging.getLogger("netx.topology").exception(
+            "reconcile_world_flat_view failed after delete_folder id=%s", folder_id
+        )
     db.commit()
     return {"ok": True, "folder_id": folder_id, "deleted": True}
 
@@ -618,9 +632,9 @@ def get_topology_tree(db: Session) -> TopologyTreeOut:
         if str(f.kind or "") == "region"
     ) or any(
         bool(
-            dict(v.filter or {}).get("ume_level")
-            or dict(v.filter or {}).get("world")
-            or dict(v.filter or {}).get("world_flat")
+            view_filter_dict(v.filter).get("ume_level")
+            or view_filter_dict(v.filter).get("world")
+            or view_filter_dict(v.filter).get("world_flat")
         )
         for v in views
     )
@@ -669,7 +683,7 @@ def get_topology_tree(db: Session) -> TopologyTreeOut:
         ne_nc = max(0, raw - int(region_icon_map.get(v.id, 0) or 0))
         if ne_nc:
             return ne_nc
-        filt = dict(v.filter or {})
+        filt = view_filter_dict(v.filter)
         if filt.get("world_flat") or (
             bool(filt.get("world")) and not filt.get("ume_level")
         ):

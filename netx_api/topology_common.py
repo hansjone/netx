@@ -19,6 +19,14 @@ PHYSICAL_VIEW_NAME = "Physical topology"
 # Legacy system region name (no longer auto-created; stripped on bootstrap when empty).
 _LEGACY_UNASSIGNED_NAME = "Unassigned"
 
+
+def view_filter_dict(raw: Any) -> dict[str, Any]:
+    """Coerce TopoView.filter JSON to a dict (bad rows must not 500 the tree)."""
+    if isinstance(raw, dict):
+        return dict(raw)
+    return {}
+
+
 PAGE_DEFAULT = 100
 PAGE_MAX = 2000
 VIEW_GRAPH_NODE_HARD_CAP = 2000
