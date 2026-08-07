@@ -1254,7 +1254,7 @@ export function TopologyPage() {
   const [canvasBg, setCanvasBg] = useState(loadCanvasBg);
   const [labelColors, setLabelColors] = useState<LabelColors>(() => loadLabelColors());
   const [vendorColors, setVendorColors] = useState<VendorColors>(() => loadVendorColors());
-  const [toolMode, setToolMode] = useState<ToolMode>("select");
+  const [toolMode, setToolMode] = useState<ToolMode>("pan");
   const [snapToGrid, setSnapToGrid] = useState(true);
   const [autoLayoutAfterDiscover, setAutoLayoutAfterDiscover] = useState(loadAutoLayoutAfterDiscover);
   const [discoverAutoAddUnmatched, setDiscoverAutoAddUnmatched] = useState(() =>
