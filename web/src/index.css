@@ -5033,9 +5033,9 @@ pre {
   font-weight: 700;
   line-height: 1.25;
   color: inherit;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: center;
 }
 .topo-region-hex__title {
   display: flex;
@@ -5047,7 +5047,7 @@ pre {
   min-width: 0;
 }
 .topo-region-hex__title .topo-region-hex__name {
-  max-width: 70%;
+  max-width: 100%;
 }
 .topo-region-hex__meta {
   display: inline;
@@ -7390,6 +7390,15 @@ pre {
 
 .topo-node.is-region {
   height: 17px;
+}
+
+.topo-node.is-region .topo-node__caption {
+  max-width: none;
+}
+
+.topo-node.is-region .topo-node__caption-name {
+  overflow: visible;
+  text-overflow: clip;
 }
 
 .topo-node__glyph {

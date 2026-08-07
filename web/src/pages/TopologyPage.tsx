@@ -774,7 +774,7 @@ const NeNode = memo(function NeNode({ data, selected }: NodeProps<Node<NeNodeDat
       }${showBadge ? " is-placeholder" : ""}${isRegion ? " is-region" : ""}`}
       title={
         isRegion
-          ? "Open region canvas"
+          ? name
           : showBadge
             ? data.managed_source || "placeholder"
             : name
