@@ -21,6 +21,7 @@ from .topology_schemas import (
     TopologyViewGraphOut,
     ViewEdgeOut,
     ViewNodeOut,
+    WorldScatterPointOut,
     WorldTransformOut,
 )
 from .topology_views_tree import _get_view_or_404, _view_out
@@ -34,10 +35,12 @@ from .ume_topology_world import (
 
 # Browser-safe caps. Flat world used to ship 2000 RF nodes (~1MB JSON) and freeze
 # the UI (fitView never settles; workbench feels stuck). Keep membership graphs at
-# the shared hard cap; flat overview/detail use LOD-specific caps.
+# the shared hard cap; flat overview uses a lightweight scatter starfield (all
+# coords) while detail uses viewport RF nodes.
 WORLD_NODE_SOFT_CAP = VIEW_GRAPH_NODE_HARD_CAP
 WORLD_FLAT_NODE_SOFT_CAP = 400  # legacy alias → detail
-WORLD_FLAT_OVERVIEW_CAP = 1500
+WORLD_FLAT_OVERVIEW_CAP = 1500  # legacy RF sample; overview now prefers scatter
+WORLD_FLAT_SCATTER_CAP = 40000
 # Close-up must be able to show a whole large SBN like the region canvas (≤ hard cap).
 WORLD_FLAT_DETAIL_CAP = VIEW_GRAPH_NODE_HARD_CAP
 # Viewport span (display/world units) at/under which we prefer a full region layout
@@ -481,7 +484,7 @@ def get_flat_view_graph(
     lod: str = "auto",
     status: str = "active",
 ) -> TopologyViewGraphOut:
-    """Flat world map with LOD: overview (global dots) or detail (viewport sample).
+    """Flat world map with LOD: overview (scatter starfield) or detail (viewport RF).
 
     Client bbox is in **display** coordinates (same as returned node x/y). Folder
     auto-bbox (when only folder_id is set) stays in packed world coordinates.
@@ -524,8 +527,27 @@ def get_flat_view_graph(
         .one()
     )
     total_all = int(extent_row[4] or 0)
+    dock_me_count = 0
     if not total_all:
-        return TopologyViewGraphOut(view=_view_out(view), nodes=[], edges=[])
+        try:
+            dock_me_count = int(
+                db.query(func.count(UmeTopoNode.node_id))
+                .filter(UmeTopoNode.node_type == "TOPO_NODE_ME")
+                .scalar()
+                or 0
+            )
+        except Exception:
+            dock_me_count = 0
+        return TopologyViewGraphOut(
+            view=_view_out(view),
+            nodes=[],
+            edges=[],
+            world_transform=WorldTransformOut(
+                total=0,
+                lod=str(lod or "overview").strip().lower() or "overview",
+                dock_me_count=dock_me_count,
+            ),
+        )
 
     full_min_x = float(extent_row[0])
     full_max_x = float(extent_row[1])
@@ -548,6 +570,54 @@ def get_flat_view_graph(
         lod_norm = "auto"
     if lod_norm == "auto":
         lod_norm = "detail" if client_bbox else "overview"
+
+    def _world_transform(*, total: int | None = None) -> WorldTransformOut:
+        return WorldTransformOut(
+            origin_x=full_min_x,
+            origin_y=full_min_y,
+            scale=scale,
+            full_min_x=full_min_x,
+            full_max_x=full_max_x,
+            full_min_y=full_min_y,
+            full_max_y=full_max_y,
+            total=int(total if total is not None else total_all),
+            lod=lod_norm,
+            dock_me_count=0,
+        )
+
+    # Overview: lightweight starfield only (no RF nodes / edges). Screen-space
+    # canvas draws these so fitView zoom no longer shrinks dots to sub-pixels.
+    if lod_norm == "overview" and not sbn_id.strip():
+        scatter_q = db.query(TopoFabricNode.world_x, TopoFabricNode.world_y).filter(
+            TopoFabricNode.world_x.isnot(None),
+            TopoFabricNode.world_y.isnot(None),
+        )
+        if region_folder_ids is not None:
+            scatter_q = scatter_q.filter(TopoFabricNode.region_folder_id.in_(list(region_folder_ids)))
+        rows = (
+            scatter_q.order_by(TopoFabricNode.world_x.asc(), TopoFabricNode.world_y.asc())
+            .limit(WORLD_FLAT_SCATTER_CAP + 1)
+            .all()
+        )
+        truncated = len(rows) > WORLD_FLAT_SCATTER_CAP
+        if truncated:
+            rows = rows[:WORLD_FLAT_SCATTER_CAP]
+        scatter = [
+            WorldScatterPointOut(
+                x=(float(wx or 0) - full_min_x) * scale,
+                y=(float(wy or 0) - full_min_y) * scale,
+            )
+            for wx, wy in rows
+        ]
+        return TopologyViewGraphOut(
+            view=_view_out(view),
+            nodes=[],
+            edges=[],
+            truncated=truncated,
+            truncate_reason="too_many_scatter_points" if truncated else "",
+            world_transform=_world_transform(total=total_all),
+            scatter=scatter,
+        )
 
     if client_bbox:
         # Display == world - origin; pad detail viewport so pan feels continuous.
@@ -760,15 +830,6 @@ def get_flat_view_graph(
         edges=edges_out,
         truncated=truncated,
         truncate_reason=reason,
-        world_transform=WorldTransformOut(
-            origin_x=full_min_x,
-            origin_y=full_min_y,
-            scale=scale,
-            full_min_x=full_min_x,
-            full_max_x=full_max_x,
-            full_min_y=full_min_y,
-            full_max_y=full_max_y,
-            total=total_all,
-            lod=lod_norm,
-        ),
+        world_transform=_world_transform(),
+        scatter=[],
     )

@@ -267,6 +267,18 @@ class UmeHierarchyTests(unittest.TestCase):
         drill = [c for c in region_kids if c.external_ref == "ume:world:drill" or c.name == "World"]
         self.assertEqual(len(drill), 1)
 
+    def test_world_flat_view_name_legacy_compat(self):
+        from netx_api.ume_topology_world import (
+            WORLD_FLAT_VIEW_NAME,
+            WORLD_FLAT_VIEW_NAME_LEGACY,
+            is_world_flat_view_name,
+        )
+
+        self.assertEqual(WORLD_FLAT_VIEW_NAME, "世界地图")
+        self.assertTrue(is_world_flat_view_name(WORLD_FLAT_VIEW_NAME))
+        self.assertTrue(is_world_flat_view_name(WORLD_FLAT_VIEW_NAME_LEGACY))
+        self.assertFalse(is_world_flat_view_name("World"))
+
     def test_world_map_forbids_add_nes(self):
         from fastapi import HTTPException
 
@@ -291,7 +303,6 @@ class UmeHierarchyTests(unittest.TestCase):
         from netx_api.ume_topology_world import get_world_flat_view
         from netx_api.ume_topology_world_graph import (
             WORLD_FLAT_DETAIL_CAP,
-            WORLD_FLAT_OVERVIEW_CAP,
             get_flat_view_graph,
         )
 
@@ -305,17 +316,14 @@ class UmeHierarchyTests(unittest.TestCase):
         overview = get_flat_view_graph(self.db, flat, lod="overview")
         self.assertIsNotNone(overview.world_transform)
         self.assertEqual(overview.world_transform.lod, "overview")
-        self.assertGreater(len(overview.nodes), 0)
-        self.assertLessEqual(len(overview.nodes), WORLD_FLAT_OVERVIEW_CAP)
+        self.assertEqual(len(overview.nodes), 0)
+        self.assertGreater(len(overview.scatter), 0)
+        self.assertEqual(len(overview.scatter), int(overview.world_transform.total or 0))
         self.assertEqual(len(overview.edges), 0)
         self.assertEqual(float(overview.world_transform.scale or 0), 1.0)
-        # Intra-block spacing matches UME local deltas (1:1, not crushed).
-        a1 = next(n for n in overview.nodes if n.ume_ne_id == "me-a1" or n.name == "A1")
-        a2 = next(n for n in overview.nodes if n.ume_ne_id == "me-a2" or n.name == "A2")
-        self.assertAlmostEqual(float(a2.x) - float(a1.x), 40.0)
 
-        # Viewport around an existing overview node (display coords).
-        hit = overview.nodes[0]
+        # Detail viewport around the first scatter point (display coords).
+        hit = overview.scatter[0]
         detail = get_flat_view_graph(
             self.db,
             flat,
@@ -328,10 +336,14 @@ class UmeHierarchyTests(unittest.TestCase):
         self.assertEqual(detail.world_transform.lod, "detail")
         self.assertGreater(len(detail.nodes), 0)
         self.assertLessEqual(len(detail.nodes), WORLD_FLAT_DETAIL_CAP)
-        self.assertTrue(any(n.fabric_node_id == hit.fabric_node_id for n in detail.nodes))
+        # Intra-block spacing matches UME local deltas (1:1, not crushed).
+        a1 = next(n for n in detail.nodes if n.ume_ne_id == "me-a1" or n.name == "A1")
+        a2 = next(n for n in detail.nodes if n.ume_ne_id == "me-a2" or n.name == "A2")
+        self.assertAlmostEqual(float(a2.x) - float(a1.x), 40.0)
 
         auto = get_flat_view_graph(self.db, flat, lod="auto")
         self.assertEqual(auto.world_transform.lod, "overview")
+        self.assertGreater(len(auto.scatter), 0)
 
     def test_flat_drag_override_survives_recompute(self):
         from netx_api.topology_schemas import ViewNodeIn, ViewPositionsPatch
@@ -344,22 +356,43 @@ class UmeHierarchyTests(unittest.TestCase):
         ensure_ume_world_and_sbn_folders(self.db)
         flat = get_world_flat_view(self.db)
         self.assertIsNotNone(flat)
-        g0 = get_flat_view_graph(self.db, flat)
+        overview = get_flat_view_graph(self.db, flat, lod="overview")
+        self.assertGreater(len(overview.scatter), 0)
+        # Need RF node payloads for drag overrides — use a wide detail window.
+        g0 = get_flat_view_graph(
+            self.db,
+            flat,
+            lod="detail",
+            min_x=-1e9,
+            max_x=1e9,
+            min_y=-1e9,
+            max_y=1e9,
+        )
         self.assertGreater(len(g0.nodes), 0)
         target = g0.nodes[0]
+        ox = float(target.x) + 17.0
+        oy = float(target.y) + 23.0
         patch_view_positions(
             self.db,
             flat.id,
             ViewPositionsPatch(
-                positions=[ViewNodeIn(fabric_node_id=target.fabric_node_id, x=1111.0, y=2222.0)],
+                positions=[ViewNodeIn(fabric_node_id=target.fabric_node_id, x=ox, y=oy)],
                 return_graph=False,
             ),
         )
         recompute_flat_world_coords(self.db)
-        g1 = get_flat_view_graph(self.db, flat)
+        g1 = get_flat_view_graph(
+            self.db,
+            flat,
+            lod="detail",
+            min_x=-1e9,
+            max_x=1e9,
+            min_y=-1e9,
+            max_y=1e9,
+        )
         moved = next(n for n in g1.nodes if n.fabric_node_id == target.fabric_node_id)
-        self.assertEqual(moved.x, 1111.0)
-        self.assertEqual(moved.y, 2222.0)
+        self.assertEqual(moved.x, ox)
+        self.assertEqual(moved.y, oy)
 
     def test_create_folder_under_ume_world_remounts_to_drill(self):
         from netx_api.topology_schemas import TopologyFolderCreate

@@ -302,6 +302,13 @@ class ViewEdgeOut(BaseModel):
     discovered_at: datetime | None = None
 
 
+class WorldScatterPointOut(BaseModel):
+    """Lightweight display-space point for world-map starfield (no labels/edges)."""
+
+    x: float = 0.0
+    y: float = 0.0
+
+
 class WorldTransformOut(BaseModel):
     """Flat world map: display = (world - origin) * scale. scale is 1.0 (1:1)."""
 
@@ -314,6 +321,8 @@ class WorldTransformOut(BaseModel):
     full_max_y: float = 0.0
     total: int = 0
     lod: str = "overview"
+    # Dock ME count when fabric world coords are empty — UI heal hint.
+    dock_me_count: int = 0
 
 
 class TopologyViewGraphOut(BaseModel):
@@ -324,6 +333,8 @@ class TopologyViewGraphOut(BaseModel):
     truncate_reason: str = ""
     outside_peers: list[dict[str, str]] = Field(default_factory=list)
     world_transform: WorldTransformOut | None = None
+    # Overview starfield: all (or capped) display coords; RF nodes stay empty far out.
+    scatter: list[WorldScatterPointOut] = Field(default_factory=list)
 
 
 class ViewPopulateOut(BaseModel):

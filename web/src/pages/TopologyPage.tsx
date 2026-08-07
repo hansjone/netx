@@ -62,12 +62,14 @@ import {
   updateLldpCollectPolicy,
   updateTopologyFolder,
   updateTopologyMap,
+  applyUmeTopologyToFabric,
 } from "../services/api";
 import { queryKeys } from "../constants/queryKeys";
 import { HelpHint } from "../components/HelpHint";
 import { useI18n } from "../i18n";
 import { useToast } from "../hooks/useToast";
 import { openOrFocusModule } from "../utils/moduleWindows";
+import { WorldScatterLayer } from "./topology/WorldScatterLayer";
 import type {
   FabricNodeSearchHit,
   TopologyDiscoverJob,
@@ -177,7 +179,8 @@ function isWorldDrillFolder(folder: TopologyTreeFolderItem | null | undefined): 
 }
 
 function isWorldFlatViewName(name: string | undefined | null): boolean {
-  return String(name || "").trim() === "完整世界地图";
+  const n = String(name || "").trim();
+  return n === "世界地图" || n === "完整世界地图";
 }
 
 /** Visual LOD for 1:1 world coords (~1e5 span). fitView overview is ~0.01. */
@@ -185,6 +188,20 @@ function worldVisualLodFromZoom(zoom: number): "dot" | "pin" | "full" {
   if (zoom < 0.04) return "dot";
   if (zoom < 0.12) return "pin";
   return "full";
+}
+
+function worldDisplayBounds(wt: TopologyWorldTransform | null | undefined): {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+} | null {
+  if (!wt) return null;
+  const scale = Number(wt.scale) || 1;
+  const width = Math.max(1, (Number(wt.full_max_x) - Number(wt.full_min_x)) * scale);
+  const height = Math.max(1, (Number(wt.full_max_y) - Number(wt.full_min_y)) * scale);
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return null;
+  return { x: 0, y: 0, width, height };
 }
 
 /**
@@ -303,6 +320,7 @@ function mergeFlatWorldGraph(
     nodes,
     edges,
     world_transform: next.world_transform ?? prev.world_transform,
+    scatter: next.scatter?.length ? next.scatter : prev.scatter,
     truncated: Boolean(prev.truncated || next.truncated),
     truncate_reason: next.truncate_reason || prev.truncate_reason || "",
     outside_peers: next.outside_peers?.length ? next.outside_peers : prev.outside_peers,
@@ -1103,7 +1121,7 @@ function graphFingerprint(graph: TopologyViewGraph): string {
     .map((e) => `${e.id}:${e.a_node_id}:${e.b_node_id}:${e.a_port || ""}:${e.b_port || ""}:${e.status || ""}`)
     .sort()
     .join("|");
-  return `${nodes}#${edges}#${graph.outside_peers?.length || 0}#${graph.world_transform?.lod || ""}`;
+  return `${nodes}#${edges}#${graph.outside_peers?.length || 0}#${graph.world_transform?.lod || ""}#${graph.scatter?.length || 0}#${graph.world_transform?.total || 0}`;
 }
 
 function applyViewGraph(
@@ -1400,17 +1418,30 @@ export function TopologyPage() {
       );
     };
     try {
-      // Far out: keep accumulated detail tiles — don't wipe with a sparse overview.
-      if (zoom < 0.025) {
+      // Far / mid zoom: starfield scatter only (screen-space canvas). Drop heavy RF tiles.
+      if (zoom < 0.12) {
         const prev = queryClient.getQueryData<TopologyViewGraph>(queryKeys.topologyGraph(mapId));
-        if (prev && prev.nodes.length > 1600) return;
-        const g = await fetchTopologyGraph(mapId, { lod: "overview" });
-        if (gen !== flatLodFetchGenRef.current || dirtyRef.current) return;
-        const cx =
-          g.nodes.reduce((s, n) => s + Number(n.x || 0), 0) / Math.max(1, g.nodes.length);
-        const cy =
-          g.nodes.reduce((s, n) => s + Number(n.y || 0), 0) / Math.max(1, g.nodes.length);
-        commit(g, cx, cy);
+        if (!prev?.scatter?.length) {
+          const g = await fetchTopologyGraph(mapId, { lod: "overview" });
+          if (gen !== flatLodFetchGenRef.current || dirtyRef.current) return;
+          const bounds = worldDisplayBounds(g.world_transform);
+          const cx = bounds ? bounds.x + bounds.width / 2 : 0;
+          const cy = bounds ? bounds.y + bounds.height / 2 : 0;
+          commit(g, cx, cy);
+        } else if (prev.nodes.length > 0 && zoom < 0.04) {
+          commit(
+            {
+              ...prev,
+              nodes: [],
+              edges: [],
+              world_transform: prev.world_transform
+                ? { ...prev.world_transform, lod: "overview" }
+                : prev.world_transform,
+            },
+            0,
+            0,
+          );
+        }
         return;
       }
       const pane = canvasRef.current?.getBoundingClientRect();
@@ -1444,6 +1475,17 @@ export function TopologyPage() {
       void refreshFlatViewport();
     }, 200);
   }, [isWorldFlatCanvas, refreshFlatViewport]);
+
+  const fitCanvas = useCallback(() => {
+    const inst = rfRef.current;
+    if (!inst) return;
+    const bounds = isWorldFlatCanvas
+      ? worldDisplayBounds(worldTransformRef.current || graphQuery.data?.world_transform)
+      : null;
+    if (bounds) inst.fitBounds(bounds, { padding: 0.12, duration: 0 });
+    else inst.fitView({ ...FIT_VIEW_OPTS });
+    setCanvasZoom(inst.getZoom());
+  }, [isWorldFlatCanvas, graphQuery.data?.world_transform]);
 
   useEffect(() => {
     return () => {
@@ -1828,13 +1870,19 @@ export function TopologyPage() {
       bumpHistory();
       // World / large canvases use absolute coords far outside the default RF
       // viewport — without an initial fit the canvas looks empty after load.
-      pendingFitRef.current = nextNodes.length > 0;
+      const hasScatter = (graphQuery.data.scatter?.length || 0) > 0;
+      const hasWorld = Boolean(worldDisplayBounds(graphQuery.data.world_transform));
+      pendingFitRef.current = nextNodes.length > 0 || hasScatter || hasWorld;
     }
     historyLockRef.current = false;
   }, [canvasMode, mapId, graphQuery.data, edgeDefaults, setNodes, setEdges, clearDirty, bumpHistory]);
 
   useEffect(() => {
-    if (!pendingFitRef.current || !nodes.length) return;
+    if (!pendingFitRef.current) return;
+    const wt = graphQuery.data?.world_transform;
+    const bounds = isWorldFlatCanvas ? worldDisplayBounds(wt) : null;
+    const canFitNodes = nodes.length > 0;
+    if (!bounds && !canFitNodes) return;
     let cancelled = false;
     let tries = 0;
     const run = () => {
@@ -1845,8 +1893,12 @@ export function TopologyPage() {
         return;
       }
       pendingFitRef.current = false;
-      // duration 0 — animated fit with 400+ nodes often never paints the first frame.
-      inst.fitView({ ...FIT_VIEW_OPTS, duration: 0 });
+      if (bounds) {
+        inst.fitBounds(bounds, { padding: 0.12, duration: 0 });
+      } else {
+        // duration 0 — animated fit with 400+ nodes often never paints the first frame.
+        inst.fitView({ ...FIT_VIEW_OPTS, duration: 0 });
+      }
       setCanvasZoom(inst.getZoom());
     };
     const t = window.setTimeout(run, 0);
@@ -1854,7 +1906,7 @@ export function TopologyPage() {
       cancelled = true;
       window.clearTimeout(t);
     };
-  }, [nodes, mapId]);
+  }, [nodes, mapId, isWorldFlatCanvas, graphQuery.data?.world_transform]);
 
   useEffect(() => {
     setEdges((eds) => eds.map((e) => withEdgeVisual(e, edgeDefaults)));
@@ -2101,6 +2153,17 @@ export function TopologyPage() {
     onError: (err) => showError(String(err)),
   });
 
+  const applyWorldMut = useMutation({
+    mutationFn: () => applyUmeTopologyToFabric(),
+    onSuccess: async () => {
+      showOk(t("topology.worldApplyOk"));
+      await queryClient.invalidateQueries({ queryKey: queryKeys.topologyGraph(mapId) });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.topologyTree });
+      pendingFitRef.current = true;
+    },
+    onError: (err) => showError(String(err)),
+  });
+
   const promptNewRegion = useCallback(() => {
     setNewRootDialog({ name: t("topology.newRegionName") });
   }, [t]);
@@ -2145,7 +2208,7 @@ export function TopologyPage() {
       const drillFolder = isWorldDrillFolder(folder);
       const umeNav = isUmeWorldNavFolder(folder);
       // Region === canvas: hide physical/custom view rows; only child regions.
-      // UME World container: only「完整世界地图」as a sibling view.
+      // UME World container: only「世界地图」as a sibling view.
       const canvasRegion = isRegionCanvasFolder(folder, String(treeRoot?.id || ""));
       const visibleViews = canvasRegion
         ? []
@@ -3881,13 +3944,21 @@ export function TopologyPage() {
   const outsidePeers = graphQuery.data?.outside_peers || [];
   const graphTruncated = Boolean(graphQuery.data?.truncated);
   const truncateReason = String(graphQuery.data?.truncate_reason || "").trim();
+  const worldScatter = graphQuery.data?.scatter || [];
+  const worldTotal = Number(graphQuery.data?.world_transform?.total || 0);
+  const worldDockMe = Number(graphQuery.data?.world_transform?.dock_me_count || 0);
+  const showWorldScatter =
+    isWorldFlatCanvas && worldVisualLod !== "full" && worldScatter.length > 0;
   const canvasGraphLoading = Boolean(mapId) && (graphQuery.isPending || !graphQuery.data);
   const canvasGraphEmpty =
     Boolean(mapId) &&
     graphQuery.isSuccess &&
     !graphQuery.isFetching &&
     (graphQuery.data?.nodes?.length ?? 0) === 0 &&
-    nodes.length === 0;
+    worldScatter.length === 0 &&
+    nodes.length === 0 &&
+    worldTotal === 0;
+  const worldNeedsApply = isWorldFlatCanvas && canvasGraphEmpty && worldDockMe > 0;
   const canvasGraphRefreshing =
     Boolean(mapId) && liveSync && graphQuery.isFetching && Boolean(graphQuery.data) && !canvasGraphLoading;
   const truncateBannerText = useMemo(() => {
@@ -4312,8 +4383,8 @@ export function TopologyPage() {
               <button
                 type="button"
                 className="btn btn--sm btn--ghost"
-                disabled={nodes.length === 0}
-                onClick={() => rfRef.current?.fitView({ ...FIT_VIEW_OPTS })}
+                disabled={!isWorldFlatCanvas && nodes.length === 0}
+                onClick={() => fitCanvas()}
               >
                 {t("topology.fit")}
               </button>
@@ -5226,7 +5297,7 @@ export function TopologyPage() {
                   type="button"
                   className="topo-fs-toolbar__btn"
                   title={t("topology.fit")}
-                  onClick={() => rfRef.current?.fitView({ ...FIT_VIEW_OPTS })}
+                  onClick={() => fitCanvas()}
                 >
                   {t("topology.fit")}
                 </button>
@@ -5242,8 +5313,25 @@ export function TopologyPage() {
             ) : null}
             {treeRoot ? (
               <TopoDisplayContext.Provider value={displayOpts}>
+                {isWorldFlatCanvas ? (
+                  <div className="topo-world-hud" role="status">
+                    <span>
+                      {t("topology.worldHud")
+                        .replace("{{total}}", String(worldTotal || worldScatter.length || 0))
+                        .replace("{{cached}}", String(nodes.length))
+                        .replace("{{zoom}}", canvasZoom.toFixed(3))
+                        .replace("{{lod}}", worldVisualLod)}
+                    </span>
+                    {graphTruncated ? (
+                      <span className="muted"> · {truncateReason || "truncated"}</span>
+                    ) : null}
+                  </div>
+                ) : null}
                 <ReactFlow
-                  nodes={nodes.map((n) => {
+                  nodes={
+                    isWorldFlatCanvas && worldVisualLod !== "full"
+                      ? []
+                      : nodes.map((n) => {
                     const isRegion = n.data.kind === "region";
                     const lod = isWorldFlatCanvas ? worldVisualLod : "full";
                     const sized =
@@ -5259,8 +5347,9 @@ export function TopologyPage() {
                           className: "is-search-hit",
                         }
                       : { ...sized, className: undefined };
-                  })}
-                  edges={displayEdges}
+                  })
+                  }
+                  edges={isWorldFlatCanvas && worldVisualLod !== "full" ? [] : displayEdges}
                   nodeTypes={nodeTypes}
                   edgeTypes={edgeTypes}
                   onlyRenderVisibleElements={
@@ -5369,11 +5458,17 @@ export function TopologyPage() {
                   }}
                   onInit={(inst) => {
                     rfRef.current = inst as ReactFlowInstance<Node<NeNodeData>, Edge>;
-                    if (pendingFitRef.current && nodesRef.current.length > 0) {
+                    if (pendingFitRef.current) {
                       pendingFitRef.current = false;
-                      // Defer one frame so RF has committed node internals.
                       window.requestAnimationFrame(() => {
-                        inst.fitView({ ...FIT_VIEW_OPTS, duration: 0 });
+                        const bounds = isWorldFlatCanvas
+                          ? worldDisplayBounds(worldTransformRef.current || graphQuery.data?.world_transform)
+                          : null;
+                        if (bounds) {
+                          inst.fitBounds(bounds, { padding: 0.12, duration: 0 });
+                        } else if (nodesRef.current.length > 0) {
+                          inst.fitView({ ...FIT_VIEW_OPTS, duration: 0 });
+                        }
                         setCanvasZoom(inst.getZoom());
                       });
                     }
@@ -5382,6 +5477,11 @@ export function TopologyPage() {
                   deleteKeyCode={null}
                   edgesFocusable
                 >
+                  <WorldScatterLayer
+                    points={worldScatter}
+                    mode={worldVisualLod === "pin" ? "pin" : "dot"}
+                    visible={showWorldScatter}
+                  />
                   <Background
                     variant={BackgroundVariant.Dots}
                     gap={16}
@@ -5453,9 +5553,34 @@ export function TopologyPage() {
               </div>
             ) : null}
             {treeRoot && canvasGraphEmpty ? (
-              <div className="topo-canvas__overlay topo-canvas__overlay--empty" role="status">
-                <p className="topo-canvas__overlay-title">{t("topology.canvasEmpty")}</p>
-                <p className="topo-canvas__overlay-hint">{t("topology.canvasEmptyHint")}</p>
+              <div
+                className={`topo-canvas__overlay topo-canvas__overlay--empty${
+                  worldNeedsApply ? " is-interactive" : ""
+                }`}
+                role="status"
+              >
+                <p className="topo-canvas__overlay-title">
+                  {worldNeedsApply ? t("topology.worldEmptyCoords") : t("topology.canvasEmpty")}
+                </p>
+                <p className="topo-canvas__overlay-hint">
+                  {worldNeedsApply
+                    ? t("topology.worldEmptyCoordsHint").replace("{{dock}}", String(worldDockMe))
+                    : t("topology.canvasEmptyHint")}
+                </p>
+                {worldNeedsApply ? (
+                  <div className="btn-row" style={{ marginTop: 10, justifyContent: "center" }}>
+                    <button
+                      type="button"
+                      className="btn btn--sm"
+                      disabled={applyWorldMut.isPending}
+                      onClick={() => applyWorldMut.mutate()}
+                    >
+                      {applyWorldMut.isPending
+                        ? t("topology.worldApplying")
+                        : t("topology.worldApply")}
+                    </button>
+                  </div>
+                ) : null}
               </div>
             ) : null}
             {treeRoot && canvasGraphRefreshing ? (

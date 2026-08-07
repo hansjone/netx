@@ -565,6 +565,12 @@ export type TopologyWorldTransform = {
   full_max_y: number;
   total: number;
   lod: string;
+  dock_me_count?: number;
+};
+
+export type TopologyWorldScatterPoint = {
+  x: number;
+  y: number;
 };
 
 export type TopologyViewGraph = {
@@ -575,6 +581,7 @@ export type TopologyViewGraph = {
   truncate_reason?: string;
   outside_peers?: TopologyOutsidePeer[];
   world_transform?: TopologyWorldTransform | null;
+  scatter?: TopologyWorldScatterPoint[];
 };
 
 export type FabricSummary = {

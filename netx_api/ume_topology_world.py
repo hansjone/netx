@@ -20,10 +20,17 @@ WORLD_DRILL_FOLDER_NAME = "World"
 WORLD_FOLDER_REF = "ume:world"
 WORLD_DRILL_REF = "ume:world:drill"
 WORLD_VIEW_NAME = "World"
-WORLD_FLAT_VIEW_NAME = "完整世界地图"
+WORLD_FLAT_VIEW_NAME = "世界地图"
+# Pre-rename label kept so existing TopoView rows still match.
+WORLD_FLAT_VIEW_NAME_LEGACY = "完整世界地图"
 # Drill-down root: children of MD (root SBNs + rare direct MEs).
 WORLD_LEVEL_FILTER = {"ume_level": True, "parent": "md"}
 WORLD_FLAT_FILTER = {"world_flat": True}
+
+
+def is_world_flat_view_name(name: str | None) -> bool:
+    n = str(name or "").strip()
+    return n == WORLD_FLAT_VIEW_NAME or n == WORLD_FLAT_VIEW_NAME_LEGACY
 
 
 def _filt(view: TopoView | None) -> dict[str, Any]:
@@ -40,7 +47,7 @@ def is_ume_level_view(view: TopoView | None) -> bool:
 
 def is_world_flat_view(view: TopoView | None) -> bool:
     filt = _filt(view)
-    return bool(filt.get("world_flat")) or str(getattr(view, "name", "") or "") == WORLD_FLAT_VIEW_NAME
+    return bool(filt.get("world_flat")) or is_world_flat_view_name(str(getattr(view, "name", "") or ""))
 
 
 def is_ume_world_container(folder: TopoFolder | None) -> bool:
@@ -326,7 +333,7 @@ def ensure_ume_world_and_sbn_folders(db: Session) -> dict[str, Any]:
         UME World          (nav only — hex browse)
           ├─ World         (unique L2 folder ume:world:drill — SBNs hang here)
           │    └─ <root SBNs…>
-          └─ 完整世界地图  (flat view — only when rule 2A holds)
+          └─ 世界地图  (flat view — only when rule 2A holds)
     """
     now = _utcnow()
     stats: dict[str, Any] = {

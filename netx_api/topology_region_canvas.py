@@ -34,7 +34,9 @@ def _is_world_flat(view: TopoView) -> bool:
     filt = dict(view.filter or {})
     if filt.get("world_flat"):
         return True
-    return str(view.name or "").strip() == "完整世界地图"
+    from .ume_topology_world import is_world_flat_view_name
+
+    return is_world_flat_view_name(str(view.name or "").strip())
 
 
 def primary_canvas_view(db: Session, folder_id: str) -> TopoView | None:
