@@ -391,6 +391,64 @@ class FabricTopologyTests(unittest.TestCase):
         self.assertEqual(ne.ip_address, "")
         self.assertEqual(ne.device_type, "generic")
 
+    def test_legacy_single_map_heals_into_root_map(self) -> None:
+        """Pre-architecture: physical view hung on top-level region (no「根图」)."""
+        from uuid import uuid4
+
+        from netx_api.models import TopoFolder, TopoView
+        from netx_api.topology_common import _utcnow
+        from netx_api.topology_membership import VIEW_KIND_PHYSICAL
+
+        now = _utcnow()
+        boot = svc.bootstrap_topology_tree(self.db)
+        root = self.db.get(TopoFolder, boot["root_id"])
+        self.assertIsNotNone(root)
+        assert root is not None
+        legacy = TopoFolder(
+            id=uuid4().hex,
+            parent_id=root.id,
+            kind="region",
+            name="旧单图站点",
+            sort_order=0,
+            is_system=False,
+            created_at=now,
+            updated_at=now,
+        )
+        old_view = TopoView(
+            id=uuid4().hex,
+            folder_id=legacy.id,
+            parent_view_id=None,
+            kind=VIEW_KIND_PHYSICAL,
+            role="core",
+            name="拓扑图",
+            remark="",
+            sort_order=0,
+            filter={},
+            viewport={},
+            created_at=now,
+            updated_at=now,
+        )
+        self.db.add(legacy)
+        self.db.add(old_view)
+        self.db.commit()
+
+        tree = svc.get_topology_tree(self.db)
+        assert tree.root is not None
+        site = next(c for c in tree.root.children if c.id == legacy.id)
+        self.assertEqual(site.views, [])
+        self.assertEqual(len(site.children), 1)
+        root_map = site.children[0]
+        self.assertEqual(root_map.name, "根图")
+        self.assertTrue(any(v.id == old_view.id for v in root_map.views))
+        # Creating another top-level root still works beside the healed legacy site.
+        created = svc.create_folder(
+            self.db, TopologyFolderCreate(name="新根", kind="region")
+        )
+        tree2 = svc.get_topology_tree(self.db)
+        assert tree2.root is not None
+        self.assertTrue(any(c.id == created.id for c in tree2.root.children))
+        self.assertTrue(any(c.id == legacy.id for c in tree2.root.children))
+
     def test_topology_tree_root_region_and_leaf(self) -> None:
         tree = svc.get_topology_tree(self.db)
         self.assertIsNotNone(tree.root)

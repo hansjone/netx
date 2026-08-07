@@ -164,8 +164,133 @@ def ensure_region_physical_view(db: Session, folder_id: str, *, commit: bool = T
     return row
 
 
+def _ensure_manual_root_map(
+    db: Session, top: TopoFolder, *, now: Any | None = None
+) -> tuple[TopoFolder, bool]:
+    """Ensure a top-level manual「根」has unique L2「根图」; migrate legacy L1 canvas onto it.
+
+    Pre-architecture shape: region === canvas (physical view hangs on the L1 folder).
+    Current shape: L1 nav-only + system L2「根图」holds the canvas (and any prior L2 kids).
+    """
+    stamp = now or _utcnow()
+    changed = False
+    kids = (
+        db.query(TopoFolder)
+        .filter(TopoFolder.parent_id == top.id, TopoFolder.kind == "region")
+        .order_by(TopoFolder.sort_order.asc(), TopoFolder.created_at.asc())
+        .all()
+    )
+    root_map = next((k for k in kids if str(k.name or "") == MANUAL_ROOT_MAP_NAME), None)
+    if root_map is None:
+        root_map = TopoFolder(
+            id=uuid4().hex,
+            parent_id=top.id,
+            kind="region",
+            name=MANUAL_ROOT_MAP_NAME,
+            sort_order=0,
+            is_system=True,
+            created_at=stamp,
+            updated_at=stamp,
+        )
+        db.add(root_map)
+        db.flush()
+        changed = True
+        for kid in kids:
+            kid.parent_id = root_map.id
+            kid.updated_at = stamp
+            changed = True
+    elif not bool(root_map.is_system):
+        root_map.is_system = True
+        root_map.updated_at = stamp
+        changed = True
+
+    l1_views = db.query(TopoView).filter(TopoView.folder_id == top.id).all()
+    for v in l1_views:
+        v.folder_id = root_map.id
+        v.updated_at = stamp
+        changed = True
+    if l1_views:
+        db.flush()
+
+    has_phys = (
+        db.query(TopoView.id)
+        .filter(TopoView.folder_id == root_map.id, TopoView.kind == VIEW_KIND_PHYSICAL)
+        .first()
+        is not None
+    )
+    if not has_phys:
+        db.add(
+            TopoView(
+                id=uuid4().hex,
+                folder_id=root_map.id,
+                kind=VIEW_KIND_PHYSICAL,
+                role="core",
+                name=MANUAL_ROOT_MAP_NAME,
+                remark="",
+                sort_order=0,
+                filter={},
+                viewport={},
+                created_at=stamp,
+                updated_at=stamp,
+            )
+        )
+        changed = True
+    return root_map, changed
+
+
+def _heal_manual_root_canvases(db: Session, root: TopoFolder) -> bool:
+    """Adopt orphan regions and upgrade legacy single-map roots to 根/根图."""
+    from .ume_topology_world import is_ume_world_container
+
+    now = _utcnow()
+    changed = False
+    # Floating regions (no parent) from older installs — hang under system root.
+    for orphan in (
+        db.query(TopoFolder)
+        .filter(
+            TopoFolder.kind == "region",
+            or_(TopoFolder.parent_id.is_(None), TopoFolder.parent_id == ""),
+        )
+        .all()
+    ):
+        orphan.parent_id = root.id
+        orphan.updated_at = now
+        changed = True
+
+    tops = (
+        db.query(TopoFolder)
+        .filter(TopoFolder.parent_id == root.id, TopoFolder.kind == "region")
+        .order_by(TopoFolder.sort_order.asc(), TopoFolder.created_at.asc())
+        .all()
+    )
+    for top in tops:
+        if is_ume_world_container(top):
+            continue
+        kids = (
+            db.query(TopoFolder)
+            .filter(TopoFolder.parent_id == top.id, TopoFolder.kind == "region")
+            .all()
+        )
+        has_root_map = any(str(k.name or "") == MANUAL_ROOT_MAP_NAME for k in kids)
+        l1_view_cnt = (
+            db.query(func.count(TopoView.id)).filter(TopoView.folder_id == top.id).scalar() or 0
+        )
+        # Already correct: unique 根图, no stray L1 views.
+        if has_root_map and int(l1_view_cnt) == 0:
+            # Still mark 根图 system if needed.
+            rm = next(k for k in kids if str(k.name or "") == MANUAL_ROOT_MAP_NAME)
+            if not bool(rm.is_system):
+                rm.is_system = True
+                rm.updated_at = now
+                changed = True
+            continue
+        _, did = _ensure_manual_root_map(db, top, now=now)
+        changed = changed or did
+    return changed
+
+
 def bootstrap_topology_tree(db: Session) -> dict[str, str]:
-    """Ensure hidden system root; flatten legacy nesting (once when needed)."""
+    """Ensure hidden system root; heal legacy Unassigned / single-map roots when needed."""
     now = _utcnow()
     root = (
         db.query(TopoFolder)
@@ -189,7 +314,7 @@ def bootstrap_topology_tree(db: Session) -> dict[str, str]:
         db.commit()
         return {"root_id": root.id}
 
-    # Hot path: root already exists. Only touch legacy Unassigned rows when present.
+    dirty = False
     legacy = (
         db.query(TopoFolder)
         .filter(
@@ -198,19 +323,29 @@ def bootstrap_topology_tree(db: Session) -> dict[str, str]:
         )
         .all()
     )
-    if not legacy:
-        return {"root_id": root.id}
-
     for folder in legacy:
         view_cnt = db.query(TopoView).filter(TopoView.folder_id == folder.id).count()
         if view_cnt == 0:
             db.delete(folder)
+            dirty = True
         elif bool(folder.is_system):
             folder.is_system = False
             folder.updated_at = now
+            dirty = True
 
-    # One-time-ish normalize for views hanging under cleaned legacy folders.
-    for v in db.query(TopoView).all():
+    # Cheap normalize only for rows that still look pre-migration.
+    stale_views = (
+        db.query(TopoView)
+        .filter(
+            or_(
+                TopoView.parent_view_id.isnot(None),
+                TopoView.role.is_(None),
+                TopoView.role == "",
+            )
+        )
+        .all()
+    )
+    for v in stale_views:
         changed = False
         if v.parent_view_id:
             v.parent_view_id = None
@@ -230,8 +365,13 @@ def bootstrap_topology_tree(db: Session) -> dict[str, str]:
             changed = True
         if changed:
             v.updated_at = now
+            dirty = True
 
-    db.commit()
+    if _heal_manual_root_canvases(db, root):
+        dirty = True
+
+    if dirty:
+        db.commit()
     return {"root_id": root.id}
 
 
@@ -271,49 +411,14 @@ def create_folder(db: Session, body: TopologyFolderCreate) -> TopologyFolderOut:
         parent_kind = "region"
 
     # Manual 根 (top-level nav): unique L2「根图」only — further creates remount under it.
-    if parent_kind == "region" and str(parent.parent_id or "") == str(root.id):
-        existing_l2 = (
-            db.query(TopoFolder)
-            .filter(TopoFolder.parent_id == parent.id, TopoFolder.kind == "region")
-            .order_by(TopoFolder.sort_order.asc(), TopoFolder.created_at.asc())
-            .all()
-        )
-        if existing_l2:
-            parent = existing_l2[0]
-            parent_kind = "region"
-        else:
-            # Legacy 根 without 根图 — heal then remount.
-            heal_now = _utcnow()
-            root_map = TopoFolder(
-                id=uuid4().hex,
-                parent_id=parent.id,
-                kind="region",
-                name=MANUAL_ROOT_MAP_NAME,
-                sort_order=0,
-                is_system=True,
-                created_at=heal_now,
-                updated_at=heal_now,
-            )
-            db.add(root_map)
-            db.flush()
-            db.add(
-                TopoView(
-                    id=uuid4().hex,
-                    folder_id=root_map.id,
-                    kind=VIEW_KIND_PHYSICAL,
-                    role="core",
-                    name=MANUAL_ROOT_MAP_NAME,
-                    remark="",
-                    sort_order=0,
-                    filter={},
-                    viewport={},
-                    created_at=heal_now,
-                    updated_at=heal_now,
-                )
-            )
-            db.flush()
-            parent = root_map
-            parent_kind = "region"
+    if (
+        parent_kind == "region"
+        and str(parent.parent_id or "") == str(root.id)
+        and not is_ume_world_container(parent)
+    ):
+        root_map, _ = _ensure_manual_root_map(db, parent)
+        parent = root_map
+        parent_kind = "region"
     now = _utcnow()
     row = TopoFolder(
         id=uuid4().hex,
@@ -390,7 +495,15 @@ def create_folder(db: Session, body: TopologyFolderCreate) -> TopologyFolderOut:
 
             place_child_region_on_parent_canvas(db, parent, row)
     db.flush()
-    reconcile_world_flat_view(db)
+    try:
+        reconcile_world_flat_view(db)
+    except Exception:
+        # Creating a manual root must not fail because UME world reconcile hiccups.
+        import logging
+
+        logging.getLogger("netx.topology").exception(
+            "reconcile_world_flat_view failed after create_folder id=%s", row.id
+        )
     db.commit()
     db.refresh(row)
     return _folder_out(row)
@@ -598,7 +711,10 @@ def get_topology_tree(db: Session) -> TopologyTreeOut:
         # Soft-hide world map on UME World when rule 2A is not met.
         show_flat = True
         if is_ume_world_container(folder):
-            show_flat = world_map_should_exist(db)
+            try:
+                show_flat = world_map_should_exist(db)
+            except Exception:
+                show_flat = False
 
         # physical first, then custom; stable by sort_order/name.
         ordered = sorted(
