@@ -297,6 +297,19 @@ function regionDisplayName(
   return raw;
 }
 
+/** Real NE count under a folder (own views + nested children). Backend node_count already excludes region icons. */
+function folderNeCount(folder: TopologyTreeFolderItem | null | undefined): number {
+  if (!folder) return 0;
+  const own = (folder.views || []).reduce((sum, v) => sum + (Number(v.node_count) || 0), 0);
+  const nested = (folder.children || []).reduce((sum, c) => sum + folderNeCount(c), 0);
+  return own + nested;
+}
+
+function formatNeCount(count: number): string {
+  const n = Math.max(0, Math.floor(Number(count) || 0));
+  return `${n}N`;
+}
+
 function formatUpdatedAt(value?: string | null): string {
   if (!value) return "";
   try {
@@ -2368,6 +2381,7 @@ export function TopologyPage() {
                     {displayViewName(v.name, t)}
                     {viewActive && dirty ? " *" : ""}
                   </span>
+                  <span className="topo-map-list__count">{formatNeCount(v.node_count)}</span>
                 </span>
               </button>
               {!umeNav ? (
@@ -2452,6 +2466,7 @@ export function TopologyPage() {
                   <RegionGlyph size={14} />
                 </span>
                 <span className="topo-map-list__title">{regionDisplayName(folder, t)}</span>
+                <span className="topo-map-list__count">{formatNeCount(folderNeCount(folder))}</span>
               </span>
             </button>
             {(() => {
@@ -4751,6 +4766,7 @@ export function TopologyPage() {
                       </span>
                       <span className="topo-region-hex__title">
                         <span className="topo-region-hex__name">{regionDisplayName(region, t)}</span>
+                        <span className="topo-region-hex__meta">{formatNeCount(folderNeCount(region))}</span>
                       </span>
                     </button>
                   ))}
@@ -4795,6 +4811,9 @@ export function TopologyPage() {
                       <span className="topo-region-hex__name">
                         {regionDisplayName(umeWorldHexModules.drill, t)}
                       </span>
+                      <span className="topo-region-hex__meta">
+                        {formatNeCount(folderNeCount(umeWorldHexModules.drill))}
+                      </span>
                     </span>
                   </button>
                 ) : null}
@@ -4825,6 +4844,9 @@ export function TopologyPage() {
                       <span className="topo-region-hex__name">
                         {umeWorldHexModules.flatView.name}
                       </span>
+                      <span className="topo-region-hex__meta">
+                        {formatNeCount(umeWorldHexModules.flatView.node_count)}
+                      </span>
                     </span>
                   </button>
                 ) : null}
@@ -4850,6 +4872,7 @@ export function TopologyPage() {
                     </span>
                     <span className="topo-region-hex__title">
                       <span className="topo-region-hex__name">{regionDisplayName(region, t)}</span>
+                      <span className="topo-region-hex__meta">{formatNeCount(folderNeCount(region))}</span>
                     </span>
                   </button>
                 ))}
@@ -4875,6 +4898,7 @@ export function TopologyPage() {
                       </span>
                       <span className="topo-region-hex__title">
                         <span className="topo-region-hex__name">{displayViewName(v.name, t)}</span>
+                        <span className="topo-region-hex__meta">{formatNeCount(v.node_count)}</span>
                       </span>
                     </button>
                   );
