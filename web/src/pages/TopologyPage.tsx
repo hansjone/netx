@@ -180,7 +180,26 @@ function isWorldDrillFolder(folder: TopologyTreeFolderItem | null | undefined): 
 
 function isWorldFlatViewName(name: string | undefined | null): boolean {
   const n = String(name || "").trim();
-  return n === "世界地图" || n === "完整世界地图";
+  return n === "世界地图" || n === "完整世界地图" || n === "World map";
+}
+
+function displayViewName(name: string | undefined | null, t: (key: string) => string): string {
+  if (isWorldFlatViewName(name)) return t("topology.worldMapName");
+  return String(name || "").trim();
+}
+
+/** UME structural folders (not user-deletable): container + World drill. */
+function isUmeStructuralFolder(folder: TopologyTreeFolderItem | null | undefined): boolean {
+  if (!folder) return false;
+  if (isUmeWorldContainer(folder) || isWorldDrillFolder(folder)) return true;
+  const ext = String(folder.external_ref || "").trim();
+  return ext === "ume:world" || ext === "ume:world:drill";
+}
+
+/** UME-synced SBN under World — deletable like a manual sub-region. */
+function isUmeSyncedSubRegion(folder: TopologyTreeFolderItem | null | undefined): boolean {
+  if (!folder || isUmeStructuralFolder(folder)) return false;
+  return Boolean(String(folder.external_ref || "").trim());
 }
 
 /** Visual LOD for 1:1 world coords (~1e5 span). fitView overview is ~0.01. */
@@ -2285,7 +2304,7 @@ export function TopologyPage() {
                     />
                   </span>
                   <span className="topo-map-list__title">
-                    {v.name}
+                    {displayViewName(v.name, t)}
                     {viewActive && dirty ? " *" : ""}
                   </span>
                   {!umeNav ? (
@@ -2395,15 +2414,16 @@ export function TopologyPage() {
                 </span>
               </span>
             </button>
-            {!umeNav || containerFolder || Boolean(String(folder.external_ref || "").trim()) ? (
+            {!isUmeStructuralFolder(folder) &&
+            (!folder.is_system || isUmeSyncedSubRegion(folder)) ? (
               <div className="topo-map-list__actions">
-                {!containerFolder ? (
+                {!folder.is_system ? (
                   <button
                     type="button"
                     className="topo-map-list__icon"
                     title={t("topology.renameRegion")}
                     aria-label={t("topology.renameRegion")}
-                    disabled={!!folder.is_system || renameRegionMut.isPending}
+                    disabled={renameRegionMut.isPending}
                     onClick={() => promptRenameRegion(folder.id, folder.name)}
                   >
                     <PencilIcon />
@@ -2414,18 +2434,12 @@ export function TopologyPage() {
                   className="topo-map-list__icon"
                   title={t("topology.deleteRegion")}
                   aria-label={t("topology.deleteRegion")}
-                  disabled={
-                    deleteFolderMut.isPending ||
-                    (!!folder.is_system &&
-                      !containerFolder &&
-                      !String(folder.external_ref || "").trim())
-                  }
+                  disabled={deleteFolderMut.isPending}
                   onClick={() => {
-                    const msg = (
-                      containerFolder
-                        ? t("topology.deleteUmeWorldConfirm")
-                        : t("topology.deleteRegionConfirm")
-                    ).replace("{{name}}", folder.name);
+                    const msg = t("topology.deleteRegionConfirm").replace(
+                      "{{name}}",
+                      folder.name,
+                    );
                     if (window.confirm(msg)) {
                       deleteFolderMut.mutate(folder.id);
                     }
@@ -3991,9 +4005,9 @@ export function TopologyPage() {
   }, [graphTruncated, truncateReason, activeView?.name, graphQuery.data?.view?.filter?.world_flat, t]);
   const activeLeafName = useMemo(() => {
     if (!mapId) return "";
-    if (activeView?.name) return activeView.name;
-    return graphQuery.data?.view?.name || "";
-  }, [mapId, activeView, graphQuery.data?.view?.name]);
+    if (activeView?.name) return displayViewName(activeView.name, t);
+    return displayViewName(graphQuery.data?.view?.name, t);
+  }, [mapId, activeView, graphQuery.data?.view?.name, t]);
 
   const titleText = useMemo(() => {
     if (canvasMode) return activeLeafName || t("topology.selectMap");
@@ -4798,7 +4812,7 @@ export function TopologyPage() {
                         <LayerGlyph role={isPhysical ? "core" : "aggregation"} size={22} />
                       </span>
                       <span className="topo-region-hex__title">
-                        <span className="topo-region-hex__name">{v.name}</span>
+                        <span className="topo-region-hex__name">{displayViewName(v.name, t)}</span>
                         <span className="topo-region-hex__meta">{v.node_count || 0}N</span>
                       </span>
                     </button>

@@ -277,6 +277,7 @@ class UmeHierarchyTests(unittest.TestCase):
         self.assertEqual(WORLD_FLAT_VIEW_NAME, "世界地图")
         self.assertTrue(is_world_flat_view_name(WORLD_FLAT_VIEW_NAME))
         self.assertTrue(is_world_flat_view_name(WORLD_FLAT_VIEW_NAME_LEGACY))
+        self.assertTrue(is_world_flat_view_name("World map"))
         self.assertFalse(is_world_flat_view_name("World"))
 
     def test_world_map_forbids_add_nes(self):
@@ -436,10 +437,19 @@ class UmeHierarchyTests(unittest.TestCase):
         out = delete_folder(self.db, target.id)
         self.assertTrue(out.get("ok"))
         self.assertIsNone(self.db.get(TopoFolder, target.id))
-        # Manual system folder without UME ref stays protected.
+        # Structural UME folders stay protected.
         with self.assertRaises(HTTPException) as ctx:
-            delete_folder(self.db, "nope-missing")
-        self.assertEqual(ctx.exception.status_code, 404)
+            delete_folder(self.db, drill.id)
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertEqual(ctx.exception.detail, "cannot_delete_system_folder")
+        from netx_api.topology_views_tree import delete_view
+        from netx_api.ume_topology_world import get_world_flat_view
+
+        flat = get_world_flat_view(self.db)
+        self.assertIsNotNone(flat)
+        with self.assertRaises(HTTPException) as ctx2:
+            delete_view(self.db, flat.id)
+        self.assertEqual(ctx2.exception.detail, "cannot_delete_world_map_view")
 
     def test_flat_slots_do_not_overlap(self):
         self._seed_tree()

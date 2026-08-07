@@ -549,22 +549,25 @@ def update_folder(db: Session, folder_id: str, body: TopologyFolderUpdate) -> To
 def delete_folder(db: Session, folder_id: str, *, force: bool = False) -> dict[str, Any]:
     """Delete a region and cascade-delete nested regions + maps.
 
-    System L2「根图」(manual, no UME external_ref) may be removed only as part of
-    cascading from its parent「根」.
+    Not user-deletable (structure / auto-managed):
+    - kind=root
+    - manual system「根图」(is_system, no UME external_ref)
+    - UME World container and World drill (ume:world / ume:world:drill)
 
-    UME World and UME-synced SBN folders (``external_ref`` set) are user-deletable —
-    they are synced inventory, not structural locks; a later UME apply can recreate them.
+    User-deletable: manual sub-regions and UME-synced SBN folders under World.
+    World map view is never a folder — it is auto created/suppressed by reconcile.
     """
     row = _get_folder_or_404(db, folder_id)
     if str(row.kind or "") == "root":
         raise HTTPException(status_code=400, detail="cannot_delete_system_folder")
 
-    from .ume_topology_world import is_ume_world_container
+    from .ume_topology_world import WORLD_DRILL_REF, WORLD_FOLDER_REF, is_ume_world_container
 
     ext = str(getattr(row, "external_ref", None) or "").strip()
-    ume_synced = bool(ext)  # ume:world / ume:world:drill / SBN id
-    # Protect manual system folders (根图); allow UME World + synced children.
-    if bool(row.is_system) and not is_ume_world_container(row) and not ume_synced:
+    if is_ume_world_container(row) or ext in (WORLD_FOLDER_REF, WORLD_DRILL_REF):
+        raise HTTPException(status_code=400, detail="cannot_delete_system_folder")
+    # Manual「根图」and other non-UME system folders stay protected except via parent cascade.
+    if bool(row.is_system) and not ext:
         raise HTTPException(status_code=400, detail="cannot_delete_system_folder")
     _ = force
     from .topology_region_canvas import remove_region_canvas_placements
@@ -884,6 +887,10 @@ def update_view(db: Session, view_id: str, body: TopologyViewUpdate) -> Topology
 
 def delete_view(db: Session, view_id: str, *, force: bool = False) -> dict[str, Any]:
     row = _get_view_or_404(db, view_id)
+    from .ume_topology_world import is_world_flat_view
+
+    if is_world_flat_view(row):
+        raise HTTPException(status_code=400, detail="cannot_delete_world_map_view")
     is_physical = normalize_view_kind(row.kind) == VIEW_KIND_PHYSICAL
     if is_physical and not force:
         raise HTTPException(status_code=400, detail="cannot_delete_physical_view")

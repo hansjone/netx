@@ -1442,6 +1442,7 @@ const en = {
     newSubRegionPrompt: "Sub-region name",
     subRegionNotOnFlat: "The world map has no regions. Create sub-regions on World or a lower-level canvas.",
     worldMapNoDirectNes: "Cannot add NEs on the world map — add them on a sub-region canvas.",
+    worldMapName: "World map",
     worldHud: "World {{total}} · close-up {{cached}} · z{{zoom}} · {{lod}}",
     worldEmptyCoords: "World map has no coordinates yet",
     worldEmptyCoordsHint:

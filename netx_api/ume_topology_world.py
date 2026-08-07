@@ -21,16 +21,19 @@ WORLD_FOLDER_REF = "ume:world"
 WORLD_DRILL_REF = "ume:world:drill"
 WORLD_VIEW_NAME = "World"
 WORLD_FLAT_VIEW_NAME = "世界地图"
-# Pre-rename label kept so existing TopoView rows still match.
+# Pre-rename / locale labels kept so existing TopoView rows still match.
 WORLD_FLAT_VIEW_NAME_LEGACY = "完整世界地图"
+WORLD_FLAT_VIEW_NAME_EN = "World map"
+WORLD_FLAT_VIEW_NAMES = frozenset(
+    {WORLD_FLAT_VIEW_NAME, WORLD_FLAT_VIEW_NAME_LEGACY, WORLD_FLAT_VIEW_NAME_EN}
+)
 # Drill-down root: children of MD (root SBNs + rare direct MEs).
 WORLD_LEVEL_FILTER = {"ume_level": True, "parent": "md"}
 WORLD_FLAT_FILTER = {"world_flat": True}
 
 
 def is_world_flat_view_name(name: str | None) -> bool:
-    n = str(name or "").strip()
-    return n == WORLD_FLAT_VIEW_NAME or n == WORLD_FLAT_VIEW_NAME_LEGACY
+    return str(name or "").strip() in WORLD_FLAT_VIEW_NAMES
 
 
 def _filt(view: TopoView | None) -> dict[str, Any]:

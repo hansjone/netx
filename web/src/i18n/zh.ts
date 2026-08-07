@@ -1432,6 +1432,7 @@ const zh = {
     newSubRegionPrompt: "子区域名称",
     subRegionNotOnFlat: "世界地图不支持子区域，请在 World 或下级区域画布上创建。",
     worldMapNoDirectNes: "世界地图不能直接添加网元，请到某个子区域画布上添加。",
+    worldMapName: "世界地图",
     worldHud: "世界 {{total}} · 近景 {{cached}} · z{{zoom}} · {{lod}}",
     worldEmptyCoords: "世界地图还没有坐标",
     worldEmptyCoordsHint: "码头已有 {{dock}} 个网元，但尚未灌入 Fabric / 世界坐标。可一键应用（不拉 UME）。",
