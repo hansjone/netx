@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   apiPost,
+  applyUmeTopologyToFabric,
   disconnectUmeToken,
   fetchUmeNe,
   cancelUmeAlarmSubscription,
@@ -260,6 +261,17 @@ export function UmePage() {
 
   const runningTasks = (syncStatusQuery.data?.items || []).filter((x) => String(x.status || "").toLowerCase() === "running");
   const runtimeTasks = syncStatusQuery.data?.runtime_tasks || [];
+  const topologyFabric = syncStatusQuery.data?.topology_fabric;
+  const needsFabricApply = Boolean(topologyFabric?.needs_apply);
+  const applyFabricMut = useMutation({
+    mutationFn: () => applyUmeTopologyToFabric(),
+    onSuccess: async () => {
+      showOk(t("ume.syncStatus.applyFabricOk"));
+      await queryClient.invalidateQueries({ queryKey: queryKeys.umeSyncStatusAll });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.topologyTree });
+    },
+    onError: (err) => showError(String(err)),
+  });
   const alarmSub: UmeAlarmSubscriptionStatus =
     subscriptionStatusQuery.data ??
     syncStatusQuery.data?.alarm_subscription ??
@@ -532,6 +544,32 @@ export function UmePage() {
               </button>
             </div>
           </div>
+          {needsFabricApply ? (
+            <div className="pill pill--high" style={{ marginBottom: 10 }} role="status">
+              <div style={{ fontWeight: 600 }}>{t("ume.syncStatus.fabricGapTitle")}</div>
+              <div className="muted" style={{ marginTop: 4 }}>
+                {t("ume.syncStatus.fabricGapHint")
+                  .replace("{{dock}}", String(topologyFabric?.dock_me_count ?? 0))
+                  .replace("{{fabric}}", String(topologyFabric?.fabric_ume_count ?? 0))
+                  .replace(
+                    "{{status}}",
+                    String(topologyFabric?.latest_topology_status || topologyFabric?.latest_topology_error || "—"),
+                  )}
+              </div>
+              <div className="btn-row" style={{ marginTop: 8 }}>
+                <button
+                  type="button"
+                  className="btn btn--sm"
+                  disabled={applyFabricMut.isPending}
+                  onClick={() => applyFabricMut.mutate()}
+                >
+                  {applyFabricMut.isPending
+                    ? t("ume.syncStatus.applyingFabric")
+                    : t("ume.syncStatus.applyFabric")}
+                </button>
+              </div>
+            </div>
+          ) : null}
           <div className="pt-list">
           <div className="pt-list-table-wrap">
 <table className="data-table pt-list-table">

@@ -530,6 +530,8 @@ def sync_topology_full(db: Session, client: UMEClient, *, trigger_mode: str = "m
                 work.commit()
 
                 apply_stats: dict[str, Any] = {}
+                apply_ok = False
+                apply_err = ""
                 try:
                     from .ume_topology_apply import apply_ume_topology_to_fabric
                     from .ume_topology_world import ensure_ume_world_and_sbn_folders
@@ -540,16 +542,23 @@ def sync_topology_full(db: Session, client: UMEClient, *, trigger_mode: str = "m
                         apply_stats = apply_ume_topology_to_fabric(apply_db)
                         world_stats = ensure_ume_world_and_sbn_folders(apply_db)
                         apply_stats = {**apply_stats, "world": world_stats}
+                        apply_ok = True
                     finally:
                         try:
                             apply_db.close()
                         except Exception:
                             pass
-                except Exception:
+                except Exception as apply_exc:
+                    apply_err = str(apply_exc)[:500]
+                    apply_stats = {"error": apply_err, "ok": False}
                     _sync_log.exception(
                         "topology sync job %s: fabric apply failed (dock sync kept)",
                         job_id,
                     )
+
+                if not apply_ok:
+                    status = "partial"
+                    err = f"dock_ok_fabric_apply_failed:{apply_err}"[:1024]
 
                 pulled = nodes_pulled + links_pulled
                 inserted = nodes_ins + links_ins
@@ -577,12 +586,14 @@ def sync_topology_full(db: Session, client: UMEClient, *, trigger_mode: str = "m
                         "deleted_topo_nodes": nodes_del,
                         "deleted_topo_links": links_del,
                         "fabric_apply": apply_stats,
+                        "fabric_apply_ok": apply_ok,
                     },
                     ensure_ascii=False,
                 )
                 _sync_log.info(
-                    "topology sync done job=%s nodes=%s/%s/%s links=%s/%s/%s deleted_n=%s deleted_l=%s",
+                    "topology sync done job=%s status=%s nodes=%s/%s/%s links=%s/%s/%s deleted_n=%s deleted_l=%s apply_ok=%s",
                     job_id,
+                    status,
                     nodes_pulled,
                     nodes_ins,
                     nodes_upd,
@@ -591,6 +602,7 @@ def sync_topology_full(db: Session, client: UMEClient, *, trigger_mode: str = "m
                     links_upd,
                     nodes_del,
                     links_del,
+                    apply_ok,
                 )
             finally:
                 try:

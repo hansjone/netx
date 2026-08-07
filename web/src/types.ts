@@ -112,6 +112,18 @@ export type UmeAlarmSubscriptionStatus = {
   ws_logs?: UmeWsLogEntry[];
 };
 
+export type UmeTopologyFabricGap = {
+  dock_me_count?: number;
+  fabric_ume_count?: number;
+  world_exists?: boolean;
+  world_folder_id?: string;
+  latest_topology_status?: string;
+  latest_topology_error?: string;
+  partial_apply?: boolean;
+  needs_apply?: boolean;
+  error?: string;
+};
+
 export type UmeSyncStatusResponse = {
   total?: number;
   page?: number;
@@ -119,6 +131,7 @@ export type UmeSyncStatusResponse = {
   items: UmeSyncJobItem[];
   latest_by_domain?: Record<string, UmeSyncJobItem>;
   alarm_subscription?: UmeAlarmSubscriptionStatus;
+  topology_fabric?: UmeTopologyFabricGap;
   runtime_tasks?: Array<{
     task: string;
     status: string;

@@ -1103,6 +1103,12 @@ const en = {
       hidePanel: "Close",
       empty: "No sync records",
       summary: "{{total}} record(s), {{running}} running",
+      fabricGapTitle: "Topology dock is newer than Fabric / UME World",
+      fabricGapHint:
+        "Dock ME {{dock}}, Fabric UME {{fabric}}. Apply without pulling UME. Last status: {{status}}",
+      applyFabric: "Apply to topology",
+      applyingFabric: "Applying…",
+      applyFabricOk: "Applied to topology",
     },
     ne: {
       title: "Network elements",

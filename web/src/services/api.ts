@@ -449,6 +449,14 @@ export const fetchUmeSyncStatus = (params: { page: number; pageSize: number }) =
   return apiGet<UmeSyncStatusResponse>(`/v1/ume/sync/status?${p.toString()}`);
 };
 
+/** Dock tables → Fabric + UME World (does not pull from UME). */
+export const applyUmeTopologyToFabric = () =>
+  apiPost<{
+    ok: boolean;
+    fabric_apply?: Record<string, unknown>;
+    world?: Record<string, unknown>;
+  }>("/v1/topology/world/apply-ume", {});
+
 export const fetchUmeTokenStatus = () => apiGet<UmeTokenStatus>("/v1/ume/token/status");
 export const refreshUmeToken = () => apiPost<UmeTokenStatus>("/v1/ume/token/refresh", {});
 export const disconnectUmeToken = () => apiPost<UmeTokenStatus>("/v1/ume/token/disconnect", {});

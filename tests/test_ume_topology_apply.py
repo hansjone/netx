@@ -10,14 +10,25 @@ from sqlalchemy.orm import sessionmaker
 
 import netx_api.models  # noqa: F401
 from netx_api.db import Base
-from netx_api.models import TopoFabricEdge, TopoFabricNode, UmeInventoryNE, UmeTopoLink, UmeTopoNode
+from netx_api.models import (
+    TopoFabricEdge,
+    TopoFabricNode,
+    UmeInventoryNE,
+    UmeSyncJob,
+    UmeTopoLink,
+    UmeTopoNode,
+)
 from netx_api.ume_port_normalize import (
     extract_ifnames_from_user_label,
     port_keys_compatible,
     port_suffix_from_tp_ref,
     resolve_link_ifnames,
 )
-from netx_api.ume_topology_apply import apply_ume_topology_to_fabric
+from netx_api.ume_topology_apply import (
+    apply_ume_dock_to_fabric_if_needed,
+    apply_ume_topology_to_fabric,
+    ume_topology_apply_gap,
+)
 from netx_api.topology_fabric_links import upsert_fabric_edge
 
 
@@ -229,6 +240,53 @@ class UmeFabricApplyTests(unittest.TestCase):
         )
         self.assertEqual(len(manuals), 1)
         self.assertEqual(manuals[0].status, "active")
+
+    def test_gap_needs_apply_when_dock_only(self):
+        self._seed_ume()
+        self.db.commit()
+        gap = ume_topology_apply_gap(self.db)
+        self.assertGreater(gap["dock_me_count"], 0)
+        self.assertEqual(gap["fabric_ume_count"], 0)
+        self.assertTrue(gap["needs_apply"])
+
+    def test_gap_needs_apply_on_partial_job(self):
+        self._seed_ume()
+        apply_ume_topology_to_fabric(self.db)
+        self.db.add(
+            UmeSyncJob(
+                domain="topology",
+                status="partial",
+                trigger_mode="manual",
+                started_at=self.now,
+                ended_at=self.now,
+                error_message="dock_ok_fabric_apply_failed:boom",
+            )
+        )
+        self.db.commit()
+        gap = ume_topology_apply_gap(self.db)
+        self.assertTrue(gap["partial_apply"])
+        self.assertTrue(gap["needs_apply"])
+
+    def test_apply_if_needed_skips_when_healthy(self):
+        self._seed_ume()
+        apply_ume_topology_to_fabric(self.db)
+        # World folder may still be missing → force a clean gap check after ensure.
+        from netx_api.ume_topology_world import ensure_ume_world_and_sbn_folders
+
+        ensure_ume_world_and_sbn_folders(self.db)
+        self.db.add(
+            UmeSyncJob(
+                domain="topology",
+                status="done",
+                trigger_mode="manual",
+                started_at=self.now,
+                ended_at=self.now,
+            )
+        )
+        self.db.commit()
+        gap = ume_topology_apply_gap(self.db)
+        self.assertFalse(gap["needs_apply"])
+        self.assertIsNone(apply_ume_dock_to_fabric_if_needed(self.db, reason="test"))
 
 
 if __name__ == "__main__":

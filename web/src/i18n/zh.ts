@@ -1096,6 +1096,12 @@ const zh = {
       hidePanel: "关闭",
       empty: "暂无同步记录",
       summary: "共 {{total}} 条记录，进行中 {{running}}",
+      fabricGapTitle: "拓扑码头已更新，但尚未灌入拓扑管理（Fabric / UME World）",
+      fabricGapHint:
+        "码头 ME {{dock}}，Fabric UME {{fabric}}；可一键应用（不拉 UME）。上次状态：{{status}}",
+      applyFabric: "应用到拓扑管理",
+      applyingFabric: "正在应用…",
+      applyFabricOk: "已应用到拓扑管理",
     },
     ne: {
       title: "网元清单",

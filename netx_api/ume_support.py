@@ -394,7 +394,7 @@ def _last_finished_job_ended_at(db: Session, domain: str) -> datetime | None:
         .filter(
             UmeSyncJob.domain == domain,
             UmeSyncJob.ended_at.isnot(None),
-            UmeSyncJob.status.in_(("done", "failed")),
+            UmeSyncJob.status.in_(("done", "failed", "partial")),
         )
         .order_by(UmeSyncJob.ended_at.desc())
         .limit(50)

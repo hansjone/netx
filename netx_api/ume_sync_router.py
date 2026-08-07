@@ -204,6 +204,16 @@ def ume_sync_status(
         items.append(item)
         if item["domain"] and item["domain"] not in latest_by_domain:
             latest_by_domain[item["domain"]] = item
+
+    topology_fabric: dict[str, Any] = {}
+    try:
+        from .ume_topology_apply import ume_topology_apply_gap
+
+        topology_fabric = ume_topology_apply_gap(db)
+    except Exception:
+        _log.exception("ume sync status: topology_fabric gap failed")
+        topology_fabric = {"needs_apply": False, "error": "gap_unavailable"}
+
     return {
         "total": total,
         "page": page,
@@ -212,6 +222,7 @@ def ume_sync_status(
         "latest_by_domain": latest_by_domain,
         "runtime_tasks": _list_runtime_tasks(),
         "alarm_subscription": get_subscription_status(),
+        "topology_fabric": topology_fabric,
     }
 
 

@@ -326,6 +326,22 @@ def start_api_sideband_threads() -> None:
                         try:
                             fail_stale_topology_running_jobs(db)
                             client = ume_support._ume_client()
+                            # Empty inventory makes Fabric naming/IP weak — pull inventory first.
+                            try:
+                                from sqlalchemy import func
+
+                                from .models import UmeInventoryNE
+
+                                inv_n = int(db.query(func.count(UmeInventoryNE.ne_id)).scalar() or 0)
+                                if inv_n <= 0:
+                                    _schedule_log.info(
+                                        "topology_auto_sync: inventory empty — syncing inventory first"
+                                    )
+                                    sync_inventory_full(db, client, trigger_mode="schedule")
+                            except Exception:
+                                _schedule_log.exception(
+                                    "topology_auto_sync: pre-inventory sync failed (continuing topology)"
+                                )
                             sync_topology_full(db, client, trigger_mode="schedule")
                             _schedule_log.info("topology_auto_sync: sync finished ok")
                             ume_support._set_runtime_task(
@@ -444,6 +460,38 @@ def start_api_sideband_threads() -> None:
             last_run_at=datetime.now(timezone.utc),
             last_error=f"startup_thread_init_failed: {str(exc)[:180]}",
         )
+
+    # Dock already has topology but Fabric/World empty (or last apply partial): heal without waiting 24h.
+    try:
+
+        def _startup_ume_fabric_apply() -> None:
+            time.sleep(3)
+            db = SessionLocal()
+            try:
+                from .ume_topology_apply import apply_ume_dock_to_fabric_if_needed
+
+                out = apply_ume_dock_to_fabric_if_needed(db, reason="startup")
+                if out:
+                    _schedule_log.info(
+                        "startup: ume dock→fabric apply ok nodes_ensured=%s",
+                        (out.get("fabric_apply") or {}).get("nodes_ensured"),
+                    )
+                else:
+                    _schedule_log.info("startup: ume dock→fabric apply skipped (no gap)")
+            except Exception as exc:
+                _schedule_log.exception("startup: ume dock→fabric apply failed: %s", exc)
+            finally:
+                db.close()
+
+        t_apply = threading.Thread(
+            target=_startup_ume_fabric_apply,
+            name="ume-fabric-apply-startup",
+            daemon=True,
+        )
+        t_apply.start()
+        _schedule_log.info("started thread %s alive=%s", t_apply.name, t_apply.is_alive())
+    except Exception as exc:
+        _schedule_log.exception("startup: ume fabric apply thread init failed: %s", exc)
 
 
 

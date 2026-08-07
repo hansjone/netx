@@ -248,6 +248,81 @@ def apply_ume_topology_to_fabric(db: Session) -> dict[str, Any]:
     return stats
 
 
+def ume_topology_apply_gap(db: Session) -> dict[str, Any]:
+    """Detect dock→Fabric/World gap for startup heal and UI hints."""
+    from sqlalchemy import func
+
+    from .models import TopoFabricNode, TopoFolder, UmeSyncJob, UmeTopoNode
+    from .ume_topology_world import get_world_container_folder
+
+    dock_me = int(
+        db.query(func.count(UmeTopoNode.node_id))
+        .filter(UmeTopoNode.node_type == "TOPO_NODE_ME")
+        .scalar()
+        or 0
+    )
+    fabric_ume = int(
+        db.query(func.count(TopoFabricNode.id))
+        .filter(TopoFabricNode.ume_ne_id.isnot(None), TopoFabricNode.ume_ne_id != "")
+        .scalar()
+        or 0
+    )
+    world = get_world_container_folder(db)
+    world_exists = world is not None
+    latest = (
+        db.query(UmeSyncJob)
+        .filter(UmeSyncJob.domain == "topology", UmeSyncJob.ended_at.isnot(None))
+        .order_by(UmeSyncJob.ended_at.desc())
+        .first()
+    )
+    latest_status = str(getattr(latest, "status", "") or "")
+    latest_error = str(getattr(latest, "error_message", "") or "")
+    partial = latest_status == "partial" or latest_error.startswith("dock_ok_fabric_apply_failed")
+    needs_apply = bool(dock_me > 0 and (fabric_ume == 0 or not world_exists or partial))
+    return {
+        "dock_me_count": dock_me,
+        "fabric_ume_count": fabric_ume,
+        "world_exists": world_exists,
+        "world_folder_id": str(getattr(world, "id", "") or ""),
+        "latest_topology_status": latest_status,
+        "latest_topology_error": latest_error[:240],
+        "partial_apply": partial,
+        "needs_apply": needs_apply,
+    }
+
+
+def apply_ume_dock_to_fabric_if_needed(
+    db: Session, *, reason: str = "manual", force: bool = False
+) -> dict[str, Any] | None:
+    """Apply dock tables into Fabric/World when gap detected (or force)."""
+    from .ume_topology_world import ensure_ume_world_and_sbn_folders
+
+    gap = ume_topology_apply_gap(db)
+    if not force and not gap.get("needs_apply"):
+        return None
+    _log.info(
+        "ume dock→fabric apply start reason=%s force=%s gap=%s",
+        reason,
+        force,
+        {k: gap.get(k) for k in ("dock_me_count", "fabric_ume_count", "world_exists", "partial_apply")},
+    )
+    apply_stats = apply_ume_topology_to_fabric(db)
+    world_stats = ensure_ume_world_and_sbn_folders(db)
+    out = {
+        "ok": True,
+        "reason": reason,
+        "before": gap,
+        "fabric_apply": apply_stats,
+        "world": world_stats,
+    }
+    _log.info(
+        "ume dock→fabric apply done reason=%s nodes_ensured=%s",
+        reason,
+        (apply_stats or {}).get("nodes_ensured"),
+    )
+    return out
+
+
 def _clear_and_keep(attrs: dict[str, Any]) -> dict[str, Any]:
     from .topology_common import _clear_miss_attrs
 
