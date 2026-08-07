@@ -1,4 +1,5 @@
 import {
+  Fragment,
   createContext,
   memo,
   useCallback,
@@ -136,7 +137,7 @@ function indexFoldersById(
   return acc;
 }
 
-/** Self + ancestors (rootward), for expanding the left tree path. */
+/** Self + ancestors (leaf → rootward), for expanding the left tree path. */
 function folderPathIds(
   folders: TopologyTreeFolderItem[],
   folderId: string,
@@ -155,6 +156,19 @@ function folderPathIds(
     cur = parent;
   }
   return path;
+}
+
+/** Ancestors + self (rootward → leaf) for breadcrumb display. */
+function folderPathFolders(
+  folders: TopologyTreeFolderItem[],
+  folderId: string,
+): TopologyTreeFolderItem[] {
+  if (!folderId) return [];
+  const byId = indexFoldersById(folders);
+  return folderPathIds(folders, folderId)
+    .map((id) => byId.get(id))
+    .filter((f): f is TopologyTreeFolderItem => Boolean(f))
+    .reverse();
 }
 
 /** UME World container only — hex nav, not a canvas. */
@@ -1844,36 +1858,45 @@ export function TopologyPage() {
   const goBackBrowse = useCallback(() => {
     if (!confirmDiscardIfDirty()) return;
     const folder = findFolderInTree(regions, selectedFolderId);
-    // Leaving a region canvas under UME World → container hex nav.
-    if (folder) {
-      const path = folderPathIds(regions, folder.id);
-      const container = regions.find((r) => isUmeWorldContainer(r));
-      if (container && (folder.id === container.id || path.includes(container.id))) {
-        setSelectedFolderId(container.id);
+    const parentId = String(folder?.parent_id || "").trim();
+    const parent = parentId ? findFolderInTree(regions, parentId) : null;
+    // One level up: parent canvas if nested, else parent hex nav, else roots.
+    if (parent) {
+      setSelectedFolderId(parent.id);
+      expandFolderPath(parent.id);
+      if (isRegionCanvasFolder(parent, String(treeRoot?.id || ""))) {
         setWorldFocusFolderId("");
-        setMapId("");
-        clearDirty();
-        setNodes([]);
-        setEdges([]);
-        return;
+        const view = primaryViewOfFolder(parent);
+        if (view) {
+          setMapId(view.id);
+          clearDirty();
+          return;
+        }
       }
+      setWorldFocusFolderId("");
+      setMapId("");
+      clearDirty();
+      setNodes([]);
+      setEdges([]);
+      return;
     }
-    // Leaving other region canvases → parent nav container, else root hex.
-    if (isRegionCanvasFolder(folder, String(treeRoot?.id || "")) || isUmeWorldNavFolder(folder)) {
-      const parentId = String(folder?.parent_id || "").trim();
-      const parent = parentId ? findFolderInTree(regions, parentId) : null;
-      if (parent && !isRegionCanvasFolder(parent, String(treeRoot?.id || ""))) {
-        setSelectedFolderId(parent.id);
-      } else {
-        setSelectedFolderId("");
-      }
-    }
+    setSelectedFolderId("");
     setWorldFocusFolderId("");
     setMapId("");
     clearDirty();
     setNodes([]);
     setEdges([]);
-  }, [confirmDiscardIfDirty, clearDirty, setNodes, setEdges, regions, selectedFolderId, treeRoot?.id]);
+  }, [
+    confirmDiscardIfDirty,
+    clearDirty,
+    setNodes,
+    setEdges,
+    regions,
+    selectedFolderId,
+    treeRoot?.id,
+    expandFolderPath,
+    primaryViewOfFolder,
+  ]);
 
   // Deep link from classify search: /topology?view=&ne=
   useEffect(() => {
@@ -2296,7 +2319,6 @@ export function TopologyPage() {
       const focused = viewActiveUnder || (isSelected && Boolean(mapId));
       const regionActive = isSelected && !mapId;
       const hot = hotBrowseKey === `region:${folder.id}`;
-      const childCount = kids.length;
 
       const renderViewRow = (v: TopologyTreeViewItem) => {
         const isPhysical = String(v.kind) === "physical";
@@ -2346,9 +2368,6 @@ export function TopologyPage() {
                     {displayViewName(v.name, t)}
                     {viewActive && dirty ? " *" : ""}
                   </span>
-                  {!umeNav ? (
-                    <span className="topo-map-list__count">{v.node_count || 0}N</span>
-                  ) : null}
                 </span>
               </button>
               {!umeNav ? (
@@ -2433,24 +2452,6 @@ export function TopologyPage() {
                   <RegionGlyph size={14} />
                 </span>
                 <span className="topo-map-list__title">{regionDisplayName(folder, t)}</span>
-                <span className="topo-map-list__count">
-                  {(() => {
-                    if (containerFolder) {
-                      return t("topology.regionNodeHint").replace(
-                        "{{count}}",
-                        String(kids.length + visibleViews.length),
-                      );
-                    }
-                    const neCount = (folder.views || []).reduce(
-                      (sum, v) => sum + (Number(v.node_count) || 0),
-                      0,
-                    );
-                    // Prefer canvas NE count; fall back to child-region count.
-                    if (neCount > 0) return `${neCount}N`;
-                    if (childCount > 0) return String(childCount);
-                    return "";
-                  })()}
-                </span>
               </span>
             </button>
             {(() => {
@@ -4063,6 +4064,12 @@ export function TopologyPage() {
     return displayViewName(graphQuery.data?.view?.name, t);
   }, [mapId, activeView, graphQuery.data?.view?.name, t]);
 
+  /** Full folder chain for breadcrumb (rootward → leaf). */
+  const breadcrumbFolders = useMemo(
+    () => folderPathFolders(regions, selectedFolderId),
+    [regions, selectedFolderId],
+  );
+
   const titleText = useMemo(() => {
     if (canvasMode) return activeLeafName || t("topology.selectMap");
     if (activeRegion) return regionDisplayName(activeRegion, t);
@@ -4338,27 +4345,37 @@ export function TopologyPage() {
                 >
                   {t("topology.rootName")}
                 </button>
-                {activeRegion ? (
-                  <>
-                    <span className="topo-breadcrumb__sep">/</span>
-                    {activeView &&
-                    isRegionCanvasFolder(activeRegion, rootFolderId) &&
-                    primaryViewOfFolder(activeRegion)?.id === activeView.id ? (
-                      <span className="topo-breadcrumb__current">
-                        {regionDisplayName(activeRegion, t)}
-                        {dirty ? " *" : ""}
-                      </span>
-                    ) : (
-                      <button
-                        type="button"
-                        className="topo-breadcrumb__link"
-                        onClick={() => goRegion(activeRegion.id)}
-                      >
-                        {regionDisplayName(activeRegion, t)}
-                      </button>
-                    )}
-                  </>
-                ) : null}
+                {breadcrumbFolders.map((folder, idx) => {
+                  const isLast = idx === breadcrumbFolders.length - 1;
+                  const primaryView = primaryViewOfFolder(folder);
+                  const showExtraView =
+                    isLast &&
+                    Boolean(activeView) &&
+                    !(
+                      isRegionCanvasFolder(folder, rootFolderId) &&
+                      primaryView?.id === activeView?.id
+                    );
+                  const asCurrent = isLast && !showExtraView;
+                  return (
+                    <Fragment key={folder.id}>
+                      <span className="topo-breadcrumb__sep">/</span>
+                      {asCurrent ? (
+                        <span className="topo-breadcrumb__current">
+                          {regionDisplayName(folder, t)}
+                          {dirty ? " *" : ""}
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          className="topo-breadcrumb__link"
+                          onClick={() => goRegion(folder.id)}
+                        >
+                          {regionDisplayName(folder, t)}
+                        </button>
+                      )}
+                    </Fragment>
+                  );
+                })}
                 {activeView &&
                 !(
                   activeRegion &&
@@ -4368,7 +4385,7 @@ export function TopologyPage() {
                   <>
                     <span className="topo-breadcrumb__sep">/</span>
                     <span className="topo-breadcrumb__current">
-                      {activeView.name}
+                      {displayViewName(activeView.name, t)}
                       {dirty ? " *" : ""}
                     </span>
                   </>
@@ -4614,8 +4631,27 @@ export function TopologyPage() {
                     >
                       {t("topology.rootName")}
                     </button>
-                    <span className="topo-breadcrumb__sep">/</span>
-                    <span className="topo-breadcrumb__current">{regionDisplayName(hexBrowseRegion, t)}</span>
+                    {breadcrumbFolders.map((folder, idx) => {
+                      const isLast = idx === breadcrumbFolders.length - 1;
+                      return (
+                        <Fragment key={folder.id}>
+                          <span className="topo-breadcrumb__sep">/</span>
+                          {isLast ? (
+                            <span className="topo-breadcrumb__current">
+                              {regionDisplayName(folder, t)}
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              className="topo-breadcrumb__link"
+                              onClick={() => goRegion(folder.id)}
+                            >
+                              {regionDisplayName(folder, t)}
+                            </button>
+                          )}
+                        </Fragment>
+                      );
+                    })}
                   </div>
                 ) : (
                   <strong>{titleText}</strong>
@@ -4715,16 +4751,6 @@ export function TopologyPage() {
                       </span>
                       <span className="topo-region-hex__title">
                         <span className="topo-region-hex__name">{regionDisplayName(region, t)}</span>
-                        <span className="topo-region-hex__meta">
-                          {t("topology.regionNodeHint").replace(
-                            "{{count}}",
-                            String(
-                              isUmeWorldContainer(region)
-                                ? (region.children?.length || 0) + (region.views?.length || 0)
-                                : region.views?.length || 0,
-                            ),
-                          )}
-                        </span>
                       </span>
                     </button>
                   ))}
@@ -4769,12 +4795,6 @@ export function TopologyPage() {
                       <span className="topo-region-hex__name">
                         {regionDisplayName(umeWorldHexModules.drill, t)}
                       </span>
-                      <span className="topo-region-hex__meta">
-                        {t("topology.regionNodeHint").replace(
-                          "{{count}}",
-                          String(umeWorldHexModules.drill.children?.length || 0),
-                        )}
-                      </span>
                     </span>
                   </button>
                 ) : null}
@@ -4805,12 +4825,6 @@ export function TopologyPage() {
                       <span className="topo-region-hex__name">
                         {umeWorldHexModules.flatView.name}
                       </span>
-                      <span className="topo-region-hex__meta">
-                        {t("topology.regionNodeHint").replace(
-                          "{{count}}",
-                          String(umeWorldHexModules.flatView.node_count || 0),
-                        )}
-                      </span>
                     </span>
                   </button>
                 ) : null}
@@ -4836,12 +4850,6 @@ export function TopologyPage() {
                     </span>
                     <span className="topo-region-hex__title">
                       <span className="topo-region-hex__name">{regionDisplayName(region, t)}</span>
-                      <span className="topo-region-hex__meta">
-                        {t("topology.regionNodeHint").replace(
-                          "{{count}}",
-                          String(region.views?.length || region.children?.length || 0),
-                        )}
-                      </span>
                     </span>
                   </button>
                 ))}
@@ -4867,7 +4875,6 @@ export function TopologyPage() {
                       </span>
                       <span className="topo-region-hex__title">
                         <span className="topo-region-hex__name">{displayViewName(v.name, t)}</span>
-                        <span className="topo-region-hex__meta">{v.node_count || 0}N</span>
                       </span>
                     </button>
                   );

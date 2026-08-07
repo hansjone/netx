@@ -1422,7 +1422,6 @@ const en = {
     openRegion: "Open",
     kindPhysical: "Physical",
     kindCustom: "Custom",
-    regionNodeHint: "{{count}}P",
     layerNodeHint: "{{count}} NE(s)",
     layerNodeEmpty: "Click to create & open",
     rootCanvasHint: "Pick a root from the left tree.",

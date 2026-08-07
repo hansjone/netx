@@ -1412,7 +1412,6 @@ const zh = {
     openRegion: "打开",
     kindPhysical: "物理拓扑",
     kindCustom: "自定义图",
-    regionNodeHint: "{{count}}P",
     layerNodeHint: "{{count}} 个网元",
     layerNodeEmpty: "点击创建并打开",
     rootCanvasHint: "从左侧选择根进入目录。",
