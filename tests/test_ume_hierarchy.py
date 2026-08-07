@@ -450,6 +450,12 @@ class UmeHierarchyTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as ctx2:
             delete_view(self.db, flat.id)
         self.assertEqual(ctx2.exception.detail, "cannot_delete_world_map_view")
+        from netx_api.topology_schemas import TopologyViewUpdate
+        from netx_api.topology_views_tree import update_view
+
+        with self.assertRaises(HTTPException) as ctx3:
+            update_view(self.db, flat.id, TopologyViewUpdate(name="Nope"))
+        self.assertEqual(ctx3.exception.detail, "cannot_rename_world_map_view")
 
     def test_flat_slots_do_not_overlap(self):
         self._seed_tree()

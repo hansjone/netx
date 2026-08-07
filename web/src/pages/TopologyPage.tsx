@@ -196,6 +196,12 @@ function isUmeStructuralFolder(folder: TopologyTreeFolderItem | null | undefined
   return ext === "ume:world" || ext === "ume:world:drill";
 }
 
+/** Auto「根图」under a manual 根 — rename OK, delete only with parent 根. */
+function isManualRootMapFolder(folder: TopologyTreeFolderItem | null | undefined): boolean {
+  if (!folder || isUmeStructuralFolder(folder)) return false;
+  return Boolean(folder.is_system) && !String(folder.external_ref || "").trim();
+}
+
 /** UME-synced SBN under World — deletable like a manual sub-region. */
 function isUmeSyncedSubRegion(folder: TopologyTreeFolderItem | null | undefined): boolean {
   if (!folder || isUmeStructuralFolder(folder)) return false;
@@ -2414,10 +2420,18 @@ export function TopologyPage() {
                 </span>
               </span>
             </button>
-            {!isUmeStructuralFolder(folder) &&
-            (!folder.is_system || isUmeSyncedSubRegion(folder)) ? (
+            {(() => {
+              const canRenameFolder =
+                !isUmeStructuralFolder(folder) &&
+                (!folder.is_system || isManualRootMapFolder(folder));
+              const canDeleteFolder =
+                !isUmeStructuralFolder(folder) &&
+                !isManualRootMapFolder(folder) &&
+                (!folder.is_system || isUmeSyncedSubRegion(folder));
+              if (!canRenameFolder && !canDeleteFolder) return null;
+              return (
               <div className="topo-map-list__actions">
-                {!folder.is_system ? (
+                {canRenameFolder ? (
                   <button
                     type="button"
                     className="topo-map-list__icon"
@@ -2429,6 +2443,7 @@ export function TopologyPage() {
                     <PencilIcon />
                   </button>
                 ) : null}
+                {canDeleteFolder ? (
                 <button
                   type="button"
                   className="topo-map-list__icon"
@@ -2447,8 +2462,10 @@ export function TopologyPage() {
                 >
                   <CloseIcon />
                 </button>
+                ) : null}
               </div>
-            ) : null}
+              );
+            })()}
           </div>
           {open ? (
             <ul className="topo-map-list topo-region-list__maps">

@@ -519,9 +519,27 @@ def update_folder(db: Session, folder_id: str, body: TopologyFolderUpdate) -> To
         name = str(body.name or "").strip()
         if not name:
             raise HTTPException(status_code=400, detail="name_required")
-        if bool(row.is_system) and str(row.kind or "") == "root":
+        ext = str(getattr(row, "external_ref", None) or "").strip()
+        # Manual「根图」is auto-created but user-renamable (still not directly deletable).
+        is_manual_root_map = (
+            bool(row.is_system)
+            and not ext
+            and str(row.kind or "") == "region"
+        )
+        if str(row.kind or "") == "root":
             row.name = name[:256]
+        elif is_manual_root_map:
+            row.name = name[:256]
+            from .topology_region_canvas import region_canvas_node_id
+
+            nid = region_canvas_node_id(row.id)
+            for vn in (
+                db.query(TopoViewNode).filter(TopoViewNode.fabric_node_id == nid).all()
+            ):
+                vn.label = name[:256]
+                vn.updated_at = _utcnow()
         elif bool(row.is_system):
+            # UME World / World drill / synced SBN folders: not free-rename.
             raise HTTPException(status_code=400, detail="cannot_rename_system_folder")
         else:
             row.name = name[:256]
@@ -547,15 +565,17 @@ def update_folder(db: Session, folder_id: str, body: TopologyFolderUpdate) -> To
 
 
 def delete_folder(db: Session, folder_id: str, *, force: bool = False) -> dict[str, Any]:
-    """Delete a region and cascade-delete nested regions + maps.
+    """Delete a folder and cascade nested regions + maps.
 
-    Not user-deletable (structure / auto-managed):
-    - kind=root
-    - manual system「根图」(is_system, no UME external_ref)
-    - UME World container and World drill (ume:world / ume:world:drill)
+    User-deletable:
+    - Manual「根」(nav region under the hidden tree root) — cascades its「根图」
+    - Manual / UME-synced sub-regions under a root map or World drill
 
-    User-deletable: manual sub-regions and UME-synced SBN folders under World.
-    World map view is never a folder — it is auto created/suppressed by reconcile.
+    Not directly deletable (auto-managed):
+    - Hidden tree ``kind=root``
+    - Manual system「根图」(deleted only with parent「根」)
+    - UME World / World drill
+    - World map view (auto create/suppress via reconcile; see ``delete_view``)
     """
     row = _get_folder_or_404(db, folder_id)
     if str(row.kind or "") == "root":
@@ -566,7 +586,7 @@ def delete_folder(db: Session, folder_id: str, *, force: bool = False) -> dict[s
     ext = str(getattr(row, "external_ref", None) or "").strip()
     if is_ume_world_container(row) or ext in (WORLD_FOLDER_REF, WORLD_DRILL_REF):
         raise HTTPException(status_code=400, detail="cannot_delete_system_folder")
-    # Manual「根图」and other non-UME system folders stay protected except via parent cascade.
+    # Manual「根图」: only removable when cascading from parent「根」.
     if bool(row.is_system) and not ext:
         raise HTTPException(status_code=400, detail="cannot_delete_system_folder")
     _ = force
@@ -838,6 +858,10 @@ def create_view(db: Session, body: TopologyViewCreate) -> TopologyViewOut:
 def update_view(db: Session, view_id: str, body: TopologyViewUpdate) -> TopologyViewOut:
     row = _get_view_or_404(db, view_id)
     if body.name is not None:
+        from .ume_topology_world import is_world_flat_view
+
+        if is_world_flat_view(row):
+            raise HTTPException(status_code=400, detail="cannot_rename_world_map_view")
         name = str(body.name or "").strip()
         if not name:
             raise HTTPException(status_code=400, detail="name_required")

@@ -666,6 +666,31 @@ class FabricTopologyTests(unittest.TestCase):
         child_ids = {c.id for c in root_map.children}
         self.assertEqual(child_ids, {a.id, b.id})
 
+    def test_root_map_rename_ok_but_not_direct_delete(self) -> None:
+        from fastapi import HTTPException
+
+        from netx_api.topology_schemas import TopologyFolderUpdate
+
+        top = svc.create_folder(
+            self.db, TopologyFolderCreate(name="North", kind="region")
+        )
+        tree = svc.get_topology_tree(self.db)
+        assert tree.root is not None
+        north = next(c for c in tree.root.children if c.id == top.id)
+        root_map = north.children[0]
+        self.assertTrue(root_map.is_system)
+        renamed = svc.update_folder(
+            self.db, root_map.id, TopologyFolderUpdate(name="主画布")
+        )
+        self.assertEqual(renamed.name, "主画布")
+        with self.assertRaises(HTTPException) as ctx:
+            svc.delete_folder(self.db, root_map.id)
+        self.assertEqual(ctx.exception.detail, "cannot_delete_system_folder")
+        # Deleting the manual「根」cascades the「根图」.
+        out = svc.delete_folder(self.db, top.id)
+        self.assertTrue(out.get("deleted"))
+        self.assertIsNone(self.db.get(TopoFolder, root_map.id))
+
     def test_classify_role_region_and_slices(self) -> None:
         from netx_api import topology_classify as clf
         from netx_api.topology_schemas import (
