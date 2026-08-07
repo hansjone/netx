@@ -70,14 +70,22 @@ export function UmePage() {
   const syncStatusQuery = useQuery({
     queryKey: queryKeys.umeSyncStatus(syncPage, syncPageSize),
     queryFn: () => fetchUmeSyncStatus({ page: syncPage, pageSize: syncPageSize }),
-    staleTime: 5000,
-    refetchInterval: 5000,
+    staleTime: 10_000,
+    // Panel open or active sync → keep snappy; otherwise idle cards only need a slow heartbeat.
+    refetchInterval: (q) => {
+      const items = q.state.data?.items || [];
+      const running = items.some((x) => String(x.status || "").toLowerCase() === "running");
+      if (syncStatusPanelOpen || running) return 5000;
+      return 20_000;
+    },
+    refetchIntervalInBackground: false,
   });
   const tokenStatusQuery = useQuery({
     queryKey: queryKeys.umeTokenStatus,
     queryFn: fetchUmeTokenStatus,
-    staleTime: 3000,
-    refetchInterval: 5000,
+    staleTime: 15_000,
+    refetchInterval: 20_000,
+    refetchIntervalInBackground: false,
   });
   const tokenRefreshMutation = useMutation({
     mutationFn: refreshUmeToken,
@@ -103,8 +111,9 @@ export function UmePage() {
   const subscriptionStatusQuery = useQuery({
     queryKey: queryKeys.umeAlarmSubscription,
     queryFn: fetchUmeAlarmSubscriptionStatus,
-    staleTime: 3000,
-    refetchInterval: 5000,
+    staleTime: 10_000,
+    refetchInterval: 15_000,
+    refetchIntervalInBackground: false,
   });
   const keyAlertMonitorQuery = useQuery({
     queryKey: queryKeys.umeKeyAlertMonitor(
@@ -122,8 +131,9 @@ export function UmePage() {
         enabled: keyAlertFilterEnabled,
         matchType: keyAlertFilterMatchType,
       }),
-    staleTime: 3000,
-    refetchInterval: 5000,
+    staleTime: keyAlertPanelOpen ? 3000 : 15_000,
+    refetchInterval: keyAlertPanelOpen ? 5000 : 20_000,
+    refetchIntervalInBackground: false,
   });
   const keyAlertNeTypesQuery = useQuery({
     queryKey: queryKeys.umeInventoryNeTypes,
@@ -981,174 +991,174 @@ export function UmePage() {
               </div>
             </div>
 
-            <div className="ume-modal-form">
+            <div className="ops-detail-modal__scroll ops-detail-modal__scroll--flow">
+              <div className="ume-modal-form">
+                <div className="ops-detail-modal__toolbar filter-inline">
+                  <label className="muted">{t("ume.keyAlert.matchType")}</label>
+                  <select
+                    className="input"
+                    value={keyAlertMatchType}
+                    onChange={(e) => {
+                      setKeyAlertMatchType(e.target.value === "keyword" ? "keyword" : "notification_id");
+                      setKeyAlertKeywordHints([]);
+                      setKeyAlertIdHints([]);
+                    }}
+                  >
+                    <option value="notification_id">{t("ume.keyAlert.matchNotificationId")}</option>
+                    <option value="keyword">{t("ume.keyAlert.matchKeyword")}</option>
+                  </select>
+                  <input
+                    className="input ume-modal-form__grow"
+                    placeholder={
+                      keyAlertMatchType === "keyword"
+                        ? t("ume.keyAlert.matchValuePhKeyword")
+                        : t("ume.keyAlert.matchValuePhNotificationId")
+                    }
+                    value={keyAlertMatchValue}
+                    onChange={(e) => setKeyAlertMatchValue(e.target.value)}
+                    list="ume-key-alert-match-options"
+                  />
+                  <input
+                    className="input ume-modal-form__grow"
+                    placeholder={t("ume.keyAlert.labelPh")}
+                    value={keyAlertLabel}
+                    onChange={(e) => setKeyAlertLabel(e.target.value)}
+                  />
+                  <datalist id="ume-key-alert-match-options">
+                    {keyAlertMatchType === "keyword"
+                      ? keyAlertKeywordHints.map((kw) => <option key={kw} value={kw} />)
+                      : keyAlertIdHints.map((x) => (
+                          <option key={x.notification_id} value={x.notification_id}>
+                            {x.native_probable_cause_sample || x.notification_id}
+                          </option>
+                        ))}
+                  </datalist>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        if (keyAlertMatchType === "keyword") {
+                          const resp = await fetchUmeAlarmKeywords(100);
+                          const hints = (resp.items || []).map((x) => x.keyword).filter(Boolean);
+                          setKeyAlertKeywordHints(hints);
+                          if (hints.length && !keyAlertMatchValue.trim()) {
+                            setKeyAlertMatchValue(hints[0]);
+                          }
+                        } else {
+                          const resp = await fetchUmeNotificationIds(100);
+                          const items = resp.items || [];
+                          setKeyAlertIdHints(items);
+                          if (items.length && !keyAlertMatchValue.trim()) {
+                            const first = items[0];
+                            setKeyAlertMatchValue(first.notification_id);
+                            if (!keyAlertLabel.trim() && first.native_probable_cause_sample) {
+                              setKeyAlertLabel(first.native_probable_cause_sample);
+                            }
+                          }
+                        }
+                      } catch (err) {
+                        showError(String(err));
+                      }
+                    }}
+                  >
+                    {t("ume.keyAlert.pickFromAlarms")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => keyAlertAddMutation.mutate()}
+                    disabled={
+                      keyAlertAddMutation.isPending || !keyAlertMatchValue.trim() || !keyAlertLabel.trim()
+                    }
+                  >
+                    {keyAlertAddMutation.isPending ? t("ume.keyAlert.adding") : t("ume.keyAlert.add")}
+                  </button>
+                </div>
+
+                <div className="muted ume-modal-form__label">{t("ume.keyAlert.neTypesLabel")}</div>
+                {keyAlertNeTypesQuery.isLoading ? (
+                  <span className="muted">{t("common.refreshing")}</span>
+                ) : (keyAlertNeTypesQuery.data?.items || []).length === 0 ? (
+                  <span className="muted">{t("ume.keyAlert.neTypesEmpty")}</span>
+                ) : (
+                  <div className="ume-ne-types">
+                    {(keyAlertNeTypesQuery.data?.items || []).map((item) => (
+                      <label key={item.ne_type} className="ume-ne-types__item">
+                        <input
+                          type="checkbox"
+                          checked={keyAlertNeTypes.includes(item.ne_type)}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setKeyAlertNeTypes((prev) => [...prev, item.ne_type]);
+                            } else {
+                              setKeyAlertNeTypes((prev) => prev.filter((x) => x !== item.ne_type));
+                            }
+                          }}
+                        />
+                        {item.ne_type}
+                        <span className="muted">({item.ne_count})</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+                <p className="muted ume-modal-form__hint">{t("ume.keyAlert.neTypesHint")}</p>
+
+                <div className="ops-detail-modal__toolbar ume-modal-form__opts">
+                  <label className="ume-ne-types__item muted">
+                    <input
+                      type="checkbox"
+                      checked={keyAlertForwardOnClear}
+                      disabled={keyAlertConfigMutation.isPending || keyAlertMonitorQuery.isLoading}
+                      onChange={(e) => keyAlertConfigMutation.mutate(e.target.checked)}
+                    />
+                    {t("ume.keyAlert.forwardOnClear")}
+                    <HelpHint
+                      text={t("ume.keyAlert.forwardOnClearHelp")}
+                      ariaLabel={t("common.help")}
+                      align="start"
+                    />
+                  </label>
+                </div>
+                {keyAlertOpError ? (
+                  <p className="ops-detail-modal__error">
+                    {t("common.opFailed")}: {keyAlertOpError}
+                  </p>
+                ) : null}
+              </div>
+
               <div className="ops-detail-modal__toolbar filter-inline">
-                <label className="muted">{t("ume.keyAlert.matchType")}</label>
-                <select
-                  className="input"
-                  value={keyAlertMatchType}
+                <input
+                  type="search"
+                  placeholder={t("ume.keyAlert.filterKeywordPh")}
+                  value={keyAlertFilterKeyword}
                   onChange={(e) => {
-                    setKeyAlertMatchType(e.target.value === "keyword" ? "keyword" : "notification_id");
-                    setKeyAlertKeywordHints([]);
-                    setKeyAlertIdHints([]);
+                    setKeyAlertFilterKeyword(e.target.value);
+                    setKeyAlertPage(1);
+                  }}
+                />
+                <select
+                  value={keyAlertFilterMatchType}
+                  onChange={(e) => {
+                    setKeyAlertFilterMatchType(e.target.value as "" | "notification_id" | "keyword");
+                    setKeyAlertPage(1);
                   }}
                 >
+                  <option value="">{t("ume.keyAlert.filterMatchAll")}</option>
                   <option value="notification_id">{t("ume.keyAlert.matchNotificationId")}</option>
                   <option value="keyword">{t("ume.keyAlert.matchKeyword")}</option>
                 </select>
-                <input
-                  className="input ume-modal-form__grow"
-                  placeholder={
-                    keyAlertMatchType === "keyword"
-                      ? t("ume.keyAlert.matchValuePhKeyword")
-                      : t("ume.keyAlert.matchValuePhNotificationId")
-                  }
-                  value={keyAlertMatchValue}
-                  onChange={(e) => setKeyAlertMatchValue(e.target.value)}
-                  list="ume-key-alert-match-options"
-                />
-                <input
-                  className="input ume-modal-form__grow"
-                  placeholder={t("ume.keyAlert.labelPh")}
-                  value={keyAlertLabel}
-                  onChange={(e) => setKeyAlertLabel(e.target.value)}
-                />
-                <datalist id="ume-key-alert-match-options">
-                  {keyAlertMatchType === "keyword"
-                    ? keyAlertKeywordHints.map((kw) => <option key={kw} value={kw} />)
-                    : keyAlertIdHints.map((x) => (
-                        <option key={x.notification_id} value={x.notification_id}>
-                          {x.native_probable_cause_sample || x.notification_id}
-                        </option>
-                      ))}
-                </datalist>
-                <button
-                  type="button"
-                  onClick={async () => {
-                    try {
-                      if (keyAlertMatchType === "keyword") {
-                        const resp = await fetchUmeAlarmKeywords(100);
-                        const hints = (resp.items || []).map((x) => x.keyword).filter(Boolean);
-                        setKeyAlertKeywordHints(hints);
-                        if (hints.length && !keyAlertMatchValue.trim()) {
-                          setKeyAlertMatchValue(hints[0]);
-                        }
-                      } else {
-                        const resp = await fetchUmeNotificationIds(100);
-                        const items = resp.items || [];
-                        setKeyAlertIdHints(items);
-                        if (items.length && !keyAlertMatchValue.trim()) {
-                          const first = items[0];
-                          setKeyAlertMatchValue(first.notification_id);
-                          if (!keyAlertLabel.trim() && first.native_probable_cause_sample) {
-                            setKeyAlertLabel(first.native_probable_cause_sample);
-                          }
-                        }
-                      }
-                    } catch (err) {
-                      showError(String(err));
-                    }
+                <select
+                  value={keyAlertFilterEnabled}
+                  onChange={(e) => {
+                    setKeyAlertFilterEnabled(e.target.value as "" | "true" | "false");
+                    setKeyAlertPage(1);
                   }}
                 >
-                  {t("ume.keyAlert.pickFromAlarms")}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => keyAlertAddMutation.mutate()}
-                  disabled={
-                    keyAlertAddMutation.isPending || !keyAlertMatchValue.trim() || !keyAlertLabel.trim()
-                  }
-                >
-                  {keyAlertAddMutation.isPending ? t("ume.keyAlert.adding") : t("ume.keyAlert.add")}
-                </button>
+                  <option value="">{t("ume.keyAlert.filterEnabledAll")}</option>
+                  <option value="true">{t("ume.keyAlert.filterEnabledOn")}</option>
+                  <option value="false">{t("ume.keyAlert.filterEnabledOff")}</option>
+                </select>
               </div>
 
-              <div className="muted ume-modal-form__label">{t("ume.keyAlert.neTypesLabel")}</div>
-              {keyAlertNeTypesQuery.isLoading ? (
-                <span className="muted">{t("common.refreshing")}</span>
-              ) : (keyAlertNeTypesQuery.data?.items || []).length === 0 ? (
-                <span className="muted">{t("ume.keyAlert.neTypesEmpty")}</span>
-              ) : (
-                <div className="ume-ne-types">
-                  {(keyAlertNeTypesQuery.data?.items || []).map((item) => (
-                    <label key={item.ne_type} className="ume-ne-types__item">
-                      <input
-                        type="checkbox"
-                        checked={keyAlertNeTypes.includes(item.ne_type)}
-                        onChange={(e) => {
-                          if (e.target.checked) {
-                            setKeyAlertNeTypes((prev) => [...prev, item.ne_type]);
-                          } else {
-                            setKeyAlertNeTypes((prev) => prev.filter((x) => x !== item.ne_type));
-                          }
-                        }}
-                      />
-                      {item.ne_type}
-                      <span className="muted">({item.ne_count})</span>
-                    </label>
-                  ))}
-                </div>
-              )}
-              <p className="muted ume-modal-form__hint">{t("ume.keyAlert.neTypesHint")}</p>
-
-              <div className="ops-detail-modal__toolbar ume-modal-form__opts">
-                <label className="ume-ne-types__item muted">
-                  <input
-                    type="checkbox"
-                    checked={keyAlertForwardOnClear}
-                    disabled={keyAlertConfigMutation.isPending || keyAlertMonitorQuery.isLoading}
-                    onChange={(e) => keyAlertConfigMutation.mutate(e.target.checked)}
-                  />
-                  {t("ume.keyAlert.forwardOnClear")}
-                  <HelpHint
-                    text={t("ume.keyAlert.forwardOnClearHelp")}
-                    ariaLabel={t("common.help")}
-                    align="start"
-                  />
-                </label>
-              </div>
-              {keyAlertOpError ? (
-                <p className="ops-detail-modal__error">
-                  {t("common.opFailed")}: {keyAlertOpError}
-                </p>
-              ) : null}
-            </div>
-
-            <div className="ops-detail-modal__toolbar filter-inline">
-              <input
-                type="search"
-                placeholder={t("ume.keyAlert.filterKeywordPh")}
-                value={keyAlertFilterKeyword}
-                onChange={(e) => {
-                  setKeyAlertFilterKeyword(e.target.value);
-                  setKeyAlertPage(1);
-                }}
-              />
-              <select
-                value={keyAlertFilterMatchType}
-                onChange={(e) => {
-                  setKeyAlertFilterMatchType(e.target.value as "" | "notification_id" | "keyword");
-                  setKeyAlertPage(1);
-                }}
-              >
-                <option value="">{t("ume.keyAlert.filterMatchAll")}</option>
-                <option value="notification_id">{t("ume.keyAlert.matchNotificationId")}</option>
-                <option value="keyword">{t("ume.keyAlert.matchKeyword")}</option>
-              </select>
-              <select
-                value={keyAlertFilterEnabled}
-                onChange={(e) => {
-                  setKeyAlertFilterEnabled(e.target.value as "" | "true" | "false");
-                  setKeyAlertPage(1);
-                }}
-              >
-                <option value="">{t("ume.keyAlert.filterEnabledAll")}</option>
-                <option value="true">{t("ume.keyAlert.filterEnabledOn")}</option>
-                <option value="false">{t("ume.keyAlert.filterEnabledOff")}</option>
-              </select>
-            </div>
-
-            <div className="ops-detail-modal__scroll">
               <div className="pt-list-table-wrap">
                 <table className="data-table pt-list-table">
                   <thead>
@@ -1239,43 +1249,43 @@ export function UmePage() {
                   </tbody>
                 </table>
               </div>
-            </div>
 
-            <div className="ops-detail-modal__foot">
-              <span className="muted">
-                {t("common.pagerMeta", {
-                  total: String(keyAlertTotal),
-                  page: String(keyAlertPage),
-                  pages: String(keyAlertPages),
-                })}
-              </span>
-              <div className="btn-row">
-                <button
-                  type="button"
-                  disabled={keyAlertPage <= 1}
-                  onClick={() => setKeyAlertPage(Math.max(1, keyAlertPage - 1))}
-                >
-                  {t("common.prevPage")}
-                </button>
-                <button
-                  type="button"
-                  disabled={keyAlertPage >= keyAlertPages}
-                  onClick={() => setKeyAlertPage(keyAlertPage + 1)}
-                >
-                  {t("common.nextPage")}
-                </button>
-                <select
-                  className="pager__size"
-                  value={String(keyAlertPageSize)}
-                  onChange={(e) => {
-                    setKeyAlertPageSize(Number(e.target.value) || 20);
-                    setKeyAlertPage(1);
-                  }}
-                >
-                  <option value="10">{perPage(10)}</option>
-                  <option value="20">{perPage(20)}</option>
-                  <option value="50">{perPage(50)}</option>
-                </select>
+              <div className="ops-detail-modal__foot">
+                <span className="muted">
+                  {t("common.pagerMeta", {
+                    total: String(keyAlertTotal),
+                    page: String(keyAlertPage),
+                    pages: String(keyAlertPages),
+                  })}
+                </span>
+                <div className="btn-row">
+                  <button
+                    type="button"
+                    disabled={keyAlertPage <= 1}
+                    onClick={() => setKeyAlertPage(Math.max(1, keyAlertPage - 1))}
+                  >
+                    {t("common.prevPage")}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={keyAlertPage >= keyAlertPages}
+                    onClick={() => setKeyAlertPage(keyAlertPage + 1)}
+                  >
+                    {t("common.nextPage")}
+                  </button>
+                  <select
+                    className="pager__size"
+                    value={String(keyAlertPageSize)}
+                    onChange={(e) => {
+                      setKeyAlertPageSize(Number(e.target.value) || 20);
+                      setKeyAlertPage(1);
+                    }}
+                  >
+                    <option value="10">{perPage(10)}</option>
+                    <option value="20">{perPage(20)}</option>
+                    <option value="50">{perPage(50)}</option>
+                  </select>
+                </div>
               </div>
             </div>
           </div>

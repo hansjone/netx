@@ -4,6 +4,21 @@ import react from '@vitejs/plugin-react'
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
+  build: {
+    rollupOptions: {
+      output: {
+        // Keep heavy optional libs in stable vendor chunks so route opens
+        // don't re-download/parse them mixed into page modules.
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return
+          if (id.includes('@xterm')) return 'vendor-xterm'
+          if (id.includes('@xyflow') || id.includes('dagre')) return 'vendor-topology'
+          if (id.includes('uplot')) return 'vendor-uplot'
+          if (id.includes('@tanstack')) return 'vendor-query'
+        },
+      },
+    },
+  },
   server: {
     port: 5173,
     proxy: {

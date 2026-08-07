@@ -1,4 +1,3 @@
-import dagre from "dagre";
 import type { Edge, Node } from "@xyflow/react";
 
 export type LayoutKind = "hierarchical-tb" | "hierarchical-lr" | "force" | "grid" | "radial";
@@ -7,6 +6,19 @@ const NODE_W = 140;
 const NODE_H = 72;
 
 type XY = { x: number; y: number };
+
+type DagreNS = typeof import("dagre");
+
+let dagreMod: DagreNS | null = null;
+
+async function loadDagre(): Promise<DagreNS> {
+  if (!dagreMod) {
+    const mod = await import("dagre");
+    // CJS typings (`export =`) may surface as default or namespace under Vite.
+    dagreMod = ((mod as { default?: DagreNS }).default ?? mod) as DagreNS;
+  }
+  return dagreMod;
+}
 
 function applyPositions<T extends Record<string, unknown>>(
   nodes: Node<T>[],
@@ -19,11 +31,12 @@ function applyPositions<T extends Record<string, unknown>>(
   });
 }
 
-function layoutDagre<T extends Record<string, unknown>>(
+async function layoutDagre<T extends Record<string, unknown>>(
   nodes: Node<T>[],
   edges: Edge[],
   rankdir: "TB" | "LR",
-): Node<T>[] {
+): Promise<Node<T>[]> {
+  const dagre = await loadDagre();
   const g = new dagre.graphlib.Graph();
   g.setDefaultEdgeLabel(() => ({}));
   g.setGraph({ rankdir, nodesep: 48, ranksep: 72, marginx: 24, marginy: 24 });
@@ -150,12 +163,13 @@ function layoutRadial<T extends Record<string, unknown>>(nodes: Node<T>[]): Node
   });
 }
 
-export function layoutGraph<T extends Record<string, unknown>>(
+/** dagre is loaded on first hierarchical layout only — not with the topology page chunk. */
+export async function layoutGraph<T extends Record<string, unknown>>(
   nodes: Node<T>[],
   edges: Edge[],
   kind: LayoutKind,
   opts?: { onlyIds?: Set<string> },
-): Node<T>[] {
+): Promise<Node<T>[]> {
   const only = opts?.onlyIds;
   const targets = only && only.size > 0 ? nodes.filter((n) => only.has(n.id)) : nodes;
   const targetIds = new Set(targets.map((n) => n.id));
@@ -164,7 +178,7 @@ export function layoutGraph<T extends Record<string, unknown>>(
   let laid: Node<T>[];
   switch (kind) {
     case "hierarchical-lr":
-      laid = layoutDagre(targets, subEdges, "LR");
+      laid = await layoutDagre(targets, subEdges, "LR");
       break;
     case "force":
       laid = layoutForce(targets, subEdges);
@@ -177,7 +191,7 @@ export function layoutGraph<T extends Record<string, unknown>>(
       break;
     case "hierarchical-tb":
     default:
-      laid = layoutDagre(targets, subEdges, "TB");
+      laid = await layoutDagre(targets, subEdges, "TB");
       break;
   }
 

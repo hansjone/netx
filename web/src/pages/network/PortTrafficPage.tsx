@@ -159,15 +159,25 @@ export function PortTrafficPage() {
   const dashQuery = useQuery({
     queryKey: queryKeys.portTrafficDashboard,
     queryFn: fetchPortTrafficDashboard,
-    staleTime: 2000,
-    refetchInterval: POLL_MS,
+    staleTime: 5000,
+    refetchInterval: (q) => {
+      const d = q.state.data;
+      const running = Number(d?.running_device_count ?? d?.running_task_count ?? 0);
+      return running > 0 ? POLL_MS : 15_000;
+    },
+    refetchIntervalInBackground: false,
   });
 
   const devicesQuery = useQuery({
     queryKey: queryKeys.portTrafficDevices(listPage),
     queryFn: () => fetchPortTrafficDevices({ page: listPage, pageSize: 10 }),
-    staleTime: 2000,
-    refetchInterval: POLL_MS,
+    staleTime: 5000,
+    refetchInterval: (q) => {
+      const items = q.state.data?.items || [];
+      const running = items.some((x) => x.status === "running" || Boolean(x.collect_running));
+      return running ? POLL_MS : 15_000;
+    },
+    refetchIntervalInBackground: false,
   });
 
   const nesQuery = useQuery({

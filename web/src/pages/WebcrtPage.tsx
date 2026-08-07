@@ -1,4 +1,6 @@
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -10,7 +12,7 @@ import {
 } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
-import { WebTerminal, type WebTerminalHandle } from "../components/WebTerminal";
+import type { WebTerminalHandle } from "../components/WebTerminal";
 import { useI18n } from "../i18n";
 import { useToast } from "../hooks/useToast";
 import {
@@ -44,6 +46,10 @@ import {
   type KeywordRule,
 } from "../utils/webcrtKeywordHighlight";
 
+/** xterm is large — only pull it when a session pane actually mounts. */
+const WebTerminal = lazy(() =>
+  import("../components/WebTerminal").then((m) => ({ default: m.WebTerminal })),
+);
 const PAGE_SIZE = 50;
 const SESSION_OPTS_KEY = "netx.webcrt.sessionOptions";
 const LEGACY_TERM_PREFS_KEY = "netx.webcrt.termPrefs";
@@ -2385,6 +2391,13 @@ export function WebcrtPage() {
                         </div>
                       ) : null}
                       {mountTerminal ? (
+                      <Suspense
+                        fallback={
+                          <div className="webcrt-main__placeholder" role="status">
+                            {t("common.refreshing")}
+                          </div>
+                        }
+                      >
                       <WebTerminal
                         key={`${tab.key}:${tab.termEpoch}`}
                         ref={(handle) => {
@@ -2500,6 +2513,7 @@ export function WebcrtPage() {
                           }
                         }}
                       />
+                      </Suspense>
                       ) : null}
                     </>
                   ) : null}

@@ -89,15 +89,18 @@ export function WorkbenchPage() {
   const metricsQuery = useQuery({
     queryKey: ["runtimeMetrics"],
     queryFn: fetchRuntimeMetrics,
-    refetchInterval: 5000,
-    staleTime: 2000,
+    staleTime: 10_000,
+    refetchInterval: 15_000,
+    refetchIntervalInBackground: false,
   });
 
   const opsQuery = useQuery({
     queryKey: ["opsTasks"],
     queryFn: fetchOpsTasks,
-    refetchInterval: 4000,
-    staleTime: 1500,
+    staleTime: 10_000,
+    // Share AppLayout cache; speed up only while something is active.
+    refetchInterval: (q) => ((q.state.data?.active ?? 0) > 0 ? 4000 : 20_000),
+    refetchIntervalInBackground: false,
   });
 
   const visibleBySection = useMemo(() => {
