@@ -1394,6 +1394,8 @@ const en = {
     maps: "Maps",
     tree: "Topology tree",
     treeLoading: "Loading tree…",
+    treeLoadFailed: "Failed to load topology tree",
+    treeRetry: "Retry",
     graphLoading: "Loading topology…",
     graphRefreshing: "Refreshing…",
     canvasEmpty: "No NEs on this map yet",

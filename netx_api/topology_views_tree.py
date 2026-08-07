@@ -165,7 +165,7 @@ def ensure_region_physical_view(db: Session, folder_id: str, *, commit: bool = T
 
 
 def bootstrap_topology_tree(db: Session) -> dict[str, str]:
-    """Ensure hidden system root; flatten legacy nesting."""
+    """Ensure hidden system root; flatten legacy nesting (once when needed)."""
     now = _utcnow()
     root = (
         db.query(TopoFolder)
@@ -186,8 +186,10 @@ def bootstrap_topology_tree(db: Session) -> dict[str, str]:
         )
         db.add(root)
         db.flush()
+        db.commit()
+        return {"root_id": root.id}
 
-    # Drop legacy auto-created Unassigned region when empty; otherwise demote to normal region.
+    # Hot path: root already exists. Only touch legacy Unassigned rows when present.
     legacy = (
         db.query(TopoFolder)
         .filter(
@@ -196,6 +198,9 @@ def bootstrap_topology_tree(db: Session) -> dict[str, str]:
         )
         .all()
     )
+    if not legacy:
+        return {"root_id": root.id}
+
     for folder in legacy:
         view_cnt = db.query(TopoView).filter(TopoView.folder_id == folder.id).count()
         if view_cnt == 0:
@@ -204,7 +209,7 @@ def bootstrap_topology_tree(db: Session) -> dict[str, str]:
             folder.is_system = False
             folder.updated_at = now
 
-    # Flatten nesting + normalize kind for all views.
+    # One-time-ish normalize for views hanging under cleaned legacy folders.
     for v in db.query(TopoView).all():
         changed = False
         if v.parent_view_id:
@@ -493,42 +498,58 @@ def get_topology_tree(db: Session) -> TopologyTreeOut:
             .all()
         )
     }
-    ume_ne_by_folder: dict[str, int] = {
-        str(fid): int(cnt or 0)
-        for fid, cnt in (
-            db.query(TopoFabricNode.region_folder_id, func.count(TopoFabricNode.id))
-            .filter(
-                TopoFabricNode.ume_ne_id.isnot(None),
-                TopoFabricNode.ume_ne_id != "",
-                TopoFabricNode.region_folder_id.isnot(None),
-                TopoFabricNode.region_folder_id != "",
-            )
-            .group_by(TopoFabricNode.region_folder_id)
-            .all()
+    # Skip heavy UME rollups on fresh installs (no UME folders / level views yet).
+    has_ume_dirs = any(
+        str(getattr(f, "external_ref", None) or "").strip()
+        for f in folders
+        if str(f.kind or "") == "region"
+    ) or any(
+        bool(
+            dict(v.filter or {}).get("ume_level")
+            or dict(v.filter or {}).get("world")
+            or dict(v.filter or {}).get("world_flat")
         )
-        if str(fid or "").strip()
-    }
-    # Direct ME counts by UME parent SBN (level-by-level; not full subtree rollup).
-    ume_ne_by_sbn: dict[str, int] = {
-        str(parent): int(cnt or 0)
-        for parent, cnt in (
-            db.query(UmeTopoNode.parent_node, func.count(UmeTopoNode.node_id))
-            .filter(
-                UmeTopoNode.node_type == "TOPO_NODE_ME",
-                UmeTopoNode.parent_node.isnot(None),
-                UmeTopoNode.parent_node != "",
-            )
-            .group_by(UmeTopoNode.parent_node)
-            .all()
-        )
-        if str(parent or "").strip()
-    }
-    ume_ne_total = int(
-        db.query(func.count(TopoFabricNode.id))
-        .filter(TopoFabricNode.ume_ne_id.isnot(None), TopoFabricNode.ume_ne_id != "")
-        .scalar()
-        or 0
+        for v in views
     )
+    ume_ne_by_folder: dict[str, int] = {}
+    ume_ne_by_sbn: dict[str, int] = {}
+    ume_ne_total = 0
+    if has_ume_dirs:
+        ume_ne_by_folder = {
+            str(fid): int(cnt or 0)
+            for fid, cnt in (
+                db.query(TopoFabricNode.region_folder_id, func.count(TopoFabricNode.id))
+                .filter(
+                    TopoFabricNode.ume_ne_id.isnot(None),
+                    TopoFabricNode.ume_ne_id != "",
+                    TopoFabricNode.region_folder_id.isnot(None),
+                    TopoFabricNode.region_folder_id != "",
+                )
+                .group_by(TopoFabricNode.region_folder_id)
+                .all()
+            )
+            if str(fid or "").strip()
+        }
+        ume_ne_by_sbn = {
+            str(parent): int(cnt or 0)
+            for parent, cnt in (
+                db.query(UmeTopoNode.parent_node, func.count(UmeTopoNode.node_id))
+                .filter(
+                    UmeTopoNode.node_type == "TOPO_NODE_ME",
+                    UmeTopoNode.parent_node.isnot(None),
+                    UmeTopoNode.parent_node != "",
+                )
+                .group_by(UmeTopoNode.parent_node)
+                .all()
+            )
+            if str(parent or "").strip()
+        }
+        ume_ne_total = int(
+            db.query(func.count(TopoFabricNode.id))
+            .filter(TopoFabricNode.ume_ne_id.isnot(None), TopoFabricNode.ume_ne_id != "")
+            .scalar()
+            or 0
+        )
 
     def _view_node_count(v: TopoView) -> int:
         raw = int(nc_map.get(v.id, 0) or 0)

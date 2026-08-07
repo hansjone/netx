@@ -1385,6 +1385,8 @@ const zh = {
     maps: "拓扑图",
     tree: "拓扑树",
     treeLoading: "加载拓扑树…",
+    treeLoadFailed: "拓扑树加载失败",
+    treeRetry: "重试",
     graphLoading: "正在加载拓扑图…",
     graphRefreshing: "刷新中…",
     canvasEmpty: "这张图上还没有网元",

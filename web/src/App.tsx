@@ -75,11 +75,8 @@ function LegacyPortTrafficWallRedirect() {
 }
 
 function PageFallback() {
-  return (
-    <div className="page-loading" role="status" aria-live="polite">
-      Loading…
-    </div>
-  );
+  // Delayed fade-in so fast chunk loads do not flash a full-page "Loading…".
+  return <div className="page-loading page-loading--soft" role="status" aria-busy="true" />;
 }
 
 function ProtectedApp() {

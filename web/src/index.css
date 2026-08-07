@@ -4894,6 +4894,13 @@ pre {
 .topo-browser__empty p {
   margin: 0;
 }
+.topo-browser__empty-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 .topo-browser__empty-icon {
   display: grid;
   place-items: center;
@@ -9894,6 +9901,16 @@ pre {
   min-height: 240px;
   color: #94a3b8;
   font-size: 13px;
+}
+.page-loading--soft {
+  min-height: 120px;
+  opacity: 0;
+  animation: page-loading-soft-in 160ms ease 180ms forwards;
+}
+@keyframes page-loading-soft-in {
+  to {
+    opacity: 1;
+  }
 }
 
 .app-main option,

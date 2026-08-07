@@ -9,7 +9,16 @@ import { I18nProvider } from "./i18n";
 import { ToastProvider } from "./hooks/useToast";
 import { AuthProvider } from "./auth/AuthContext";
 
-const queryClient = new QueryClient();
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      // Avoid remount flash/jank on every navigation (default staleTime is 0).
+      staleTime: 30_000,
+      refetchOnWindowFocus: false,
+      retry: 1,
+    },
+  },
+});
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

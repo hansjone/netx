@@ -25,8 +25,10 @@ export function AppLayout({ children }: Props) {
     queryKey: ["opsTasks"],
     queryFn: fetchOpsTasks,
     enabled: Boolean(user),
-    refetchInterval: 4000,
-    staleTime: 1500,
+    // Idle installs: poll slowly; speed up only while tasks are active.
+    refetchInterval: (q) => ((q.state.data?.active ?? 0) > 0 ? 4000 : 20_000),
+    staleTime: 10_000,
+    refetchOnWindowFocus: false,
   });
   const activeTasks = opsTasksQuery.data?.active ?? 0;
 

@@ -1189,6 +1189,7 @@ export function TopologyPage() {
     ip_address: string;
   } | null>(null);
   const [createNeBusy, setCreateNeBusy] = useState(false);
+  const [newRootDialog, setNewRootDialog] = useState<{ name: string } | null>(null);
   const [discoverOpen, setDiscoverOpen] = useState(false);
   const [discovering, setDiscovering] = useState(false);
   const [discoverReport, setDiscoverReport] = useState<TopologyDiscoverOut | null>(null);
@@ -1511,6 +1512,8 @@ export function TopologyPage() {
 
   const treeRoot = treeQuery.data?.root || null;
   const regions = useMemo(() => treeRoot?.children || [], [treeRoot]);
+  const treeLoading = treeQuery.isPending && !treeQuery.data;
+  const treeFailed = treeQuery.isError && !treeQuery.data;
 
   useEffect(() => {
     if (!treeRoot || !regions.length) return;
@@ -1999,13 +2002,17 @@ export function TopologyPage() {
   );
 
   const createRegionMut = useMutation({
-    mutationFn: (input: { name: string; parent_id?: string }) =>
-      createTopologyFolder({
-        name: input.name,
-        kind: "region",
-        parent_id: input.parent_id || treeQuery.data?.root?.id,
-      }),
+    mutationFn: (input: { name: string; parent_id?: string }) => {
+      const parentId = String(input.parent_id || "").trim();
+      // Top-level root: omit parent_id so API bootstraps system root even if tree query failed.
+      return createTopologyFolder(
+        parentId
+          ? { name: input.name, kind: "region", parent_id: parentId }
+          : { name: input.name, kind: "region" },
+      );
+    },
     onSuccess: async (folder, input) => {
+      setNewRootDialog(null);
       await queryClient.invalidateQueries({ queryKey: queryKeys.topologyTree });
       const tree = await fetchTopologyTree();
       const regionsList = tree.root?.children || [];
@@ -2095,10 +2102,17 @@ export function TopologyPage() {
   });
 
   const promptNewRegion = useCallback(() => {
-    const name = window.prompt(t("topology.newRegionPrompt"), t("topology.newRegionName"));
-    if (!name?.trim()) return;
-    createRegionMut.mutate({ name: name.trim() });
-  }, [createRegionMut, t]);
+    setNewRootDialog({ name: t("topology.newRegionName") });
+  }, [t]);
+
+  const submitNewRoot = useCallback(() => {
+    const name = String(newRootDialog?.name || "").trim();
+    if (!name) {
+      showError(t("topology.newRegionPrompt"));
+      return;
+    }
+    createRegionMut.mutate({ name });
+  }, [newRootDialog, createRegionMut, showError, t]);
 
   const promptNewSubRegion = useCallback(() => {
     if (isWorldFlatViewName(activeView?.name)) {
@@ -3999,7 +4013,7 @@ export function TopologyPage() {
                     type="button"
                     className="topo-sidebar__icon-btn"
                     onClick={promptNewRegion}
-                    disabled={createRegionMut.isPending || !treeRoot}
+                    disabled={createRegionMut.isPending}
                     title={t("topology.newRegion")}
                     aria-label={t("topology.newRegion")}
                   >
@@ -4095,10 +4109,21 @@ export function TopologyPage() {
               </div>
               {!treeRoot ? (
                 <p className="panel__hint topo-tree-status" role="status">
-                  {treeQuery.isLoading ? (
+                  {treeLoading ? (
                     <>
                       <span className="topo-loading-spinner" aria-hidden="true" />
                       {t("topology.treeLoading")}
+                    </>
+                  ) : treeFailed ? (
+                    <>
+                      {t("topology.treeLoadFailed")}{" "}
+                      <button
+                        type="button"
+                        className="btn btn--sm btn--ghost"
+                        onClick={() => void treeQuery.refetch()}
+                      >
+                        {t("topology.treeRetry")}
+                      </button>
                     </>
                   ) : (
                     t("topology.emptyMaps")
@@ -4456,10 +4481,31 @@ export function TopologyPage() {
               </button>
             </div>
             {!hexBrowseRegion ? (
-              treeQuery.isLoading ? (
+              treeLoading ? (
                 <div className="topo-browser__empty topo-browser__empty--loading" role="status">
                   <span className="topo-loading-spinner" aria-hidden="true" />
                   <p>{t("topology.treeLoading")}</p>
+                </div>
+              ) : treeFailed ? (
+                <div className="topo-browser__empty">
+                  <p>{t("topology.treeLoadFailed")}</p>
+                  <div className="topo-browser__empty-actions">
+                    <button
+                      type="button"
+                      className="btn btn--sm btn--ghost"
+                      onClick={() => void treeQuery.refetch()}
+                    >
+                      {t("topology.treeRetry")}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn--sm"
+                      onClick={promptNewRegion}
+                      disabled={createRegionMut.isPending}
+                    >
+                      {t("topology.newRegion")}
+                    </button>
+                  </div>
                 </div>
               ) : regions.length === 0 ? (
                 <div className="topo-browser__empty">
@@ -4471,7 +4517,7 @@ export function TopologyPage() {
                     type="button"
                     className="btn btn--sm"
                     onClick={promptNewRegion}
-                    disabled={createRegionMut.isPending || !treeRoot}
+                    disabled={createRegionMut.isPending}
                   >
                     {t("topology.newRegion")}
                   </button>
@@ -4516,7 +4562,7 @@ export function TopologyPage() {
                     type="button"
                     className="topo-region-hex topo-region-hex--add"
                     onClick={promptNewRegion}
-                    disabled={createRegionMut.isPending || !treeRoot}
+                    disabled={createRegionMut.isPending}
                     title={t("topology.newRegion")}
                   >
                     <span className="topo-region-hex__plus" aria-hidden="true">
@@ -5350,10 +5396,43 @@ export function TopologyPage() {
                   {!isWorldFlatCanvas ? <MiniMap pannable zoomable /> : null}
                 </ReactFlow>
               </TopoDisplayContext.Provider>
-            ) : (
+            ) : treeLoading ? (
               <div className="topo-canvas__empty topo-canvas__status" role="status">
                 <span className="topo-loading-spinner" aria-hidden="true" />
                 <p>{t("topology.treeLoading")}</p>
+              </div>
+            ) : treeFailed ? (
+              <div className="topo-canvas__empty">
+                <p className="muted">{t("topology.treeLoadFailed")}</p>
+                <div className="topo-browser__empty-actions">
+                  <button
+                    type="button"
+                    className="btn btn--sm btn--ghost"
+                    onClick={() => void treeQuery.refetch()}
+                  >
+                    {t("topology.treeRetry")}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn--sm"
+                    onClick={promptNewRegion}
+                    disabled={createRegionMut.isPending}
+                  >
+                    {t("topology.newRegion")}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="topo-canvas__empty">
+                <p className="muted">{t("topology.emptyMaps")}</p>
+                <button
+                  type="button"
+                  className="btn btn--sm"
+                  onClick={promptNewRegion}
+                  disabled={createRegionMut.isPending}
+                >
+                  {t("topology.newRegion")}
+                </button>
               </div>
             )}
             {treeRoot && canvasGraphLoading ? (
@@ -5377,6 +5456,62 @@ export function TopologyPage() {
           </div>
         )}
       </main>
+
+      {newRootDialog ? (
+        <div
+          className="topo-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="topo-new-root-title"
+        >
+          <div className="topo-modal__backdrop" onClick={() => setNewRootDialog(null)} />
+          <div className="topo-modal__panel" style={{ maxWidth: 420 }}>
+            <div className="topo-modal__head">
+              <strong id="topo-new-root-title">{t("topology.newRegion")}</strong>
+              <button
+                type="button"
+                className="btn btn--sm btn--ghost"
+                onClick={() => setNewRootDialog(null)}
+              >
+                {t("topology.discoverClose")}
+              </button>
+            </div>
+            <p className="panel__hint topo-modal__hint">{t("topology.folderHint")}</p>
+            <div className="form-grid" style={{ padding: "0 16px 8px" }}>
+              <label>
+                <span className="form-label">{t("topology.newRegionPrompt")}</span>
+                <input
+                  autoFocus
+                  value={newRootDialog.name}
+                  disabled={createRegionMut.isPending}
+                  onChange={(e) => setNewRootDialog({ name: e.target.value })}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") submitNewRoot();
+                  }}
+                />
+              </label>
+            </div>
+            <div className="topo-modal__foot">
+              <button
+                type="button"
+                className="btn btn--sm btn--ghost"
+                disabled={createRegionMut.isPending}
+                onClick={() => setNewRootDialog(null)}
+              >
+                {t("topology.discoverClose")}
+              </button>
+              <button
+                type="button"
+                className="btn btn--sm"
+                disabled={createRegionMut.isPending || !String(newRootDialog.name || "").trim()}
+                onClick={submitNewRoot}
+              >
+                {createRegionMut.isPending ? "…" : t("topology.newRegion")}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {createNeDialog && canvasMode ? (
         <div
