@@ -757,17 +757,45 @@ def get_topology_tree(db: Session) -> TopologyTreeOut:
 
         return is_ume_world_container(folder) or is_world_drill_folder(folder)
 
+    views_by_folder: dict[str, list[TopoView]] = {}
+    for v in views:
+        views_by_folder.setdefault(str(v.folder_id or ""), []).append(v)
+
+    def _view_membership_ne(v: TopoView) -> int:
+        """Canvas members that are real NEs (exclude region:* directory icons)."""
+        raw = int(nc_map.get(v.id, 0) or 0)
+        return max(0, raw - int(region_icon_map.get(v.id, 0) or 0))
+
+    def _own_canvas_ne(folder: TopoFolder) -> int:
+        """Manual canvas: prefer view membership; also honor fabric region ownership."""
+        mem = sum(
+            _view_membership_ne(v) for v in views_by_folder.get(str(folder.id), [])
+        )
+        fab = int(ne_by_folder.get(str(folder.id), 0))
+        return max(mem, fab)
+
     def _subtree_inventory(folder_id: str) -> int:
-        """Directory semantics: NEs owned by this folder + all descendant folders."""
+        """UME-synced directory: NEs owned by this folder + all descendant folders."""
         total = int(ne_by_folder.get(folder_id, 0))
         for child in by_parent.get(folder_id, []):
             total += _subtree_inventory(str(child.id))
         return total
 
+    def _is_ume_synced_folder(folder: TopoFolder) -> bool:
+        return bool(str(getattr(folder, "external_ref", None) or "").strip())
+
     def _folder_ne_count(folder: TopoFolder) -> int:
         if _is_whole_network_folder(folder):
             return int(ume_ne_total or 0)
-        return _subtree_inventory(str(folder.id))
+        # UME SBN / synced dirs: fabric ownership tree (not empty manual canvases).
+        if _is_ume_synced_folder(folder):
+            return _subtree_inventory(str(folder.id))
+        # Manual 根/根图/子区域: count NEs placed on canvases (+ nested regions).
+        own = _own_canvas_ne(folder)
+        nested = sum(
+            _folder_ne_count(child) for child in by_parent.get(str(folder.id), [])
+        )
+        return own + nested
 
     def _view_node_count(v: TopoView) -> int:
         folder = folder_by_id.get(str(v.folder_id or ""))
@@ -784,15 +812,12 @@ def get_topology_tree(db: Session) -> TopologyTreeOut:
                 return int(ume_ne_by_sbn.get(sid, 0))
             if str(filt.get("parent") or "") == "md":
                 return int(ume_ne_total or 0)
+        mem = _view_membership_ne(v)
+        if mem:
+            return mem
         if folder is not None:
-            return _folder_ne_count(folder)
-        # Fallback: membership minus region icons (never count region placeholders as NEs).
-        raw = int(nc_map.get(v.id, 0) or 0)
-        return max(0, raw - int(region_icon_map.get(v.id, 0) or 0))
-
-    views_by_folder: dict[str, list[TopoView]] = {}
-    for v in views:
-        views_by_folder.setdefault(str(v.folder_id or ""), []).append(v)
+            return int(ne_by_folder.get(str(folder.id), 0))
+        return 0
 
     def _flat_views(folder: TopoFolder, folder_views: list[TopoView]) -> list[TopologyTreeViewOut]:
         from .ume_topology_world import (

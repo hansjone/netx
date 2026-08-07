@@ -314,9 +314,8 @@ function primaryTreeView(
 }
 
 /**
- * Directory NE badge from API: fabric inventory under the folder.
- * UME World / World / 世界地图 share the UME total; manual 根/根图 use their own
- * subtree (empty → 0). Region folders themselves never count as NEs.
+ * Directory NE badge from API.
+ * Manual canvases count view membership (placed NEs); UME World surfaces use inventory.
  */
 function folderNeCount(folder: TopologyTreeFolderItem | null | undefined): number {
   if (!folder) return 0;
