@@ -691,25 +691,30 @@ def get_topology_tree(db: Session) -> TopologyTreeOut:
         )
         for v in views
     )
-    ume_ne_by_folder: dict[str, int] = {}
+    # Fabric NE inventory by owning region folder (regions themselves are never fabric NEs).
+    ne_by_folder: dict[str, int] = {
+        str(fid): int(cnt or 0)
+        for fid, cnt in (
+            db.query(TopoFabricNode.region_folder_id, func.count(TopoFabricNode.id))
+            .filter(
+                TopoFabricNode.region_folder_id.isnot(None),
+                TopoFabricNode.region_folder_id != "",
+                or_(
+                    and_(TopoFabricNode.ume_ne_id.isnot(None), TopoFabricNode.ume_ne_id != ""),
+                    and_(
+                        TopoFabricNode.managed_ne_id.isnot(None),
+                        TopoFabricNode.managed_ne_id != "",
+                    ),
+                ),
+            )
+            .group_by(TopoFabricNode.region_folder_id)
+            .all()
+        )
+        if str(fid or "").strip()
+    }
     ume_ne_by_sbn: dict[str, int] = {}
     ume_ne_total = 0
     if has_ume_dirs:
-        ume_ne_by_folder = {
-            str(fid): int(cnt or 0)
-            for fid, cnt in (
-                db.query(TopoFabricNode.region_folder_id, func.count(TopoFabricNode.id))
-                .filter(
-                    TopoFabricNode.ume_ne_id.isnot(None),
-                    TopoFabricNode.ume_ne_id != "",
-                    TopoFabricNode.region_folder_id.isnot(None),
-                    TopoFabricNode.region_folder_id != "",
-                )
-                .group_by(TopoFabricNode.region_folder_id)
-                .all()
-            )
-            if str(fid or "").strip()
-        }
         ume_ne_by_sbn = {
             str(parent): int(cnt or 0)
             for parent, cnt in (
@@ -731,37 +736,74 @@ def get_topology_tree(db: Session) -> TopologyTreeOut:
             or 0
         )
 
-    def _view_node_count(v: TopoView) -> int:
-        raw = int(nc_map.get(v.id, 0) or 0)
-        ne_nc = max(0, raw - int(region_icon_map.get(v.id, 0) or 0))
-        if ne_nc:
-            return ne_nc
-        filt = view_filter_dict(v.filter)
-        if filt.get("world_flat") or (
-            bool(filt.get("world")) and not filt.get("ume_level")
-        ):
-            return ume_ne_total
-        if filt.get("ume_level"):
-            sid = str(filt.get("sbn_id") or "").strip()
-            if sid:
-                return int(ume_ne_by_sbn.get(sid, 0))
-            # World drill root: directory hint only (open canvas for real graph).
-            if str(filt.get("parent") or "") == "md":
-                return ume_ne_total
-            if v.folder_id:
-                return int(ume_ne_by_folder.get(str(v.folder_id), 0))
-        if v.folder_id:
-            return int(ume_ne_by_folder.get(str(v.folder_id), 0))
-        return 0
-
     by_parent: dict[str, list[TopoFolder]] = {}
+    folder_by_id: dict[str, TopoFolder] = {}
     root: TopoFolder | None = None
     for f in folders:
+        folder_by_id[str(f.id)] = f
         if str(f.kind or "") == "root":
             root = f
             continue
         pid = str(f.parent_id or "")
         by_parent.setdefault(pid, []).append(f)
+
+    root_id = str(root.id) if root is not None else ""
+
+    def _is_manual_root_map(folder: TopoFolder) -> bool:
+        ext = str(getattr(folder, "external_ref", None) or "").strip()
+        if ext:
+            return False
+        if not bool(folder.is_system):
+            return False
+        return is_manual_root_map_name(folder.name)
+
+    def _is_whole_network_folder(folder: TopoFolder) -> bool:
+        """根 / 根图 / UME World / World — same inventory, different presentation."""
+        from .ume_topology_world import is_ume_world_container, is_world_drill_folder
+
+        if is_ume_world_container(folder) or is_world_drill_folder(folder):
+            return True
+        ext = str(getattr(folder, "external_ref", None) or "").strip()
+        if ext.startswith("ume:"):
+            return False
+        parent = str(folder.parent_id or "").strip()
+        # Top-level manual「根」(nav-only under system root).
+        if root_id and parent == root_id and not ext:
+            return True
+        return _is_manual_root_map(folder)
+
+    def _subtree_inventory(folder_id: str) -> int:
+        """Directory semantics: NEs owned by this folder + all descendant folders."""
+        total = int(ne_by_folder.get(folder_id, 0))
+        for child in by_parent.get(folder_id, []):
+            total += _subtree_inventory(str(child.id))
+        return total
+
+    def _folder_ne_count(folder: TopoFolder) -> int:
+        if _is_whole_network_folder(folder):
+            return int(ume_ne_total or 0)
+        return _subtree_inventory(str(folder.id))
+
+    def _view_node_count(v: TopoView) -> int:
+        folder = folder_by_id.get(str(v.folder_id or ""))
+        if folder is not None and _is_whole_network_folder(folder):
+            return int(ume_ne_total or 0)
+        filt = view_filter_dict(v.filter)
+        if filt.get("world_flat") or (
+            bool(filt.get("world")) and not filt.get("ume_level")
+        ):
+            return int(ume_ne_total or 0)
+        if filt.get("ume_level"):
+            sid = str(filt.get("sbn_id") or "").strip()
+            if sid:
+                return int(ume_ne_by_sbn.get(sid, 0))
+            if str(filt.get("parent") or "") == "md":
+                return int(ume_ne_total or 0)
+        if folder is not None:
+            return _folder_ne_count(folder)
+        # Fallback: membership minus region icons (never count region placeholders as NEs).
+        raw = int(nc_map.get(v.id, 0) or 0)
+        return max(0, raw - int(region_icon_map.get(v.id, 0) or 0))
 
     views_by_folder: dict[str, list[TopoView]] = {}
     for v in views:
@@ -821,6 +863,7 @@ def get_topology_tree(db: Session) -> TopologyTreeOut:
             sort_order=int(folder.sort_order or 0),
             is_system=bool(folder.is_system),
             external_ref=str(getattr(folder, "external_ref", None) or ""),
+            ne_count=_folder_ne_count(folder),
             views=_flat_views(folder, views_by_folder.get(folder.id, [])),
             children=kids,
         )

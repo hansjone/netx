@@ -228,6 +228,8 @@ class TopologyTreeFolderOut(BaseModel):
     sort_order: int = 0
     is_system: bool = False
     external_ref: str = ""
+    # Real NE inventory under this folder (subtree). Region folders are not NEs.
+    ne_count: int = 0
     views: list[TopologyTreeViewOut] = Field(default_factory=list)
     children: list["TopologyTreeFolderOut"] = Field(default_factory=list)
 

@@ -297,12 +297,35 @@ function regionDisplayName(
   return raw;
 }
 
-/** Real NE count under a folder (own views + nested children). Backend node_count already excludes region icons. */
+/** Prefer the folder's primary canvas view (physical / world flat / World drill). */
+function primaryTreeView(
+  folder: TopologyTreeFolderItem | null | undefined,
+): TopologyTreeViewItem | null {
+  if (!folder) return null;
+  const views = folder.views || [];
+  if (!views.length) return null;
+  if (isWorldDrillFolder(folder)) {
+    return views.find((v) => v.name === "World") || views[0] || null;
+  }
+  if (isUmeWorldContainer(folder)) {
+    return views.find((v) => isWorldFlatViewName(v.name)) || views[0] || null;
+  }
+  return views[0] || null;
+}
+
+/**
+ * Directory NE badge from API: fabric inventory under the folder.
+ * 根 / 根图 / UME World / World share the same whole-network total; nested regions
+ * sum owned NEs in their subtree. Region folders themselves never count as NEs.
+ */
 function folderNeCount(folder: TopologyTreeFolderItem | null | undefined): number {
   if (!folder) return 0;
-  const own = (folder.views || []).reduce((sum, v) => sum + (Number(v.node_count) || 0), 0);
-  const nested = (folder.children || []).reduce((sum, c) => sum + folderNeCount(c), 0);
-  return own + nested;
+  if (folder.ne_count != null && Number.isFinite(Number(folder.ne_count))) {
+    return Math.max(0, Math.floor(Number(folder.ne_count) || 0));
+  }
+  // Legacy fallback before API ne_count: primary view only (no recursive sum).
+  const primary = primaryTreeView(folder);
+  return primary ? Math.max(0, Math.floor(Number(primary.node_count) || 0)) : 0;
 }
 
 function formatNeCount(count: number): string {

@@ -427,6 +427,8 @@ export type TopologyTreeFolderItem = {
   sort_order: number;
   is_system: boolean;
   external_ref?: string;
+  /** Real NE inventory under this folder (subtree). Region folders are not NEs. */
+  ne_count?: number;
   views: TopologyTreeViewItem[];
   children: TopologyTreeFolderItem[];
 };
