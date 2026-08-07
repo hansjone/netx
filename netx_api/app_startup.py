@@ -10,6 +10,7 @@ from .db import Base, SessionLocal, engine
 from .schema_patches import (
     apply_all_legacy_startup_ddl,
     apply_auth_schema_patches,
+    apply_topology_schema_safety_net,
     run_alembic_upgrade_to_head,
 )
 from .security_bootstrap import assert_secure_defaults_or_exit
@@ -54,8 +55,11 @@ def run_api_startup() -> None:
     try:
         with engine.begin() as conn:
             apply_auth_schema_patches(conn)
+            # Critical topology columns even when full legacy DDL is skipped
+            # (e.g. alembic stamped head without applying domain patches).
+            apply_topology_schema_safety_net(conn)
     except Exception:
-        _log.exception("startup: auth schema patches failed")
+        _log.exception("startup: auth/topology schema safety patches failed")
     if skip_ddl and alembic_ok:
         _log.info("startup: schema via Alembic (legacy inline DDL skipped)")
     else:

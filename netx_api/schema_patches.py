@@ -123,6 +123,28 @@ def apply_auth_schema_patches(conn: Connection) -> None:
     )
 
 
+def apply_topology_schema_safety_net(conn: Connection) -> None:
+    """Always-on topology columns (Alembic stamp-without-upgrade must not skip these)."""
+    _run_sql(
+        conn,
+        "ALTER TABLE topo_folder ADD COLUMN IF NOT EXISTS external_ref VARCHAR(128) DEFAULT ''",
+    )
+    _run_sql(
+        conn,
+        "CREATE INDEX IF NOT EXISTS ix_topo_folder_external_ref ON topo_folder (external_ref)",
+    )
+    _run_sql(conn, "ALTER TABLE topo_fabric_node ADD COLUMN IF NOT EXISTS world_x DOUBLE PRECISION")
+    _run_sql(conn, "ALTER TABLE topo_fabric_node ADD COLUMN IF NOT EXISTS world_y DOUBLE PRECISION")
+    _run_sql(
+        conn,
+        "CREATE INDEX IF NOT EXISTS ix_topo_fabric_node_world_x ON topo_fabric_node (world_x)",
+    )
+    _run_sql(
+        conn,
+        "CREATE INDEX IF NOT EXISTS ix_topo_fabric_node_world_y ON topo_fabric_node (world_y)",
+    )
+
+
 def apply_key_alert_schema_patches(
     engine: Engine | None = None,
     *,
