@@ -2,6 +2,35 @@
   box-sizing: border-box;
 }
 
+html {
+  color-scheme: dark;
+  scrollbar-color: #475569 #0f172a;
+  scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: #0f172a;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: #475569;
+  border: 2px solid #0f172a;
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
+
+*::-webkit-scrollbar-corner {
+  background: #0f172a;
+}
+
 body {
   margin: 0;
   font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
@@ -4305,8 +4334,9 @@ pre {
 
 /* ---- Topology — dark sidebar + canvas (shared chrome tokens) ---- */
 .topo-page {
+  --topo-sidebar-w: 260px;
   display: grid;
-  grid-template-columns: 260px 1fr;
+  grid-template-columns: var(--topo-sidebar-w) 1fr;
   gap: 12px;
   height: calc(100vh - 48px);
   min-height: 520px;
@@ -4320,7 +4350,13 @@ pre {
   grid-template-columns: 36px 1fr;
 }
 
+.topo-page.is-sidebar-resizing {
+  transition: none;
+  cursor: col-resize;
+}
+
 .topo-sidebar {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -4332,6 +4368,35 @@ pre {
   overflow: hidden;
   color: var(--nm-text);
   box-shadow: 0 1px 2px rgba(15, 27, 45, 0.06);
+}
+
+.topo-sidebar__resizer {
+  position: absolute;
+  top: 0;
+  right: -8px;
+  z-index: 6;
+  width: 12px;
+  height: 100%;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.topo-sidebar__resizer::after {
+  content: "";
+  position: absolute;
+  top: 12%;
+  bottom: 12%;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  border-radius: 1px;
+  background: transparent;
+  transition: background 0.12s ease;
+}
+
+.topo-sidebar__resizer:hover::after,
+.topo-sidebar__resizer.is-dragging::after {
+  background: rgba(59, 130, 246, 0.75);
 }
 
 .topo-page.is-sidebar-collapsed .topo-sidebar {
@@ -4364,29 +4429,6 @@ pre {
 
 .topo-sidebar__rail-wrap > .topo-sidebar__rail:first-child {
   flex: 1;
-}
-
-.topo-sidebar__rail--live {
-  flex: 0 0 auto;
-  padding: 10px 0;
-}
-
-.topo-sidebar__rail--live.is-on {
-  color: #93c5fd;
-  background: rgba(37, 99, 235, 0.2);
-}
-
-.topo-sidebar__rail-live-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: currentColor;
-  opacity: 0.45;
-}
-
-.topo-sidebar__rail--live.is-on .topo-sidebar__rail-live-dot {
-  opacity: 1;
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.25);
 }
 
 .topo-sidebar__rail .topo-sidebar__rail-icon {
@@ -4477,17 +4519,6 @@ pre {
   align-items: center;
   gap: 2px;
   min-width: 0;
-}
-
-.topo-sidebar__live {
-  display: flex;
-  align-items: center;
-  margin-top: 2px;
-}
-
-.topo-sidebar__live .btn {
-  width: 100%;
-  justify-content: center;
 }
 
 .topo-tree-search__bar > .input {
@@ -6028,36 +6059,29 @@ pre {
   justify-content: flex-start;
   flex-wrap: wrap;
   gap: 8px;
-  padding-top: 6px;
-  border-top: 1px solid rgba(148, 163, 184, 0.16);
+  padding-top: 4px;
+  border-top: 1px solid rgba(148, 163, 184, 0.12);
 }
 
 .topo-toolbar__group + .topo-toolbar__group,
-.topo-toolbar__panel + .topo-toolbar__group,
+.topo-toolbar__cluster + .topo-toolbar__group,
 .topo-toolbar__group + .topo-toolbar__group--find,
-.topo-toolbar__panel + .topo-toolbar__group--find {
+.topo-toolbar__cluster + .topo-toolbar__group--find {
   margin-left: 2px;
   padding-left: 10px;
   border-left: 1px solid rgba(148, 163, 184, 0.2);
 }
 
-.topo-toolbar__panel {
+/* Flat cluster: no nested chrome — only a separator from tool modes. */
+.topo-toolbar__cluster {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   flex-shrink: 0;
-  padding: 3px 6px;
-  background: rgba(2, 8, 23, 0.55);
-  border: 1px solid rgba(148, 163, 184, 0.22);
-  border-radius: 6px;
-}
-
-.topo-toolbar__panel .topo-tools {
-  background: rgba(15, 23, 42, 0.8);
-}
-
-.topo-toolbar__panel .topo-toolbar__display > summary {
-  background: #0b1220;
+  min-width: 0;
+  margin-left: 2px;
+  padding-left: 10px;
+  border-left: 1px solid rgba(148, 163, 184, 0.2);
 }
 
 .topo-toolbar__group--find {
@@ -6196,11 +6220,8 @@ pre {
 
 .topo-tools {
   display: inline-flex;
+  align-items: center;
   gap: 2px;
-  padding: 2px;
-  background: rgba(2, 8, 23, 0.55);
-  border: 1px solid rgba(148, 163, 184, 0.22);
-  border-radius: 6px;
   flex-shrink: 0;
 }
 
@@ -6213,8 +6234,8 @@ pre {
   color: #94a3b8;
   font-size: 12px;
   font-weight: 600;
-  padding: 4px 8px;
-  border-radius: 4px;
+  padding: 5px 9px;
+  border-radius: 6px;
   cursor: pointer;
   line-height: 1.2;
 }
@@ -6881,6 +6902,24 @@ pre {
   background: var(--topo-canvas-bg, #0f172a);
   --xy-edge-label-background-color: transparent;
   --xy-edge-label-color: var(--topo-edge-label-color, #e2e8f0);
+  /* Defaults = dark canvas; TopologyPage overrides via canvasFloatChromeVars. */
+  --topo-float-bg: rgba(15, 23, 42, 0.92);
+  --topo-float-border: rgba(148, 163, 184, 0.22);
+  --topo-float-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  --topo-float-fg: #e2e8f0;
+  --topo-float-muted: #94a3b8;
+  --topo-float-btn-bg: #0b1220;
+  --topo-float-btn-border: rgba(148, 163, 184, 0.28);
+  --topo-float-btn-hover: #152033;
+  --topo-float-active-bg: rgba(37, 99, 235, 0.28);
+  --topo-float-active-fg: #93c5fd;
+  --topo-float-active-border: #3b82f6;
+  --topo-float-control-bg: #0f172a;
+  --topo-float-control-hover: #1e293b;
+  --topo-float-control-fill: #cbd5e1;
+  --topo-float-input-bg: #0b1220;
+  --topo-float-input-fg: #e2e8f0;
+  --topo-float-input-border: rgba(148, 163, 184, 0.28);
 }
 
 .topo-canvas:fullscreen,
@@ -6894,31 +6933,39 @@ pre {
 .topo-canvas .react-flow__controls {
   display: flex;
   flex-direction: column;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
-  border: 1px solid rgba(148, 163, 184, 0.28);
+  box-shadow: var(--topo-float-shadow);
+  border: 0;
   border-radius: 6px;
   overflow: hidden;
+  background: var(--topo-float-bg);
 }
 
 .topo-canvas .react-flow__controls-button {
-  background: #0f172a;
-  border-bottom-color: rgba(148, 163, 184, 0.22);
-  fill: #cbd5e1;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--topo-float-border);
+  color: var(--topo-float-control-fill);
+  fill: var(--topo-float-control-fill);
+}
+
+.topo-canvas .react-flow__controls-button:last-child {
+  border-bottom: 0;
 }
 
 .topo-canvas .react-flow__controls-button:hover {
-  background: #1e293b;
+  background: var(--topo-float-control-hover);
 }
 
-.topo-canvas .react-flow__controls-button svg {
-  fill: #cbd5e1;
+.topo-canvas .react-flow__controls-button svg,
+.topo-canvas .react-flow__controls-button svg path {
+  fill: currentColor;
 }
 
 .topo-canvas .react-flow__minimap {
-  background: #0b1220;
-  border: 1px solid rgba(148, 163, 184, 0.28);
-  border-radius: 6px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  border: 0;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: var(--topo-float-shadow);
 }
 
 .topo-canvas .react-flow__controls-button.topo-fs-control {
@@ -6928,16 +6975,13 @@ pre {
 .topo-canvas .react-flow__controls-button.topo-fs-control svg {
   max-width: 14px;
   max-height: 14px;
+  width: 14px;
+  height: 14px;
+  display: block;
+  color: inherit;
 }
 
-.topo-toolbar__panel--view {
-  margin-left: 2px;
-  padding-left: 10px;
-  border-left: 1px solid rgba(148, 163, 184, 0.2);
-  gap: 8px;
-}
-
-.topo-toolbar__panel--view .topo-toolbar__group--find {
+.topo-toolbar__cluster .topo-toolbar__group--find {
   margin-left: 0;
   padding-left: 0;
   border-left: 0;
@@ -6953,9 +6997,10 @@ pre {
   gap: 6px;
   padding: 8px;
   border-radius: 10px;
-  background: rgba(15, 23, 42, 0.92);
-  border: 1px solid rgba(148, 163, 184, 0.22);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  background: var(--topo-float-bg);
+  border: 1px solid var(--topo-float-border);
+  box-shadow: var(--topo-float-shadow);
+  color: var(--topo-float-fg);
   pointer-events: auto;
 }
 
@@ -6970,9 +7015,10 @@ pre {
   gap: 6px;
   padding: 6px 8px;
   border-radius: 10px;
-  background: rgba(15, 23, 42, 0.92);
-  border: 1px solid rgba(148, 163, 184, 0.22);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  background: var(--topo-float-bg);
+  border: 1px solid var(--topo-float-border);
+  box-shadow: var(--topo-float-shadow);
+  color: var(--topo-float-fg);
   pointer-events: auto;
   max-width: min(520px, calc(100% - 24px));
 }
@@ -7006,32 +7052,71 @@ pre {
   right: 12px;
 }
 
+/* Beat `.app-main button { background:#0b1220 }` so inactive chips stay ghost. */
+.app-main .topo-fs-toolbar__btn,
+.topo-canvas .topo-fs-toolbar__btn,
 .topo-fs-toolbar__btn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 10px;
-  border-radius: 8px;
-  border: 1px solid rgba(148, 163, 184, 0.28);
-  background: #0b1220;
-  color: #e2e8f0;
+  height: auto;
+  padding: 6px 10px !important;
+  border-radius: 8px !important;
+  border: 1px solid transparent !important;
+  background: transparent !important;
+  color: var(--topo-float-muted) !important;
+  box-shadow: none !important;
   font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
   cursor: pointer;
 }
 
+.app-main .topo-fs-toolbar__btn:hover,
+.topo-canvas .topo-fs-toolbar__btn:hover,
 .topo-fs-toolbar__btn:hover {
-  background: #152033;
+  background: var(--topo-float-btn-hover) !important;
+  color: var(--topo-float-fg) !important;
 }
 
+.app-main .topo-fs-toolbar__btn.is-active,
+.topo-canvas .topo-fs-toolbar__btn.is-active,
 .topo-fs-toolbar__btn.is-active {
-  border-color: #3b82f6;
-  background: rgba(37, 99, 235, 0.28);
-  color: #93c5fd;
+  border-color: var(--topo-float-active-border) !important;
+  background: var(--topo-float-active-bg) !important;
+  color: var(--topo-float-active-fg) !important;
 }
 
+.app-main .topo-fs-toolbar__btn kbd,
+.topo-canvas .topo-fs-toolbar__btn kbd,
 .topo-fs-toolbar__btn kbd {
   font-size: 10px;
   opacity: 0.7;
+  border-color: currentColor;
+  background: transparent;
+  color: inherit;
+  padding: 0 3px;
+}
+
+/* Beat global dark toolbar overrides when canvas bg is light. */
+.topo-canvas.is-canvas-light .topo-view-tools .topo-toolbar__find,
+.topo-canvas.is-canvas-light .topo-view-tools .topo-toolbar__select,
+.topo-canvas.is-canvas-light .topo-view-tools .topo-toolbar__display > summary {
+  background: var(--topo-float-input-bg) !important;
+  border-color: var(--topo-float-input-border) !important;
+  color: var(--topo-float-input-fg) !important;
+}
+
+.topo-canvas.is-canvas-light .topo-view-tools .topo-toolbar__find::placeholder {
+  color: var(--topo-float-muted);
+}
+
+.topo-canvas .topo-view-tools .topo-toolbar__find,
+.topo-canvas .topo-view-tools .topo-toolbar__select,
+.topo-canvas .topo-view-tools .topo-toolbar__display > summary {
+  background: var(--topo-float-input-bg);
+  border-color: var(--topo-float-input-border);
+  color: var(--topo-float-input-fg);
 }
 
 .topo-canvas__empty {
@@ -7330,15 +7415,36 @@ pre {
   pointer-events: none;
 }
 
-.topo-outside-peers {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 0 10px 10px;
+.app-main .topo-toolbar__outside-peers,
+.topo-toolbar__outside-peers {
+  margin-left: auto;
+  flex-shrink: 0;
+  white-space: nowrap;
+  width: auto;
+  height: 30px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  border-radius: 6px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: #0b1220;
+  color: #94a3b8;
 }
 
-.topo-outside-peers .panel__hint {
-  margin: 0;
+.app-main .topo-toolbar__outside-peers:hover,
+.topo-toolbar__outside-peers:hover {
+  background: #152033;
+  color: #e2e8f0;
+}
+
+.topo-modal__panel--wide {
+  width: min(560px, calc(100vw - 32px));
+}
+
+.topo-modal__count {
+  font-weight: 500;
+  color: #94a3b8;
 }
 
 .topo-node--cisco {
@@ -7657,6 +7763,10 @@ pre {
   .topo-page.is-sidebar-collapsed {
     grid-template-columns: 1fr;
     height: auto;
+  }
+
+  .topo-sidebar__resizer {
+    display: none;
   }
 
   .topo-sidebar {

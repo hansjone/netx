@@ -213,14 +213,41 @@ const edgeTypes = { topoParallel: ParallelEdge };
 const SNAP_GRID: [number, number] = [16, 16];
 const FIT_VIEW_OPTS = { padding: 0.2, includeHiddenNodes: true } as const;
 
-function canvasDotColor(bg: string): string {
-  const hex = String(bg || "").replace("#", "");
-  if (hex.length !== 6) return "#93c5fd";
+function canvasBgRgb(bg: string): { r: number; g: number; b: number } | null {
+  const hex = String(bg || "").replace("#", "").trim();
+  if (hex.length !== 6) return null;
   const r = parseInt(hex.slice(0, 2), 16);
   const g = parseInt(hex.slice(2, 4), 16);
   const b = parseInt(hex.slice(4, 6), 16);
-  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  if (![r, g, b].every((n) => Number.isFinite(n))) return null;
+  return { r, g, b };
+}
+
+function canvasDotColor(bg: string): string {
+  const rgb = canvasBgRgb(bg);
+  if (!rgb) return "#93c5fd";
+  const lum = (0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b) / 255;
   return lum > 0.55 ? "#93c5fd" : "#64748b";
+}
+
+/** MiniMap colors follow the canvas bg so a light map doesn't get a dark inset. */
+function minimapTheme(bg: string): {
+  bgColor: string;
+  nodeColor: string;
+  nodeStrokeColor: string;
+  maskColor: string;
+  maskStrokeColor: string;
+} {
+  const rgb = canvasBgRgb(bg) || { r: 11, g: 18, b: 32 };
+  const lum = (0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b) / 255;
+  const light = lum > 0.55;
+  return {
+    bgColor: bg || (light ? "#e8eef6" : "#0b1220"),
+    nodeColor: "#3b82f6",
+    nodeStrokeColor: light ? "#93c5fd" : "#1e3a5f",
+    maskColor: light ? "rgba(15, 23, 42, 0.14)" : "rgba(2, 8, 23, 0.62)",
+    maskStrokeColor: light ? "rgba(59, 130, 246, 0.55)" : "rgba(148, 163, 184, 0.45)",
+  };
 }
 
 function worldDisplayBounds(wt: TopologyWorldTransform | null | undefined): {
@@ -497,7 +524,15 @@ export default function TopologyReactFlowView(props: TopologyReactFlowViewProps)
             <FullscreenIcon exit={fullscreen} />
           </ControlButton>
         </Controls>
-        {!isWorldFlatCanvas ? <MiniMap pannable zoomable /> : null}
+        {!isWorldFlatCanvas ? (
+          <MiniMap
+            pannable
+            zoomable
+            {...minimapTheme(canvasBg)}
+            nodeStrokeWidth={1}
+            maskStrokeWidth={1}
+          />
+        ) : null}
       </ReactFlow>
     </TopoDisplayContext.Provider>
   );

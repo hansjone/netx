@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
@@ -89,6 +90,39 @@ function isPlaceholderSource(source: string | undefined, neIp: string): boolean 
 
 const LAST_LEAF_KEY = "netx.topology.lastLeafViewId";
 const TREE_EXPAND_KEY = "netx.topology.treeExpanded";
+const SIDEBAR_WIDTH_KEY = "netx.topology.sidebarWidth";
+const SIDEBAR_WIDTH_DEFAULT = 260;
+const SIDEBAR_WIDTH_MIN = 180;
+const SIDEBAR_WIDTH_MAX = 560;
+
+function loadSidebarWidth(): number {
+  try {
+    const n = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY));
+    if (Number.isFinite(n) && n >= SIDEBAR_WIDTH_MIN) {
+      return Math.min(Math.round(n), SIDEBAR_WIDTH_MAX);
+    }
+  } catch {
+    /* ignore */
+  }
+  return SIDEBAR_WIDTH_DEFAULT;
+}
+
+function saveSidebarWidth(width: number): void {
+  try {
+    localStorage.setItem(SIDEBAR_WIDTH_KEY, String(Math.round(width)));
+  } catch {
+    /* ignore */
+  }
+}
+
+function clampSidebarWidth(width: number, pageWidth?: number): number {
+  const maxByPage =
+    pageWidth && pageWidth > 0
+      ? Math.max(SIDEBAR_WIDTH_MIN, Math.floor(pageWidth * 0.55))
+      : SIDEBAR_WIDTH_MAX;
+  const maxW = Math.min(SIDEBAR_WIDTH_MAX, maxByPage);
+  return Math.max(SIDEBAR_WIDTH_MIN, Math.min(maxW, Math.round(width)));
+}
 
 function findViewInRegion(
   regions: TopologyTreeFolderItem[],
@@ -677,6 +711,61 @@ function isHexColor(value: string): boolean {
   return /^#[0-9a-fA-F]{6}$/.test(value);
 }
 
+function canvasBgLuminance(bg: string): number {
+  const hex = String(bg || "").replace("#", "").trim();
+  if (hex.length !== 6) return 0.1;
+  const r = parseInt(hex.slice(0, 2), 16);
+  const g = parseInt(hex.slice(2, 4), 16);
+  const b = parseInt(hex.slice(4, 6), 16);
+  if (![r, g, b].every((n) => Number.isFinite(n))) return 0.1;
+  return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+}
+
+/** Floating chrome (fs toolbar / view tools / controls) follows canvas bg like MiniMap. */
+function canvasFloatChromeVars(bg: string): CSSProperties {
+  const light = canvasBgLuminance(bg) > 0.55;
+  if (light) {
+    return {
+      "--topo-float-bg": "rgba(255, 255, 255, 0.92)",
+      "--topo-float-border": "rgba(15, 23, 42, 0.08)",
+      "--topo-float-shadow": "0 8px 24px rgba(15, 23, 42, 0.12)",
+      "--topo-float-fg": "#0f172a",
+      "--topo-float-muted": "#64748b",
+      "--topo-float-btn-bg": "transparent",
+      "--topo-float-btn-border": "transparent",
+      "--topo-float-btn-hover": "rgba(15, 23, 42, 0.06)",
+      "--topo-float-active-bg": "rgba(37, 99, 235, 0.16)",
+      "--topo-float-active-fg": "#1d4ed8",
+      "--topo-float-active-border": "#3b82f6",
+      "--topo-float-control-bg": "transparent",
+      "--topo-float-control-hover": "rgba(15, 23, 42, 0.06)",
+      "--topo-float-control-fill": "#334155",
+      "--topo-float-input-bg": "#ffffff",
+      "--topo-float-input-fg": "#0f172a",
+      "--topo-float-input-border": "rgba(15, 23, 42, 0.16)",
+    } as CSSProperties;
+  }
+  return {
+    "--topo-float-bg": "rgba(15, 23, 42, 0.92)",
+    "--topo-float-border": "rgba(148, 163, 184, 0.18)",
+    "--topo-float-shadow": "0 8px 24px rgba(0, 0, 0, 0.35)",
+    "--topo-float-fg": "#e2e8f0",
+    "--topo-float-muted": "#94a3b8",
+    "--topo-float-btn-bg": "transparent",
+    "--topo-float-btn-border": "transparent",
+    "--topo-float-btn-hover": "rgba(30, 41, 59, 0.9)",
+    "--topo-float-active-bg": "rgba(37, 99, 235, 0.28)",
+    "--topo-float-active-fg": "#93c5fd",
+    "--topo-float-active-border": "#3b82f6",
+    "--topo-float-control-bg": "transparent",
+    "--topo-float-control-hover": "rgba(30, 41, 59, 0.9)",
+    "--topo-float-control-fill": "#cbd5e1",
+    "--topo-float-input-bg": "#0b1220",
+    "--topo-float-input-fg": "#e2e8f0",
+    "--topo-float-input-border": "rgba(148, 163, 184, 0.28)",
+  } as CSSProperties;
+}
+
 function loadCanvasBg(): string {
   try {
     const raw = String(localStorage.getItem(CANVAS_BG_KEY) || "").trim().toLowerCase();
@@ -1054,7 +1143,15 @@ export function TopologyPage() {
     loadBoolFlag(DISCOVER_PROJECT_NEIGHBORS_KEY, true),
   );
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarWidth, setSidebarWidth] = useState(() => loadSidebarWidth());
+  const [sidebarResizing, setSidebarResizing] = useState(false);
+  const sidebarDragRef = useRef<{ startX: number; startW: number } | null>(null);
+  const topoPageRef = useRef<HTMLDivElement | null>(null);
   const [addNeOpen, setAddNeOpen] = useState(false);
+  const [outsidePeersOpen, setOutsidePeersOpen] = useState(false);
+  const [outsidePeerSelectedIds, setOutsidePeerSelectedIds] = useState<string[]>([]);
+  const [outsidePeerQuery, setOutsidePeerQuery] = useState("");
+  const [outsidePeersAdding, setOutsidePeersAdding] = useState(false);
   const [paletteSource, setPaletteSource] = useState<PaletteSource>("managed");
   const [paletteSelectedKeys, setPaletteSelectedKeys] = useState<string[]>([]);
   const [paletteAdding, setPaletteAdding] = useState(false);
@@ -3066,38 +3163,88 @@ export function TopologyPage() {
     });
   }, [staleEdgeIds, queueDeleteEdges]);
 
-  const projectOutsidePeers = useCallback(async () => {
-    if (!mapId) return;
-    try {
-      const before = nodes.length;
-      const projected = await projectTopologyNeighbors(mapId, { dry_run: true });
-      if (projected.truncate_reason === "membership_frozen") {
-        showError(t("topology.truncatedFrozen"));
-        return;
+  const addOutsidePeers = useCallback(
+    async (fabricNodeIds: string[]): Promise<boolean> => {
+      if (!mapId) return false;
+      const ids = [...new Set(fabricNodeIds.map((x) => String(x || "").trim()).filter(Boolean))];
+      if (!ids.length || outsidePeersAdding) return false;
+      setOutsidePeersAdding(true);
+      try {
+        const onCanvas = new Set(nodes.map((n) => n.id));
+        const toAdd = ids.filter((id) => !onCanvas.has(id));
+        if (!toAdd.length) {
+          setOutsidePeersOpen(false);
+          setOutsidePeerSelectedIds([]);
+          return false;
+        }
+        const graph = await addTopologyViewNodes(mapId, {
+          fabric_node_ids: toAdd,
+          layout: "grid",
+        });
+        if (graph.truncate_reason === "membership_frozen") {
+          showError(t("topology.truncatedFrozen"));
+          return false;
+        }
+        const addedSet = new Set(toAdd);
+        const added = (graph.nodes || []).filter((n) => addedSet.has(n.fabric_node_id));
+        if (added.length > 0) {
+          const peerList = graphQuery.data?.outside_peers || [];
+          const viaAnchors = new Map(
+            peerList
+              .filter((p) => addedSet.has(p.fabric_node_id))
+              .map((p) => [p.fabric_node_id, p.via_node_id] as const),
+          );
+          const cols = Math.max(1, Math.ceil(Math.sqrt(added.length)));
+          await patchTopologyPositions(
+            mapId,
+            added.map((n, i) => {
+              const viaId = viaAnchors.get(n.fabric_node_id);
+              const viaNode = viaId ? nodes.find((x) => x.id === viaId) : undefined;
+              const base = viaNode
+                ? { x: viaNode.position.x + 200, y: viaNode.position.y }
+                : { x: 80 + nodes.length * 24, y: 80 + nodes.length * 24 };
+              return {
+                fabric_node_id: n.fabric_node_id,
+                x: base.x + (i % cols) * 180,
+                y: base.y + Math.floor(i / cols) * 120,
+                label: n.label || n.name || "",
+              };
+            }),
+          );
+        }
+        const refreshed = await fetchTopologyGraph(mapId);
+        queryClient.setQueryData(queryKeys.topologyGraph(mapId), refreshed);
+        historyLockRef.current = true;
+        applyViewGraph(refreshed, edgeDefaults, setNodes, setEdges);
+        historyLockRef.current = false;
+        clearDirty();
+        const count = added.length || toAdd.length;
+        showOk(t("topology.projectedNeighbors").replace("{{count}}", String(count)));
+        setOutsidePeerSelectedIds([]);
+        setOutsidePeersOpen(false);
+        return count > 0;
+      } catch (err) {
+        showError(String(err));
+        return false;
+      } finally {
+        setOutsidePeersAdding(false);
       }
-      const localPos = new Map(nodes.map((n) => [n.id, n.position]));
-      historyLockRef.current = true;
-      applyViewGraph(projected, edgeDefaults, setNodes, setEdges, localPos);
-      historyLockRef.current = false;
-      const added = Math.max(0, projected.nodes.length - before);
-      if (added > 0) {
-        markDirty();
-      }
-      showOk(t("topology.projectedNeighbors").replace("{{count}}", String(added)));
-    } catch (err) {
-      showError(String(err));
-    }
-  }, [
-    mapId,
-    nodes,
-    edgeDefaults,
-    setNodes,
-    setEdges,
-    markDirty,
-    showOk,
-    showError,
-    t,
-  ]);
+    },
+    [
+      mapId,
+      nodes,
+      graphQuery.data?.outside_peers,
+      outsidePeersAdding,
+      edgeDefaults,
+      setNodes,
+      setEdges,
+      clearDirty,
+      queryClient,
+      showOk,
+      showError,
+      t,
+    ],
+  );
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -3816,6 +3963,23 @@ export function TopologyPage() {
   );
 
   const outsidePeers = graphQuery.data?.outside_peers || [];
+  const outsidePeerNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const n of nodes) {
+      const label = String(n.data?.label || n.data?.subtitle || "").trim();
+      m.set(n.id, label || n.id.slice(0, 8));
+    }
+    return m;
+  }, [nodes]);
+  const outsidePeersVisible = useMemo(() => {
+    const q = outsidePeerQuery.trim().toLowerCase();
+    if (!q) return outsidePeers;
+    return outsidePeers.filter((p) => {
+      const viaName = outsidePeerNameById.get(p.via_node_id) || p.via_node_id;
+      const bits = [p.name, p.ip, viaName, p.fabric_node_id];
+      return bits.some((b) => String(b || "").toLowerCase().includes(q));
+    });
+  }, [outsidePeers, outsidePeerQuery, outsidePeerNameById]);
   const graphTruncated = Boolean(graphQuery.data?.truncated);
   const truncateReason = String(graphQuery.data?.truncate_reason || "").trim();
   const worldScatter = graphQuery.data?.scatter || [];
@@ -3924,8 +4088,53 @@ export function TopologyPage() {
     (paletteSource === "managed" && neQuery.isLoading) ||
     (paletteSource === "ume" && umeQuery.isLoading);
 
+  const onSidebarResizeDown = useCallback(
+    (e: ReactMouseEvent<HTMLDivElement>) => {
+      if (sidebarCollapsed) return;
+      e.preventDefault();
+      sidebarDragRef.current = { startX: e.clientX, startW: sidebarWidth };
+      setSidebarResizing(true);
+      const onMove = (ev: MouseEvent) => {
+        const drag = sidebarDragRef.current;
+        if (!drag) return;
+        const pageW = topoPageRef.current?.clientWidth || window.innerWidth;
+        const next = clampSidebarWidth(drag.startW + (ev.clientX - drag.startX), pageW);
+        setSidebarWidth(next);
+      };
+      const onUp = () => {
+        sidebarDragRef.current = null;
+        setSidebarResizing(false);
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+        setSidebarWidth((w) => {
+          const pageW = topoPageRef.current?.clientWidth || window.innerWidth;
+          const next = clampSidebarWidth(w, pageW);
+          saveSidebarWidth(next);
+          return next;
+        });
+      };
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    },
+    [sidebarCollapsed, sidebarWidth],
+  );
+
   return (
-    <div className={`topo-page${sidebarCollapsed ? " is-sidebar-collapsed" : ""}`}>
+    <div
+      ref={topoPageRef}
+      className={`topo-page${sidebarCollapsed ? " is-sidebar-collapsed" : ""}${
+        sidebarResizing ? " is-sidebar-resizing" : ""
+      }`}
+      style={
+        sidebarCollapsed
+          ? undefined
+          : ({ "--topo-sidebar-w": `${sidebarWidth}px` } as CSSProperties)
+      }
+    >
       <aside className="topo-sidebar" aria-label={t("topology.maps")}>
         {sidebarCollapsed ? (
           <div className="topo-sidebar__rail-wrap">
@@ -3939,16 +4148,6 @@ export function TopologyPage() {
               <span className="topo-sidebar__rail-icon" aria-hidden="true">
                 <SidebarFoldIcon expand />
               </span>
-            </button>
-            <button
-              type="button"
-              className={`topo-sidebar__rail topo-sidebar__rail--live${liveSync ? " is-on" : ""}`}
-              aria-pressed={liveSync}
-              title={t("topology.liveSyncHint")}
-              aria-label={liveSync ? t("topology.liveSyncOn") : t("topology.liveSync")}
-              onClick={() => setLiveSync((v) => !v)}
-            >
-              <span className="topo-sidebar__rail-live-dot" aria-hidden="true" />
             </button>
           </div>
         ) : (
@@ -3986,17 +4185,6 @@ export function TopologyPage() {
                     onClick={() => setSidebarCollapsed(true)}
                   >
                     <SidebarFoldIcon />
-                  </button>
-                </div>
-                <div className="topo-sidebar__live">
-                  <button
-                    type="button"
-                    className={`btn btn--sm${liveSync ? "" : " btn--ghost"}`}
-                    aria-pressed={liveSync}
-                    title={t("topology.liveSyncHint")}
-                    onClick={() => setLiveSync((v) => !v)}
-                  >
-                    {liveSync ? t("topology.liveSyncOn") : t("topology.liveSync")}
                   </button>
                 </div>
                 {treeSearchOpen && treeNeQuery.trim() ? (
@@ -4102,23 +4290,19 @@ export function TopologyPage() {
                   </ul>
                 </div>
               )}
-              {mapId && outsidePeers.length > 0 && (
-                <div className="topo-outside-peers">
-                  <p className="panel__hint">
-                    {t("topology.outsidePeers").replace("{{count}}", String(outsidePeers.length))}
-                  </p>
-                  <button
-                    type="button"
-                    className="btn btn--sm"
-                    onClick={() => void projectOutsidePeers()}
-                  >
-                    {t("topology.projectNeighbors")}
-                  </button>
-                </div>
-              )}
             </div>
           </>
         )}
+        {!sidebarCollapsed ? (
+          <div
+            className={`topo-sidebar__resizer${sidebarResizing ? " is-dragging" : ""}`}
+            role="separator"
+            aria-orientation="vertical"
+            aria-label={t("topology.resizeSidebar")}
+            title={t("topology.resizeSidebar")}
+            onMouseDown={onSidebarResizeDown}
+          />
+        ) : null}
       </aside>
 
       <main className="topo-main">
@@ -4190,6 +4374,15 @@ export function TopologyPage() {
               <HelpHint text={t("topology.canvasHint")} ariaLabel={t("common.help")} />
             </div>
             <div className="topo-toolbar__actions">
+              <button
+                type="button"
+                className={`btn btn--sm${liveSync ? "" : " btn--ghost"}`}
+                aria-pressed={liveSync}
+                title={t("topology.liveSyncHint")}
+                onClick={() => setLiveSync((v) => !v)}
+              >
+                {liveSync ? t("topology.liveSyncOn") : t("topology.liveSync")}
+              </button>
               <button
                 type="button"
                 className="btn btn--sm"
@@ -4294,39 +4487,51 @@ export function TopologyPage() {
             </div>
           </div>
           <div className="topo-toolbar__row topo-toolbar__row--tools">
-            <div className="topo-toolbar__panel" aria-label={t("topology.toolModes")}>
-              <div className="topo-tools" role="toolbar" aria-label={t("topology.toolModes")}>
-                {(
-                  [
-                    ["select", t("topology.toolSelect"), "V"],
-                    ["pan", t("topology.toolPan"), "H"],
-                    ["connect", t("topology.toolConnect"), "C"],
-                  ] as const
-                ).map(([mode, label, key]) => (
-                  <button
-                    key={mode}
-                    type="button"
-                    className={`topo-tools__btn${toolMode === mode ? " is-active" : ""}`}
-                    title={`${label} (${key})`}
-                    aria-pressed={toolMode === mode}
-                    onClick={() => {
-                      setToolMode(mode);
-                      connectClickRef.current = null;
-                    }}
-                  >
-                    <span className="topo-tools__label">{label}</span>
-                    <kbd className="topo-tools__key">{key}</kbd>
-                  </button>
-                ))}
-              </div>
+            <div className="topo-tools" role="toolbar" aria-label={t("topology.toolModes")}>
+              {(
+                [
+                  ["select", t("topology.toolSelect"), "V"],
+                  ["pan", t("topology.toolPan"), "H"],
+                  ["connect", t("topology.toolConnect"), "C"],
+                ] as const
+              ).map(([mode, label, key]) => (
+                <button
+                  key={mode}
+                  type="button"
+                  className={`topo-tools__btn${toolMode === mode ? " is-active" : ""}`}
+                  title={`${label} (${key})`}
+                  aria-pressed={toolMode === mode}
+                  onClick={() => {
+                    setToolMode(mode);
+                    connectClickRef.current = null;
+                  }}
+                >
+                  <span className="topo-tools__label">{label}</span>
+                  <kbd className="topo-tools__key">{key}</kbd>
+                </button>
+              ))}
             </div>
             {!fullscreen ? (
               <div
-                className="topo-toolbar__panel topo-toolbar__panel--view"
+                className="topo-toolbar__cluster"
                 role="toolbar"
                 aria-label={t("topology.display")}
                 ref={setViewToolsToolbarSlot}
               />
+            ) : null}
+            {outsidePeers.length > 0 ? (
+              <button
+                type="button"
+                className="btn btn--sm btn--ghost topo-toolbar__outside-peers"
+                title={t("topology.outsidePeers").replace("{{count}}", String(outsidePeers.length))}
+                onClick={() => {
+                  setOutsidePeerQuery("");
+                  setOutsidePeerSelectedIds([]);
+                  setOutsidePeersOpen(true);
+                }}
+              >
+                {t("topology.outsidePeersView").replace("{{count}}", String(outsidePeers.length))}
+              </button>
             ) : null}
           </div>
         </div>
@@ -4465,15 +4670,6 @@ export function TopologyPage() {
                       )}
                 </p>
               </div>
-              <button
-                type="button"
-                className={`btn btn--sm${liveSync ? "" : " btn--ghost"}`}
-                aria-pressed={liveSync}
-                title={t("topology.liveSyncHint")}
-                onClick={() => setLiveSync((v) => !v)}
-              >
-                {liveSync ? t("topology.liveSyncOn") : t("topology.liveSync")}
-              </button>
             </div>
             {!hexBrowseRegion ? (
               treeLoading ? (
@@ -4699,7 +4895,9 @@ export function TopologyPage() {
           </div>
         ) : (
           <div
-            className={`topo-canvas${fullscreen ? " is-fullscreen" : ""}${toolMode === "pan" ? " is-pan-mode" : ""}`}
+            className={`topo-canvas${fullscreen ? " is-fullscreen" : ""}${
+              toolMode === "pan" ? " is-pan-mode" : ""
+            }${canvasBgLuminance(canvasBg) > 0.55 ? " is-canvas-light" : ""}`}
             ref={canvasRef}
             style={
               {
@@ -4716,6 +4914,7 @@ export function TopologyPage() {
                 "--topo-vendor-ruijie": vendorColors.ruijie,
                 "--topo-vendor-mikrotik": vendorColors.mikrotik,
                 "--topo-vendor-gray": vendorColors.gray,
+                ...canvasFloatChromeVars(canvasBg),
               } as CSSProperties
             }
             onDragOver={onCanvasDragOver}
@@ -5496,6 +5695,164 @@ export function TopologyPage() {
                 onClick={() => void submitCreateNe()}
               >
                 {createNeBusy ? t("topology.createNeBusy") : t("topology.createNe")}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {outsidePeersOpen && canvasMode ? (
+        <div
+          className="topo-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label={t("topology.outsidePeersTitle")}
+        >
+          <div
+            className="topo-modal__backdrop"
+            onClick={() => {
+              if (outsidePeersAdding) return;
+              setOutsidePeersOpen(false);
+            }}
+          />
+          <div className="topo-modal__panel topo-modal__panel--wide">
+            <div className="topo-modal__head">
+              <strong>
+                {t("topology.outsidePeersTitle")}
+                <span className="topo-modal__count"> · {outsidePeers.length}</span>
+              </strong>
+              <button
+                type="button"
+                className="btn btn--sm btn--ghost"
+                disabled={outsidePeersAdding}
+                onClick={() => setOutsidePeersOpen(false)}
+              >
+                {t("topology.discoverClose")}
+              </button>
+            </div>
+            <p className="panel__hint topo-modal__hint">{t("topology.outsidePeersHint")}</p>
+            <input
+              className="input"
+              value={outsidePeerQuery}
+              onChange={(e) => {
+                setOutsidePeerQuery(e.target.value);
+              }}
+              placeholder={t("topology.outsidePeersFilterPh")}
+              disabled={outsidePeersAdding}
+              autoFocus
+            />
+            {outsidePeersVisible.length > 0 ? (
+              <div className="topo-modal__selectbar">
+                <label className="topo-modal__selectall">
+                  <input
+                    type="checkbox"
+                    checked={
+                      outsidePeersVisible.length > 0 &&
+                      outsidePeersVisible.every((p) =>
+                        outsidePeerSelectedIds.includes(p.fabric_node_id),
+                      )
+                    }
+                    disabled={outsidePeersAdding}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        setOutsidePeerSelectedIds((prev) => [
+                          ...new Set([
+                            ...prev,
+                            ...outsidePeersVisible.map((p) => p.fabric_node_id),
+                          ]),
+                        ]);
+                        return;
+                      }
+                      const drop = new Set(outsidePeersVisible.map((p) => p.fabric_node_id));
+                      setOutsidePeerSelectedIds((prev) => prev.filter((id) => !drop.has(id)));
+                    }}
+                    aria-label={t("topology.selectAllVisible")}
+                  />
+                  <span>{t("topology.selectAllVisible")}</span>
+                </label>
+                <span className="panel__hint">
+                  {t("topology.selectedCount").replace(
+                    "{{count}}",
+                    String(outsidePeerSelectedIds.length),
+                  )}
+                </span>
+              </div>
+            ) : null}
+            <ul className="topo-palette topo-modal__list">
+              {outsidePeersVisible.length === 0 ? (
+                <li className="topo-palette__empty">
+                  <span className="panel__hint">{t("topology.outsidePeersEmpty")}</span>
+                </li>
+              ) : (
+                outsidePeersVisible.map((peer) => {
+                  const checked = outsidePeerSelectedIds.includes(peer.fabric_node_id);
+                  const viaName =
+                    outsidePeerNameById.get(peer.via_node_id) || peer.via_node_id.slice(0, 8);
+                  const title = peer.name || peer.ip || peer.fabric_node_id.slice(0, 8);
+                  return (
+                    <li key={peer.fabric_node_id}>
+                      <div className={`topo-palette__row${checked ? " is-selected" : ""}`}>
+                        <label className="topo-palette__check">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            disabled={outsidePeersAdding}
+                            onChange={(e) => {
+                              setOutsidePeerSelectedIds((prev) =>
+                                e.target.checked
+                                  ? [...new Set([...prev, peer.fabric_node_id])]
+                                  : prev.filter((id) => id !== peer.fabric_node_id),
+                              );
+                            }}
+                            aria-label={title}
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          className="topo-palette__item"
+                          disabled={outsidePeersAdding}
+                          onClick={() => {
+                            setOutsidePeerSelectedIds((prev) =>
+                              prev.includes(peer.fabric_node_id)
+                                ? prev.filter((id) => id !== peer.fabric_node_id)
+                                : [...prev, peer.fabric_node_id],
+                            );
+                          }}
+                        >
+                          <span className="topo-palette__name">{title}</span>
+                          <span className="topo-palette__meta">
+                            {[peer.ip, t("topology.outsidePeersVia").replace("{{name}}", viaName)]
+                              .filter(Boolean)
+                              .join(" · ")}
+                          </span>
+                        </button>
+                      </div>
+                    </li>
+                  );
+                })
+              )}
+            </ul>
+            <div className="topo-modal__foot">
+              <button
+                type="button"
+                className="btn btn--sm btn--ghost"
+                disabled={outsidePeersAdding}
+                onClick={() => setOutsidePeersOpen(false)}
+              >
+                {t("topology.discoverClose")}
+              </button>
+              <button
+                type="button"
+                className="btn btn--sm"
+                disabled={outsidePeerSelectedIds.length === 0 || outsidePeersAdding}
+                onClick={() => void addOutsidePeers(outsidePeerSelectedIds)}
+              >
+                {outsidePeersAdding
+                  ? t("topology.addingNe")
+                  : t("topology.addSelected").replace(
+                      "{{count}}",
+                      String(outsidePeerSelectedIds.length),
+                    )}
               </button>
             </div>
           </div>
