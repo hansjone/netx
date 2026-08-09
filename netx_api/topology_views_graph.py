@@ -297,7 +297,14 @@ def get_view_graph(db: Session, view_id: str) -> TopologyViewGraphOut:
 
 
 def _membership_for_view(view: TopoView) -> dict[str, Any]:
-    return parse_membership(dict(view.filter or {}), role=normalize_view_role(view.role))
+    # Physical canvases use KIND_DEFAULT_MAX_NODES (2000); role defaults (core=80)
+    # only apply to custom views. Omitting kind made every empty-filter physical
+    # canvas silently inherit core=80 and truncate MCP/UI adds early.
+    return parse_membership(
+        dict(view.filter or {}),
+        role=normalize_view_role(view.role),
+        kind=normalize_view_kind(view.kind),
+    )
 
 
 def _fabric_in_hard_scope(db: Session, fn: TopoFabricNode, mem: dict[str, Any]) -> bool:
@@ -1104,7 +1111,10 @@ def project_fabric_neighbors_to_view(
         if peer_ids
         else {}
     )
+    region_v = str(req.region_folder_id or "").strip()
     eligible: list[str] = []
+    out_of_region_skipped = 0
+    out_of_region_sample: list[dict[str, str]] = []
     for peer in sorted(peer_ids):
         if peer in existing:
             continue
@@ -1115,11 +1125,28 @@ def project_fabric_neighbors_to_view(
             continue
         if not _fabric_in_hard_scope(db, fn, mem):
             continue
+        if region_v and str(fn.region_folder_id or "").strip() != region_v:
+            out_of_region_skipped += 1
+            if len(out_of_region_sample) < 20:
+                out_of_region_sample.append(
+                    {
+                        "fabric_node_id": peer,
+                        "name": str(fn.name or ""),
+                        "region_folder_id": str(fn.region_folder_id or ""),
+                    }
+                )
+            continue
         eligible.append(peer)
 
     room = max(0, max_nodes - len(existing))
     to_add = eligible[:room]
     truncated = len(eligible) > len(to_add)
+
+    def _attach_region_meta(g: TopologyViewGraphOut) -> TopologyViewGraphOut:
+        if region_v:
+            g.out_of_region_skipped = out_of_region_skipped
+            g.out_of_region_sample = out_of_region_sample
+        return g
 
     if dry_run:
         if to_add:
@@ -1137,7 +1164,7 @@ def project_fabric_neighbors_to_view(
         if truncated:
             g.truncated = True
             g.truncate_reason = g.truncate_reason or "membership_cap"
-        return g
+        return _attach_region_meta(g)
 
     if to_add:
         _place_fabric_ids_on_view(
@@ -1148,22 +1175,26 @@ def project_fabric_neighbors_to_view(
     if truncated:
         g.truncated = True
         g.truncate_reason = g.truncate_reason or "membership_cap"
-    return g
+    return _attach_region_meta(g)
 
 
 def populate_view(db: Session, view_id: str, body: ViewPopulateRequest) -> ViewPopulateOut:
     """Resolve membership candidates and optionally place them on the leaf view."""
     view = _get_view_or_404(db, view_id)
     role = normalize_view_role(view.role)
+    kind = normalize_view_kind(view.kind)
     if body.membership is not None:
         filt = merge_filter_with_membership(
-            dict(view.filter or {}), role=role, membership=parse_membership(
-                {"membership": body.membership}, role=role
-            )
+            dict(view.filter or {}),
+            role=role,
+            kind=kind,
+            membership=parse_membership(
+                {"membership": body.membership}, role=role, kind=kind
+            ),
         )
         if not body.dry_run:
             view.filter = filt
-    mem = parse_membership(dict(view.filter or {}), role=role)
+    mem = parse_membership(dict(view.filter or {}), role=role, kind=kind)
     max_nodes = int(mem.get("max_nodes") or 300)
     hops = int(mem.get("expand_hops") or 1)
     layer = str((view.filter or {}).get("layer") or "physical").strip() or "physical"

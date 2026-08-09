@@ -1574,7 +1574,11 @@ export function TopologyPage() {
       }
       return views.find((v) => !isWorldFlatViewName(v.name)) || null;
     }
-    return views[0] || null;
+    // Region / 根图: the physical view is the canvas. Custom siblings are rare
+    // extras — never prefer them over physical for the default open target.
+    const physical =
+      views.find((v) => String(v.kind) === "physical") || null;
+    return physical || views[0] || null;
   }, []);
 
   const goRegion = useCallback(
@@ -2084,11 +2088,12 @@ export function TopologyPage() {
         folder.external_ref === "ume:world" || folder.name === "UME World";
       const drillFolder = isWorldDrillFolder(folder);
       const umeNav = isUmeWorldNavFolder(folder);
-      // Region === canvas: hide physical/custom view rows; only child regions.
+      // Region === canvas: hide the physical primary row (region click opens it),
+      // but keep sibling custom canvases visible (e.g. MCP LPG-Full next to 根图).
       // UME World container: only「世界地图」as a sibling view.
       const canvasRegion = isRegionCanvasFolder(folder, String(treeRoot?.id || ""));
       const visibleViews = canvasRegion
-        ? []
+        ? (folder.views || []).filter((v) => String(v.kind) !== "physical")
         : containerFolder
           ? (folder.views || []).filter((v) => isWorldFlatViewName(v.name))
           : folder.views || [];

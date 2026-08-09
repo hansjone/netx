@@ -360,7 +360,8 @@ export default function TopologyReactFlowView(props: TopologyReactFlowViewProps)
         connectionLineStyle={{ stroke: "#38bdf8", strokeWidth: 2 }}
         defaultEdgeOptions={{ type: "straight", labelShowBg: false }}
         proOptions={{ hideAttribution: true }}
-        minZoom={isWorldFlatCanvas ? 0.002 : 0.05}
+        // Composed metro canvases can span 40k–70k; default 0.05 clips fitView.
+        minZoom={isWorldFlatCanvas || nodes.length >= 400 ? 0.002 : 0.05}
         maxZoom={isWorldFlatCanvas ? 12 : 4}
         nodesDraggable={
           isWorldFlatCanvas

@@ -1767,9 +1767,14 @@ pre {
 
 .system-page .token-once {
   padding: 12px 14px;
-  border: 1px solid #cdd6e2;
+  border: 1px solid rgba(148, 163, 184, 0.22);
   border-radius: 8px;
-  background: #eef2f7;
+  background: rgba(15, 23, 42, 0.85);
+  color: #e2e8f0;
+}
+
+.system-page .token-once .panel__hint {
+  color: #94a3b8;
 }
 
 .system-page .token-once code {
@@ -1777,7 +1782,11 @@ pre {
   margin: 8px 0;
   word-break: break-all;
   font-size: 12px;
-  color: var(--nm-brand);
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: #0b1220;
+  color: #93c5fd;
 }
 
 .system-page .token-create {
@@ -1791,9 +1800,10 @@ pre {
   flex-direction: column;
   gap: 10px;
   padding: 12px 14px;
-  border: 1px solid #cdd6e2;
+  border: 1px solid rgba(148, 163, 184, 0.22);
   border-radius: 8px;
-  background: #f8fafc;
+  background: rgba(15, 23, 42, 0.85);
+  color: #e2e8f0;
 }
 
 .system-page .token-scopes__head {
@@ -1813,7 +1823,7 @@ pre {
   align-items: center;
   gap: 8px;
   font-size: 13px;
-  color: #334155;
+  color: #cbd5e1;
 }
 
 .system-page .token-scopes__grid {
@@ -1831,7 +1841,7 @@ pre {
   align-items: center;
   gap: 6px;
   font-size: 12px;
-  color: #334155;
+  color: #cbd5e1;
   white-space: nowrap;
 }
 
@@ -1841,7 +1851,7 @@ pre {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 12px;
-  color: #475569;
+  color: #94a3b8;
 }
 
 .token-page__title {

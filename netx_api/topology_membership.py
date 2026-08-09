@@ -19,7 +19,8 @@ ROLE_DEFAULT_MAX_NODES = {
     VIEW_ROLE_ACCESS: 300,
 }
 KIND_DEFAULT_MAX_NODES = {
-    VIEW_KIND_PHYSICAL: 500,
+    # Physical 根图 / region canvases: allow full metro on one map (hard cap 2000).
+    VIEW_KIND_PHYSICAL: 2000,
     VIEW_KIND_CUSTOM: 300,
 }
 

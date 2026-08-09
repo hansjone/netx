@@ -7,12 +7,14 @@ import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
-from sqlalchemy import or_
+from sqlalchemy import create_engine, or_
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from netx_api import topology_lldp as lldp
 from netx_api import topology_service as svc
-from netx_api.db import Base, SessionLocal, engine
+from netx_api.db import Base
 from netx_api.device_types import LLDP_DISCOVERED_NE_SOURCE, TOPOLOGY_NE_SOURCE, WEBCRT_NE_SOURCE
 from netx_api.models import (
     ManagedNE,
@@ -30,6 +32,7 @@ from netx_api.topology_schemas import (
     TopologyFolderCreate,
     TopologyPlaceholderCreate,
     TopologyViewCreate,
+    TopologyViewUpdate,
     ViewNodesAdd,
     ViewPopulateRequest,
     ViewPositionsPatch,
@@ -167,17 +170,24 @@ class DeadlockHelperTests(unittest.TestCase):
 
 
 class FabricTopologyTests(unittest.TestCase):
+    """Uses an in-memory SQLite engine — never touch the live NETX_DATABASE_URL."""
+
     @classmethod
     def setUpClass(cls) -> None:
-        Base.metadata.create_all(bind=engine)
-        from netx_api.topology_migrate import ensure_topology_schema
-
-        with engine.begin() as conn:
-            ensure_topology_schema(conn)
+        cls.engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            future=True,
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(bind=cls.engine)
+        cls.Session = sessionmaker(
+            bind=cls.engine, autoflush=False, autocommit=False, expire_on_commit=False
+        )
 
     def setUp(self) -> None:
-        self.db = SessionLocal()
-        # Shared SQLite DB across tests — wipe fabric/view state for isolation.
+        self.db = self.Session()
+        # Wipe between cases on the isolated in-memory DB only.
         for model in (
             TopoViewEdgeStyle,
             TopoViewNode,
@@ -319,7 +329,7 @@ class FabricTopologyTests(unittest.TestCase):
         self.assertEqual(action, "skipped_self_loop")
 
     def _region(self, name: str = "Test-Region") -> str:
-        """Return the unique L2「根图」canvas id under a new top-level「根」."""
+        """Return the unique L2「根图」canvas folder id under a new top-level「根」."""
         top = svc.create_folder(
             self.db, TopologyFolderCreate(name=name, kind="region")
         )
@@ -330,6 +340,37 @@ class FabricTopologyTests(unittest.TestCase):
             .first()
         )
         return child.id if child is not None else top.id
+
+    def _physical_view(self, folder_id: str) -> TopoView:
+        row = (
+            self.db.query(TopoView)
+            .filter(
+                TopoView.folder_id == folder_id,
+                TopoView.kind == "physical",
+            )
+            .first()
+        )
+        assert row is not None, f"no physical view on folder {folder_id}"
+        return row
+
+    def _canvas(
+        self,
+        name: str = "Test-Region",
+        *,
+        filter: dict | None = None,
+        role: str | None = None,
+    ) -> str:
+        """createTopologyFolder path: return 根图 physical view_id (optional filter patch)."""
+        folder_id = self._region(name)
+        view = self._physical_view(folder_id)
+        if filter is not None or role is not None:
+            body = TopologyViewUpdate(
+                filter=filter,
+                role=role,
+            )
+            svc.update_view(self.db, view.id, body)
+            self.db.refresh(view)
+        return view.id
 
     def test_view_crud_and_positions(self) -> None:
         suffix = uuid4().hex[:8]
@@ -343,18 +384,15 @@ class FabricTopologyTests(unittest.TestCase):
         self.db.add(ne)
         self.db.commit()
 
-        view = svc.create_view(
-            self.db,
-            TopologyViewCreate(name=f"V-{suffix}", folder_id=self._region(f"R-{suffix}")),
-        )
+        view_id = self._canvas(f"R-{suffix}")
         graph = svc.add_nodes_to_view(
-            self.db, view.id, ViewNodesAdd(managed_ne_ids=[ne.id])
+            self.db, view_id, ViewNodesAdd(managed_ne_ids=[ne.id])
         )
         self.assertEqual(len(graph.nodes), 1)
         fid = graph.nodes[0].fabric_node_id
         graph2 = svc.patch_view_positions(
             self.db,
-            view.id,
+            view_id,
             ViewPositionsPatch(positions=[ViewNodeIn(fabric_node_id=fid, x=120, y=80)]),
         )
         self.assertEqual(graph2.nodes[0].x, 120)
@@ -363,19 +401,16 @@ class FabricTopologyTests(unittest.TestCase):
         summary = svc.get_fabric_summary(self.db)
         self.assertGreaterEqual(summary.node_count, 1)
 
-        svc.delete_view(self.db, view.id)
+        svc.delete_view(self.db, view_id, force=True)
         self.db.delete(ne)
         self.db.commit()
 
     def test_create_topology_placeholder_on_view(self) -> None:
         suffix = uuid4().hex[:8]
-        view = svc.create_view(
-            self.db,
-            TopologyViewCreate(name=f"Vph-{suffix}", folder_id=self._region(f"Rph-{suffix}")),
-        )
+        view_id = self._canvas(f"Rph-{suffix}")
         graph = svc.create_topology_placeholder_on_view(
             self.db,
-            view.id,
+            view_id,
             TopologyPlaceholderCreate(name=f"SW-{suffix}", ip_address="", x=42, y=77),
         )
         self.assertEqual(len(graph.nodes), 1)
@@ -471,25 +506,31 @@ class FabricTopologyTests(unittest.TestCase):
         self.assertEqual(len(root_map.views), 1)
         self.assertEqual(root_map.views[0].name, "根图")
 
-        view = svc.create_view(
-            self.db,
-            TopologyViewCreate(
-                name="East-Custom",
-                folder_id=root_map.id,
-                kind="custom",
-            ),
-        )
-        self.assertEqual(view.folder_id, root_map.id)
-        self.assertEqual(view.kind, "custom")
-        self.assertIn("membership", view.filter)
+        # Sibling custom maps are forbidden — nest a sub-region folder instead.
+        from fastapi import HTTPException
 
+        with self.assertRaises(HTTPException) as ctx:
+            svc.create_view(
+                self.db,
+                TopologyViewCreate(
+                    name="East-Custom",
+                    folder_id=root_map.id,
+                    kind="custom",
+                ),
+            )
+        self.assertEqual(ctx.exception.detail, "use_create_subregion_folder")
+
+        sub = svc.create_folder(
+            self.db,
+            TopologyFolderCreate(name="East-Zone", kind="region", parent_id=root_map.id),
+        )
         tree2 = svc.get_topology_tree(self.db)
         assert tree2.root is not None
         east = next(c for c in tree2.root.children if c.id == region.id)
         rm = east.children[0]
-        self.assertTrue(any(v.id == view.id for v in rm.views))
-        self.assertEqual(len(rm.views), 2)
-        self.assertTrue(all(not getattr(v, "children", None) for v in rm.views))
+        self.assertEqual(len(rm.views), 1)
+        self.assertEqual(rm.views[0].kind, "physical")
+        self.assertTrue(any(c.id == sub.id for c in rm.children))
 
     def test_tree_ne_count_distinct_membership_and_home(self) -> None:
         """Directory N = distinct fabric ids (membership ∪ region_folder_id); parent unions."""
@@ -610,7 +651,41 @@ class FabricTopologyTests(unittest.TestCase):
         east = next(c for c in tree2.root.children if c.id == zh_root.id)
         self.assertEqual(east.children[0].name, "根图")
 
-    def test_site_physical_and_custom_flat(self) -> None:
+    def test_physical_view_default_max_nodes_uses_kind(self) -> None:
+        """Empty-filter physical canvases must not inherit role core=80."""
+        from netx_api.topology_views_graph import _membership_for_view
+
+        root = svc.create_folder(
+            self.db, TopologyFolderCreate(name="Cap-Site", kind="region", locale="zh")
+        )
+        tree = svc.get_topology_tree(self.db)
+        assert tree.root is not None
+        nav = next(c for c in tree.root.children if c.id == root.id)
+        phys_id = nav.children[0].views[0].id
+        view = self.db.get(TopoView, phys_id)
+        assert view is not None
+        self.assertEqual(view.kind, "physical")
+        self.assertEqual(view.role, "core")
+        self.assertEqual(view.filter or {}, {})
+        mem = _membership_for_view(view)
+        self.assertEqual(int(mem.get("max_nodes") or 0), 2000)
+
+        from fastapi import HTTPException
+        from netx_api.topology_membership import default_membership
+
+        with self.assertRaises(HTTPException) as ctx:
+            svc.create_view(
+                self.db,
+                TopologyViewCreate(
+                    name="Cap-Custom", folder_id=nav.children[0].id, kind="custom"
+                ),
+            )
+        self.assertEqual(ctx.exception.detail, "use_create_subregion_folder")
+        self.assertEqual(int(default_membership("core", kind="custom")["max_nodes"]), 80)
+
+    def test_site_rejects_sibling_custom_allows_subregion(self) -> None:
+        from fastapi import HTTPException
+
         top = svc.create_folder(
             self.db, TopologyFolderCreate(name="Site-R", kind="region")
         )
@@ -622,26 +697,30 @@ class FabricTopologyTests(unittest.TestCase):
         auto_phys = root_map.views[0]
         self.assertEqual(auto_phys.kind, "physical")
 
-        custom = svc.create_view(
+        with self.assertRaises(HTTPException) as ctx:
+            svc.create_view(
+                self.db,
+                TopologyViewCreate(
+                    name="Custom-A",
+                    folder_id=root_map.id,
+                    kind="custom",
+                ),
+            )
+        self.assertEqual(ctx.exception.detail, "use_create_subregion_folder")
+
+        sub = svc.create_folder(
             self.db,
-            TopologyViewCreate(
-                name="Custom-A",
-                folder_id=root_map.id,
-                kind="custom",
-            ),
+            TopologyFolderCreate(name="Site-Zone", kind="region", parent_id=root_map.id),
         )
         tree2 = svc.get_topology_tree(self.db)
         assert tree2.root is not None
         reg2 = next(c for c in tree2.root.children if c.id == top.id).children[0]
-        ids = {v.id for v in reg2.views}
-        self.assertIn(auto_phys.id, ids)
-        self.assertIn(custom.id, ids)
-        # physical first
-        self.assertEqual(reg2.views[0].kind, "physical")
+        self.assertEqual(len(reg2.views), 1)
+        self.assertEqual(reg2.views[0].id, auto_phys.id)
+        self.assertTrue(any(c.id == sub.id for c in reg2.children))
 
         with self.assertRaises(Exception):
             svc.delete_view(self.db, auto_phys.id)
-        svc.delete_view(self.db, custom.id)
         # force-delete physical does not recreate another map
         svc.delete_view(self.db, auto_phys.id, force=True)
         tree3 = svc.get_topology_tree(self.db)
@@ -657,25 +736,24 @@ class FabricTopologyTests(unittest.TestCase):
         assert tree0.root is not None
         nav = next(c for c in tree0.root.children if c.id == region.id)
         root_map = nav.children[0]
-        custom = svc.create_view(
+        phys_id = root_map.views[0].id
+        sub = svc.create_folder(
             self.db,
-            TopologyViewCreate(
-                name="Custom-Del",
-                folder_id=root_map.id,
-                kind="custom",
+            TopologyFolderCreate(
+                name="Del-Zone", kind="region", parent_id=root_map.id
             ),
         )
         tree = svc.get_topology_tree(self.db)
         assert tree.root is not None
         reg = next(c for c in tree.root.children if c.id == region.id)
-        self.assertTrue(any(v.id == custom.id for v in reg.children[0].views))
+        self.assertTrue(any(c.id == sub.id for c in reg.children[0].children))
 
         out = svc.delete_folder(self.db, region.id)
         self.assertTrue(out.get("deleted"))
         tree2 = svc.get_topology_tree(self.db)
         assert tree2.root is not None
         self.assertFalse(any(c.id == region.id for c in tree2.root.children))
-        self.assertIsNone(self.db.get(TopoView, custom.id))
+        self.assertIsNone(self.db.get(TopoView, phys_id))
         self.assertEqual(
             self.db.query(TopoView).filter(TopoView.folder_id == root_map.id).count(),
             0,
@@ -977,43 +1055,35 @@ class FabricTopologyTests(unittest.TestCase):
             )
         self.db.commit()
 
-        view = svc.create_view(
-            self.db,
-            TopologyViewCreate(
-                name=f"Cap-{suffix}",
-                folder_id=self._region(f"CapR-{suffix}"),
-                role="core",
-                filter={
-                    "membership": {
-                        "expand_hops": 3,
-                        "max_nodes": 2,
-                        "frozen": False,
-                    }
-                },
-            ),
+        view_id = self._canvas(
+            f"CapR-{suffix}",
+            role="core",
+            filter={
+                "membership": {
+                    "expand_hops": 3,
+                    "max_nodes": 2,
+                    "frozen": False,
+                }
+            },
         )
-        svc.add_nodes_to_view(self.db, view.id, ViewNodesAdd(managed_ne_ids=[nes[0].id]))
-        g = svc.project_fabric_neighbors_to_view(self.db, view.id)
+        svc.add_nodes_to_view(self.db, view_id, ViewNodesAdd(managed_ne_ids=[nes[0].id]))
+        g = svc.project_fabric_neighbors_to_view(self.db, view_id)
         self.assertLessEqual(len(g.nodes), 2)
         self.assertTrue(g.truncated or len(g.nodes) == 2)
 
         # Seed-scoped project: expand only from node 0 → only node 1 among line peers.
-        view2 = svc.create_view(
-            self.db,
-            TopologyViewCreate(
-                name=f"CapSeed-{suffix}",
-                folder_id=self._region(f"CapSeedR-{suffix}"),
-                role="core",
-                filter={"membership": {"expand_hops": 1, "max_nodes": 50, "frozen": False}},
-            ),
+        view2_id = self._canvas(
+            f"CapSeedR-{suffix}",
+            role="core",
+            filter={"membership": {"expand_hops": 1, "max_nodes": 50, "frozen": False}},
         )
         # Place endpoints 0 and 2 (not adjacent); seed from 0 should add 1, not 3.
         svc.add_nodes_to_view(
-            self.db, view2.id, ViewNodesAdd(managed_ne_ids=[nes[0].id, nes[2].id])
+            self.db, view2_id, ViewNodesAdd(managed_ne_ids=[nes[0].id, nes[2].id])
         )
         g2 = svc.project_fabric_neighbors_to_view(
             self.db,
-            view2.id,
+            view2_id,
             ViewProjectNeighborsRequest(seed_fabric_node_ids=[nodes[0].id]),
         )
         ids2 = {n.fabric_node_id for n in g2.nodes}
@@ -1025,14 +1095,14 @@ class FabricTopologyTests(unittest.TestCase):
         # Peers already on canvas must not raise a false truncated banner.
         g3 = svc.project_fabric_neighbors_to_view(
             self.db,
-            view2.id,
+            view2_id,
             ViewProjectNeighborsRequest(seed_fabric_node_ids=[nodes[0].id]),
         )
         self.assertFalse(g3.truncated)
 
         pop = svc.populate_view(
             self.db,
-            view.id,
+            view_id,
             ViewPopulateRequest(
                 dry_run=True,
                 membership={"seed_fabric_node_ids": [nodes[0].id], "expand_hops": 3, "max_nodes": 2},
@@ -1040,6 +1110,68 @@ class FabricTopologyTests(unittest.TestCase):
         )
         self.assertLessEqual(pop.candidate_count, 4)
         self.assertTrue(pop.truncated or pop.candidate_count <= 2 or pop.would_add <= 2)
+
+    def test_project_neighbors_region_folder_filter(self) -> None:
+        suffix = uuid4().hex[:8]
+        region_a = self._region(f"RegA-{suffix}")
+        region_b = self._region(f"RegB-{suffix}")
+        nes = []
+        for i in range(3):
+            ne = ManagedNE(
+                id=f"regf-{suffix}-{i}",
+                name=f"RF{i}-{suffix}",
+                vendor="Cisco",
+                device_type="cisco_ios",
+                ip_address=f"10.11.{(int(suffix[:2], 16) % 200)}.{i + 1}",
+            )
+            self.db.add(ne)
+            nes.append(ne)
+        self.db.commit()
+        nodes = [svc.ensure_fabric_node_for_managed(self.db, ne) for ne in nes]
+        nodes[0].region_folder_id = region_a
+        nodes[1].region_folder_id = region_a
+        nodes[2].region_folder_id = region_b
+        self.db.commit()
+        svc.upsert_fabric_edge(
+            self.db,
+            a_node_id=nodes[0].id,
+            b_node_id=nodes[1].id,
+            a_port="Gi0/0",
+            b_port="Gi0/0",
+            source="lldp",
+        )
+        svc.upsert_fabric_edge(
+            self.db,
+            a_node_id=nodes[0].id,
+            b_node_id=nodes[2].id,
+            a_port="Gi0/1",
+            b_port="Gi0/1",
+            source="lldp",
+        )
+        self.db.commit()
+
+        view = self._physical_view(region_a)
+        svc.update_view(
+            self.db,
+            view.id,
+            TopologyViewUpdate(
+                role="core",
+                filter={"membership": {"expand_hops": 1, "max_nodes": 50, "frozen": False}},
+            ),
+        )
+        svc.add_nodes_to_view(self.db, view.id, ViewNodesAdd(managed_ne_ids=[nes[0].id]))
+        g = svc.project_fabric_neighbors_to_view(
+            self.db,
+            view.id,
+            ViewProjectNeighborsRequest(region_folder_id=region_a),
+        )
+        ids = {n.fabric_node_id for n in g.nodes}
+        self.assertIn(nodes[0].id, ids)
+        self.assertIn(nodes[1].id, ids)
+        self.assertNotIn(nodes[2].id, ids)
+        self.assertEqual(g.out_of_region_skipped, 1)
+        self.assertTrue(g.out_of_region_sample)
+        self.assertEqual(g.out_of_region_sample[0]["fabric_node_id"], nodes[2].id)
 
     def test_project_neighbors_dry_run_does_not_persist(self) -> None:
         suffix = uuid4().hex[:8]
@@ -1067,29 +1199,25 @@ class FabricTopologyTests(unittest.TestCase):
                 source="lldp",
             )
         self.db.commit()
-        view = svc.create_view(
-            self.db,
-            TopologyViewCreate(
-                name=f"Dry-{suffix}",
-                folder_id=self._region(f"DryR-{suffix}"),
-                role="core",
-                filter={"membership": {"expand_hops": 1, "max_nodes": 50, "frozen": False}},
-            ),
+        view_id = self._canvas(
+            f"DryR-{suffix}",
+            role="core",
+            filter={"membership": {"expand_hops": 1, "max_nodes": 50, "frozen": False}},
         )
-        svc.add_nodes_to_view(self.db, view.id, ViewNodesAdd(managed_ne_ids=[nes[0].id]))
+        svc.add_nodes_to_view(self.db, view_id, ViewNodesAdd(managed_ne_ids=[nes[0].id]))
         before = (
-            self.db.query(TopoViewNode).filter(TopoViewNode.view_id == view.id).count()
+            self.db.query(TopoViewNode).filter(TopoViewNode.view_id == view_id).count()
         )
         g = svc.project_fabric_neighbors_to_view(
             self.db,
-            view.id,
+            view_id,
             ViewProjectNeighborsRequest(seed_fabric_node_ids=[nodes[0].id], dry_run=True),
         )
         ids = {n.fabric_node_id for n in g.nodes}
         self.assertIn(nodes[0].id, ids)
         self.assertIn(nodes[1].id, ids)
         after = (
-            self.db.query(TopoViewNode).filter(TopoViewNode.view_id == view.id).count()
+            self.db.query(TopoViewNode).filter(TopoViewNode.view_id == view_id).count()
         )
         self.assertEqual(after, before)
 
@@ -1200,13 +1328,10 @@ class FabricTopologyTests(unittest.TestCase):
         )
         self.db.commit()
 
-        view = svc.create_view(
-            self.db,
-            TopologyViewCreate(name=f"V-{suffix}", folder_id=self._region(f"MR-{suffix}")),
-        )
+        view_id = self._canvas(f"MR-{suffix}")
         graph = svc.add_nodes_to_view(
             self.db,
-            view.id,
+            view_id,
             ViewNodesAdd(fabric_node_ids=[fa.id, fb.id, orphan.id, orphan_r2.id]),
         )
         self.assertEqual(len(graph.nodes), 4)
@@ -1219,10 +1344,10 @@ class FabricTopologyTests(unittest.TestCase):
 
         # Re-place inventory nodes only, then project should stay at 2.
         graph2 = svc.add_nodes_to_view(
-            self.db, view.id, ViewNodesAdd(managed_ne_ids=[ne_a.id, ne_b.id])
+            self.db, view_id, ViewNodesAdd(managed_ne_ids=[ne_a.id, ne_b.id])
         )
         # View may still have stale placements pointing at deleted ids — project cleans.
-        projected = svc.project_fabric_neighbors_to_view(self.db, view.id)
+        projected = svc.project_fabric_neighbors_to_view(self.db, view_id)
         self.assertEqual(len(projected.nodes), 2)
         labels = sorted((n.name or n.label).upper() for n in projected.nodes)
         self.assertEqual(labels, ["R1", "R2"])
@@ -1330,12 +1455,9 @@ Management Addresses:
         self.assertEqual(placeholder.device_type, "generic")
         self.assertEqual(placeholder.source_ref, "198.51.100.200")
 
-        view = svc.create_view(
-            self.db,
-            TopologyViewCreate(name=f"V-{suffix}", folder_id=self._region(f"PR-{suffix}")),
-        )
-        svc.add_nodes_to_view(self.db, view.id, ViewNodesAdd(managed_ne_ids=[ne_a.id]))
-        projected = svc.project_fabric_neighbors_to_view(self.db, view.id)
+        view_id = self._canvas(f"PR-{suffix}")
+        svc.add_nodes_to_view(self.db, view_id, ViewNodesAdd(managed_ne_ids=[ne_a.id]))
+        projected = svc.project_fabric_neighbors_to_view(self.db, view_id)
         self.assertEqual(len(projected.nodes), 2)
         self.assertGreaterEqual(len(projected.edges), 1)
 
@@ -1979,12 +2101,9 @@ Management Addresses:
         self.db.add(ne)
         self.db.commit()
         region_id = self._region(f"Detach-{suffix}")
-        view = svc.create_view(
-            self.db,
-            TopologyViewCreate(name=f"DV-{suffix}", folder_id=region_id),
-        )
+        view_id = self._physical_view(region_id).id
         graph = svc.add_nodes_to_view(
-            self.db, view.id, ViewNodesAdd(managed_ne_ids=[ne.id])
+            self.db, view_id, ViewNodesAdd(managed_ne_ids=[ne.id])
         )
         fid = graph.nodes[0].fabric_node_id
         peer = TopoFabricNode(
@@ -2013,7 +2132,7 @@ Management Addresses:
         self.assertIsNone(self.db.get(TopoFabricEdge, edge_id))
         self.assertEqual(
             self.db.query(TopoViewNode)
-            .filter(TopoViewNode.view_id == view.id, TopoViewNode.fabric_node_id == fid)
+            .filter(TopoViewNode.view_id == view_id, TopoViewNode.fabric_node_id == fid)
             .count(),
             0,
         )
@@ -2266,10 +2385,7 @@ Management Addresses:
 
         suffix = uuid4().hex[:8]
         region = self._region(f"Bulk-{suffix}")
-        view = svc.create_view(
-            self.db,
-            TopologyViewCreate(name=f"BulkV-{suffix}", folder_id=region),
-        )
+        view_id = self._physical_view(region).id
         nodes = []
         for i in range(5):
             n = TopoFabricNode(
@@ -2293,7 +2409,7 @@ Management Addresses:
 
         summary = svc.add_nodes_to_view(
             self.db,
-            view.id,
+            view_id,
             ViewNodesAdd(keyword="BJ-SW-", limit=3, offset=0, return_graph=False),
         )
         self.assertIsInstance(summary, ViewMutationOut)
@@ -2305,7 +2421,7 @@ Management Addresses:
 
         more = svc.add_nodes_to_view(
             self.db,
-            view.id,
+            view_id,
             ViewNodesAdd(keyword="BJ-SW-", limit=10, offset=3, return_graph=False),
         )
         assert isinstance(more, ViewMutationOut)
@@ -2314,7 +2430,7 @@ Management Addresses:
 
         laid = svc.patch_view_positions(
             self.db,
-            view.id,
+            view_id,
             ViewPositionsPatch(layout="grid", keyword="BJ-SW-", origin_x=10, origin_y=20, return_graph=False),
         )
         assert isinstance(laid, ViewMutationOut)
@@ -2322,7 +2438,7 @@ Management Addresses:
 
         removed = svc.remove_view_nodes(
             self.db,
-            view.id,
+            view_id,
             body=ViewNodesRemove(keyword=f"BJ-SW-{suffix}-1", return_graph=False),
         )
         assert isinstance(removed, ViewMutationOut)
@@ -2363,14 +2479,11 @@ Management Addresses:
         )
         self.db.commit()
         region_id = self._region(f"DelEdge-{suffix}")
-        view = svc.create_view(
-            self.db,
-            TopologyViewCreate(name=f"DE-{suffix}", folder_id=region_id),
-        )
+        view_id = self._physical_view(region_id).id
         svc.add_nodes_to_view(
-            self.db, view.id, ViewNodesAdd(managed_ne_ids=[ne_a.id, ne_b.id])
+            self.db, view_id, ViewNodesAdd(managed_ne_ids=[ne_a.id, ne_b.id])
         )
-        graph = svc.get_view_graph(self.db, view.id)
+        graph = svc.get_view_graph(self.db, view_id)
         self.assertTrue(any(e.id == edge.id for e in graph.edges))
         self.assertTrue(any(n.managed_source == "manual" for n in graph.nodes))
 
@@ -2379,7 +2492,7 @@ Management Addresses:
         self.assertEqual(out["deleted"], 1)
         self.db.expire_all()
         self.assertIsNone(self.db.get(TopoFabricEdge, edge_id))
-        graph2 = svc.get_view_graph(self.db, view.id)
+        graph2 = svc.get_view_graph(self.db, view_id)
         self.assertFalse(any(e.id == edge_id for e in graph2.edges))
 
 

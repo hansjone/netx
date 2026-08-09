@@ -856,14 +856,19 @@ def create_view(db: Session, body: TopologyViewCreate) -> TopologyViewOut:
     folder = _get_folder_or_404(db, folder_id)
     if str(folder.kind or "") == "root":
         raise HTTPException(status_code=400, detail="view_must_hang_under_region")
-    if kind == VIEW_KIND_PHYSICAL:
-        existing = (
-            db.query(TopoView)
-            .filter(TopoView.folder_id == folder.id, TopoView.kind == VIEW_KIND_PHYSICAL)
-            .first()
+    existing_physical = (
+        db.query(TopoView)
+        .filter(TopoView.folder_id == folder.id, TopoView.kind == VIEW_KIND_PHYSICAL)
+        .first()
+    )
+    if kind == VIEW_KIND_PHYSICAL and existing_physical is not None:
+        raise HTTPException(status_code=400, detail="region_already_has_physical_view")
+    # One canvas per region/根图: no sibling custom maps — nest sub-regions instead.
+    if kind == VIEW_KIND_CUSTOM and existing_physical is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="use_create_subregion_folder",
         )
-        if existing is not None:
-            raise HTTPException(status_code=400, detail="region_already_has_physical_view")
     filt = merge_filter_with_membership(dict(body.filter or {}), role=role, kind=kind)
     now = _utcnow()
     row = TopoView(
@@ -923,6 +928,18 @@ def update_view(db: Session, view_id: str, body: TopologyViewUpdate) -> Topology
             )
             if clash is not None:
                 raise HTTPException(status_code=400, detail="region_already_has_physical_view")
+        if new_kind == VIEW_KIND_CUSTOM and normalize_view_kind(row.kind) != VIEW_KIND_CUSTOM:
+            # Do not demote/add custom beside an existing physical canvas.
+            phys = (
+                db.query(TopoView)
+                .filter(
+                    TopoView.folder_id == row.folder_id,
+                    TopoView.kind == VIEW_KIND_PHYSICAL,
+                )
+                .first()
+            )
+            if phys is not None:
+                raise HTTPException(status_code=400, detail="use_create_subregion_folder")
         row.kind = new_kind
     row.parent_view_id = None
     if body.filter is not None:

@@ -253,12 +253,16 @@ class ViewProjectNeighborsRequest(BaseModel):
     When provided, expand only from those seeds (resolved to fabric nodes that
     are already placed on the view).
 
+    region_folder_id: when set, only add peers whose fabric.region_folder_id
+    matches (exact). Skipped peers are counted on the graph response.
+
     dry_run=True: return the would-be graph without writing placements (canvas
     can apply locally and persist on Save).
     """
 
     seed_fabric_node_ids: list[str] = Field(default_factory=list)
     managed_ne_ids: list[str] = Field(default_factory=list)
+    region_folder_id: str | None = None
     dry_run: bool = False
 
 
@@ -338,6 +342,9 @@ class TopologyViewGraphOut(BaseModel):
     truncated: bool = False
     truncate_reason: str = ""
     outside_peers: list[dict[str, str]] = Field(default_factory=list)
+    # Set by project-neighbors when region_folder_id filters peers out.
+    out_of_region_skipped: int = 0
+    out_of_region_sample: list[dict[str, str]] = Field(default_factory=list)
     world_transform: WorldTransformOut | None = None
     # Overview starfield: all (or capped) display coords; RF nodes stay empty far out.
     scatter: list[WorldScatterPointOut] = Field(default_factory=list)
