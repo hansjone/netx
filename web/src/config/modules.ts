@@ -20,7 +20,6 @@ export type ModuleDefinition = {
   path: string;
   section: WorkbenchSection;
   labelKey: string;
-  descKey?: string;
   iconTone: ModuleIconTone;
   iconKind: ModuleIconKind;
   titleKey: string;
@@ -37,7 +36,6 @@ export const MODULES: readonly ModuleDefinition[] = [
     path: "/ume",
     section: "monitoring",
     labelKey: "workbench.cards.umeSync",
-    descKey: "workbench.cards.umeSyncDesc",
     iconTone: "blue",
     iconKind: "sync",
     titleKey: "layout.titleUme",
@@ -48,7 +46,6 @@ export const MODULES: readonly ModuleDefinition[] = [
     path: "/ne",
     section: "operations",
     labelKey: "workbench.cards.managedNe",
-    descKey: "workbench.cards.managedNeDesc",
     iconTone: "green",
     iconKind: "server",
     titleKey: "layout.titleManagedNe",
@@ -59,7 +56,6 @@ export const MODULES: readonly ModuleDefinition[] = [
     path: "/network",
     section: "operations",
     labelKey: "workbench.cards.network",
-    descKey: "workbench.cards.networkDesc",
     iconTone: "slate",
     iconKind: "network",
     titleKey: "layout.titleNetwork",
@@ -70,7 +66,6 @@ export const MODULES: readonly ModuleDefinition[] = [
     path: "/topology",
     section: "operations",
     labelKey: "workbench.cards.topology",
-    descKey: "workbench.cards.topologyDesc",
     iconTone: "amber",
     iconKind: "topology",
     titleKey: "layout.titleTopology",
@@ -81,7 +76,6 @@ export const MODULES: readonly ModuleDefinition[] = [
     path: "/webcrt",
     section: "operations",
     labelKey: "workbench.cards.webcrt",
-    descKey: "workbench.cards.webcrtDesc",
     iconTone: "slate",
     iconKind: "terminal",
     titleKey: "layout.titleWebcrt",
@@ -92,7 +86,6 @@ export const MODULES: readonly ModuleDefinition[] = [
     path: "/port-traffic/wall",
     section: "operations",
     labelKey: "workbench.cards.portTrafficWall",
-    descKey: "workbench.cards.portTrafficWallDesc",
     iconTone: "amber",
     iconKind: "wall",
     titleKey: "layout.titlePortTrafficWall",
@@ -104,7 +97,6 @@ export const MODULES: readonly ModuleDefinition[] = [
     path: "/users",
     section: "system",
     labelKey: "workbench.cards.users",
-    descKey: "workbench.cards.usersDesc",
     iconTone: "slate",
     iconKind: "users",
     titleKey: "layout.titleUsers",
@@ -115,7 +107,6 @@ export const MODULES: readonly ModuleDefinition[] = [
     path: "/audit",
     section: "system",
     labelKey: "workbench.cards.audit",
-    descKey: "workbench.cards.auditDesc",
     iconTone: "amber",
     iconKind: "audit",
     titleKey: "layout.titleAudit",
@@ -125,7 +116,6 @@ export const MODULES: readonly ModuleDefinition[] = [
     path: "/api-keys",
     section: "system",
     labelKey: "workbench.cards.apiKeys",
-    descKey: "workbench.cards.apiKeysDesc",
     iconTone: "green",
     iconKind: "key",
     titleKey: "layout.titleApiKeys",
@@ -135,7 +125,6 @@ export const MODULES: readonly ModuleDefinition[] = [
     path: "/sessions",
     section: "system",
     labelKey: "workbench.cards.sessions",
-    descKey: "workbench.cards.sessionsDesc",
     iconTone: "slate",
     iconKind: "key",
     titleKey: "layout.titleSessions",

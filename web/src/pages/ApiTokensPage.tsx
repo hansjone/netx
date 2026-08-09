@@ -164,10 +164,13 @@ export function ApiTokensPage() {
     createMut.mutate();
   };
 
+  const dismissCreatedPlain = () => setCreatedPlain("");
+
   const copyToken = async () => {
     try {
       await navigator.clipboard.writeText(createdPlain);
       showOk(t("auth.tokenCopied"));
+      dismissCreatedPlain();
     } catch {
       showError(t("auth.tokenCopyFailed"));
     }
@@ -259,6 +262,9 @@ export function ApiTokensPage() {
               <code>{createdPlain}</code>
               <button type="button" onClick={() => void copyToken()}>
                 {t("auth.copyToken")}
+              </button>
+              <button type="button" onClick={dismissCreatedPlain}>
+                {t("common.close")}
               </button>
             </div>
           ) : null}
