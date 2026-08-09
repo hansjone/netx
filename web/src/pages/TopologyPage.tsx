@@ -4,6 +4,7 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -219,6 +220,9 @@ function isWorldFlatViewName(name: string | undefined | null): boolean {
   const n = String(name || "").trim();
   return n === "世界地图" || n === "完整世界地图" || n === "World map";
 }
+
+/** Flat world-map canvas (LOD / scatter). Temporarily offline in the UI. */
+const WORLD_MAP_ENABLED = false;
 
 function isManualRootMapName(name: string | undefined | null): boolean {
   const n = String(name || "").trim();
@@ -1115,6 +1119,7 @@ export function TopologyPage() {
   const [historyTick, setHistoryTick] = useState(0);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [ctxMenu, setCtxMenu] = useState<CtxMenu | null>(null);
+  const ctxMenuRef = useRef<HTMLUListElement | null>(null);
   const [hideIp, setHideIp] = useState(true);
   const [hideVendor, setHideVendor] = useState(true);
   const [hidePorts, setHidePorts] = useState(true);
@@ -1293,8 +1298,12 @@ export function TopologyPage() {
   const graphQuery = useQuery({
     queryKey: queryKeys.topologyGraph(mapId),
     queryFn: () =>
-      fetchTopologyGraph(mapId, treeFlatMap ? { lod: "overview" } : undefined),
-    enabled: Boolean(mapId),
+      fetchTopologyGraph(
+        mapId,
+        WORLD_MAP_ENABLED && treeFlatMap ? { lod: "overview" } : undefined,
+      ),
+    // Offline: never fetch the flat world-map graph (LOD / scatter).
+    enabled: Boolean(mapId) && (WORLD_MAP_ENABLED || !treeFlatMap),
     staleTime: liveSync ? 0 : 30_000,
     refetchOnWindowFocus: liveSync && !treeFlatMap,
     refetchInterval: liveSync && mapId && !treeFlatMap ? 3000 : false,
@@ -1302,9 +1311,10 @@ export function TopologyPage() {
   });
 
   const isWorldFlatCanvas =
-    treeFlatMap ||
-    isWorldFlatViewName(graphQuery.data?.view?.name) ||
-    Boolean(graphQuery.data?.view?.filter?.world_flat);
+    WORLD_MAP_ENABLED &&
+    (treeFlatMap ||
+      isWorldFlatViewName(graphQuery.data?.view?.name) ||
+      Boolean(graphQuery.data?.view?.filter?.world_flat));
 
   isWorldFlatCanvasRef.current = isWorldFlatCanvas;
   mapIdRef.current = mapId;
@@ -1360,7 +1370,7 @@ export function TopologyPage() {
   }, [graphQuery.data?.world_transform]);
 
   const refreshFlatViewport = useCallback(async () => {
-    if (!mapId || !isWorldFlatCanvas || dirtyRef.current) return;
+    if (!WORLD_MAP_ENABLED || !mapId || !isWorldFlatCanvas || dirtyRef.current) return;
     const inst = rfRef.current;
     if (!inst) return;
     const zoom = inst.getZoom();
@@ -1425,7 +1435,7 @@ export function TopologyPage() {
   }, [mapId, isWorldFlatCanvas, queryClient]);
 
   const scheduleFlatViewportRefresh = useCallback(() => {
-    if (!isWorldFlatCanvas) return;
+    if (!WORLD_MAP_ENABLED || !isWorldFlatCanvas) return;
     if (flatLodTimerRef.current) window.clearTimeout(flatLodTimerRef.current);
     flatLodTimerRef.current = window.setTimeout(() => {
       flatLodTimerRef.current = null;
@@ -1578,13 +1588,18 @@ export function TopologyPage() {
     if (!activeRegion || !isUmeWorldContainer(activeRegion)) return null;
     const drill =
       (activeRegion.children || []).find((c) => isWorldDrillFolder(c)) || null;
-    const flatView =
-      (activeRegion.views || []).find((v) => isWorldFlatViewName(v.name)) || null;
+    const flatView = WORLD_MAP_ENABLED
+      ? (activeRegion.views || []).find((v) => isWorldFlatViewName(v.name)) || null
+      : null;
     return { drill, flatView };
   }, [activeRegion]);
 
   // Resolve World drill view id for shortcuts; do not auto-open canvas.
   useEffect(() => {
+    if (!WORLD_MAP_ENABLED) {
+      setWorldViewId("");
+      return;
+    }
     let cancelled = false;
     fetchTopologyWorld()
       .then((w) => {
@@ -1625,7 +1640,23 @@ export function TopologyPage() {
     clearDirty();
   }, [confirmDiscardIfDirty, clearDirty, regions]);
 
+  // Leave flat world map if still open after the feature was taken offline.
+  useEffect(() => {
+    if (WORLD_MAP_ENABLED || !mapId || !treeFlatMap) return;
+    const container = regions.find(
+      (r) => r.external_ref === "ume:world" || r.name === "UME World",
+    );
+    setWorldFocusFolderId("");
+    if (container) {
+      setSelectedFolderId(container.id);
+      setExpandedIds((p) => ({ ...p, [container.id]: true }));
+    }
+    setMapId("");
+    clearDirty();
+  }, [mapId, treeFlatMap, regions, clearDirty]);
+
   const goWorld = useCallback(() => {
+    if (!WORLD_MAP_ENABLED) return;
     if (!confirmDiscardIfDirty()) return;
     if (!worldViewId) return;
     setWorldFocusFolderId("");
@@ -1727,6 +1758,10 @@ export function TopologyPage() {
     (viewId: string, folderId?: string) => {
       if (!confirmDiscardIfDirty()) return;
       const hit = findViewInRegion(regions, viewId);
+      if (!WORLD_MAP_ENABLED && isWorldFlatViewName(hit?.view?.name)) {
+        showError(t("topology.worldMapOffline"));
+        return;
+      }
       const regionId = folderId || hit?.region.id || selectedFolderId;
       if (regionId) {
         setSelectedFolderId(regionId);
@@ -1735,7 +1770,7 @@ export function TopologyPage() {
       setWorldFocusFolderId("");
       setMapId(viewId);
     },
-    [confirmDiscardIfDirty, regions, selectedFolderId, expandFolderPath],
+    [confirmDiscardIfDirty, regions, selectedFolderId, expandFolderPath, showError, t],
   );
 
   const goBackBrowse = useCallback(() => {
@@ -2187,13 +2222,15 @@ export function TopologyPage() {
       const umeNav = isUmeWorldNavFolder(folder);
       // Region === canvas: hide the physical primary row (region click opens it),
       // but keep sibling custom canvases visible (e.g. MCP LPG-Full next to 根图).
-      // UME World container: only「世界地图」as a sibling view.
+      // UME World container: only「世界地图」as a sibling view (when enabled).
       const canvasRegion = isRegionCanvasFolder(folder, String(treeRoot?.id || ""));
-      const visibleViews = canvasRegion
-        ? (folder.views || []).filter((v) => String(v.kind) !== "physical")
-        : containerFolder
-          ? (folder.views || []).filter((v) => isWorldFlatViewName(v.name))
-          : folder.views || [];
+      const visibleViews = (
+        canvasRegion
+          ? (folder.views || []).filter((v) => String(v.kind) !== "physical")
+          : containerFolder
+            ? (folder.views || []).filter((v) => isWorldFlatViewName(v.name))
+            : folder.views || []
+      ).filter((v) => WORLD_MAP_ENABLED || !isWorldFlatViewName(v.name));
       const hasKids = kids.length > 0 || visibleViews.length > 0;
       const open = Boolean(expandedIds[folder.id]);
       const viewActiveUnder =
@@ -3301,7 +3338,11 @@ export function TopologyPage() {
 
   useEffect(() => {
     if (!ctxMenu) return;
-    const onScroll = () => closeCtxMenu();
+    const onScroll = (e: Event) => {
+      const t = e.target;
+      if (t instanceof Node && ctxMenuRef.current?.contains(t)) return;
+      closeCtxMenu();
+    };
     const onPointerDown = (e: MouseEvent) => {
       const el = e.target as HTMLElement | null;
       if (el?.closest?.(".topo-ctx")) return;
@@ -3314,6 +3355,25 @@ export function TopologyPage() {
       window.removeEventListener("mousedown", onPointerDown, true);
     };
   }, [ctxMenu, closeCtxMenu]);
+
+  useLayoutEffect(() => {
+    if (!ctxMenu || !ctxMenuRef.current) return;
+    const el = ctxMenuRef.current;
+    const pad = 8;
+    const rect = el.getBoundingClientRect();
+    let x = ctxMenu.x;
+    let y = ctxMenu.y;
+    if (x + rect.width > window.innerWidth - pad) {
+      x = Math.max(pad, window.innerWidth - rect.width - pad);
+    }
+    if (y + rect.height > window.innerHeight - pad) {
+      y = Math.max(pad, window.innerHeight - rect.height - pad);
+    }
+    if (x !== ctxMenu.x || y !== ctxMenu.y) {
+      el.style.left = `${x}px`;
+      el.style.top = `${y}px`;
+    }
+  }, [ctxMenu]);
 
   const removeNodeById = (nodeId: string) => {
     if (!mapId) return;
@@ -3765,12 +3825,19 @@ export function TopologyPage() {
       }
       const target =
         view ||
-        views.find((v) => isWorldFlatViewName(v.view_name)) ||
-        views.find((v) => String(v.kind) === "physical") ||
+        (WORLD_MAP_ENABLED
+          ? views.find((v) => isWorldFlatViewName(v.view_name))
+          : undefined) ||
+        views.find((v) => !isWorldFlatViewName(v.view_name) && String(v.kind) === "physical") ||
+        views.find((v) => !isWorldFlatViewName(v.view_name)) ||
         views[0] ||
         null;
       if (!target) {
         showError(t("topology.treeSearchNotOnMap"));
+        return;
+      }
+      if (!WORLD_MAP_ENABLED && isWorldFlatViewName(target.view_name)) {
+        showError(t("topology.worldMapOffline"));
         return;
       }
       if (!confirmDiscardIfDirty()) return;
@@ -3779,7 +3846,7 @@ export function TopologyPage() {
         setSelectedFolderId(regionId);
         setExpandedIds((p) => ({ ...p, [regionId]: true }));
       }
-      if (isWorldFlatViewName(target.view_name) && worldCoords) {
+      if (WORLD_MAP_ENABLED && isWorldFlatViewName(target.view_name) && worldCoords) {
         pendingLocateWorldRef.current = { id: hit.id, ...worldCoords };
       } else {
         pendingLocateWorldRef.current = null;
@@ -4226,7 +4293,12 @@ export function TopologyPage() {
                             </button>
                             {views.length > 0 ? (
                               <div className="topo-tree-search__views">
-                                {views.map((v) => (
+                                {views
+                                  .filter(
+                                    (v) =>
+                                      WORLD_MAP_ENABLED || !isWorldFlatViewName(v.view_name),
+                                  )
+                                  .map((v) => (
                                   <button
                                     key={`${hit.id}-${v.view_id}`}
                                     type="button"
@@ -6034,6 +6106,7 @@ export function TopologyPage() {
       {ctxMenu
         ? createPortal(
             <ul
+              ref={ctxMenuRef}
               className={`topo-ctx${ctxMenu.kind === "edge" ? " topo-ctx--edge" : ""}`}
               style={{ left: ctxMenu.x, top: ctxMenu.y }}
               role="menu"

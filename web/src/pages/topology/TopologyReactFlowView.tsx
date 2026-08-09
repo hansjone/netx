@@ -446,7 +446,10 @@ export default function TopologyReactFlowView(props: TopologyReactFlowViewProps)
         onEdgeContextMenu={(e, edge) => {
           e.preventDefault();
           focusEdge(edge.id);
-          const pos = placeCtxMenu(e.clientX, e.clientY, { w: 260, h: 280 });
+          const pos = placeCtxMenu(e.clientX, e.clientY, {
+            w: 280,
+            h: Math.min(560, Math.max(280, window.innerHeight - 24)),
+          });
           setCtxMenu({ kind: "edge", id: edge.id, ...pos });
         }}
         onSelectionContextMenu={(e) => {

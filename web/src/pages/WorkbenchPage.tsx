@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useI18n } from "../i18n";
 import { WorkbenchCardIcon } from "../components/WorkbenchCardIcon";
@@ -84,7 +84,7 @@ function Gauge({
 
 export function WorkbenchPage() {
   const { t, locale } = useI18n();
-  const { user, isAdmin, hasScope } = useAuth();
+  const { isAdmin, hasScope } = useAuth();
 
   const metricsQuery = useQuery({
     queryKey: ["runtimeMetrics"],
@@ -148,28 +148,50 @@ export function WorkbenchPage() {
   const taskCap = Math.max(totalTasks, activeTasks, 8);
   const taskPct = ratioPct(activeTasks, taskCap);
 
-  const todayLabel = useMemo(() => {
-    try {
-      return new Intl.DateTimeFormat(locale === "en" ? "en-US" : "zh-CN", {
-        year: "numeric",
-        month: "long",
-        day: "numeric",
-        weekday: "short",
-      }).format(new Date());
-    } catch {
-      return new Date().toLocaleDateString();
-    }
-  }, [locale]);
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(new Date()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
 
-  const displayName = user?.username || "admin";
+  const clockLocale = locale === "en" ? "en-US" : "zh-CN";
+  const clockDate = useMemo(() => {
+    try {
+      return new Intl.DateTimeFormat(clockLocale, {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        weekday: "short",
+      }).format(now);
+    } catch {
+      return now.toLocaleDateString();
+    }
+  }, [now, clockLocale]);
+  const hh = String(now.getHours()).padStart(2, "0");
+  const mm = String(now.getMinutes()).padStart(2, "0");
+  const ss = String(now.getSeconds()).padStart(2, "0");
+  const colonOn = now.getSeconds() % 2 === 0;
 
   return (
     <div className="workbench">
       <section className="wb-hero" aria-label={t("workbench.title")}>
-        <div className="wb-hero__copy">
-          <p className="wb-hero__eyebrow">{t("workbench.welcomeEyebrow")}</p>
-          <h1 className="wb-hero__title">{t("workbench.welcomeTitle", { name: displayName })}</h1>
-          <p className="wb-hero__date">{t("workbench.today", { date: todayLabel })}</p>
+        <div className="wb-hero__clock" aria-live="polite">
+          <time className="wb-hero__clock-panel" dateTime={now.toISOString()}>
+            <span className="wb-hero__clock-digits" aria-hidden="true">
+              <span className="wb-hero__digit">{hh[0]}</span>
+              <span className="wb-hero__digit">{hh[1]}</span>
+              <span className={`wb-hero__colon${colonOn ? " is-on" : ""}`}>:</span>
+              <span className="wb-hero__digit">{mm[0]}</span>
+              <span className="wb-hero__digit">{mm[1]}</span>
+              <span className={`wb-hero__colon${colonOn ? " is-on" : ""}`}>:</span>
+              <span className="wb-hero__digit">{ss[0]}</span>
+              <span className="wb-hero__digit">{ss[1]}</span>
+            </span>
+            <span className="wb-hero__clock-sr">
+              {hh}:{mm}:{ss}
+            </span>
+            <span className="wb-hero__clock-date">{clockDate}</span>
+          </time>
         </div>
         <div className="wb-hero__status" aria-label={t("workbench.statusTitle")}>
           <div className="wb-gauges wb-gauges--hero">

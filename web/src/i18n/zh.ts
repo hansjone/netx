@@ -1421,6 +1421,7 @@ const zh = {
     subRegionNotOnFlat: "世界地图不支持子区域，请在 World 或下级区域画布上创建。",
     worldMapNoDirectNes: "世界地图不能直接添加网元，请到某个子区域画布上添加。",
     worldMapName: "世界地图",
+    worldMapOffline: "世界地图功能已暂时下线",
     rootMapName: "根图",
     worldHud: "世界 {{total}} · 近景 {{cached}} · z{{zoom}} · {{lod}}",
     worldEmptyCoords: "世界地图还没有坐标",
