@@ -7,6 +7,10 @@ __pycache__/
 build/
 dist/
 scripts/.run/
+# Local one-off probes / staging dumps (not for commit)
+scripts/_*
+scripts/archive/
+packages/netx-topology-mcp/tests/_*
 ume/
 data/ne_collections/
 data/webcrt/
