@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 import httpx
@@ -51,20 +52,28 @@ def lang_query_params() -> dict[str, str]:
     return {}
 
 
+def _default_timeout() -> float:
+    try:
+        return float(os.getenv("NETX_HTTP_TIMEOUT") or 120.0)
+    except (TypeError, ValueError):
+        return 120.0
+
+
 def http_json(
     method: str,
     path: str,
     *,
     params: dict[str, Any] | None = None,
     body: dict[str, Any] | None = None,
-    timeout: float = 60.0,
+    timeout: float | None = None,
 ) -> dict[str, Any]:
     url = f"{api_base_url()}{path}"
     merged: dict[str, Any] = dict(lang_query_params())
     if params:
         merged.update(params)
+    to = float(timeout) if timeout is not None else _default_timeout()
     try:
-        with httpx.Client(timeout=timeout, trust_env=False) as client:
+        with httpx.Client(timeout=to, trust_env=False) as client:
             resp = client.request(
                 method,
                 url,
@@ -79,6 +88,55 @@ def http_json(
             return {"ok": True, "data": data if isinstance(data, dict) else {"raw": data}}
     except Exception as exc:
         return {"ok": False, "error": "netx_request_failed", "detail": str(exc)[:800]}
+
+
+def http_json_many(
+    requests: list[dict[str, Any]],
+    *,
+    max_workers: int = 12,
+    timeout: float | None = None,
+) -> list[dict[str, Any]]:
+    """Run many HTTP calls in parallel; preserve input order in results.
+
+    Each request: ``{method, path, params?, body?, key?}``.
+    """
+    if not requests:
+        return []
+    if len(requests) == 1:
+        r0 = requests[0]
+        out = http_json(
+            str(r0.get("method") or "GET"),
+            str(r0.get("path") or ""),
+            params=r0.get("params") if isinstance(r0.get("params"), dict) else None,
+            body=r0.get("body") if isinstance(r0.get("body"), dict) else None,
+            timeout=timeout,
+        )
+        if "key" in r0:
+            out = {**out, "key": r0.get("key")}
+        return [out]
+
+    to = float(timeout) if timeout is not None else _default_timeout()
+    workers = max(1, min(int(max_workers), len(requests)))
+    results: list[dict[str, Any] | None] = [None] * len(requests)
+
+    def _one(idx: int, req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        out = http_json(
+            str(req.get("method") or "GET"),
+            str(req.get("path") or ""),
+            params=req.get("params") if isinstance(req.get("params"), dict) else None,
+            body=req.get("body") if isinstance(req.get("body"), dict) else None,
+            timeout=to,
+        )
+        if "key" in req:
+            out = {**out, "key": req.get("key")}
+        return idx, out
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futs = [pool.submit(_one, i, r) for i, r in enumerate(requests)]
+        for fut in as_completed(futs):
+            idx, out = fut.result()
+            results[idx] = out
+    return [r if isinstance(r, dict) else {"ok": False, "error": "parallel_slot_empty"} for r in results]
 
 
 def mcp_text_result(payload: Any, *, is_error: bool = False) -> dict[str, Any]:

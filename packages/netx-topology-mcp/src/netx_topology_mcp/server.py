@@ -10,10 +10,15 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from typing import Any
 
 from netx_topology_mcp.http_client import http_json
 from netx_topology_mcp.http_tools import TOOL_REQUIRED_SCOPE, call_http_tool, tools_for_scopes
+
+# Re-fetch /v1/auth/me scopes so API Key permission edits become visible without
+# restarting the whole MCP host for too long. tools/list always refreshes.
+_SCOPE_TTL_SEC = 45.0
 
 
 def _ensure_utf8_stdio() -> None:
@@ -63,11 +68,15 @@ def _fetch_scopes() -> list[str] | None:
 
 def run_stdio_loop() -> None:
     cached_scopes: list[str] | None | object = _UNSET
+    cached_at = 0.0
 
-    def scopes() -> list[str] | None:
-        nonlocal cached_scopes
-        if cached_scopes is _UNSET:
+    def scopes(*, force: bool = False) -> list[str] | None:
+        nonlocal cached_scopes, cached_at
+        now = time.monotonic()
+        stale = cached_scopes is _UNSET or (now - cached_at) >= _SCOPE_TTL_SEC
+        if force or stale:
             cached_scopes = _fetch_scopes()
+            cached_at = now
         return cached_scopes  # type: ignore[return-value]
 
     for line in sys.stdin:
@@ -88,15 +97,15 @@ def run_stdio_loop() -> None:
                     rid,
                     {
                         "protocolVersion": "2024-11-05",
-                        "capabilities": {"tools": {}},
-                        "serverInfo": {"name": "netx-topology-mcp", "version": "0.1.0", "mode": "http"},
+                        "capabilities": {"tools": {"listChanged": True}},
+                        "serverInfo": {"name": "netx-topology-mcp", "version": "0.1.2", "mode": "http"},
                     },
                 )
                 continue
             if method == "notifications/initialized":
                 continue
             if method == "tools/list":
-                _ok(rid, {"tools": tools_for_scopes(scopes())})
+                _ok(rid, {"tools": tools_for_scopes(scopes(force=True))})
                 continue
             if method == "tools/call":
                 name = str(params.get("name") or "")

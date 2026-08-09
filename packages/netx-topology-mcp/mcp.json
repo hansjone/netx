@@ -5,9 +5,11 @@
       "args": ["-m", "netx_topology_mcp"],
       "env": {
         "NETX_API_URL": "http://127.0.0.1:8890",
+        "NETX_API_TOKEN": "nxt_replace_with_api_key_ne_write",
         "NETX_LANG": "zh",
         "PYTHONIOENCODING": "utf-8",
-        "PYTHONUTF8": "1"
+        "PYTHONUTF8": "1",
+        "PYTHONPATH": "D:/project/chatgpt/netx/packages/netx-topology-mcp/src"
       }
     }
   }

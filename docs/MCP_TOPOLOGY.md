@@ -44,6 +44,7 @@ pip install "git+https://github.com/hansjone/netx.git#subdirectory=packages/netx
       "args": ["-m", "netx_topology_mcp"],
       "env": {
         "NETX_API_URL": "http://127.0.0.1:8890",
+        "NETX_API_TOKEN": "nxt_your_key_with_ne_write",
         "NETX_LANG": "zh",
         "PYTHONIOENCODING": "utf-8",
         "PYTHONUTF8": "1"
@@ -53,41 +54,56 @@ pip install "git+https://github.com/hansjone/netx.git#subdirectory=packages/netx
 }
 ```
 
+画图必须设 `NETX_API_TOKEN`（网页新建 Key，默认含 `ne:write`）。未设置时回退读 `data/auth/mcp_token`（只读+CLI，**无写工具**）。改 Key 权限后 Sync Tools / 约 45s 内 scopes 会刷新。
+
 样本：[`packages/netx-topology-mcp/mcp.json`](../packages/netx-topology-mcp/mcp.json)。
 
 与告警 MCP 并存时，把两个 server 都放进 `mcpServers` 即可；未勾选/未安装的不会加载工具。
 
-oclaw：Install from JSON → Health → Sync Tools（应看到 **14** 个工具）→ 专家绑定勾选 `server_id=netx-topology`。
+oclaw：Install from JSON → Health → Sync Tools（应看到 **14** 个工具，含 `layoutTopologyView` / `sinkTopologyDualUnits` / `queryTopologyFabricNodes`）→ 专家绑定勾选 `server_id=netx-topology`。
 
-配套 Agent Skill（画图流水线 / 安全约束）：[`.cursor/skills/netx-topology/SKILL.md`](../.cursor/skills/netx-topology/SKILL.md)。Cursor / oclaw 读 skill 后再调 MCP。
+Cursor：改包后若 Sync 工具数不对，请 **禁用/启用** `netx-topology` 或重载窗口（须重启 stdio 进程）。可选在 env 加 `PYTHONPATH=.../packages/netx-topology-mcp/src` 强制最新源码。
+
+配套 Agent Skill（dual_unit 排水 → 扫角/polish → 手拖）：[`.cursor/skills/netx-topology/SKILL.md`](../.cursor/skills/netx-topology/SKILL.md)。Cursor / oclaw 读 skill 后再调 MCP。
 
 ---
 
 ## 3. 工具一览
 
+### 目录模型
+
+- 顶级为导航「根」；其下唯一「根图」/ `Root map` 为画布（physical view）。
+- 子区域即画布（创建时自动 physical view）。
+- 文件夹 `ne_count`：子树去重 Fabric 网元数（来源无关）。
+
 ### 读
 
 | 工具 | 作用 |
 |------|------|
-| `getTopologyTree` | 站点/区域文件夹树 + 下属画布 |
-| `listTopologyViews` / `getTopologyView` | 画布列表 / 单图（节点+边+坐标） |
-| `getTopologyFabricSummary` | Fabric 汇总 |
-| `listTopologyFabricNodes` / `searchTopologyFabricNodes` | 网元搜索 |
-| `queryTopologyNeighborhood` | 指定节点邻接 |
-| `queryTopologyEdges` | LLDP/手工链路（含 `peer_count`） |
+| `getTopologyTree` | 「根 / 根图 / 子区域」树 + views + `ne_count`（找画布用这个，勿再 listViews） |
+| `getTopologyView` | 单图（节点+边+坐标）；`detail=summary\|full` |
+| `queryTopologyFabricNodes` | Fabric 库存：`mode=summary\|list\|search`（有 `q` 默认 search；list 支持 `region_folder_id`） |
+| `queryTopologyNeighborhood` | 邻域：compact nodes + `links[]`（NE 对，非端口） |
+| `queryTopologyEdges` | 默认 **adjacency**：`links[{a,b,link_count}]`；画布一对网元一条线。`detail=ports` 才给端口行 |
+| `analyzeTopologyViewLayout` | 布图验收（只读）：`verdict` + score（含中档 `chains` 直链成一体、`rings` 最小环不被穿，各权 0.10）；`detail=structure` 给重心/枢纽/配方建议；`hotspots\|blocks\|both` 给手拖 sight（`drag_candidates[].suggest_xy` / `delta_crossings_est`） |
 
 ### 写（只动画布，不污染 Fabric）
 
 | 工具 | 作用 |
 |------|------|
-| `createTopologyFolder` | 新建**区域**文件夹（挂在根下）；返回 `id`；**不**自动建画布，需再调 `createTopologyView` |
-| `createTopologyView` | 在 folder 下新建画布 |
+| `createTopologyFolder` | **唯一建图入口**：顶级→「根」+「根图」；根图下→**子区域**；返回 `view_id` |
 | `addTopologyViewNodes` | **优先**传 `keyword`/`role`/`vendor`/`link_status` + `limit`/`offset`，由 API 筛选落点；也可 `fabric_node_ids`。拒绝 managed/UME。返回摘要。 |
 | `removeTopologyViewNodes` | 筛选或 id 从画布移除（不删 Fabric），摘要 |
+| `sinkTopologyDualUnits` | 根图 dual_units 分批沉入子区域；默认 `layout_batch`→`layout_dual_unit`→块扫挂载；日常禁 `until_empty` |
+| `copyTopologyViewNodes` | 一键克隆画布成员+坐标到另一画布（`clear_target` 可选）；源画布不动，测沙箱用 |
+| `layoutTopologyView` `move_nodes` | 指定 `fabric_node_ids` 从 `source_view_id`→`view_id`（默认同移出源）；对调两 view 回迁；别名 `sink_nodes`；`park=true` 扫角停靠 |
 | `updateTopologyViewPositions` | **优先** `layout=grid\|offset\|stack` + 筛选，API 自己挪点；`positions[]` 仅少量微调 |
-| `projectTopologyNeighbors` | 投影**已有** LLDP 邻居到画布 |
+| `layoutTopologyView` | **布图/局部修**：公开 `action=layout\|layout_dual_unit\|orbit_sweep\|polish_crossings\|clear_edge_hits\|fix_overlaps\|untangle\|straighten_channels\|move_nodes`；recipe 仅 `compact\|corridor\|rings\|unstick`。巨图 apply 可能返回 `job_id` → 轮询 `job_status` / `job_cancel`。Job=**子进程+`data/runtime/layout_jobs` 落盘**。`mode=preview\|apply` |
+| `projectTopologyNeighbors` | 投影**已有** LLDP 邻居到画布；区域画布务必传 `region_folder_id`，读 `out_of_region_skipped` |
 
-**单画布硬顶 2000**；库存更大时多画布 + `offset` 翻页加满。前端对可见节点做 `onlyRenderVisibleElements`。
+**推荐流水线：** `getTopologyTree` →（可选）`createTopologyFolder` 取 `view_id` → `addTopologyViewNodes` →（可选）邻居投影 / 布局。
+
+**硬顶 2000：目标 ≤2000 画一张图即可**；physical 根图/区域默认 `max_nodes=2000`，custom 仍按角色软顶。Agent 默认 `links[]` 邻接；布图按邻接与 Skill 中的经验摆点。
 
 **刻意不提供：** 手工建链、`populate`、删 Fabric / 删整图。
 
