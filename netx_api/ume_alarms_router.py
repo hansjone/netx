@@ -437,9 +437,9 @@ def ume_diagnostics(
     return {
         "source": "ume_alarms_current",
         "total_alarms": len(rows),
-        "severity_summary": [{"key": k, "count": v} for k, v in by_severity],
-        "top_alarm_codes": [{"key": k, "count": v} for k, v in by_alarm_code],
-        "top_ne": [{"key": k, "count": v} for k, v in by_ne],
+        "severity_summary": by_severity,
+        "top_alarm_codes": by_alarm_code,
+        "top_ne": by_ne,
         "protocol_summary": [{"key": k, "count": v} for k, v in protocol_summary],
     }
 

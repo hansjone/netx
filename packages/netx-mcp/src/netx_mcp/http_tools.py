@@ -285,6 +285,31 @@ def _list_cli_targets(args: dict[str, Any]) -> dict[str, Any]:
     return http_json("GET", "/v1/cli/targets", params=params)
 
 
+def _find_topology_paths(args: dict[str, Any]) -> dict[str, Any]:
+    from_uid = str(args.get("from_ume_ne_id") or "").strip()
+    from_mid = str(args.get("from_managed_ne_id") or "").strip()
+    to_uid = str(args.get("to_ume_ne_id") or "").strip()
+    to_mid = str(args.get("to_managed_ne_id") or "").strip()
+    if bool(from_uid) == bool(from_mid):
+        return {"ok": False, "error": "exactly_one_of_from_ume_ne_id_or_from_managed_ne_id_required"}
+    if bool(to_uid) == bool(to_mid):
+        return {"ok": False, "error": "exactly_one_of_to_ume_ne_id_or_to_managed_ne_id_required"}
+    body: dict[str, Any] = {
+        "max_paths": max(1, min(10, int(args.get("max_paths") or 3))),
+        "max_hops": max(1, min(12, int(args.get("max_hops") or 6))),
+        "layer": str(args.get("layer") or "physical").strip() or "physical",
+    }
+    if from_uid:
+        body["from_ume_ne_id"] = from_uid
+    else:
+        body["from_managed_ne_id"] = from_mid
+    if to_uid:
+        body["to_ume_ne_id"] = to_uid
+    else:
+        body["to_managed_ne_id"] = to_mid
+    return http_post_json("/v1/topology/fabric/paths", body, timeout=30.0)
+
+
 HTTP_MCP_TOOLS: list[dict[str, Any]] = [
     {
         "name": "queryUmeAlarms",
@@ -469,6 +494,28 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "findTopologyPaths",
+        "description": (
+            "Find up to max_paths simple paths between two fabric nodes for troubleshooting. "
+            "Accepts ume_ne_id (from UME alarms) or managed_ne_id — resolved to fabric node "
+            "internally. Returns paths with node sequence + edge status (up/down)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "from_ume_ne_id": {"type": "string", "description": "Source UME ne_id (from alarm ne_id)"},
+                "from_managed_ne_id": {"type": "string", "description": "Source managed NE id"},
+                "to_ume_ne_id": {"type": "string", "description": "Target UME ne_id"},
+                "to_managed_ne_id": {"type": "string", "description": "Target managed NE id"},
+                "max_paths": {"type": "integer", "minimum": 1, "maximum": 10, "default": 3},
+                "max_hops": {"type": "integer", "minimum": 1, "maximum": 12, "default": 6},
+                "layer": {"type": "string", "default": "physical"},
+            },
+            "required": ["from_ume_ne_id", "to_ume_ne_id"],
+            "additionalProperties": False,
+        },
+    },
 ]
 
 _HANDLERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
@@ -485,6 +532,7 @@ _HANDLERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "getManagedNe": _get_managed_ne,
     "execManagedNe": _exec_managed_ne,
     "listCliTargets": _list_cli_targets,
+    "findTopologyPaths": _find_topology_paths,
 }
 
 # Minimum scope required to advertise / invoke each tool (matches netx API RBAC).
@@ -502,6 +550,7 @@ TOOL_REQUIRED_SCOPE: dict[str, str] = {
     "getManagedNe": "ne:read",
     "execManagedNe": "ne:exec",
     "listCliTargets": "ne:read",
+    "findTopologyPaths": "ne:read",
 }
 
 

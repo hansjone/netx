@@ -457,3 +457,112 @@ def get_fabric_neighborhood(
     )
 
 
+def find_fabric_paths(
+    db: Session,
+    *,
+    from_ume_ne_id: str = "",
+    from_managed_ne_id: str = "",
+    to_ume_ne_id: str = "",
+    to_managed_ne_id: str = "",
+    max_paths: int = 3,
+    max_hops: int = 6,
+    layer: str = "physical",
+) -> dict[str, Any]:
+    """Find up to max_paths simple paths between two fabric nodes.
+
+    Accepts ume_ne_id (from UME alarms) or managed_ne_id (from managed NE) — resolved
+    to fabric_node_id internally so agents can use alarm ne_id directly.
+    """
+    from_uid = str(from_ume_ne_id or "").strip()
+    from_mid = str(from_managed_ne_id or "").strip()
+    to_uid = str(to_ume_ne_id or "").strip()
+    to_mid = str(to_managed_ne_id or "").strip()
+    if bool(from_uid) == bool(from_mid):
+        raise HTTPException(400, detail="exactly_one_of_from_ume_ne_id_or_from_managed_ne_id_required")
+    if bool(to_uid) == bool(to_mid):
+        raise HTTPException(400, detail="exactly_one_of_to_ume_ne_id_or_to_managed_ne_id_required")
+
+    def _resolve(uid: str, mid: str) -> str:
+        q = db.query(TopoFabricNode)
+        if uid:
+            q = q.filter(TopoFabricNode.ume_ne_id == uid)
+        else:
+            q = q.filter(TopoFabricNode.managed_ne_id == mid)
+        row = q.first()
+        if not row:
+            raise HTTPException(404, detail="fabric_node_not_found_for_ne_id")
+        return row.id
+
+    from_id = _resolve(from_uid, from_mid)
+    to_id = _resolve(to_uid, to_mid)
+    if from_id == to_id:
+        raise HTTPException(400, detail="from_and_to_are_same_node")
+
+    max_paths = max(1, min(10, int(max_paths or 3)))
+    max_hops = max(1, min(12, int(max_hops or 6)))
+    layer_v = str(layer or "physical").strip() or "physical"
+
+    edges = db.query(TopoFabricEdge).filter(TopoFabricEdge.layer == layer_v).all()
+    edge_map: dict[str, TopoFabricEdge] = {e.id: e for e in edges}
+    adj: dict[str, list[tuple[str, str]]] = {}
+    for e in edges:
+        adj.setdefault(e.a_node_id, []).append((e.b_node_id, e.id))
+        adj.setdefault(e.b_node_id, []).append((e.a_node_id, e.id))
+
+    # DFS for simple paths (no repeated nodes), capped to avoid blow-up on large graphs.
+    _EXPLORE_CAP = 100
+    all_paths: list[list[str]] = []
+    stack: list[tuple[str, list[str], set[str]]] = [(from_id, [], {from_id})]
+    while stack and len(all_paths) < _EXPLORE_CAP:
+        node, edge_path, visited = stack.pop()
+        if len(edge_path) >= max_hops:
+            continue
+        for nbr, eid in adj.get(node, []):
+            if nbr in visited:
+                continue
+            new_path = edge_path + [eid]
+            if nbr == to_id:
+                all_paths.append(new_path)
+                continue
+            stack.append((nbr, new_path, visited | {nbr}))
+
+    all_paths.sort(key=len)
+    found = all_paths[:max_paths]
+
+    node_ids = {from_id, to_id}
+    for p in found:
+        for eid in p:
+            e = edge_map.get(eid)
+            if e:
+                node_ids.add(e.a_node_id)
+                node_ids.add(e.b_node_id)
+    node_map = _nodes_by_ids(db, node_ids)
+
+    def _path_nodes(edge_ids: list[str]) -> list[dict]:
+        ids = [from_id]
+        cur = from_id
+        for eid in edge_ids:
+            e = edge_map.get(eid)
+            if not e:
+                break
+            nxt = e.b_node_id if e.a_node_id == cur else e.a_node_id
+            ids.append(nxt)
+            cur = nxt
+        return [_node_out(node_map[nid]).model_dump() for nid in ids if nid in node_map]
+
+    return {
+        "from_node_id": from_id,
+        "to_node_id": to_id,
+        "layer": layer_v,
+        "path_count": len(found),
+        "paths": [
+            {
+                "hops": len(p),
+                "nodes": _path_nodes(p),
+                "edges": [_edge_out(edge_map[eid], nodes_by_id=node_map).model_dump() for eid in p if eid in edge_map],
+            }
+            for p in found
+        ],
+    }
+
+

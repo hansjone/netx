@@ -15,11 +15,12 @@ from netx_mcp.server import _fetch_scopes
 
 def test_http_mcp_tool_list_has_expected_tools() -> None:
     names = [str(t.get("name") or "") for t in HTTP_MCP_TOOLS]
-    assert len(names) == 13
+    assert len(names) == 14
     assert "queryUmeAlarms" in names
     assert "queryUmeAlarmsRaw" in names
     assert "execManagedNe" in names
     assert "listCliTargets" in names
+    assert "findTopologyPaths" in names
     assert "queryTopologyEdges" not in names
     exec_tool = next(t for t in HTTP_MCP_TOOLS if t.get("name") == "execManagedNe")
     assert exec_tool["inputSchema"]["properties"]["commands"]["maxItems"] >= 5
@@ -136,7 +137,7 @@ def test_stdio_initialize_and_tools_list() -> None:
     list_resp = json.loads(list_line)
     assert "error" not in list_resp, list_resp
     tools = list_resp["result"]["tools"]
-    assert len(tools) == 13
+    assert len(tools) == 14
 
     proc.terminate()
     proc.wait(timeout=5)

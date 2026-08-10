@@ -19,9 +19,10 @@ _SQL_FORBIDDEN_RE = re.compile(
     r"set\s+role|set\s+session|into\s+outfile|pg_read_file|lo_import|lo_export)\b",
     flags=re.IGNORECASE,
 )
-_WITH_RE = re.compile(r"^\s*with\b", flags=re.IGNORECASE)
 _COMMENT_RE = re.compile(r"/\*.*?\*/|--.*?$", flags=re.IGNORECASE | re.DOTALL | re.MULTILINE)
 _FROM_JOIN_RE = re.compile(r"\b(?:from|join)\s+([a-zA-Z0-9_\"\.]+)", flags=re.IGNORECASE)
+# CTE / subquery alias names: "name AS (" defines an inline virtual table, not a DB table.
+_ALIAS_NAME_RE = re.compile(r"\b(\w+)\s+AS\s*\(", flags=re.IGNORECASE)
 
 _readonly_engine: Engine | None = None
 _ReadonlySession: sessionmaker | None = None
@@ -43,10 +44,8 @@ def validate_select_sql(sql: str, *, allowed_tables: set[str] | None = None) -> 
         raise HTTPException(status_code=400, detail="sql_required")
     if ";" in cleaned:
         raise HTTPException(status_code=400, detail="single_statement_only")
-    if _WITH_RE.search(cleaned):
-        raise HTTPException(status_code=400, detail="with_cte_not_allowed")
     low = cleaned.lower().lstrip()
-    if not low.startswith("select"):
+    if not low.startswith(("select", "with")):
         raise HTTPException(status_code=400, detail="select_only")
     if _SQL_FORBIDDEN_RE.search(cleaned):
         raise HTTPException(status_code=400, detail="forbidden_keyword")
@@ -57,10 +56,13 @@ def validate_select_sql(sql: str, *, allowed_tables: set[str] | None = None) -> 
         refs = _FROM_JOIN_RE.findall(cleaned)
         if not refs:
             raise HTTPException(status_code=400, detail="from_required")
+        alias_names = {m.group(1).lower() for m in _ALIAS_NAME_RE.finditer(cleaned)}
         for ref in refs:
             normalized = str(ref).strip().strip('"')
             if "." in normalized:
                 normalized = normalized.split(".")[-1]
+            if normalized.lower() in alias_names:
+                continue  # CTE / subquery alias, not a DB table
             if normalized.lower() not in allowed_tables:
                 raise HTTPException(status_code=400, detail=f"ume_table_not_allowed:{normalized}")
     return cleaned
@@ -109,13 +111,11 @@ def run_select(
         if statement_timeout_ms > 0:
             try:
                 if str(getattr(getattr(session, "bind", None), "dialect", None).name).lower().startswith("postgres"):
-                    session.execute(
-                        sql_text("SET LOCAL statement_timeout = :ms"),
-                        {"ms": int(statement_timeout_ms)},
-                    )
+                    ms_int = int(statement_timeout_ms)
+                    session.execute(sql_text(f"SET LOCAL statement_timeout = {ms_int}"))
                     session.execute(sql_text("SET LOCAL search_path TO public"))
             except Exception:
-                pass
+                session.rollback()
         res = session.execute(sql_text(wrapped), bind_params)
         cols = list(res.keys())
         raw_rows = res.fetchall()

@@ -54,13 +54,30 @@ class ScopeUnitTests(unittest.TestCase):
 
 
 class SqlGuardTests(unittest.TestCase):
-    def test_rejects_cte(self) -> None:
-        with self.assertRaises(HTTPException) as ctx:
-            validate_select_sql(
-                "WITH x AS (SELECT * FROM app_user) SELECT * FROM x",
-                allowed_tables={"ume_alarms_current", "ume_inventory_ne"},
-            )
-        self.assertEqual(ctx.exception.detail, "with_cte_not_allowed")
+    def test_allows_cte(self) -> None:
+        # CTE (including WITH RECURSIVE) is now allowed; table whitelist still applies.
+        cleaned = validate_select_sql(
+            "WITH x AS (SELECT * FROM ume_alarms_current) SELECT * FROM x",
+            allowed_tables={"ume_alarms_current", "ume_inventory_ne"},
+        )
+        self.assertTrue(cleaned.lower().startswith("with"))
+
+    def test_allows_cte_referencing_alias_in_from(self) -> None:
+        # CTE name appears in FROM but should not be flagged as unauthorized table.
+        cleaned = validate_select_sql(
+            "WITH stats AS (SELECT host_name, COUNT(*) AS cnt FROM ume_alarms_current GROUP BY host_name) "
+            "SELECT * FROM stats WHERE cnt > 5",
+            allowed_tables={"ume_alarms_current", "ume_inventory_ne"},
+        )
+        self.assertIn("stats", cleaned.lower())
+
+    def test_allows_subquery_alias_in_from(self) -> None:
+        # Subquery alias in FROM should not be flagged as unauthorized table.
+        cleaned = validate_select_sql(
+            "SELECT * FROM (SELECT host_name, COUNT(*) AS cnt FROM ume_alarms_current GROUP BY host_name) AS stats WHERE cnt > 5",
+            allowed_tables={"ume_alarms_current", "ume_inventory_ne"},
+        )
+        self.assertIn("stats", cleaned.lower())
 
     def test_rejects_disallowed_table(self) -> None:
         with self.assertRaises(HTTPException) as ctx:

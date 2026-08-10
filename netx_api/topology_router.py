@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from .db import get_db
@@ -49,6 +49,7 @@ from .topology_discover import get_discover_job, start_discover_job
 from .topology_fabric import (
     delete_fabric_edge,
     delete_fabric_edges,
+    find_fabric_paths,
     get_fabric_neighborhood,
     get_fabric_summary,
     list_fabric_edges,
@@ -145,6 +146,21 @@ def api_fabric_neighborhood(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     return get_fabric_neighborhood(db, node_id, depth=depth, layer=layer).model_dump()
+
+
+@router.post("/fabric/paths")
+def api_fabric_paths(body: dict[str, Any] = Body(...), db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Find up to max_paths simple paths between two fabric nodes (by ne_id)."""
+    return find_fabric_paths(
+        db,
+        from_ume_ne_id=str(body.get("from_ume_ne_id") or ""),
+        from_managed_ne_id=str(body.get("from_managed_ne_id") or ""),
+        to_ume_ne_id=str(body.get("to_ume_ne_id") or ""),
+        to_managed_ne_id=str(body.get("to_managed_ne_id") or ""),
+        max_paths=int(body.get("max_paths") or 3),
+        max_hops=int(body.get("max_hops") or 6),
+        layer=str(body.get("layer") or "physical"),
+    )
 
 
 @router.post("/fabric/edges")
