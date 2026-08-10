@@ -114,7 +114,8 @@ def required_scope_for_request(method: str, path: str) -> str | None:
         return SCOPE_WEBCRT
 
     if p.startswith("/v1/managed-ne"):
-        if p.rstrip("/").endswith("/exec") and m == "POST":
+        path_tail = p.rstrip("/")
+        if m == "POST" and (path_tail.endswith("/exec") or path_tail.endswith("/exec-batch")):
             return SCOPE_NE_EXEC
         if m in ("POST", "PUT", "PATCH", "DELETE"):
             return SCOPE_NE_WRITE

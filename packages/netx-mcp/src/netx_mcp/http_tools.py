@@ -282,6 +282,60 @@ def _get_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
 
 
 def _exec_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
+    targets_raw = args.get("targets")
+    ne_ids_raw = args.get("ne_ids")
+    ume_ne_ids_raw = args.get("ume_ne_ids")
+    shared_cmds_raw = args.get("commands")
+    shared_commands = (
+        [str(c).strip() for c in shared_cmds_raw if str(c).strip()]
+        if isinstance(shared_cmds_raw, list)
+        else []
+    )
+    multi = bool(
+        (isinstance(targets_raw, list) and targets_raw)
+        or (isinstance(ne_ids_raw, list) and ne_ids_raw)
+        or (isinstance(ume_ne_ids_raw, list) and ume_ne_ids_raw)
+    )
+    if multi:
+        body: dict[str, Any] = {}
+        if isinstance(targets_raw, list) and targets_raw:
+            cleaned_targets: list[dict[str, Any]] = []
+            for t in targets_raw:
+                if not isinstance(t, dict):
+                    continue
+                row: dict[str, Any] = {}
+                if str(t.get("ne_id") or "").strip():
+                    row["ne_id"] = str(t.get("ne_id")).strip()
+                if str(t.get("ume_ne_id") or "").strip():
+                    row["ume_ne_id"] = str(t.get("ume_ne_id")).strip()
+                cmds = t.get("commands")
+                if isinstance(cmds, list) and cmds:
+                    row["commands"] = [str(c).strip() for c in cmds if str(c).strip()]
+                if row:
+                    cleaned_targets.append(row)
+            body["targets"] = cleaned_targets
+        if isinstance(ne_ids_raw, list) and ne_ids_raw:
+            body["ne_ids"] = [str(x).strip() for x in ne_ids_raw if str(x).strip()]
+        if isinstance(ume_ne_ids_raw, list) and ume_ne_ids_raw:
+            body["ume_ne_ids"] = [str(x).strip() for x in ume_ne_ids_raw if str(x).strip()]
+        if shared_commands:
+            if len(shared_commands) > exec_max_commands():
+                return {"ok": False, "error": "too_many_commands", "error_code": "too_many_commands"}
+            body["commands"] = shared_commands
+        rts = args.get("read_timeout_sec")
+        body["read_timeout_sec"] = int(rts) if rts is not None else 60
+        conc = args.get("concurrency")
+        if conc is not None:
+            body["concurrency"] = int(conc)
+        # Wall clock: many NEs × per-cmd timeout; keep below oclaw MCP override.
+        out = http_post_json("/v1/managed-ne/exec-batch", body, timeout=600.0)
+        if not out.get("ok"):
+            return out
+        data = out.get("data") or {}
+        if isinstance(data, dict) and data.get("ok") is False:
+            return {"ok": False, "data": data, "error": str(data.get("error") or "exec_batch_failed")}
+        return {"ok": True, "data": data}
+
     ne_id = str(args.get("ne_id") or "").strip()
     ume_ne_id = str(args.get("ume_ne_id") or "").strip()
     if bool(ne_id) == bool(ume_ne_id):
@@ -289,16 +343,16 @@ def _exec_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
             "ok": False,
             "error": "exactly_one_of_ne_id_or_ume_ne_id_required",
             "error_code": "exactly_one_of_ne_id_or_ume_ne_id_required",
+            "hint": (
+                "For one NE pass ne_id OR ume_ne_id. For many NEs pass ne_ids / ume_ne_ids "
+                "(or targets[]) with shared commands — one call, concurrent on server."
+            ),
         }
-    raw_cmds = args.get("commands")
-    if not isinstance(raw_cmds, list) or not raw_cmds:
+    if not shared_commands:
         return {"ok": False, "error": "commands_required", "error_code": "commands_required"}
-    commands = [str(c).strip() for c in raw_cmds if str(c).strip()]
-    if not commands:
-        return {"ok": False, "error": "commands_required", "error_code": "commands_required"}
-    if len(commands) > exec_max_commands():
+    if len(shared_commands) > exec_max_commands():
         return {"ok": False, "error": "too_many_commands", "error_code": "too_many_commands"}
-    body: dict[str, Any] = {"commands": commands}
+    body = {"commands": shared_commands}
     if ne_id:
         body["ne_id"] = ne_id
     if ume_ne_id:
@@ -592,21 +646,55 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
         "name": "execManagedNe",
         "description": (
             f"Run read-only CLI via netx (show/display/ping/traceroute; "
-            f"max {exec_max_commands()} commands per call, NETX_NE_EXEC_MAX_COMMANDS). "
-            "Use ne_id (managed NE) OR ume_ne_id (UME inventory). "
-            "Batch multiple show commands in one call instead of looping. "
-            "Default read_timeout_sec=60; on timeout raise to 90–120 or shrink commands — do not blind-retry."
+            f"max {exec_max_commands()} commands per NE, NETX_NE_EXEC_MAX_COMMANDS). "
+            "Single NE: ne_id OR ume_ne_id + commands. "
+            "Many NEs (preferred for sweeps): ne_ids[] or ume_ne_ids[] or targets[] with shared commands "
+            "— server runs them concurrently (default concurrency 4, max 20 targets). "
+            "Do NOT loop one-NE execManagedNe for the same show commands. "
+            "Default read_timeout_sec=60; on timeout raise to 90–120 — do not blind-retry."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "ne_id": {"type": "string"},
                 "ume_ne_id": {"type": "string"},
+                "ne_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "maxItems": 20,
+                    "description": "Managed NE ids for concurrent batch (shared commands).",
+                },
+                "ume_ne_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "maxItems": 20,
+                    "description": "UME inventory ne_ids for concurrent batch (shared commands).",
+                },
+                "targets": {
+                    "type": "array",
+                    "maxItems": 20,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "ne_id": {"type": "string"},
+                            "ume_ne_id": {"type": "string"},
+                            "commands": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "minItems": 1,
+                                "maxItems": exec_max_commands(),
+                            },
+                        },
+                        "additionalProperties": False,
+                    },
+                    "description": "Explicit per-NE targets; optional per-target commands override shared commands.",
+                },
                 "commands": {
                     "type": "array",
                     "items": {"type": "string"},
                     "minItems": 1,
                     "maxItems": exec_max_commands(),
+                    "description": "Commands for single NE, or shared commands for ne_ids/ume_ne_ids/targets.",
                 },
                 "read_timeout_sec": {
                     "type": "integer",
@@ -615,8 +703,15 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                     "default": 60,
                     "description": "Per-command read timeout (default 60; use 90–120 for slow show).",
                 },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 8,
+                    "default": 4,
+                    "description": "Parallel NEs for batch mode (ignored for single-NE).",
+                },
             },
-            "required": ["commands"],
+            "required": [],
             "additionalProperties": False,
         },
     },

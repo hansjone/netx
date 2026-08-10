@@ -8,12 +8,13 @@ from .db import get_db
 from .device_types import SUPPORTED_VENDORS
 from .ne_connect import schedule_connect_tests
 from .ne_crypto import credentials_configured
-from .ne_exec import execute_managed_ne_commands
+from .ne_exec import execute_managed_ne_commands, execute_managed_ne_commands_batch
 from .ne_schemas import (
     BatchAccountApplyRequest,
     BatchHopApplyRequest,
     ConnectTestRequest,
     ManagedNeCreate,
+    ManagedNeExecBatchRequest,
     ManagedNeExecRequest,
     ManagedNeUpdate,
 )
@@ -138,6 +139,22 @@ def api_exec_managed_ne(body: ManagedNeExecRequest, db: Session = Depends(get_db
         ne_id=body.ne_id,
         ume_ne_id=body.ume_ne_id,
         read_timeout_sec=body.read_timeout_sec,
+    )
+
+
+@router.post("/exec-batch")
+def api_exec_managed_ne_batch(body: ManagedNeExecBatchRequest):
+    """Run read-only CLI on many NEs concurrently (field multi-NE sweeps)."""
+    targets = None
+    if body.targets:
+        targets = [t.model_dump() for t in body.targets]
+    return execute_managed_ne_commands_batch(
+        targets=targets,
+        ne_ids=body.ne_ids,
+        ume_ne_ids=body.ume_ne_ids,
+        commands=body.commands,
+        read_timeout_sec=body.read_timeout_sec,
+        concurrency=body.concurrency,
     )
 
 

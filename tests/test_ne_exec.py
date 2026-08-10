@@ -205,5 +205,51 @@ class NeExecRunTests(unittest.TestCase):
         collect.assert_called_once()
 
 
+class NeExecBatchTests(unittest.TestCase):
+    @patch("netx_api.ne_exec.credentials_configured", return_value=True)
+    @patch("netx_api.ne_exec._collect_on_device", return_value="ok-output")
+    @patch("netx_api.ne_exec.resolve_cli_target")
+    @patch("netx_api.ne_exec.SessionLocal")
+    def test_batch_ne_ids_runs_concurrently(
+        self,
+        session_local: MagicMock,
+        resolve: MagicMock,
+        collect: MagicMock,
+        _creds: MagicMock,
+    ) -> None:
+        from netx_api.ne_exec import execute_managed_ne_commands_batch
+
+        session_local.return_value = MagicMock()
+        resolve.return_value = (
+            {"ip_address": "1.1.1.1"},
+            {
+                "source": "managed",
+                "id": "ne-1",
+                "name": "R1",
+                "ip_address": "1.1.1.1",
+            },
+        )
+        with patch("netx_api.ne_exec.settings") as mock_settings:
+            mock_settings.ne_exec_max_commands = 5
+            out = execute_managed_ne_commands_batch(
+                ne_ids=["a", "b", "c"],
+                commands=["show version"],
+                concurrency=3,
+            )
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["summary"]["total"], 3)
+        self.assertEqual(out["summary"]["ok"], 3)
+        self.assertEqual(out["summary"]["failed"], 0)
+        self.assertEqual(collect.call_count, 3)
+        self.assertEqual(len(out["results"]), 3)
+
+    def test_batch_requires_targets(self) -> None:
+        from netx_api.ne_exec import execute_managed_ne_commands_batch
+
+        with self.assertRaises(HTTPException) as ctx:
+            execute_managed_ne_commands_batch(commands=["show version"])
+        self.assertEqual(ctx.exception.detail, "targets_required")
+
+
 if __name__ == "__main__":
     unittest.main()

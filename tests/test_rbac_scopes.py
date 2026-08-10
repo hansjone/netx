@@ -50,6 +50,7 @@ class ScopeUnitTests(unittest.TestCase):
         self.assertEqual(required_scope_for_request("POST", "/v1/sql/ume_query"), SCOPE_SQL)
         self.assertEqual(required_scope_for_request("GET", "/v1/webcrt/sessions"), SCOPE_WEBCRT)
         self.assertEqual(required_scope_for_request("POST", "/v1/managed-ne/exec"), "ne:exec")
+        self.assertEqual(required_scope_for_request("POST", "/v1/managed-ne/exec-batch"), "ne:exec")
         self.assertEqual(required_scope_for_request("POST", "/v1/managed-ne"), "ne:write")
         self.assertEqual(required_scope_for_request("POST", "/v1/topology/fabric/paths"), "ne:read")
         self.assertEqual(required_scope_for_request("POST", "/v1/topology/fabric/edges"), "ne:write")

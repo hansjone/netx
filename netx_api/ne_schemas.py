@@ -127,6 +127,25 @@ class ManagedNeExecRequest(BaseModel):
     read_timeout_sec: int | None = Field(default=None, ge=10, le=120)
 
 
+class ManagedNeExecBatchTarget(BaseModel):
+    """One NE in a concurrent exec batch (exactly one of ne_id / ume_ne_id)."""
+
+    ne_id: str | None = None
+    ume_ne_id: str | None = None
+    commands: list[str] | None = Field(default=None, max_length=50)
+
+
+class ManagedNeExecBatchRequest(BaseModel):
+    """Run the same (or per-target) read-only CLI on many NEs concurrently."""
+
+    targets: list[ManagedNeExecBatchTarget] | None = Field(default=None, max_length=20)
+    ne_ids: list[str] | None = Field(default=None, max_length=20)
+    ume_ne_ids: list[str] | None = Field(default=None, max_length=20)
+    commands: list[str] | None = Field(default=None, max_length=50)
+    read_timeout_sec: int | None = Field(default=None, ge=10, le=120)
+    concurrency: int | None = Field(default=4, ge=1, le=8)
+
+
 class HopProxyConfig(BaseModel):
     """Shared jump-host (proxy) settings applied to one or many NEs."""
 
