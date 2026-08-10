@@ -200,6 +200,9 @@ def test_orbit_objective_total_ranks_clearance_trade() -> None:
     by_total = orbit_sweep_node(st, "h", max_jump=400, nn_floor=20.0, objective="total")
     assert by_cross["ok"] is True and by_total["ok"] is True
     assert by_total.get("objective") == "total"
+    # Tiny graph: clearance runs, so ranked candidates carry verdict_partial.
+    assert by_total.get("candidates")
+    assert all("verdict_partial" in c for c in by_total["candidates"])
     # y_band plumbing
     banded = orbit_sweep_node(
         st, "h", max_jump=400, nn_floor=20.0, objective="total", y_min=0.0, y_max=80.0
@@ -208,3 +211,23 @@ def test_orbit_objective_total_ranks_clearance_trade() -> None:
     assert banded.get("y_band") == [0.0, 80.0]
     for c in banded.get("candidates") or []:
         assert 0.0 <= float(c["y"]) <= 80.0
+
+
+def test_verdict_partial_weights_match_layout_stats() -> None:
+    from netx_topology_mcp.layout_ops.orbit_sweep import (
+        _W_CLR,
+        _W_CROSS,
+        _crossing_part_score,
+        _verdict_partial,
+    )
+
+    assert abs(_W_CROSS - 0.18) < 1e-9
+    assert abs(_W_CLR - 0.08) < 1e-9
+    # Zero crossings on small graph → crossing part 1.0
+    assert _crossing_part_score(0, n_links=10, n_nodes=10) == 1.0
+    # Perfect clearance + perfect crossing
+    assert abs(_verdict_partial(0, 1.0, n_links=10, n_nodes=10) - (_W_CROSS + _W_CLR)) < 1e-9
+    # Worse crossings lower the partial
+    assert _verdict_partial(5, 1.0, n_links=10, n_nodes=10) < _verdict_partial(
+        0, 1.0, n_links=10, n_nodes=10
+    )

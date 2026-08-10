@@ -184,38 +184,86 @@ def _score_key(c: dict[str, Any]) -> tuple:
     )
 
 
+# Verdict weights for the components a single-node orbit move mainly affects.
+_W_CROSS = 0.18
+_W_CLR = 0.08
+
+
+def _crossing_part_score(crossings: int, *, n_links: int, n_nodes: int) -> float:
+    """Match layout_stats crossing sub-score in [0,1] from raw crossing count."""
+    cpl = float(crossings) / max(int(n_links), 1)
+    if n_nodes <= 50:
+        cpl_ok, cpl_bad = 0.05, 0.20
+    elif n_nodes <= 200:
+        cpl_ok, cpl_bad = 0.10, 0.25
+    else:
+        cpl_ok, cpl_bad = 0.16, 0.30
+    if cpl <= cpl_ok:
+        return 1.0
+    if cpl >= cpl_bad:
+        return 0.0
+    return 1.0 - (cpl - cpl_ok) / max(cpl_bad - cpl_ok, 1e-9)
+
+
+def _verdict_partial(crossings: int, clearance_score: float, *, n_links: int, n_nodes: int) -> float:
+    """Weighted crossing+clearance slice of verdict.total (higher is better)."""
+    return (
+        _W_CROSS * _crossing_part_score(crossings, n_links=n_links, n_nodes=n_nodes)
+        + _W_CLR * max(0.0, min(1.0, float(clearance_score)))
+    )
+
+
 def _rerank_by_total(
     scored: list[dict[str, Any]],
     nid: str,
     pos: dict[str, tuple[float, float]],
     names: dict[str, str],
     links: list[tuple[str, str]],
-    adj: dict[str, set[str]],
     *,
+    global0: int,
     re_rank_n: int = 20,
-) -> list[dict[str, Any]]:
-    """Re-rank top candidates by crossing + edge_clearance (multi-objective).
+) -> tuple[list[dict[str, Any]], bool, float]:
+    """Re-rank top candidates by weighted crossing+clearance (verdict.total slice).
 
-    A move may increase crossings but resolve several edge-clearance hits;
-    ranking by ``crossings + edge_clearance_hits`` aligns with verdict.total.
+    Returns ``(ranked, clearance_ok, base_partial)``. When edge_clearance is
+    skipped on large graphs, ``clearance_ok`` is False and ranking is unchanged.
     """
     from netx_topology_mcp.layout_metrics import compute_edge_clearance
+
+    n_nodes = len(pos)
+    n_links = len(links)
+    ec0 = compute_edge_clearance(pos, links, names=names, top_n=1)
+    if ec0.get("edge_clearance_skipped"):
+        return scored, False, 0.0
+
+    base_clr = float(ec0.get("edge_clearance_score") or 1.0)
+    base_partial = _verdict_partial(int(global0), base_clr, n_links=n_links, n_nodes=n_nodes)
 
     n = min(re_rank_n, len(scored))
     for c in scored[:n]:
         trial = dict(pos)
         trial[nid] = (float(c["x"]), float(c["y"]))
         ec = compute_edge_clearance(trial, links, names=names, top_n=1)
+        if ec.get("edge_clearance_skipped"):
+            return scored, False, base_partial
+        clr_s = float(ec.get("edge_clearance_score") or 1.0)
         c["edge_clearance_hits"] = int(ec.get("edge_clearance_hits") or 0)
+        c["edge_clearance_score"] = clr_s
+        c["verdict_partial"] = _verdict_partial(
+            int(c["crossings"]["global"]),
+            clr_s,
+            n_links=n_links,
+            n_nodes=n_nodes,
+        )
     head = sorted(
         scored[:n],
         key=lambda c: (
-            int(c["crossings"]["global"]) + int(c.get("edge_clearance_hits", 0)),
+            -float(c.get("verdict_partial") or 0.0),
             int(c["crossings"]["incident"]),
             float(c.get("stretch") or 1.0),
         ),
     )
-    return head + scored[n:]
+    return head + scored[n:], True, base_partial
 
 
 def _diversify_top(
@@ -488,22 +536,22 @@ def orbit_sweep_node(
             scored.append(c)
 
     scored.sort(key=_score_key)
-    # Multi-objective re-rank: optimize total score, not just crossings
+    # Multi-objective re-rank: weighted crossing+clearance slice of verdict.total
     use_total = objective == "total" and len(scored) > 1
-    base_clearance_hits = 0
+    base_partial = 0.0
     if use_total:
-        from netx_topology_mcp.layout_metrics import compute_edge_clearance
-
-        ec0 = compute_edge_clearance(pos, links, names=names, top_n=1)
-        base_clearance_hits = int(ec0.get("edge_clearance_hits") or 0)
-        scored = _rerank_by_total(scored, nid, pos, names, links, adj)
+        scored, clr_ok, base_partial = _rerank_by_total(
+            scored, nid, pos, names, links, global0=int(global0)
+        )
+        if not clr_ok:
+            # Large-graph clearance skip → fall back to crossing-only ranking.
+            use_total = False
     # Prefer improving moves; still return best even if none improve.
     if use_total:
-        base_total = int(global0) + base_clearance_hits
         improving = [
             c
             for c in scored
-            if int(c["crossings"]["global"]) + int(c.get("edge_clearance_hits", 0)) < base_total
+            if float(c.get("verdict_partial") or 0.0) > base_partial
         ]
     else:
         improving = [c for c in scored if c["delta"]["global"] < 0]
@@ -523,7 +571,9 @@ def orbit_sweep_node(
         "improving_n": len(improving),
         "max_jump": jump,
         "angle_step": angle_step,
-        "objective": objective,
+        "objective": "total" if use_total else (
+            "crossing" if objective != "total" else "crossing_fallback"
+        ),
         "y_band": (
             None if (y_min is None and y_max is None)
             else [y_min, y_max]
@@ -531,8 +581,15 @@ def orbit_sweep_node(
         "hint": (
             "prefer rank1 unless util/label concern; then pick 2/3. "
             "apply with params.pick=1|2|3 or updateTopologyViewPositions."
-            + (" objective=total: rank by crossing+edge_clearance, may trade crossings for clearance."
-               if objective == "total" else "")
+            + (
+                " objective=total: rank by weighted crossing+edge_clearance (verdict slice)."
+                if use_total
+                else (
+                    " objective=total skipped clearance (graph too large); ranked by crossings."
+                    if objective == "total"
+                    else ""
+                )
+            )
         ),
     }
 

@@ -503,12 +503,36 @@ def find_fabric_paths(
     max_hops = max(1, min(12, int(max_hops or 6)))
     layer_v = str(layer or "physical").strip() or "physical"
 
-    edges = db.query(TopoFabricEdge).filter(TopoFabricEdge.layer == layer_v).all()
-    edge_map: dict[str, TopoFabricEdge] = {e.id: e for e in edges}
-    adj: dict[str, list[tuple[str, str]]] = {}
-    for e in edges:
-        adj.setdefault(e.a_node_id, []).append((e.b_node_id, e.id))
-        adj.setdefault(e.b_node_id, []).append((e.a_node_id, e.id))
+    # Lazy adjacency: only fetch edges for nodes the BFS actually expands
+    # (avoids loading the entire fabric layer on large graphs).
+    adj_cache: dict[str, list[tuple[str, str]]] = {}
+    adj_loaded: set[str] = set()
+    edge_map: dict[str, TopoFabricEdge] = {}
+
+    def _ensure_adj(node_ids: set[str]) -> None:
+        missing = [n for n in node_ids if n not in adj_loaded]
+        if not missing:
+            return
+        batch = (
+            db.query(TopoFabricEdge)
+            .filter(
+                TopoFabricEdge.layer == layer_v,
+                or_(
+                    TopoFabricEdge.a_node_id.in_(missing),
+                    TopoFabricEdge.b_node_id.in_(missing),
+                ),
+            )
+            .all()
+        )
+        for nid in missing:
+            adj_cache[nid] = []
+            adj_loaded.add(nid)
+        for e in batch:
+            edge_map[e.id] = e
+            if e.a_node_id in missing:
+                adj_cache[e.a_node_id].append((e.b_node_id, e.id))
+            if e.b_node_id in missing:
+                adj_cache[e.b_node_id].append((e.a_node_id, e.id))
 
     # BFS for simple paths so shorter hops are found first; cap expansions on dense graphs.
     _EXPLORE_CAP = 5000
@@ -519,7 +543,8 @@ def find_fabric_paths(
         node, edge_path, visited = queue.popleft()
         if len(edge_path) >= max_hops:
             continue
-        for nbr, eid in adj.get(node, []):
+        _ensure_adj({node})
+        for nbr, eid in adj_cache.get(node, []):
             if nbr in visited:
                 continue
             explored += 1
