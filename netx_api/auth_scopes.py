@@ -141,6 +141,9 @@ def required_scope_for_request(method: str, path: str) -> str | None:
         return SCOPE_NE_READ
 
     if p.startswith("/v1/topology"):
+        # Read-only path search uses POST for a structured body.
+        if m == "POST" and p.rstrip("/").endswith("/fabric/paths"):
+            return SCOPE_NE_READ
         if m in ("POST", "PUT", "PATCH", "DELETE"):
             return SCOPE_NE_WRITE
         return SCOPE_NE_READ

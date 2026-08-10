@@ -2495,6 +2495,62 @@ Management Addresses:
         graph2 = svc.get_view_graph(self.db, view_id)
         self.assertFalse(any(e.id == edge_id for e in graph2.edges))
 
+    def test_find_fabric_paths_prefers_shortest(self) -> None:
+        """BFS should return the 1-hop path before a longer detour."""
+        suffix = uuid4().hex[:8]
+        nes = []
+        for label, ip_tail in (("A", 1), ("B", 2), ("C", 3)):
+            ne = ManagedNE(
+                id=f"path-{suffix}-{label}",
+                name=f"PATH-{label}-{suffix}",
+                vendor="Cisco",
+                device_type="cisco_ios",
+                ip_address=f"198.51.100.{ip_tail}",
+            )
+            self.db.add(ne)
+            nes.append(ne)
+        self.db.commit()
+        nodes = [svc.ensure_fabric_node_for_managed(self.db, ne) for ne in nes]
+        self.db.commit()
+        # Short: A—B ; Long: A—C—B
+        svc.upsert_fabric_edge(
+            self.db,
+            a_node_id=nodes[0].id,
+            b_node_id=nodes[1].id,
+            a_port="Gi0/0",
+            b_port="Gi0/0",
+            source="manual",
+        )
+        svc.upsert_fabric_edge(
+            self.db,
+            a_node_id=nodes[0].id,
+            b_node_id=nodes[2].id,
+            a_port="Gi0/1",
+            b_port="Gi0/0",
+            source="manual",
+        )
+        svc.upsert_fabric_edge(
+            self.db,
+            a_node_id=nodes[2].id,
+            b_node_id=nodes[1].id,
+            a_port="Gi0/1",
+            b_port="Gi0/1",
+            source="manual",
+        )
+        self.db.commit()
+
+        out = svc.find_fabric_paths(
+            self.db,
+            from_managed_ne_id=nes[0].id,
+            to_managed_ne_id=nes[1].id,
+            max_paths=2,
+            max_hops=6,
+        )
+        self.assertEqual(out["path_count"], 2)
+        self.assertEqual(out["paths"][0]["hops"], 1)
+        self.assertEqual(out["paths"][1]["hops"], 2)
+        self.assertEqual(len(out["paths"][0]["nodes"]), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

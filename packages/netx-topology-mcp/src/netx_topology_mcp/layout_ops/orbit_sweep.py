@@ -489,10 +489,24 @@ def orbit_sweep_node(
 
     scored.sort(key=_score_key)
     # Multi-objective re-rank: optimize total score, not just crossings
-    if objective == "total" and len(scored) > 1:
+    use_total = objective == "total" and len(scored) > 1
+    base_clearance_hits = 0
+    if use_total:
+        from netx_topology_mcp.layout_metrics import compute_edge_clearance
+
+        ec0 = compute_edge_clearance(pos, links, names=names, top_n=1)
+        base_clearance_hits = int(ec0.get("edge_clearance_hits") or 0)
         scored = _rerank_by_total(scored, nid, pos, names, links, adj)
     # Prefer improving moves; still return best even if none improve.
-    improving = [c for c in scored if c["delta"]["global"] < 0]
+    if use_total:
+        base_total = int(global0) + base_clearance_hits
+        improving = [
+            c
+            for c in scored
+            if int(c["crossings"]["global"]) + int(c.get("edge_clearance_hits", 0)) < base_total
+        ]
+    else:
+        improving = [c for c in scored if c["delta"]["global"] < 0]
     pool = improving if improving else scored
     top = _diversify_top(pool, k=max(1, int(top_k)), min_angle_sep=min_angle_sep)
 
@@ -582,8 +596,11 @@ def orbit_sweep_round(
     protect_rigid: bool | str = "off",
     frozen_ids: set[str] | None = None,
     focus_ids: list[str] | None = None,
+    y_min: float | None = None,
+    y_max: float | None = None,
+    objective: str = "crossing",
 ) -> OpResult:
-    """Scan hot nodes; auto-apply each node's rank-1 if global crossings drop.
+    """Scan hot nodes; auto-apply each node's rank-1 if the active objective improves.
 
     Default ``protect_rigid=off`` (may move portals). Opt in with portals/all.
     """
@@ -653,6 +670,9 @@ def orbit_sweep_round(
             min_angle_sep=min_angle_sep,
             protect_rigid="off",  # already applied frozen set
             frozen_ids=frozen,
+            y_min=y_min,
+            y_max=y_max,
+            objective=objective,
         )
         if not sweep.get("ok"):
             trace.append({"node_id": nid, "skipped": sweep.get("error")})
@@ -662,12 +682,14 @@ def orbit_sweep_round(
             trace.append({"node_id": nid, "skipped": "no_candidates"})
             continue
         best = cands[0]
-        if int(best["delta"]["global"]) >= 0:
+        # Skip when the active objective has no improving candidates.
+        if int(sweep.get("improving_n") or 0) <= 0:
             trace.append(
                 {
                     "node_id": nid,
                     "skipped": "no_global_gain",
                     "best_delta": best["delta"],
+                    "objective": objective,
                 }
             )
             continue

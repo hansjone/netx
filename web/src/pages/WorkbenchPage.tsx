@@ -175,7 +175,7 @@ export function WorkbenchPage() {
   return (
     <div className="workbench">
       <section className="wb-hero" aria-label={t("workbench.title")}>
-        <div className="wb-hero__clock" aria-live="polite">
+        <div className="wb-hero__clock">
           <time className="wb-hero__clock-panel" dateTime={now.toISOString()}>
             <span className="wb-hero__clock-digits" aria-hidden="true">
               <span className="wb-hero__digit">{hh[0]}</span>

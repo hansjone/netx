@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from collections import deque
 from datetime import datetime, timedelta
 from typing import Any
 from uuid import uuid4
@@ -509,25 +510,26 @@ def find_fabric_paths(
         adj.setdefault(e.a_node_id, []).append((e.b_node_id, e.id))
         adj.setdefault(e.b_node_id, []).append((e.a_node_id, e.id))
 
-    # DFS for simple paths (no repeated nodes), capped to avoid blow-up on large graphs.
-    _EXPLORE_CAP = 100
-    all_paths: list[list[str]] = []
-    stack: list[tuple[str, list[str], set[str]]] = [(from_id, [], {from_id})]
-    while stack and len(all_paths) < _EXPLORE_CAP:
-        node, edge_path, visited = stack.pop()
+    # BFS for simple paths so shorter hops are found first; cap expansions on dense graphs.
+    _EXPLORE_CAP = 5000
+    found: list[list[str]] = []
+    queue: deque[tuple[str, list[str], set[str]]] = deque([(from_id, [], {from_id})])
+    explored = 0
+    while queue and len(found) < max_paths and explored < _EXPLORE_CAP:
+        node, edge_path, visited = queue.popleft()
         if len(edge_path) >= max_hops:
             continue
         for nbr, eid in adj.get(node, []):
             if nbr in visited:
                 continue
+            explored += 1
             new_path = edge_path + [eid]
             if nbr == to_id:
-                all_paths.append(new_path)
+                found.append(new_path)
+                if len(found) >= max_paths:
+                    break
                 continue
-            stack.append((nbr, new_path, visited | {nbr}))
-
-    all_paths.sort(key=len)
-    found = all_paths[:max_paths]
+            queue.append((nbr, new_path, visited | {nbr}))
 
     node_ids = {from_id, to_id}
     for p in found:

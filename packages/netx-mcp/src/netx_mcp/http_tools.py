@@ -498,21 +498,22 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
         "name": "findTopologyPaths",
         "description": (
             "Find up to max_paths simple paths between two fabric nodes for troubleshooting. "
-            "Accepts ume_ne_id (from UME alarms) or managed_ne_id — resolved to fabric node "
-            "internally. Returns paths with node sequence + edge status (up/down)."
+            "For each endpoint provide exactly one of ume_ne_id (from UME alarms) or "
+            "managed_ne_id — resolved to fabric node internally. Returns shortest paths "
+            "first with node sequence + edge status (up/down)."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "from_ume_ne_id": {"type": "string", "description": "Source UME ne_id (from alarm ne_id)"},
-                "from_managed_ne_id": {"type": "string", "description": "Source managed NE id"},
-                "to_ume_ne_id": {"type": "string", "description": "Target UME ne_id"},
-                "to_managed_ne_id": {"type": "string", "description": "Target managed NE id"},
+                "from_ume_ne_id": {"type": "string", "description": "Source UME ne_id (from alarm ne_id); mutually exclusive with from_managed_ne_id"},
+                "from_managed_ne_id": {"type": "string", "description": "Source managed NE id; mutually exclusive with from_ume_ne_id"},
+                "to_ume_ne_id": {"type": "string", "description": "Target UME ne_id; mutually exclusive with to_managed_ne_id"},
+                "to_managed_ne_id": {"type": "string", "description": "Target managed NE id; mutually exclusive with to_ume_ne_id"},
                 "max_paths": {"type": "integer", "minimum": 1, "maximum": 10, "default": 3},
                 "max_hops": {"type": "integer", "minimum": 1, "maximum": 12, "default": 6},
                 "layer": {"type": "string", "default": "physical"},
             },
-            "required": ["from_ume_ne_id", "to_ume_ne_id"],
+            "required": [],
             "additionalProperties": False,
         },
     },

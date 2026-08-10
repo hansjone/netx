@@ -51,16 +51,27 @@ class ScopeUnitTests(unittest.TestCase):
         self.assertEqual(required_scope_for_request("GET", "/v1/webcrt/sessions"), SCOPE_WEBCRT)
         self.assertEqual(required_scope_for_request("POST", "/v1/managed-ne/exec"), "ne:exec")
         self.assertEqual(required_scope_for_request("POST", "/v1/managed-ne"), "ne:write")
+        self.assertEqual(required_scope_for_request("POST", "/v1/topology/fabric/paths"), "ne:read")
+        self.assertEqual(required_scope_for_request("POST", "/v1/topology/fabric/edges"), "ne:write")
 
 
 class SqlGuardTests(unittest.TestCase):
     def test_allows_cte(self) -> None:
-        # CTE (including WITH RECURSIVE) is now allowed; table whitelist still applies.
+        # Plain WITH CTE is allowed; table whitelist still applies.
         cleaned = validate_select_sql(
             "WITH x AS (SELECT * FROM ume_alarms_current) SELECT * FROM x",
             allowed_tables={"ume_alarms_current", "ume_inventory_ne"},
         )
         self.assertTrue(cleaned.lower().startswith("with"))
+
+    def test_rejects_recursive_cte(self) -> None:
+        with self.assertRaises(HTTPException) as ctx:
+            validate_select_sql(
+                "WITH RECURSIVE t AS (SELECT 1 AS n UNION ALL SELECT n+1 FROM t WHERE n < 100) "
+                "SELECT * FROM t",
+                allowed_tables={"ume_alarms_current", "ume_inventory_ne"},
+            )
+        self.assertEqual(ctx.exception.detail, "with_recursive_not_allowed")
 
     def test_allows_cte_referencing_alias_in_from(self) -> None:
         # CTE name appears in FROM but should not be flagged as unauthorized table.

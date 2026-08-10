@@ -174,3 +174,37 @@ def test_orbit_default_protect_off_ignores_portal_freeze() -> None:
     )
     assert frozen["ok"] is False
     assert frozen.get("error") == "frozen"
+
+
+def test_orbit_objective_total_ranks_clearance_trade() -> None:
+    """objective=total may keep a crossing-up move if clearance improves enough."""
+    # Hub h near non-incident segment a—b; moving h right cuts clearance hits
+    # but can add a mild cross with c—d. Crossing-only ranking would reject it.
+    nodes = [
+        {"fabric_node_id": "a", "name": "AAAAAA-EN-1", "x": 0.0, "y": 0.0},
+        {"fabric_node_id": "b", "name": "BBBBBB-EN-2", "x": 400.0, "y": 0.0},
+        {"fabric_node_id": "c", "name": "CCCCCC-EN-3", "x": 200.0, "y": -200.0},
+        {"fabric_node_id": "d", "name": "DDDDDD-EN-4", "x": 200.0, "y": 200.0},
+        {"fabric_node_id": "h", "name": "HHHHHH-EN-5", "x": 200.0, "y": 20.0},
+        {"fabric_node_id": "t", "name": "TTTTTT-EN-6", "x": 200.0, "y": 300.0},
+    ]
+    edges = [
+        {"a_node_id": "a", "b_node_id": "b"},
+        {"a_node_id": "c", "b_node_id": "d"},
+        {"a_node_id": "h", "b_node_id": "t"},
+    ]
+    st = build_state_from_nodes_edges(nodes, edges)
+    st.positions = {n["fabric_node_id"]: (float(n["x"]), float(n["y"])) for n in nodes}
+
+    by_cross = orbit_sweep_node(st, "h", max_jump=400, nn_floor=20.0, objective="crossing")
+    by_total = orbit_sweep_node(st, "h", max_jump=400, nn_floor=20.0, objective="total")
+    assert by_cross["ok"] is True and by_total["ok"] is True
+    assert by_total.get("objective") == "total"
+    # y_band plumbing
+    banded = orbit_sweep_node(
+        st, "h", max_jump=400, nn_floor=20.0, objective="total", y_min=0.0, y_max=80.0
+    )
+    assert banded["ok"] is True
+    assert banded.get("y_band") == [0.0, 80.0]
+    for c in banded.get("candidates") or []:
+        assert 0.0 <= float(c["y"]) <= 80.0

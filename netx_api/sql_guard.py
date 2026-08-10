@@ -47,6 +47,9 @@ def validate_select_sql(sql: str, *, allowed_tables: set[str] | None = None) -> 
     low = cleaned.lower().lstrip()
     if not low.startswith(("select", "with")):
         raise HTTPException(status_code=400, detail="select_only")
+    # Plain WITH CTE is allowed; RECURSIVE can explode into DoS.
+    if re.search(r"\bwith\s+recursive\b", cleaned, flags=re.IGNORECASE):
+        raise HTTPException(status_code=400, detail="with_recursive_not_allowed")
     if _SQL_FORBIDDEN_RE.search(cleaned):
         raise HTTPException(status_code=400, detail="forbidden_keyword")
     # Block obvious catalog / other-schema probes in the text.

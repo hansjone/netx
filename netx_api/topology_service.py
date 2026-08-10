@@ -26,6 +26,7 @@ from .topology_fabric import (
     ensure_fabric_node_for_managed,
     ensure_fabric_node_for_ume,
     ensure_lldp_discovered_managed_ne,
+    find_fabric_paths,
     get_fabric_neighborhood,
     get_fabric_summary,
     list_fabric_edges,

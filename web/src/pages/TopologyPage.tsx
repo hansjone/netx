@@ -3370,8 +3370,7 @@ export function TopologyPage() {
       y = Math.max(pad, window.innerHeight - rect.height - pad);
     }
     if (x !== ctxMenu.x || y !== ctxMenu.y) {
-      el.style.left = `${x}px`;
-      el.style.top = `${y}px`;
+      setCtxMenu((prev) => (prev ? { ...prev, x, y } : null));
     }
   }, [ctxMenu]);
 

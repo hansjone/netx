@@ -475,6 +475,9 @@ def run_layout_on_graph(
                 protect_rigid=protect,
                 frozen_ids=frozen,
                 focus_ids=knobs.get("focus_ids"),
+                y_min=knobs.get("y_min"),
+                y_max=knobs.get("y_max"),
+                objective=str(knobs.get("objective") or "crossing"),
             )
             st = normalize_origin(op.state, base_params).state
             fin = score_state(st)
