@@ -2547,9 +2547,24 @@ Management Addresses:
             max_hops=6,
         )
         self.assertEqual(out["path_count"], 2)
+        self.assertEqual(out["detail"], "summary")
         self.assertEqual(out["paths"][0]["hops"], 1)
         self.assertEqual(out["paths"][1]["hops"], 2)
         self.assertEqual(len(out["paths"][0]["nodes"]), 2)
+        self.assertNotIn("attrs", out["paths"][0]["nodes"][0])
+        self.assertIn("label", out["paths"][0])
+        self.assertIn("gi0/0", out["paths"][0]["label"].lower())
+
+        full = svc.find_fabric_paths(
+            self.db,
+            from_managed_ne_id=nes[0].id,
+            to_managed_ne_id=nes[1].id,
+            max_paths=1,
+            max_hops=6,
+            detail="full",
+        )
+        self.assertEqual(full["detail"], "full")
+        self.assertIn("attrs", full["paths"][0]["nodes"][0])
 
 
 if __name__ == "__main__":

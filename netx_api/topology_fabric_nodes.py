@@ -468,11 +468,15 @@ def find_fabric_paths(
     max_paths: int = 3,
     max_hops: int = 6,
     layer: str = "physical",
+    detail: str = "summary",
 ) -> dict[str, Any]:
     """Find up to max_paths simple paths between two fabric nodes.
 
     Accepts ume_ne_id (from UME alarms) or managed_ne_id (from managed NE) — resolved
     to fabric_node_id internally so agents can use alarm ne_id directly.
+
+    detail=summary (default): compact node/edge fields for ops/MCP.
+    detail=full: full FabricNodeOut/FabricEdgeOut payloads.
     """
     from_uid = str(from_ume_ne_id or "").strip()
     from_mid = str(from_managed_ne_id or "").strip()
@@ -502,6 +506,9 @@ def find_fabric_paths(
     max_paths = max(1, min(10, int(max_paths or 3)))
     max_hops = max(1, min(12, int(max_hops or 6)))
     layer_v = str(layer or "physical").strip() or "physical"
+    detail_v = str(detail or "summary").strip().lower() or "summary"
+    if detail_v not in {"summary", "full"}:
+        raise HTTPException(400, detail="invalid_detail_use_summary_or_full")
 
     # Lazy adjacency: only fetch edges for nodes the BFS actually expands
     # (avoids loading the entire fabric layer on large graphs).
@@ -565,7 +572,29 @@ def find_fabric_paths(
                 node_ids.add(e.b_node_id)
     node_map = _nodes_by_ids(db, node_ids)
 
-    def _path_nodes(edge_ids: list[str]) -> list[dict]:
+    def _node_summary(n: TopoFabricNode) -> dict[str, Any]:
+        return {
+            "name": n.name or "",
+            "ip": n.ip or "",
+            "ume_ne_id": n.ume_ne_id or "",
+            "managed_ne_id": n.managed_ne_id or "",
+            "vendor": n.vendor or "",
+        }
+
+    def _edge_summary(e: TopoFabricEdge) -> dict[str, Any]:
+        a_node = node_map.get(e.a_node_id)
+        b_node = node_map.get(e.b_node_id)
+        return {
+            "a_name": (a_node.name if a_node else "") or "",
+            "b_name": (b_node.name if b_node else "") or "",
+            "a_ip": (a_node.ip if a_node else "") or "",
+            "b_ip": (b_node.ip if b_node else "") or "",
+            "a_port": e.a_port or "",
+            "b_port": e.b_port or "",
+            "status": _normalize_edge_status(e.status or "active"),
+        }
+
+    def _path_node_ids(edge_ids: list[str]) -> list[str]:
         ids = [from_id]
         cur = from_id
         for eid in edge_ids:
@@ -575,18 +604,53 @@ def find_fabric_paths(
             nxt = e.b_node_id if e.a_node_id == cur else e.a_node_id
             ids.append(nxt)
             cur = nxt
-        return [_node_out(node_map[nid]).model_dump() for nid in ids if nid in node_map]
+        return ids
+
+    def _path_nodes(edge_ids: list[str]) -> list[dict]:
+        ids = _path_node_ids(edge_ids)
+        if detail_v == "full":
+            return [_node_out(node_map[nid]).model_dump() for nid in ids if nid in node_map]
+        return [_node_summary(node_map[nid]) for nid in ids if nid in node_map]
+
+    def _path_edges(edge_ids: list[str]) -> list[dict]:
+        if detail_v == "full":
+            return [
+                _edge_out(edge_map[eid], nodes_by_id=node_map).model_dump()
+                for eid in edge_ids
+                if eid in edge_map
+            ]
+        return [_edge_summary(edge_map[eid]) for eid in edge_ids if eid in edge_map]
+
+    def _path_label(edge_ids: list[str]) -> str:
+        ids = _path_node_ids(edge_ids)
+        names = [(node_map[nid].name if nid in node_map else nid) or nid for nid in ids]
+        if not edge_ids:
+            return " -> ".join(names)
+        parts: list[str] = [names[0]]
+        for i, eid in enumerate(edge_ids):
+            e = edge_map.get(eid)
+            nxt = names[i + 1] if i + 1 < len(names) else "?"
+            if not e:
+                parts.append(f"-> {nxt}")
+                continue
+            # Port facing the next hop from current node orientation.
+            cur_id = ids[i]
+            port = e.a_port if e.a_node_id == cur_id else e.b_port
+            parts.append(f"-[{port or '?'}]-> {nxt}")
+        return " ".join(parts)
 
     return {
         "from_node_id": from_id,
         "to_node_id": to_id,
         "layer": layer_v,
+        "detail": detail_v,
         "path_count": len(found),
         "paths": [
             {
                 "hops": len(p),
+                "label": _path_label(p),
                 "nodes": _path_nodes(p),
-                "edges": [_edge_out(edge_map[eid], nodes_by_id=node_map).model_dump() for eid in p if eid in edge_map],
+                "edges": _path_edges(p),
             }
             for p in found
         ],

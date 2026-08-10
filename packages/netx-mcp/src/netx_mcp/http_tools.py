@@ -123,12 +123,24 @@ def _query_ume_alarms(args: dict[str, Any]) -> dict[str, Any]:
         params["keyword"] = ne_name
     if str(args.get("ne_id") or "").strip():
         params["ne_id"] = str(args.get("ne_id")).strip()
+    if str(args.get("host_name") or "").strip():
+        params["host_name"] = str(args.get("host_name")).strip()
+    for k in ("time_from", "time_to"):
+        if str(args.get(k) or "").strip():
+            params[k] = str(args.get(k)).strip()
     return http_json("GET", "/v1/ume/alarms", params=params)
 
 
 def _aggregate_ume_alarms(args: dict[str, Any]) -> dict[str, Any]:
-    _ = args
-    return http_json("GET", "/v1/ume/alarms/aggregate", params=None)
+    # Default top 50 named NEs — missing host buckets reported separately.
+    top_ne = max(0, min(500, int(args.get("top_ne") if args.get("top_ne") is not None else 50)))
+    params: dict[str, Any] = {"top_ne": top_ne}
+    if "exclude_missing_host" in args:
+        params["exclude_missing_host"] = bool(args.get("exclude_missing_host"))
+    for k in ("severity", "time_from", "time_to"):
+        if str(args.get(k) or "").strip():
+            params[k] = str(args.get(k)).strip()
+    return http_json("GET", "/v1/ume/alarms/aggregate", params=params)
 
 
 def _run_ume_diagnostics(args: dict[str, Any]) -> dict[str, Any]:
@@ -192,6 +204,8 @@ def _aggregate_ume_alarms_raw(args: dict[str, Any]) -> dict[str, Any]:
         sv = str(v).strip()
         if sv:
             params[k] = sv
+    if "exclude_missing_host" in args:
+        params["exclude_missing_host"] = bool(args.get("exclude_missing_host"))
     return http_json("GET", "/v1/ume/alarms/aggregate/raw", params=params)
 
 
@@ -294,10 +308,14 @@ def _find_topology_paths(args: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "error": "exactly_one_of_from_ume_ne_id_or_from_managed_ne_id_required"}
     if bool(to_uid) == bool(to_mid):
         return {"ok": False, "error": "exactly_one_of_to_ume_ne_id_or_to_managed_ne_id_required"}
+    detail = str(args.get("detail") or "summary").strip().lower() or "summary"
+    if detail not in {"summary", "full"}:
+        detail = "summary"
     body: dict[str, Any] = {
         "max_paths": max(1, min(10, int(args.get("max_paths") or 3))),
         "max_hops": max(1, min(12, int(args.get("max_hops") or 6))),
         "layer": str(args.get("layer") or "physical").strip() or "physical",
+        "detail": detail,
     }
     if from_uid:
         body["from_ume_ne_id"] = from_uid
@@ -313,14 +331,21 @@ def _find_topology_paths(args: dict[str, Any]) -> dict[str, Any]:
 HTTP_MCP_TOOLS: list[dict[str, Any]] = [
     {
         "name": "queryUmeAlarms",
-        "description": "Query UME current alarms (each row includes host_name). Supports severity/ne_id/keyword and pagination.",
+        "description": (
+            "Query UME current alarms (each row includes host_name). "
+            "Supports severity/ne_id/host_name/keyword, last_seen time_from/time_to, pagination. "
+            "Prefer host_name for display; ne_id is for filters only."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "severity": {"type": "string"},
-                "ne_id": {"type": "string"},
+                "ne_id": {"type": "string", "description": "Filter only; do not show UUID to users"},
+                "host_name": {"type": "string", "description": "Filter by NE host_name"},
                 "ne_name": {"type": "string", "description": "Legacy alias mapped to keyword"},
                 "keyword": {"type": "string"},
+                "time_from": {"type": "string", "description": "ISO time; filters last_seen_at >="},
+                "time_to": {"type": "string", "description": "ISO time; filters last_seen_at <="},
                 "page": {"type": "integer", "minimum": 1, "default": 1},
                 "page_size": {"type": "integer", "minimum": 1, "maximum": 500, "default": 50},
             },
@@ -330,12 +355,45 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "aggregateUmeAlarms",
-        "description": "Aggregate UME current alarms (by_severity/by_ne).",
-        "inputSchema": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
+        "description": (
+            "Aggregate UME current alarms (by_severity + top by_ne). "
+            "Optional severity filter (e.g. critical) for risk Top-N. "
+            "by_ne is capped by top_ne (default 50) and excludes missing host_name by default "
+            "(see by_ne_missing). meta.last_seen_min/max show data freshness. "
+            "For custom grouping use aggregateUmeAlarmsRaw."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "severity": {
+                    "type": "string",
+                    "description": "Optional perceived_severity filter (critical/major/minor/warning).",
+                },
+                "top_ne": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 500,
+                    "default": 50,
+                    "description": "Max NE buckets to return (0 = all, capped at API 5000).",
+                },
+                "exclude_missing_host": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Omit (host_name missing) from by_ne ranking.",
+                },
+                "time_from": {"type": "string", "description": "ISO time; filters last_seen_at >="},
+                "time_to": {"type": "string", "description": "ISO time; filters last_seen_at <="},
+            },
+            "required": [],
+            "additionalProperties": False,
+        },
     },
     {
         "name": "runUmeDiagnostics",
-        "description": "UME alarm diagnostics summary (severity distribution, top codes/NEs, protocol buckets).",
+        "description": (
+            "UME alarm diagnostics: severity, top_event_types, top_alarm_codes (UME alarmCode), "
+            "top_ne (excludes missing host), protocol buckets, and meta.last_seen_min/max freshness."
+        ),
         "inputSchema": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
     },
     {
@@ -391,7 +449,11 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "aggregateUmeAlarmsRaw",
-        "description": "Dynamic aggregation on UME raw fields (group_by/group_by2); prefer alarm_host_name for NE grouping.",
+        "description": (
+            "Dynamic aggregation on UME raw fields (group_by/group_by2); prefer alarm_host_name. "
+            "When grouping by host fields, (host_name missing) is omitted by default "
+            "(see by_ne_missing)."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -404,6 +466,11 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                 "keyword": {"type": "string"},
                 "time_from": {"type": "string"},
                 "time_to": {"type": "string"},
+                "exclude_missing_host": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Omit missing host buckets when grouping by host/user_label fields.",
+                },
                 "limit": {"type": "integer", "minimum": 1, "maximum": 2000, "default": 200},
             },
             "required": ["group_by"],
@@ -498,9 +565,10 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
         "name": "findTopologyPaths",
         "description": (
             "Find up to max_paths simple paths between two fabric nodes for troubleshooting. "
-            "For each endpoint provide exactly one of ume_ne_id (from UME alarms) or "
+            "For each endpoint provide exactly one of ume_ne_id (from UME alarm ne_id) or "
             "managed_ne_id — resolved to fabric node internally. Returns shortest paths "
-            "first with node sequence + edge status (up/down)."
+            "first with compact label + node/edge summary (detail=summary default). "
+            "Use after critical alarms to correlate neighboring NEs before CLI login."
         ),
         "inputSchema": {
             "type": "object",
@@ -512,6 +580,12 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                 "max_paths": {"type": "integer", "minimum": 1, "maximum": 10, "default": 3},
                 "max_hops": {"type": "integer", "minimum": 1, "maximum": 12, "default": 6},
                 "layer": {"type": "string", "default": "physical"},
+                "detail": {
+                    "type": "string",
+                    "enum": ["summary", "full"],
+                    "default": "summary",
+                    "description": "summary=compact ops fields; full=include attrs/coords.",
+                },
             },
             "required": [],
             "additionalProperties": False,

@@ -160,6 +160,7 @@ def api_fabric_paths(body: dict[str, Any] = Body(...), db: Session = Depends(get
         max_paths=int(body.get("max_paths") or 3),
         max_hops=int(body.get("max_hops") or 6),
         layer=str(body.get("layer") or "physical"),
+        detail=str(body.get("detail") or "summary"),
     )
 
 
