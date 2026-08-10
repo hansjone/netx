@@ -252,10 +252,33 @@ def _list_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
 
 
 def _get_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
-    ne_id = str(args.get("ne_id") or "").strip()
+    ne_id = str(
+        args.get("ne_id") or args.get("managed_ne_id") or args.get("id") or ""
+    ).strip()
     if not ne_id:
-        return {"ok": False, "error": "ne_id_required", "error_code": "ne_id_required"}
-    return http_json("GET", f"/v1/managed-ne/{ne_id}", params=None)
+        return {
+            "ok": False,
+            "error": "ne_id_required",
+            "error_code": "ne_id_required",
+            "hint": (
+                "Pass managed NE id from listManagedNe/listCliTargets (source=managed). "
+                "For UME inventory UUIDs use execManagedNe(ume_ne_id=...) or getUmeNe, not getManagedNe."
+            ),
+            "example": {"ne_id": "<managed-ne-uuid-from-listManagedNe>"},
+        }
+    # UME ne_id is typically a UUID; managed NE may differ. Soft-guide when callers mix them.
+    out = http_json("GET", f"/v1/managed-ne/{ne_id}", params=None)
+    if isinstance(out, dict) and out.get("ok") is False:
+        detail = str(out.get("detail") or out.get("error") or "")
+        low = detail.lower()
+        if "404" in low or "not_found" in low or "not found" in low or out.get("error") == "netx_http_404":
+            out = dict(out)
+            out["hint"] = (
+                "Managed NE not found for this ne_id. Call listManagedNe(keyword=...) or "
+                "listCliTargets(source=managed) first. If this is a UME ne_id, use "
+                "execManagedNe(ume_ne_id=...) / getUmeNe instead of getManagedNe."
+            )
+    return out
 
 
 def _exec_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
@@ -513,7 +536,11 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "sqlQueryUme",
-        "description": "Read-only SELECT on UME tables (ume_alarms_current/ume_inventory_ne); server enforces limits.",
+        "description": (
+            "Read-only SELECT on UME tables (ume_alarms_current/ume_inventory_ne); server enforces limits. "
+            "Requires netx scope sql:query. If insufficient_scope, use aggregateUmeAlarms / "
+            "queryUmeAlarmsRaw / ume_alarm_xlsx_report instead."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -543,11 +570,21 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "getManagedNe",
-        "description": "Get single managed NE metadata (connect_status, hop config summary).",
+        "description": (
+            "Get one **managed** NE by managed ne_id (from listManagedNe / listCliTargets source=managed). "
+            "Do NOT pass UME inventory UUID here — use getUmeNe or execManagedNe(ume_ne_id=...) instead."
+        ),
         "inputSchema": {
             "type": "object",
-            "properties": {"ne_id": {"type": "string"}},
-            "required": ["ne_id"],
+            "properties": {
+                "ne_id": {
+                    "type": "string",
+                    "description": "Managed NE id (not UME host_name / not UME ne_id unless they coincide).",
+                },
+                "managed_ne_id": {"type": "string", "description": "Alias for ne_id."},
+                "id": {"type": "string", "description": "Alias for ne_id."},
+            },
+            "required": [],
             "additionalProperties": False,
         },
     },

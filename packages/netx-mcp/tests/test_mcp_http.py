@@ -114,12 +114,22 @@ def test_call_exec_managed_ne_defaults_read_timeout() -> None:
         assert payload["ok"] is True
 
 
-def test_call_get_ume_ne_requires_id() -> None:
-    out = call_http_tool("getUmeNe", {})
+def test_get_managed_ne_requires_id_with_hint() -> None:
+    out = call_http_tool("getManagedNe", {})
     assert out.get("isError") is True
-    text = out["content"][0]["text"]
-    payload = json.loads(text)
+    payload = json.loads(out["content"][0]["text"])
     assert payload["error"] == "ne_id_required"
+    assert "hint" in payload
+
+
+def test_get_managed_ne_accepts_managed_ne_id_alias() -> None:
+    with patch("netx_mcp.http_tools.http_json") as mock_http:
+        mock_http.return_value = {"ok": True, "data": {"ne_id": "m1"}}
+        out = call_http_tool("getManagedNe", {"managed_ne_id": "m1"})
+        mock_http.assert_called_once()
+        assert mock_http.call_args[0][1].endswith("/m1")
+        payload = json.loads(out["content"][0]["text"])
+        assert payload["ok"] is True
 
 
 def test_call_exec_managed_ne_posts_body() -> None:

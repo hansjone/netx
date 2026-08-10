@@ -105,7 +105,15 @@ def run_stdio_loop() -> None:
                 need = TOOL_REQUIRED_SCOPE.get(name)
                 granted = scopes()
                 if need and granted is not None and need not in {str(s).lower() for s in granted}:
-                    _err(rid, -32001, f"insufficient_scope:{need}")
+                    _err(
+                        rid,
+                        -32001,
+                        (
+                            f"insufficient_scope:{need}. "
+                            "Ask a netx admin to grant this scope on the API token; "
+                            "for sql:query prefer aggregateUmeAlarms/queryUmeAlarmsRaw/ume_alarm_xlsx_report instead."
+                        ),
+                    )
                     continue
                 args = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
                 _ok(rid, call_http_tool(name, args))
