@@ -132,6 +132,13 @@ def test_get_managed_ne_accepts_managed_ne_id_alias() -> None:
         assert payload["ok"] is True
 
 
+def test_call_get_ume_ne_requires_id() -> None:
+    out = call_http_tool("getUmeNe", {})
+    assert out.get("isError") is True
+    payload = json.loads(out["content"][0]["text"])
+    assert payload["error"] == "ne_id_required"
+
+
 def test_call_exec_managed_ne_posts_body() -> None:
     with patch("netx_mcp.http_tools.http_post_json") as mock_post:
         mock_post.return_value = {"ok": True, "data": {"ok": True, "output": "ok"}}
