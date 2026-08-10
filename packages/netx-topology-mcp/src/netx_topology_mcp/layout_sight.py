@@ -131,6 +131,52 @@ def list_crossings(
     top_e = top_crossing_edges(
         pos_xy, links, names=names, top_n=5, edge_participation=edge_hit
     )
+    # Fallback: when no drag_candidates (all hot nodes are high-degree hubs),
+    # suggest from edge_clearance.top and crossing top_nodes regardless of degree.
+    if not candidates:
+        from netx_topology_mcp.layout_metrics import compute_edge_clearance
+
+        ec = compute_edge_clearance(pos_xy, links, names=names, top_n=5)
+        for eh in (ec.get("top_edge_hits") or [])[:5]:
+            nid = str(eh.get("fabric_node_id") or "")
+            if not nid or nid not in pos:
+                continue
+            x, y, name = pos[nid]
+            deg = len(adj.get(nid, ()))
+            candidates.append({
+                "fabric_node_id": nid,
+                "name": name,
+                "short": _short_name(name),
+                "x": round(x, 1),
+                "y": round(y, 1),
+                "degree": deg,
+                "in_crossings": hit.get(nid, 0),
+                "score": 0.0,
+                "suggest_xy": [],
+                "delta_crossings_est": 0,
+                "reason": "edge_clearance_hit",
+            })
+        for tn in top5:
+            nid = str(tn.get("fabric_node_id") or "")
+            if not nid or nid not in pos:
+                continue
+            if any(c["fabric_node_id"] == nid for c in candidates):
+                continue
+            x, y, name = pos[nid]
+            deg = len(adj.get(nid, ()))
+            candidates.append({
+                "fabric_node_id": nid,
+                "name": name,
+                "short": _short_name(name),
+                "x": round(x, 1),
+                "y": round(y, 1),
+                "degree": deg,
+                "in_crossings": tn.get("crossing_hits", 0),
+                "score": round(tn.get("crossing_hits", 0) / max(deg, 1), 3),
+                "suggest_xy": [],
+                "delta_crossings_est": 0,
+                "reason": "top_crossing_high_degree",
+            })
     return {
         "edge_crossings": total_cross,
         "crossings_listed": len(crosses),

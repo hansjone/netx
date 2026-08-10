@@ -184,6 +184,40 @@ def _score_key(c: dict[str, Any]) -> tuple:
     )
 
 
+def _rerank_by_total(
+    scored: list[dict[str, Any]],
+    nid: str,
+    pos: dict[str, tuple[float, float]],
+    names: dict[str, str],
+    links: list[tuple[str, str]],
+    adj: dict[str, set[str]],
+    *,
+    re_rank_n: int = 20,
+) -> list[dict[str, Any]]:
+    """Re-rank top candidates by crossing + edge_clearance (multi-objective).
+
+    A move may increase crossings but resolve several edge-clearance hits;
+    ranking by ``crossings + edge_clearance_hits`` aligns with verdict.total.
+    """
+    from netx_topology_mcp.layout_metrics import compute_edge_clearance
+
+    n = min(re_rank_n, len(scored))
+    for c in scored[:n]:
+        trial = dict(pos)
+        trial[nid] = (float(c["x"]), float(c["y"]))
+        ec = compute_edge_clearance(trial, links, names=names, top_n=1)
+        c["edge_clearance_hits"] = int(ec.get("edge_clearance_hits") or 0)
+    head = sorted(
+        scored[:n],
+        key=lambda c: (
+            int(c["crossings"]["global"]) + int(c.get("edge_clearance_hits", 0)),
+            int(c["crossings"]["incident"]),
+            float(c.get("stretch") or 1.0),
+        ),
+    )
+    return head + scored[n:]
+
+
 def _diversify_top(
     ranked: list[dict[str, Any]],
     *,
@@ -286,6 +320,9 @@ def orbit_sweep_node(
     protect_rigid: bool | str = "off",
     frozen_ids: set[str] | None = None,
     top_k: int = 3,
+    y_min: float | None = None,
+    y_max: float | None = None,
+    objective: str = "crossing",
 ) -> dict[str, Any]:
     """Sweep polar candidates for one node; return diversified top-k.
 
@@ -370,6 +407,15 @@ def orbit_sweep_node(
         if len(uniq) >= cand_cap:
             break
 
+    # Layered y constraint: skip candidates outside [y_min, y_max]
+    if y_min is not None or y_max is not None:
+        uniq = [
+            (sx, sy, r, ang)
+            for sx, sy, r, ang in uniq
+            if (y_min is None or sy >= y_min)
+            and (y_max is None or sy <= y_max)
+        ]
+
     scored: list[dict[str, Any]] = []
     for sx, sy, r, ang in uniq:
         c = _eval_candidate(
@@ -417,6 +463,8 @@ def orbit_sweep_node(
             break
 
     for sx, sy, r, ang in fine:
+        if (y_min is not None and sy < y_min) or (y_max is not None and sy > y_max):
+            continue
         key = (int(round(sx)), int(round(sy)))
         if key in seen:
             continue
@@ -440,6 +488,9 @@ def orbit_sweep_node(
             scored.append(c)
 
     scored.sort(key=_score_key)
+    # Multi-objective re-rank: optimize total score, not just crossings
+    if objective == "total" and len(scored) > 1:
+        scored = _rerank_by_total(scored, nid, pos, names, links, adj)
     # Prefer improving moves; still return best even if none improve.
     improving = [c for c in scored if c["delta"]["global"] < 0]
     pool = improving if improving else scored
@@ -458,9 +509,16 @@ def orbit_sweep_node(
         "improving_n": len(improving),
         "max_jump": jump,
         "angle_step": angle_step,
+        "objective": objective,
+        "y_band": (
+            None if (y_min is None and y_max is None)
+            else [y_min, y_max]
+        ),
         "hint": (
             "prefer rank1 unless util/label concern; then pick 2/3. "
             "apply with params.pick=1|2|3 or updateTopologyViewPositions."
+            + (" objective=total: rank by crossing+edge_clearance, may trade crossings for clearance."
+               if objective == "total" else "")
         ),
     }
 
@@ -736,6 +794,16 @@ def orbit_params_from_overrides(overrides: dict[str, Any] | None) -> dict[str, A
     raw_p = o.get("portal_ids")
     if isinstance(raw_p, list):
         out["frozen_ids"] = {str(x) for x in raw_p if str(x)}
+    # Layered y constraint (y_min/y_max): keep node within its layer band
+    for yk in ("y_min", "y_max"):
+        if o.get(yk) is not None:
+            try:
+                out[yk] = float(o[yk])
+            except (TypeError, ValueError):
+                pass
+    # Multi-objective ranking: "crossing" (default) or "total"
+    obj = str(o.get("objective") or "crossing").strip().lower()
+    out["objective"] = "total" if obj in ("total", "score", "multi") else "crossing"
     return out
 
 

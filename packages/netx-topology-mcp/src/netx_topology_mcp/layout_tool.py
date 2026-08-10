@@ -512,6 +512,9 @@ def run_layout_on_graph(
             protect_rigid=protect,
             frozen_ids=frozen,
             top_k=int(knobs.get("top_k") or 3),
+            y_min=knobs.get("y_min"),
+            y_max=knobs.get("y_max"),
+            objective=knobs.get("objective", "crossing"),
         )
         if not sweep.get("ok"):
             fin = score_state(st0)
