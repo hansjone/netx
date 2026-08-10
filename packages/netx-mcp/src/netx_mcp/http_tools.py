@@ -132,6 +132,10 @@ def _query_ume_alarms(args: dict[str, Any]) -> dict[str, Any]:
 
 
 def _aggregate_ume_alarms(args: dict[str, Any]) -> dict[str, Any]:
+    # Agents often pass group_by here (docs historically mixed tools). Route to raw aggregate.
+    group_by = str(args.get("group_by") or "").strip()
+    if group_by:
+        return _aggregate_ume_alarms_raw(args)
     # Default top 50 named NEs — missing host buckets reported separately.
     top_ne = max(0, min(500, int(args.get("top_ne") if args.get("top_ne") is not None else 50)))
     params: dict[str, Any] = {"top_ne": top_ne}
@@ -360,7 +364,8 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
             "Optional severity filter (e.g. critical) for risk Top-N. "
             "by_ne is capped by top_ne (default 50) and excludes missing host_name by default "
             "(see by_ne_missing). meta.last_seen_min/max show data freshness. "
-            "For custom grouping use aggregateUmeAlarmsRaw."
+            "If group_by is set (e.g. alarm_host_name), automatically routes to the same "
+            "behavior as aggregateUmeAlarmsRaw — preferred for custom dimensions."
         ),
         "inputSchema": {
             "type": "object",
@@ -374,15 +379,39 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                     "minimum": 0,
                     "maximum": 500,
                     "default": 50,
-                    "description": "Max NE buckets to return (0 = all, capped at API 5000).",
+                    "description": "Max NE buckets to return (0 = all, capped at API 5000). Ignored when group_by is set.",
                 },
                 "exclude_missing_host": {
                     "type": "boolean",
                     "default": True,
-                    "description": "Omit (host_name missing) from by_ne ranking.",
+                    "description": "Omit (host_name missing) from by_ne / host rankings.",
                 },
                 "time_from": {"type": "string", "description": "ISO time; filters last_seen_at >="},
                 "time_to": {"type": "string", "description": "ISO time; filters last_seen_at <="},
+                "group_by": {
+                    "type": "string",
+                    "enum": UME_RAW_GROUP_FIELDS,
+                    "description": (
+                        "Optional. When set, routes to dynamic raw aggregation "
+                        "(same as aggregateUmeAlarmsRaw). Prefer alarm_host_name for NE Top."
+                    ),
+                },
+                "group_by2": {
+                    "type": "string",
+                    "enum": UME_RAW_GROUP_FIELDS,
+                    "description": "Optional second group field when group_by is set.",
+                },
+                "is_cleared": {"type": "string", "description": "Only used when group_by is set."},
+                "ne_id": {"type": "string", "description": "Only used when group_by is set."},
+                "event_type": {"type": "string", "description": "Only used when group_by is set."},
+                "keyword": {"type": "string", "description": "Only used when group_by is set."},
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 2000,
+                    "default": 200,
+                    "description": "Bucket limit when group_by is set (default 200).",
+                },
             },
             "required": [],
             "additionalProperties": False,
@@ -526,8 +555,10 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
         "name": "execManagedNe",
         "description": (
             f"Run read-only CLI via netx (show/display/ping/traceroute; "
-            f"max {exec_max_commands()} commands, NETX_NE_EXEC_MAX_COMMANDS). "
-            "Use ne_id (managed NE) OR ume_ne_id (UME inventory)."
+            f"max {exec_max_commands()} commands per call, NETX_NE_EXEC_MAX_COMMANDS). "
+            "Use ne_id (managed NE) OR ume_ne_id (UME inventory). "
+            "Batch multiple show commands in one call instead of looping. "
+            "On timeout, raise read_timeout_sec (max 120) or shrink commands — do not blind-retry."
         ),
         "inputSchema": {
             "type": "object",
@@ -540,7 +571,12 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                     "minItems": 1,
                     "maxItems": exec_max_commands(),
                 },
-                "read_timeout_sec": {"type": "integer", "minimum": 10, "maximum": 120},
+                "read_timeout_sec": {
+                    "type": "integer",
+                    "minimum": 10,
+                    "maximum": 120,
+                    "description": "Per-command read timeout; use 60–120 for slow show commands.",
+                },
             },
             "required": ["commands"],
             "additionalProperties": False,
@@ -548,7 +584,11 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "listCliTargets",
-        "description": "List CLI-capable targets (managed NE and/or UME inventory); use before execManagedNe.",
+        "description": (
+            "List CLI-capable targets (managed NE and/or UME inventory). "
+            "Call once per session with keyword/source, cache ume_ne_id/ne_id, "
+            "then execManagedNe — do not re-list before every command."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {

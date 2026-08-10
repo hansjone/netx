@@ -57,6 +57,32 @@ def test_call_aggregate_ume_alarms_forwards_top_ne() -> None:
         assert payload["data"]["top_ne"] == 20
 
 
+def test_call_aggregate_ume_alarms_group_by_routes_to_raw() -> None:
+    with patch("netx_mcp.http_tools.http_json") as mock_http:
+        mock_http.return_value = {"ok": True, "data": {"buckets": []}}
+        out = call_http_tool(
+            "aggregateUmeAlarms",
+            {"group_by": "alarm_host_name", "severity": "critical", "limit": 20},
+        )
+        mock_http.assert_called_once()
+        assert mock_http.call_args[0][0] == "GET"
+        assert mock_http.call_args[0][1] == "/v1/ume/alarms/aggregate/raw"
+        params = mock_http.call_args[1]["params"]
+        assert params["group_by"] == "alarm_host_name"
+        assert params["severity"] == "critical"
+        assert params["limit"] == "20"
+        payload = json.loads(out["content"][0]["text"])
+        assert payload["ok"] is True
+
+
+def test_aggregate_ume_alarms_schema_accepts_group_by() -> None:
+    tool = next(t for t in HTTP_MCP_TOOLS if t.get("name") == "aggregateUmeAlarms")
+    props = tool["inputSchema"]["properties"]
+    assert "group_by" in props
+    assert "group_by2" in props
+    assert "alarm_host_name" in props["group_by"]["enum"]
+
+
 def test_call_find_topology_paths_defaults_summary_detail() -> None:
     with patch("netx_mcp.http_tools.http_post_json") as mock_post:
         mock_post.return_value = {"ok": True, "data": {"path_count": 1, "detail": "summary", "paths": []}}
