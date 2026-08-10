@@ -99,6 +99,21 @@ def test_call_find_topology_paths_defaults_summary_detail() -> None:
         assert payload["ok"] is True
 
 
+def test_call_exec_managed_ne_defaults_read_timeout() -> None:
+    with patch("netx_mcp.http_tools.http_post_json") as mock_post:
+        mock_post.return_value = {"ok": True, "data": {"ok": True, "output": "hi"}}
+        out = call_http_tool(
+            "execManagedNe",
+            {"ume_ne_id": "u1", "commands": ["show version"]},
+        )
+        mock_post.assert_called_once()
+        body = mock_post.call_args[0][1]
+        assert body["read_timeout_sec"] == 60
+        assert body["ume_ne_id"] == "u1"
+        payload = json.loads(out["content"][0]["text"])
+        assert payload["ok"] is True
+
+
 def test_call_get_ume_ne_requires_id() -> None:
     out = call_http_tool("getUmeNe", {})
     assert out.get("isError") is True

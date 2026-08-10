@@ -280,9 +280,9 @@ def _exec_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
         body["ne_id"] = ne_id
     if ume_ne_id:
         body["ume_ne_id"] = ume_ne_id
+    # Default 60s matches netx API default; slow show commands often exceed 30s.
     rts = args.get("read_timeout_sec")
-    if rts is not None:
-        body["read_timeout_sec"] = int(rts)
+    body["read_timeout_sec"] = int(rts) if rts is not None else 60
     out = http_post_json("/v1/managed-ne/exec", body, timeout=300.0)
     if not out.get("ok"):
         return out
@@ -558,7 +558,7 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
             f"max {exec_max_commands()} commands per call, NETX_NE_EXEC_MAX_COMMANDS). "
             "Use ne_id (managed NE) OR ume_ne_id (UME inventory). "
             "Batch multiple show commands in one call instead of looping. "
-            "On timeout, raise read_timeout_sec (max 120) or shrink commands — do not blind-retry."
+            "Default read_timeout_sec=60; on timeout raise to 90–120 or shrink commands — do not blind-retry."
         ),
         "inputSchema": {
             "type": "object",
@@ -575,7 +575,8 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                     "type": "integer",
                     "minimum": 10,
                     "maximum": 120,
-                    "description": "Per-command read timeout; use 60–120 for slow show commands.",
+                    "default": 60,
+                    "description": "Per-command read timeout (default 60; use 90–120 for slow show).",
                 },
             },
             "required": ["commands"],
