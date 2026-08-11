@@ -33,6 +33,10 @@ def is_cisco_ios_device_type(device_type: str) -> bool:
     return "cisco_ios" in dt or dt in {"cisco_ios", "cisco_ios_ssh", "cisco_ios_telnet"}
 
 
+def is_zte_device_type(device_type: str) -> bool:
+    return "zte" in str(device_type or "").strip().lower()
+
+
 def send_show_command(conn: Any, command: str, *, read_timeout: int = 120) -> str:
     """Send a show/display command via ``send_command`` (wait for device prompt).
 

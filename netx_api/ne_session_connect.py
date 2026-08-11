@@ -192,18 +192,59 @@ def _cisco_ios_collection_driver_class(base_cls: type) -> type:
     return _CiscoIosCollectionSession
 
 
+def _zte_collection_driver_class(base_cls: type) -> type:
+    """ZTE ZXROS collection: after login banner, RETURN once if prompt wait times out."""
+
+    class _ZteCollectionSession(base_cls):  # type: ignore[misc,valid-type]
+        def session_preparation(self) -> None:
+            prompt_pat = r"[>#]"
+            try:
+                self._test_channel_read(pattern=prompt_pat)
+            except Exception:
+                # Long MOTD / idle after bastion proxy — nudge then wait again.
+                try:
+                    self.write_channel("\n")
+                except Exception:
+                    pass
+                self._test_channel_read(pattern=prompt_pat)
+            self.set_base_prompt()
+            try:
+                self.disable_paging(command="terminal length 0", cmd_verify=False, pattern=prompt_pat)
+            except Exception:
+                try:
+                    self.write_channel("\n")
+                    self.disable_paging(command="terminal length 0", cmd_verify=False, pattern=prompt_pat)
+                except Exception:
+                    pass
+            time.sleep(0.3 * self.global_delay_factor)
+            self.clear_buffer()
+
+    _ZteCollectionSession.__name__ = f"ZteCollection{getattr(base_cls, '__name__', 'Netmiko')}"
+    return _ZteCollectionSession
+
+
+def _collection_driver_class(device_type: str, base_cls: type) -> type:
+    """Vendor-specific collection session prep (non-interactive CLI / LLDP / sync)."""
+    from .ne_netmiko import is_cisco_ios_device_type, is_zte_device_type
+
+    if is_cisco_ios_device_type(device_type):
+        return _cisco_ios_collection_driver_class(base_cls)
+    if is_zte_device_type(device_type):
+        return _zte_collection_driver_class(base_cls)
+    return base_cls
+
+
 def _build_netmiko_connection(dev: dict[str, Any], *, interactive: bool = False) -> ConnectHandler:
     """Instantiate Netmiko from connect kwargs; optional interactive skips paging cmds."""
-    from .ne_netmiko import is_cisco_ios_device_type
-
     device_type = str(dev.get("device_type") or "").strip()
     if interactive:
         base_cls = _netmiko_driver_class(device_type)
         return _interactive_driver_class(base_cls)(**dev)
-    if is_cisco_ios_device_type(device_type):
-        base_cls = _netmiko_driver_class(device_type)
-        return _cisco_ios_collection_driver_class(base_cls)(**dev)
-    return ConnectHandler(**dev)
+    raw_cls = _netmiko_driver_class(device_type)
+    base_cls = _collection_driver_class(device_type, raw_cls)
+    if base_cls is raw_cls:
+        return ConnectHandler(**dev)
+    return base_cls(**dev)
 
 
 def _netmiko_over_ssh_client(
@@ -224,6 +265,8 @@ def _netmiko_over_ssh_client(
     base_cls = _netmiko_driver_class(device_type)
     if interactive:
         base_cls = _interactive_driver_class(base_cls)
+    else:
+        base_cls = _collection_driver_class(device_type, base_cls)
 
     class _PreauthSession(base_cls):  # type: ignore[misc,valid-type]
         def establish_connection(self, width: int = 511, height: int = 1000) -> None:
