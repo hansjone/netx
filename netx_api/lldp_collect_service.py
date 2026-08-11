@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from fastapi import HTTPException
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from .lldp_collect_schemas import (
@@ -12,9 +13,10 @@ from .lldp_collect_schemas import (
     LldpCollectJobSummary,
     LldpCollectPolicyOut,
     LldpCollectPolicyUpdate,
+    LldpCollectStartBody,
     LldpCollectTargetRef,
 )
-from .models import LldpCollectPolicy, TopoDiscoverJob, TopoFabricStats
+from .models import LldpCollectPolicy, TopoDiscoverJob, TopoDiscoverJobItem, TopoFabricStats
 from .topology_schemas import FabricDiscoverRequest
 from .topology_service import (
     get_discover_job,
@@ -30,6 +32,12 @@ from .topology_service import (
 POLICY_ID = 1
 DEFAULT_HISTORY_KEEP = 30
 MAX_INTERVAL_HOURS = 8760  # 365d
+
+# Soft failures: CLI ran but produced no trustworthy LLDP evidence (parity with
+# config-sync empty_config_output — retryable as "no valid new data").
+_WEAK_LLDP_ERRORS = frozenset(
+    {"parser_stub", "empty_cli_output", "vendor_or_device_type_required"}
+)
 
 
 def _utcnow() -> datetime:
@@ -151,7 +159,72 @@ def update_policy(db: Session, body: LldpCollectPolicyUpdate) -> LldpCollectPoli
     return _policy_out(row)
 
 
-def _job_summary(job: TopoDiscoverJob | None) -> LldpCollectJobSummary | None:
+def item_needs_retry(item: TopoDiscoverJobItem) -> bool:
+    """True when the NE failed or produced no trustworthy LLDP evidence."""
+    if not bool(item.ok):
+        return True
+    if bool(item.parser_stub):
+        return True
+    err = str(item.error or "").strip()
+    return err in _WEAK_LLDP_ERRORS
+
+
+def _retryable_item_filter():
+    return or_(
+        TopoDiscoverJobItem.ok.is_(False),
+        TopoDiscoverJobItem.parser_stub.is_(True),
+        TopoDiscoverJobItem.error.in_(list(_WEAK_LLDP_ERRORS)),
+    )
+
+
+def _count_job_outcomes(db: Session, job_id: str) -> tuple[int, int]:
+    """Return (success_count, fail_count) for a discover job's items."""
+    items = (
+        db.query(TopoDiscoverJobItem.ok, TopoDiscoverJobItem.parser_stub, TopoDiscoverJobItem.error)
+        .filter(TopoDiscoverJobItem.job_id == job_id)
+        .all()
+    )
+    fail = 0
+    for ok, stub, error in items:
+        if (not bool(ok)) or bool(stub) or str(error or "").strip() in _WEAK_LLDP_ERRORS:
+            fail += 1
+    total = len(items)
+    return max(0, total - fail), fail
+
+
+def _job_outcome_map(db: Session, job_ids: list[str]) -> dict[str, tuple[int, int]]:
+    """Batch (success_count, fail_count) for many jobs."""
+    if not job_ids:
+        return {}
+    rows = (
+        db.query(
+            TopoDiscoverJobItem.job_id,
+            TopoDiscoverJobItem.ok,
+            TopoDiscoverJobItem.parser_stub,
+            TopoDiscoverJobItem.error,
+        )
+        .filter(TopoDiscoverJobItem.job_id.in_(job_ids))
+        .all()
+    )
+    totals: dict[str, int] = {jid: 0 for jid in job_ids}
+    fails: dict[str, int] = {jid: 0 for jid in job_ids}
+    for job_id, ok, stub, error in rows:
+        jid = str(job_id)
+        totals[jid] = totals.get(jid, 0) + 1
+        if (not bool(ok)) or bool(stub) or str(error or "").strip() in _WEAK_LLDP_ERRORS:
+            fails[jid] = fails.get(jid, 0) + 1
+    return {
+        jid: (max(0, totals.get(jid, 0) - fails.get(jid, 0)), fails.get(jid, 0))
+        for jid in job_ids
+    }
+
+
+def _job_summary(
+    job: TopoDiscoverJob | None,
+    *,
+    success_count: int = 0,
+    fail_count: int = 0,
+) -> LldpCollectJobSummary | None:
     if job is None:
         return None
     return LldpCollectJobSummary(
@@ -161,6 +234,8 @@ def _job_summary(job: TopoDiscoverJob | None) -> LldpCollectJobSummary | None:
         status=job.status or "",
         total=int(job.total or 0),
         done=int(job.done or 0),
+        success_count=int(success_count or 0),
+        fail_count=int(fail_count or 0),
         edges_added=int(job.edges_added or 0),
         edges_updated=int(job.edges_updated or 0),
         edges_stale=int(job.edges_stale or 0),
@@ -170,6 +245,78 @@ def _job_summary(job: TopoDiscoverJob | None) -> LldpCollectJobSummary | None:
         ended_at=job.ended_at,
         created_at=job.created_at,
     )
+
+
+def _summarize_job(db: Session, job: TopoDiscoverJob | None) -> LldpCollectJobSummary | None:
+    if job is None:
+        return None
+    ok_n, fail_n = _count_job_outcomes(db, job.id)
+    return _job_summary(job, success_count=ok_n, fail_count=fail_n)
+
+
+def collect_retry_targets(db: Session, src: TopoDiscoverJob) -> tuple[list[str], list[str]]:
+    """Build managed/ume NE id lists from retryable items of a prior job."""
+    items = (
+        db.query(TopoDiscoverJobItem)
+        .filter(TopoDiscoverJobItem.job_id == src.id)
+        .order_by(TopoDiscoverJobItem.created_at.asc())
+        .all()
+    )
+    managed: list[str] = []
+    ume: list[str] = []
+    seen: set[str] = set()
+    for it in items:
+        if not item_needs_retry(it):
+            continue
+        ume_id = str(it.ume_ne_id or "").strip()
+        ne_id = str(it.ne_id or "").strip()
+        if ume_id:
+            key = f"ume:{ume_id}"
+            if key in seen:
+                continue
+            seen.add(key)
+            ume.append(ume_id)
+        elif ne_id:
+            key = f"managed:{ne_id}"
+            if key in seen:
+                continue
+            seen.add(key)
+            managed.append(ne_id)
+    return managed, ume
+
+
+def find_retry_source_job(db: Session, job_id: str | None = None) -> TopoDiscoverJob:
+    """Resolve the source job that still has retryable NE items."""
+    src_id = str(job_id or "").strip()
+    if src_id:
+        src = db.get(TopoDiscoverJob, src_id)
+        if src is None:
+            raise HTTPException(status_code=404, detail="job_not_found")
+        return src
+    # Newest finished job that still has failed / weak-evidence items.
+    candidate_ids = [
+        row[0]
+        for row in (
+            db.query(TopoDiscoverJobItem.job_id)
+            .filter(_retryable_item_filter())
+            .distinct()
+            .all()
+        )
+    ]
+    if not candidate_ids:
+        raise HTTPException(status_code=404, detail="no_failed_job")
+    src = (
+        db.query(TopoDiscoverJob)
+        .filter(
+            TopoDiscoverJob.id.in_(candidate_ids),
+            TopoDiscoverJob.status.in_(["done", "failed", "cancelled"]),
+        )
+        .order_by(TopoDiscoverJob.created_at.desc())
+        .first()
+    )
+    if src is None:
+        raise HTTPException(status_code=404, detail="no_failed_job")
+    return src
 
 
 def has_running_job(db: Session) -> TopoDiscoverJob | None:
@@ -249,14 +396,50 @@ def build_discover_request(policy: LldpCollectPolicy) -> FabricDiscoverRequest:
     )
 
 
-def start_collect(db: Session, *, trigger_mode: str = "manual") -> dict:
+def start_collect(
+    db: Session,
+    *,
+    trigger_mode: str = "manual",
+    mode: str = "full",
+    job_id: str | None = None,
+) -> dict:
     if has_running_job(db) is not None:
         raise HTTPException(status_code=409, detail="lldp_collect_already_running")
     policy = ensure_policy(db)
-    body = build_discover_request(policy)
-    job = start_discover_job(db, body, trigger_mode=trigger_mode)
+    collect_mode = str(mode or "full").strip().lower() or "full"
+    if collect_mode == "retry_failed":
+        src = find_retry_source_job(db, job_id)
+        managed_ids, ume_ids = collect_retry_targets(db, src)
+        if not managed_ids and not ume_ids:
+            raise HTTPException(status_code=400, detail="no_failed_targets")
+        concurrency = max(1, min(32, int(policy.concurrency or 4)))
+        body = FabricDiscoverRequest(
+            scope="ne_ids",
+            ne_ids=[],
+            managed_ne_ids=managed_ids,
+            ume_ne_ids=ume_ids,
+            concurrency=concurrency,
+            auto_add_unmatched=bool(policy.auto_add_unmatched),
+        )
+        trig = "retry_failed"
+    else:
+        body = build_discover_request(policy)
+        trig = str(trigger_mode or "manual").strip().lower() or "manual"
+        if trig == "retry_failed":
+            trig = "manual"
+    job = start_discover_job(db, body, trigger_mode=trig)
     prune_discover_jobs(db, keep=int(getattr(policy, "history_keep", DEFAULT_HISTORY_KEEP) or 0))
     return {"ok": True, "job": job.model_dump()}
+
+
+def start_collect_from_body(db: Session, body: LldpCollectStartBody | None = None) -> dict:
+    payload = body or LldpCollectStartBody()
+    return start_collect(
+        db,
+        trigger_mode="manual",
+        mode=str(payload.mode or "full"),
+        job_id=payload.job_id,
+    )
 
 
 def pause_collect(db: Session, job_id: str) -> dict:
@@ -292,8 +475,8 @@ def get_dashboard(db: Session) -> LldpCollectDashboardOut:
         fabric_edge_stale=int(stats.edge_stale if stats else 0),
         fabric_edge_missing=int(stats.edge_stale if stats else 0),
         last_discover_at=stats.last_discover_at if stats else None,
-        running_job=_job_summary(running),
-        last_job=_job_summary(last),
+        running_job=_summarize_job(db, running),
+        last_job=_summarize_job(db, last),
         next_due_at=next_due_at(db, policy),
     )
 
@@ -304,11 +487,18 @@ def list_jobs(db: Session, *, page: int = 1, page_size: int = 20) -> dict:
     q = db.query(TopoDiscoverJob).order_by(TopoDiscoverJob.created_at.desc())
     total = int(q.count())
     rows = q.offset((page - 1) * page_size).limit(page_size).all()
+    outcomes = _job_outcome_map(db, [r.id for r in rows])
+    items: list[dict] = []
+    for r in rows:
+        ok_n, fail_n = outcomes.get(r.id, (0, 0))
+        summary = _job_summary(r, success_count=ok_n, fail_count=fail_n)
+        if summary is not None:
+            items.append(summary.model_dump())
     return {
         "total": total,
         "page": page,
         "page_size": page_size,
-        "items": [_job_summary(r).model_dump() for r in rows if _job_summary(r)],
+        "items": items,
     }
 
 

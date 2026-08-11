@@ -48,11 +48,23 @@ function lldpScopeLabel(t: (k: string) => string, scope: string): string {
 
 function lldpItemResultLabel(
   t: (k: string) => string,
-  it: { ok?: boolean; parser_stub?: boolean | string | null; unmatched_count?: number; unmatched?: unknown[] },
+  it: {
+    ok?: boolean;
+    parser_stub?: boolean | string | null;
+    unmatched_count?: number;
+    unmatched?: unknown[];
+    error?: string | null;
+  },
 ): string {
-  if (!it.ok) return t("lldpLinks.itemResult.fail");
+  const err = String(it.error || "").trim();
+  const weak =
+    Boolean(it.parser_stub) ||
+    err === "parser_stub" ||
+    err === "empty_cli_output" ||
+    err === "vendor_or_device_type_required";
+  if (!it.ok || weak) return t("lldpLinks.itemResult.fail");
   const unmatchedCount = it.unmatched_count ?? (it.unmatched?.length || 0);
-  if (it.parser_stub || unmatchedCount > 0) return t("lldpLinks.itemResult.warn");
+  if (unmatchedCount > 0) return t("lldpLinks.itemResult.warn");
   return t("lldpLinks.itemResult.ok");
 }
 
@@ -250,7 +262,7 @@ export function LldpLinksPage() {
   });
 
   const startMut = useMutation({
-    mutationFn: () => startLldpCollect(),
+    mutationFn: (mode: "full" | "retry_failed" = "full") => startLldpCollect({ mode }),
     onSuccess: async () => {
       showOk(t("lldpLinks.started"));
       await refresh();
@@ -322,9 +334,16 @@ export function LldpLinksPage() {
             type="button"
             className="btn-primary"
             disabled={Boolean(running) || startMut.isPending}
-            onClick={() => startMut.mutate()}
+            onClick={() => startMut.mutate("full")}
           >
             {t("lldpLinks.collectNow")}
+          </button>
+          <button
+            type="button"
+            disabled={Boolean(running) || startMut.isPending || !(last && (last.fail_count || 0) > 0)}
+            onClick={() => startMut.mutate("retry_failed")}
+          >
+            {t("lldpLinks.retryFailed")}
           </button>
           {running?.status === "running" || running?.status === "pending" ? (
             <button type="button" onClick={() => pauseMut.mutate(running.id)} disabled={pauseMut.isPending}>
@@ -379,7 +398,7 @@ export function LldpLinksPage() {
             <div className="pt-list-kpi__label">{t("lldpLinks.kpi.last")}</div>
             <div className="pt-list-kpi__value" style={{ fontSize: 15 }}>
               {last
-                ? `${last.status} · +${last.edges_added} / ~${last.edges_updated}`
+                ? `${last.status} · ok ${last.success_count ?? "—"} / fail ${last.fail_count ?? 0}`
                 : t("common.empty")}
             </div>
           </div>
@@ -697,6 +716,11 @@ export function LldpLinksPage() {
                   </td>
                   <td>
                     {job.done}/{job.total}
+                    {(job.fail_count || 0) > 0 ? (
+                      <div className="muted">
+                        ok {job.success_count ?? 0} / fail {job.fail_count}
+                      </div>
+                    ) : null}
                   </td>
                   <td>
                     +{job.edges_added} / ~{job.edges_updated}

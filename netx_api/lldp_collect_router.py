@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from .db import get_db
-from .lldp_collect_schemas import LldpCollectPolicyUpdate
+from .lldp_collect_schemas import LldpCollectPolicyUpdate, LldpCollectStartBody
 from .lldp_collect_service import (
     get_dashboard,
     get_job_detail,
@@ -16,7 +16,7 @@ from .lldp_collect_service import (
     list_jobs,
     pause_collect,
     resume_collect,
-    start_collect,
+    start_collect_from_body,
     stop_collect,
     update_policy,
 )
@@ -42,8 +42,10 @@ def api_dashboard(db: Session = Depends(get_db)) -> dict[str, Any]:
 
 
 @router.post("/start")
-def api_start(db: Session = Depends(get_db)) -> dict[str, Any]:
-    return start_collect(db, trigger_mode="manual")
+def api_start(
+    body: LldpCollectStartBody | None = None, db: Session = Depends(get_db)
+) -> dict[str, Any]:
+    return start_collect_from_body(db, body)
 
 
 @router.post("/jobs/{job_id}/pause")

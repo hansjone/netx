@@ -445,6 +445,174 @@ class LldpCollectTests(unittest.TestCase):
         self.assertEqual(job.status, "paused")
         self.assertIsNotNone(has_running_job(self.db))
 
+    def test_item_needs_retry_covers_hard_and_weak(self) -> None:
+        from netx_api.lldp_collect_service import item_needs_retry
+
+        hard = TopoDiscoverJobItem(id=uuid4().hex, job_id="j", ok=False, error="exec_failed")
+        weak_empty = TopoDiscoverJobItem(
+            id=uuid4().hex, job_id="j", ok=True, error="empty_cli_output"
+        )
+        weak_stub = TopoDiscoverJobItem(
+            id=uuid4().hex, job_id="j", ok=True, parser_stub=True, error="parser_stub"
+        )
+        ok = TopoDiscoverJobItem(id=uuid4().hex, job_id="j", ok=True, error="")
+        self.assertTrue(item_needs_retry(hard))
+        self.assertTrue(item_needs_retry(weak_empty))
+        self.assertTrue(item_needs_retry(weak_stub))
+        self.assertFalse(item_needs_retry(ok))
+
+    def test_collect_retry_targets_and_start_retry_failed(self) -> None:
+        from unittest.mock import patch
+
+        from netx_api.lldp_collect_service import (
+            collect_retry_targets,
+            find_retry_source_job,
+            start_collect,
+        )
+        from netx_api.topology_schemas import FabricDiscoverJobOut
+
+        now = datetime.utcnow()
+        job_id = uuid4().hex
+        older_ok = uuid4().hex
+        # Older finished job with a failure — should not be picked when a newer one has fails.
+        self.db.add(
+            TopoDiscoverJob(
+                id=older_ok,
+                scope="all_inventory",
+                trigger_mode="manual",
+                status="done",
+                total=1,
+                done=1,
+                created_at=now - timedelta(hours=2),
+                updated_at=now - timedelta(hours=2),
+                ended_at=now - timedelta(hours=2),
+            )
+        )
+        self.db.add(
+            TopoDiscoverJobItem(
+                id=uuid4().hex,
+                job_id=older_ok,
+                ne_id="old-fail",
+                ok=False,
+                error="timeout",
+                created_at=now - timedelta(hours=2),
+            )
+        )
+        self.db.add(
+            TopoDiscoverJob(
+                id=job_id,
+                scope="all_inventory",
+                trigger_mode="manual",
+                status="done",
+                total=3,
+                done=3,
+                created_at=now - timedelta(hours=1),
+                updated_at=now - timedelta(hours=1),
+                ended_at=now - timedelta(hours=1),
+            )
+        )
+        self.db.add(
+            TopoDiscoverJobItem(
+                id=uuid4().hex,
+                job_id=job_id,
+                ne_id="ok-ne",
+                ok=True,
+                error="",
+                created_at=now,
+            )
+        )
+        self.db.add(
+            TopoDiscoverJobItem(
+                id=uuid4().hex,
+                job_id=job_id,
+                ne_id="fail-ne",
+                ok=False,
+                error="cli_budget_unavailable",
+                created_at=now,
+            )
+        )
+        self.db.add(
+            TopoDiscoverJobItem(
+                id=uuid4().hex,
+                job_id=job_id,
+                ume_ne_id="ume-weak",
+                ok=True,
+                error="empty_cli_output",
+                created_at=now,
+            )
+        )
+        ensure_policy(self.db)
+        self.db.commit()
+
+        src = find_retry_source_job(self.db)
+        self.assertEqual(src.id, job_id)
+        managed, ume = collect_retry_targets(self.db, src)
+        self.assertEqual(managed, ["fail-ne"])
+        self.assertEqual(ume, ["ume-weak"])
+
+        dash = get_dashboard(self.db)
+        self.assertIsNotNone(dash.last_job)
+        assert dash.last_job is not None
+        self.assertEqual(dash.last_job.fail_count, 2)
+        self.assertEqual(dash.last_job.success_count, 1)
+
+        fake_out = FabricDiscoverJobOut(
+            id=uuid4().hex,
+            scope="ne_ids",
+            trigger_mode="retry_failed",
+            status="pending",
+            total=2,
+            done=0,
+        )
+        with patch(
+            "netx_api.lldp_collect_service.start_discover_job", return_value=fake_out
+        ) as start_mock:
+            out = start_collect(self.db, mode="retry_failed")
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["job"]["trigger_mode"], "retry_failed")
+        req = start_mock.call_args.args[1]
+        self.assertEqual(req.scope, "ne_ids")
+        self.assertEqual(req.managed_ne_ids, ["fail-ne"])
+        self.assertEqual(req.ume_ne_ids, ["ume-weak"])
+        self.assertEqual(start_mock.call_args.kwargs.get("trigger_mode"), "retry_failed")
+
+    def test_start_retry_failed_no_targets(self) -> None:
+        from fastapi import HTTPException
+
+        from netx_api.lldp_collect_service import start_collect
+
+        now = datetime.utcnow()
+        job_id = uuid4().hex
+        self.db.add(
+            TopoDiscoverJob(
+                id=job_id,
+                scope="all_inventory",
+                trigger_mode="manual",
+                status="done",
+                total=1,
+                done=1,
+                created_at=now,
+                updated_at=now,
+                ended_at=now,
+            )
+        )
+        self.db.add(
+            TopoDiscoverJobItem(
+                id=uuid4().hex,
+                job_id=job_id,
+                ne_id="ok-only",
+                ok=True,
+                error="",
+                created_at=now,
+            )
+        )
+        ensure_policy(self.db)
+        self.db.commit()
+        with self.assertRaises(HTTPException) as ctx:
+            start_collect(self.db, mode="retry_failed")
+        self.assertEqual(ctx.exception.status_code, 404)
+        self.assertEqual(ctx.exception.detail, "no_failed_job")
+
 
 if __name__ == "__main__":
     unittest.main()

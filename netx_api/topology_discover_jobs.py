@@ -526,7 +526,7 @@ def start_discover_job(
     if scope not in {"all_inventory", "ne_ids"}:
         raise HTTPException(status_code=400, detail="invalid_scope")
     trig = str(trigger_mode or getattr(body, "trigger_mode", None) or "manual").strip().lower() or "manual"
-    if trig not in {"manual", "schedule", "topology"}:
+    if trig not in {"manual", "schedule", "topology", "retry_failed"}:
         trig = "manual"
     now = _utcnow()
     # Persist explicit source lists when present; keep legacy ne_ids for older clients.

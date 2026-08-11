@@ -1384,8 +1384,11 @@ export const fetchLldpCollectDashboard = () =>
 export const updateLldpCollectPolicy = (body: Partial<LldpCollectPolicy>) =>
   apiPut<LldpCollectPolicy>("/v1/topology/lldp-collect/policy", body);
 
-export const startLldpCollect = () =>
-  apiPost<{ ok: boolean; job: TopologyDiscoverJob }>("/v1/topology/lldp-collect/start", {});
+export const startLldpCollect = (body?: { mode?: "full" | "retry_failed"; job_id?: string }) =>
+  apiPost<{ ok: boolean; job: TopologyDiscoverJob }>("/v1/topology/lldp-collect/start", {
+    mode: body?.mode || "full",
+    ...(body?.job_id ? { job_id: body.job_id } : {}),
+  });
 
 export const pauseLldpCollectJob = (jobId: string) =>
   apiPost<TopologyDiscoverJob>(`/v1/topology/lldp-collect/jobs/${encodeURIComponent(jobId)}/pause`, {});

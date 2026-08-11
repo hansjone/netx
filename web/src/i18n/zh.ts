@@ -316,6 +316,7 @@ const zh = {
   lldpLinks: {
     title: "LLDP 链路",
     collectNow: "立即采集",
+    retryFailed: "一键重试失败",
     started: "已启动 LLDP 采集",
     pause: "暂停",
     resume: "继续",
@@ -392,6 +393,7 @@ const zh = {
       manual: "手动",
       schedule: "周期",
       topology: "拓扑画布",
+      retry_failed: "重试失败",
     },
     jobScope: {
       all: "全部网元",

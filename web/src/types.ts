@@ -715,6 +715,8 @@ export type LldpCollectJobSummary = {
   status: string;
   total: number;
   done: number;
+  success_count?: number;
+  fail_count?: number;
   edges_added: number;
   edges_updated: number;
   edges_stale: number;

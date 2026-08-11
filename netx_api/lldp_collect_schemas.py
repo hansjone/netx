@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -43,6 +43,8 @@ class LldpCollectJobSummary(BaseModel):
     status: str = ""
     total: int = 0
     done: int = 0
+    success_count: int = 0
+    fail_count: int = 0
     edges_added: int = 0
     edges_updated: int = 0
     edges_stale: int = 0  # legacy alias of edges_missing
@@ -64,6 +66,11 @@ class LldpCollectDashboardOut(BaseModel):
     running_job: LldpCollectJobSummary | None = None
     last_job: LldpCollectJobSummary | None = None
     next_due_at: datetime | None = None
+
+
+class LldpCollectStartBody(BaseModel):
+    mode: Literal["full", "retry_failed"] = "full"
+    job_id: str | None = None
 
 
 class LldpCollectStartOut(BaseModel):

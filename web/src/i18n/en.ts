@@ -319,6 +319,7 @@ const en = {
   lldpLinks: {
     title: "LLDP links",
     collectNow: "Collect now",
+    retryFailed: "Retry failed",
     started: "LLDP collect started",
     pause: "Pause",
     resume: "Resume",
@@ -396,6 +397,7 @@ const en = {
       manual: "Manual",
       schedule: "Scheduled",
       topology: "Topology canvas",
+      retry_failed: "Retry failed",
     },
     jobScope: {
       all: "All NEs",
