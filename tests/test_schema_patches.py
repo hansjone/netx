@@ -10,7 +10,11 @@ from sqlalchemy.orm import sessionmaker
 
 from netx_api.db import Base
 import netx_api.models  # noqa: F401
-from netx_api.schema_patches import apply_auth_schema_patches, apply_domain_schema_patches
+from netx_api.schema_patches import (
+    apply_auth_schema_patches,
+    apply_domain_schema_patches,
+    apply_topology_schema_safety_net,
+)
 
 
 class SchemaPatchesTests(unittest.TestCase):
@@ -33,6 +37,28 @@ class SchemaPatchesTests(unittest.TestCase):
         self.assertIn("scopes", token_cols)
         self.assertIn("expires_at", token_cols)
         self.assertIn("auth_session", insp.get_table_names())
+
+    def test_topology_safety_net_adds_ume_link_ifnames(self) -> None:
+        """Brownfield: table without ifnames; safety-net must add them (sync depends on it)."""
+        with self.engine.begin() as conn:
+            conn.execute(text("DROP TABLE IF EXISTS ume_topo_link"))
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE ume_topo_link (
+                        link_id VARCHAR(128) PRIMARY KEY,
+                        name VARCHAR(1024) DEFAULT '',
+                        a_ptp VARCHAR(256) DEFAULT '',
+                        z_ptp VARCHAR(256) DEFAULT ''
+                    )
+                    """
+                )
+            )
+            apply_topology_schema_safety_net(conn)
+            apply_topology_schema_safety_net(conn)
+        cols = {c["name"] for c in inspect(self.engine).get_columns("ume_topo_link")}
+        self.assertIn("a_ifname", cols)
+        self.assertIn("z_ifname", cols)
 
     def test_domain_patches_do_not_raise(self) -> None:
         with self.engine.begin() as conn:

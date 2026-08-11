@@ -12,6 +12,7 @@ columns and indexes that ``create_all`` will not evolve on existing DBs.
 from __future__ import annotations
 
 import logging
+import re
 
 from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
@@ -23,6 +24,24 @@ def _dialect_name(conn: Connection) -> str:
     return str(getattr(conn.dialect, "name", "") or "").lower()
 
 
+def _normalize_ddl_for_dialect(conn: Connection, sql: str) -> str:
+    """SQLite lacks ``ADD COLUMN IF NOT EXISTS`` (PG 9.5+/11+). Strip for quiet retry."""
+    stmt = str(sql or "").strip()
+    if not stmt:
+        return stmt
+    if _dialect_name(conn) == "sqlite":
+        # Keep CREATE/INDEX IF NOT EXISTS; only ALTER TABLE … ADD COLUMN needs help.
+        upper = stmt.upper()
+        if "ADD COLUMN IF NOT EXISTS" in upper:
+            stmt = re.sub(
+                r"(?i)\bADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\b",
+                "ADD COLUMN",
+                stmt,
+                count=1,
+            )
+    return stmt
+
+
 def _run_sql(conn: Connection, sql: str, *, quiet: bool = True) -> None:
     """Run one DDL/DML statement.
 
@@ -30,7 +49,7 @@ def _run_sql(conn: Connection, sql: str, *, quiet: bool = True) -> None:
     patches must use a SAVEPOINT (``begin_nested``) so Alembic can still stamp
     ``alembic_version`` after a best-effort ALTER fails.
     """
-    stmt = str(sql or "").strip()
+    stmt = _normalize_ddl_for_dialect(conn, sql)
     if not stmt:
         return
 
@@ -142,6 +161,16 @@ def apply_topology_schema_safety_net(conn: Connection) -> None:
     _run_sql(
         conn,
         "CREATE INDEX IF NOT EXISTS ix_topo_fabric_node_world_y ON topo_fabric_node (world_y)",
+    )
+    # UME link ifnames — required by topology sync/apply; missing when DB predates the columns
+    # or Alembic was stamped head without running domain patches.
+    _run_sql(
+        conn,
+        "ALTER TABLE ume_topo_link ADD COLUMN IF NOT EXISTS a_ifname VARCHAR(128) DEFAULT ''",
+    )
+    _run_sql(
+        conn,
+        "ALTER TABLE ume_topo_link ADD COLUMN IF NOT EXISTS z_ifname VARCHAR(128) DEFAULT ''",
     )
 
 
@@ -408,6 +437,8 @@ def apply_domain_schema_patches(conn: Connection) -> None:
                 z_ume_ne_id VARCHAR(128) DEFAULT '',
                 a_ptp VARCHAR(256) DEFAULT '',
                 z_ptp VARCHAR(256) DEFAULT '',
+                a_ifname VARCHAR(128) DEFAULT '',
+                z_ifname VARCHAR(128) DEFAULT '',
                 first_seen_at TIMESTAMP,
                 last_seen_at TIMESTAMP,
                 raw_json TEXT DEFAULT '{}'
