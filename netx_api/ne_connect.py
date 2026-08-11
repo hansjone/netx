@@ -11,6 +11,7 @@ from .config import settings
 from .db import SessionLocal
 from .models import ManagedNE, UmeCliOverride, UmeInventoryNE
 from .ne_crypto import CredentialCryptoError
+from .cli_creds import cli_creds_skip_reason
 from .cli_resolve import resolve_cli_target
 from .ne_service import get_device_credentials
 from .ne_netmiko import send_show_command
@@ -361,6 +362,13 @@ def _run_single(ne_id: str) -> None:
             )
             _update_row(ne_id, "fail", str(exc), detail=detail)
             return
+        skip = cli_creds_skip_reason(creds, interactive=False)
+        if skip:
+            detail = _truncate_detail(
+                "\n".join(_connect_context_lines(creds)) + f"\nresult=fail\nerror={skip}"
+            )
+            _update_row(ne_id, "fail", skip, detail=detail)
+            return
         status, message, discovered, detail = _probe_device(creds)
         _update_row(ne_id, status, message, discovered, detail=detail)
     except Exception as exc:
@@ -417,6 +425,13 @@ def _run_single_ume(ume_ne_id: str) -> None:
         except Exception as exc:
             detail = _truncate_detail(traceback.format_exc())
             _update_ume_override_row(uid, "fail", str(exc)[:480], detail=detail)
+            return
+        skip = cli_creds_skip_reason(creds, interactive=False)
+        if skip:
+            detail = _truncate_detail(
+                "\n".join(_connect_context_lines(creds)) + f"\nresult=fail\nerror={skip}"
+            )
+            _update_ume_override_row(uid, "fail", skip, detail=detail)
             return
         status, message, discovered, detail = _probe_device(creds)
         _update_ume_override_row(uid, status, message, discovered, detail=detail)

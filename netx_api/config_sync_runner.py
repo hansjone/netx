@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
+from .cli_creds import cli_creds_skip_reason
 from .cli_resolve import resolve_cli_target
 from .config import settings
 from .config_sync_codec import compress_text
@@ -316,6 +317,19 @@ def _run_single(cycle_id: str, task_id: str) -> None:
             return
         except Exception as exc:
             _update_task(task_id, status="fail", message=_format_error(exc), ended_at=_utcnow())
+            return
+
+        skip = cli_creds_skip_reason(creds, interactive=False)
+        if skip:
+            _update_task(
+                task_id,
+                status="fail",
+                message=skip[:1020],
+                vendor=str(device.get("vendor") or vendor_hint or ""),
+                ne_name=str(device.get("name") or task.ne_name or ""),
+                ne_ip=str(device.get("ip_address") or task.ne_ip or ""),
+                ended_at=_utcnow(),
+            )
             return
 
         vendor = str(device.get("vendor") or vendor_hint or "")

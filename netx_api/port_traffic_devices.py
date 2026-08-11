@@ -9,6 +9,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
+from .cli_creds import require_cli_creds_ready
 from .cli_resolve import resolve_cli_target
 from .config import settings
 from .models import (
@@ -469,6 +470,8 @@ def discover_ports(db: Session, body: DiscoverPortsRequest) -> DiscoverPortsResp
         raise
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"resolve_failed: {exc}") from exc
+
+    require_cli_creds_ready(creds, interactive=False)
 
     vendor = str(device.get("vendor") or creds.get("vendor") or "")
     device_type = str(device.get("device_type") or creds.get("device_type") or "")

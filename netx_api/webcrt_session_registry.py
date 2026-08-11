@@ -205,31 +205,13 @@ def wait_session_ready(session_id: str, *, timeout: float = 120.0) -> WebcrtSess
     raise HTTPException(status_code=504, detail="connect_timeout")
 
 
+from .cli_creds import cli_creds_ready as _cli_creds_ready
+
+
 def _webcrt_creds_ready(creds: dict[str, Any]) -> bool:
-    """True when WebCRT can open a session with the resolved credentials.
-
-    Bastion-managed hops store the target password on the bastion side, so an empty
-    NE password is valid (same as connectivity test). Direct / manual / Linux hops
-    still require a target password for SSH.
-
-    Telnet (no hop) allows empty username/password so the user can authenticate
-    interactively in the terminal (SecureCRT-style).
-    """
-    hop_enabled = bool(creds.get("hop_enabled"))
-    hop_vendor = str(creds.get("hop_vendor") or "").strip().lower()
-    auth_mode = str(creds.get("hop_target_auth_mode") or "bastion_managed").strip().lower()
-    protocol = str(creds.get("protocol") or "ssh").strip().lower()
-    if hop_enabled and hop_vendor == "bastion" and auth_mode == "bastion_managed":
-        return bool(
-            str(creds.get("hop_host") or "").strip()
-            and str(creds.get("hop_username") or "").strip()
-            and str(creds.get("hop_password") or "")
-        )
-    if protocol == "telnet" and not hop_enabled:
-        return True
-    if not str(creds.get("username") or "").strip():
-        return False
-    return bool(str(creds.get("password") or ""))
+    """True when WebCRT can open a session with the resolved credentials."""
+    ready, _ = _cli_creds_ready(creds, interactive=True)
+    return ready
 
 
 def _finish_connect(

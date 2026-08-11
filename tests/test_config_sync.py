@@ -124,7 +124,13 @@ class ConfigSyncSnapshotOverwriteTests(unittest.TestCase):
         task.ne_ip = "1.1.1.1"
         db.get.return_value = task
         resolve.return_value = (
-            {"host": "1.1.1.1"},
+            {
+                "ip_address": "1.1.1.1",
+                "protocol": "ssh",
+                "username": "admin",
+                "password": "secret",
+                "hop_enabled": False,
+            },
             {"vendor": "Cisco", "device_type": "ios", "name": "r1", "ip_address": "1.1.1.1"},
         )
 
@@ -158,7 +164,13 @@ class ConfigSyncSnapshotOverwriteTests(unittest.TestCase):
         task.ne_ip = "1.1.1.1"
         db.get.return_value = task
         resolve.return_value = (
-            {"host": "1.1.1.1"},
+            {
+                "ip_address": "1.1.1.1",
+                "protocol": "ssh",
+                "username": "admin",
+                "password": "secret",
+                "hop_enabled": False,
+            },
             {"vendor": "Juniper", "device_type": "junos", "name": "r1", "ip_address": "1.1.1.1"},
         )
 

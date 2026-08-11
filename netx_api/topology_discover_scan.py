@@ -8,6 +8,8 @@ from sqlalchemy.orm import Session
 
 from .db import SessionLocal
 from .models import ManagedNE, TopoFabricNode, UmeInventoryNE
+from .cli_creds import cli_creds_skip_reason
+from .cli_resolve import resolve_cli_target
 from .ne_exec import execute_managed_ne_commands
 from .topology_common import (
     _DISCOVER_DEADLOCK_RETRIES,
@@ -97,6 +99,22 @@ def _discover_one_target(
         else:
             exec_kwargs["ne_id"] = target["ne_id"]
         try:
+            creds, _device = resolve_cli_target(
+                db,
+                managed_ne_id=exec_kwargs.get("ne_id"),
+                ume_ne_id=exec_kwargs.get("ume_ne_id"),
+            )
+        except HTTPException as exc:
+            return {
+                **base,
+                "ok": False,
+                "command": cmd,
+                "error": str(exc.detail or "resolve_failed")[:500],
+            }
+        skip = cli_creds_skip_reason(creds, interactive=False)
+        if skip:
+            return {**base, "ok": False, "command": cmd, "error": skip}
+        try:
             from .cli_budget import acquire_cli_slot
 
             with acquire_cli_slot() as ok:
@@ -104,18 +122,20 @@ def _discover_one_target(
                     return {**base, "ok": False, "command": cmd, "error": "cli_budget_unavailable"}
                 exec_out = execute_managed_ne_commands(db, [cmd], **exec_kwargs)
         except HTTPException as exc:
+            detail = str(exc.detail or "exec_failed")[:500]
             return {
                 **base,
                 "ok": False,
                 "command": cmd,
-                "error": str(exc.detail or "exec_failed")[:500],
+                "error": detail,
             }
         if not exec_out.get("ok"):
+            err = str(exec_out.get("error") or exec_out.get("detail") or "exec_failed")[:500]
             return {
                 **base,
                 "ok": False,
                 "command": cmd,
-                "error": str(exec_out.get("detail") or exec_out.get("error") or "exec_failed")[:500],
+                "error": err,
             }
 
         raw = str(exec_out.get("output") or "")

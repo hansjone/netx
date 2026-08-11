@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
+from .cli_creds import cli_creds_skip_reason
 from .cli_resolve import resolve_cli_target
 from .cli_timeout import run_cli_with_timeout
 from .config import settings
@@ -227,6 +228,12 @@ def _sample_targets_shared_session(device_id: str, target_ids: list[str]) -> tup
             for tid in target_ids:
                 _set_target_error(tid, msg)
             return len(target_ids), msg
+
+        skip = cli_creds_skip_reason(creds, interactive=False)
+        if skip:
+            for tid in target_ids:
+                _set_target_error(tid, skip)
+            return len(target_ids), skip
 
         vendor = str(info.get("vendor") or vendor_hint or "")
         device_type = str(info.get("device_type") or "")

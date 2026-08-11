@@ -8,6 +8,18 @@ from fastapi import HTTPException
 from netx_api.ne_exec import _validate_command, execute_managed_ne_commands
 
 
+def _ready_creds(**overrides) -> dict:
+    base = {
+        "ip_address": "1.1.1.1",
+        "protocol": "ssh",
+        "username": "admin",
+        "password": "secret",
+        "hop_enabled": False,
+    }
+    base.update(overrides)
+    return base
+
+
 class NeExecValidationTests(unittest.TestCase):
     def test_allows_show(self) -> None:
         _validate_command("show ip interface brief")
@@ -130,7 +142,7 @@ class NeExecRunTests(unittest.TestCase):
     @patch("netx_api.ne_exec.resolve_cli_target")
     def test_execute_success(self, resolve, _collect, _configured) -> None:
         resolve.return_value = (
-            {"ip_address": "1.1.1.1"},
+            _ready_creds(),
             {
                 "source": "managed",
                 "id": "ne-1",
@@ -151,6 +163,20 @@ class NeExecRunTests(unittest.TestCase):
         self.assertTrue(out["ok"])
         self.assertEqual(out["output"], "ok-output")
         self.assertEqual(out["commands"], ["show version"])
+
+    @patch("netx_api.ne_exec.credentials_configured", return_value=True)
+    @patch("netx_api.ne_exec._collect_on_device", return_value="ok-output")
+    @patch("netx_api.ne_exec.resolve_cli_target")
+    def test_execute_skips_when_no_password(self, resolve, collect, _configured) -> None:
+        resolve.return_value = (
+            _ready_creds(password=""),
+            {"source": "managed", "id": "ne-1", "name": "R2", "ip_address": "192.168.0.128"},
+        )
+        db = MagicMock()
+        out = execute_managed_ne_commands(db, ["show version"], ne_id="ne-1")
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error"], "no_password")
+        collect.assert_not_called()
 
     @patch("netx_api.ne_exec.credentials_configured", return_value=True)
     @patch("netx_api.ne_exec._collect_on_device", return_value="ok-output")
@@ -181,7 +207,7 @@ class NeExecRunTests(unittest.TestCase):
             collect.assert_not_called()
 
         resolve.return_value = (
-            {"ip_address": "1.1.1.1"},
+            _ready_creds(),
             {
                 "source": "managed",
                 "id": "ne-1",
@@ -221,7 +247,7 @@ class NeExecBatchTests(unittest.TestCase):
 
         session_local.return_value = MagicMock()
         resolve.return_value = (
-            {"ip_address": "1.1.1.1"},
+            _ready_creds(),
             {
                 "source": "managed",
                 "id": "ne-1",

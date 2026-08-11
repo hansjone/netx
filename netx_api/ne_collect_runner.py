@@ -14,6 +14,7 @@ from .config import settings
 from .db import SessionLocal
 from fastapi import HTTPException
 
+from .cli_creds import cli_creds_skip_reason
 from .cli_budget import clamp_cli_workers
 from .cli_resolve import resolve_cli_target
 from .models import NeCollectionJob, NeCollectionRun
@@ -205,6 +206,10 @@ def _run_single(job_id: str, run_id: str, commands: list[str]) -> None:
                 creds, _device = resolve_cli_target(db, ume_ne_id=tid)
             else:
                 creds, _device = resolve_cli_target(db, managed_ne_id=tid)
+            skip = cli_creds_skip_reason(creds, interactive=False)
+            if skip:
+                _update_run(run_id, status="fail", message=skip[:1020], ended_at=datetime.now())
+                return
             output = _collect_with_timeout(creds, commands)
             finished_at = datetime.now()
             name_part = _safe_filename_part(str(run.ne_name or creds.get("name") or "ne"))

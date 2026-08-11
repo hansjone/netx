@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
+from .cli_creds import cli_creds_skip_reason
 from .cli_resolve import resolve_cli_target
 from .config import settings
 from .db import SessionLocal
@@ -65,6 +66,16 @@ def execute_managed_ne_commands(
         validate_ne_exec_command(c)
 
     creds, device = resolve_cli_target(db, managed_ne_id=mid or None, ume_ne_id=uid or None)
+    skip = cli_creds_skip_reason(creds, interactive=False)
+    if skip:
+        return {
+            "ok": False,
+            "device": device,
+            "commands": cmds,
+            "read_timeout_sec": _normalize_read_timeout(read_timeout_sec),
+            "error": skip,
+            "detail": skip,
+        }
     read_timeout = _normalize_read_timeout(read_timeout_sec)
 
     try:
