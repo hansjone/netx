@@ -27,6 +27,88 @@ export function isCliHopVendor(vendor: string): boolean {
   return v === "zte" || v === "huawei" || v === "cisco";
 }
 
+/** Strip ssh:// / trailing slash / :port from bastion host (IP or FQDN). */
+export function normalizeHopHost(value: string): string {
+  let host = String(value || "").trim();
+  if (!host) return "";
+  host = host.replace(/^ssh(?:\s+-p\s+\d+)?\s+/i, "").trim();
+  if (host.includes("://")) host = host.split("://", 2)[1] || host;
+  host = host.trim().replace(/\/+$/, "");
+  if (host.startsWith("[") && host.includes("]")) {
+    const inside = host.slice(1, host.indexOf("]"));
+    const rest = host.slice(host.indexOf("]") + 1);
+    if (!rest || rest.startsWith(":")) return inside.trim();
+    return host;
+  }
+  if ((host.match(/:/g) || []).length === 1) {
+    const [left, right] = host.split(":");
+    if (/^\d+$/.test(right || "") && left && !left.includes("@")) return left.trim();
+  }
+  return host;
+}
+
+/**
+ * Parse OpenSSH-style bastion destination.
+ * Example: bastion-user@target-user@198.51.100.20@ssh-bastion.example.com
+ */
+export function parseBastionSshDestination(value: string): {
+  hop_host: string;
+  hop_username: string;
+  target_user: string;
+  target_ip: string;
+  ssh_username: string;
+} {
+  let raw = String(value || "").trim().replace(/^["']|["']$/g, "");
+  raw = raw.replace(/^ssh(?:\s+-p\s+\d+)?\s+/i, "").trim();
+  if (!raw) {
+    return { hop_host: "", hop_username: "", target_user: "", target_ip: "", ssh_username: "" };
+  }
+  if (!raw.includes("@")) {
+    return {
+      hop_host: normalizeHopHost(raw),
+      hop_username: "",
+      target_user: "",
+      target_ip: "",
+      ssh_username: "",
+    };
+  }
+  const at = raw.lastIndexOf("@");
+  const userPart = raw.slice(0, at).trim();
+  const hopHost = normalizeHopHost(raw.slice(at + 1));
+  const parts = userPart.split("@").filter(Boolean);
+  return {
+    hop_host: hopHost,
+    hop_username: parts[0] || "",
+    target_user: parts[1] || "",
+    target_ip: parts[2] || "",
+    ssh_username: userPart,
+  };
+}
+
+/** If hop_host is a pasted user@…@bastion string, split into host + hop username. */
+export function expandBastionHopFields(
+  hopHost: string,
+  hopUsername = "",
+): {
+  hop_host: string;
+  hop_username: string;
+  target_user: string;
+  target_ip: string;
+} {
+  const curUser = String(hopUsername || "").trim();
+  const raw = String(hopHost || "").trim();
+  if (!raw.includes("@")) {
+    return { hop_host: normalizeHopHost(raw), hop_username: curUser, target_user: "", target_ip: "" };
+  }
+  const parsed = parseBastionSshDestination(raw);
+  return {
+    hop_host: parsed.hop_host,
+    hop_username: parsed.hop_username || curUser,
+    target_user: parsed.target_user,
+    target_ip: parsed.target_ip,
+  };
+}
+
 export function defaultHopTemplate(vendor: string, protocol: string, vrf: string): string {
   const v = String(vendor || "zte").toLowerCase();
   if (v === "huawei") return huaweiHopTemplate(protocol, vrf);

@@ -22,6 +22,7 @@ from .ne_service import (
     _normalize_hop_target_auth_mode,
     _normalize_hop_vendor,
     _normalize_protocol,
+    _normalize_saved_hop_endpoint,
     _require_crypto,
 )
 
@@ -33,8 +34,12 @@ def _now() -> datetime:
 def _validate_profile_hop(body: CliConnectProfileCreate | CliConnectProfileUpdate, *, hop_enabled: bool) -> None:
     if not hop_enabled:
         return
-    host = str(getattr(body, "hop_host", None) or "").strip()
-    user = str(getattr(body, "hop_username", None) or "").strip()
+    vendor = _normalize_hop_vendor(getattr(body, "hop_vendor", None) or "zte")
+    host, user = _normalize_saved_hop_endpoint(
+        hop_vendor=vendor,
+        hop_host=str(getattr(body, "hop_host", None) or ""),
+        hop_username=str(getattr(body, "hop_username", None) or ""),
+    )
     if not host:
         raise HTTPException(status_code=400, detail="hop_host_required")
     if not user:
@@ -103,6 +108,12 @@ def create_cli_profile(db: Session, body: CliConnectProfileCreate) -> CliConnect
     _validate_profile_hop(body, hop_enabled=bool(body.hop_enabled))
     if not str(body.username or "").strip():
         raise HTTPException(status_code=400, detail="username_required")
+    hop_vendor = _normalize_hop_vendor(body.hop_vendor)
+    hop_host, hop_username = _normalize_saved_hop_endpoint(
+        hop_vendor=hop_vendor,
+        hop_host=str(body.hop_host or ""),
+        hop_username=str(body.hop_username or ""),
+    )
     row = CliConnectProfile(
         name=str(body.name or "").strip() or "default",
         username=str(body.username).strip(),
@@ -113,11 +124,11 @@ def create_cli_profile(db: Session, body: CliConnectProfileCreate) -> CliConnect
         vendor_default=str(body.vendor_default),
         ne_type_rules=str(body.ne_type_rules or ""),
         hop_enabled=bool(body.hop_enabled),
-        hop_vendor=_normalize_hop_vendor(body.hop_vendor),
-        hop_host=str(body.hop_host or "").strip(),
+        hop_vendor=hop_vendor,
+        hop_host=hop_host,
         hop_port=int(body.hop_port or 22),
         hop_protocol=_normalize_protocol(body.hop_protocol),
-        hop_username=str(body.hop_username or "").strip(),
+        hop_username=hop_username,
         hop_password_enc=encrypt_secret(body.hop_password) if body.hop_enabled and body.hop_password else "",
         hop_command_template=str(body.hop_command_template or "").strip(),
         hop_vrf=str(body.hop_vrf or "").strip(),
@@ -182,6 +193,14 @@ def update_cli_profile(db: Session, profile_id: str, body: CliConnectProfileUpda
     if "hop_password" in data and data["hop_password"]:
         _require_crypto()
         row.hop_password_enc = encrypt_secret(str(data["hop_password"]))
+    if "hop_host" in data or "hop_username" in data or "hop_vendor" in data:
+        hop_host, hop_username = _normalize_saved_hop_endpoint(
+            hop_vendor=str(row.hop_vendor or ""),
+            hop_host=str(row.hop_host or ""),
+            hop_username=str(row.hop_username or ""),
+        )
+        row.hop_host = hop_host
+        row.hop_username = hop_username
     if body.is_default is True:
         db.query(CliConnectProfile).filter(CliConnectProfile.id != row.id).update({CliConnectProfile.is_default: False})
         row.is_default = True

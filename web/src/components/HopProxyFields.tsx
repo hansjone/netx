@@ -3,6 +3,7 @@ import { useI18n } from "../i18n";
 import {
   HOP_VENDORS,
   defaultHopTemplate,
+  expandBastionHopFields,
   isAutoHopTemplate,
   isBastionHopVendor,
   isLinuxHopVendor,
@@ -127,7 +128,24 @@ export function HopProxyFields({
       </label>
       <label>
         <FormLabel required>{t("managedNe.hop.host")}</FormLabel>
-        <input required value={value.hop_host} onChange={(e) => set({ hop_host: e.target.value })} />
+        <input
+          required
+          value={value.hop_host}
+          placeholder={bastion ? t("managedNe.hop.hostPlaceholderBastion") : undefined}
+          onChange={(e) => set({ hop_host: e.target.value })}
+          onBlur={() => {
+            if (!bastion) return;
+            const raw = String(value.hop_host || "").trim();
+            if (!raw.includes("@")) return;
+            const parsed = expandBastionHopFields(raw, value.hop_username);
+            if (!parsed.hop_host || parsed.hop_host === raw) return;
+            set({
+              hop_host: parsed.hop_host,
+              hop_username: parsed.hop_username || value.hop_username,
+            });
+          }}
+        />
+        {bastion ? <span className="form-field-hint">{t("managedNe.hop.hostHintBastion")}</span> : null}
       </label>
       <label>
         <FormLabel>{t("managedNe.hop.port")}</FormLabel>

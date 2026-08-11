@@ -26,6 +26,7 @@ from .ne_service_common import (
     _normalize_hop_vendor,
     _normalize_ip,
     _normalize_protocol,
+    _normalize_saved_hop_endpoint,
     _normalize_vendor,
     _now,
     _require_crypto,
@@ -192,8 +193,12 @@ def update_managed_ne(db: Session, ne_id: str, body: ManagedNeUpdate) -> Managed
 
 def batch_apply_hop_proxy(db: Session, ids: list[str], hop: HopProxyConfig) -> dict[str, Any]:
     """Apply the same jump-host (proxy) settings to multiple managed NEs."""
-    hop_host = str(hop.hop_host or "").strip()
-    hop_user = str(hop.hop_username or "").strip()
+    hop_vendor = _normalize_hop_vendor(hop.hop_vendor)
+    hop_host, hop_user = _normalize_saved_hop_endpoint(
+        hop_vendor=hop_vendor,
+        hop_host=str(hop.hop_host or ""),
+        hop_username=str(hop.hop_username or ""),
+    )
     hop_pass = str(hop.hop_password or "").strip()
     if hop_pass:
         _require_crypto()
@@ -205,7 +210,6 @@ def batch_apply_hop_proxy(db: Session, ids: list[str], hop: HopProxyConfig) -> d
     if not hop_pass and hop_auth_mode != "bastion_managed":
         raise HTTPException(status_code=400, detail="hop_password_required")
 
-    hop_vendor = _normalize_hop_vendor(hop.hop_vendor)
     template = str(hop.hop_command_template or "").strip()
     if hop_vendor == "bastion" and not template:
         template = default_bastion_username_template()

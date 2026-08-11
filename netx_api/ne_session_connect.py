@@ -16,6 +16,8 @@ from .ne_cli_hop import (
 )
 from .ne_hop_templates import (
     _hop_vendor,
+    expand_bastion_hop_fields,
+    normalize_hop_host,
     render_hop_command,
     resolve_bastion_ssh_username,
 )
@@ -497,11 +499,15 @@ def _connect_via_bastion(
     keepalive: int | None = None,
 ) -> ConnectHandler:
     """SSH to bastion with composite username; bastion proxies to target (protocol proxy)."""
-    hop_host = str(creds.get("hop_host") or "").strip()
-    hop_user = str(creds.get("hop_username") or "").strip()
+    hop_host, hop_user = expand_bastion_hop_fields(
+        hop_host=str(creds.get("hop_host") or ""),
+        hop_username=str(creds.get("hop_username") or ""),
+    )
     hop_pass = str(creds.get("hop_password") or "")
     if not hop_host or not hop_user or not hop_pass:
         raise ValueError("hop_credentials_incomplete")
+    # Keep render/logs aligned when hop_host was a pasted user@…@fqdn string.
+    creds = {**creds, "hop_host": hop_host, "hop_username": hop_user}
 
     composite_rendered = render_hop_command(str(creds.get("hop_command_template") or ""), creds)
     ssh_username = resolve_bastion_ssh_username(composite_rendered, hop_host)
@@ -563,7 +569,7 @@ def _connect_via_linux_hop(
     keepalive: int | None = None,
 ) -> ConnectHandler:
     """SSH to Linux bastion, then direct-tcpip tunnel to target (classic ProxyJump-style)."""
-    hop_host = str(creds.get("hop_host") or "").strip()
+    hop_host = normalize_hop_host(str(creds.get("hop_host") or ""))
     hop_user = str(creds.get("hop_username") or "").strip()
     hop_pass = str(creds.get("hop_password") or "")
     if not hop_host or not hop_user or not hop_pass:

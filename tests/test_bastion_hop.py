@@ -48,20 +48,70 @@ class BastionTemplateTests(unittest.TestCase):
 
     def test_resolve_strips_legacy_hop_host_suffix(self) -> None:
         self.assertEqual(
-            resolve_bastion_ssh_username("ZTE-FIVIE@ca-admin@114.1.198.1@10.34.145.25", "10.34.145.25"),
-            "ZTE-FIVIE@ca-admin@114.1.198.1",
+            resolve_bastion_ssh_username("bastion-user@target-user@198.51.100.10@192.0.2.10", "192.0.2.10"),
+            "bastion-user@target-user@198.51.100.10",
+        )
+
+    def test_resolve_strips_domain_bastion_suffix(self) -> None:
+        self.assertEqual(
+            resolve_bastion_ssh_username(
+                "bastion-user@target-user@198.51.100.20@ssh-bastion.example.com",
+                "ssh-bastion.example.com",
+            ),
+            "bastion-user@target-user@198.51.100.20",
         )
 
     def test_resolve_keeps_username_without_hop_host_suffix(self) -> None:
         self.assertEqual(
-            resolve_bastion_ssh_username("ZTE-FIVIE@ca-admin@114.1.198.1", "10.34.145.25"),
-            "ZTE-FIVIE@ca-admin@114.1.198.1",
+            resolve_bastion_ssh_username("bastion-user@target-user@198.51.100.10", "192.0.2.10"),
+            "bastion-user@target-user@198.51.100.10",
         )
 
     def test_bastion_ssh_cli(self) -> None:
         self.assertEqual(
-            bastion_ssh_cli("ZTE-FIVIE@ca-admin@114.1.198.1", "10.34.145.25"),
-            "ssh ZTE-FIVIE@ca-admin@114.1.198.1@10.34.145.25",
+            bastion_ssh_cli("bastion-user@target-user@198.51.100.10", "192.0.2.10"),
+            "ssh bastion-user@target-user@198.51.100.10@192.0.2.10",
+        )
+
+    def test_bastion_ssh_cli_domain(self) -> None:
+        self.assertEqual(
+            bastion_ssh_cli("bastion-user@target-user@198.51.100.20", "ssh-bastion.example.com"),
+            "ssh bastion-user@target-user@198.51.100.20@ssh-bastion.example.com",
+        )
+
+    def test_parse_domain_bastion_destination(self) -> None:
+        from netx_api.ne_hop_templates import expand_bastion_hop_fields, parse_bastion_ssh_destination
+
+        parsed = parse_bastion_ssh_destination(
+            "ssh bastion-user@target-user@198.51.100.20@ssh-bastion.example.com"
+        )
+        self.assertEqual(parsed["hop_host"], "ssh-bastion.example.com")
+        self.assertEqual(parsed["hop_username"], "bastion-user")
+        self.assertEqual(parsed["target_user"], "target-user")
+        self.assertEqual(parsed["target_ip"], "198.51.100.20")
+        self.assertEqual(parsed["ssh_username"], "bastion-user@target-user@198.51.100.20")
+        host, user = expand_bastion_hop_fields(
+            hop_host="bastion-user@target-user@198.51.100.20@ssh-bastion.example.com",
+            hop_username="",
+        )
+        self.assertEqual(host, "ssh-bastion.example.com")
+        self.assertEqual(user, "bastion-user")
+
+    def test_render_bastion_with_domain_hop_host(self) -> None:
+        creds = {
+            "hop_vendor": "bastion",
+            "hop_username": "bastion-user",
+            "hop_host": "ssh-bastion.example.com",
+            "username": "target-user",
+            "ip_address": "198.51.100.20",
+            "hop_protocol": "ssh",
+            "hop_vrf": "",
+        }
+        out = render_hop_command("", creds)
+        self.assertEqual(out, "bastion-user@target-user@198.51.100.20")
+        self.assertEqual(
+            bastion_ssh_cli(out, creds["hop_host"]),
+            "ssh bastion-user@target-user@198.51.100.20@ssh-bastion.example.com",
         )
 
     def test_netmiko_driver_class_resolves_zte(self) -> None:
@@ -131,6 +181,68 @@ class BastionConnectImplTests(unittest.TestCase):
         self.assertEqual(wrap_kwargs["username"], "bastion-user@target-user@2.2.2.2")
         self.assertEqual(wrap_kwargs["password"], "vault-pass")
         conn.disconnect.assert_not_called()
+
+    @patch("netx_api.ne_session_connect._netmiko_over_ssh_client")
+    @patch("netx_api.ne_session_connect._bastion_ssh_connect")
+    def test_bastion_domain_host_connect(self, bastion_ssh, netmiko_wrap) -> None:
+        from netx_api.ne_session_factory import _connect_via_bastion
+
+        bastion_ssh.return_value = MagicMock()
+        netmiko_wrap.return_value = MagicMock()
+        creds = {
+            "hop_host": "ssh-bastion.example.com",
+            "hop_username": "bastion-user",
+            "hop_password": "vault-pass",
+            "hop_port": 22,
+            "device_type": "zte_zxros",
+            "protocol": "ssh",
+            "username": "target-user",
+            "ip_address": "198.51.100.20",
+            "password": "",
+            "hop_target_auth_mode": "bastion_managed",
+            "hop_vendor": "bastion",
+            "hop_protocol": "ssh",
+            "hop_vrf": "",
+        }
+        _connect_via_bastion(creds)
+        bastion_ssh.assert_called_once_with(
+            host="ssh-bastion.example.com",
+            port=22,
+            username="bastion-user@target-user@198.51.100.20",
+            password="vault-pass",
+            timeout=unittest.mock.ANY,
+        )
+
+    @patch("netx_api.ne_session_connect._netmiko_over_ssh_client")
+    @patch("netx_api.ne_session_connect._bastion_ssh_connect")
+    def test_bastion_pasted_destination_expands_on_connect(self, bastion_ssh, netmiko_wrap) -> None:
+        from netx_api.ne_session_factory import _connect_via_bastion
+
+        bastion_ssh.return_value = MagicMock()
+        netmiko_wrap.return_value = MagicMock()
+        creds = {
+            "hop_host": "bastion-user@target-user@198.51.100.20@ssh-bastion.example.com",
+            "hop_username": "",
+            "hop_password": "vault-pass",
+            "hop_port": 22,
+            "device_type": "zte_zxros",
+            "protocol": "ssh",
+            "username": "target-user",
+            "ip_address": "198.51.100.20",
+            "password": "",
+            "hop_target_auth_mode": "bastion_managed",
+            "hop_vendor": "bastion",
+            "hop_protocol": "ssh",
+            "hop_vrf": "",
+        }
+        _connect_via_bastion(creds)
+        bastion_ssh.assert_called_once_with(
+            host="ssh-bastion.example.com",
+            port=22,
+            username="bastion-user@target-user@198.51.100.20",
+            password="vault-pass",
+            timeout=unittest.mock.ANY,
+        )
 
     @patch("netx_api.ne_session_connect._interactive_target_auth")
     @patch("netx_api.ne_session_connect._read_channel")

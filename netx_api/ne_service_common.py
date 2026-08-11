@@ -18,6 +18,7 @@ from .device_types import (
 from .models import ManagedNE
 from .ne_crypto import CredentialCryptoError, credentials_configured, decrypt_secret, encrypt_secret
 from .ne_schemas import ManagedNeCreate, ManagedNeOut, ManagedNeUpdate
+from .ne_hop_templates import expand_bastion_hop_fields, normalize_hop_host
 from .ne_session_factory import default_bastion_username_template, default_hop_command_template
 from .timeutil import utcnow_naive
 
@@ -118,13 +119,18 @@ def _infer_managed_ne_type_vendor(ne_type: str, vendor: str) -> tuple[str, str]:
 def _validate_hop_on_create(body: ManagedNeCreate) -> None:
     if not body.hop_enabled:
         return
-    if not str(body.hop_host or "").strip():
+    hop_vendor = _normalize_hop_vendor(body.hop_vendor)
+    hop_host, hop_username = _normalize_saved_hop_endpoint(
+        hop_vendor=hop_vendor,
+        hop_host=str(body.hop_host or ""),
+        hop_username=str(body.hop_username or ""),
+    )
+    if not hop_host:
         raise HTTPException(status_code=400, detail="hop_host_required")
-    if not str(body.hop_username or "").strip():
+    if not hop_username:
         raise HTTPException(status_code=400, detail="hop_username_required")
     if not str(body.hop_password or "").strip():
         raise HTTPException(status_code=400, detail="hop_password_required")
-    hop_vendor = _normalize_hop_vendor(body.hop_vendor)
     if hop_vendor == "bastion" and _normalize_hop_target_auth_mode(body.hop_target_auth_mode) == "manual":
         if not str(body.password or "").strip():
             raise HTTPException(status_code=400, detail="password_required")
@@ -141,13 +147,27 @@ def _import_cell_str(value: Any) -> str:
     return "" if text.lower() == "nan" else text
 
 
+def _normalize_saved_hop_endpoint(*, hop_vendor: str, hop_host: str, hop_username: str) -> tuple[str, str]:
+    """Accept IP or FQDN; split pasted OpenSSH ``user@target@ip@bastion`` into fields."""
+    host = str(hop_host or "").strip()
+    user = str(hop_username or "").strip()
+    if str(hop_vendor or "").strip().lower() == "bastion":
+        return expand_bastion_hop_fields(hop_host=host, hop_username=user)
+    return normalize_hop_host(host), user
+
+
 def _apply_hop_create(row: ManagedNE, body: ManagedNeCreate) -> None:
     row.hop_enabled = bool(body.hop_enabled)
     row.hop_vendor = _normalize_hop_vendor(body.hop_vendor)
-    row.hop_host = str(body.hop_host or "").strip()
+    hop_host, hop_username = _normalize_saved_hop_endpoint(
+        hop_vendor=row.hop_vendor,
+        hop_host=str(body.hop_host or ""),
+        hop_username=str(body.hop_username or ""),
+    )
+    row.hop_host = hop_host
     row.hop_port = int(body.hop_port or 22)
     row.hop_protocol = _normalize_protocol(body.hop_protocol)
-    row.hop_username = str(body.hop_username or "").strip()
+    row.hop_username = hop_username
     row.hop_password_enc = encrypt_secret(body.hop_password) if body.hop_enabled else ""
     row.hop_command_template = str(body.hop_command_template or "").strip()
     row.hop_vrf = str(body.hop_vrf or "").strip()
@@ -176,6 +196,14 @@ def _apply_hop_update(row: ManagedNE, data: dict[str, Any]) -> None:
         row.hop_vrf = str(data["hop_vrf"]).strip()
     if "hop_target_auth_mode" in data and data["hop_target_auth_mode"] is not None:
         row.hop_target_auth_mode = _normalize_hop_target_auth_mode(data["hop_target_auth_mode"])
+    if "hop_host" in data or "hop_username" in data or "hop_vendor" in data:
+        hop_host, hop_username = _normalize_saved_hop_endpoint(
+            hop_vendor=str(row.hop_vendor or ""),
+            hop_host=str(row.hop_host or ""),
+            hop_username=str(row.hop_username or ""),
+        )
+        row.hop_host = hop_host
+        row.hop_username = hop_username
     if row.hop_enabled:
         if not str(row.hop_host or "").strip():
             raise HTTPException(status_code=400, detail="hop_host_required")

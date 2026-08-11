@@ -820,9 +820,9 @@ const en = {
       "· password may be empty (required for direct login; optional for bastion-managed or batch proxy later).\n" +
       "· Recommended flow: import NEs first, select rows, then use Batch add proxy.\n\n" +
       "[Jump / bastion]\n" +
-      "· Bastion SSH username template: {hop_user}@{target_user}@{target_ip} (bastion host is separate); CLI: ssh user@target@ip@bastion-host.\n" +
+      "· Bastion SSH username template: {hop_user}@{target_user}@{target_ip} (bastion host is separate IP or FQDN); CLI: ssh user@target@ip@bastion-host.\n" +
       "· Bastion-managed: set Jump password (Vault); target password optional. Manual mode needs target password.\n" +
-      "· JumpServer/CBH often use port 2222; some sites use 22.\n\n" +
+      "· Jump host accepts IP (192.0.2.10) or domain (ssh-bastion.example.com). JumpServer/CBH often use port 2222; some sites use 22.\n\n" +
       "[Connectivity / edit]\n" +
       "· NETX_CREDENTIAL_SECRET_KEY required to store passwords.\n" +
       "· Leave password blank on edit to keep unchanged; open Details after failed connect-test for hop context (no secrets).",
@@ -859,15 +859,18 @@ const en = {
       ciscoHint: "Run Cisco ssh -vrf / telnet /vrf jump commands; target credentials use secondary auth.",
       linuxHint: "SSH to the Linux bastion, then direct-tcpip tunnel to target IP:port (ProxyJump-style).",
       bastionHint:
-        "SSH with composite username via bastion protocol proxy. Example: bastion-user@target-user@2.2.2.2@1.1.1.1; password is the bastion/Vault password. JumpServer/CBH often use port 2222.",
+        "SSH with composite username via bastion protocol proxy. Hop host may be an IP or FQDN. Examples: bastion-user@target-user@198.51.100.20@192.0.2.10 or bastion-user@target-user@198.51.100.20@ssh-bastion.example.com; password is the bastion/Vault password. JumpServer/CBH often use port 2222.",
       targetAuthMode: "Target credentials",
       targetAuthBastionManaged: "Bastion-managed (target password optional)",
       targetAuthManual: "Manual (secondary auth after connect)",
       targetAuthHint: "Bastion-managed needs only bastion password; manual mode requires target NE password.",
       usernameTemplate: "SSH username template",
       templateHintBastion:
-        "Default {hop_user}@{target_user}@{target_ip}. Bastion address is the hop host field. CLI example: ssh bastion-user@target-user@2.2.2.2@1.1.1.1.",
+        "Default {hop_user}@{target_user}@{target_ip}. Bastion address (IP or FQDN) goes in Jump host. CLI example: ssh bastion-user@target-user@198.51.100.20@ssh-bastion.example.com.",
       host: "Jump host",
+      hostPlaceholderBastion: "192.0.2.10 or ssh-bastion.example.com",
+      hostHintBastion:
+        "IP or FQDN. You can paste a full SSH destination (e.g. bastion-user@target-user@198.51.100.20@ssh-bastion.example.com); on blur it splits into jump username + host.",
       port: "Jump port",
       protocol: "Jump protocol",
       protocolSshStelnet: "ssh (stelnet)",

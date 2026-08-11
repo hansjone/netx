@@ -852,15 +852,18 @@ const zh = {
       ciscoHint: "在思科设备上执行 ssh -vrf / telnet /vrf 跳登，目标账号由二次认证输入。",
       linuxHint: "先 SSH 登录 Linux 跳板，经 direct-tcpip 隧道连接目标 IP:端口（等同 ProxyJump）。",
       bastionHint:
-        "SSH 复合用户名直连堡垒机，由堡垒机协议代理到目标。示例：bastion-user@target-user@2.2.2.2@1.1.1.1；密码为 Vault/堡垒机密码。JumpServer/CBH 常用端口 2222。",
+        "SSH 复合用户名直连堡垒机（跳板地址可为 IP 或域名），由堡垒机协议代理到目标。示例：bastion-user@target-user@198.51.100.20@192.0.2.10 或 bastion-user@target-user@198.51.100.20@ssh-bastion.example.com；密码为 Vault/堡垒机密码。JumpServer/CBH 常用端口 2222。",
       targetAuthMode: "目标凭据",
       targetAuthBastionManaged: "堡垒机托管（目标密码可留空）",
       targetAuthManual: "手动输入（连接后二次认证）",
       targetAuthHint: "堡垒机托管时仅需堡垒机密码；手动模式需填写目标网元密码。",
       usernameTemplate: "SSH 用户名模板",
       templateHintBastion:
-        "默认 {hop_user}@{target_user}@{target_ip}，堡垒机地址填「跳板地址」。命令行示例：ssh bastion-user@target-user@2.2.2.2@1.1.1.1。",
+        "默认 {hop_user}@{target_user}@{target_ip}，堡垒机地址（IP 或域名）填「跳板地址」。命令行示例：ssh bastion-user@target-user@198.51.100.20@ssh-bastion.example.com。",
       host: "跳板地址",
+      hostPlaceholderBastion: "192.0.2.10 或 ssh-bastion.example.com",
+      hostHintBastion:
+        "支持 IP 或 FQDN。也可粘贴完整 SSH 目标串（如 bastion-user@target-user@198.51.100.20@ssh-bastion.example.com），失焦后自动拆成跳板用户名与地址。",
       port: "跳板端口",
       protocol: "跳板协议",
       protocolSshStelnet: "ssh（stelnet）",
