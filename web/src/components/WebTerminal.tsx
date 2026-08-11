@@ -448,6 +448,8 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
     // report closed/error after a newer socket owns the terminal.
     let cancelled = false;
     let ws: WebSocket | null = null;
+    // Server sends status:error then close(4502); ignore the close code so UI keeps the real reason.
+    let terminalFailureReported = false;
     onStatusRef.current?.("connecting");
 
     const isActiveSocket = () => !cancelled && !!ws && wsRef.current === ws;
@@ -535,12 +537,16 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
                     cliHop: typeof msg.cli_hop === "boolean" ? msg.cli_hop : undefined,
                   }
                 : undefined;
-            onStatusRef.current?.(String(msg.state || ""), msg.message, phase, meta);
-            if (msg.state === "connected" || msg.state === "connecting") {
+            const state = String(msg.state || "");
+            if (state === "error" || state === "closed") {
+              terminalFailureReported = true;
+            }
+            onStatusRef.current?.(state, msg.message, phase, meta);
+            if (state === "connected" || state === "connecting") {
               maybeFocus();
               return;
             }
-            if (msg.state === "warning") {
+            if (state === "warning") {
               const m = String(msg.message || "");
               const dropMatch = /^queue_dropped:(\d+)/i.exec(m);
               if (dropMatch) {
@@ -550,11 +556,11 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
               }
               return;
             }
-            if (msg.state === "closed" || msg.state === "error") {
+            if (state === "closed" || state === "error") {
               const detail = msg.message ? `: ${msg.message}` : "";
               term.writeln(
                 `\r\n\x1b[33m${tRef.current("webcrt.term.sessionStatus", {
-                  state: String(msg.state || ""),
+                  state,
                   detail,
                 })}\x1b[0m`,
               );
@@ -569,12 +575,17 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
 
       socket.onerror = () => {
         if (!isActiveSocket()) return;
+        terminalFailureReported = true;
         onStatusRef.current?.("error", "websocket_error");
       };
 
       socket.onclose = (ev) => {
         // Intentional unmount/remount closes the socket; do not flip UI to "closed".
         if (!isActiveSocket()) return;
+        // 45xx = app close after status:error (e.g. connect_timeout → 4502).
+        if (terminalFailureReported && ev.code >= 4000 && ev.code < 5000) {
+          return;
+        }
         onStatusRef.current?.("closed", `websocket_closed:${ev.code}`);
       };
 
