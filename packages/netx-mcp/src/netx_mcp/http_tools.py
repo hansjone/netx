@@ -415,7 +415,11 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
         "description": (
             "Query UME current alarms (each row includes host_name). "
             "Supports severity/ne_id/host_name/keyword, last_seen time_from/time_to, pagination. "
-            "Prefer host_name for display; ne_id is for filters only."
+            "Prefer host_name for display; ne_id is for filters only. "
+            "Field keyword examples (native_probable_cause): LOS, Fiber Break, bandwidth, CRC, "
+            "BN EMS, dying gasp, License, BGP Neighbour, Port down, optical power, NTP. "
+            "Area = hostname prefix (MDN-/MKS-/PLG-/ACH-/PAD-/BJM-/…). "
+            "Optical-power threshold ≠ fiber cut; capacity A<>B is CLI optics, not this tally alone."
         ),
         "inputSchema": {
             "type": "object",
@@ -424,7 +428,13 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                 "ne_id": {"type": "string", "description": "Filter only; do not show UUID to users"},
                 "host_name": {"type": "string", "description": "Filter by NE host_name"},
                 "ne_name": {"type": "string", "description": "Legacy alias mapped to keyword"},
-                "keyword": {"type": "string"},
+                "keyword": {
+                    "type": "string",
+                    "description": (
+                        "Substring on cause/object/event. Examples: LOS, Fiber Break, bandwidth, "
+                        "CRC, BN EMS, dying gasp, License, optical power, BGP Neighbour."
+                    ),
+                },
                 "time_from": {"type": "string", "description": "ISO time; filters last_seen_at >="},
                 "time_to": {"type": "string", "description": "ISO time; filters last_seen_at <="},
                 "page": {"type": "integer", "minimum": 1, "default": 1},
@@ -442,7 +452,9 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
             "by_ne is capped by top_ne (default 50) and excludes missing host_name by default "
             "(see by_ne_missing). meta.last_seen_min/max show data freshness. "
             "If group_by is set (e.g. alarm_host_name), automatically routes to the same "
-            "behavior as aggregateUmeAlarmsRaw — preferred for custom dimensions."
+            "behavior as aggregateUmeAlarmsRaw — preferred for custom dimensions. "
+            "Snapshot volumes are large (tens of thousands); always filter severity/keyword/time "
+            "before paging — do not dump unfiltered lists."
         ),
         "inputSchema": {
             "type": "object",
@@ -528,7 +540,12 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "queryUmeAlarmsRaw",
-        "description": "Power query UME current alarms with full alarm_* + ne_* fields; optional field_preset or select_fields.",
+        "description": (
+            "Power query UME current alarms with full alarm_* + ne_* fields; optional field_preset or select_fields. "
+            "Use field_preset=evidence for WA citations. Same keyword vocabulary as queryUmeAlarms "
+            "(LOS / Fiber Break / bandwidth / CRC / BN EMS / dying gasp / License / optical power). "
+            "For area asks: keyword then keep hosts starting with AREA- (e.g. PAD-, ACH-, BPP-)."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -536,7 +553,10 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                 "is_cleared": {"type": "string"},
                 "ne_id": {"type": "string"},
                 "event_type": {"type": "string"},
-                "keyword": {"type": "string"},
+                "keyword": {
+                    "type": "string",
+                    "description": "Substring filter; see queryUmeAlarms keyword examples.",
+                },
                 "time_from": {"type": "string"},
                 "time_to": {"type": "string"},
                 "order_by": {
