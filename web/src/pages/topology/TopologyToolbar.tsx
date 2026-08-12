@@ -8,6 +8,7 @@ import type { NeNodeData } from "./TopologyReactFlowView";
 import type { ToolMode } from "./toolMode";
 
 export type TopologyToolbarProps = {
+  readOnly?: boolean;
   breadcrumbFolders: TopologyTreeFolderItem[];
   activeView: TopologyTreeViewItem | null | undefined;
   activeRegion: TopologyTreeFolderItem | null | undefined;
@@ -51,6 +52,7 @@ export type TopologyToolbarProps = {
 };
 
 export function TopologyToolbar({
+  readOnly = false,
   breadcrumbFolders,
   activeView,
   activeRegion,
@@ -186,8 +188,14 @@ export function TopologyToolbar({
           <button
             type="button"
             className="btn btn--sm"
-            disabled={isWorldFlatCanvas}
-            title={isWorldFlatCanvas ? t("topology.worldMapNoDirectNes") : undefined}
+            disabled={readOnly || isWorldFlatCanvas}
+            title={
+              readOnly
+                ? t("topology.readOnlyHint")
+                : isWorldFlatCanvas
+                  ? t("topology.worldMapNoDirectNes")
+                  : undefined
+            }
             onClick={onAddNe}
           >
             {t("topology.addNe")}
@@ -195,8 +203,14 @@ export function TopologyToolbar({
           <button
             type="button"
             className="btn btn--sm"
-            disabled={isWorldFlatCanvas}
-            title={isWorldFlatCanvas ? t("topology.worldMapNoDirectNes") : undefined}
+            disabled={readOnly || isWorldFlatCanvas}
+            title={
+              readOnly
+                ? t("topology.readOnlyHint")
+                : isWorldFlatCanvas
+                  ? t("topology.worldMapNoDirectNes")
+                  : undefined
+            }
             onClick={handleCreateNe}
           >
             {t("topology.createNe")}
@@ -207,7 +221,7 @@ export function TopologyToolbar({
           <button
             type="button"
             className="btn btn--sm btn--ghost"
-            disabled={!canUndo}
+            disabled={readOnly || !canUndo}
             onClick={onUndo}
             title="Ctrl+Z"
           >
@@ -216,7 +230,7 @@ export function TopologyToolbar({
           <button
             type="button"
             className="btn btn--sm btn--ghost"
-            disabled={!canRedo}
+            disabled={readOnly || !canRedo}
             onClick={onRedo}
             title="Ctrl+Y"
           >
@@ -225,9 +239,9 @@ export function TopologyToolbar({
           <button
             type="button"
             className={`btn btn--sm${dirty ? "" : " btn--ghost"}`}
-            disabled={savePending || !dirty}
+            disabled={readOnly || savePending || !dirty}
             onClick={onSave}
-            title="Ctrl+S"
+            title={readOnly ? t("topology.readOnlyHint") : "Ctrl+S"}
           >
             {savePending ? t("topology.saving") : dirty ? t("topology.saveDirty") : t("topology.save")}
           </button>
@@ -265,8 +279,8 @@ export function TopologyToolbar({
           <button
             type="button"
             className="btn btn--sm btn--ghost"
-            disabled={!staleEdgeCount}
-            title={t("topology.removeStaleHint")}
+            disabled={readOnly || !staleEdgeCount}
+            title={readOnly ? t("topology.readOnlyHint") : t("topology.removeStaleHint")}
             onClick={() => void onRemoveStale()}
           >
             {t("topology.removeStale").replace("{{count}}", String(staleEdgeCount))}
@@ -286,8 +300,9 @@ export function TopologyToolbar({
               key={mode}
               type="button"
               className={`topo-tools__btn${toolMode === mode ? " is-active" : ""}`}
-              title={`${label} (${key})`}
+              title={`${label} (${key})${readOnly && mode === "connect" ? ` — ${t("topology.readOnlyHint")}` : ""}`}
               aria-pressed={toolMode === mode}
+              disabled={readOnly && mode === "connect"}
               onClick={() => {
                 onToolModeChange(mode);
                 onConnectClickReset();

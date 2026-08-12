@@ -1,5 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSearchParams } from "react-router-dom";
+import { ListPager } from "../components/ListPager";
 import {
   createNeCollection,
   deleteCollectionJob,
@@ -8,31 +10,51 @@ import {
   fetchCollectionRuns,
   fetchEligibleNe,
   fetchNeCollections,
+  formatErr,
   pauseCollectionJob,
   startCollectionJob,
+  startCollectionFromPolicy,
   retryFailedCollectionJob,
+  updateCollectionPolicy,
   collectionJobDownloadUrl,
   collectionRunDownloadUrl,
 } from "../services/api";
 import { queryKeys } from "../constants/queryKeys";
+import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import { useI18n } from "../i18n";
 import { useToast } from "../hooks/useToast";
-import type { CollectionJobItem, EligibleNeItem } from "../types";
+import type { CollectionJobItem, CollectionRunItem, CollectionTargetRef, EligibleNeItem } from "../types";
+import { downloadCsv, fetchAllPages } from "../utils/csvExport";
 import { pageCount } from "../utils/display";
 import { formatSystemTime } from "../utils/time";
 
 const POLL_MS = 2000;
 const ELIGIBLE_PAGE_SIZE = 20;
+const POLICY_TARGET_PAGE_SIZE = 20;
+const JOB_STATUS_OPTIONS = ["draft", "pending", "running", "paused", "done", "failed", "cancelled"] as const;
+const JOB_PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
+const RUN_PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
 
 function eligibleKey(row: Pick<EligibleNeItem, "id" | "source">): string {
   const src = String(row.source || "managed").trim().toLowerCase() || "managed";
   return `${src}:${row.id}`;
 }
 
+function targetKey(ref: CollectionTargetRef): string {
+  const src = String(ref.source || "managed").trim().toLowerCase() || "managed";
+  return `${src}:${ref.id}`;
+}
+
 function collectionErrorMessage(err: unknown, t: (key: string) => string): string {
   const raw = String(err);
   if (raw.includes("collection_ne_busy")) return t("collect.neBusy");
   if (raw.includes("collection_job_running")) return t("collect.jobRunning");
+  if (raw.includes("commands_empty") || raw.includes("commands_required_for_schedule")) {
+    return t("collect.policyCommandsRequired");
+  }
+  if (raw.includes("no_selected_targets") || raw.includes("no_eligible_ne")) {
+    return t("collect.policyTargetsRequired");
+  }
   return raw;
 }
 
@@ -40,6 +62,7 @@ export function CollectPage() {
   const { t } = useI18n();
   const { showOk, showError } = useToast();
   const queryClient = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const [commands, setCommands] = useState("");
   const [title, setTitle] = useState("");
@@ -48,11 +71,45 @@ export function CollectPage() {
   const [neKeyword, setNeKeyword] = useState("");
   const [nePage, setNePage] = useState(1);
   const [jobPage, setJobPage] = useState(1);
+  const [jobPageSize, setJobPageSize] = useState(20);
+  const [jobStatus, setJobStatus] = useState("");
+  const [jobKeyword, setJobKeyword] = useState("");
+  const [exportingJobs, setExportingJobs] = useState(false);
   const [expandedJobId, setExpandedJobId] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
 
+  const [policyEnabled, setPolicyEnabled] = useState(false);
+  const [policyIntervalValue, setPolicyIntervalValue] = useState(1);
+  const [policyIntervalUnit, setPolicyIntervalUnit] = useState<"days" | "hours">("days");
+  const [policyHistoryKeep, setPolicyHistoryKeep] = useState(3);
+  const [policyScopeMode, setPolicyScopeMode] = useState<"all" | "selected">("all");
+  const [policyTitle, setPolicyTitle] = useState("");
+  const [policyCommands, setPolicyCommands] = useState("");
+  const [policySelectedMap, setPolicySelectedMap] = useState<Record<string, CollectionTargetRef>>({});
+  const [policyHydrated, setPolicyHydrated] = useState(false);
+  const [policyTargetKeyword, setPolicyTargetKeyword] = useState("");
+  const [policyTargetPage, setPolicyTargetPage] = useState(1);
+
+  const debouncedJobKeyword = useDebouncedValue(jobKeyword, 300);
+  const debouncedPolicyTargetKeyword = useDebouncedValue(policyTargetKeyword, 300);
+
   const selectedIds = useMemo(() => Object.keys(selectedMap), [selectedMap]);
   const selectedList = useMemo(() => Object.values(selectedMap), [selectedMap]);
+
+  // Deep link: /collect?job_id=… → open runs modal, then strip param
+  useEffect(() => {
+    const jobId = String(searchParams.get("job_id") || "").trim();
+    if (!jobId) return;
+    setExpandedJobId(jobId);
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (next.get("job_id") === jobId) next.delete("job_id");
+        return next;
+      },
+      { replace: true },
+    );
+  }, [searchParams, setSearchParams]);
 
   const eligibleQuery = useQuery({
     queryKey: queryKeys.collectionEligibleNe(nePage, neKeyword),
@@ -63,8 +120,14 @@ export function CollectPage() {
   });
 
   const jobsQuery = useQuery({
-    queryKey: queryKeys.neCollections(jobPage),
-    queryFn: () => fetchNeCollections({ page: jobPage, pageSize: 20 }),
+    queryKey: queryKeys.neCollections(jobPage, jobPageSize, jobStatus, debouncedJobKeyword),
+    queryFn: () =>
+      fetchNeCollections({
+        page: jobPage,
+        pageSize: jobPageSize,
+        status: jobStatus,
+        keyword: debouncedJobKeyword,
+      }),
     staleTime: 1000,
     refetchInterval: (q) => {
       const items = q.state.data?.items ?? [];
@@ -83,6 +146,42 @@ export function CollectPage() {
         ? POLL_MS
         : false;
     },
+  });
+
+  useEffect(() => {
+    const p = dashQuery.data?.policy;
+    if (!p || policyHydrated) return;
+    setPolicyEnabled(Boolean(p.enabled));
+    const hours = Math.max(1, Number(p.interval_hours || Number(p.interval_days || 1) * 24));
+    if (hours % 24 === 0) {
+      setPolicyIntervalUnit("days");
+      setPolicyIntervalValue(Math.max(1, Math.min(365, hours / 24)));
+    } else {
+      setPolicyIntervalUnit("hours");
+      setPolicyIntervalValue(Math.max(1, Math.min(8760, hours)));
+    }
+    setPolicyHistoryKeep(Math.max(0, Math.min(200, Number(p.history_keep ?? 3))));
+    setPolicyScopeMode(p.scope_mode === "selected" ? "selected" : "all");
+    setPolicyTitle(String(p.title || ""));
+    setPolicyCommands(String(p.commands || ""));
+    const map: Record<string, CollectionTargetRef> = {};
+    for (const ref of p.selected_targets || []) {
+      map[targetKey(ref)] = { source: ref.source, id: ref.id };
+    }
+    setPolicySelectedMap(map);
+    setPolicyHydrated(true);
+  }, [dashQuery.data?.policy, policyHydrated]);
+
+  const policyTargetsQuery = useQuery({
+    queryKey: queryKeys.collectionEligibleNe(policyTargetPage, debouncedPolicyTargetKeyword),
+    queryFn: () =>
+      fetchEligibleNe({
+        page: policyTargetPage,
+        pageSize: POLICY_TARGET_PAGE_SIZE,
+        keyword: debouncedPolicyTargetKeyword,
+      }),
+    staleTime: 5000,
+    enabled: policyScopeMode === "selected",
   });
 
   const detailQuery = useQuery({
@@ -120,6 +219,62 @@ export function CollectPage() {
         : Promise.resolve(),
     ]);
   };
+
+  const savePolicyMutation = useMutation({
+    mutationFn: () => {
+      const hours =
+        policyIntervalUnit === "days"
+          ? Math.max(1, Math.min(365, policyIntervalValue)) * 24
+          : Math.max(1, Math.min(8760, policyIntervalValue));
+      return updateCollectionPolicy({
+        enabled: policyEnabled,
+        interval_hours: hours,
+        history_keep: policyHistoryKeep,
+        scope_mode: policyScopeMode,
+        title: policyTitle.trim(),
+        commands: policyCommands,
+        selected_targets: Object.values(policySelectedMap),
+      });
+    },
+    onSuccess: async (saved) => {
+      setPolicyEnabled(Boolean(saved.enabled));
+      const hours = Math.max(1, Number(saved.interval_hours || Number(saved.interval_days || 1) * 24));
+      if (hours % 24 === 0) {
+        setPolicyIntervalUnit("days");
+        setPolicyIntervalValue(Math.max(1, Math.min(365, hours / 24)));
+      } else {
+        setPolicyIntervalUnit("hours");
+        setPolicyIntervalValue(Math.max(1, Math.min(8760, hours)));
+      }
+      setPolicyHistoryKeep(Math.max(0, Math.min(200, Number(saved.history_keep ?? 3))));
+      setPolicyScopeMode(saved.scope_mode === "selected" ? "selected" : "all");
+      setPolicyTitle(String(saved.title || ""));
+      setPolicyCommands(String(saved.commands || ""));
+      const map: Record<string, CollectionTargetRef> = {};
+      for (const ref of saved.selected_targets || []) {
+        map[targetKey(ref)] = { source: ref.source, id: ref.id };
+      }
+      setPolicySelectedMap(map);
+      setPolicyHydrated(true);
+      queryClient.setQueryData(queryKeys.neCollectionDashboard, (prev: unknown) => {
+        if (!prev || typeof prev !== "object") return prev;
+        return { ...(prev as object), policy: saved };
+      });
+      showOk(t("collect.policySaved"));
+      await refreshAll();
+    },
+    onError: (err) => showError(collectionErrorMessage(err, t)),
+  });
+
+  const startFromPolicyMutation = useMutation({
+    mutationFn: startCollectionFromPolicy,
+    onSuccess: async (job) => {
+      showOk(t("collect.started", { id: job.id }));
+      setExpandedJobId(job.id);
+      await refreshAll();
+    },
+    onError: (err) => showError(collectionErrorMessage(err, t)),
+  });
 
   const invalidateJobs = async (jobId?: string) => {
     await queryClient.invalidateQueries({ queryKey: queryKeys.neCollectionsAll });
@@ -231,7 +386,58 @@ export function CollectPage() {
   const nePages = pageCount(neTotal, ELIGIBLE_PAGE_SIZE);
 
   const jobTotal = jobsQuery.data?.total ?? 0;
-  const jobPages = pageCount(jobTotal, 20);
+  const jobPages = pageCount(jobTotal, jobPageSize);
+  const hasJobFilters = Boolean(jobKeyword.trim() || jobStatus);
+
+  const exportJobsCsv = async () => {
+    setExportingJobs(true);
+    try {
+      const rows = await fetchAllPages<CollectionJobItem>({
+        pageSize: 100,
+        maxRows: 2000,
+        fetchPage: (page, pageSize) =>
+          fetchNeCollections({
+            page,
+            pageSize,
+            status: jobStatus,
+            keyword: debouncedJobKeyword,
+          }),
+      });
+      downloadCsv(
+        `${t("collect.exportJobsName")}-${new Date().toISOString().slice(0, 10)}.csv`,
+        rows,
+        [
+          { key: "title", header: t("collect.jobs.col.title") },
+          { key: "status", header: t("collect.jobs.col.status") },
+          {
+            key: "progress",
+            header: t("collect.jobs.col.progress"),
+            value: (r) =>
+              `${r.success_count}/${r.ne_count} ${t("collect.jobs.ok")}, ${r.fail_count} ${t("collect.jobs.fail")}`,
+          },
+          {
+            key: "started_at",
+            header: "started_at",
+            value: (r) => (r.started_at ? formatSystemTime(r.started_at) : ""),
+          },
+          {
+            key: "ended_at",
+            header: "ended_at",
+            value: (r) => (r.ended_at ? formatSystemTime(r.ended_at) : ""),
+          },
+        ],
+      );
+      if (rows.length < jobTotal) {
+        showOk(t("common.exportTruncated", { count: String(rows.length), total: String(jobTotal) }));
+      } else {
+        showOk(t("common.exportOk", { count: String(rows.length) }));
+      }
+    } catch (err) {
+      showError(t("common.exportFailed") + ": " + formatErr(err));
+    } finally {
+      setExportingJobs(false);
+    }
+  };
 
   const commandLines = useMemo(
     () =>
@@ -262,10 +468,25 @@ export function CollectPage() {
             ) : null}
           </div>
           <div className="btn-row">
+            <button
+              type="button"
+              disabled={exportingJobs || jobTotal === 0}
+              onClick={() => void exportJobsCsv()}
+            >
+              {exportingJobs ? t("common.exporting") : t("common.exportCsv")}
+            </button>
             <button type="button" onClick={refreshAll} disabled={jobsQuery.isFetching || dashQuery.isFetching}>
               {jobsQuery.isFetching || dashQuery.isFetching ? t("common.refreshing") : t("common.refresh")}
             </button>
-            <button type="button" className="btn-primary" onClick={() => setCreateOpen(true)}>
+            <button
+              type="button"
+              className="btn-primary"
+              disabled={startFromPolicyMutation.isPending || jobActive}
+              onClick={() => startFromPolicyMutation.mutate()}
+            >
+              {startFromPolicyMutation.isPending ? t("collect.form.starting") : t("collect.collectNow")}
+            </button>
+            <button type="button" onClick={() => setCreateOpen(true)}>
               {t("collect.create.expand")}
             </button>
             {running?.status === "running" || running?.status === "pending" ? (
@@ -295,10 +516,6 @@ export function CollectPage() {
               </div>
             </div>
             <div className="pt-list-kpi">
-              <div className="pt-list-kpi__label">{t("collect.kpi.active")}</div>
-              <div className="pt-list-kpi__value">{dash?.active_count ?? "—"}</div>
-            </div>
-            <div className="pt-list-kpi">
               <div className="pt-list-kpi__label">{t("collect.kpi.last")}</div>
               <div className="pt-list-kpi__value" style={{ fontSize: 15 }}>
                 {last
@@ -306,10 +523,225 @@ export function CollectPage() {
                   : t("common.empty")}
               </div>
             </div>
+            <div className="pt-list-kpi">
+              <div className="pt-list-kpi__label">{t("collect.kpi.nextDue")}</div>
+              <div className="pt-list-kpi__value" style={{ fontSize: 15 }}>
+                {dash?.next_due_at ? formatSystemTime(dash.next_due_at) : t("common.empty")}
+              </div>
+            </div>
           </div>
         </div>
+      </section>
 
+      <section className="panel" style={{ marginBottom: 16 }}>
+        <h3>{t("collect.policyTitle")}</h3>
+        <p className="muted" style={{ marginTop: 0 }}>
+          {t("collect.policyHint")}
+        </p>
+        <div className="config-sync-policy-row">
+          <label className="config-sync-policy-check">
+            <input
+              type="checkbox"
+              checked={policyEnabled}
+              onChange={(e) => setPolicyEnabled(e.target.checked)}
+            />
+            <span>{t("collect.enabled")}</span>
+          </label>
+          <label className="config-sync-policy-field">
+            <span>{t("collect.interval")}</span>
+            <input
+              type="number"
+              min={1}
+              max={policyIntervalUnit === "days" ? 365 : 8760}
+              value={policyIntervalValue}
+              onChange={(e) => {
+                const max = policyIntervalUnit === "days" ? 365 : 8760;
+                setPolicyIntervalValue(Math.max(1, Math.min(max, Number(e.target.value) || 1)));
+              }}
+            />
+            <select
+              value={policyIntervalUnit}
+              onChange={(e) => {
+                const next = e.target.value === "hours" ? "hours" : "days";
+                if (next === policyIntervalUnit) return;
+                if (next === "hours") {
+                  setPolicyIntervalValue(Math.max(1, Math.min(8760, policyIntervalValue * 24)));
+                } else {
+                  setPolicyIntervalValue(
+                    Math.max(1, Math.min(365, Math.round(policyIntervalValue / 24) || 1)),
+                  );
+                }
+                setPolicyIntervalUnit(next);
+              }}
+            >
+              <option value="days">{t("collect.intervalUnitDays")}</option>
+              <option value="hours">{t("collect.intervalUnitHours")}</option>
+            </select>
+          </label>
+          <label className="config-sync-policy-field">
+            <span>{t("collect.historyKeep")}</span>
+            <input
+              type="number"
+              min={0}
+              max={200}
+              value={policyHistoryKeep}
+              onChange={(e) =>
+                setPolicyHistoryKeep(Math.max(0, Math.min(200, Number(e.target.value) || 0)))
+              }
+            />
+          </label>
+          <label className="config-sync-policy-field">
+            <span>{t("collect.scope")}</span>
+            <select
+              value={policyScopeMode}
+              onChange={(e) => setPolicyScopeMode(e.target.value === "selected" ? "selected" : "all")}
+            >
+              <option value="all">{t("collect.scopeAll")}</option>
+              <option value="selected">{t("collect.scopeSelected")}</option>
+            </select>
+          </label>
+          <button
+            type="button"
+            className="btn-primary"
+            disabled={savePolicyMutation.isPending}
+            onClick={() => savePolicyMutation.mutate()}
+          >
+            {t("collect.savePolicy")}
+          </button>
+        </div>
+
+        <div className="filter-inline" style={{ marginTop: 12 }}>
+          <label className="config-sync-policy-field" style={{ flex: 1 }}>
+            <span>{t("collect.form.jobTitle")}</span>
+            <input
+              value={policyTitle}
+              placeholder={t("collect.form.jobTitlePh")}
+              onChange={(e) => setPolicyTitle(e.target.value)}
+            />
+          </label>
+        </div>
+        <label className="config-sync-policy-field" style={{ display: "block", marginTop: 12 }}>
+          <span>{t("collect.form.commands")}</span>
+          <textarea
+            rows={5}
+            value={policyCommands}
+            placeholder={t("collect.form.commandsPh")}
+            onChange={(e) => setPolicyCommands(e.target.value)}
+            style={{ width: "100%", fontFamily: "var(--font-mono, monospace)" }}
+          />
+          <span className="muted">{t("collect.form.commandsHint")}</span>
+        </label>
+
+        {policyScopeMode === "selected" ? (
+          <div style={{ marginTop: 12 }}>
+            <p className="muted">
+              {t("collect.selectedCount", { count: String(Object.keys(policySelectedMap).length) })}
+            </p>
+            <div className="filter-inline">
+              <input
+                value={policyTargetKeyword}
+                placeholder={t("collect.create.filterKeywordPh")}
+                onChange={(e) => {
+                  setPolicyTargetKeyword(e.target.value);
+                  setPolicyTargetPage(1);
+                }}
+              />
+            </div>
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th />
+                  <th>{t("collect.create.pickTitle")}</th>
+                  <th>IP</th>
+                  <th>{t("collect.colSource")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(policyTargetsQuery.data?.items ?? []).map((row) => {
+                  const key = eligibleKey(row);
+                  const checked = Boolean(policySelectedMap[key]);
+                  return (
+                    <tr key={key}>
+                      <td>
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => {
+                            setPolicySelectedMap((prev) => {
+                              const next = { ...prev };
+                              if (next[key]) delete next[key];
+                              else next[key] = { source: row.source || "managed", id: row.id };
+                              return next;
+                            });
+                          }}
+                        />
+                      </td>
+                      <td>{row.name || row.id}</td>
+                      <td>{row.ip_address}</td>
+                      <td>{row.source}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            <ListPager
+              page={policyTargetPage}
+              pages={pageCount(policyTargetsQuery.data?.total ?? 0, POLICY_TARGET_PAGE_SIZE)}
+              total={policyTargetsQuery.data?.total ?? 0}
+              pageSize={POLICY_TARGET_PAGE_SIZE}
+              onPageChange={setPolicyTargetPage}
+            />
+          </div>
+        ) : null}
+      </section>
+
+      <section className="panel">
+        <div className="panel__toolbar">
+          <div>
+            <h2>{t("collect.jobs.listTitle")}</h2>
+          </div>
+        </div>
         <div className="pt-list">
+          <div className="filter-inline">
+            <input
+              type="search"
+              value={jobKeyword}
+              placeholder={t("collect.keywordPh")}
+              onChange={(e) => {
+                setJobKeyword(e.target.value);
+                setJobPage(1);
+              }}
+            />
+            <select
+              value={jobStatus}
+              onChange={(e) => {
+                setJobStatus(e.target.value);
+                setJobPage(1);
+              }}
+            >
+              <option value="">{t("collect.statusAll")}</option>
+              {JOB_STATUS_OPTIONS.map((st) => (
+                <option key={st} value={st}>
+                  {st}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              disabled={!hasJobFilters}
+              onClick={() => {
+                setJobKeyword("");
+                setJobStatus("");
+                setJobPage(1);
+              }}
+            >
+              {t("common.clearFilters")}
+            </button>
+          </div>
+
+          {jobsQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
+          {jobsQuery.isError ? <p className="error-text">{t("common.opFailed")}</p> : null}
+
           {!(jobsQuery.data?.items ?? []).length && !jobsQuery.isLoading ? (
             <div className="pt-list-empty">
               <p>{t("common.empty")}</p>
@@ -347,23 +779,19 @@ export function CollectPage() {
               </table>
             </div>
           )}
-          <div className="pager pt-list-pager">
-            <div className="pager__meta muted">
-              {t("common.pagerMeta", {
-                total: String(jobTotal),
-                page: String(jobPage),
-                pages: String(jobPages),
-              })}
-            </div>
-            <div className="pager__controls btn-row">
-              <button className="pager__btn" disabled={jobPage <= 1} onClick={() => setJobPage(jobPage - 1)}>
-                {t("common.prevPage")}
-              </button>
-              <button className="pager__btn" disabled={jobPage >= jobPages} onClick={() => setJobPage(jobPage + 1)}>
-                {t("common.nextPage")}
-              </button>
-            </div>
-          </div>
+          <ListPager
+            page={jobPage}
+            pages={jobPages}
+            total={jobTotal}
+            pageSize={jobPageSize}
+            pageSizeOptions={JOB_PAGE_SIZE_OPTIONS}
+            onPageChange={setJobPage}
+            onPageSizeChange={(size) => {
+              setJobPageSize(size);
+              setJobPage(1);
+            }}
+            disabled={jobsQuery.isLoading}
+          />
         </div>
       </section>
 
@@ -764,7 +1192,6 @@ function JobRow({
   );
 }
 
-const RUN_PAGE_SIZE = 20;
 const RUN_STATUS_OPTIONS = ["pending", "running", "success", "fail", "cancelled"] as const;
 
 function JobRunsPanel({
@@ -783,19 +1210,23 @@ function JobRunsPanel({
   retryPending: boolean;
 }) {
   const { t } = useI18n();
+  const { showOk, showError } = useToast();
   const [runPage, setRunPage] = useState(1);
+  const [runPageSize, setRunPageSize] = useState(20);
   const [runStatus, setRunStatus] = useState("");
   const [runKeyword, setRunKeyword] = useState("");
+  const [exportingRuns, setExportingRuns] = useState(false);
+  const debouncedRunKeyword = useDebouncedValue(runKeyword, 300);
 
   const runsQuery = useQuery({
-    queryKey: queryKeys.neCollectionRuns(jobId, runPage, runStatus, runKeyword),
+    queryKey: queryKeys.neCollectionRuns(jobId, runPage, runPageSize, runStatus, debouncedRunKeyword),
     queryFn: () =>
       fetchCollectionRuns({
         jobId,
         page: runPage,
-        pageSize: RUN_PAGE_SIZE,
+        pageSize: runPageSize,
         status: runStatus,
-        keyword: runKeyword,
+        keyword: debouncedRunKeyword,
       }),
     staleTime: 500,
     refetchInterval: jobStatus === "running" ? 2000 : false,
@@ -808,8 +1239,57 @@ function JobRunsPanel({
   };
 
   const runTotal = runsQuery.data?.total ?? 0;
-  const runPages = pageCount(runTotal, RUN_PAGE_SIZE);
+  const runPages = pageCount(runTotal, runPageSize);
   const runs = runsQuery.data?.items ?? [];
+  const hasRunFilters = Boolean(runStatus || runKeyword.trim());
+
+  const exportRunsCsv = async () => {
+    setExportingRuns(true);
+    try {
+      const rows = await fetchAllPages<CollectionRunItem>({
+        pageSize: 100,
+        maxRows: 2000,
+        fetchPage: (page, pageSize) =>
+          fetchCollectionRuns({
+            jobId,
+            page,
+            pageSize,
+            status: runStatus,
+            keyword: debouncedRunKeyword,
+          }),
+      });
+      downloadCsv(
+        `${t("collect.exportRunsName")}-${jobId.slice(0, 8)}-${new Date().toISOString().slice(0, 10)}.csv`,
+        rows,
+        [
+          { key: "ne_source", header: t("managedNe.col.source"), value: (r) => r.ne_source || "managed" },
+          { key: "ne_name", header: t("managedNe.col.name") },
+          { key: "ne_ip", header: t("managedNe.col.ip") },
+          { key: "status", header: t("collect.runs.status") },
+          { key: "message", header: t("collect.runs.message") },
+          {
+            key: "started_at",
+            header: "started_at",
+            value: (r) => (r.started_at ? formatSystemTime(r.started_at) : ""),
+          },
+          {
+            key: "ended_at",
+            header: "ended_at",
+            value: (r) => (r.ended_at ? formatSystemTime(r.ended_at) : ""),
+          },
+        ],
+      );
+      if (rows.length < runTotal) {
+        showOk(t("common.exportTruncated", { count: String(rows.length), total: String(runTotal) }));
+      } else {
+        showOk(t("common.exportOk", { count: String(rows.length) }));
+      }
+    } catch (err) {
+      showError(t("common.exportFailed") + ": " + formatErr(err));
+    } finally {
+      setExportingRuns(false);
+    }
+  };
 
   return (
     <>
@@ -841,11 +1321,14 @@ function JobRunsPanel({
             </option>
           ))}
         </select>
-        {runStatus || runKeyword ? (
+        {hasRunFilters ? (
           <button type="button" onClick={clearRunFilters}>
             {t("common.clearFilters")}
           </button>
         ) : null}
+        <button type="button" disabled={exportingRuns || runTotal === 0} onClick={() => void exportRunsCsv()}>
+          {exportingRuns ? t("common.exporting") : t("common.exportCsv")}
+        </button>
         {jobStatus !== "running" && failCount > 0 ? (
           <button type="button" disabled={retryPending} onClick={onRetryFailed}>
             {t("collect.jobs.retryFailed")}
@@ -907,21 +1390,19 @@ function JobRunsPanel({
         </div>
       </div>
       <div className="ops-detail-modal__foot">
-        <span className="muted">
-          {t("common.pagerMeta", {
-            total: String(runTotal),
-            page: String(runPage),
-            pages: String(runPages),
-          })}
-        </span>
-        <div className="btn-row">
-          <button type="button" disabled={runPage <= 1} onClick={() => setRunPage(runPage - 1)}>
-            {t("common.prevPage")}
-          </button>
-          <button type="button" disabled={runPage >= runPages} onClick={() => setRunPage(runPage + 1)}>
-            {t("common.nextPage")}
-          </button>
-        </div>
+        <ListPager
+          page={runPage}
+          pages={runPages}
+          total={runTotal}
+          pageSize={runPageSize}
+          pageSizeOptions={RUN_PAGE_SIZE_OPTIONS}
+          onPageChange={setRunPage}
+          onPageSizeChange={(size) => {
+            setRunPageSize(size);
+            setRunPage(1);
+          }}
+          disabled={runsQuery.isLoading}
+        />
       </div>
     </>
   );

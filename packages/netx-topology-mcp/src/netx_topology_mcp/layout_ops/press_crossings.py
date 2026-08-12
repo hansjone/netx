@@ -161,13 +161,35 @@ def _large_graph_budget(n_links: int) -> dict[str, Any]:
         "cross_max_moves": 40,
         "cross_max_sweeps": 6,
         "cross_cand_cap": 220,
-        "straighten": True,
+        # Off by default: straighten flattens dual-unit petal eyes into H-chains.
+        "straighten": False,
         "skip_dual_full_x": False,
         "untangle_rounds": 120,
         "untangle_moves": 5,
         "untangle_rank_cap": 140,
         "untangle_angle_step": 15,
     }
+
+
+def _has_petal_dual_eye(state: LayoutState) -> bool:
+    """True when a multi-corridor dual-unit covers a large share of the canvas."""
+    try:
+        from netx_topology_mcp.layout_ops.dual_units import (
+            classify_dual_unit,
+            find_dual_portal_units,
+        )
+    except Exception:
+        return False
+    units = find_dual_portal_units(state, max_units=24)
+    if not units:
+        return False
+    n = max(1, len(state.positions) or len(state.names) or len(state.adj))
+    for u in units:
+        if classify_dual_unit(u) != "petal":
+            continue
+        if len(u.member_ids()) >= max(8, int(0.25 * n)):
+            return True
+    return False
 
 
 def press_hot_edges(
@@ -586,16 +608,46 @@ def polish_crossings(
     top_n: int | None = None,
     max_moves: int | None = None,
     max_sweeps: int | None = None,
+    preserve_dual_eye: bool | None = None,
 ) -> OpResult:
-    """Pipeline: park phantoms → straighten → hot_edges → crossers → untangle."""
+    """Pipeline: park phantoms → (optional straighten) → hot → crossers → untangle.
+
+    Petal dual-unit eyes: straighten stays off unless ``straighten=true`` —
+    channel flattening destroys parallel-lane eye geometry.
+    """
     from netx_topology_mcp.layout_jobs import raise_if_cancelled, report_progress
 
     params = params or LayoutParams()
     st = state.copy()
     park_phantom_nodes(st)
     budget = _large_graph_budget(len(st.links))
+    preserve = True if preserve_dual_eye is None else bool(preserve_dual_eye)
+    petal_eye = False
+    eye_portals: list[str] = []
+    if preserve:
+        try:
+            from netx_topology_mcp.layout_ops.dual_units import (
+                classify_dual_unit,
+                find_dual_portal_units,
+            )
+
+            units = find_dual_portal_units(st, max_units=24)
+            n = max(1, len(st.positions) or len(st.names) or len(st.adj))
+            for u in units:
+                if classify_dual_unit(u) != "petal":
+                    continue
+                if len(u.member_ids()) >= max(8, int(0.25 * n)):
+                    petal_eye = True
+                    eye_portals = [u.portal_a, u.portal_b]
+                    break
+        except Exception:
+            petal_eye = _has_petal_dual_eye(st)
+    if portal_ids is None and eye_portals:
+        portal_ids = eye_portals
     # Giant graphs: never allow straighten even if caller asks (stalls for minutes).
     if len(st.links) >= 800:
+        do_straighten = False
+    elif petal_eye and straighten is not True:
         do_straighten = False
     else:
         do_straighten = (
@@ -720,6 +772,8 @@ def polish_crossings(
         "focus_n": len(focus),
         "budget": budget,
         "straighten": do_straighten,
+        "preserve_dual_eye": preserve,
+        "petal_eye_detected": petal_eye,
         "untangle_rounds": untangle_rounds,
     }
     return OpResult(
@@ -749,6 +803,13 @@ def press_params_from_overrides(overrides: dict[str, Any] | None) -> dict[str, A
     if "straighten" in o:
         v = o["straighten"]
         out["straighten"] = (
+            v
+            if isinstance(v, bool)
+            else str(v).strip().lower() in {"1", "true", "yes", "on"}
+        )
+    if "preserve_dual_eye" in o:
+        v = o["preserve_dual_eye"]
+        out["preserve_dual_eye"] = (
             v
             if isinstance(v, bool)
             else str(v).strip().lower() in {"1", "true", "yes", "on"}

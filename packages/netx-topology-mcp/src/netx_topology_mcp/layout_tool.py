@@ -42,11 +42,24 @@ from netx_topology_mcp.layout_ops.clear_edge_hits import (
     clear_edge_hits,
     clear_edge_params_from_overrides,
 )
+from netx_topology_mcp.layout_ops.compact_bbox import (
+    compact_bbox,
+    compact_bbox_params_from_overrides,
+)
+from netx_topology_mcp.layout_ops.pull_far_chains import (
+    pull_far_chains,
+    pull_far_chains_params_from_overrides,
+)
 from netx_topology_mcp.layout_ops.orbit_sweep import (
     apply_orbit_pick,
     orbit_params_from_overrides,
     orbit_sweep_node,
     orbit_sweep_round,
+    orbit_sweep_until_limit,
+)
+from netx_topology_mcp.layout_ops.level_util import (
+    apply_level_bands,
+    level_bands_params_from_overrides,
 )
 
 # Public recipe names → internal multipass ids
@@ -137,7 +150,11 @@ ACTIONS = (
     "layout_dual_unit",
     "polish_crossings",
     "clear_edge_hits",
+    "compact_bbox",
+    "pull_far_chains",
+    "align_reference",
     "orbit_sweep",
+    "level_bands",
 )
 
 
@@ -431,6 +448,7 @@ def run_layout_on_graph(
             unit_id=knobs.get("unit_id"),
             portal_a=knobs.get("portal_a"),
             portal_b=knobs.get("portal_b"),
+            require_zero_cross=bool(knobs.get("require_zero_cross", False)),
         )
         accepted = bool(op.params.get("accepted", False))
         # Always return best-effort dual geometry (even if accepted=False).
@@ -452,16 +470,67 @@ def run_layout_on_graph(
                 "note": op.note,
                 "accepted": accepted,
                 "meta": st.meta.get("layout_dual_unit"),
-                "ensure": {"ran": False, "reason": "dual_unit_preserves_zero_cross"},
+                "ensure": {
+                    "ran": False,
+                    "reason": "dual_unit_skips_global_overlap_crush",
+                },
             },
         )
 
     if action_key == "orbit_sweep":
         knobs = orbit_params_from_overrides(params)
         do_round = bool(knobs.get("round"))
+        do_until = bool(knobs.get("until_limit"))
         node_id = str(knobs.get("node_id") or "").strip()
         frozen = knobs.get("frozen_ids")
         protect = knobs.get("protect_rigid", "off")
+        if do_until:
+            # until_limit wins over round/node_id (single-point loop to stall).
+            op = orbit_sweep_until_limit(
+                st0,
+                params=base_params,
+                max_degree=int(knobs.get("max_degree") or 14),
+                max_jump=knobs.get("max_jump"),
+                angle_step=knobs.get("angle_step"),
+                nn_floor=float(knobs.get("nn_floor") or 36.0),
+                min_angle_sep=float(knobs.get("min_angle_sep") or 35.0),
+                protect_rigid=protect,
+                frozen_ids=frozen,
+                freeze_layers=knobs.get("freeze_layers"),
+                freeze_levels=knobs.get("freeze_levels"),
+                y_min=knobs.get("y_min"),
+                y_max=knobs.get("y_max"),
+                objective=str(knobs.get("objective") or "crossing"),
+                max_moves=int(knobs.get("max_moves") or 40),
+                stall_limit=int(knobs.get("stall_limit") or 12),
+                max_stretch=float(knobs.get("max_stretch") or 32.0),
+                min_delta=int(knobs.get("min_delta") or 1),
+                scan_cap=int(knobs.get("scan_cap") or 32),
+                top_k=int(knobs.get("top_k") or 8),
+                prefer_low_degree=bool(knobs.get("prefer_low_degree", True)),
+                cand_cap=int(knobs.get("cand_cap") or 360),
+                bundle=bool(knobs.get("bundle", True)),
+                bundle_max=int(knobs.get("bundle_max") or 10),
+            )
+            st = normalize_origin(op.state, base_params).state
+            fin = score_state(st)
+            return _pack_result(
+                st,
+                fin,
+                action=action_key,
+                recipe=None,
+                recipe_id=None,
+                preset=preset,
+                params=base_params,
+                tune=False,
+                tried=None,
+                local={
+                    "op": op.params,
+                    "note": op.note,
+                    "meta": st.meta.get("orbit_sweep"),
+                    "until_limit": True,
+                },
+            )
         if do_round:
             op = orbit_sweep_round(
                 st0,
@@ -474,6 +543,8 @@ def run_layout_on_graph(
                 min_angle_sep=float(knobs.get("min_angle_sep") or 35.0),
                 protect_rigid=protect,
                 frozen_ids=frozen,
+                freeze_layers=knobs.get("freeze_layers"),
+                freeze_levels=knobs.get("freeze_levels"),
                 focus_ids=knobs.get("focus_ids"),
                 y_min=knobs.get("y_min"),
                 y_max=knobs.get("y_max"),
@@ -500,8 +571,8 @@ def run_layout_on_graph(
             )
         if not node_id:
             raise ValueError(
-                "orbit_sweep_requires_node_id_or_round:"
-                "params.node_id=… or params.round=true"
+                "orbit_sweep_requires_node_id_or_round_or_until_limit:"
+                "params.node_id=… or params.round=true or params.until_limit=true"
             )
         sweep = orbit_sweep_node(
             st0,
@@ -514,6 +585,8 @@ def run_layout_on_graph(
             cand_cap=int(knobs.get("cand_cap") or 280),
             protect_rigid=protect,
             frozen_ids=frozen,
+            freeze_layers=knobs.get("freeze_layers"),
+            freeze_levels=knobs.get("freeze_levels"),
             top_k=int(knobs.get("top_k") or 3),
             y_min=knobs.get("y_min"),
             y_max=knobs.get("y_max"),
@@ -599,6 +672,8 @@ def run_layout_on_graph(
             pitch=knobs.get("pitch"),
             side=knobs.get("side"),
             rounds=int(knobs.get("rounds") or (6 if preserve else 1)),
+            frozen_ids=knobs.get("frozen_ids") or set(),
+            max_eject_degree=int(knobs.get("max_eject_degree") or 5),
         )
         st = normalize_origin(op.state, base_params).state
         from netx_topology_mcp.layout_metrics import count_edge_crossings as _cx
@@ -629,6 +704,100 @@ def run_layout_on_graph(
             },
         )
 
+    if action_key == "compact_bbox":
+        knobs = compact_bbox_params_from_overrides(params)
+        op = compact_bbox(
+            st0,
+            base_params,
+            frozen_ids=knobs.get("frozen_ids") or set(),
+            portal_ids=knobs.get("portal_ids") or [],
+            min_scale=float(knobs.get("min_scale") or 0.72),
+            step=float(knobs.get("step") or 0.03),
+            max_clearance_slack=int(knobs.get("max_clearance_slack") or 80),
+            outlier_only=bool(knobs.get("outlier_only", True)),
+        )
+        st = normalize_origin(op.state, base_params).state
+        fin = score_state(st)
+        return _pack_result(
+            st,
+            fin,
+            action=action_key,
+            recipe=None,
+            recipe_id=None,
+            preset=preset,
+            params=base_params,
+            tune=False,
+            tried=None,
+            local={"op": op.params, "note": op.note, "meta": st.meta.get("compact_bbox")},
+        )
+
+    if action_key == "pull_far_chains":
+        knobs = pull_far_chains_params_from_overrides(params)
+        op = pull_far_chains(
+            st0,
+            base_params,
+            frozen_ids=knobs.get("frozen_ids") or set(),
+            portal_ids=knobs.get("portal_ids") or [],
+            max_chains=int(knobs.get("max_chains") or 16),
+            min_tip_radius=float(knobs.get("min_tip_radius") or 1800.0),
+            scales=knobs.get("scales") or (0.92, 0.88, 0.84, 0.80, 0.75),
+            max_clearance_slack=int(knobs.get("max_clearance_slack") or 40),
+            pull_isolates=bool(knobs.get("pull_isolates", True)),
+        )
+        st = normalize_origin(op.state, base_params).state
+        fin = score_state(st)
+        return _pack_result(
+            st,
+            fin,
+            action=action_key,
+            recipe=None,
+            recipe_id=None,
+            preset=preset,
+            params=base_params,
+            tune=False,
+            tried=None,
+            local={
+                "op": op.params,
+                "note": op.note,
+                "meta": st.meta.get("pull_far_chains"),
+            },
+        )
+
+    if action_key == "level_bands":
+        knobs = level_bands_params_from_overrides(params)
+        op = apply_level_bands(st0, base_params, **knobs)
+        # Soft unstick only — hard crush fights band geometry and inflates crossings.
+        st = op.state
+        ov = overlapping_nodes(st)
+        fix_meta: dict[str, Any] = {"ran": False, "overlaps_before": len(ov)}
+        if ov:
+            st2 = fix_overlaps_local(st, base_params).state
+            st = st2
+            fix_meta = {
+                "ran": True,
+                "overlaps_before": len(ov),
+                "overlaps_after": len(overlapping_nodes(st)),
+                "mode": "local_only",
+            }
+        fin = score_state(st)
+        return _pack_result(
+            st,
+            fin,
+            action=action_key,
+            recipe=None,
+            recipe_id=None,
+            preset=preset,
+            params=base_params,
+            tune=False,
+            tried=None,
+            local={
+                "op": op.params,
+                "note": op.note,
+                "meta": st.meta.get("level_bands"),
+                "ensure": fix_meta,
+            },
+        )
+
     if action_key == "polish_crossings":
         knobs = press_params_from_overrides(params)
         # Omit knobs so polish can auto-scale budgets on large E (MCP timeout).
@@ -639,6 +808,7 @@ def run_layout_on_graph(
             base_params,
             portal_ids=knobs.get("portal_ids"),
             straighten=knobs.get("straighten"),
+            preserve_dual_eye=knobs.get("preserve_dual_eye"),
             max_degree=int(knobs.get("max_degree") or 9),
             untangle_rounds=knobs.get("untangle_rounds"),
             top_n=knobs.get("top_n"),
@@ -750,13 +920,35 @@ def list_layout_catalog() -> dict[str, Any]:
             ),
             "clear_edge_hits": (
                 "把贴在非关联边上的网元沿垂直方向弹开（直角偏好 H/V）；"
-                "门控：不增交叉、不增重叠。"
-                "params: top_n/thr/margin/max_moves"
+                "门控：不增交叉、不增重叠（preserve_axis 亦不放宽交叉）。"
+                "眼 sink 须 portal_ids；params: top_n/thr/margin/max_moves/max_eject_degree"
+            ),
+            "compact_bbox": (
+                "眼图安全收 bbox：相对门户中心；默认 farthest-K（outlier_only）；"
+                "门控：交叉不升、overlaps=0、贴边不可大幅恶化。"
+                "params: portal_ids/min_scale/step"
+            ),
+            "pull_far_chains": (
+                "眼图安全收远场：deg≤2 走廊/孤立点/远叶相对门户中点缩放；"
+                "门控：交叉不升、overlaps=0、贴边松弛有限。"
+                "params: portal_ids/max_chains/min_tip_radius/scales"
+            ),
+            "align_reference": (
+                "【非主路径】仅同网同成员画布 A/B 调试："
+                "把参考画布几何映射到当前画布（共享 fabric_node_id）。"
+                "日常无范本、跨网人工图 → 禁止当交付手段。"
+                "params: reference_view_id|source_view_id, portal_ids, mode=similarity|adopt"
+            ),
+            "level_bands": (
+                "按 fabric level/layer 水平分层（external→core→agg→access）；"
+                "params: y0/band_gap/preserve_x/pitch；分层场景先于 polish"
             ),
             "orbit_sweep": (
-                "压交叉（默认可动门户）：以网元为圆心不定长扫角 top-3；"
-                "preview+node_id / apply+pick / round=true；"
-                "protect_rigid 默认 off（portals/all 可恢复刚体冻）"
+                "压交叉：以网元为圆心不定长扫角；"
+                "preview+node_id / apply+pick；"
+                "until_limit=true 单点循环到 stall（默认冻 portals、objective=crossing|total）；"
+                "round=true 一批 top_n 自动 pick#1（眼 sink 禁用）；"
+                "单点/round 默认 protect_rigid=off；bundle 默认开"
             ),
             "job_status": (
                 "轮询后台 job：params.job_id；返回 progress.phase/pct、elapsed_ms、"
@@ -789,9 +981,15 @@ def list_layout_catalog() -> dict[str, Any]:
             "apply": "PATCH 到 view_id（有残留重叠则拒绝落笔）",
         },
         "workflow": (
-            "主路径：analyze(structure) → layout_dual_unit（或小图 layout "
-            "compact|corridor|rings）→ sinkTopologyDualUnits / move_nodes(park) → "
-            "orbit_sweep(round) → polish_crossings → clear_edge_hits → "
-            "手拖微调。禁止临时 py 算坐标。"
+            "主路径：analyze(structure) → sinkTopologyDualUnits(max_units=1) → "
+            "suggestSinkHubs/move_nodes(park) → "
+            "orbit_sweep(until_limit crossing→total) → "
+            "clear_edge_hits → pull_far_chains → compact_bbox → 手拖。"
+            "默认无范本；align_reference 仅同网调试，禁止当跨网交付。"
+            "眼 sink 禁 polish/fix_overlaps/untangle/round。"
+        ),
+        "eye_polish_plateau": (
+            "算法到头：overlaps=0 + until_limit stall + "
+            "pull/compact/clear moved≈0 → 手拖或改初布；勿指望金标对齐。"
         ),
     }

@@ -21,6 +21,9 @@ class FabricNodeOut(BaseModel):
     ip: str = ""
     vendor: str = ""
     device_type: str = ""
+    # Layout rank (major.minor). None = unclassified.
+    level: float | None = None
+    # Synced alias from floor(level): external|core|aggregation|access|edge|""
     role: str = ""
     region_folder_id: str | None = None
     role_source: str = ""
@@ -483,7 +486,7 @@ class ClassifyRuleOut(BaseModel):
 
 
 class ClassifyRuleCreate(BaseModel):
-    scope: str = Field(default="role", description="role | region")
+    scope: str = Field(default="level", description="level | region (role accepted as level alias)")
     name: str = ""
     pattern: str
     match_field: str = "name"
@@ -505,26 +508,33 @@ class ClassifyRuleUpdate(BaseModel):
 
 class ClassifyPreviewOut(BaseModel):
     total_nodes: int = 0
+    level_matched: int = 0
+    level_unmatched: int = 0
+    level_conflicts: int = 0
+    # Legacy aliases
     role_matched: int = 0
     role_unmatched: int = 0
     role_conflicts: int = 0
     region_matched: int = 0
     region_unmatched: int = 0
     region_conflicts: int = 0
+    level_samples: list[dict[str, Any]] = Field(default_factory=list)
     role_samples: list[dict[str, Any]] = Field(default_factory=list)
     region_samples: list[dict[str, Any]] = Field(default_factory=list)
     unmatched_samples: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ClassifyApplyOut(BaseModel):
-    role_updated: int = 0
+    level_updated: int = 0
+    role_updated: int = 0  # alias of level_updated
     region_updated: int = 0
     skipped_manual: int = 0
     total_nodes: int = 0
 
 
 class FabricNodeTagPatch(BaseModel):
-    role: str | None = None
+    level: float | None = None
+    role: str | None = None  # preset alias → level
     region_folder_id: str | None = None
 
 
@@ -545,12 +555,13 @@ class FabricNodesMatchOut(BaseModel):
 
 
 class FabricNodesBulkTagRequest(BaseModel):
-    """Assign role/region to explicit ids or to an ephemeral regex match."""
+    """Assign level/region to explicit ids or to an ephemeral regex match."""
 
     fabric_node_ids: list[str] = Field(default_factory=list)
     pattern: str = ""
     match_field: str = "name"
-    role: str | None = None
+    level: float | None = None
+    role: str | None = None  # preset → level when level omitted
     region_folder_id: str | None = None
     dry_run: bool = False
 
@@ -559,6 +570,7 @@ class FabricNodesBulkTagOut(BaseModel):
     dry_run: bool = False
     matched: int = 0
     updated: int = 0
+    level: float | None = None
     role: str | None = None
     region_folder_id: str | None = None
     samples: list[dict[str, Any]] = Field(default_factory=list)

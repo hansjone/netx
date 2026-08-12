@@ -138,14 +138,14 @@ src/
 - MCP：以 `queryTopologyEdges` 为主查询 Fabric；画布编辑走 Web
 - BGP / 隧道 / L2VPN：`layer` 预留，实现 TODO
 
-## 分类与切片（清单打标）
+## 分类（清单打标）
 
-- Fabric 标签：`topo_fabric_node.role` / `region_folder_id`（`role_source` / `region_source`）
-- 主流程：网元清单表（Fabric 全量）+ 临时正则查找 → 确认后批量写角色/区域；支持单行编辑
-- 关联状态：`link_status`=`managed|ume|both|orphaned`；筛选 `link_status=linked|orphaned|…`
-- API：`GET /fabric/nodes`（keyword/role/region/unmatched/link_status）、`POST /fabric/nodes/match`、`POST /fabric/nodes/tags/bulk`、`PATCH /fabric/nodes/{id}/tags`
-- 切片：`POST /v1/topology/slices/generate`（`core_only` / `core_agg` / `agg_access`；dry_run；可重叠上图）
-- 前端：网络管理 →「分类与切片」
+- Fabric 主键：`topo_fabric_node.level`（major.minor，越小越靠外）；`role` 为 `floor(level)` 同步别名
+- 预设：0 外部 / 1 核心 / 2 汇聚 / 3 接入；子层如 1.1、2.1
+- 主流程：清单 + 正则 → 批量写 level/区域；支持单行编辑
+- API：`GET /fabric/nodes`（level / level_major / role / unmatched=level）、`POST …/match`、`POST …/tags/bulk`（`level`）、`PATCH …/tags`
+- Agent：`classifyTopologyFabricNodes`（netx-topology MCP）
+- 前端：网络管理 →「分类」
 
 ## WebCRT
 

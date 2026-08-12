@@ -83,9 +83,10 @@ Cursor：改包后若 Sync 工具数不对，请 **禁用/启用** `netx-topolog
 | `getTopologyTree` | 「根 / 根图 / 子区域」树 + views + `ne_count`（找画布用这个，勿再 listViews） |
 | `getTopologyView` | 单图（节点+边+坐标）；`detail=summary\|full` |
 | `queryTopologyFabricNodes` | Fabric 库存：`mode=summary\|list\|search`（有 `q` 默认 search；list 支持 `region_folder_id`） |
+| `classifyTopologyFabricNodes` | **分级打标**：`match`→`tag(level\|role, dry_run)`→`tag`；`level` 为 major.minor（0 外部…3 接入）；`role` 预设仍可用。再 `addTopologyViewNodes` 上区域画布。**勿用切片建图** |
 | `queryTopologyNeighborhood` | 邻域：compact nodes + `links[]`（NE 对，非端口） |
 | `queryTopologyEdges` | 默认 **adjacency**：`links[{a,b,link_count}]`；画布一对网元一条线。`detail=ports` 才给端口行 |
-| `analyzeTopologyViewLayout` | 布图验收（只读）：`verdict` + score（含中档 `chains` 直链成一体、`rings` 最小环不被穿，各权 0.10）；`detail=structure` 给重心/枢纽/配方建议；`hotspots\|blocks\|both` 给手拖 sight（`drag_candidates[].suggest_xy` / `delta_crossings_est`） |
+| `analyzeTopologyViewLayout` | 布图验收（只读）：`verdict` + score；`score_profile=auto\|default\|eye`（大稀疏斜边→eye）；贴边=节点命中∪hits/link；util 甜区下限 0.08；`detail=structure` / `hotspots\|blocks\|both` |
 
 ### 写（只动画布，不污染 Fabric）
 
@@ -98,7 +99,7 @@ Cursor：改包后若 Sync 工具数不对，请 **禁用/启用** `netx-topolog
 | `copyTopologyViewNodes` | 一键克隆画布成员+坐标到另一画布（`clear_target` 可选）；源画布不动，测沙箱用 |
 | `layoutTopologyView` `move_nodes` | 指定 `fabric_node_ids` 从 `source_view_id`→`view_id`（默认同移出源）；对调两 view 回迁；别名 `sink_nodes`；`park=true` 扫角停靠 |
 | `updateTopologyViewPositions` | **优先** `layout=grid\|offset\|stack` + 筛选，API 自己挪点；`positions[]` 仅少量微调 |
-| `layoutTopologyView` | **布图/局部修**：公开 `action=layout\|layout_dual_unit\|orbit_sweep\|polish_crossings\|clear_edge_hits\|fix_overlaps\|untangle\|straighten_channels\|move_nodes`；recipe 仅 `compact\|corridor\|rings\|unstick`。巨图 apply 可能返回 `job_id` → 轮询 `job_status` / `job_cancel`。Job=**子进程+`data/runtime/layout_jobs` 落盘**。`mode=preview\|apply` |
+| `layoutTopologyView` | **布图/局部修**：公开 `action=layout\|layout_dual_unit\|orbit_sweep\|clear_edge_hits\|pull_far_chains\|compact_bbox\|polish_crossings\|fix_overlaps\|untangle\|straighten_channels\|level_bands\|move_nodes`；recipe 仅 `compact\|corridor\|rings\|unstick`。眼 sink 主路径：`until_limit(crossing→total)` → `clear_edge_hits` → `pull_far_chains` → `compact_bbox` → 手拖；禁对眼跑 polish/fix_overlaps/untangle/round。stall 且 moved≈0 即算法到头。巨图 apply 可能返回 `job_id` → 轮询 `job_status` / `job_cancel`。Job=**子进程+`data/runtime/layout_jobs` 落盘**。`mode=preview\|apply` |
 | `projectTopologyNeighbors` | 投影**已有** LLDP 邻居到画布；区域画布务必传 `region_folder_id`，读 `out_of_region_skipped` |
 
 **推荐流水线：** `getTopologyTree` →（可选）`createTopologyFolder` 取 `view_id` → `addTopologyViewNodes` →（可选）邻居投影 / 布局。
@@ -120,7 +121,7 @@ Cursor：改包后若 Sync 工具数不对，请 **禁用/启用** `netx-topolog
 | 包 | server_id | 职责 |
 |----|-----------|------|
 | `netx-mcp` | `netx` | 告警、UME、托管网元 CLI（**13** 工具） |
-| `netx-topology-mcp` | `netx-topology` | 拓扑画布 / Fabric 只读 + 安全画图（**14** 工具） |
+| `netx-topology-mcp` | `netx-topology` | 拓扑画布 / Fabric 只读 + 分类打标 + 安全画图（**15** 工具） |
 
 `queryTopologyEdges` 已从 `netx-mcp` **迁出**到本包，避免重复。
 

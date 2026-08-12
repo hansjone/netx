@@ -5,6 +5,34 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 
+class CollectionTargetRef(BaseModel):
+    source: str = "managed"  # managed | ume
+    id: str
+
+
+class CollectionPolicyOut(BaseModel):
+    enabled: bool = False
+    interval_days: int = 1
+    interval_hours: int = 24
+    scope_mode: str = "all"
+    selected_targets: list[CollectionTargetRef] = Field(default_factory=list)
+    title: str = ""
+    commands: str = ""
+    history_keep: int = 3
+    updated_at: datetime | None = None
+
+
+class CollectionPolicyUpdate(BaseModel):
+    enabled: bool | None = None
+    interval_days: int | None = Field(default=None, ge=1, le=365)
+    interval_hours: int | None = Field(default=None, ge=1, le=8760)
+    scope_mode: str | None = None
+    selected_targets: list[CollectionTargetRef] | None = None
+    title: str | None = None
+    commands: str | None = None
+    history_keep: int | None = Field(default=None, ge=0, le=200)
+
+
 class CollectionJobCreate(BaseModel):
     title: str = ""
     commands: str = Field(min_length=1)
@@ -31,6 +59,7 @@ class CollectionJobOut(BaseModel):
     id: str
     title: str
     commands: str
+    trigger_mode: str = "manual"
     status: str
     ne_count: int
     success_count: int
@@ -47,6 +76,7 @@ class CollectionJobSummary(BaseModel):
     id: str
     title: str
     status: str
+    trigger_mode: str = "manual"
     ne_count: int
     success_count: int
     fail_count: int
@@ -61,3 +91,5 @@ class CollectionDashboardOut(BaseModel):
     active_count: int = 0
     running_job: CollectionJobSummary | None = None
     last_job: CollectionJobSummary | None = None
+    next_due_at: datetime | None = None
+    policy: CollectionPolicyOut | None = None

@@ -481,10 +481,32 @@ def get_dashboard(db: Session) -> LldpCollectDashboardOut:
     )
 
 
-def list_jobs(db: Session, *, page: int = 1, page_size: int = 20) -> dict:
+def list_jobs(
+    db: Session,
+    *,
+    page: int = 1,
+    page_size: int = 20,
+    status: str = "",
+    keyword: str = "",
+) -> dict:
     page = max(1, int(page or 1))
     page_size = max(1, min(100, int(page_size or 20)))
-    q = db.query(TopoDiscoverJob).order_by(TopoDiscoverJob.created_at.desc())
+    q = db.query(TopoDiscoverJob)
+    st = str(status or "").strip()
+    if st:
+        q = q.filter(TopoDiscoverJob.status == st)
+    kw = str(keyword or "").strip()
+    if kw:
+        like = f"%{kw}%"
+        q = q.filter(
+            or_(
+                TopoDiscoverJob.id.ilike(like),
+                TopoDiscoverJob.error.ilike(like),
+                TopoDiscoverJob.scope.ilike(like),
+                TopoDiscoverJob.trigger_mode.ilike(like),
+            )
+        )
+    q = q.order_by(TopoDiscoverJob.created_at.desc())
     total = int(q.count())
     rows = q.offset((page - 1) * page_size).limit(page_size).all()
     outcomes = _job_outcome_map(db, [r.id for r in rows])
@@ -503,6 +525,19 @@ def list_jobs(db: Session, *, page: int = 1, page_size: int = 20) -> dict:
 
 
 def get_job_detail(
-    db: Session, job_id: str, *, page: int | None = None, page_size: int | None = None
+    db: Session,
+    job_id: str,
+    *,
+    page: int | None = None,
+    page_size: int | None = None,
+    item_status: str = "",
+    item_keyword: str = "",
 ) -> dict:
-    return get_discover_job(db, job_id, page=page, page_size=page_size).model_dump()
+    return get_discover_job(
+        db,
+        job_id,
+        page=page,
+        page_size=page_size,
+        item_status=item_status,
+        item_keyword=item_keyword,
+    ).model_dump()

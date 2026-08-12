@@ -7,6 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import HTTPException
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from .cli_creds import require_cli_creds_ready
@@ -51,8 +52,30 @@ from .port_traffic_schemas import (
 _log = logging.getLogger("netx.port_traffic.service")
 
 
-def list_devices(db: Session, *, page: int = 1, page_size: int = 20) -> dict[str, Any]:
-    q = db.query(PortTrafficDevice).order_by(PortTrafficDevice.ne_name.asc(), PortTrafficDevice.ne_ip.asc())
+def list_devices(
+    db: Session,
+    *,
+    page: int = 1,
+    page_size: int = 20,
+    status: str = "",
+    keyword: str = "",
+) -> dict[str, Any]:
+    q = db.query(PortTrafficDevice)
+    st = str(status or "").strip()
+    if st:
+        q = q.filter(PortTrafficDevice.status == st)
+    kw = str(keyword or "").strip()
+    if kw:
+        like = f"%{kw}%"
+        q = q.filter(
+            or_(
+                PortTrafficDevice.ne_name.ilike(like),
+                PortTrafficDevice.ne_ip.ilike(like),
+                PortTrafficDevice.ne_id.ilike(like),
+                PortTrafficDevice.vendor.ilike(like),
+            )
+        )
+    q = q.order_by(PortTrafficDevice.ne_name.asc(), PortTrafficDevice.ne_ip.asc())
     total = q.count()
     rows = q.offset((page - 1) * page_size).limit(page_size).all()
     return {

@@ -1,25 +1,23 @@
 """Topology classify preview/apply and fabric node tagging."""
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from .models import TopoClassifyRule, TopoFabricNode, TopoFolder
+from .models import TopoFabricNode, TopoFolder
 from .topology_classify_common import (
     _MATCH_FIELDS,
-    _ROLE_VALUES,
     _compile_pattern,
     _enabled_rules,
-    _ensure_region_by_name,
     _match_text,
+    _resolve_level_hit,
     _resolve_region_hit,
-    _resolve_role_hit,
     _utcnow,
+    apply_level_fields,
 )
-from .topology_membership import normalize_view_role
+from .topology_level import level_to_role, normalize_level, role_to_level
 from .topology_schemas import (
     ClassifyApplyOut,
     ClassifyPreviewOut,
@@ -31,31 +29,33 @@ from .topology_schemas import (
     FabricNodeTagPatch,
 )
 
+
 def preview_classify(db: Session, *, sample_limit: int = 20) -> ClassifyPreviewOut:
-    role_rules = _enabled_rules(db, "role")
+    level_rules = _enabled_rules(db, "level")
     region_rules = _enabled_rules(db, "region")
     nodes = db.query(TopoFabricNode).order_by(TopoFabricNode.name.asc()).all()
-    role_matched = role_unmatched = role_conflict = 0
+    level_matched = level_unmatched = level_conflict = 0
     region_matched = region_unmatched = region_conflict = 0
-    role_samples: list[dict[str, Any]] = []
+    level_samples: list[dict[str, Any]] = []
     region_samples: list[dict[str, Any]] = []
     unmatched_samples: list[dict[str, Any]] = []
 
     for n in nodes:
-        role, _rid, multi_r = _resolve_role_hit(n, role_rules)
-        if role is None:
-            role_unmatched += 1
+        level, _rid, multi_r = _resolve_level_hit(n, level_rules)
+        if level is None:
+            level_unmatched += 1
         else:
-            role_matched += 1
+            level_matched += 1
             if multi_r:
-                role_conflict += 1
-            if len(role_samples) < sample_limit:
-                role_samples.append(
+                level_conflict += 1
+            if len(level_samples) < sample_limit:
+                level_samples.append(
                     {
                         "fabric_node_id": n.id,
                         "name": n.name,
                         "ip": n.ip,
-                        "role": role,
+                        "level": level,
+                        "role": level_to_role(level),
                         "multi_hit": multi_r,
                     }
                 )
@@ -80,20 +80,24 @@ def preview_classify(db: Session, *, sample_limit: int = 20) -> ClassifyPreviewO
                     }
                 )
 
-        if role is None and region_id is None and len(unmatched_samples) < sample_limit:
+        if level is None and region_id is None and len(unmatched_samples) < sample_limit:
             unmatched_samples.append(
                 {"fabric_node_id": n.id, "name": n.name, "ip": n.ip, "vendor": n.vendor}
             )
 
     return ClassifyPreviewOut(
         total_nodes=len(nodes),
-        role_matched=role_matched,
-        role_unmatched=role_unmatched,
-        role_conflicts=role_conflict,
+        level_matched=level_matched,
+        level_unmatched=level_unmatched,
+        level_conflicts=level_conflict,
+        role_matched=level_matched,
+        role_unmatched=level_unmatched,
+        role_conflicts=level_conflict,
         region_matched=region_matched,
         region_unmatched=region_unmatched,
         region_conflicts=region_conflict,
-        role_samples=role_samples,
+        level_samples=level_samples,
+        role_samples=level_samples,
         region_samples=region_samples,
         unmatched_samples=unmatched_samples,
     )
@@ -105,27 +109,22 @@ def apply_classify(
     skip_manual: bool = True,
     fill_empty_only: bool = False,
 ) -> ClassifyApplyOut:
-    role_rules = _enabled_rules(db, "role")
+    level_rules = _enabled_rules(db, "level")
     region_rules = _enabled_rules(db, "region")
     nodes = db.query(TopoFabricNode).all()
-    role_updated = region_updated = skipped_manual = 0
+    level_updated = region_updated = skipped_manual = 0
 
     for n in nodes:
-        role, _, _ = _resolve_role_hit(n, role_rules)
-        if role is not None:
+        level, _, _ = _resolve_level_hit(n, level_rules)
+        if level is not None:
             if skip_manual and str(n.role_source or "") == "manual":
                 skipped_manual += 1
-            elif fill_empty_only and str(n.role or "").strip():
+            elif fill_empty_only and n.level is not None:
                 pass
             else:
-                n.role = role
-                n.role_source = "rule"
+                apply_level_fields(n, level, source="rule")
                 n.updated_at = _utcnow()
-                role_updated += 1
-        elif not str(n.role or "").strip() and str(n.role_source or "") != "manual":
-            n.role = "unknown"
-            n.role_source = "rule"
-            n.updated_at = _utcnow()
+                level_updated += 1
 
         region_id, _, _ = _resolve_region_hit(db, n, region_rules, create_missing=True)
         if region_id is not None and not str(region_id).startswith("new:"):
@@ -141,7 +140,8 @@ def apply_classify(
 
     db.commit()
     return ClassifyApplyOut(
-        role_updated=role_updated,
+        level_updated=level_updated,
+        role_updated=level_updated,
         region_updated=region_updated,
         skipped_manual=skipped_manual,
         total_nodes=len(nodes),
@@ -159,17 +159,19 @@ def list_unmatched(
 
     q = db.query(TopoFabricNode)
     k = str(kind or "any").strip().lower()
-    role_miss = or_(TopoFabricNode.role == "", TopoFabricNode.role == "unknown")
+    if k == "role":
+        k = "level"
+    level_miss = TopoFabricNode.level.is_(None)
     region_miss = or_(
         TopoFabricNode.region_folder_id.is_(None),
         TopoFabricNode.region_folder_id == "",
     )
-    if k == "role":
-        q = q.filter(role_miss)
+    if k == "level":
+        q = q.filter(level_miss)
     elif k == "region":
         q = q.filter(region_miss)
     else:
-        q = q.filter(or_(role_miss, region_miss))
+        q = q.filter(or_(level_miss, region_miss))
     total = q.count()
     rows = (
         q.order_by(TopoFabricNode.name.asc())
@@ -195,14 +197,18 @@ def patch_fabric_node_tags(
     n = db.get(TopoFabricNode, fabric_node_id)
     if n is None:
         raise HTTPException(status_code=404, detail="fabric_node_not_found")
-    if body.role is not None:
-        role = str(body.role or "").strip().lower()
-        if role and role not in _ROLE_VALUES:
-            raise HTTPException(status_code=400, detail="role_invalid")
-        n.role = role
-        n.role_source = "manual"
-    if body.region_folder_id is not None:
-        fid = str(body.region_folder_id or "").strip()
+    data = body.model_dump(exclude_unset=True)
+    if "level" in data or "role" in data:
+        try:
+            if "level" in data:
+                lv = normalize_level(data.get("level"))
+            else:
+                lv = role_to_level(data.get("role"))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        apply_level_fields(n, lv, source="manual")
+    if "region_folder_id" in data:
+        fid = str(data.get("region_folder_id") or "").strip()
         if fid:
             folder = db.get(TopoFolder, fid)
             if folder is None or str(folder.kind or "") != "region":
@@ -245,6 +251,7 @@ def match_fabric_nodes(db: Session, body: FabricNodesMatchRequest) -> FabricNode
             "fabric_node_id": n.id,
             "name": n.name,
             "ip": n.ip,
+            "level": n.level,
             "role": n.role or "",
             "region_folder_id": n.region_folder_id or "",
             "link_status": fabric_link_status(n),
@@ -263,25 +270,32 @@ def match_fabric_nodes(db: Session, body: FabricNodesMatchRequest) -> FabricNode
 def bulk_tag_fabric_nodes(
     db: Session, body: FabricNodesBulkTagRequest
 ) -> FabricNodesBulkTagOut:
-    """Assign role/region after user confirms a regex or explicit selection."""
-    if body.role is None and body.region_folder_id is None:
-        raise HTTPException(status_code=400, detail="role_or_region_required")
+    """Assign level/region after user confirms a regex or explicit selection."""
+    data = body.model_dump(exclude_unset=True)
+    level_v: float | None | object = Ellipsis
+    if "level" in data:
+        try:
+            level_v = normalize_level(data.get("level"))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    elif "role" in data:
+        try:
+            level_v = role_to_level(data.get("role"))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    role_v: str | None = None
-    if body.role is not None:
-        role_v = str(body.role or "").strip().lower()
-        if role_v and role_v not in _ROLE_VALUES:
-            raise HTTPException(status_code=400, detail="role_invalid")
-
-    region_v: str | None = None
-    if body.region_folder_id is not None:
-        region_v = str(body.region_folder_id or "").strip()
+    region_v: str | None | object = Ellipsis
+    if "region_folder_id" in data:
+        region_v = str(data.get("region_folder_id") or "").strip()
         if region_v:
             folder = db.get(TopoFolder, region_v)
             if folder is None or str(folder.kind or "") != "region":
                 raise HTTPException(status_code=400, detail="folder_not_found")
         else:
             region_v = ""
+
+    if level_v is Ellipsis and region_v is Ellipsis:
+        raise HTTPException(status_code=400, detail="level_or_region_required")
 
     ids = [str(x).strip() for x in (body.fabric_node_ids or []) if str(x).strip()]
     if str(body.pattern or "").strip():
@@ -298,11 +312,18 @@ def bulk_tag_fabric_nodes(
     else:
         raise HTTPException(status_code=400, detail="ids_or_pattern_required")
 
+    role_alias = level_to_role(level_v) if isinstance(level_v, float) else (
+        "" if level_v is None else None
+    )
+    if level_v is Ellipsis:
+        role_alias = None
+
     samples = [
         {
             "fabric_node_id": n.id,
             "name": n.name,
             "ip": n.ip,
+            "level": n.level,
             "role": n.role or "",
             "region_folder_id": n.region_folder_id or "",
         }
@@ -313,19 +334,19 @@ def bulk_tag_fabric_nodes(
             dry_run=True,
             matched=len(matched_nodes),
             updated=0,
-            role=role_v,
-            region_folder_id=region_v,
+            level=None if level_v is Ellipsis else level_v,  # type: ignore[arg-type]
+            role=role_alias,
+            region_folder_id=None if region_v is Ellipsis else (region_v or None),  # type: ignore[arg-type]
             samples=samples,
         )
 
     now = _utcnow()
     updated = 0
     for n in matched_nodes:
-        if role_v is not None:
-            n.role = role_v
-            n.role_source = "manual"
-        if region_v is not None:
-            n.region_folder_id = region_v or None
+        if level_v is not Ellipsis:
+            apply_level_fields(n, level_v, source="manual")  # type: ignore[arg-type]
+        if region_v is not Ellipsis:
+            n.region_folder_id = region_v or None  # type: ignore[operator]
             n.region_source = "manual"
         n.updated_at = now
         updated += 1
@@ -334,8 +355,9 @@ def bulk_tag_fabric_nodes(
         dry_run=False,
         matched=len(matched_nodes),
         updated=updated,
-        role=role_v,
-        region_folder_id=region_v,
+        level=None if level_v is Ellipsis else level_v,  # type: ignore[arg-type]
+        role=role_alias,
+        region_folder_id=None if region_v is Ellipsis else (region_v or None),  # type: ignore[arg-type]
         samples=samples,
     )
 
@@ -343,5 +365,3 @@ def bulk_tag_fabric_nodes(
 def apply_classify_empty_only(db: Session) -> ClassifyApplyOut:
     """Incremental classify for newly synced nodes (fill empty tags only)."""
     return apply_classify(db, skip_manual=True, fill_empty_only=True)
-
-

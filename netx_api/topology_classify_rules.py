@@ -13,6 +13,7 @@ from .topology_classify_common import (
     _MAX_PATTERN_LEN,
     _SCOPES,
     _compile_pattern,
+    _normalize_scope,
     _rule_out,
     _utcnow,
     _validate_payload,
@@ -21,8 +22,13 @@ from .topology_schemas import ClassifyRuleCreate, ClassifyRuleOut, ClassifyRuleU
 
 def list_rules(db: Session, *, scope: str = "") -> list[ClassifyRuleOut]:
     q = db.query(TopoClassifyRule)
-    if scope.strip():
-        q = q.filter(TopoClassifyRule.scope == scope.strip().lower())
+    scope_f = str(scope or "").strip().lower()
+    if scope_f:
+        scope_n = _normalize_scope(scope_f)
+        if scope_n == "level":
+            q = q.filter(TopoClassifyRule.scope.in_(("level", "role")))
+        else:
+            q = q.filter(TopoClassifyRule.scope == scope_n)
     rows = q.order_by(
         TopoClassifyRule.scope.asc(),
         TopoClassifyRule.priority.asc(),
@@ -32,9 +38,10 @@ def list_rules(db: Session, *, scope: str = "") -> list[ClassifyRuleOut]:
 
 
 def create_rule(db: Session, body: ClassifyRuleCreate) -> ClassifyRuleOut:
-    scope = str(body.scope or "").strip().lower()
-    if scope not in _SCOPES:
+    scope_raw = str(body.scope or "").strip().lower()
+    if scope_raw not in _SCOPES:
         raise HTTPException(status_code=400, detail="scope_invalid")
+    scope = _normalize_scope(scope_raw)
     match_field = str(body.match_field or "name").strip().lower()
     if match_field not in _MATCH_FIELDS:
         raise HTTPException(status_code=400, detail="match_field_invalid")

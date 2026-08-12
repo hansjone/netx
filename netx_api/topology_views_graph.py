@@ -467,7 +467,17 @@ def _apply_fabric_filters(
         )
     role_v = str(role or "").strip().lower()
     if role_v:
-        q = q.filter(TopoFabricNode.role == role_v)
+        from .topology_level import LEVEL_PRESETS
+
+        if role_v in LEVEL_PRESETS:
+            maj = int(LEVEL_PRESETS[role_v])
+            q = q.filter(
+                TopoFabricNode.level.isnot(None),
+                TopoFabricNode.level >= float(maj),
+                TopoFabricNode.level < float(maj) + 1.0,
+            )
+        else:
+            q = q.filter(TopoFabricNode.role == role_v)
     vendor_v = str(vendor or "").strip()
     if vendor_v:
         q = q.filter(TopoFabricNode.vendor.ilike(f"%{vendor_v}%"))

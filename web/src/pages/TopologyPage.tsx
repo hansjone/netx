@@ -89,6 +89,8 @@ import {
 import { queryKeys } from "../constants/queryKeys";
 import { useI18n } from "../i18n";
 import { useToast } from "../hooks/useToast";
+import { useAuth } from "../auth/AuthContext";
+import { formatErr } from "../services/api";
 import { openOrFocusModule } from "../utils/moduleWindows";
 import type {
   FabricNodeSearchHit,
@@ -114,6 +116,8 @@ const TopologyReactFlowView = lazy(() => import("./topology/TopologyReactFlowVie
 export function TopologyPage() {
   const { t, locale } = useI18n();
   const { showOk, showError } = useToast();
+  const { hasScope, isAdmin } = useAuth();
+  const canWriteTopology = isAdmin || hasScope("ne:write");
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
   const [keyword, setKeyword] = useState("");
@@ -295,7 +299,13 @@ export function TopologyPage() {
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, []);
 
-  const toolBehavior = useMemo(() => behaviorForMode(toolMode), [toolMode]);
+  const toolBehavior = useMemo(() => {
+    const base = behaviorForMode(toolMode);
+    if (!canWriteTopology) {
+      return { ...base, nodesDraggable: false, nodesConnectable: false };
+    }
+    return base;
+  }, [toolMode, canWriteTopology]);
 
   const canvas = useTopologyCanvas({
     mapId,
@@ -354,6 +364,8 @@ export function TopologyPage() {
     worldScatter,
     showWorldScatter,
     canvasGraphLoading,
+    canvasGraphError,
+    canvasGraphErrorMsg,
     canvasGraphEmpty,
     worldNeedsApply,
     canvasGraphRefreshing,
@@ -537,7 +549,10 @@ export function TopologyPage() {
       await queryClient.invalidateQueries({ queryKey: queryKeys.topologyMaps });
       showOk(t("topology.saved"));
     },
-    onError: (err) => showError(String(err)),
+    onError: async (err) => {
+      showError(t("topology.saveFailed").replace("{{detail}}", formatErr(err)));
+      await queryClient.invalidateQueries({ queryKey: queryKeys.topologyGraph(mapId) });
+    },
   });
 
   const isValidConnection = useCallback(
@@ -545,14 +560,18 @@ export function TopologyPage() {
       const source = String(connection.source || "");
       const target = String(connection.target || "");
       if (!source || !target || source === target) return false;
-      return !edges.some((e) => e.source === source && e.target === target);
+      return !edges.some(
+        (e) =>
+          (e.source === source && e.target === target) ||
+          (e.source === target && e.target === source),
+      );
     },
     [edges],
   );
 
   const onConnect = useCallback(
     (connection: Connection) => {
-      if (!mapId || !isValidConnection(connection)) return;
+      if (!canWriteTopology || !mapId || !isValidConnection(connection)) return;
       const source = String(connection.source || "");
       const target = String(connection.target || "");
       if (!source || !target) return;
@@ -586,11 +605,12 @@ export function TopologyPage() {
       setEdges((es) => [...es, edge]);
       markDirty();
     },
-    [mapId, isValidConnection, pushHistory, edgeDefaults, setEdges, markDirty],
+    [mapId, isValidConnection, pushHistory, edgeDefaults, setEdges, markDirty, canWriteTopology],
   );
 
   const addPaletteItems = useCallback(
     async (items: PaletteItem[], origin?: { x: number; y: number }): Promise<boolean> => {
+      if (!canWriteTopology) return false;
       if (!mapId) {
         showError(t("topology.selectMap"));
         return false;
@@ -700,6 +720,7 @@ export function TopologyPage() {
 
   const onCanvasDrop = (e: React.DragEvent) => {
     e.preventDefault();
+    if (!canWriteTopology) return;
     const raw = e.dataTransfer.getData(PALETTE_DND);
     if (!raw || !rfRef.current) return;
     try {
@@ -1076,7 +1097,7 @@ export function TopologyPage() {
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
         e.preventDefault();
-        if (mapId && dirtyRef.current && !saveMut.isPending) saveMut.mutate();
+        if (canWriteTopology && mapId && dirtyRef.current && !saveMut.isPending) saveMut.mutate();
         return;
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
@@ -1095,6 +1116,7 @@ export function TopologyPage() {
         return;
       }
       if (e.key === "Delete" || e.key === "Backspace") {
+        if (!canWriteTopology) return;
         if (nodes.some((n) => n.selected) || edges.some((ed) => ed.selected)) {
           e.preventDefault();
           void removeSelected();
@@ -1103,7 +1125,7 @@ export function TopologyPage() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [closeCtxMenu, clearSelection, undo, redo, selectAllNodes, removeSelected, nodes, edges, mapId, saveMut]);
+  }, [closeCtxMenu, clearSelection, undo, redo, selectAllNodes, removeSelected, nodes, edges, mapId, saveMut, canWriteTopology]);
 
   useEffect(() => {
     if (!ctxMenu) return;
@@ -1366,6 +1388,10 @@ export function TopologyPage() {
 
   const discoverOneFor = (node: Node<NeNodeData> | null) => {
     closeCtxMenu();
+    if (!canWriteTopology) {
+      showError(t("topology.readOnlyHint"));
+      return;
+    }
     const id = String(node?.data.managed_ne_id || node?.data.ume_ne_id || "").trim();
     if (!id) {
       showError(t("topology.discoverOneNeedNe"));
@@ -1917,6 +1943,7 @@ export function TopologyPage() {
       <main className="topo-main">
         {canvasMode ? (
           <TopologyToolbar
+            readOnly={!canWriteTopology}
             breadcrumbFolders={breadcrumbFolders}
             activeView={activeView}
             activeRegion={activeRegion}
@@ -2049,6 +2076,11 @@ export function TopologyPage() {
             {truncateBannerText ? (
               <div className="topo-truncate-banner" role="status">
                 {truncateBannerText}
+              </div>
+            ) : null}
+            {!canWriteTopology && mapId ? (
+              <div className="topo-readonly-banner" role="status">
+                {t("topology.readOnlyBanner")}
               </div>
             ) : null}
             <TopologyViewTools
@@ -2248,6 +2280,23 @@ export function TopologyPage() {
                 </button>
               </div>
             )}
+            {treeRoot && canvasGraphError ? (
+              <div className="topo-canvas__overlay topo-canvas__overlay--error" role="alert">
+                <p className="topo-canvas__overlay-title">{t("topology.graphLoadFailed")}</p>
+                {canvasGraphErrorMsg ? (
+                  <p className="topo-canvas__overlay-hint muted">{canvasGraphErrorMsg}</p>
+                ) : null}
+                <div className="topo-browser__empty-actions">
+                  <button
+                    type="button"
+                    className="btn btn--sm btn--ghost"
+                    onClick={() => void graphQuery.refetch()}
+                  >
+                    {t("topology.treeRetry")}
+                  </button>
+                </div>
+              </div>
+            ) : null}
             {treeRoot && canvasGraphLoading ? (
               <div className="topo-canvas__overlay topo-canvas__overlay--loading" role="status">
                 <span className="topo-loading-spinner topo-loading-spinner--lg" aria-hidden="true" />

@@ -27,12 +27,14 @@ export const queryKeys = {
   collectionEligibleNeAll: ["collectionEligibleNe"] as const,
   collectionEligibleNe: (page: number, keyword: string) => ["collectionEligibleNe", page, keyword] as const,
   neCollectionsAll: ["neCollections"] as const,
-  neCollections: (page: number) => ["neCollections", page] as const,
+  neCollections: (page: number, pageSize = 20, status = "", keyword = "") =>
+    ["neCollections", page, pageSize, status, keyword] as const,
   neCollectionDashboard: ["neCollectionDashboard"] as const,
+  neCollectionPolicy: ["neCollectionPolicy"] as const,
   neCollectionDetail: (jobId: string) => ["neCollection", jobId] as const,
   neCollectionRunsAll: ["neCollectionRuns"] as const,
-  neCollectionRuns: (jobId: string, page: number, status: string, keyword: string) =>
-    ["neCollectionRuns", jobId, page, status, keyword] as const,
+  neCollectionRuns: (jobId: string, page: number, pageSize: number, status: string, keyword: string) =>
+    ["neCollectionRuns", jobId, page, pageSize, status, keyword] as const,
   cliMeta: ["cliMeta"] as const,
   cliProfiles: ["cliProfiles"] as const,
   cliTargetsAll: ["cliTargets"] as const,
@@ -56,7 +58,9 @@ export const queryKeys = {
     unmatched: string,
     linkStatus: string,
     page: number,
-  ) => ["fabricNodeInventory", keyword, role, regionFolderId, unmatched, linkStatus, page] as const,
+    levelMajor?: string,
+  ) =>
+    ["fabricNodeInventory", keyword, role, regionFolderId, unmatched, linkStatus, page, levelMajor || ""] as const,
   fabricNodeSearch: (q: string, page: number) => ["fabricNodeSearch", q, page] as const,
   topologyViewGraph: (viewId: string) => ["topologyViewGraph", viewId] as const,
   fabricSummary: ["fabricSummary"] as const,
@@ -66,26 +70,35 @@ export const queryKeys = {
     ["topologyViewGraph", viewId, focusFolderId] as const,
   lldpCollectDashboard: ["lldpCollectDashboard"] as const,
   lldpCollectJobsAll: ["lldpCollectJobs"] as const,
-  lldpCollectJobs: (page: number) => ["lldpCollectJobs", page] as const,
+  lldpCollectJobs: (page: number, pageSize = 10, status = "", keyword = "") =>
+    ["lldpCollectJobs", page, pageSize, status, keyword] as const,
   lldpCollectJobAll: ["lldpCollectJob"] as const,
-  lldpCollectJob: (jobId: string, page = 1) => ["lldpCollectJob", jobId, page] as const,
+  lldpCollectJob: (jobId: string, page = 1, pageSize = 20, status = "", keyword = "") =>
+    ["lldpCollectJob", jobId, page, pageSize, status, keyword] as const,
   fabricEdgesAll: ["fabricEdges"] as const,
-  fabricEdges: (status: string, keyword: string, page: number) =>
-    ["fabricEdges", status, keyword, page] as const,
+  fabricEdges: (status: string, keyword: string, page: number, pageSize = 20, source = "") =>
+    ["fabricEdges", status, keyword, page, pageSize, source] as const,
   configSyncDashboard: ["configSyncDashboard"] as const,
   configSyncPolicy: ["configSyncPolicy"] as const,
   configSyncCyclesAll: ["configSyncCycles"] as const,
-  configSyncCycles: (page: number) => ["configSyncCycles", page] as const,
+  configSyncCycles: (page: number, pageSize = 20, status = "", keyword = "") =>
+    ["configSyncCycles", page, pageSize, status, keyword] as const,
   configSyncCycleTasksAll: ["configSyncCycleTasks"] as const,
-  configSyncCycleTasks: (cycleId: string, page: number, status: string, keyword: string) =>
-    ["configSyncCycleTasks", cycleId, page, status, keyword] as const,
+  configSyncCycleTasks: (
+    cycleId: string,
+    page: number,
+    pageSize = 20,
+    status = "",
+    keyword = "",
+  ) => ["configSyncCycleTasks", cycleId, page, pageSize, status, keyword] as const,
   networkConfigsAll: ["networkConfigs"] as const,
-  networkConfigs: (page: number, keyword: string, source: string, vendor: string) =>
-    ["networkConfigs", page, keyword, source, vendor] as const,
+  networkConfigs: (page: number, keyword: string, source: string, vendor: string, pageSize = 20) =>
+    ["networkConfigs", page, keyword, source, vendor, pageSize] as const,
   networkConfigDetail: (source: string, id: string) => ["networkConfigDetail", source, id] as const,
   portTrafficDashboard: ["portTrafficDashboard"] as const,
   portTrafficDevicesAll: ["portTrafficDevices"] as const,
-  portTrafficDevices: (page: number) => ["portTrafficDevices", page] as const,
+  portTrafficDevices: (page: number, pageSize = 20, status = "", keyword = "") =>
+    ["portTrafficDevices", page, pageSize, status, keyword] as const,
   portTrafficTargets: (deviceId: string) => ["portTrafficTargets", deviceId] as const,
   portTrafficEvents: (deviceId: string) => ["portTrafficEvents", deviceId] as const,
   portTrafficBoards: ["portTrafficBoards"] as const,

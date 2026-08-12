@@ -320,6 +320,7 @@ export type CollectionJobItem = {
   id: string;
   title: string;
   commands: string;
+  trigger_mode?: string;
   status: string;
   ne_count: number;
   success_count: number;
@@ -336,6 +337,7 @@ export type CollectionJobSummary = {
   id: string;
   title: string;
   status: string;
+  trigger_mode?: string;
   ne_count: number;
   success_count: number;
   fail_count: number;
@@ -345,11 +347,30 @@ export type CollectionJobSummary = {
   last_run_at?: string | null;
 };
 
+export type CollectionTargetRef = {
+  source: "managed" | "ume" | string;
+  id: string;
+};
+
+export type CollectionPolicy = {
+  enabled: boolean;
+  interval_days: number;
+  interval_hours: number;
+  scope_mode: "all" | "selected" | string;
+  selected_targets: CollectionTargetRef[];
+  title: string;
+  commands: string;
+  history_keep: number;
+  updated_at?: string | null;
+};
+
 export type CollectionDashboard = {
   job_count: number;
   active_count: number;
   running_job: CollectionJobSummary | null;
   last_job: CollectionJobSummary | null;
+  next_due_at?: string | null;
+  policy?: CollectionPolicy | null;
 };
 
 export type CollectionRunItem = {
@@ -480,6 +501,8 @@ export type FabricNodeSearchHit = {
   vendor: string;
   managed_ne_id?: string;
   ume_ne_id?: string;
+  /** Layout rank major.minor; null/undefined = unclassified */
+  level?: number | null;
   role?: string;
   region_folder_id?: string | null;
   world_x?: number | null;
@@ -495,22 +518,6 @@ export type FabricNodeSearchHit = {
     folder_id: string;
     folder_name: string;
     kind: string;
-  }>;
-};
-
-export type SliceGenerateResult = {
-  folder_id: string;
-  template: string;
-  dry_run: boolean;
-  map_count: number;
-  overlap_node_count: number;
-  created_view_ids: string[];
-  maps: Array<{
-    name: string;
-    role: string;
-    node_count: number;
-    seed_fabric_node_ids: string[];
-    member_fabric_node_ids: string[];
   }>;
 };
 

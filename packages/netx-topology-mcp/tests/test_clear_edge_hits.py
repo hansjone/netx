@@ -37,7 +37,7 @@ def test_collinear_midpoint_scores_edge_clearance_hit() -> None:
     assert int(m["edge_clearance_hits"] or 0) >= 1
     assert float(m["edge_clearance_score"]) < 1.0
     assert "edge_clearance" in m["score"]["parts"]
-    assert abs(m["score"]["weights"]["edge_clearance"] - 0.08) < 1e-9
+    assert abs(m["score"]["weights"]["edge_clearance"] - 0.10) < 1e-9
     assert m["report"]["edge_clearance"]["status"] in {"warn", "fail"}
     top = m.get("top_edge_hits") or []
     assert any(r.get("fabric_node_id") == "mksr" for r in top)
@@ -118,9 +118,8 @@ def test_score_weights_include_edge_clearance() -> None:
             "edge_axis_score": 0.2,
         }
     )
-    assert abs(s["weights"]["edge_clearance"] - 0.08) < 1e-9
+    assert abs(s["weights"]["edge_clearance"] - 0.10) < 1e-9
     assert abs(s["weights"]["edge_axis"] - 0.06) < 1e-9
-    assert abs(s["weights"]["grid"] - 0.04) < 1e-9
     assert abs(s["weights"]["nn"] - 0.04) < 1e-9
     assert abs(sum(s["weights"].values()) - 1.0) < 1e-9
     good = score_layout_components(

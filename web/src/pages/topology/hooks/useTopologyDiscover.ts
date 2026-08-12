@@ -13,6 +13,7 @@ import {
   removeTopologyViewNodes,
   startLldpDiscover,
   stopLldpCollectJob,
+  formatErr,
 } from "../../../services/api";
 import type {
   TopologyDiscoverJob,
@@ -181,6 +182,11 @@ export function useTopologyDiscover(opts: UseTopologyDiscoverOptions) {
         setDiscoverJobId(jobStart.id);
         let job: TopologyDiscoverJob = jobStart;
         let cancelled = false;
+        const isTerminalStatus = (status: string) =>
+          status === "done" ||
+          status === "failed" ||
+          status === "cancelled" ||
+          status === "stopped";
         for (let i = 0; i < 600; i++) {
           if (discoverAbortRef.current) {
             cancelled = true;
@@ -202,12 +208,7 @@ export function useTopologyDiscover(opts: UseTopologyDiscoverOptions) {
             neIp: job.items?.[job.items.length - 1]?.ne_ip || p.neIp,
           }));
           setDiscoverLiveResults((job.items || []) as TopologyDiscoverNeResult[]);
-          if (
-            job.status === "done" ||
-            job.status === "failed" ||
-            job.status === "cancelled" ||
-            job.status === "stopped"
-          ) {
+          if (isTerminalStatus(job.status)) {
             if (job.status === "cancelled" || job.status === "stopped") cancelled = true;
             break;
           }
@@ -226,6 +227,9 @@ export function useTopologyDiscover(opts: UseTopologyDiscoverOptions) {
             graph: null,
           });
           return;
+        }
+        if (!isTerminalStatus(job.status)) {
+          throw new Error(t("topology.discoverTimeout"));
         }
         if (job.status === "failed") {
           throw new Error(job.error || "discover_failed");
@@ -293,8 +297,9 @@ export function useTopologyDiscover(opts: UseTopologyDiscoverOptions) {
         if (discoverAbortRef.current) {
           setDiscoverError(t("topology.discoverCancelled"));
         } else {
-          setDiscoverError(String(err));
-          showError(t("topology.discoverFail").replace("{{detail}}", String(err)));
+          const detail = formatErr(err);
+          setDiscoverError(detail);
+          showError(t("topology.discoverFail").replace("{{detail}}", detail));
         }
       } finally {
         setDiscovering(false);

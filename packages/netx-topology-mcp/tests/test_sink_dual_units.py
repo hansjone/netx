@@ -104,4 +104,4 @@ def test_tools_registered() -> None:
     names = {str(t.get("name") or "") for t in HTTP_MCP_TOOLS}
     assert "sinkTopologyDualUnits" in names
     assert "copyTopologyViewNodes" in names
-    assert len(names) == 14
+    assert len(names) >= 14

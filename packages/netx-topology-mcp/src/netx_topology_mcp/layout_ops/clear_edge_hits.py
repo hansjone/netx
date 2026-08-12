@@ -38,6 +38,13 @@ def clear_edge_params_from_overrides(params: dict[str, Any] | None) -> dict[str,
         out["pitch"] = float(p["pitch"])
     if p.get("side") is not None:
         out["side"] = float(p["side"])
+    portals = p.get("portal_ids") or p.get("portals") or []
+    if isinstance(portals, str):
+        portals = [portals]
+    frozen = set(str(x) for x in (p.get("frozen_ids") or []) if str(x).strip())
+    frozen |= {str(x) for x in portals if str(x).strip()}
+    out["frozen_ids"] = frozen
+    out["max_eject_degree"] = int(p.get("max_eject_degree") or 5)
     return out
 
 
@@ -228,11 +235,15 @@ def clear_edge_hits(
     pitch: float | None = None,
     side: float | None = None,
     rounds: int = 1,
+    frozen_ids: set[str] | None = None,
+    max_eject_degree: int = 5,
 ) -> OpResult:
     """Move nodes off non-incident edges; gate on crossings + overlaps.
 
     ``preserve_axis=True``: snap to pitch/side grid, keep incident H/V count,
     multi-round until no progress — use after ``ortho_metro``.
+    ``frozen_ids``: never eject these (eye portals).
+    ``max_eject_degree``: skip hubs at/above this degree (default 5).
     """
     del params
     st = state.copy()
@@ -240,6 +251,8 @@ def clear_edge_hits(
     names = st.names
     links = list(st.links)
     adj = st.adj
+    frozen = {str(x) for x in (frozen_ids or ()) if str(x).strip()}
+    max_eject_degree = max(2, int(max_eject_degree))
     pitch_f = float(pitch if pitch is not None else REC_CENTER_DX)
     side_f = float(side if side is not None else REC_CENTER_DY)
     rounds_n = max(1, int(rounds))
@@ -272,8 +285,8 @@ def clear_edge_hits(
     target = float(thr) + float(margin)
     x0 = count_edge_crossings(pos, links)
     ax0 = _global_axis_score(pos, links)
-    # Clearance matters, but keep metro readable — modest crossing slack only.
-    x_slack = 4 if preserve_axis else 0
+    # Never allow crossing rise — even with preserve_axis (metro snap).
+    x_slack = 0
     deg = {n: len(adj.get(n) or ()) for n in pos}
 
     def _move_budget(nid: str) -> float:
@@ -308,6 +321,8 @@ def clear_edge_hits(
             nid = str(h["fabric_node_id"])
             if nid not in pos:
                 continue
+            if nid in frozen:
+                continue
             a = str(h["a_node_id"])
             b = str(h["b_node_id"])
             if a not in pos or b not in pos:
@@ -315,8 +330,8 @@ def clear_edge_hits(
             p0 = pos[nid]
             if not _on_open_segment(p0, pos[a], pos[b], thr=thr) and float(h.get("dist") or 99) >= thr:
                 continue
-            # Very high-degree hub on a chord: break the chord instead of ejecting hub.
-            if deg.get(nid, 0) >= 5:
+            # High-degree hubs on a chord: skip unless caller raises cap.
+            if deg.get(nid, 0) >= int(max_eject_degree):
                 continue
             if preserve_axis:
                 nbr_xy = [

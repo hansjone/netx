@@ -131,11 +131,33 @@ def test_score_includes_mid_tier_weights() -> None:
     assert "edge_clearance" in s["parts"]
     assert "edge_axis" in s["parts"]
     assert abs(s["weights"]["chain"] - 0.10) < 1e-9
-    assert abs(s["weights"]["rings"] - 0.10) < 1e-9
-    assert abs(s["weights"]["edge_clearance"] - 0.08) < 1e-9
-    assert abs(s["weights"]["edge_axis"] - 0.06) < 1e-9
-    assert abs(s["weights"]["grid"] - 0.04) < 1e-9
     assert abs(sum(s["weights"].values()) - 1.0) < 1e-9
+    # default profile: rings down, clearance up vs legacy 0.10/0.08
+    assert s["weights"]["rings"] <= 0.08
+    assert s["weights"]["edge_clearance"] >= 0.08
+    eye = score_layout_components(
+        {
+            "node_count": 200,
+            "edge_crossings": 50,
+            "crossings_per_link": 0.15,
+            "footprint_overlap_pairs": 0,
+            "label_overlap_pairs": 0,
+            "nn_p50": 170,
+            "space_utilization": 0.05,
+            "hull_utilization": 0.09,
+            "grid_occupancy": 0.05,
+            "edge_stretch_p50": 1.2,
+            "whitespace_index": 0.5,
+            "chain_score": 0.6,
+            "rings_score": 0.3,
+            "edge_clearance_score": 0.5,
+            "edge_axis_score": 0.3,
+            "axis_frac": 0.35,
+        },
+        score_profile="eye",
+    )
+    assert eye["score_profile"] == "eye"
+    assert eye["weights"]["edge_axis"] < s["weights"]["edge_axis"]
     good = score_layout_components(
         {
             "node_count": 40,

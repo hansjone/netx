@@ -262,9 +262,52 @@ def test_tools_for_scopes_filters_write() -> None:
     assert "queryTopologyEdges" in read_only
     assert "queryTopologyFabricNodes" in read_only
     assert "createTopologyFolder" not in read_only
+    assert "classifyTopologyFabricNodes" not in read_only
     write = {str(t.get("name") or "") for t in tools_for_scopes(["ne:read", "ne:write"])}
     assert "createTopologyView" not in write
     assert "createTopologyFolder" in write
+    assert "classifyTopologyFabricNodes" in write
+
+
+def test_classify_topology_fabric_nodes_match_tag() -> None:
+    with patch("netx_topology_mcp.http_tools.http_json") as mock_http:
+        mock_http.return_value = {
+            "ok": True,
+            "data": {
+                "pattern": "CORE",
+                "match_field": "name",
+                "total_matched": 1,
+                "samples": [{"id": "n1", "name": "CORE-1", "attrs": {"x": 1}}],
+                "fabric_node_ids": ["n1"],
+            },
+        }
+        out = call_http_tool(
+            "classifyTopologyFabricNodes",
+            {"action": "match", "pattern": "CORE", "match_field": "name"},
+        )
+        payload = json.loads(out["content"][0]["text"])
+        assert payload.get("action") == "match"
+        assert payload.get("fabric_node_ids") == ["n1"]
+        assert mock_http.call_args[0][:2] == ("POST", "/v1/topology/fabric/nodes/match")
+
+        mock_http.return_value = {
+            "ok": True,
+            "data": {"dry_run": True, "matched": 1, "updated": 0, "level": 1.0, "samples": []},
+        }
+        out = call_http_tool(
+            "classifyTopologyFabricNodes",
+            {
+                "action": "tag",
+                "fabric_node_ids": ["n1"],
+                "level": 1.0,
+                "dry_run": True,
+            },
+        )
+        payload = json.loads(out["content"][0]["text"])
+        assert payload.get("action") == "tag"
+        assert payload.get("dry_run") is True
+        assert mock_http.call_args[0][:2] == ("POST", "/v1/topology/fabric/nodes/tags/bulk")
+        assert mock_http.call_args[1]["body"]["level"] == 1.0
 
 
 def test_query_fabric_nodes_modes() -> None:

@@ -115,11 +115,17 @@ def run_api_startup() -> None:
         if cfg_resumed:
             _log.info("startup: resumed %s config_sync task(s) from interrupted cycle", cfg_resumed)
         try:
+            from .collection_policy import ensure_policy as ensure_ne_collect_policy
+            from .collection_policy import history_keep_value, prune_collection_jobs
             from .lldp_collect_service import ensure_policy as ensure_lldp_collect_policy
 
             ensure_lldp_collect_policy(db)
+            pol = ensure_ne_collect_policy(db)
+            pruned_jobs = prune_collection_jobs(db, keep=history_keep_value(pol))
+            if pruned_jobs:
+                _log.info("startup: pruned %s ne_collection job(s) by history_keep", pruned_jobs)
         except Exception:
-            _log.exception("startup: lldp_collect policy ensure failed")
+            _log.exception("startup: lldp/ne_collect policy ensure failed")
         pt_cleared = recover_port_traffic_on_startup(db)
         if pt_cleared:
             _log.info("startup: cleared %s port_traffic stuck collect_running flag(s)", pt_cleared)
@@ -151,7 +157,7 @@ def run_api_startup() -> None:
     else:
         _log.info(
             "startup: inline schedulers disabled — run `python -m netx_api.worker` for "
-            "config_sync / lldp_collect / port_traffic"
+            "config_sync / lldp_collect / ne_collect / port_traffic"
         )
 
     start_api_sideband_threads()

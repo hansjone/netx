@@ -10,21 +10,28 @@ from sqlalchemy.orm import Session
 
 from .models import TopoClassifyRule, TopoFabricNode, TopoFolder
 from .timeutil import utcnow_naive
-from .topology_membership import VIEW_ROLES, normalize_view_role
+from .topology_level import LEVEL_PRESETS, level_to_role, normalize_level, role_to_level
 from .topology_schemas import (
     ClassifyRuleOut,
     TopologyFolderCreate,
 )
 
 _MAX_PATTERN_LEN = 512
-_ROLE_VALUES = VIEW_ROLES | {"unknown"}
 _MATCH_FIELDS = frozenset({"name", "ip", "name_ip"})
-_SCOPES = frozenset({"role", "region"})
+_SCOPES = frozenset({"level", "region", "role"})  # role = legacy alias of level
 _SLICE_TEMPLATES = frozenset({"core_only", "core_agg", "agg_access"})
+_ROLE_VALUES = frozenset(LEVEL_PRESETS) | {"unknown", "edge", ""}
 
 
 def _utcnow() -> datetime:
     return utcnow_naive()
+
+
+def _normalize_scope(scope: str) -> str:
+    s = str(scope or "level").strip().lower()
+    if s == "role":
+        return "level"
+    return s
 
 
 def _compile_pattern(pattern: str) -> re.Pattern[str]:
@@ -51,9 +58,10 @@ def _match_text(node: TopoFabricNode, match_field: str) -> str:
 
 
 def _rule_out(row: TopoClassifyRule) -> ClassifyRuleOut:
+    scope = _normalize_scope(str(row.scope or "level"))
     return ClassifyRuleOut(
         id=row.id,
-        scope=str(row.scope or "role"),
+        scope=scope,
         name=str(row.name or ""),
         pattern=str(row.pattern or ""),
         match_field=str(row.match_field or "name"),
@@ -68,11 +76,25 @@ def _rule_out(row: TopoClassifyRule) -> ClassifyRuleOut:
 
 def _validate_payload(scope: str, payload: dict[str, Any]) -> dict[str, Any]:
     out = dict(payload or {})
-    if scope == "role":
-        role = normalize_view_role(str(out.get("role") or ""))
-        if str(out.get("role") or "").strip().lower() not in VIEW_ROLES:
-            raise HTTPException(status_code=400, detail="role_payload_invalid")
-        return {"role": role}
+    scope_n = _normalize_scope(scope)
+    if scope_n == "level":
+        if "level" in out and out.get("level") is not None:
+            try:
+                lv = normalize_level(out.get("level"))
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            if lv is None:
+                raise HTTPException(status_code=400, detail="level_payload_invalid")
+            return {"level": lv}
+        if "role" in out:
+            try:
+                lv = role_to_level(str(out.get("role") or ""))
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            if lv is None:
+                raise HTTPException(status_code=400, detail="level_payload_invalid")
+            return {"level": lv, "role": level_to_role(lv)}
+        raise HTTPException(status_code=400, detail="level_payload_invalid")
     if "folder_id" in out and str(out.get("folder_id") or "").strip():
         return {"folder_id": str(out["folder_id"]).strip()}
     if "region_name_from_group" in out:
@@ -87,9 +109,11 @@ def _validate_payload(scope: str, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _enabled_rules(db: Session, scope: str) -> list[tuple[TopoClassifyRule, re.Pattern[str]]]:
+    scope_n = _normalize_scope(scope)
+    scopes = ("level", "role") if scope_n == "level" else (scope_n,)
     rows = (
         db.query(TopoClassifyRule)
-        .filter(TopoClassifyRule.scope == scope, TopoClassifyRule.enabled.is_(True))
+        .filter(TopoClassifyRule.scope.in_(scopes), TopoClassifyRule.enabled.is_(True))
         .order_by(TopoClassifyRule.priority.asc(), TopoClassifyRule.name.asc())
         .all()
     )
@@ -122,21 +146,48 @@ def _ensure_region_by_name(db: Session, name: str) -> TopoFolder:
     return folder
 
 
-def _resolve_role_hit(
+def _payload_level(payload: dict[str, Any] | None) -> float | None:
+    p = dict(payload or {})
+    if "level" in p and p.get("level") is not None:
+        try:
+            return normalize_level(p.get("level"))
+        except ValueError:
+            return None
+    if "role" in p:
+        try:
+            return role_to_level(str(p.get("role") or ""))
+        except ValueError:
+            return None
+    return None
+
+
+def _resolve_level_hit(
     node: TopoFabricNode, rules: list[tuple[TopoClassifyRule, re.Pattern[str]]]
-) -> tuple[str | None, str | None, bool]:
-    """Return (role, rule_id, multi_hit)."""
-    hits: list[tuple[str, str]] = []
+) -> tuple[float | None, str | None, bool]:
+    """Return (level, rule_id, multi_hit)."""
+    hits: list[tuple[float, str]] = []
     for rule, cre in rules:
         text = _match_text(node, rule.match_field)
         if not text:
             continue
         if cre.search(text):
-            role = normalize_view_role(str((rule.payload or {}).get("role") or ""))
-            hits.append((role, rule.id))
+            lv = _payload_level(rule.payload)
+            if lv is None:
+                continue
+            hits.append((lv, rule.id))
     if not hits:
         return None, None, False
     return hits[0][0], hits[0][1], len(hits) > 1
+
+
+# Back-compat name used by older imports
+def _resolve_role_hit(
+    node: TopoFabricNode, rules: list[tuple[TopoClassifyRule, re.Pattern[str]]]
+) -> tuple[str | None, str | None, bool]:
+    lv, rid, multi = _resolve_level_hit(node, rules)
+    if lv is None:
+        return None, None, False
+    return level_to_role(lv), rid, multi
 
 
 def _resolve_region_hit(
@@ -182,3 +233,8 @@ def _resolve_region_hit(
     return hits[0][0], hits[0][1], len(hits) > 1
 
 
+def apply_level_fields(node: TopoFabricNode, level: float | None, *, source: str) -> None:
+    """Write level + synced role alias."""
+    node.level = level
+    node.role = level_to_role(level)
+    node.role_source = source

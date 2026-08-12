@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import HTTPException
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from .cli_resolve import get_default_profile, infer_device_type_vendor
@@ -48,6 +49,8 @@ def _job_out(
     include_items: bool = True,
     page: int | None = None,
     page_size: int | None = None,
+    item_status: str = "",
+    item_keyword: str = "",
 ) -> FabricDiscoverJobOut:
     items_out: list[FabricDiscoverJobItemOut] = []
     items_total = 0
@@ -59,6 +62,37 @@ def _job_out(
             .filter(TopoDiscoverJobItem.job_id == job.id)
             .order_by(TopoDiscoverJobItem.created_at.asc())
         )
+        st = str(item_status or "").strip().lower()
+        if st in ("ok", "success", "pass"):
+            q = q.filter(
+                TopoDiscoverJobItem.ok.is_(True),
+                TopoDiscoverJobItem.parser_stub.is_(False),
+                TopoDiscoverJobItem.unmatched_count == 0,
+            )
+        elif st in ("fail", "failed", "error"):
+            q = q.filter(
+                or_(
+                    TopoDiscoverJobItem.ok.is_(False),
+                    TopoDiscoverJobItem.parser_stub.is_(True),
+                )
+            )
+        elif st in ("warn", "warning"):
+            q = q.filter(
+                TopoDiscoverJobItem.ok.is_(True),
+                TopoDiscoverJobItem.parser_stub.is_(False),
+                TopoDiscoverJobItem.unmatched_count > 0,
+            )
+        kw = str(item_keyword or "").strip()
+        if kw:
+            like = f"%{kw}%"
+            q = q.filter(
+                or_(
+                    TopoDiscoverJobItem.ne_name.ilike(like),
+                    TopoDiscoverJobItem.ne_ip.ilike(like),
+                    TopoDiscoverJobItem.ne_id.ilike(like),
+                    TopoDiscoverJobItem.error.ilike(like),
+                )
+            )
         items_total = int(q.count())
         if page is not None and page_size is not None:
             items_page = max(1, int(page or 1))
@@ -121,11 +155,20 @@ def get_discover_job(
     *,
     page: int | None = None,
     page_size: int | None = None,
+    item_status: str = "",
+    item_keyword: str = "",
 ) -> FabricDiscoverJobOut:
     job = db.get(TopoDiscoverJob, str(job_id or "").strip())
     if job is None:
         raise HTTPException(status_code=404, detail="discover_job_not_found")
-    return _job_out(db, job, page=page, page_size=page_size)
+    return _job_out(
+        db,
+        job,
+        page=page,
+        page_size=page_size,
+        item_status=item_status,
+        item_keyword=item_keyword,
+    )
 
 
 def _ume_target_dict(db: Session, uid: str, default_profile: Any) -> dict[str, str] | None:

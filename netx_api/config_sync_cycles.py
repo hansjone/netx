@@ -6,7 +6,7 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from .cli_resolve import cli_profile_ready
@@ -252,8 +252,29 @@ def create_cycle(db: Session, body: ConfigSyncCycleCreate) -> ConfigSyncCycleOut
     return cycle_to_out(cycle)
 
 
-def list_cycles(db: Session, *, page: int, page_size: int) -> dict[str, Any]:
-    q = db.query(ConfigSyncCycle).order_by(ConfigSyncCycle.created_at.desc())
+def list_cycles(
+    db: Session,
+    *,
+    page: int,
+    page_size: int,
+    status: str = "",
+    keyword: str = "",
+) -> dict[str, Any]:
+    q = db.query(ConfigSyncCycle)
+    st = str(status or "").strip()
+    if st:
+        q = q.filter(ConfigSyncCycle.status == st)
+    kw = str(keyword or "").strip()
+    if kw:
+        like = f"%{kw}%"
+        q = q.filter(
+            or_(
+                ConfigSyncCycle.id.ilike(like),
+                ConfigSyncCycle.trigger_mode.ilike(like),
+                ConfigSyncCycle.error_message.ilike(like),
+            )
+        )
+    q = q.order_by(ConfigSyncCycle.created_at.desc())
     total = int(q.count())
     rows = q.offset((page - 1) * page_size).limit(page_size).all()
     return {"total": total, "page": page, "page_size": page_size, "items": [cycle_to_out(r) for r in rows]}

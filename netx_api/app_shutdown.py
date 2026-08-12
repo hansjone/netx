@@ -32,6 +32,13 @@ def shutdown_runtime(*, reason: str = "lifespan") -> None:
         _log.exception("stop_lldp_collect_scheduler failed")
 
     try:
+        from .ne_collect_scheduler import stop_ne_collect_scheduler
+
+        stop_ne_collect_scheduler()
+    except Exception:  # noqa: BLE001
+        _log.exception("stop_ne_collect_scheduler failed")
+
+    try:
         from .port_traffic_scheduler import stop_port_traffic_scheduler
 
         stop_port_traffic_scheduler()

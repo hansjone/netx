@@ -4,8 +4,11 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 
+from .collection_policy import get_policy, update_policy
+from .collection_schemas import CollectionJobCreate, CollectionPolicyUpdate
 from .collection_service import (
     build_collection_job_zip,
+    create_and_start_from_policy,
     create_collection,
     delete_collection_job,
     get_collection_dashboard,
@@ -19,7 +22,6 @@ from .collection_service import (
     start_collection_job,
     retry_failed_collection_job,
 )
-from .collection_schemas import CollectionJobCreate
 from .db import get_db
 from .models import NeCollectionRun
 from .ne_collect_runner import dispatch_collection_runs
@@ -42,6 +44,32 @@ def api_collection_dashboard(db: Session = Depends(get_db)):
     return get_collection_dashboard(db).model_dump()
 
 
+@router.get("/policy")
+def api_get_collection_policy(db: Session = Depends(get_db)):
+    return get_policy(db).model_dump()
+
+
+@router.put("/policy")
+def api_put_collection_policy(body: CollectionPolicyUpdate, db: Session = Depends(get_db)):
+    return update_policy(db, body).model_dump()
+
+
+@router.post("/start-from-policy")
+def api_start_from_policy(
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """Create + start a collect job from the saved policy (manual trigger)."""
+    out, payload = create_and_start_from_policy(db, trigger_mode="manual")
+    background_tasks.add_task(
+        dispatch_collection_runs,
+        payload["job_id"],
+        payload["run_ids"],
+        payload["commands"],
+    )
+    return out.model_dump()
+
+
 @router.post("")
 def api_create_collection(body: CollectionJobCreate, db: Session = Depends(get_db)):
     return create_collection(db, body).model_dump()
@@ -51,9 +79,13 @@ def api_create_collection(body: CollectionJobCreate, db: Session = Depends(get_d
 def api_list_collections(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
+    status: str = Query(default=""),
+    keyword: str = Query(default=""),
     db: Session = Depends(get_db),
 ):
-    return list_collection_jobs(db, page=page, page_size=page_size)
+    return list_collection_jobs(
+        db, page=page, page_size=page_size, status=status, keyword=keyword
+    )
 
 
 @router.get("/runs/{run_id}/download")

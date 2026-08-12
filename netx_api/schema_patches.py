@@ -154,6 +154,7 @@ def apply_topology_schema_safety_net(conn: Connection) -> None:
     )
     _run_sql(conn, "ALTER TABLE topo_fabric_node ADD COLUMN IF NOT EXISTS world_x DOUBLE PRECISION")
     _run_sql(conn, "ALTER TABLE topo_fabric_node ADD COLUMN IF NOT EXISTS world_y DOUBLE PRECISION")
+    _run_sql(conn, "ALTER TABLE topo_fabric_node ADD COLUMN IF NOT EXISTS level DOUBLE PRECISION")
     _run_sql(
         conn,
         "CREATE INDEX IF NOT EXISTS ix_topo_fabric_node_world_x ON topo_fabric_node (world_x)",
@@ -161,6 +162,10 @@ def apply_topology_schema_safety_net(conn: Connection) -> None:
     _run_sql(
         conn,
         "CREATE INDEX IF NOT EXISTS ix_topo_fabric_node_world_y ON topo_fabric_node (world_y)",
+    )
+    _run_sql(
+        conn,
+        "CREATE INDEX IF NOT EXISTS ix_topo_fabric_node_level ON topo_fabric_node (level)",
     )
     # UME link ifnames — required by topology sync/apply; missing when DB predates the columns
     # or Alembic was stamped head without running domain patches.
@@ -329,6 +334,7 @@ def apply_domain_schema_patches(conn: Connection) -> None:
         "ALTER TABLE ne_collection_job ADD COLUMN IF NOT EXISTS last_run_at TIMESTAMP",
         "UPDATE ne_collection_job SET last_run_at = COALESCE(ended_at, started_at, created_at) "
         "WHERE last_run_at IS NULL",
+        "ALTER TABLE ne_collection_job ADD COLUMN IF NOT EXISTS trigger_mode VARCHAR(32) DEFAULT 'manual'",
         "ALTER TABLE topology_edge ADD COLUMN IF NOT EXISTS stroke_color VARCHAR(32) DEFAULT ''",
         "ALTER TABLE topology_edge ADD COLUMN IF NOT EXISTS stroke_width INTEGER DEFAULT 0",
         "ALTER TABLE topology_edge ADD COLUMN IF NOT EXISTS line_style VARCHAR(16) DEFAULT ''",

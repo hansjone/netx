@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, type QueryClient } from "@tanstack/react-query";
 import type { Edge, Node, ReactFlowInstance } from "@xyflow/react";
-import { fetchTopologyGraph } from "../../../services/api";
+import { fetchTopologyGraph, formatErr } from "../../../services/api";
 import { queryKeys } from "../../../constants/queryKeys";
 import type { TopologyTreeViewItem, TopologyViewGraph, TopologyWorldTransform } from "../../../types";
 import {
@@ -493,6 +493,8 @@ export function useTopologyCanvas(opts: UseTopologyCanvasOptions) {
   const showWorldScatter =
     isWorldFlatCanvas && worldVisualLod !== "full" && worldScatter.length > 0;
   const canvasGraphLoading = Boolean(mapId) && (graphQuery.isPending || !graphQuery.data);
+  const canvasGraphError = Boolean(mapId) && graphQuery.isError;
+  const canvasGraphErrorMsg = graphQuery.error ? formatErr(graphQuery.error) : "";
   const canvasGraphEmpty =
     Boolean(mapId) &&
     graphQuery.isSuccess &&
@@ -551,6 +553,8 @@ export function useTopologyCanvas(opts: UseTopologyCanvasOptions) {
     worldDockMe,
     showWorldScatter,
     canvasGraphLoading,
+    canvasGraphError,
+    canvasGraphErrorMsg,
     canvasGraphEmpty,
     worldNeedsApply,
     canvasGraphRefreshing,

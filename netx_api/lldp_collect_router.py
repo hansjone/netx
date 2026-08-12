@@ -67,9 +67,11 @@ def api_stop_job(job_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
 def api_list_jobs(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
+    status: str = Query(default=""),
+    keyword: str = Query(default=""),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    return list_jobs(db, page=page, page_size=page_size)
+    return list_jobs(db, page=page, page_size=page_size, status=status, keyword=keyword)
 
 
 @router.get("/jobs/{job_id}")
@@ -77,6 +79,15 @@ def api_get_job(
     job_id: str,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
+    status: str = Query(default=""),
+    keyword: str = Query(default=""),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    return get_job_detail(db, job_id, page=page, page_size=page_size)
+    return get_job_detail(
+        db,
+        job_id,
+        page=page,
+        page_size=page_size,
+        item_status=status,
+        item_keyword=keyword,
+    )

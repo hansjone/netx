@@ -93,8 +93,10 @@ def api_fabric_summary(db: Session = Depends(get_db)) -> dict[str, Any]:
 def api_fabric_nodes(
     keyword: str = "",
     role: str = "",
+    level: str = Query(default="", description="Exact level e.g. 1.1"),
+    level_major: str = Query(default="", description="Major band e.g. 2 → [2.0, 3.0)"),
     region_folder_id: str = "",
-    unmatched: str = Query(default="", description="any | role | region"),
+    unmatched: str = Query(default="", description="any | level | role | region"),
     link_status: str = Query(
         default="",
         description="linked | orphaned | managed | ume | both",
@@ -107,6 +109,8 @@ def api_fabric_nodes(
         db,
         keyword=keyword,
         role=role,
+        level=level,
+        level_major=level_major,
         region_folder_id=region_folder_id,
         unmatched=unmatched,
         link_status=link_status,
@@ -255,9 +259,18 @@ def api_fabric_discover_job(
     job_id: str,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
+    status: str = Query(default=""),
+    keyword: str = Query(default=""),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    return get_discover_job(db, job_id, page=page, page_size=page_size).model_dump()
+    return get_discover_job(
+        db,
+        job_id,
+        page=page,
+        page_size=page_size,
+        item_status=status,
+        item_keyword=keyword,
+    ).model_dump()
 
 
 # --- Tree / folders ---------------------------------------------------------
@@ -520,7 +533,7 @@ def api_classify_apply(
 
 @router.get("/classify/unmatched")
 def api_classify_unmatched(
-    kind: str = Query(default="any", description="any | role | region"),
+    kind: str = Query(default="any", description="any | level | role | region"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=500),
     db: Session = Depends(get_db),
@@ -591,6 +604,10 @@ def api_generate_slices(
     body: SliceGenerateRequest,
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
+    """Deprecated for product UI: slice maps freeze custom views and bypass region canvases.
+
+    Kept for tests / legacy clients. Prefer region folders + classify tags + MCP layout.
+    """
     return generate_slices(db, body).model_dump()
 
 

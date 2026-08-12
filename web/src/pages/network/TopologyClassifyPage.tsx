@@ -6,7 +6,6 @@ import {
   deleteFabricNodes,
   fetchFabricNodes,
   fetchTopologyTree,
-  generateTopologySlices,
   matchFabricNodes,
   patchFabricNodeTags,
 } from "../../services/api";
@@ -14,7 +13,7 @@ import { queryKeys } from "../../constants/queryKeys";
 import { useI18n } from "../../i18n";
 import { useToast } from "../../hooks/useToast";
 import { openOrFocusModule } from "../../utils/moduleWindows";
-import type { FabricNodeSearchHit, SliceGenerateResult, TopologyTreeFolderItem } from "../../types";
+import type { FabricNodeSearchHit, TopologyTreeFolderItem } from "../../types";
 
 const PAGE_SIZE = 50;
 
@@ -37,15 +36,42 @@ function isFabricNodeDeletable(n: FabricNodeSearchHit): boolean {
   return src === "lldp" || src === "topology" || src === "webcrt";
 }
 
-const ROLE_OPTIONS = ["core", "aggregation", "access", "unknown"] as const;
+const LEVEL_PRESETS = [
+  { value: "0", labelKey: "topoClassify.levelExternal" },
+  { value: "1", labelKey: "topoClassify.levelCore" },
+  { value: "1.1", labelKey: "topoClassify.levelCoreSub" },
+  { value: "2", labelKey: "topoClassify.levelAgg" },
+  { value: "2.1", labelKey: "topoClassify.levelAggSub" },
+  { value: "3", labelKey: "topoClassify.levelAccess" },
+  { value: "3.1", labelKey: "topoClassify.levelAccessSub" },
+] as const;
 
-function roleLabel(t: (k: string) => string, role: string): string {
-  const s = String(role || "").trim().toLowerCase();
-  if (s === "core") return t("topoClassify.roleCore");
-  if (s === "aggregation") return t("topoClassify.roleAggregation");
-  if (s === "access") return t("topoClassify.roleAccess");
-  if (s === "unknown") return t("topoClassify.roleUnknown");
-  return role || "-";
+const FILTER_MAJOR = [
+  { value: "", labelKey: "topoClassify.filterLevelAll" },
+  { value: "0", labelKey: "topoClassify.levelExternal" },
+  { value: "1", labelKey: "topoClassify.levelCore" },
+  { value: "2", labelKey: "topoClassify.levelAgg" },
+  { value: "3", labelKey: "topoClassify.levelAccess" },
+] as const;
+
+function formatLevel(level: number | null | undefined): string {
+  if (level === null || level === undefined || Number.isNaN(Number(level))) return "—";
+  const n = Number(level);
+  if (Math.abs(n - Math.round(n)) < 1e-9) return String(Math.round(n));
+  return String(Math.round(n * 10) / 10);
+}
+
+function parseLevelInput(raw: string): number | null {
+  const s = String(raw || "").trim();
+  if (!s) return null;
+  const n = Number(s);
+  if (!Number.isFinite(n) || n < 0 || n > 99.9) throw new Error("level_invalid");
+  return Math.round(n * 10) / 10;
+}
+
+function levelPresetLabel(t: (k: string) => string, value: string): string {
+  const hit = LEVEL_PRESETS.find((p) => p.value === value);
+  return hit ? t(hit.labelKey) : value;
 }
 
 function managedSourceLabel(t: (k: string) => string, source: string): string {
@@ -64,7 +90,7 @@ export function TopologyClassifyPage() {
   const queryClient = useQueryClient();
 
   const [keyword, setKeyword] = useState("");
-  const [filterRole, setFilterRole] = useState("");
+  const [filterMajor, setFilterMajor] = useState("");
   const [filterRegion, setFilterRegion] = useState("");
   const [unmatched, setUnmatched] = useState("");
   const [linkStatus, setLinkStatus] = useState("");
@@ -89,22 +115,14 @@ export function TopologyClassifyPage() {
   const [matchField, setMatchField] = useState<"name" | "ip" | "name_ip">("name");
   const [matchedIds, setMatchedIds] = useState<string[]>([]);
   const [matchTotal, setMatchTotal] = useState(0);
-  const [assignRole, setAssignRole] = useState("core");
+  const [assignLevel, setAssignLevel] = useState("1");
   const [assignRegion, setAssignRegion] = useState("");
-  const [assignWhat, setAssignWhat] = useState<"role" | "region" | "both">("role");
+  const [assignWhat, setAssignWhat] = useState<"level" | "region" | "both">("level");
 
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [editingId, setEditingId] = useState("");
-  const [editRole, setEditRole] = useState("");
+  const [editLevel, setEditLevel] = useState("");
   const [editRegion, setEditRegion] = useState("");
-
-  const [sliceFolderId, setSliceFolderId] = useState("");
-  const [sliceTemplate, setSliceTemplate] = useState<"core_only" | "core_agg" | "agg_access">(
-    "core_agg",
-  );
-  const [slicePreview, setSlicePreview] = useState<SliceGenerateResult | null>(null);
-  const [seedPhysical, setSeedPhysical] = useState(true);
-  const [showSlices, setShowSlices] = useState(false);
 
   const treeQuery = useQuery({
     queryKey: queryKeys.topologyTree,
@@ -120,16 +138,17 @@ export function TopologyClassifyPage() {
   const listQuery = useQuery({
     queryKey: queryKeys.fabricNodeInventory(
       keyword,
-      filterRole,
+      "",
       filterRegion,
       unmatched,
       linkStatus,
       page,
+      filterMajor,
     ),
     queryFn: () =>
       fetchFabricNodes({
         keyword,
-        role: filterRole,
+        levelMajor: filterMajor || undefined,
         regionFolderId: filterRegion,
         unmatched,
         linkStatus,
@@ -163,7 +182,9 @@ export function TopologyClassifyPage() {
         fabric_node_ids: ids.length ? ids : matchedIds,
         dry_run: false,
       };
-      if (assignWhat === "role" || assignWhat === "both") body.role = assignRole;
+      if (assignWhat === "level" || assignWhat === "both") {
+        body.level = parseLevelInput(assignLevel);
+      }
       if (assignWhat === "region" || assignWhat === "both") {
         body.region_folder_id = assignRegion || "";
       }
@@ -180,11 +201,18 @@ export function TopologyClassifyPage() {
   });
 
   const patchMut = useMutation({
-    mutationFn: () =>
-      patchFabricNodeTags(editingId, {
-        role: editRole,
+    mutationFn: () => {
+      let level: number | null;
+      try {
+        level = parseLevelInput(editLevel);
+      } catch {
+        throw new Error(t("topoClassify.levelInvalid"));
+      }
+      return patchFabricNodeTags(editingId, {
+        level,
         region_folder_id: editRegion || "",
-      }),
+      });
+    },
     onSuccess: async () => {
       showOk(t("topoClassify.rowSaved"));
       setEditingId("");
@@ -213,36 +241,6 @@ export function TopologyClassifyPage() {
     onError: (err) => showError(String(err)),
   });
 
-  const slicePreviewMut = useMutation({
-    mutationFn: () =>
-      generateTopologySlices({
-        folder_id: sliceFolderId,
-        template: sliceTemplate,
-        dry_run: true,
-        max_nodes: 300,
-        seed_physical_cores: seedPhysical,
-      }),
-    onSuccess: (out) => setSlicePreview(out),
-    onError: (err) => showError(String(err)),
-  });
-
-  const sliceApplyMut = useMutation({
-    mutationFn: () =>
-      generateTopologySlices({
-        folder_id: sliceFolderId,
-        template: sliceTemplate,
-        dry_run: false,
-        max_nodes: 300,
-        seed_physical_cores: seedPhysical,
-      }),
-    onSuccess: async (out) => {
-      showOk(t("topoClassify.sliceOk").replace("{{count}}", String(out.created_view_ids.length)));
-      setSlicePreview(out);
-      await queryClient.invalidateQueries({ queryKey: queryKeys.topologyTree });
-    },
-    onError: (err) => showError(String(err)),
-  });
-
   const items = listQuery.data?.items || [];
   const deletableSelected = items
     .filter((n) => selected[n.id] && isFabricNodeDeletable(n))
@@ -254,7 +252,7 @@ export function TopologyClassifyPage() {
 
   const startEdit = (n: FabricNodeSearchHit) => {
     setEditingId(n.id);
-    setEditRole(n.role || "");
+    setEditLevel(n.level == null ? "" : formatLevel(n.level));
     setEditRegion(n.region_folder_id || "");
   };
 
@@ -278,7 +276,17 @@ export function TopologyClassifyPage() {
           <button
             type="button"
             className="btn-primary"
-            onClick={() => openOrFocusModule({ moduleId: "topology", path: "/topology" })}
+            onClick={() => {
+              const regionId = filterRegion || assignRegion || "";
+              const folder = regions.find((r) => r.id === regionId);
+              const views = folder?.views || [];
+              const primary =
+                views.find((v) => String(v.kind || "") === "physical") || views[0];
+              const path = primary?.id
+                ? `/topology?view=${encodeURIComponent(primary.id)}`
+                : "/topology";
+              openOrFocusModule({ moduleId: "topology", path });
+            }}
           >
             {t("topoClassify.openTopo")}
           </button>
@@ -299,16 +307,15 @@ export function TopologyClassifyPage() {
           />
           <select
             className="input"
-            value={filterRole}
+            value={filterMajor}
             onChange={(e) => {
-              setFilterRole(e.target.value);
+              setFilterMajor(e.target.value);
               setPage(1);
             }}
           >
-            <option value="">{t("topoClassify.filterRoleAll")}</option>
-            {ROLE_OPTIONS.map((r) => (
-              <option key={r} value={r}>
-                {roleLabel(t, r)}
+            {FILTER_MAJOR.map((r) => (
+              <option key={r.value || "all"} value={r.value}>
+                {t(r.labelKey)}
               </option>
             ))}
           </select>
@@ -337,7 +344,7 @@ export function TopologyClassifyPage() {
           >
             <option value="">{t("topoClassify.filterUnmatchedOff")}</option>
             <option value="any">{t("topoClassify.kindAny")}</option>
-            <option value="role">{t("topoClassify.kindRole")}</option>
+            <option value="level">{t("topoClassify.kindLevel")}</option>
             <option value="region">{t("topoClassify.kindRegion")}</option>
           </select>
           <select
@@ -390,26 +397,26 @@ export function TopologyClassifyPage() {
           <select
             className="input"
             value={assignWhat}
-            onChange={(e) => setAssignWhat(e.target.value as "role" | "region" | "both")}
+            onChange={(e) => setAssignWhat(e.target.value as "level" | "region" | "both")}
           >
-            <option value="role">{t("topoClassify.assignRole")}</option>
+            <option value="level">{t("topoClassify.assignLevel")}</option>
             <option value="region">{t("topoClassify.assignRegion")}</option>
             <option value="both">{t("topoClassify.assignBoth")}</option>
           </select>
           {assignWhat !== "region" ? (
             <select
               className="input"
-              value={assignRole}
-              onChange={(e) => setAssignRole(e.target.value)}
+              value={assignLevel}
+              onChange={(e) => setAssignLevel(e.target.value)}
             >
-              {ROLE_OPTIONS.map((r) => (
-                <option key={r} value={r}>
-                  {roleLabel(t, r)}
+              {LEVEL_PRESETS.map((r) => (
+                <option key={r.value} value={r.value}>
+                  {levelPresetLabel(t, r.value)}
                 </option>
               ))}
             </select>
           ) : null}
-          {assignWhat !== "role" ? (
+          {assignWhat !== "level" ? (
             <select
               className="input"
               value={assignRegion}
@@ -475,7 +482,7 @@ export function TopologyClassifyPage() {
               <th>{t("topoClassify.colNe")}</th>
               <th>IP</th>
               <th>{t("topoClassify.colLink")}</th>
-              <th>{t("topoClassify.colRole")}</th>
+              <th>{t("topoClassify.colLevel")}</th>
               <th>{t("topoClassify.colRegion")}</th>
               <th>{t("topoClassify.colActions")}</th>
             </tr>
@@ -503,20 +510,14 @@ export function TopologyClassifyPage() {
                   </td>
                   <td>
                     {editing ? (
-                      <select
+                      <input
                         className="input"
-                        value={editRole}
-                        onChange={(e) => setEditRole(e.target.value)}
-                      >
-                        <option value="">-</option>
-                        {ROLE_OPTIONS.map((r) => (
-                          <option key={r} value={r}>
-                            {roleLabel(t, r)}
-                          </option>
-                        ))}
-                      </select>
+                        value={editLevel}
+                        placeholder="1 / 1.1 / 2.1"
+                        onChange={(e) => setEditLevel(e.target.value)}
+                      />
                     ) : (
-                      roleLabel(t, n.role || "")
+                      formatLevel(n.level)
                     )}
                   </td>
                   <td>
@@ -626,95 +627,6 @@ export function TopologyClassifyPage() {
             {t("common.nextPage")}
           </button>
         </div>
-      </section>
-
-      <section className="topo-classify__section">
-        <button
-          type="button"
-          className="btn btn--sm btn--ghost"
-          onClick={() => setShowSlices((v) => !v)}
-        >
-          {showSlices ? t("topoClassify.hideSlices") : t("topoClassify.showSlices")}
-        </button>
-        {showSlices ? (
-          <>
-            <h3>{t("topoClassify.slices")}</h3>
-            <div className="topo-classify__draft">
-              <select
-                className="input"
-                value={sliceFolderId}
-                onChange={(e) => {
-                  setSliceFolderId(e.target.value);
-                  setSlicePreview(null);
-                }}
-              >
-                <option value="">{t("topoClassify.pickRegion")}</option>
-                {regions.map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {r.name}
-                  </option>
-                ))}
-              </select>
-              <select
-                className="input"
-                value={sliceTemplate}
-                onChange={(e) =>
-                  setSliceTemplate(e.target.value as "core_only" | "core_agg" | "agg_access")
-                }
-              >
-                <option value="core_only">{t("topoClassify.tplCore")}</option>
-                <option value="core_agg">{t("topoClassify.tplCoreAgg")}</option>
-                <option value="agg_access">{t("topoClassify.tplAggAcc")}</option>
-              </select>
-              <label className="topo-classify__check">
-                <input
-                  type="checkbox"
-                  checked={seedPhysical}
-                  onChange={(e) => setSeedPhysical(e.target.checked)}
-                />
-                {t("topoClassify.seedPhysical")}
-              </label>
-              <button
-                type="button"
-                className="btn btn--sm btn--ghost"
-                disabled={!sliceFolderId || slicePreviewMut.isPending}
-                onClick={() => slicePreviewMut.mutate()}
-              >
-                {t("topoClassify.slicePreview")}
-              </button>
-              <button
-                type="button"
-                className="btn btn--sm"
-                disabled={!sliceFolderId || sliceApplyMut.isPending}
-                onClick={() => {
-                  if (window.confirm(t("topoClassify.sliceConfirm"))) sliceApplyMut.mutate();
-                }}
-              >
-                {t("topoClassify.sliceApply")}
-              </button>
-            </div>
-            {slicePreview ? (
-              <div className="topo-classify__preview">
-                <p className="panel__hint">
-                  {t("topoClassify.sliceStats")
-                    .replace("{{maps}}", String(slicePreview.map_count))
-                    .replace("{{overlap}}", String(slicePreview.overlap_node_count))}
-                </p>
-                <ul className="topo-classify__slice-list">
-                  {slicePreview.maps.map((m) => (
-                    <li key={m.name}>
-                      <strong>{m.name}</strong>
-                      {" · "}
-                      {roleLabel(t, m.role)}
-                      {" · "}
-                      {t("topoClassify.nodeCount").replace("{{count}}", String(m.node_count))}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-          </>
-        ) : null}
       </section>
     </div>
   );

@@ -26,10 +26,12 @@ class TopoFabricNode(Base):
     ip: Mapped[str] = mapped_column(String(128), default="", index=True)
     vendor: Mapped[str] = mapped_column(String(64), default="")
     device_type: Mapped[str] = mapped_column(String(64), default="")
-    # Classify tags (regex rules / manual). role: core|aggregation|access|unknown|""
+    # Layout rank: major.minor (0=external … 1=core … 2=agg … 3=access). None = unclassified.
+    level: Mapped[float | None] = mapped_column(Float, nullable=True, index=True)
+    # Synced alias from floor(level): external|core|aggregation|access|edge|""
     role: Mapped[str] = mapped_column(String(32), default="", index=True)
     region_folder_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
-    # rule | manual | ""
+    # rule | manual | ""  (applies to level; role is derived)
     role_source: Mapped[str] = mapped_column(String(16), default="")
     region_source: Mapped[str] = mapped_column(String(16), default="")
     # Composed flat-world coordinates (packed per-SBN local layouts). Not raw UME xPos/yPos.
@@ -47,15 +49,15 @@ class TopoClassifyRule(Base):
     __tablename__ = "topo_classify_rule"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
-    # role | region
-    scope: Mapped[str] = mapped_column(String(16), default="role", index=True)
+    # level | region  (legacy scope "role" accepted as alias of level)
+    scope: Mapped[str] = mapped_column(String(16), default="level", index=True)
     name: Mapped[str] = mapped_column(String(256), default="")
     pattern: Mapped[str] = mapped_column(String(512), default="")
     # name | ip | name_ip
     match_field: Mapped[str] = mapped_column(String(32), default="name")
     priority: Mapped[int] = mapped_column(Integer, default=100, index=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
-    # role: {role}; region: {folder_id} or {region_name_from_group}
+    # role: {level} or legacy {role}; region: {folder_id} or {region_name_from_group}
     payload: Mapped[dict] = mapped_column(_JsonType, default=dict)
     remark: Mapped[str] = mapped_column(String(512), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)

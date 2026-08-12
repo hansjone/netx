@@ -163,9 +163,11 @@ def api_delete_board(
 def api_list_devices(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
+    status: str = Query(default=""),
+    keyword: str = Query(default=""),
     db: Session = Depends(get_db),
 ):
-    return list_devices(db, page=page, page_size=page_size)
+    return list_devices(db, page=page, page_size=page_size, status=status, keyword=keyword)
 
 
 @router.post("/devices")

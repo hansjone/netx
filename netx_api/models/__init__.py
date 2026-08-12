@@ -20,6 +20,7 @@ from .managed_ne import (
     CliConnectProfile,
     ManagedNE,
     NeCollectionJob,
+    NeCollectionPolicy,
     NeCollectionRun,
     UmeCliOverride,
 )
@@ -82,6 +83,7 @@ __all__ = [
     "CliConnectProfile",
     "UmeCliOverride",
     "NeCollectionJob",
+    "NeCollectionPolicy",
     "NeCollectionRun",
     "TopoFabricNode",
     "TopoClassifyRule",

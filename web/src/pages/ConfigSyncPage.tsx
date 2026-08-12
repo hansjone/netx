@@ -1,20 +1,25 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSearchParams } from "react-router-dom";
+import { ListPager } from "../components/ListPager";
+import { queryKeys } from "../constants/queryKeys";
+import { useDebouncedValue } from "../hooks/useDebouncedValue";
+import { useToast } from "../hooks/useToast";
+import { useI18n } from "../i18n";
 import {
   createConfigSyncCycle,
   fetchCliTargets,
   fetchConfigSyncCycleTasks,
   fetchConfigSyncCycles,
   fetchConfigSyncDashboard,
+  formatErr,
   pauseConfigSyncCycle,
   resumeConfigSyncCycle,
   stopConfigSyncCycle,
   updateConfigSyncPolicy,
 } from "../services/api";
-import { queryKeys } from "../constants/queryKeys";
-import { useI18n } from "../i18n";
-import { useToast } from "../hooks/useToast";
-import type { CliTargetItem, ConfigSyncTargetRef } from "../types";
+import type { CliTargetItem, ConfigSyncCycle, ConfigSyncTargetRef, ConfigSyncTask } from "../types";
+import { downloadCsv, fetchAllPages } from "../utils/csvExport";
 import { pageCount } from "../utils/display";
 import { formatSystemTime } from "../utils/time";
 
@@ -25,12 +30,22 @@ export function ConfigSyncPage() {
   const { t } = useI18n();
   const { showOk, showError } = useToast();
   const queryClient = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const [cyclePage, setCyclePage] = useState(1);
+  const [cyclePageSize, setCyclePageSize] = useState(20);
+  const [cycleStatus, setCycleStatus] = useState("");
+  const [cycleKeyword, setCycleKeyword] = useState("");
+  const [exportingCycles, setExportingCycles] = useState(false);
   const [expandedCycleId, setExpandedCycleId] = useState("");
   const [taskPage, setTaskPage] = useState(1);
+  const [taskPageSize, setTaskPageSize] = useState(20);
   const [taskStatus, setTaskStatus] = useState("");
   const [taskKeyword, setTaskKeyword] = useState("");
+  const [exportingTasks, setExportingTasks] = useState(false);
+
+  const debouncedCycleKeyword = useDebouncedValue(cycleKeyword, 300);
+  const debouncedTaskKeyword = useDebouncedValue(taskKeyword, 300);
 
   const [enabled, setEnabled] = useState(false);
   const [intervalDays, setIntervalDays] = useState(3);
@@ -73,22 +88,52 @@ export function ConfigSyncPage() {
     setPolicyHydrated(true);
   }, [dashQuery.data, policyHydrated]);
 
+  useEffect(() => {
+    const id = String(searchParams.get("cycle_id") || "").trim();
+    if (!id) return;
+    setExpandedCycleId(id);
+    setTaskPage(1);
+    setTaskPageSize(20);
+    setTaskKeyword("");
+    setTaskStatus("");
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (next.get("cycle_id") === id) next.delete("cycle_id");
+        return next;
+      },
+      { replace: true },
+    );
+  }, [searchParams, setSearchParams]);
+
   const cyclesQuery = useQuery({
-    queryKey: queryKeys.configSyncCycles(cyclePage),
-    queryFn: () => fetchConfigSyncCycles({ page: cyclePage, pageSize: 10 }),
+    queryKey: queryKeys.configSyncCycles(cyclePage, cyclePageSize, cycleStatus, debouncedCycleKeyword),
+    queryFn: () =>
+      fetchConfigSyncCycles({
+        page: cyclePage,
+        pageSize: cyclePageSize,
+        status: cycleStatus,
+        keyword: debouncedCycleKeyword,
+      }),
     staleTime: 1000,
     refetchInterval: () => (dashQuery.data?.running_cycle ? POLL_MS : false),
   });
 
   const tasksQuery = useQuery({
-    queryKey: queryKeys.configSyncCycleTasks(expandedCycleId, taskPage, taskStatus, taskKeyword),
+    queryKey: queryKeys.configSyncCycleTasks(
+      expandedCycleId,
+      taskPage,
+      taskPageSize,
+      taskStatus,
+      debouncedTaskKeyword,
+    ),
     queryFn: () =>
       fetchConfigSyncCycleTasks({
         cycleId: expandedCycleId,
         page: taskPage,
-        pageSize: 20,
+        pageSize: taskPageSize,
         status: taskStatus,
-        keyword: taskKeyword,
+        keyword: debouncedTaskKeyword,
       }),
     enabled: Boolean(expandedCycleId),
     staleTime: 800,
@@ -144,7 +189,7 @@ export function ConfigSyncPage() {
       showOk(t("configSync.policySaved"));
       await refresh();
     },
-    onError: (err) => showError(String(err)),
+    onError: (err) => showError(formatErr(err)),
   });
 
   const startMut = useMutation({
@@ -153,7 +198,7 @@ export function ConfigSyncPage() {
       showOk(t("configSync.started"));
       await refresh();
     },
-    onError: (err) => showError(String(err)),
+    onError: (err) => showError(formatErr(err)),
   });
 
   const pauseMut = useMutation({
@@ -162,7 +207,7 @@ export function ConfigSyncPage() {
       showOk(t("configSync.paused"));
       await refresh();
     },
-    onError: (err) => showError(String(err)),
+    onError: (err) => showError(formatErr(err)),
   });
 
   const resumeMut = useMutation({
@@ -171,7 +216,7 @@ export function ConfigSyncPage() {
       showOk(t("configSync.resumed"));
       await refresh();
     },
-    onError: (err) => showError(String(err)),
+    onError: (err) => showError(formatErr(err)),
   });
 
   const stopMut = useMutation({
@@ -180,7 +225,7 @@ export function ConfigSyncPage() {
       showOk(t("configSync.stopped"));
       await refresh();
     },
-    onError: (err) => showError(String(err)),
+    onError: (err) => showError(formatErr(err)),
   });
 
   const dash = dashQuery.data;
@@ -188,8 +233,110 @@ export function ConfigSyncPage() {
   const last = dash?.last_cycle;
   const cycles = cyclesQuery.data?.items ?? [];
   const cycleTotal = Number(cyclesQuery.data?.total || 0);
-  const cyclePages = pageCount(cycleTotal, 10);
+  const cyclePages = pageCount(cycleTotal, cyclePageSize);
+  const taskTotal = Number(tasksQuery.data?.total || 0);
+  const taskPages = pageCount(taskTotal, taskPageSize);
   const selectedCount = useMemo(() => Object.keys(selectedMap).length, [selectedMap]);
+  const hasCycleFilters = Boolean(cycleKeyword.trim() || cycleStatus);
+
+  const openCycleTasks = (cycleId: string) => {
+    setExpandedCycleId(cycleId);
+    setTaskPage(1);
+    setTaskKeyword("");
+    setTaskStatus("");
+  };
+
+  const exportCyclesCsv = async () => {
+    setExportingCycles(true);
+    try {
+      const rows = await fetchAllPages<ConfigSyncCycle>({
+        pageSize: 100,
+        maxRows: 2000,
+        fetchPage: (p, ps) =>
+          fetchConfigSyncCycles({
+            page: p,
+            pageSize: ps,
+            status: cycleStatus,
+            keyword: debouncedCycleKeyword,
+          }),
+      });
+      downloadCsv(
+        `${t("configSync.exportCyclesName")}-${new Date().toISOString().slice(0, 10)}.csv`,
+        rows,
+        [
+          { key: "id", header: "ID" },
+          { key: "trigger_mode", header: t("configSync.col.trigger") },
+          { key: "status", header: t("configSync.col.status") },
+          {
+            key: "progress",
+            header: t("configSync.col.progress"),
+            value: (r) => `${r.success_count}/${r.planned_count} fail ${r.fail_count}`,
+          },
+          {
+            key: "started_at",
+            header: t("configSync.col.started"),
+            value: (r) => (r.started_at ? formatSystemTime(r.started_at) : ""),
+          },
+          {
+            key: "ended_at",
+            header: t("configSync.col.ended"),
+            value: (r) => (r.ended_at ? formatSystemTime(r.ended_at) : ""),
+          },
+          { key: "error_message", header: t("configSync.col.message") },
+        ],
+      );
+      if (rows.length < cycleTotal) {
+        showOk(t("common.exportTruncated", { count: String(rows.length), total: String(cycleTotal) }));
+      } else {
+        showOk(t("common.exportOk", { count: String(rows.length) }));
+      }
+    } catch (err) {
+      showError(t("common.exportFailed") + ": " + formatErr(err));
+    } finally {
+      setExportingCycles(false);
+    }
+  };
+
+  const exportTasksCsv = async () => {
+    if (!expandedCycleId) return;
+    setExportingTasks(true);
+    try {
+      const rows = await fetchAllPages<ConfigSyncTask>({
+        pageSize: 200,
+        maxRows: 2000,
+        fetchPage: (p, ps) =>
+          fetchConfigSyncCycleTasks({
+            cycleId: expandedCycleId,
+            page: p,
+            pageSize: ps,
+            status: taskStatus,
+            keyword: debouncedTaskKeyword,
+          }),
+      });
+      downloadCsv(
+        `${t("configSync.exportTasksName")}-${expandedCycleId.slice(0, 8)}-${new Date().toISOString().slice(0, 10)}.csv`,
+        rows,
+        [
+          { key: "ne_name", header: t("configSync.col.name"), value: (r) => r.ne_name || r.target_id },
+          { key: "ne_ip", header: "IP" },
+          { key: "vendor", header: t("configSync.col.vendor") },
+          { key: "source", header: t("configSync.col.source") },
+          { key: "status", header: t("configSync.col.status") },
+          { key: "message", header: t("configSync.col.message") },
+          { key: "target_id", header: "ID" },
+        ],
+      );
+      if (rows.length < taskTotal) {
+        showOk(t("common.exportTruncated", { count: String(rows.length), total: String(taskTotal) }));
+      } else {
+        showOk(t("common.exportOk", { count: String(rows.length) }));
+      }
+    } catch (err) {
+      showError(t("common.exportFailed") + ": " + formatErr(err));
+    } finally {
+      setExportingTasks(false);
+    }
+  };
 
   const toggleTarget = (row: CliTargetItem) => {
     const source = row.source === "ume" ? "ume" : "managed";
@@ -416,114 +563,155 @@ export function ConfigSyncPage() {
       </div>
 
       <h3>{t("configSync.cyclesTitle")}</h3>
-      <div className="pt-list-table-wrap">
-      <table className="data-table pt-list-table">
-        <thead>
-          <tr>
-            <th />
-            <th>ID</th>
-            <th>{t("configSync.col.trigger")}</th>
-            <th>{t("configSync.col.status")}</th>
-            <th>{t("configSync.col.progress")}</th>
-            <th>{t("configSync.col.started")}</th>
-            <th>{t("configSync.col.ended")}</th>
-            <th>{t("configSync.col.actions")}</th>
-          </tr>
-        </thead>
-        <tbody>
-          {cycles.map((c) => (
-            <tr key={c.id}>
-              <td>
-                <button
-                  type="button"
-                  className="btn btn--sm btn--ghost"
-                  onClick={() => {
-                    setExpandedCycleId(c.id);
-                    setTaskPage(1);
-                    setTaskKeyword("");
-                    setTaskStatus("");
-                  }}
-                >
-                  {t("configSync.expand")}
-                </button>
-              </td>
-              <td title={c.id} className="pt-list-num">{c.id.slice(0, 8)}</td>
-              <td>{c.trigger_mode}</td>
-              <td>
-                <span
-                  className={`pt-list-status ${
-                    c.status === "running" || c.status === "pending"
-                      ? "pt-list-status--running"
-                      : c.status === "paused"
-                        ? "pt-list-status--paused"
-                        : c.status === "failed"
-                          ? "pt-list-status--failed"
-                          : c.status === "success" || c.status === "completed"
-                            ? "pt-list-status--ok"
-                            : "pt-list-status--other"
-                  }`}
-                >
-                  {c.status}
-                </span>
-              </td>
-              <td>
-                {c.success_count}/{c.planned_count} · fail {c.fail_count}
-              </td>
-              <td>{c.started_at ? formatSystemTime(c.started_at) : "-"}</td>
-              <td>{c.ended_at ? formatSystemTime(c.ended_at) : "-"}</td>
-              <td>
-                <div className="btn-row">
-                  {c.status === "running" || c.status === "pending" ? (
-                    <button type="button" onClick={() => pauseMut.mutate(c.id)} disabled={pauseMut.isPending}>
-                      {t("configSync.pause")}
-                    </button>
-                  ) : null}
-                  {c.status === "paused" ? (
-                    <button type="button" onClick={() => resumeMut.mutate(c.id)} disabled={resumeMut.isPending}>
-                      {t("configSync.resume")}
-                    </button>
-                  ) : null}
-                  {c.status === "running" || c.status === "paused" || c.status === "pending" ? (
+      <div className="pt-list">
+        <div className="filter-inline">
+          <input
+            value={cycleKeyword}
+            placeholder={t("configSync.keywordPh")}
+            onChange={(e) => {
+              setCycleKeyword(e.target.value);
+              setCyclePage(1);
+            }}
+          />
+          <select
+            value={cycleStatus}
+            onChange={(e) => {
+              setCycleStatus(e.target.value);
+              setCyclePage(1);
+            }}
+          >
+            <option value="">{t("configSync.statusAll")}</option>
+            <option value="pending">pending</option>
+            <option value="running">running</option>
+            <option value="paused">paused</option>
+            <option value="success">success</option>
+            <option value="completed">completed</option>
+            <option value="failed">failed</option>
+            <option value="stopped">stopped</option>
+          </select>
+          <button
+            type="button"
+            disabled={!hasCycleFilters}
+            onClick={() => {
+              setCycleKeyword("");
+              setCycleStatus("");
+              setCyclePage(1);
+            }}
+          >
+            {t("common.clearFilters")}
+          </button>
+          <button
+            type="button"
+            disabled={exportingCycles || cycleTotal === 0}
+            onClick={() => void exportCyclesCsv()}
+          >
+            {exportingCycles ? t("common.exporting") : t("common.exportCsv")}
+          </button>
+        </div>
+
+        {cyclesQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
+        {cyclesQuery.isError ? <p className="error-text">{formatErr(cyclesQuery.error)}</p> : null}
+
+        <div className="pt-list-table-wrap">
+          <table className="data-table pt-list-table">
+            <thead>
+              <tr>
+                <th />
+                <th>ID</th>
+                <th>{t("configSync.col.trigger")}</th>
+                <th>{t("configSync.col.status")}</th>
+                <th>{t("configSync.col.progress")}</th>
+                <th>{t("configSync.col.started")}</th>
+                <th>{t("configSync.col.ended")}</th>
+                <th>{t("configSync.col.actions")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {cycles.map((c) => (
+                <tr key={c.id}>
+                  <td>
                     <button
                       type="button"
-                      onClick={() => {
-                        if (window.confirm(t("configSync.confirmStop"))) stopMut.mutate(c.id);
-                      }}
-                      disabled={stopMut.isPending}
+                      className="btn btn--sm btn--ghost"
+                      onClick={() => openCycleTasks(c.id)}
                     >
-                      {t("configSync.stop")}
+                      {t("configSync.expand")}
                     </button>
-                  ) : null}
-                </div>
-              </td>
-            </tr>
-          ))}
-          {!cycles.length ? (
-            <tr>
-              <td colSpan={8} className="muted">
-                {t("configSync.cyclesEmpty")}
-              </td>
-            </tr>
-          ) : null}
-        </tbody>
-      </table>
-      </div>
-      <div className="pager pt-list-pager">
-        <span className="muted">
-          {t("common.pagerMeta", {
-            total: String(cycleTotal),
-            page: String(cyclePage),
-            pages: String(cyclePages),
-          })}
-        </span>
-        <div className="btn-row">
-        <button type="button" disabled={cyclePage <= 1} onClick={() => setCyclePage((p) => p - 1)}>
-          {t("common.prevPage")}
-        </button>
-        <button type="button" disabled={cyclePage >= cyclePages} onClick={() => setCyclePage((p) => p + 1)}>
-          {t("common.nextPage")}
-        </button>
+                  </td>
+                  <td title={c.id} className="pt-list-num">{c.id.slice(0, 8)}</td>
+                  <td>{c.trigger_mode}</td>
+                  <td>
+                    <span
+                      className={`pt-list-status ${
+                        c.status === "running" || c.status === "pending"
+                          ? "pt-list-status--running"
+                          : c.status === "paused"
+                            ? "pt-list-status--paused"
+                            : c.status === "failed"
+                              ? "pt-list-status--failed"
+                              : c.status === "success" || c.status === "completed"
+                                ? "pt-list-status--ok"
+                                : "pt-list-status--other"
+                      }`}
+                    >
+                      {c.status}
+                    </span>
+                  </td>
+                  <td>
+                    {c.success_count}/{c.planned_count} · fail {c.fail_count}
+                  </td>
+                  <td>{c.started_at ? formatSystemTime(c.started_at) : "-"}</td>
+                  <td>{c.ended_at ? formatSystemTime(c.ended_at) : "-"}</td>
+                  <td>
+                    <div className="btn-row">
+                      {c.status === "running" || c.status === "pending" ? (
+                        <button type="button" onClick={() => pauseMut.mutate(c.id)} disabled={pauseMut.isPending}>
+                          {t("configSync.pause")}
+                        </button>
+                      ) : null}
+                      {c.status === "paused" ? (
+                        <button type="button" onClick={() => resumeMut.mutate(c.id)} disabled={resumeMut.isPending}>
+                          {t("configSync.resume")}
+                        </button>
+                      ) : null}
+                      {c.status === "running" || c.status === "paused" || c.status === "pending" ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (window.confirm(t("configSync.confirmStop"))) stopMut.mutate(c.id);
+                          }}
+                          disabled={stopMut.isPending}
+                        >
+                          {t("configSync.stop")}
+                        </button>
+                      ) : null}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {!cycles.length && !cyclesQuery.isLoading ? (
+                <tr>
+                  <td colSpan={8} className="muted">
+                    {t("configSync.cyclesEmpty")}
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
         </div>
+        <ListPager
+          page={cyclePage}
+          pages={cyclePages}
+          total={cycleTotal}
+          pageSize={cyclePageSize}
+          pageSizeOptions={[20, 50, 100]}
+          onPageChange={setCyclePage}
+          onPageSizeChange={(size) => {
+            setCyclePageSize(size);
+            setCyclePage(1);
+          }}
+          disabled={cyclesQuery.isLoading}
+        />
       </div>
 
       {expandedCycleId ? (
@@ -553,6 +741,13 @@ export function ConfigSyncPage() {
                 </p>
               </div>
               <div className="btn-row ops-detail-modal__actions">
+                <button
+                  type="button"
+                  disabled={exportingTasks || taskTotal === 0}
+                  onClick={() => void exportTasksCsv()}
+                >
+                  {exportingTasks ? t("common.exporting") : t("common.exportCsv")}
+                </button>
                 <button type="button" onClick={() => setExpandedCycleId("")}>
                   {t("networkConfigs.close")}
                 </button>
@@ -575,7 +770,7 @@ export function ConfigSyncPage() {
                   setTaskPage(1);
                 }}
               >
-                <option value="">{t("configSync.allStatus")}</option>
+                <option value="">{t("configSync.statusAll")}</option>
                 <option value="pending">pending</option>
                 <option value="running">running</option>
                 <option value="success">success</option>
@@ -586,9 +781,7 @@ export function ConfigSyncPage() {
 
             {tasksQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
             {tasksQuery.isError ? (
-              <p className="ops-detail-modal__error">
-                {tasksQuery.error instanceof Error ? tasksQuery.error.message : String(tasksQuery.error)}
-              </p>
+              <p className="ops-detail-modal__error">{formatErr(tasksQuery.error)}</p>
             ) : null}
 
             <div className="ops-detail-modal__scroll">
@@ -628,25 +821,19 @@ export function ConfigSyncPage() {
             </div>
 
             <div className="ops-detail-modal__foot">
-              <span className="muted">
-                {t("common.pagerMeta", {
-                  total: String(tasksQuery.data?.total ?? 0),
-                  page: String(taskPage),
-                  pages: String(pageCount(Number(tasksQuery.data?.total || 0), 20)),
-                })}
-              </span>
-              <div className="btn-row">
-                <button type="button" disabled={taskPage <= 1} onClick={() => setTaskPage((p) => p - 1)}>
-                  {t("common.prevPage")}
-                </button>
-                <button
-                  type="button"
-                  disabled={taskPage >= pageCount(Number(tasksQuery.data?.total || 0), 20)}
-                  onClick={() => setTaskPage((p) => p + 1)}
-                >
-                  {t("common.nextPage")}
-                </button>
-              </div>
+              <ListPager
+                page={taskPage}
+                pages={taskPages}
+                total={taskTotal}
+                pageSize={taskPageSize}
+                pageSizeOptions={[20, 50, 100, 200]}
+                onPageChange={setTaskPage}
+                onPageSizeChange={(size) => {
+                  setTaskPageSize(size);
+                  setTaskPage(1);
+                }}
+                disabled={tasksQuery.isLoading}
+              />
             </div>
           </div>
         </div>

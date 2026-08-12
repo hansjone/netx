@@ -213,6 +213,221 @@ def test_orbit_objective_total_ranks_clearance_trade() -> None:
         assert 0.0 <= float(c["y"]) <= 80.0
 
 
+def test_orbit_until_limit_params_defaults() -> None:
+    from netx_topology_mcp.layout_ops.orbit_sweep import orbit_params_from_overrides
+
+    knobs = orbit_params_from_overrides({"until_limit": True})
+    assert knobs["until_limit"] is True
+    assert knobs["protect_rigid"] == "portals"
+    assert knobs["objective"] == "crossing"
+    assert knobs["max_degree"] == 14
+    assert knobs["max_jump"] == 4000.0
+    assert knobs["max_stretch"] == 32.0
+    assert knobs["cand_cap"] == 360
+    assert knobs["top_k"] == 8
+    # until_stall alias
+    assert orbit_params_from_overrides({"until_stall": 1})["until_limit"] is True
+
+
+def test_orbit_far_field_can_cut_long_chord() -> None:
+    """Node whose improving slot is outside local polar rings."""
+    nodes = [
+        {"fabric_node_id": "a", "name": "A", "x": 0.0, "y": 200.0},
+        {"fabric_node_id": "b", "name": "B", "x": 4000.0, "y": 200.0},
+        {"fabric_node_id": "c", "name": "C", "x": 2000.0, "y": 0.0},
+        {"fabric_node_id": "leaf", "name": "LEAF", "x": 2000.0, "y": 400.0},
+    ]
+    edges = [
+        {"a_node_id": "a", "b_node_id": "b"},
+        {"a_node_id": "c", "b_node_id": "leaf"},
+    ]
+    st = build_state_from_nodes_edges(nodes, edges)
+    st.positions = {n["fabric_node_id"]: (float(n["x"]), float(n["y"])) for n in nodes}
+    g0 = count_edge_crossings(st.positions, st.links)
+    assert g0 >= 1
+    out = orbit_sweep_node(
+        st,
+        "leaf",
+        protect_rigid="off",
+        max_jump=5000,
+        cand_cap=400,
+        top_k=5,
+        nn_floor=10.0,
+    )
+    assert out["ok"] is True
+    assert int(out.get("improving_n") or 0) >= 1
+    best = out["candidates"][0]
+    assert int((best.get("delta") or {}).get("global") or 0) < 0
+
+
+def test_orbit_sweep_until_limit_cuts_crossings() -> None:
+    from netx_topology_mcp.layout_ops.orbit_sweep import orbit_sweep_until_limit
+
+    nodes, edges = _crossed_pair()
+    st = build_state_from_nodes_edges(nodes, edges)
+    st.positions = {n["fabric_node_id"]: (float(n["x"]), float(n["y"])) for n in nodes}
+    g0 = count_edge_crossings(st.positions, st.links)
+    op = orbit_sweep_until_limit(
+        st,
+        protect_rigid="off",
+        max_jump=600,
+        max_degree=9,
+        max_moves=10,
+        stall_limit=4,
+        max_stretch=30.0,
+        nn_floor=20.0,
+    )
+    g1 = count_edge_crossings(op.state.positions, op.state.links)
+    meta = op.params or {}
+    assert meta.get("mode") == "until_limit"
+    assert g1 <= g0
+    assert meta.get("end_crossings") == g1
+    assert meta.get("stop_reason") in {
+        "stall",
+        "no_candidates",
+        "max_moves",
+    }
+
+
+def test_run_layout_until_limit_preview_moves_in_result() -> None:
+    nodes, edges = _crossed_pair()
+    g0_nodes = {n["fabric_node_id"]: (float(n["x"]), float(n["y"])) for n in nodes}
+    # Build edges list for crossing count on input
+    st = build_state_from_nodes_edges(nodes, edges)
+    st.positions = dict(g0_nodes)
+    g0 = count_edge_crossings(st.positions, st.links)
+    out = run_layout_on_graph(
+        nodes,
+        edges,
+        action="orbit_sweep",
+        params={
+            "until_limit": True,
+            "protect_rigid": "off",
+            "max_jump": 600,
+            "max_moves": 8,
+            "stall_limit": 4,
+            "nn_floor": 20.0,
+        },
+    )
+    assert out["ok"] is True
+    local = out.get("local") or {}
+    assert local.get("until_limit") is True
+    meta = local.get("meta") or local.get("op") or {}
+    assert meta.get("mode") == "until_limit"
+    by_id = {p["fabric_node_id"]: p for p in out["positions"]}
+    # Relative geometry: crossings should not rise vs original.
+    pos1 = {nid: (float(by_id[nid]["x"]), float(by_id[nid]["y"])) for nid in by_id}
+    g1 = count_edge_crossings(pos1, st.links)
+    assert g1 <= g0
+
+
+def test_select_stretch_pick_prefers_lower_stretch() -> None:
+    from netx_topology_mcp.layout_ops.orbit_sweep import _select_stretch_pick
+
+    sweep = {
+        "improving_n": 2,
+        "candidates": [
+            {
+                "delta": {"global": -2},
+                "stretch": 40.0,
+                "ov": False,
+                "x": 1,
+                "y": 1,
+                "crossings": {"global": 1},
+            },
+            {
+                "delta": {"global": -2},
+                "stretch": 5.0,
+                "ov": False,
+                "x": 2,
+                "y": 2,
+                "crossings": {"global": 1},
+            },
+        ],
+    }
+    picked = _select_stretch_pick(sweep, max_stretch=24.0, min_delta=1)
+    assert picked is not None
+    pick_i, cand = picked
+    assert pick_i == 2
+    assert cand["stretch"] == 5.0
+
+
+def test_until_limit_freezes_portal_ids() -> None:
+    from netx_topology_mcp.layout_ops.orbit_sweep import orbit_sweep_until_limit
+
+    nodes, edges = _crossed_pair()
+    st = build_state_from_nodes_edges(nodes, edges)
+    st.positions = {n["fabric_node_id"]: (float(n["x"]), float(n["y"])) for n in nodes}
+    # Freeze both endpoints of the vertical crossing edge.
+    op = orbit_sweep_until_limit(
+        st,
+        protect_rigid="portals",
+        frozen_ids={"c", "d"},
+        max_jump=600,
+        max_moves=6,
+        stall_limit=3,
+        nn_floor=20.0,
+    )
+    moved = set(op.moved or ())
+    assert "c" not in moved and "d" not in moved
+
+
+def test_ids_matching_freeze_layers_levels() -> None:
+    from netx_topology_mcp.layout_ops.orbit_sweep import (
+        ids_matching_freeze_layers_levels,
+    )
+
+    nodes = [
+        {"fabric_node_id": "c1", "name": "X-CN1-Y", "x": 0, "y": 0, "level": 1},
+        {"fabric_node_id": "c11", "name": "X-CN2-Y", "x": 10, "y": 0, "level": 1.1},
+        {"fabric_node_id": "a1", "name": "X-AN1-Y", "x": 20, "y": 0, "level": 2},
+        {"fabric_node_id": "e1", "name": "X-EN1-Y", "x": 30, "y": 0, "level": 3},
+    ]
+    edges = [{"a_node_id": "c1", "b_node_id": "a1"}]
+    st = build_state_from_nodes_edges(nodes, edges)
+    assert st.layers["c1"] == "core"
+    assert st.levels["c11"] == 1.1
+    by_layer = ids_matching_freeze_layers_levels(st, freeze_layers=["core", "agg"])
+    assert by_layer == {"c1", "c11", "a1"}
+    by_maj = ids_matching_freeze_layers_levels(st, freeze_levels=[1, 2])
+    assert "c1" in by_maj and "c11" in by_maj and "a1" in by_maj
+    assert "e1" not in by_maj
+    by_exact = ids_matching_freeze_layers_levels(st, freeze_levels=[1.1])
+    assert by_exact == {"c11"}
+    # aliases
+    assert "c1" in ids_matching_freeze_layers_levels(st, freeze_layers=["CN"])
+
+
+def test_until_limit_freeze_layers_blocks_core() -> None:
+    from netx_topology_mcp.layout_ops.orbit_sweep import orbit_sweep_until_limit
+
+    nodes = [
+        {"fabric_node_id": "a", "name": "AAAAAA-EN-1", "x": 0.0, "y": 200.0, "level": 3},
+        {"fabric_node_id": "b", "name": "BBBBBB-EN-2", "x": 400.0, "y": 200.0, "level": 3},
+        {"fabric_node_id": "c", "name": "CCCCCC-CN-3", "x": 200.0, "y": 0.0, "level": 1},
+        {"fabric_node_id": "d", "name": "DDDDDD-EN-4", "x": 200.0, "y": 400.0, "level": 3},
+        {"fabric_node_id": "e", "name": "EEEEEE-EN-5", "x": 200.0, "y": -80.0, "level": 3},
+    ]
+    edges = [
+        {"a_node_id": "a", "b_node_id": "b"},
+        {"a_node_id": "c", "b_node_id": "d"},
+        {"a_node_id": "c", "b_node_id": "e"},
+    ]
+    st = build_state_from_nodes_edges(nodes, edges)
+    st.positions = {n["fabric_node_id"]: (float(n["x"]), float(n["y"])) for n in nodes}
+    op = orbit_sweep_until_limit(
+        st,
+        protect_rigid="off",
+        freeze_layers=["core"],
+        max_jump=600,
+        max_moves=8,
+        stall_limit=4,
+        nn_floor=20.0,
+    )
+    assert "c" not in set(op.moved or ())
+    assert (op.params or {}).get("freeze_layers") == ["core"]
+
+
 def test_verdict_partial_weights_match_layout_stats() -> None:
     from netx_topology_mcp.layout_ops.orbit_sweep import (
         _W_CLR,

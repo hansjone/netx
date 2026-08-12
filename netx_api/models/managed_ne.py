@@ -98,6 +98,28 @@ class UmeCliOverride(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
 
 
+class NeCollectionPolicy(Base):
+    """Singleton policy for periodic batch CLI collect (id=1).
+
+    Default ``enabled=False``: one-shot / manual only until the operator turns on schedule.
+    ``history_keep`` defaults to 3 finished jobs.
+    """
+
+    __tablename__ = "ne_collection_policy"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    interval_days: Mapped[int] = mapped_column(Integer, default=1)  # legacy mirror of hours
+    interval_hours: Mapped[int] = mapped_column(Integer, default=24)
+    scope_mode: Mapped[str] = mapped_column(String(32), default="all")  # all | selected
+    selected_targets: Mapped[list] = mapped_column(_JsonType, default=list)
+    title: Mapped[str] = mapped_column(String(256), default="")
+    commands: Mapped[str] = mapped_column(Text, default="")
+    # Finished jobs to retain (newest kept); active jobs always kept.
+    history_keep: Mapped[int] = mapped_column(Integer, default=3)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+
+
 class NeCollectionJob(Base):
     """Batch CLI collection job over managed NEs."""
 
@@ -106,6 +128,8 @@ class NeCollectionJob(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
     title: Mapped[str] = mapped_column(String(256), default="")
     commands: Mapped[str] = mapped_column(Text, default="")
+    # manual | schedule
+    trigger_mode: Mapped[str] = mapped_column(String(32), default="manual", index=True)
     status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
     ne_count: Mapped[int] = mapped_column(Integer, default=0)
     success_count: Mapped[int] = mapped_column(Integer, default=0)

@@ -1,15 +1,21 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useSearchParams } from "react-router-dom";
+import { ListPager } from "../../components/ListPager";
+import { queryKeys } from "../../constants/queryKeys";
+import { useDebouncedValue } from "../../hooks/useDebouncedValue";
+import { useToast } from "../../hooks/useToast";
+import { useI18n } from "../../i18n";
 import {
   downloadNeConfigSnapshot,
   fetchNeConfigSnapshotDetail,
   fetchNeConfigSnapshots,
+  formatErr,
 } from "../../services/api";
-import { queryKeys } from "../../constants/queryKeys";
-import { useI18n } from "../../i18n";
-import { useToast } from "../../hooks/useToast";
-import { openNewModuleWindow } from "../../utils/moduleWindows";
+import type { NeConfigSnapshotMeta } from "../../types";
+import { downloadCsv, fetchAllPages } from "../../utils/csvExport";
 import { pageCount } from "../../utils/display";
+import { openNewModuleWindow } from "../../utils/moduleWindows";
 import { formatSystemTime } from "../../utils/time";
 
 function fmtBytes(n: number): string {
@@ -22,18 +28,45 @@ function fmtBytes(n: number): string {
 export function NetworkConfigsPage() {
   const { t } = useI18n();
   const { showOk, showError } = useToast();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [page, setPage] = useState(1);
-  const [keyword, setKeyword] = useState("");
+  const [pageSize, setPageSize] = useState(50);
+  const [keyword, setKeyword] = useState(() => String(searchParams.get("q") || ""));
   const [source, setSource] = useState("");
   const [vendor, setVendor] = useState("");
   const [selected, setSelected] = useState<{ source: string; id: string } | null>(null);
   const [tab, setTab] = useState<"primary" | "alt">("primary");
   const [exporting, setExporting] = useState("");
+  const [exportingList, setExportingList] = useState(false);
+
+  const debouncedKeyword = useDebouncedValue(keyword, 300);
+  const debouncedVendor = useDebouncedValue(vendor, 300);
+
+  useEffect(() => {
+    const q = String(searchParams.get("q") || "").trim();
+    if (!q) return;
+    setKeyword(q);
+    setPage(1);
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (next.get("q") === q) next.delete("q");
+        return next;
+      },
+      { replace: true },
+    );
+  }, [searchParams, setSearchParams]);
 
   const listQuery = useQuery({
-    queryKey: queryKeys.networkConfigs(page, keyword, source, vendor),
+    queryKey: queryKeys.networkConfigs(page, debouncedKeyword, source, debouncedVendor, pageSize),
     queryFn: () =>
-      fetchNeConfigSnapshots({ page, pageSize: 20, keyword, source, vendor }),
+      fetchNeConfigSnapshots({
+        page,
+        pageSize,
+        keyword: debouncedKeyword,
+        source,
+        vendor: debouncedVendor,
+      }),
     staleTime: 5000,
   });
 
@@ -46,7 +79,7 @@ export function NetworkConfigsPage() {
 
   const items = listQuery.data?.items ?? [];
   const total = Number(listQuery.data?.total || 0);
-  const pages = pageCount(total, 20);
+  const pages = pageCount(total, pageSize);
   const detail = detailQuery.data;
   const showAlt = Boolean(detail?.has_alt);
   const hasFilters = Boolean(keyword || source || vendor);
@@ -62,9 +95,53 @@ export function NetworkConfigsPage() {
       await downloadNeConfigSnapshot(src, id, field);
       showOk(t("networkConfigs.exportOk"));
     } catch (err) {
-      showError(String(err));
+      showError(formatErr(err));
     } finally {
       setExporting("");
+    }
+  };
+
+  const exportListCsv = async () => {
+    setExportingList(true);
+    try {
+      const rows = await fetchAllPages<NeConfigSnapshotMeta>({
+        pageSize: 100,
+        maxRows: 2000,
+        fetchPage: (p, ps) =>
+          fetchNeConfigSnapshots({
+            page: p,
+            pageSize: ps,
+            keyword: debouncedKeyword,
+            source,
+            vendor: debouncedVendor,
+          }),
+      });
+      downloadCsv(
+        `${t("networkConfigs.exportListName")}-${new Date().toISOString().slice(0, 10)}.csv`,
+        rows,
+        [
+          { key: "ne_name", header: t("networkConfigs.col.name"), value: (r) => r.ne_name || r.target_id },
+          { key: "ne_ip", header: "IP" },
+          { key: "vendor", header: t("networkConfigs.col.vendor") },
+          { key: "source", header: t("networkConfigs.col.source") },
+          { key: "plain_size", header: t("networkConfigs.col.size"), value: (r) => fmtBytes(r.plain_size) },
+          {
+            key: "collected_at",
+            header: t("networkConfigs.col.collected"),
+            value: (r) => (r.collected_at ? formatSystemTime(r.collected_at) : ""),
+          },
+          { key: "target_id", header: "ID" },
+        ],
+      );
+      if (rows.length < total) {
+        showOk(t("common.exportTruncated", { count: String(rows.length), total: String(total) }));
+      } else {
+        showOk(t("common.exportOk", { count: String(rows.length) }));
+      }
+    } catch (err) {
+      showError(t("common.exportFailed") + ": " + formatErr(err));
+    } finally {
+      setExportingList(false);
     }
   };
 
@@ -72,6 +149,15 @@ export function NetworkConfigsPage() {
     <section className="panel">
       <div className="panel__toolbar">
         <h2>{t("networkConfigs.title")}</h2>
+        <div className="btn-row">
+          <button
+            type="button"
+            disabled={exportingList || total === 0}
+            onClick={() => void exportListCsv()}
+          >
+            {exportingList ? t("common.exporting") : t("common.exportCsv")}
+          </button>
+        </div>
       </div>
 
       <div className="pt-list">
@@ -118,6 +204,7 @@ export function NetworkConfigsPage() {
         </div>
 
         {listQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
+        {listQuery.isError ? <p className="error-text">{t("common.opFailed")}</p> : null}
 
         {!items.length && !listQuery.isLoading ? (
           <div className="pt-list-empty">
@@ -199,23 +286,19 @@ export function NetworkConfigsPage() {
           </div>
         )}
 
-        <div className="pager pt-list-pager">
-          <span className="muted">
-            {t("common.pagerMeta", {
-              total: String(total),
-              page: String(page),
-              pages: String(pages),
-            })}
-          </span>
-          <div className="btn-row">
-            <button type="button" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
-              {t("common.prevPage")}
-            </button>
-            <button type="button" disabled={page >= pages} onClick={() => setPage((p) => p + 1)}>
-              {t("common.nextPage")}
-            </button>
-          </div>
-        </div>
+        <ListPager
+          page={page}
+          pages={pages}
+          total={total}
+          pageSize={pageSize}
+          pageSizeOptions={[20, 50, 100]}
+          onPageChange={setPage}
+          onPageSizeChange={(size) => {
+            setPageSize(size);
+            setPage(1);
+          }}
+          disabled={listQuery.isLoading}
+        />
       </div>
 
       {selected ? (

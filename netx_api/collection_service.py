@@ -20,6 +20,14 @@ from .collection_job_state import (
     sync_job_progress,
     _sync_job_counts,
 )
+from .collection_policy import (
+    ensure_policy,
+    expand_policy_targets,
+    history_keep_value,
+    next_due_at,
+    policy_to_out,
+    prune_collection_jobs,
+)
 from .collection_schemas import (
     CollectionDashboardOut,
     CollectionJobCreate,
@@ -87,6 +95,7 @@ def job_to_out(row: NeCollectionJob, *, output_count: int | None = None) -> Coll
         id=str(row.id),
         title=str(row.title or ""),
         commands=str(row.commands or ""),
+        trigger_mode=str(getattr(row, "trigger_mode", None) or "manual"),
         status=str(row.status or "pending"),
         ne_count=int(row.ne_count or 0),
         success_count=int(row.success_count or 0),
@@ -107,6 +116,7 @@ def job_to_summary(row: NeCollectionJob | None) -> CollectionJobSummary | None:
         id=str(row.id),
         title=str(row.title or "").strip() or str(row.id)[:8],
         status=str(row.status or "pending"),
+        trigger_mode=str(getattr(row, "trigger_mode", None) or "manual"),
         ne_count=int(row.ne_count or 0),
         success_count=int(row.success_count or 0),
         fail_count=int(row.fail_count or 0),
@@ -162,11 +172,14 @@ def get_collection_dashboard(db: Session) -> CollectionDashboardOut:
                 or 0
             )
     last = last_finished_collection_job(db)
+    policy = ensure_policy(db)
     return CollectionDashboardOut(
         job_count=job_count,
         active_count=active_count,
         running_job=job_to_summary(running),
         last_job=job_to_summary(last),
+        next_due_at=next_due_at(db, policy),
+        policy=policy_to_out(policy),
     )
 
 
@@ -318,6 +331,7 @@ def create_collection(db: Session, body: CollectionJobCreate) -> CollectionJobOu
     job = NeCollectionJob(
         title=str(body.title or "").strip() or f"collect-{now.strftime('%Y%m%d-%H%M%S')}",
         commands="\n".join(commands),
+        trigger_mode="manual",
         status="pending",
         ne_count=len(targets),
         created_at=now,
@@ -342,8 +356,81 @@ def create_collection(db: Session, body: CollectionJobCreate) -> CollectionJobOu
     return job_to_out(job, output_count=0)
 
 
-def list_collection_jobs(db: Session, *, page: int = 1, page_size: int = 20) -> dict[str, Any]:
+def create_and_start_from_policy(
+    db: Session,
+    *,
+    trigger_mode: str = "manual",
+) -> tuple[CollectionJobOut, CollectionSchedulePayload]:
+    """Create a job from the singleton policy and start it immediately."""
+    if has_active_collection_job(db) is not None:
+        raise HTTPException(status_code=409, detail="collection_job_running")
+    policy = ensure_policy(db)
+    commands = _parse_commands(str(policy.commands or ""))
+    if not commands:
+        raise HTTPException(status_code=400, detail="commands_empty")
+    targets = expand_policy_targets(db, policy)
+    if not targets:
+        raise HTTPException(status_code=400, detail="no_eligible_ne")
+    mode = str(trigger_mode or "manual").strip().lower() or "manual"
+    if mode not in {"manual", "schedule"}:
+        mode = "manual"
+    now = _now()
+    title = str(policy.title or "").strip() or f"collect-{now.strftime('%Y%m%d-%H%M%S')}"
+    job = NeCollectionJob(
+        title=title,
+        commands="\n".join(commands),
+        trigger_mode=mode,
+        status="pending",
+        ne_count=len(targets),
+        created_at=now,
+        started_at=None,
+        last_run_at=None,
+    )
+    db.add(job)
+    db.flush()
+    for source, tid, name, ip in targets:
+        db.add(
+            NeCollectionRun(
+                job_id=str(job.id),
+                ne_id=tid,
+                ne_source=source,
+                ne_name=name,
+                ne_ip=ip,
+                status="pending",
+            )
+        )
+    db.commit()
+    db.refresh(job)
+    out, payload = start_collection_job(db, str(job.id))
+    try:
+        prune_collection_jobs(db, keep=history_keep_value(policy))
+    except Exception:  # noqa: BLE001
+        _log.exception("prune_collection_jobs after start failed")
+    return out, payload
+
+
+def list_collection_jobs(
+    db: Session,
+    *,
+    page: int = 1,
+    page_size: int = 20,
+    status: str = "",
+    keyword: str = "",
+) -> dict[str, Any]:
     stmt = db.query(NeCollectionJob)
+    st = str(status or "").strip()
+    if st:
+        stmt = stmt.filter(NeCollectionJob.status == st)
+    kw = str(keyword or "").strip()
+    if kw:
+        like = f"%{kw}%"
+        stmt = stmt.filter(
+            or_(
+                NeCollectionJob.title.ilike(like),
+                NeCollectionJob.id.ilike(like),
+                NeCollectionJob.error_message.ilike(like),
+            )
+        )
     total = int(stmt.count())
     rows = stmt.order_by(NeCollectionJob.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
     for row in rows:

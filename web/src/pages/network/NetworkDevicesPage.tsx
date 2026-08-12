@@ -1,11 +1,15 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { fetchCliTargets } from "../../services/api";
+import { ListPager } from "../../components/ListPager";
 import { queryKeys } from "../../constants/queryKeys";
+import { useDebouncedValue } from "../../hooks/useDebouncedValue";
+import { useToast } from "../../hooks/useToast";
 import { useI18n } from "../../i18n";
+import { fetchCliTargets, formatErr } from "../../services/api";
+import type { CliTargetItem } from "../../types";
+import { downloadCsv, fetchAllPages } from "../../utils/csvExport";
 import { pageCount } from "../../utils/display";
-
-const PAGE_SIZE = 50;
+import { openNewModuleWindow } from "../../utils/moduleWindows";
 
 function connectStatusClass(status: string | null | undefined): string {
   const s = String(status || "").trim().toLowerCase();
@@ -17,28 +21,80 @@ function connectStatusClass(status: string | null | undefined): string {
   return "pt-list-status--other";
 }
 
-/** Read-only inventory of managed + UME NEs for Network Management. */
+function openWebcrt(row: CliTargetItem) {
+  const path =
+    row.source === "ume"
+      ? `/webcrt?ne_id=${encodeURIComponent(row.id)}&source=ume`
+      : `/webcrt?ne_id=${encodeURIComponent(row.id)}`;
+  openNewModuleWindow({ moduleId: "webcrt", path });
+}
+
+/** Inventory of managed + UME NEs for Network Management. */
 export function NetworkDevicesPage() {
   const { t } = useI18n();
+  const { showOk, showError } = useToast();
   const [keyword, setKeyword] = useState("");
   const [source, setSource] = useState<"all" | "managed" | "ume">("all");
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+  const [exporting, setExporting] = useState(false);
+
+  const debouncedKeyword = useDebouncedValue(keyword, 300);
 
   const listQuery = useQuery({
-    queryKey: queryKeys.cliTargets(`${source}:${keyword}`, page, PAGE_SIZE),
-    queryFn: () => fetchCliTargets({ source, keyword, page, pageSize: PAGE_SIZE }),
+    queryKey: queryKeys.cliTargets(`${source}:${debouncedKeyword}`, page, pageSize),
+    queryFn: () => fetchCliTargets({ source, keyword: debouncedKeyword, page, pageSize }),
     staleTime: 5000,
   });
 
   const items = listQuery.data?.items ?? [];
   const total = Number(listQuery.data?.total || 0);
-  const pages = pageCount(total, PAGE_SIZE);
+  const pages = pageCount(total, pageSize);
   const hasFilters = Boolean(keyword.trim() || source !== "all");
+
+  const exportCsv = async () => {
+    setExporting(true);
+    try {
+      const rows = await fetchAllPages<CliTargetItem>({
+        pageSize: 200,
+        maxRows: 2000,
+        fetchPage: (p, ps) =>
+          fetchCliTargets({ source, keyword: debouncedKeyword, page: p, pageSize: ps }),
+      });
+      downloadCsv(`${t("networkDevices.exportName")}-${new Date().toISOString().slice(0, 10)}.csv`, rows, [
+        { key: "source", header: t("networkDevices.col.source") },
+        { key: "name", header: t("networkDevices.col.name"), value: (r) => r.name || r.id },
+        { key: "ip_address", header: "IP" },
+        { key: "vendor", header: t("networkDevices.col.vendor") },
+        {
+          key: "device_type",
+          header: t("networkDevices.col.deviceType"),
+          value: (r) => r.device_type || r.ne_type || "",
+        },
+        { key: "connect_status", header: t("networkDevices.col.connect") },
+        { key: "id", header: "ID" },
+      ]);
+      if (rows.length < total) {
+        showOk(t("common.exportTruncated", { count: String(rows.length), total: String(total) }));
+      } else {
+        showOk(t("common.exportOk", { count: String(rows.length) }));
+      }
+    } catch (err) {
+      showError(t("common.exportFailed") + ": " + formatErr(err));
+    } finally {
+      setExporting(false);
+    }
+  };
 
   return (
     <section className="panel">
       <div className="panel__toolbar">
         <h2>{t("networkDevices.title")}</h2>
+        <div className="btn-row">
+          <button type="button" disabled={exporting || total === 0} onClick={() => void exportCsv()}>
+            {exporting ? t("common.exporting") : t("common.exportCsv")}
+          </button>
+        </div>
       </div>
 
       <div className="pt-list">
@@ -76,6 +132,7 @@ export function NetworkDevicesPage() {
         </div>
 
         {listQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
+        {listQuery.isError ? <p className="error-text">{t("common.opFailed")}</p> : null}
 
         {!items.length && !listQuery.isLoading ? (
           <div className="pt-list-empty">
@@ -92,6 +149,7 @@ export function NetworkDevicesPage() {
                   <th>{t("networkDevices.col.vendor")}</th>
                   <th>{t("networkDevices.col.deviceType")}</th>
                   <th>{t("networkDevices.col.connect")}</th>
+                  <th>{t("networkDevices.col.actions")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -107,6 +165,24 @@ export function NetworkDevicesPage() {
                         {row.connect_status || "—"}
                       </span>
                     </td>
+                    <td>
+                      <div className="btn-row pt-list-actions table-actions">
+                        <button type="button" onClick={() => openWebcrt(row)}>
+                          WebCRT
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            openNewModuleWindow({
+                              moduleId: "network",
+                              path: `/network/configs?q=${encodeURIComponent(row.name || row.ip_address || row.id)}`,
+                            })
+                          }
+                        >
+                          {t("network.nav.configs")}
+                        </button>
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -114,23 +190,19 @@ export function NetworkDevicesPage() {
           </div>
         )}
 
-        <div className="pager pt-list-pager">
-          <span className="muted">
-            {t("common.pagerMeta", {
-              total: String(total),
-              page: String(page),
-              pages: String(pages),
-            })}
-          </span>
-          <div className="btn-row">
-            <button type="button" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
-              {t("common.prevPage")}
-            </button>
-            <button type="button" disabled={page >= pages} onClick={() => setPage((p) => p + 1)}>
-              {t("common.nextPage")}
-            </button>
-          </div>
-        </div>
+        <ListPager
+          page={page}
+          pages={pages}
+          total={total}
+          pageSize={pageSize}
+          pageSizeOptions={[20, 50, 100, 200]}
+          onPageChange={setPage}
+          onPageSizeChange={(size) => {
+            setPageSize(size);
+            setPage(1);
+          }}
+          disabled={listQuery.isLoading}
+        />
       </div>
     </section>
   );

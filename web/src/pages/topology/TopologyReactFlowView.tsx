@@ -291,6 +291,7 @@ export type TopologyReactFlowViewProps = {
   setCanvasZoom: (z: number) => void;
   scheduleFlatViewportRefresh: () => void;
   toggleFullscreen: () => void | Promise<void>;
+  readOnly?: boolean;
 };
 
 export default function TopologyReactFlowView(props: TopologyReactFlowViewProps) {

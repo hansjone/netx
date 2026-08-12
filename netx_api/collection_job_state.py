@@ -48,6 +48,12 @@ def finalize_collection_job(db: Session, job_id: str) -> None:
             job.ended_at = finish_at
     job.last_run_at = job.ended_at or finish_at
     db.commit()
+    try:
+        from .collection_policy import ensure_policy, history_keep_value, prune_collection_jobs
+
+        prune_collection_jobs(db, keep=history_keep_value(ensure_policy(db)))
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def reconcile_stale_collection_job(db: Session, job_id: str) -> bool:

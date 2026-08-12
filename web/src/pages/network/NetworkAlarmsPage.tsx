@@ -1,8 +1,13 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { fetchUmeCurrentAlarms } from "../../services/api";
+import { ListPager } from "../../components/ListPager";
 import { queryKeys } from "../../constants/queryKeys";
+import { useDebouncedValue } from "../../hooks/useDebouncedValue";
+import { useToast } from "../../hooks/useToast";
 import { useI18n } from "../../i18n";
+import { fetchUmeCurrentAlarms, formatErr } from "../../services/api";
+import type { UmeAlarmItem } from "../../types";
+import { downloadCsv, fetchAllPages } from "../../utils/csvExport";
 import { pageCount } from "../../utils/display";
 import { formatSystemTime } from "../../utils/time";
 
@@ -19,19 +24,24 @@ function severityClass(sev: string | null | undefined): string {
 /** Current UME alarms query view for Network Management. */
 export function NetworkAlarmsPage() {
   const { t } = useI18n();
+  const { showOk, showError } = useToast();
   const [curSeverity, setCurSeverity] = useState("");
   const [curCleared, setCurCleared] = useState("");
   const [curHostName, setCurHostName] = useState("");
   const [curKeyword, setCurKeyword] = useState("");
   const [curPage, setCurPage] = useState(1);
   const [curPageSize, setCurPageSize] = useState(50);
+  const [exporting, setExporting] = useState(false);
+
+  const debouncedKeyword = useDebouncedValue(curKeyword, 300);
+  const debouncedHost = useDebouncedValue(curHostName, 300);
 
   const currentQuery = useQuery({
     queryKey: queryKeys.umeCurrentAlarms(
       curSeverity,
       curCleared,
-      curHostName,
-      curKeyword,
+      debouncedHost,
+      debouncedKeyword,
       curPage,
       curPageSize,
     ),
@@ -39,8 +49,8 @@ export function NetworkAlarmsPage() {
       fetchUmeCurrentAlarms({
         severity: curSeverity,
         isCleared: curCleared,
-        hostName: curHostName,
-        keyword: curKeyword,
+        hostName: debouncedHost,
+        keyword: debouncedKeyword,
         page: curPage,
         pageSize: curPageSize,
       }),
@@ -50,13 +60,57 @@ export function NetworkAlarmsPage() {
   const items = currentQuery.data?.items || [];
   const curTotal = Number(currentQuery.data?.total || 0);
   const curPages = pageCount(curTotal, curPageSize);
-  const perPage = (n: number) => t("common.perPage", { n: String(n) });
   const hasFilters = Boolean(curKeyword.trim() || curHostName.trim() || curSeverity || curCleared);
+
+  const exportCsv = async () => {
+    setExporting(true);
+    try {
+      const rows = await fetchAllPages<UmeAlarmItem>({
+        pageSize: 200,
+        maxRows: 2000,
+        fetchPage: (page, pageSize) =>
+          fetchUmeCurrentAlarms({
+            severity: curSeverity,
+            isCleared: curCleared,
+            hostName: debouncedHost,
+            keyword: debouncedKeyword,
+            page,
+            pageSize,
+          }),
+      });
+      downloadCsv(`ume-alarms-${new Date().toISOString().slice(0, 10)}.csv`, rows, [
+        { key: "time_created", header: t("ume.alarms.col.time"), value: (r) => formatSystemTime(r.time_created) },
+        { key: "perceived_severity", header: t("ume.alarms.col.severity") },
+        { key: "ne_id", header: t("ume.alarms.col.neId") },
+        { key: "host_name", header: t("ume.alarms.col.hostName") },
+        { key: "ne_type", header: t("ume.alarms.col.neType") },
+        { key: "native_probable_cause", header: t("ume.alarms.col.cause") },
+        { key: "is_cleared", header: "is_cleared" },
+        { key: "alarm_key", header: "alarm_key" },
+      ]);
+      if (rows.length < curTotal) {
+        showOk(
+          t("common.exportTruncated", { count: String(rows.length), total: String(curTotal) }),
+        );
+      } else {
+        showOk(t("common.exportOk", { count: String(rows.length) }));
+      }
+    } catch (err) {
+      showError(t("common.exportFailed") + ": " + formatErr(err));
+    } finally {
+      setExporting(false);
+    }
+  };
 
   return (
     <section className="panel">
       <div className="panel__toolbar">
         <h2>{t("ume.alarms.title")}</h2>
+        <div className="btn-row">
+          <button type="button" disabled={exporting || curTotal === 0} onClick={() => void exportCsv()}>
+            {exporting ? t("common.exporting") : t("common.exportCsv")}
+          </button>
+        </div>
       </div>
 
       <div className="pt-list">
@@ -99,8 +153,8 @@ export function NetworkAlarmsPage() {
             }}
           >
             <option value="">{t("ume.alarms.clearedAll")}</option>
-            <option value="true">true</option>
-            <option value="false">false</option>
+            <option value="false">{t("ume.alarms.clearedNo")}</option>
+            <option value="true">{t("ume.alarms.clearedYes")}</option>
           </select>
           <button
             type="button"
@@ -130,12 +184,12 @@ export function NetworkAlarmsPage() {
             <table className="data-table pt-list-table">
               <thead>
                 <tr>
-                  <th>time_created</th>
-                  <th>severity</th>
-                  <th>ne_id</th>
-                  <th>host_name</th>
-                  <th>ne_type</th>
-                  <th>cause</th>
+                  <th>{t("ume.alarms.col.time")}</th>
+                  <th>{t("ume.alarms.col.severity")}</th>
+                  <th>{t("ume.alarms.col.neId")}</th>
+                  <th>{t("ume.alarms.col.hostName")}</th>
+                  <th>{t("ume.alarms.col.neType")}</th>
+                  <th>{t("ume.alarms.col.cause")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -177,46 +231,19 @@ export function NetworkAlarmsPage() {
           </div>
         )}
 
-        <div className="pager pt-list-pager">
-          <div className="pager__meta muted">
-            {t("common.pagerMeta", {
-              total: String(curTotal),
-              page: String(curPage),
-              pages: String(curPages),
-            })}
-          </div>
-          <div className="pager__controls btn-row">
-            <button
-              className="pager__btn"
-              type="button"
-              onClick={() => setCurPage(Math.max(1, curPage - 1))}
-              disabled={curPage <= 1}
-            >
-              {t("common.prevPage")}
-            </button>
-            <button
-              className="pager__btn"
-              type="button"
-              onClick={() => setCurPage(curPage + 1)}
-              disabled={curPage >= curPages}
-            >
-              {t("common.nextPage")}
-            </button>
-            <select
-              className="pager__size"
-              value={String(curPageSize)}
-              onChange={(e) => {
-                setCurPageSize(Number(e.target.value) || 50);
-                setCurPage(1);
-              }}
-            >
-              <option value="50">{perPage(50)}</option>
-              <option value="100">{perPage(100)}</option>
-              <option value="200">{perPage(200)}</option>
-              <option value="500">{perPage(500)}</option>
-            </select>
-          </div>
-        </div>
+        <ListPager
+          page={curPage}
+          pages={curPages}
+          total={curTotal}
+          pageSize={curPageSize}
+          pageSizeOptions={[50, 100, 200, 500]}
+          onPageChange={setCurPage}
+          onPageSizeChange={(size) => {
+            setCurPageSize(size);
+            setCurPage(1);
+          }}
+          disabled={currentQuery.isLoading}
+        />
       </div>
     </section>
   );

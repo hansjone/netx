@@ -43,6 +43,8 @@ class LayoutState:
     pinned: set[str] = field(default_factory=set)
     names: dict[str, str] = field(default_factory=dict)
     layers: dict[str, str] = field(default_factory=dict)
+    # Optional fabric numeric level (1 / 1.1 / 2 …); used by freeze_levels.
+    levels: dict[str, float] = field(default_factory=dict)
     links: list[tuple[str, str]] = field(default_factory=list)
     adj: dict[str, set[str]] = field(default_factory=dict)
     spine: set[str] = field(default_factory=set)
@@ -57,6 +59,7 @@ class LayoutState:
             pinned=set(self.pinned),
             names=dict(self.names),
             layers=dict(self.layers),
+            levels=dict(self.levels),
             links=list(self.links),
             adj={k: set(v) for k, v in self.adj.items()},
             spine=set(self.spine),

@@ -200,7 +200,7 @@ def analyze_graph_structure(
         nm = str(n.get("name") or n.get("label") or fid)
         ids.append(fid)
         names[fid] = nm
-        layers[fid] = infer_layer(nm, n.get("role"))
+        layers[fid] = infer_layer(nm, n.get("role"), n.get("level"))
 
     adj: dict[str, set[str]] = {i: set() for i in ids}
     links = collapse_links(edges)
@@ -211,7 +211,9 @@ def analyze_graph_structure(
 
     deg = {i: len(adj[i]) for i in ids}
     access = {i for i in ids if layers.get(i) == "access"}
-    layer_known = sum(1 for i in ids if layers.get(i) in {"core", "agg", "access"})
+    layer_known = sum(
+        1 for i in ids if layers.get(i) in {"external", "core", "agg", "access"}
+    )
     if layer_known < max(3, len(ids) // 5) and ids:
         ranked = sorted(ids, key=lambda i: (-deg[i], names[i]))
         hub_budget = max(2, min(8, len(ids) // 15 + 2))
@@ -317,6 +319,7 @@ def analyze_graph_structure(
         }
 
     layer_block = {
+        "external": layer_stats("external"),
         "core": layer_stats("core"),
         "agg": layer_stats("agg"),
         "access": {

@@ -55,7 +55,13 @@ from .topology_schemas import (
 
 
 def _node_out(n: TopoFabricNode) -> FabricNodeOut:
+    lv = getattr(n, "level", None)
+    try:
+        level_v = float(lv) if lv is not None else None
+    except (TypeError, ValueError):
+        level_v = None
     return FabricNodeOut(
+        level=level_v,
         role=str(getattr(n, "role", "") or ""),
         region_folder_id=str(getattr(n, "region_folder_id", None) or "") or None,
         role_source=str(getattr(n, "role_source", "") or ""),
@@ -264,6 +270,8 @@ def list_fabric_nodes(
     *,
     keyword: str = "",
     role: str = "",
+    level: str = "",
+    level_major: str = "",
     region_folder_id: str = "",
     unmatched: str = "",
     link_status: str = "",
@@ -271,6 +279,7 @@ def list_fabric_nodes(
     page_size: int = PAGE_DEFAULT,
 ) -> dict[str, Any]:
     from .topology_inventory_lifecycle import enrich_fabric_node_dicts
+    from .topology_level import LEVEL_PRESETS, normalize_level
 
     page = max(1, int(page or 1))
     page_size = max(1, min(PAGE_MAX, int(page_size or PAGE_DEFAULT)))
@@ -286,15 +295,46 @@ def list_fabric_nodes(
                 TopoFabricNode.ume_ne_id.ilike(like),
             )
         )
+    level_raw = str(level or "").strip()
+    if level_raw:
+        try:
+            lv = normalize_level(level_raw)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if lv is None:
+            q = q.filter(TopoFabricNode.level.is_(None))
+        else:
+            q = q.filter(TopoFabricNode.level == lv)
+    maj_raw = str(level_major or "").strip()
+    if maj_raw:
+        try:
+            maj = int(float(maj_raw))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="level_major_invalid") from exc
+        q = q.filter(
+            TopoFabricNode.level.isnot(None),
+            TopoFabricNode.level >= float(maj),
+            TopoFabricNode.level < float(maj) + 1.0,
+        )
     role_v = str(role or "").strip().lower()
     if role_v:
-        q = q.filter(TopoFabricNode.role == role_v)
+        if role_v in LEVEL_PRESETS and not level_raw and not maj_raw:
+            # Prefer major-band filter so 1.1 still matches role=core
+            preset_lv = LEVEL_PRESETS[role_v]
+            maj = int(preset_lv)
+            q = q.filter(
+                TopoFabricNode.level.isnot(None),
+                TopoFabricNode.level >= float(maj),
+                TopoFabricNode.level < float(maj) + 1.0,
+            )
+        else:
+            q = q.filter(TopoFabricNode.role == role_v)
     region_v = str(region_folder_id or "").strip()
     if region_v:
         q = q.filter(TopoFabricNode.region_folder_id == region_v)
     um = str(unmatched or "").strip().lower()
-    if um == "role":
-        q = q.filter(or_(TopoFabricNode.role == "", TopoFabricNode.role == "unknown"))
+    if um in {"role", "level"}:
+        q = q.filter(TopoFabricNode.level.is_(None))
     elif um == "region":
         q = q.filter(
             or_(TopoFabricNode.region_folder_id.is_(None), TopoFabricNode.region_folder_id == "")
@@ -302,8 +342,7 @@ def list_fabric_nodes(
     elif um == "any":
         q = q.filter(
             or_(
-                TopoFabricNode.role == "",
-                TopoFabricNode.role == "unknown",
+                TopoFabricNode.level.is_(None),
                 TopoFabricNode.region_folder_id.is_(None),
                 TopoFabricNode.region_folder_id == "",
             )

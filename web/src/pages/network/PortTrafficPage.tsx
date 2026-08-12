@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { ListPager } from "../../components/ListPager";
 import {
   createPortTrafficDevice,
   deletePortTrafficDevice,
@@ -10,6 +11,7 @@ import {
   fetchPortTrafficDevices,
   fetchPortTrafficEvents,
   fetchPortTrafficTargets,
+  formatErr,
   pausePortTrafficDevice,
   putPortTrafficInterfaces,
   rebindPortTrafficDevice,
@@ -19,13 +21,16 @@ import {
 } from "../../services/api";
 import { queryKeys } from "../../constants/queryKeys";
 import { useI18n } from "../../i18n";
+import { useDebouncedValue } from "../../hooks/useDebouncedValue";
 import { useToast } from "../../hooks/useToast";
 import type {
   CliTargetItem,
   PortTrafficDevice,
   PortTrafficDiscoverPort,
+  PortTrafficEvent,
   PortTrafficIfaceIn,
 } from "../../types";
+import { downloadCsv, fetchAllPages } from "../../utils/csvExport";
 import { pageCount } from "../../utils/display";
 import { formatSystemTime } from "../../utils/time";
 
@@ -34,10 +39,11 @@ const TARGET_PAGE_SIZE = 20;
 
 type ViewMode = "list" | "wizard" | "edit";
 
-function statusTone(status: string): "running" | "paused" | "stopped" | "other" {
+function statusTone(status: string): "running" | "paused" | "stopped" | "draft" | "other" {
   if (status === "running") return "running";
   if (status === "paused") return "paused";
   if (status === "stopped") return "stopped";
+  if (status === "draft") return "draft";
   return "other";
 }
 
@@ -122,6 +128,11 @@ export function PortTrafficPage() {
 
   const [view, setView] = useState<ViewMode>("list");
   const [listPage, setListPage] = useState(1);
+  const [listPageSize, setListPageSize] = useState(50);
+  const [listKeyword, setListKeyword] = useState("");
+  const [listStatus, setListStatus] = useState("");
+  const [exportingDevices, setExportingDevices] = useState(false);
+  const debouncedListKeyword = useDebouncedValue(listKeyword, 300);
 
   // Wizard / edit
   const [editDeviceId, setEditDeviceId] = useState("");
@@ -151,6 +162,7 @@ export function PortTrafficPage() {
   const [wizardStep, setWizardStep] = useState<1 | 2 | 3>(1);
   const [logDeviceId, setLogDeviceId] = useState("");
   const [logDeviceLabel, setLogDeviceLabel] = useState("");
+  const [logKeyword, setLogKeyword] = useState("");
   const [rebindDevice, setRebindDevice] = useState<PortTrafficDevice | null>(null);
   const [rebindKeyword, setRebindKeyword] = useState("");
   const [rebindPage, setRebindPage] = useState(1);
@@ -169,8 +181,14 @@ export function PortTrafficPage() {
   });
 
   const devicesQuery = useQuery({
-    queryKey: queryKeys.portTrafficDevices(listPage),
-    queryFn: () => fetchPortTrafficDevices({ page: listPage, pageSize: 10 }),
+    queryKey: queryKeys.portTrafficDevices(listPage, listPageSize, listStatus, debouncedListKeyword),
+    queryFn: () =>
+      fetchPortTrafficDevices({
+        page: listPage,
+        pageSize: listPageSize,
+        status: listStatus || undefined,
+        keyword: debouncedListKeyword || undefined,
+      }),
     staleTime: 5000,
     refetchInterval: (q) => {
       const items = q.state.data?.items || [];
@@ -570,15 +588,107 @@ export function PortTrafficPage() {
 
   const dash = dashQuery.data;
   const devices = devicesQuery.data?.items || [];
-  const pages = pageCount(devicesQuery.data?.total || 0, 10);
+  const listTotal = Number(devicesQuery.data?.total || 0);
+  const pages = pageCount(listTotal, listPageSize);
   const editDevice = editDeviceSnap;
+  const hasListFilters = Boolean(listKeyword.trim() || listStatus);
+  const logEvents = logQuery.data?.items || [];
+  const logKw = logKeyword.trim().toLowerCase();
+  const filteredLogEvents = !logKw
+    ? logEvents
+    : logEvents.filter((ev) => {
+        const msg = formatPortTrafficLogMessage(ev.message, t).toLowerCase();
+        const hay = `${ev.level || ""} ${ev.ifname || ""} ${ev.message || ""} ${msg}`.toLowerCase();
+        return hay.includes(logKw);
+      });
 
   const statusText = (status: string) => {
     const tone = statusTone(status);
     if (tone === "running") return t("portTraffic.statusRunning");
     if (tone === "paused") return t("portTraffic.statusPaused");
     if (tone === "stopped") return t("portTraffic.statusStopped");
+    if (tone === "draft") return t("portTraffic.statusDraft");
     return status;
+  };
+
+  const closeLog = () => {
+    setLogDeviceId("");
+    setLogDeviceLabel("");
+    setLogKeyword("");
+  };
+
+  const exportDevicesCsv = async () => {
+    setExportingDevices(true);
+    try {
+      const rows = await fetchAllPages<PortTrafficDevice>({
+        pageSize: 100,
+        maxRows: 2000,
+        fetchPage: (p, ps) =>
+          fetchPortTrafficDevices({
+            page: p,
+            pageSize: ps,
+            status: listStatus || undefined,
+            keyword: debouncedListKeyword || undefined,
+          }),
+      });
+      downloadCsv(
+        `${t("portTraffic.exportDevicesName")}-${new Date().toISOString().slice(0, 10)}.csv`,
+        rows,
+        [
+          { key: "ne_name", header: t("portTraffic.col.device"), value: (r) => deviceLabel(r) },
+          { key: "ne_ip", header: "IP" },
+          { key: "ne_id", header: "NE ID" },
+          { key: "vendor", header: t("portTraffic.col.vendor") },
+          { key: "status", header: t("portTraffic.col.status"), value: (r) => statusText(r.status) },
+          { key: "target_count", header: t("portTraffic.col.ports") },
+          { key: "active_target_count", header: "Active ports" },
+          { key: "interval_sec", header: t("portTraffic.col.interval") },
+          {
+            key: "last_collect_ended_at",
+            header: t("portTraffic.col.last"),
+            value: (r) => formatSystemTime(r.last_collect_ended_at) || "",
+          },
+          { key: "note", header: t("portTraffic.note") },
+          { key: "last_error", header: t("portTraffic.logMessage") },
+          { key: "id", header: "ID" },
+        ],
+      );
+      if (rows.length < listTotal) {
+        showOk(t("common.exportTruncated", { count: String(rows.length), total: String(listTotal) }));
+      } else {
+        showOk(t("common.exportOk", { count: String(rows.length) }));
+      }
+    } catch (err) {
+      showError(t("common.exportFailed") + ": " + formatErr(err));
+    } finally {
+      setExportingDevices(false);
+    }
+  };
+
+  const exportEventsCsv = () => {
+    try {
+      downloadCsv(
+        `${t("portTraffic.exportEventsName")}-${new Date().toISOString().slice(0, 10)}.csv`,
+        filteredLogEvents,
+        [
+          {
+            key: "created_at",
+            header: t("portTraffic.logTime"),
+            value: (r: PortTrafficEvent) => formatSystemTime(r.created_at) || "",
+          },
+          { key: "level", header: t("portTraffic.logLevel") },
+          { key: "ifname", header: t("portTraffic.col.ifname") },
+          {
+            key: "message",
+            header: t("portTraffic.logMessage"),
+            value: (r: PortTrafficEvent) => formatPortTrafficLogMessage(r.message, t),
+          },
+        ],
+      );
+      showOk(t("common.exportOk", { count: String(filteredLogEvents.length) }));
+    } catch (err) {
+      showError(t("common.exportFailed") + ": " + formatErr(err));
+    }
   };
 
   return (
@@ -600,6 +710,13 @@ export function PortTrafficPage() {
             <>
               <button type="button" onClick={() => navigate("/network/tasks/port-traffic/wall")}>
                 {t("portTraffic.wall")}
+              </button>
+              <button
+                type="button"
+                disabled={exportingDevices || listTotal === 0}
+                onClick={() => void exportDevicesCsv()}
+              >
+                {exportingDevices ? t("common.exporting") : t("common.exportCsv")}
               </button>
               <button type="button" className="btn-primary" onClick={openWizard}>
                 {t("portTraffic.create")}
@@ -634,157 +751,189 @@ export function PortTrafficPage() {
             </div>
           </div>
 
-          {!devices.length ? (
+          <div className="filter-inline">
+            <input
+              value={listKeyword}
+              placeholder={t("portTraffic.keywordPh")}
+              onChange={(e) => {
+                setListKeyword(e.target.value);
+                setListPage(1);
+              }}
+            />
+            <select
+              value={listStatus}
+              onChange={(e) => {
+                setListStatus(e.target.value);
+                setListPage(1);
+              }}
+            >
+              <option value="">{t("portTraffic.allStatus")}</option>
+              <option value="running">{t("portTraffic.statusRunning")}</option>
+              <option value="paused">{t("portTraffic.statusPaused")}</option>
+              <option value="stopped">{t("portTraffic.statusStopped")}</option>
+              <option value="draft">{t("portTraffic.statusDraft")}</option>
+            </select>
+            <button
+              type="button"
+              disabled={!hasListFilters}
+              onClick={() => {
+                setListKeyword("");
+                setListStatus("");
+                setListPage(1);
+              }}
+            >
+              {t("common.clearFilters")}
+            </button>
+          </div>
+
+          {devicesQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
+          {devicesQuery.isError ? <p className="error-text">{t("common.opFailed")}</p> : null}
+
+          {!devices.length && !devicesQuery.isLoading ? (
             <div className="pt-list-empty">
               <p>{t("portTraffic.empty")}</p>
-              <button type="button" className="btn-primary" onClick={openWizard}>
-                {t("portTraffic.create")}
-              </button>
+              {!hasListFilters ? (
+                <button type="button" className="btn-primary" onClick={openWizard}>
+                  {t("portTraffic.create")}
+                </button>
+              ) : null}
             </div>
-          ) : (
-            <>
-              <div className="pt-list-table-wrap">
-                <table className="data-table pt-list-table">
-                  <thead>
-                    <tr>
-                      <th>{t("portTraffic.col.device")}</th>
-                      <th>{t("portTraffic.col.status")}</th>
-                      <th>{t("portTraffic.col.ports")}</th>
-                      <th>{t("portTraffic.col.interval")}</th>
-                      <th>{t("portTraffic.col.last")}</th>
-                      <th>{t("portTraffic.col.actions")}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {devices.map((row) => {
-                      const tone = statusTone(row.status);
-                      return (
-                        <tr key={row.id}>
-                          <td>
-                            <div className="pt-list-task-name">{deviceLabel(row)}</div>
-                            <div className="muted" style={{ fontSize: 12 }}>
-                              {row.ne_ip || row.ne_id}
-                              {row.vendor ? ` · ${row.vendor}` : ""}
-                              {row.note ? ` · ${row.note}` : ""}
-                            </div>
-                          </td>
-                          <td>
-                            <span className={`pt-list-status pt-list-status--${tone}`}>
-                              {statusText(row.status)}
+          ) : devices.length ? (
+            <div className="pt-list-table-wrap">
+              <table className="data-table pt-list-table">
+                <thead>
+                  <tr>
+                    <th>{t("portTraffic.col.device")}</th>
+                    <th>{t("portTraffic.col.status")}</th>
+                    <th>{t("portTraffic.col.ports")}</th>
+                    <th>{t("portTraffic.col.interval")}</th>
+                    <th>{t("portTraffic.col.last")}</th>
+                    <th>{t("portTraffic.col.actions")}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {devices.map((row) => {
+                    const tone = statusTone(row.status);
+                    return (
+                      <tr key={row.id}>
+                        <td>
+                          <div className="pt-list-task-name">{deviceLabel(row)}</div>
+                          <div className="muted" style={{ fontSize: 12 }}>
+                            {row.ne_ip || row.ne_id}
+                            {row.vendor ? ` · ${row.vendor}` : ""}
+                            {row.note ? ` · ${row.note}` : ""}
+                          </div>
+                        </td>
+                        <td>
+                          <span className={`pt-list-status pt-list-status--${tone}`}>
+                            {statusText(row.status)}
+                          </span>
+                          {row.collect_running ? (
+                            <span className="pt-list-status pt-list-status--collect">
+                              {t("portTraffic.collecting")}
                             </span>
-                            {row.collect_running ? (
-                              <span className="pt-list-status pt-list-status--collect">
-                                {t("portTraffic.collecting")}
-                              </span>
+                          ) : null}
+                        </td>
+                        <td className="pt-list-num">
+                          {row.active_target_count}/{row.target_count}
+                        </td>
+                        <td className="pt-list-num">{row.interval_sec}s</td>
+                        <td className="pt-list-time">
+                          {formatSystemTime(row.last_collect_ended_at) || "—"}
+                        </td>
+                        <td>
+                          <div className="pt-list-actions">
+                            <button
+                              type="button"
+                              className="btn-primary"
+                              onClick={() => openWallList()}
+                            >
+                              {t("portTraffic.wall")}
+                            </button>
+                            <button type="button" onClick={() => openEdit(row)}>
+                              {t("portTraffic.edit")}
+                            </button>
+                            {needsNeRebind(row) ? (
+                              <button
+                                type="button"
+                                title={t("portTraffic.rebindHint")}
+                                onClick={() => openRebind(row)}
+                              >
+                                {t("portTraffic.rebind")}
+                              </button>
                             ) : null}
-                          </td>
-                          <td className="pt-list-num">
-                            {row.active_target_count}/{row.target_count}
-                          </td>
-                          <td className="pt-list-num">{row.interval_sec}s</td>
-                          <td className="pt-list-time">
-                            {formatSystemTime(row.last_collect_ended_at) || "—"}
-                          </td>
-                          <td>
-                            <div className="pt-list-actions">
+                            {row.status !== "running" ? (
                               <button
                                 type="button"
-                                className="btn-primary"
-                                onClick={() => openWallList()}
+                                disabled={startMut.isPending}
+                                onClick={() => startMut.mutate(row.id)}
                               >
-                                {t("portTraffic.wall")}
+                                {t("portTraffic.start")}
                               </button>
-                              <button type="button" onClick={() => openEdit(row)}>
-                                {t("portTraffic.edit")}
-                              </button>
-                              {needsNeRebind(row) ? (
-                                <button
-                                  type="button"
-                                  title={t("portTraffic.rebindHint")}
-                                  onClick={() => openRebind(row)}
-                                >
-                                  {t("portTraffic.rebind")}
-                                </button>
-                              ) : null}
-                              {row.status !== "running" ? (
-                                <button
-                                  type="button"
-                                  disabled={startMut.isPending}
-                                  onClick={() => startMut.mutate(row.id)}
-                                >
-                                  {t("portTraffic.start")}
-                                </button>
-                              ) : (
-                                <button
-                                  type="button"
-                                  disabled={pauseMut.isPending}
-                                  onClick={() => pauseMut.mutate(row.id)}
-                                >
-                                  {t("portTraffic.pause")}
-                                </button>
-                              )}
-                              {row.status !== "stopped" ? (
-                                <button
-                                  type="button"
-                                  disabled={stopMut.isPending}
-                                  onClick={() => stopMut.mutate(row.id)}
-                                >
-                                  {t("portTraffic.stop")}
-                                </button>
-                              ) : null}
+                            ) : (
                               <button
                                 type="button"
-                                className={row.last_error ? "pt-list-log-btn--error" : undefined}
-                                onClick={() => {
-                                  setLogDeviceId(row.id);
-                                  setLogDeviceLabel(deviceLabel(row));
-                                }}
+                                disabled={pauseMut.isPending}
+                                onClick={() => pauseMut.mutate(row.id)}
                               >
-                                {t("portTraffic.log")}
+                                {t("portTraffic.pause")}
                               </button>
+                            )}
+                            {row.status !== "stopped" ? (
                               <button
                                 type="button"
-                                className="btn--danger"
-                                disabled={deleteMut.isPending}
-                                onClick={() => {
-                                  if (window.confirm(t("portTraffic.confirmDelete"))) {
-                                    deleteMut.mutate(row.id);
-                                  }
-                                }}
+                                disabled={stopMut.isPending}
+                                onClick={() => stopMut.mutate(row.id)}
                               >
-                                {t("portTraffic.delete")}
+                                {t("portTraffic.stop")}
                               </button>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-              <div className="pager pt-list-pager">
-                <button
-                  type="button"
-                  className="pager__btn"
-                  disabled={listPage <= 1}
-                  onClick={() => setListPage((p) => p - 1)}
-                >
-                  ‹
-                </button>
-                <span className="muted">
-                  {listPage}/{Math.max(1, pages)}
-                </span>
-                <button
-                  type="button"
-                  className="pager__btn"
-                  disabled={listPage >= pages}
-                  onClick={() => setListPage((p) => p + 1)}
-                >
-                  ›
-                </button>
-              </div>
-            </>
-          )}
+                            ) : null}
+                            <button
+                              type="button"
+                              className={row.last_error ? "pt-list-log-btn--error" : undefined}
+                              onClick={() => {
+                                setLogDeviceId(row.id);
+                                setLogDeviceLabel(deviceLabel(row));
+                                setLogKeyword("");
+                              }}
+                            >
+                              {t("portTraffic.log")}
+                            </button>
+                            <button
+                              type="button"
+                              className="btn--danger"
+                              disabled={deleteMut.isPending}
+                              onClick={() => {
+                                if (window.confirm(t("portTraffic.confirmDelete"))) {
+                                  deleteMut.mutate(row.id);
+                                }
+                              }}
+                            >
+                              {t("portTraffic.delete")}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+
+          <ListPager
+            page={listPage}
+            pages={pages}
+            total={listTotal}
+            pageSize={listPageSize}
+            pageSizeOptions={[20, 50, 100]}
+            onPageChange={setListPage}
+            onPageSizeChange={(size) => {
+              setListPageSize(size);
+              setListPage(1);
+            }}
+            disabled={devicesQuery.isLoading}
+          />
         </div>
       ) : null}
 
@@ -1179,14 +1328,7 @@ export function PortTrafficPage() {
       ) : null}
 
       {logDeviceId ? (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onClick={() => {
-            setLogDeviceId("");
-            setLogDeviceLabel("");
-          }}
-        >
+        <div className="modal-backdrop" role="presentation" onClick={closeLog}>
           <div
             className="modal modal--wide pt-log-modal"
             role="dialog"
@@ -1201,23 +1343,35 @@ export function PortTrafficPage() {
                   {t("portTraffic.logDevice")}: {logDeviceLabel || "—"}
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setLogDeviceId("");
-                  setLogDeviceLabel("");
-                }}
-              >
-                {t("portTraffic.logClose")}
-              </button>
+              <div className="btn-row">
+                <button
+                  type="button"
+                  disabled={!filteredLogEvents.length}
+                  onClick={exportEventsCsv}
+                >
+                  {t("common.exportCsv")}
+                </button>
+                <button type="button" onClick={closeLog}>
+                  {t("portTraffic.logClose")}
+                </button>
+              </div>
+            </div>
+            <div className="filter-inline" style={{ marginBottom: 10 }}>
+              <input
+                value={logKeyword}
+                placeholder={t("portTraffic.keywordPh")}
+                onChange={(e) => setLogKeyword(e.target.value)}
+              />
             </div>
             {logQuery.isLoading ? (
               <p className="muted">…</p>
-            ) : !(logQuery.data?.items || []).length ? (
+            ) : !logEvents.length ? (
+              <p className="muted">{t("portTraffic.logEmpty")}</p>
+            ) : !filteredLogEvents.length ? (
               <p className="muted">{t("portTraffic.logEmpty")}</p>
             ) : (
               <div className="pt-log-modal__list">
-                {(logQuery.data?.items || []).map((ev) => {
+                {filteredLogEvents.map((ev) => {
                   const level = String(ev.level || "error").toLowerCase();
                   const tone =
                     level === "warn" || level === "warning"

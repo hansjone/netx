@@ -977,11 +977,14 @@ class FabricTopologyTests(unittest.TestCase):
             ),
         )
         prev = clf.preview_classify(self.db)
+        self.assertGreaterEqual(prev.level_matched, 4)
         self.assertGreaterEqual(prev.role_matched, 4)
         applied = clf.apply_classify(self.db)
+        self.assertGreaterEqual(applied.level_updated, 4)
         self.assertGreaterEqual(applied.role_updated, 4)
         self.db.refresh(nodes[0])
         self.assertEqual(nodes[0].role, "core")
+        self.assertEqual(nodes[0].level, 1.0)
         self.assertEqual(nodes[0].region_folder_id, region.id)
 
         dry = clf.generate_slices(
@@ -1026,6 +1029,11 @@ class FabricTopologyTests(unittest.TestCase):
             ),
         )
         self.assertEqual(bulk.updated, 1)
+        self.assertEqual(bulk.level, 3.0)
+        acc = next(n for n in nodes if n.name.startswith("ACC-"))
+        self.db.refresh(acc)
+        self.assertEqual(acc.level, 3.0)
+        self.assertEqual(acc.role, "access")
 
     def test_project_neighbors_respects_max_nodes(self) -> None:
         suffix = uuid4().hex[:8]

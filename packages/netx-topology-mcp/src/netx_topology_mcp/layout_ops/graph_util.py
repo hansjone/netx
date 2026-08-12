@@ -2,32 +2,17 @@
 
 from __future__ import annotations
 
-import re
 from collections import deque
 
+from netx_topology_mcp.layout_ops.level_util import infer_layer
 
-_ROLE_TO_LAYER = {
-    "core": "core",
-    "cn": "core",
-    "aggregation": "agg",
-    "aggregate": "agg",
-    "agg": "agg",
-    "an": "agg",
-    "access": "access",
-    "en": "access",
-    "edge": "access",
-}
-
-
-def infer_layer(name: str, role: str | None = None) -> str:
-    """Map inventory role / name token (CN|AN|EN) → core|agg|access|other."""
-    r = str(role or "").strip().lower()
-    if r in _ROLE_TO_LAYER:
-        return _ROLE_TO_LAYER[r]
-    m = re.search(r"-(CN|AN|EN)(\d*)-", name or "", re.I)
-    if not m:
-        return "other"
-    return {"CN": "core", "AN": "agg", "EN": "access"}[m.group(1).upper()]
+__all__ = [
+    "infer_layer",
+    "bbox",
+    "connected_components",
+    "order_ans",
+    "chain_order",
+]
 
 
 def bbox(pos: dict[str, tuple[float, float]]) -> tuple[float, float, float, float]:
@@ -164,9 +149,11 @@ def build_state_from_nodes_edges(
 ) -> "LayoutState":  # noqa: F821
     from netx_topology_mcp.layout_ops.state import LayoutState
     from netx_topology_mcp.layout_metrics import collapse_links
+    from netx_topology_mcp.layout_ops.level_util import _parse_level
 
     names: dict[str, str] = {}
     layers: dict[str, str] = {}
+    levels: dict[str, float] = {}
     ids: list[str] = []
     for n in nodes:
         if not isinstance(n, dict):
@@ -177,7 +164,10 @@ def build_state_from_nodes_edges(
         nm = str(n.get("name") or n.get("label") or fid)
         ids.append(fid)
         names[fid] = nm
-        layers[fid] = infer_layer(nm, n.get("role"))
+        layers[fid] = infer_layer(nm, n.get("role"), n.get("level"))
+        lv = _parse_level(n.get("level"))
+        if lv is not None:
+            levels[fid] = float(lv)
 
     adj: dict[str, set[str]] = {i: set() for i in ids}
     links = collapse_links(edges)
@@ -203,6 +193,7 @@ def build_state_from_nodes_edges(
         positions=positions,
         names=names,
         layers=layers,
+        levels=levels,
         links=[(a, b) for a, b in links if a in adj and b in adj],
         adj=adj,
         meta={"ids": ids},

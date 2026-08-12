@@ -111,6 +111,7 @@ def _prom_lines(metrics: dict[str, Any]) -> str:
     for name, key in (
         ("config_sync", "netx_config_sync_scheduler_running"),
         ("lldp_collect", "netx_lldp_collect_scheduler_running"),
+        ("ne_collect", "netx_ne_collect_scheduler_running"),
         ("port_traffic", "netx_port_traffic_scheduler_running"),
         ("fabric_reconcile", "netx_fabric_reconcile_scheduler_running"),
     ):

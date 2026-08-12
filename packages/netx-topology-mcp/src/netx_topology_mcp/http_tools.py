@@ -39,6 +39,7 @@ _FABRIC_KEEP = (
     "ip",
     "vendor",
     "device_type",
+    "level",
     "role",
     "link_status",
     "region_folder_id",
@@ -278,6 +279,7 @@ def _analyze_one_view(
     detail: str = "summary",
     sight_limit: int = 40,
     sight_cell: float = 600.0,
+    score_profile: str = "auto",
 ) -> dict[str, Any]:
     graph = _data(http_json("GET", f"/v1/topology/views/{view_id}"))
     if not graph.get("ok"):
@@ -285,7 +287,9 @@ def _analyze_one_view(
     nodes = [n for n in (graph.get("nodes") or []) if isinstance(n, dict)]
     edges = [e for e in (graph.get("edges") or []) if isinstance(e, dict)]
     view = graph.get("view") if isinstance(graph.get("view"), dict) else {}
-    stats = analyze_layout_stats(nodes, edges, with_meta=with_meta)
+    stats = analyze_layout_stats(
+        nodes, edges, with_meta=with_meta, score_profile=score_profile
+    )
     report = dict(stats.get("report") or {})
     out: dict[str, Any] = {
         "ok": True,
@@ -471,7 +475,12 @@ def _layout_topology_view(args: dict[str, Any]) -> dict[str, Any]:
         "layout_dual_unit",
         "polish_crossings",
         "clear_edge_hits",
+        "compact_bbox",
+        "pull_far_chains",
+        "align_reference",
+        "align_to_reference",
         "orbit_sweep",
+        "level_bands",
         "move_nodes",
         "sink_nodes",
         "job_status",
@@ -483,9 +492,14 @@ def _layout_topology_view(args: dict[str, Any]) -> dict[str, Any]:
             "error": f"unknown_action:{action}",
             "hint": (
                 "Public actions: layout|layout_dual_unit|move_nodes|orbit_sweep|"
-                "polish_crossings|clear_edge_hits|fix_overlaps|untangle|"
-                "straighten_channels|job_status|job_cancel. "
-                "Main path: sinkTopologyDualUnits → orbit_sweep → polish → clear."
+                "level_bands|polish_crossings|clear_edge_hits|compact_bbox|"
+                "pull_far_chains|align_reference|"
+                "fix_overlaps|untangle|straighten_channels|job_status|job_cancel. "
+                "Main path: sinkTopologyDualUnits(max_units=1) → "
+                "move_nodes(park) → until_limit → clear → pull_far_chains → "
+                "compact_bbox → hand. Default: no template. "
+                "align_reference = same-network debug only, not delivery. "
+                "Eye sinks: no polish/fix_overlaps/round."
             ),
             **list_layout_catalog(),
         }
@@ -496,6 +510,10 @@ def _layout_topology_view(args: dict[str, Any]) -> dict[str, Any]:
     # Bidirectional membership move: view_id=TO, source_view_id=FROM.
     if action in {"move_nodes", "sink_nodes"}:
         return _move_topology_view_nodes(args)
+
+    # Reference alignment: view_id=TO, source_view_id|params.reference_view_id=FROM.
+    if action in {"align_reference", "align_to_reference"}:
+        return _align_topology_reference(args)
 
     # Background job poll / cancel (no view_id required).
     if action in {"job_status", "job_cancel"}:
@@ -597,6 +615,8 @@ def _layout_topology_view(args: dict[str, Any]) -> dict[str, Any]:
         "layout_dual_unit",
         "polish_crossings",
         "clear_edge_hits",
+        "compact_bbox",
+        "pull_far_chains",
         "orbit_sweep",
     }:
         source_id = view_id
@@ -850,17 +870,28 @@ def _layout_topology_view(args: dict[str, Any]) -> dict[str, Any]:
     force_sync = _truthy((overrides or {}).get("sync")) or _truthy(
         (overrides or {}).get("_force_sync")
     )
+    until_limit = _truthy((overrides or {}).get("until_limit")) or _truthy(
+        (overrides or {}).get("until_stall")
+    )
     heavy_bg = action in {
         "polish_crossings",
         "orbit_sweep",
         "clear_edge_hits",
+        "compact_bbox",
+        "pull_far_chains",
         "layout_dual_unit",
     }
+    # until_limit loops many orbit sweeps — background earlier than one-shot polish.
+    bg_n_thr = 80 if (action == "orbit_sweep" and until_limit) else 600
     if (
         mode == "apply"
         and heavy_bg
         and not force_sync
-        and (len(nodes) >= 600 or _truthy((overrides or {}).get("background")))
+        and (
+            len(nodes) >= bg_n_thr
+            or _truthy((overrides or {}).get("background"))
+            or (until_limit and action == "orbit_sweep")
+        )
     ):
         sync_args = dict(args)
         sync_params = dict(overrides or {})
@@ -879,10 +910,11 @@ def _layout_topology_view(args: dict[str, Any]) -> dict[str, Any]:
             action=action,
             view_id=view_id,
             tool_args=sync_args,
-            meta={"node_count": len(nodes)},
+            meta={"node_count": len(nodes), "until_limit": until_limit},
         )
         print(
-            f"[netx-topology] {action} background job_id={job_id} n={len(nodes)}",
+            f"[netx-topology] {action} background job_id={job_id} n={len(nodes)}"
+            + (" until_limit" if until_limit else ""),
             file=sys.stderr,
             flush=True,
         )
@@ -901,11 +933,12 @@ def _layout_topology_view(args: dict[str, Any]) -> dict[str, Any]:
             ),
         }
 
-    # orbit_sweep: preview suggests only; apply defaults pick=1 (unless round).
+    # orbit_sweep: preview suggests only; apply defaults pick=1 (unless round/until_limit).
     if action == "orbit_sweep" and mode == "apply":
         overrides = dict(overrides or {})
         if (
             not overrides.get("round")
+            and not until_limit
             and overrides.get("pick") is None
         ):
             if overrides.get("node_id") or overrides.get("fabric_node_id"):
@@ -954,23 +987,26 @@ def _layout_topology_view(args: dict[str, Any]) -> dict[str, Any]:
         out["hint"] = (
             "Preview only. Re-call with mode=apply to PATCH. "
             "If overlaps remain: action=fix_overlaps. "
-            "Main path: orbit_sweep → polish_crossings → clear_edge_hits."
+            "Main path: until_limit(crossing→total) → clear_edge_hits → "
+            "pull_far_chains → compact_bbox → hand. "
+            "Eye sinks: do not polish_crossings / fix_overlaps / round."
         )
         return _slim_layout_payload(out)
 
-    # Dual-unit: gate on unit crossings only. Staging eyes often have label
-    # footprint touches that fix_overlaps would re-cross; allow apply when
-    # accepted (unit-internal crossings=0).
+    # Dual-unit: default accepts residual crossings (max-membership CN eyes).
+    # Optional hard gate: params.require_zero_cross=true.
     if action == "layout_dual_unit":
         loc = result.get("local") or {}
-        if not loc.get("accepted", False):
+        require_zero = bool((overrides or {}).get("require_zero_cross"))
+        if require_zero and not loc.get("accepted", False):
             return {
                 **out,
                 "ok": False,
                 "error": "dual_unit_crossings",
                 "hint": (
-                    "layout_dual_unit requires unit-internal crossings=0. "
-                    "Check membership (portals+corridors+tails) or re-detect dual_units."
+                    "require_zero_cross=true but unit-internal crossings≠0. "
+                    "Omit the flag (default) to apply best-effort eye layout, "
+                    "or shrink membership / re-pick portals."
                 ),
                 "local": loc,
             }
@@ -1086,12 +1122,309 @@ def _layout_topology_view(args: dict[str, Any]) -> dict[str, Any]:
     report_progress("done", pct=100.0, message="positions applied")
     out["hint"] = (
         "Positions applied. Main path: analyze(structure) → "
-        "sinkTopologyDualUnits (or move_nodes park) → orbit_sweep(round) → "
-        "polish_crossings → clear_edge_hits → updateTopologyViewPositions. "
-        "Small graphs: layout(compact|corridor|rings). "
+        "sinkTopologyDualUnits(max_units=1) → suggestSinkHubs/move_nodes(park) → "
+        "orbit_sweep(until_limit crossing→total) → clear_edge_hits → "
+        "pull_far_chains → compact_bbox → hand drag. "
+        "Eye sinks: no polish_crossings / fix_overlaps / untangle / round. "
+        "Plateau when stall + moved≈0. Small graphs: layout(compact|corridor|rings). "
         "Large jobs: poll job_status; job_cancel for cooperative stop."
     )
     return _slim_layout_payload(out)
+
+
+def _view_membership_ids(view_id: str) -> tuple[dict[str, Any], set[str], list[dict], list[dict]]:
+    """Fetch a view; return (graph, id_set, nodes, edges)."""
+    graph = _data(http_json("GET", f"/v1/topology/views/{view_id}", timeout=120.0))
+    if not graph.get("ok"):
+        return graph, set(), [], []
+    nodes = [n for n in (graph.get("nodes") or []) if isinstance(n, dict)]
+    edges = [e for e in (graph.get("edges") or []) if isinstance(e, dict)]
+    ids: set[str] = set()
+    for n in nodes:
+        fid = str(n.get("fabric_node_id") or n.get("id") or "").strip()
+        if fid and not fid.startswith("region:"):
+            ids.add(fid)
+    return graph, ids, nodes, edges
+
+
+def _suggest_sink_hubs(args: dict[str, Any]) -> dict[str, Any]:
+    """Rank hub territories on source for non-dual move_nodes(park) batches."""
+    from netx_topology_mcp.layout_ops.suggest_sink_hubs import (
+        pick_batch,
+        suggest_sink_hub_batches,
+    )
+    from netx_topology_mcp.layout_structure import analyze_graph_structure
+
+    source_view_id = str(
+        args.get("source_view_id") or args.get("view_id") or ""
+    ).strip()
+    sink_view_id = str(args.get("sink_view_id") or "").strip()
+    if not source_view_id:
+        return {
+            "ok": False,
+            "error": "source_view_id_required",
+            "hint": "Pass source_view_id=根图 (post-dual leftovers).",
+        }
+
+    try:
+        top_n = max(1, min(40, int(args.get("top_n") or 12)))
+    except (TypeError, ValueError):
+        top_n = 12
+    try:
+        pick = max(1, int(args.get("pick") or 1))
+    except (TypeError, ValueError):
+        pick = 1
+    try:
+        min_territory = max(0, int(args.get("min_territory") or 1))
+    except (TypeError, ValueError):
+        min_territory = 1
+    try:
+        min_move_n = max(1, int(args.get("min_move_n") or 1))
+    except (TypeError, ValueError):
+        min_move_n = 1
+
+    include_hub = str(args.get("include_hub") if args.get("include_hub") is not None else "true").lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+    # Source dual portals: default OFF — leftover root eyes (e.g. GHP) still need
+    # non-dual park batches. Sink dual: default ON but only the primary eye.
+    use_source_dual = str(
+        args.get("use_source_dual_portals")
+        if args.get("use_source_dual_portals") is not None
+        else "false"
+    ).lower() not in {"0", "false", "no", "off"}
+    use_sink_dual = str(
+        args.get("use_sink_dual_portals")
+        if args.get("use_sink_dual_portals") is not None
+        else ("true" if sink_view_id else "false")
+    ).lower() not in {"0", "false", "no", "off"}
+
+    only_layers = args.get("only_layers") or args.get("layers")
+    if isinstance(only_layers, str):
+        only_layers = [p.strip() for p in only_layers.replace(";", ",").split(",") if p.strip()]
+    elif not isinstance(only_layers, list):
+        only_layers = ["agg", "core"]
+
+    exclude: set[str] = set()
+    raw_ex = args.get("exclude_portal_ids") or args.get("exclude_ids") or args.get("portal_ids")
+    if isinstance(raw_ex, (list, tuple, set)):
+        exclude |= {str(x).strip() for x in raw_ex if str(x).strip()}
+    elif isinstance(raw_ex, str) and raw_ex.strip():
+        exclude |= {
+            p.strip()
+            for p in raw_ex.replace(";", ",").split(",")
+            if p.strip()
+        }
+
+    src_graph, src_ids, src_nodes, src_edges = _view_membership_ids(source_view_id)
+    if not src_graph.get("ok"):
+        return {
+            "ok": False,
+            "error": src_graph.get("error") or "source_view_fetch_failed",
+            "source_view_id": source_view_id,
+        }
+    if len(src_ids) < 2:
+        return {
+            "ok": False,
+            "error": "source_too_few_nodes",
+            "source_view_id": source_view_id,
+            "node_count": len(src_ids),
+        }
+
+    sink_ids: set[str] = set()
+    sink_dual: dict[str, Any] | None = None
+    if sink_view_id:
+        sink_graph, sink_ids, sink_nodes, sink_edges = _view_membership_ids(sink_view_id)
+        if not sink_graph.get("ok"):
+            return {
+                "ok": False,
+                "error": sink_graph.get("error") or "sink_view_fetch_failed",
+                "sink_view_id": sink_view_id,
+            }
+        if use_sink_dual:
+            sink_struct = analyze_graph_structure(sink_nodes, sink_edges, hub_top_k=8)
+            sink_dual = sink_struct.get("dual_units") if isinstance(sink_struct, dict) else None
+
+    struct = analyze_graph_structure(
+        src_nodes, src_edges, hub_top_k=max(12, top_n * 2), stub_top_k=40
+    )
+    dual = struct.get("dual_units") if use_source_dual else None
+    # Merge dual portals into exclude via dual_units arg.
+    # Sink: only the largest unit (the fixed eye) — nested eyes must not
+    # blanket-exclude every AN hub still holding root stubs.
+    merged_dual: dict[str, Any] = {"units": []}
+    if isinstance(dual, dict):
+        merged_dual["units"].extend(list(dual.get("units") or [])[:8])
+    if isinstance(sink_dual, dict):
+        sink_units = [u for u in (sink_dual.get("units") or []) if isinstance(u, dict)]
+        if sink_units:
+            best = max(sink_units, key=lambda u: int(u.get("node_count") or 0))
+            merged_dual["units"].append(best)
+
+    report = suggest_sink_hub_batches(
+        hubs=list(struct.get("hubs") or []),
+        soft_blocks=struct.get("soft_blocks") if isinstance(struct.get("soft_blocks"), dict) else {},
+        source_ids=src_ids,
+        sink_ids=sink_ids,
+        exclude_ids=exclude,
+        dual_units=merged_dual if merged_dual["units"] else None,
+        min_territory=min_territory,
+        min_move_n=min_move_n,
+        top_n=top_n,
+        include_hub=include_hub,
+        only_layers=[str(x) for x in only_layers] if only_layers else None,
+    )
+    batch = pick_batch(report, pick=pick)
+    src_view = src_graph.get("view") if isinstance(src_graph.get("view"), dict) else {}
+    out: dict[str, Any] = {
+        "ok": True,
+        "source_view_id": source_view_id,
+        "source_view_name": str(src_view.get("name") or ""),
+        "sink_view_id": sink_view_id or None,
+        "pick": pick,
+        "batch": batch,
+        **report,
+    }
+    if batch:
+        out["move_nodes"] = {
+            "action": "move_nodes",
+            "source_view_id": source_view_id,
+            "view_id": sink_view_id or "<sink_view_id>",
+            "mode": "apply",
+            "params": {
+                "fabric_node_ids": list(batch.get("fabric_node_ids") or []),
+                "park": True,
+                "remove_from_source": True,
+            },
+        }
+        out["hint"] = (
+            f"Rank#{batch.get('rank')} hub={batch.get('hub_name')} "
+            f"n={batch.get('remaining_n')}. "
+            "Call layoutTopologyView with move_nodes payload (park=true). "
+            "Do not sinkTopologyDualUnits again."
+        )
+    else:
+        out["hint"] = (
+            "No hub batches left (all territories on sink or excluded). "
+            "Check leftovers / tiny chains on source."
+        )
+    return out
+
+
+def _align_topology_reference(args: dict[str, Any]) -> dict[str, Any]:
+    """Map reference canvas geometry onto target via shared fabric_node_ids."""
+    from netx_topology_mcp.layout_ops.align_reference import (
+        align_reference_params_from_overrides,
+        align_to_reference,
+    )
+    from netx_topology_mcp.layout_ops.graph_util import build_state_from_nodes_edges
+    from netx_topology_mcp.layout_stats import analyze_layout_stats
+
+    view_id = str(args.get("view_id") or "").strip()
+    overrides = args.get("params") if isinstance(args.get("params"), dict) else {}
+    knobs = align_reference_params_from_overrides(overrides)
+    ref_id = (
+        knobs.get("reference_view_id")
+        or str(args.get("source_view_id") or "").strip()
+        or str(args.get("reference_view_id") or "").strip()
+    )
+    mode = str(args.get("mode") or "preview").strip().lower() or "preview"
+    if not view_id:
+        return {"ok": False, "error": "view_id_required", "hint": "Target canvas to rewrite."}
+    if not ref_id:
+        return {
+            "ok": False,
+            "error": "reference_view_id_required",
+            "hint": "Pass source_view_id or params.reference_view_id (hand golden / UME).",
+        }
+    if mode not in {"preview", "apply"}:
+        return {"ok": False, "error": "mode_invalid"}
+
+    tgt = _data(http_json("GET", f"/v1/topology/views/{view_id}", timeout=120.0))
+    if not tgt.get("ok"):
+        return {"ok": False, "error": tgt.get("error") or "target_fetch_failed", "view_id": view_id}
+    ref = _data(http_json("GET", f"/v1/topology/views/{ref_id}", timeout=120.0))
+    if not ref.get("ok"):
+        return {
+            "ok": False,
+            "error": ref.get("error") or "reference_fetch_failed",
+            "reference_view_id": ref_id,
+        }
+
+    t_nodes = [n for n in (tgt.get("nodes") or []) if isinstance(n, dict)]
+    t_edges = [e for e in (tgt.get("edges") or []) if isinstance(e, dict)]
+    r_nodes = [n for n in (ref.get("nodes") or []) if isinstance(n, dict)]
+    st = build_state_from_nodes_edges(t_nodes, t_edges)
+    ref_pos: dict[str, tuple[float, float]] = {}
+    for n in r_nodes:
+        fid = str(n.get("fabric_node_id") or n.get("id") or "").strip()
+        if not fid or n.get("x") is None or n.get("y") is None:
+            continue
+        try:
+            ref_pos[fid] = (float(n["x"]), float(n["y"]))
+        except (TypeError, ValueError):
+            continue
+
+    op = align_to_reference(
+        st,
+        portal_ids=knobs.get("portal_ids") or [],
+        reference=ref_pos,
+        mode=knobs.get("mode") or "similarity",
+        park_missing=bool(knobs.get("park_missing", True)),
+        freeze_portals=bool(knobs.get("freeze_portals", True)),
+    )
+    if op.params.get("error"):
+        return {"ok": False, **op.params, "note": op.note}
+
+    positions = [
+        {"fabric_node_id": nid, "x": xy[0], "y": xy[1]}
+        for nid, xy in op.state.positions.items()
+        if nid in op.moved
+    ]
+    out: dict[str, Any] = {
+        "ok": True,
+        "action": "align_reference",
+        "view_id": view_id,
+        "reference_view_id": ref_id,
+        "mode": mode,
+        "applied": False,
+        "local": {"op": op.params, "note": op.note},
+        "moved_n": len(op.moved),
+    }
+    if mode == "preview":
+        # Score proposed coords without PATCH.
+        preview_nodes = []
+        for n in t_nodes:
+            fid = str(n.get("fabric_node_id") or "").strip()
+            row = dict(n)
+            if fid in op.state.positions:
+                row["x"], row["y"] = op.state.positions[fid]
+            preview_nodes.append(row)
+        qa = analyze_layout_stats(preview_nodes, t_edges, score_profile="auto")
+        out["summary"] = qa.get("summary")
+        out["hint"] = "Preview only. Re-call mode=apply to PATCH aligned positions."
+        return out
+
+    patch = _patch_positions_chunked(view_id, positions)
+    if not patch.get("ok"):
+        return {
+            **out,
+            "ok": False,
+            "error": patch.get("error") or "patch_failed",
+            "patch": patch,
+        }
+    out["applied"] = True
+    out["updated"] = patch.get("updated")
+    from_live = _analyze_one_view(view_id, detail="summary", score_profile="auto")
+    out["summary"] = from_live.get("summary")
+    out["hint"] = (
+        "Aligned from reference. If overlaps remain, surgical orbit_sweep; "
+        "do not global polish on eye sinks."
+    )
+    return out
 
 
 def _analyze_topology_view_layout(args: dict[str, Any]) -> dict[str, Any]:
@@ -1120,6 +1453,7 @@ def _analyze_topology_view_layout(args: dict[str, Any]) -> dict[str, Any]:
         max_nodes = max(1, min(2000, int(args.get("max_nodes") or 800)))
     except (TypeError, ValueError):
         max_nodes = 800
+    score_profile = str(args.get("score_profile") or "auto").strip().lower() or "auto"
 
     if view_id:
         return _analyze_one_view(
@@ -1128,6 +1462,7 @@ def _analyze_topology_view_layout(args: dict[str, Any]) -> dict[str, Any]:
             detail=detail,
             sight_limit=sight_limit,
             sight_cell=sight_cell,
+            score_profile=score_profile,
         )
 
     if not folder_id:
@@ -1162,7 +1497,11 @@ def _analyze_topology_view_layout(args: dict[str, Any]) -> dict[str, Any]:
 
     rows: list[dict[str, Any]] = []
     for c in picked:
-        one = _analyze_one_view(str(c["view_id"]), with_meta=with_meta)
+        one = _analyze_one_view(
+            str(c["view_id"]),
+            with_meta=with_meta,
+            score_profile=score_profile,
+        )
         if not one.get("ok"):
             rows.append(
                 {
@@ -1772,6 +2111,10 @@ def _query_topology_fabric_nodes(args: dict[str, Any]) -> dict[str, Any]:
         params["keyword"] = filt
     if str(args.get("role") or "").strip():
         params["role"] = str(args.get("role")).strip()
+    if str(args.get("level") or "").strip() or args.get("level") == 0:
+        params["level"] = str(args.get("level")).strip()
+    if str(args.get("level_major") or "").strip() or args.get("level_major") == 0:
+        params["level_major"] = str(args.get("level_major")).strip()
     if str(args.get("link_status") or "").strip():
         params["link_status"] = str(args.get("link_status")).strip()
     if str(args.get("region_folder_id") or "").strip():
@@ -1783,6 +2126,203 @@ def _query_topology_fabric_nodes(args: dict[str, Any]) -> dict[str, Any]:
         page = dict(page)
         page["mode"] = "list"
     return page
+
+
+def _classify_topology_fabric_nodes(args: dict[str, Any]) -> dict[str, Any]:
+    """Tag Fabric level/region for agents (match → tag; rules apply; unmatched)."""
+    action = str(args.get("action") or "").strip().lower()
+    if not action:
+        return {
+            "ok": False,
+            "error": "action_required",
+            "hint": (
+                "action=match|tag|patch|unmatched|preview_rules|apply_rules|list_rules. "
+                "Typical: match → tag(level|role, dry_run) → tag; "
+                "then addTopologyViewNodes by role/level_major/region."
+            ),
+        }
+
+    if action in {"match", "find"}:
+        pattern = str(args.get("pattern") or args.get("q") or "").strip()
+        if not pattern:
+            return {"ok": False, "error": "pattern_required"}
+        match_field = str(args.get("match_field") or "name").strip() or "name"
+        sample_limit = min(200, max(1, int(args.get("sample_limit") or 50)))
+        out = _data(
+            http_json(
+                "POST",
+                "/v1/topology/fabric/nodes/match",
+                body={
+                    "pattern": pattern,
+                    "match_field": match_field,
+                    "sample_limit": sample_limit,
+                },
+            )
+        )
+        if isinstance(out, dict) and out.get("ok") is not False:
+            out = dict(out)
+            out["action"] = "match"
+            samples = out.get("samples")
+            if isinstance(samples, list):
+                out["samples"] = [
+                    _compact_fabric_item(s) if isinstance(s, dict) else s for s in samples[:sample_limit]
+                ]
+            ids = out.get("fabric_node_ids")
+            if isinstance(ids, list) and len(ids) > 200:
+                out["fabric_node_ids"] = ids[:200]
+                out["fabric_node_ids_truncated"] = True
+            out["hint"] = (
+                "Preview only. Re-call action=tag with same pattern (or fabric_node_ids) "
+                "and level (e.g. 1 / 1.1 / 2.1) or role preset; dry_run=true first."
+            )
+        return out
+
+    if action in {"tag", "bulk_tag", "assign"}:
+        level = args.get("level") if "level" in args else Ellipsis
+        role = args.get("role") if "role" in args else Ellipsis
+        region = args.get("region_folder_id") if "region_folder_id" in args else Ellipsis
+        clear_region = _truthy(args.get("clear_region"))
+        if level is Ellipsis and role is Ellipsis and region is Ellipsis and not clear_region:
+            return {
+                "ok": False,
+                "error": "level_or_region_required",
+                "hint": (
+                    "Pass level (0/1/1.1/2/2.1/3…) and/or role preset "
+                    "(external|core|aggregation|access) and/or region_folder_id."
+                ),
+            }
+        body: dict[str, Any] = {
+            "dry_run": _truthy(args.get("dry_run")),
+        }
+        ids = args.get("fabric_node_ids")
+        if isinstance(ids, list) and ids:
+            body["fabric_node_ids"] = [str(x).strip() for x in ids if str(x).strip()][:2000]
+        pattern = str(args.get("pattern") or args.get("q") or "").strip()
+        if pattern:
+            body["pattern"] = pattern
+            body["match_field"] = str(args.get("match_field") or "name").strip() or "name"
+        if not body.get("fabric_node_ids") and not body.get("pattern"):
+            return {
+                "ok": False,
+                "error": "ids_or_pattern_required",
+                "hint": "Pass fabric_node_ids[] from match, or pattern for ephemeral regex tag.",
+            }
+        if level is not Ellipsis:
+            body["level"] = level
+        elif role is not Ellipsis:
+            body["role"] = None if role is None or str(role).strip() == "" else str(role).strip()
+        if clear_region:
+            body["region_folder_id"] = None
+        elif region is not Ellipsis:
+            body["region_folder_id"] = None if region is None or str(region).strip() == "" else str(region).strip()
+        out = _data(http_json("POST", "/v1/topology/fabric/nodes/tags/bulk", body=body))
+        if isinstance(out, dict) and out.get("ok") is not False:
+            out = dict(out)
+            out["action"] = "tag"
+            samples = out.get("samples")
+            if isinstance(samples, list):
+                out["samples"] = [
+                    _compact_fabric_item(s) if isinstance(s, dict) else s for s in samples[:50]
+                ]
+            if out.get("dry_run"):
+                out["hint"] = "Preview only. Re-call with dry_run=false to write tags."
+            else:
+                out["hint"] = (
+                    "Tagged. Use queryTopologyFabricNodes(role|level_major|region_folder_id) or "
+                    "addTopologyViewNodes filters to place on region canvas."
+                )
+        return out
+
+    if action == "patch":
+        node_id = str(args.get("fabric_node_id") or args.get("node_id") or "").strip()
+        if not node_id:
+            return {"ok": False, "error": "fabric_node_id_required"}
+        body: dict[str, Any] = {}
+        if "level" in args:
+            body["level"] = args.get("level")
+        elif "role" in args:
+            role = args.get("role")
+            body["role"] = None if role is None or str(role).strip() == "" else str(role).strip()
+        if _truthy(args.get("clear_region")):
+            body["region_folder_id"] = None
+        elif "region_folder_id" in args:
+            region = args.get("region_folder_id")
+            body["region_folder_id"] = (
+                None if region is None or str(region).strip() == "" else str(region).strip()
+            )
+        if not body:
+            return {"ok": False, "error": "level_or_region_required"}
+        out = _data(
+            http_json(
+                "PATCH",
+                f"/v1/topology/fabric/nodes/{node_id}/tags",
+                body=body,
+            )
+        )
+        if isinstance(out, dict) and out.get("ok") is not False:
+            out = _compact_fabric_item(out) if "id" in out else dict(out)
+            out["ok"] = True
+            out["action"] = "patch"
+        return out
+
+    if action == "unmatched":
+        kind = str(args.get("kind") or "any").strip() or "any"
+        page_n = max(1, int(args.get("page") or 1))
+        page_size = min(500, max(1, int(args.get("page_size") or args.get("limit") or 50)))
+        page = _compact_fabric_page(
+            _data(
+                http_json(
+                    "GET",
+                    "/v1/topology/classify/unmatched",
+                    params={"kind": kind, "page": page_n, "page_size": page_size},
+                )
+            )
+        )
+        if isinstance(page, dict):
+            page = dict(page)
+            page["action"] = "unmatched"
+        return page
+
+    if action in {"preview_rules", "preview"}:
+        out = _data(http_json("POST", "/v1/topology/classify/preview"))
+        if isinstance(out, dict) and out.get("ok") is not False:
+            out = dict(out)
+            out["action"] = "preview_rules"
+            out["hint"] = "Rule engine dry-run. Re-call action=apply_rules to write."
+        return out
+
+    if action in {"apply_rules", "apply"}:
+        skip_manual = True
+        if "skip_manual" in args:
+            skip_manual = _truthy(args.get("skip_manual"))
+        elif _truthy(args.get("overwrite_manual")):
+            skip_manual = False
+        params = {
+            "skip_manual": skip_manual,
+            "fill_empty_only": _truthy(args.get("fill_empty_only")),
+        }
+        out = _data(http_json("POST", "/v1/topology/classify/apply", params=params))
+        if isinstance(out, dict) and out.get("ok") is not False:
+            out = dict(out)
+            out["action"] = "apply_rules"
+        return out
+
+    if action in {"list_rules", "rules"}:
+        out = _data(http_json("GET", "/v1/topology/classify/rules"))
+        if isinstance(out, dict) and out.get("ok") is not False:
+            out = dict(out)
+            out["action"] = "list_rules"
+            out["hint"] = (
+                "Rules CRUD stays on web or HTTP. Agent tagging prefers action=match|tag "
+                "(ephemeral regex) over editing rules."
+            )
+        return out
+
+    return {
+        "ok": False,
+        "error": "action_invalid",
+        "hint": "action=match|tag|patch|unmatched|preview_rules|apply_rules|list_rules",
+    }
 
 
 def _query_topology_neighborhood(args: dict[str, Any]) -> dict[str, Any]:
@@ -2002,8 +2542,9 @@ def _sink_topology_dual_units(args: dict[str, Any]) -> dict[str, Any]:
 
     max_units = max(1, min(20, int(args.get("max_units") or 3)))
     min_nodes = max(2, min(200, int(args.get("min_nodes") or 8)))
-    max_nodes = max(min_nodes, min(400, int(args.get("max_nodes") or 80)))
-    max_batch_nodes = max(max_nodes, min(800, int(args.get("max_batch_nodes") or 120)))
+    # CN-eye units often cover 150–300 NEs; old default 80 rejected them.
+    max_nodes = max(min_nodes, min(400, int(args.get("max_nodes") or 300)))
+    max_batch_nodes = max(max_nodes, min(800, int(args.get("max_batch_nodes") or 400)))
     until_empty = bool(args.get("until_empty"))
     include_leftovers = bool(
         args.get("include_leftovers")
@@ -2019,6 +2560,49 @@ def _sink_topology_dual_units(args: dict[str, Any]) -> dict[str, Any]:
         True if args.get("layout_batch") is None else args.get("layout_batch")
     )
     unit_gap = float(args.get("unit_gap") or 220.0)
+    # Level-aware drain: sink_layers = whitelist this phase; keep_layers = anchors.
+    # Default: drain access(+other), leave core/agg on root.
+    raw_keep = args.get("keep_layers")
+    if raw_keep is None:
+        keep_layers = {"core", "agg"}
+    elif isinstance(raw_keep, str):
+        keep_layers = {p.strip().lower() for p in raw_keep.split(",") if p.strip()}
+    elif isinstance(raw_keep, (list, tuple)):
+        keep_layers = {str(p).strip().lower() for p in raw_keep if str(p).strip()}
+    else:
+        keep_layers = {"core", "agg"}
+    if isinstance(raw_keep, (list, tuple)) and len(raw_keep) == 0:
+        keep_layers = set()
+
+    raw_sink = args.get("sink_layers")
+    if raw_sink is None:
+        # Default phase: access corridors (+ unclassified).
+        sink_layers: set[str] | None = {"access", "other"}
+    elif isinstance(raw_sink, str):
+        sink_layers = {p.strip().lower() for p in raw_sink.split(",") if p.strip()} or None
+    elif isinstance(raw_sink, (list, tuple)):
+        if len(raw_sink) == 0:
+            sink_layers = None  # any non-keep
+        else:
+            sink_layers = {str(p).strip().lower() for p in raw_sink if str(p).strip()}
+    else:
+        sink_layers = {"access", "other"}
+
+    # by_level=true: auto-pick deepest remaining layer on source (access→agg→core).
+    by_level = bool(args.get("by_level"))
+    # Default false: CN/core eyes hang off keep portals; prefer_pure would skip them.
+    prefer_pure = bool(
+        False if args.get("prefer_pure") is None else args.get("prefer_pure")
+    )
+    prefer_core_eye = bool(
+        True if args.get("prefer_core_eye") is None else args.get("prefer_core_eye")
+    )
+    prefer_top_eye = args.get("prefer_top_eye")
+    if prefer_top_eye is None:
+        prefer_top_eye = prefer_core_eye
+    else:
+        prefer_top_eye = bool(prefer_top_eye)
+    _LEVEL_DEPTH = ("access", "other", "agg", "core", "external")
 
     batches: list[dict[str, Any]] = []
     source_remaining = -1
@@ -2073,6 +2657,36 @@ def _sink_topology_dual_units(args: dict[str, Any]) -> dict[str, Any]:
             and str(e.get("b_node_id") or e.get("target") or "") not in dry_removed
         ]
         st = build_state_from_nodes_edges(nodes, edges)
+        layer_of = {
+            nid: str(ly or "").strip().lower() or "other"
+            for nid, ly in (st.layers or {}).items()
+        }
+        # Phase layers: explicit sink_layers, or by_level → deepest remaining.
+        phase_layers = set(sink_layers) if sink_layers is not None else None
+        if by_level:
+            picked_ly = None
+            for ly in _LEVEL_DEPTH:
+                if ly in keep_layers:
+                    continue
+                if any(layer_of.get(i) == ly for i in src_ids):
+                    picked_ly = ly
+                    break
+            if picked_ly:
+                phase_layers = {picked_ly}
+                if picked_ly == "access":
+                    phase_layers.add("other")
+
+        keep_ids = {
+            nid
+            for nid, ly in layer_of.items()
+            if ly in keep_layers or (phase_layers is not None and ly not in phase_layers)
+        }
+        sink_ids = {
+            nid
+            for nid in src_ids
+            if nid not in keep_ids
+            and (phase_layers is None or layer_of.get(nid, "other") in phase_layers)
+        }
         units = find_dual_portal_units(st, max_units=detect_max)
         picked = select_dual_unit_batch(
             units,
@@ -2081,8 +2695,14 @@ def _sink_topology_dual_units(args: dict[str, Any]) -> dict[str, Any]:
             max_nodes=max_nodes,
             max_batch_nodes=max_batch_nodes,
             exclude_ids=set(snk_ids),
+            keep_ids=keep_ids,
+            sink_ids=sink_ids,
+            prefer_pure=prefer_pure,
+            prefer_core_eye=prefer_core_eye,
+            prefer_top_eye=prefer_top_eye,
+            layers=layer_of,
         )
-        move_ids = batch_node_ids(picked)
+        move_ids = batch_node_ids(picked, keep_ids=keep_ids, sink_ids=sink_ids)
         mode = "dual_units"
         if not move_ids:
             # Relax size band once before leftovers.
@@ -2090,22 +2710,34 @@ def _sink_topology_dual_units(args: dict[str, Any]) -> dict[str, Any]:
                 units,
                 max_units=max_units,
                 min_nodes=2,
-                max_nodes=max(max_nodes, 200),
+                max_nodes=max(max_nodes, 300),
                 max_batch_nodes=max_batch_nodes,
                 exclude_ids=set(snk_ids),
+                keep_ids=keep_ids,
+                sink_ids=sink_ids,
+                prefer_pure=prefer_pure,
+                prefer_core_eye=prefer_core_eye,
+                prefer_top_eye=prefer_top_eye,
+                layers=layer_of,
             )
-            move_ids = batch_node_ids(picked)
+            move_ids = batch_node_ids(picked, keep_ids=keep_ids, sink_ids=sink_ids)
         if not move_ids and include_leftovers:
             mode = "leftovers"
             move_ids = leftover_batch_ids(
                 src_ids,
                 max_batch_nodes=max_batch_nodes,
                 exclude_ids=set(snk_ids),
+                keep_ids=keep_ids,
+                sink_ids=sink_ids,
             )
             # leftovers may already be on sink; still remove from source
             if not move_ids:
                 move_ids = leftover_batch_ids(
-                    src_ids, max_batch_nodes=max_batch_nodes, exclude_ids=set()
+                    src_ids,
+                    max_batch_nodes=max_batch_nodes,
+                    exclude_ids=set(),
+                    keep_ids=keep_ids,
+                    sink_ids=sink_ids,
                 )
 
         if not move_ids:
@@ -2130,6 +2762,18 @@ def _sink_topology_dual_units(args: dict[str, Any]) -> dict[str, Any]:
             "units": units_as_batch_rows(picked, st.names),
             "node_ids": move_ids,
             "node_count": len(move_ids),
+            "kept_on_source": sorted(
+                {
+                    nid
+                    for u in picked
+                    for nid in u.member_ids()
+                    if nid in keep_ids
+                }
+            ),
+            "keep_layers": sorted(keep_layers),
+            "sink_layers": sorted(phase_layers) if phase_layers is not None else None,
+            "by_level": by_level,
+            "sink_eligible": len(sink_ids),
             "source_before": source_remaining,
             "sink_before": sink_count,
         }
@@ -2206,6 +2850,10 @@ def _sink_topology_dual_units(args: dict[str, Any]) -> dict[str, Any]:
                 unit_gap=unit_gap,
                 links=attach_links,
             )
+            # Never patch keep-layer anchors (they stay on source only).
+            move_set = set(move_ids)
+            if world:
+                world = {nid: xy for nid, xy in world.items() if nid in move_set}
             pos_patch = positions_to_patch(world) if world else []
             # Fill any members missing from unit layout (shared skip / fail).
             have = {str(p.get("fabric_node_id") or "") for p in pos_patch}
@@ -2294,12 +2942,13 @@ def _sink_topology_dual_units(args: dict[str, Any]) -> dict[str, Any]:
         "layout_batch": layout_batch,
         "hint": (
             "Source empty — sink membership complete. Batches already had "
-            "layout_dual_unit when layout_batch=true; finish with polish_crossings / "
-            "straighten / clear_edge_hits (avoid chord straighten after clear)."
+            "layout_dual_unit when layout_batch=true; polish with "
+            "polish_crossings(straighten=false)/clear_edge_hits — "
+            "never fix_overlaps+straighten (destroys dual-unit eyes)."
             if done
             else (
-                "Call again for the NEXT batch only after polish/clear on sink. "
-                "Do NOT set until_empty — one batch → tune → next batch."
+                "Call again for the NEXT batch only after eye-safe polish on sink "
+                "(no straighten). Do NOT set until_empty — one batch → tune → next."
             )
         ),
     }
@@ -2846,9 +3495,13 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
             "source_view_id, layout_dual_unit each unit (layout_batch default true), "
             "then compose_orbit-style block sweep to park onto sink (best partial "
             "crossings / overlap / bridge — not fixed right), "
-            "then remove those fabric ids from the root. Default one batch/call; "
-            "until_empty=true loops until source empty (or leftovers). Global polish "
-            "still via layoutTopologyView. dry_run previews selection. Requires ne:write."
+            "then remove those fabric ids from the root. "
+            "Default keep_layers=[core,agg] leaves gravity anchors on the root; "
+            "sink_layers=[access,other] drains one level phase (set by_level=true "
+            "to auto deepest remaining). "
+            "Default one batch/call; until_empty=true loops until source empty "
+            "(or leftovers). Global polish still via layoutTopologyView. "
+            "dry_run previews selection. Requires ne:write."
         ),
         "inputSchema": {
             "type": "object",
@@ -2878,14 +3531,16 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                     "type": "integer",
                     "minimum": 2,
                     "maximum": 400,
-                    "default": 80,
-                    "description": "Max nodes per dual_unit candidate.",
+                    "default": 300,
+                    "description": (
+                        "Max nodes per dual_unit candidate (CN eyes often 150–300)."
+                    ),
                 },
                 "max_batch_nodes": {
                     "type": "integer",
                     "minimum": 8,
                     "maximum": 800,
-                    "default": 120,
+                    "default": 400,
                 },
                 "layout_batch": {
                     "type": "boolean",
@@ -2915,6 +3570,58 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                     "type": "boolean",
                     "default": True,
                     "description": "When dual_units exhausted, move leftover NE chunks.",
+                },
+                "keep_layers": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "default": ["core", "agg"],
+                    "description": (
+                        "Fabric layers that stay on source (not sunk). "
+                        "Default core+agg so root keeps the gravity bar; "
+                        "pass [] to drain everything (legacy)."
+                    ),
+                },
+                "sink_layers": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "default": ["access", "other"],
+                    "description": (
+                        "Only move these layers this phase. Default access+other. "
+                        "Pass [] to allow any non-keep. With by_level=true, auto "
+                        "picks deepest remaining (access→agg→…)."
+                    ),
+                },
+                "by_level": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Auto sink deepest remaining non-keep layer each batch "
+                        "(access first, then agg if keep allows)."
+                    ),
+                },
+                "prefer_pure": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Legacy: prefer both portals sinkable. Default false so "
+                        "CN/core eyes (portals stay on root) are not deprioritized."
+                    ),
+                },
+                "prefer_core_eye": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": (
+                        "Alias of prefer_top_eye. Prefer core/agg eyes "
+                        "top→down before access rings."
+                    ),
+                },
+                "prefer_top_eye": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": (
+                        "Prefer dual_unit portals top→down: core–core, "
+                        "core–agg, agg–agg, then maximize movable coverage."
+                    ),
                 },
                 "dry_run": {
                     "type": "boolean",
@@ -3101,6 +3808,14 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                     "description": "List filter keyword; alias of q for search.",
                 },
                 "role": {"type": "string"},
+                "level": {
+                    "type": "string",
+                    "description": "Exact fabric level e.g. 1.1",
+                },
+                "level_major": {
+                    "type": "string",
+                    "description": "Major band e.g. 2 → [2.0, 3.0)",
+                },
                 "region_folder_id": {
                     "type": "string",
                     "description": "Filter by topo folder id (UME region / canvas folder).",
@@ -3119,6 +3834,113 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                 },
             },
             "required": [],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "classifyTopologyFabricNodes",
+        "description": (
+            "Classify Fabric inventory by layout level (major.minor) + region. "
+            "level: 0=external, 1=core, 2=agg, 3=access; use 1.1 / 2.1 for sub-tiers. "
+            "action=match → tag(level|role preset, dry_run) → tag. "
+            "role preset still accepted (maps to *.0). "
+            "After tagging, addTopologyViewNodes by role/region. No slice maps. "
+            "Requires ne:write."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "match",
+                        "tag",
+                        "patch",
+                        "unmatched",
+                        "preview_rules",
+                        "apply_rules",
+                        "list_rules",
+                    ],
+                    "description": "Required. Typical: match → tag(dry_run) → tag.",
+                },
+                "pattern": {
+                    "type": "string",
+                    "description": "Regex for match/tag (aliases q).",
+                },
+                "q": {"type": "string", "description": "Alias of pattern."},
+                "match_field": {
+                    "type": "string",
+                    "enum": ["name", "ip", "name_ip"],
+                    "default": "name",
+                },
+                "sample_limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 200,
+                    "default": 50,
+                },
+                "fabric_node_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Explicit ids for tag (from match).",
+                },
+                "fabric_node_id": {
+                    "type": "string",
+                    "description": "Single id for patch (alias node_id).",
+                },
+                "node_id": {"type": "string"},
+                "level": {
+                    "description": "Layout rank e.g. 0, 1, 1.1, 2.1, 3. null clears.",
+                },
+                "role": {
+                    "type": "string",
+                    "description": "Preset alias → level: external|core|aggregation|access|edge.",
+                },
+                "region_folder_id": {
+                    "type": "string",
+                    "description": "Topo region folder id; empty + clear_region clears.",
+                },
+                "clear_region": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Clear region_folder_id on tag/patch.",
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "tag only: preview without write.",
+                },
+                "kind": {
+                    "type": "string",
+                    "enum": ["any", "level", "role", "region"],
+                    "default": "any",
+                    "description": "unmatched filter (role aliases level).",
+                },
+                "page": {"type": "integer", "minimum": 1, "default": 1},
+                "page_size": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 500,
+                    "default": 50,
+                },
+                "limit": {"type": "integer", "description": "Alias of page_size"},
+                "skip_manual": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "apply_rules: skip manually tagged nodes.",
+                },
+                "overwrite_manual": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "apply_rules shortcut: skip_manual=false.",
+                },
+                "fill_empty_only": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "apply_rules: only fill empty role/region.",
+                },
+            },
+            "required": ["action"],
             "additionalProperties": False,
         },
     },
@@ -3169,16 +3991,94 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "suggestSinkHubs",
+        "description": (
+            "After the one-shot dual_unit eye is fixed: rank remaining hub territories on "
+            "source_view for non-dual move_nodes(park) batches. Excludes eye portals "
+            "(source/sink dual_units + exclude_portal_ids). Returns batches[] ranked by "
+            "remaining territory (agg before core) and move_nodes payload for pick=1. "
+            "Do NOT call sinkTopologyDualUnits again. Needs ne:read."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "source_view_id": {
+                    "type": "string",
+                    "description": "Root / leftover canvas (required). Alias: view_id.",
+                },
+                "view_id": {
+                    "type": "string",
+                    "description": "Alias of source_view_id.",
+                },
+                "sink_view_id": {
+                    "type": "string",
+                    "description": "Eye sink canvas; ids already there are dropped from batches.",
+                },
+                "exclude_portal_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Extra freeze ids (CN portals). Merged with dual_units portals.",
+                },
+                "use_source_dual_portals": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Exclude portals from source dual_units (default true).",
+                },
+                "use_sink_dual_portals": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Exclude portals from sink dual_units when sink_view_id set.",
+                },
+                "only_layers": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Hub layers to consider (default [agg, core]).",
+                },
+                "min_territory": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "default": 1,
+                    "description": "Skip hubs with remaining_territory below this.",
+                },
+                "min_move_n": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 1,
+                },
+                "top_n": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 40,
+                    "default": 12,
+                },
+                "pick": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 1,
+                    "description": "1-based batch to expose as batch + move_nodes.",
+                },
+                "include_hub": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Include hub id in fabric_node_ids when still on source.",
+                },
+            },
+            "required": [],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "analyzeTopologyViewLayout",
         "description": (
             "Layout QA + structure planning (read-only). Returns verdict + overlap/crossing/"
             "spacing/sparsity/edges + mid-tier chains(直链成一体)/rings(最小环不被穿) "
-            "+ score.total∈[0,100] (chain/rings each weight 0.10). Pass view_id, or folder_id to sample. "
+            "+ score.total∈[0,100] (profiles: auto|default|eye). Pass view_id, or folder_id to sample. "
             "detail=structure: graph stats for gravity (core_bar|agg_bar|mixed), hubs, stubs, "
             "dual_units (two-portal eye units), soft_blocks, "
             "geometry_hint, recipe_preference (compact|corridor|rings) — call BEFORE layout. "
             "detail=hotspots|blocks|both: sight{} for hand-drag (crossings, drag_candidates, blocks); "
             "both also includes structure{}. "
+            "score_profile=auto picks eye for large sparse diagonal sinks. "
             "For writing positions use layoutTopologyView / updateTopologyViewPositions. Needs ne:read."
         ),
         "inputSchema": {
@@ -3199,6 +4099,15 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                     "description": (
                         "summary=score only; structure=gravity/hubs/recipe hint (phase 0.5); "
                         "hotspots|blocks=sight; both=structure+sight (hand-drag)"
+                    ),
+                },
+                "score_profile": {
+                    "type": "string",
+                    "enum": ["auto", "default", "eye"],
+                    "default": "auto",
+                    "description": (
+                        "Scoring weights. auto→eye for large sparse diagonal canvases; "
+                        "eye softens axis/rings (arc-band dual sinks); default=metro."
                     ),
                 },
                 "sight_limit": {
@@ -3236,19 +4145,31 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
         "description": (
             "Layout / local polish for a canvas. Prefer local actions over global crush. "
             "action=layout: recipe=rings|corridor|compact|unstick (small graphs). "
-            "action=layout_dual_unit: eye-shaped dual-portal unit (require crossings=0). "
+            "action=layout_dual_unit: CN/core dual-portal eye (max membership; "
+            "residual crossings OK unless params.require_zero_cross=true). "
             "action=move_nodes (alias sink_nodes): move fabric_node_ids from "
             "source_view_id→view_id; park=true for orbit attach; swap views to reverse. "
             "Prefer sinkTopologyDualUnits for dual_units batches. "
-            "action=orbit_sweep: crossing orbit; preview+node_id / apply+pick / round=true. "
+            "action=orbit_sweep: crossing orbit; preview+node_id / apply+pick; "
+            "until_limit=true loops single-point to stall (eye polish; default freeze portals); "
+            "round=true one-batch auto pick#1 (avoid on eye sinks). "
+            "action=level_bands: snap y by fabric layer (external→core→agg→access). "
             "action=polish_crossings: one-shot straighten→press→untangle (no temp scripts). "
-            "action=clear_edge_hits: eject nodes on non-incident edges (H/V). "
-            "action=fix_overlaps|resolve_overlaps: pull apart overlaps. "
-            "action=untangle / straighten_channels: surgical polish. "
+            "action=clear_edge_hits: eject nodes on non-incident edges (H/V); "
+            "never raise crossings (even preserve_axis); eye sinks need portal_ids. "
+            "action=compact_bbox: gated farthest-K shrink toward portals. "
+            "action=pull_far_chains: scale far corridors/isolates toward portal mid-point. "
+            "action=align_reference: SAME-network A/B debug only "
+            "(shared fabric_node_ids); not a cross-network template. "
+            "action=fix_overlaps|resolve_overlaps: pull apart overlaps (not on eye sinks). "
+            "action=untangle / straighten_channels: surgical polish (not on eye sinks). "
             "action=job_status|job_cancel: poll/cancel background jobs. "
             "preset: loose|balanced|dense. mode: preview|apply. "
-            "Workflow: analyze(structure) → sinkTopologyDualUnits → orbit_sweep → "
-            "polish_crossings → clear_edge_hits → hand drag. Needs ne:write for apply."
+            "Workflow: analyze(structure) → sinkTopologyDualUnits(max_units=1) → "
+            "suggestSinkHubs/move_nodes(park) → until_limit(crossing→total) → "
+            "clear_edge_hits → pull_far_chains → compact_bbox → hand. "
+            "No golden by default; do not align_reference for delivery. "
+            "Needs ne:write for apply."
         ),
         "inputSchema": {
             "type": "object",
@@ -3268,7 +4189,11 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                         "untangle",
                         "polish_crossings",
                         "clear_edge_hits",
+                        "compact_bbox",
+                        "pull_far_chains",
+                        "align_reference",
                         "orbit_sweep",
+                        "level_bands",
                         "move_nodes",
                         "sink_nodes",
                         "job_status",
@@ -3277,9 +4202,14 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                     "default": "layout",
                     "description": (
                         "layout=full recipe; layout_dual_unit=dual-portal eye; "
+                        "level_bands=horizontal layer bands; "
                         "move_nodes|sink_nodes=migrate fabric_node_ids; "
                         "orbit_sweep=polar sweep; polish_crossings=one-shot cut crossings; "
-                        "clear_edge_hits=eject edge hits; fix_overlaps|resolve_overlaps; "
+                        "clear_edge_hits=eject edge hits (no crossing rise); "
+                        "pull_far_chains=scale far corridors toward portal mid; "
+                        "compact_bbox=gated farthest-K shrink; "
+                        "align_reference=same-network A/B debug only; "
+                        "fix_overlaps|resolve_overlaps; "
                         "untangle/straighten_channels; job_status|job_cancel."
                     ),
                 },
@@ -3287,7 +4217,8 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": (
                         "For action=layout: optional load graph (default=view_id). "
-                        "For action=move_nodes: required FROM canvas (view_id is TO)."
+                        "For action=move_nodes: required FROM canvas (view_id is TO). "
+                        "For action=align_reference: same-network reference (debug only)."
                     ),
                 },
                 "recipe": {
@@ -3325,13 +4256,22 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                     "description": (
                         "Overrides. layout: target_nn/target_util/…. "
                         "job_status|job_cancel: job_id (required). "
-                        "layout_dual_unit: unit_id (optional). "
+                        "layout_dual_unit: unit_id / portal_a+portal_b; "
+                        "require_zero_cross (default false). "
                         "untangle: max_rounds/max_degree/protect_rigid/focus_ids[]. "
                         "polish_crossings: portal_ids[]/source_view_ids[], "
                         "top_n/max_moves/max_sweeps/straighten/untangle_rounds. "
-                        "clear_edge_hits: top_n/thr/margin/max_moves. "
-                        "orbit_sweep: node_id/pick/round/top_n/max_jump/angle_step/"
-                        "nn_floor/min_angle_sep; protect_rigid default off. "
+                        "clear_edge_hits: top_n/thr/margin/max_moves/portal_ids/"
+                        "max_eject_degree/preserve_axis. "
+                        "compact_bbox|pull_far_chains: portal_ids; "
+                        "pull scales toward portal mid (not outer hub); "
+                        "compact defaults farthest-K. "
+                        "orbit_sweep: node_id/pick/round/until_limit/portal_ids[]/"
+                        "freeze_layers[]/freeze_levels[]/"
+                        "max_degree/max_moves/stall_limit/max_stretch/min_delta/"
+                        "max_jump/angle_step/nn_floor; until_limit defaults "
+                        "protect_rigid=portals + objective=crossing; "
+                        "single-node/round default protect_rigid=off. "
                         "move_nodes|sink_nodes: fabric_node_ids[] (required), "
                         "copy_positions (default true), park, remove_from_source "
                         "(default true), pad/offset_x/offset_y."
@@ -3361,8 +4301,10 @@ _HANDLERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "updateTopologyViewPositions": _update_topology_view_positions,
     "projectTopologyNeighbors": _project_topology_neighbors,
     "queryTopologyFabricNodes": _query_topology_fabric_nodes,
+    "classifyTopologyFabricNodes": _classify_topology_fabric_nodes,
     "queryTopologyNeighborhood": _query_topology_neighborhood,
     "queryTopologyEdges": _query_topology_edges,
+    "suggestSinkHubs": _suggest_sink_hubs,
     "analyzeTopologyViewLayout": _analyze_topology_view_layout,
     "layoutTopologyView": _layout_topology_view,
 }
@@ -3378,8 +4320,10 @@ TOOL_REQUIRED_SCOPE: dict[str, str] = {
     "updateTopologyViewPositions": "ne:write",
     "projectTopologyNeighbors": "ne:write",
     "queryTopologyFabricNodes": "ne:read",
+    "classifyTopologyFabricNodes": "ne:write",
     "queryTopologyNeighborhood": "ne:read",
     "queryTopologyEdges": "ne:read",
+    "suggestSinkHubs": "ne:read",
     "analyzeTopologyViewLayout": "ne:read",
     "layoutTopologyView": "ne:write",
 }

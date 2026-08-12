@@ -2208,6 +2208,36 @@ pre {
   min-width: 88px;
 }
 
+.pager__jump {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.pager__jump-input {
+  width: 3.2rem;
+  min-width: 2.5rem;
+  max-width: 4.5rem;
+  padding: 4px 6px;
+  text-align: center;
+}
+
+.visually-hidden {
+  position: absolute;
+  inset: 0;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
 @keyframes shimmer {
   0% {
     background-position: 200% 0;
@@ -7591,6 +7621,26 @@ pre {
   pointer-events: none;
 }
 
+.topo-readonly-banner {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  z-index: 5;
+  max-width: min(360px, calc(100% - 24px));
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  background: rgba(15, 23, 42, 0.92);
+  color: #bae6fd;
+  font-size: 12px;
+  line-height: 1.4;
+  pointer-events: none;
+}
+
+.topo-canvas__overlay--error {
+  background: rgba(15, 23, 42, 0.88);
+}
+
 .app-main .topo-toolbar__outside-peers,
 .topo-toolbar__outside-peers {
   margin-left: auto;
@@ -8506,12 +8556,32 @@ html.login-page--paused .login-page__flare {
 
 
 /* —— Network Management shell (left nav + main) ——
-   Light ops shell + login-aligned accent blues. */
+   Fill the app chrome without a second document scrollbar.
+   Negative margins + 100vh used to fight app-main padding and over-expand the page. */
+.app--shell:has(.network-shell),
+.app--shell:has(.audit-shell) {
+  height: 100vh;
+  max-height: 100vh;
+  overflow: hidden;
+}
+
+.app-main:has(> .network-shell),
+.app-main:has(> .audit-shell) {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
 .network-shell {
   display: flex;
-  height: calc(100vh - 48px);
-  min-height: 480px;
-  margin: -20px -28px -32px;
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  height: auto;
+  margin: 0;
   background: var(--nm-chrome);
   overflow: hidden;
 }

@@ -1,9 +1,10 @@
-import type { RefObject } from "react";
-import { createPortal } from "react-dom";
 import { useQueryClient } from "@tanstack/react-query";
+import type { RefObject } from "react";
 import type { Node } from "@xyflow/react";
+import { createPortal } from "react-dom";
 import { queryKeys } from "../../constants/queryKeys";
 import { useI18n } from "../../i18n";
+import { useToast } from "../../hooks/useToast";
 import { updateLldpCollectPolicy } from "../../services/api";
 import {
   DEFAULT_CANVAS_BG,
@@ -87,6 +88,7 @@ export type TopologyViewToolsProps = {
 
 export function TopologyViewTools(props: TopologyViewToolsProps) {
   const { t } = useI18n();
+  const { showError } = useToast();
   const queryClient = useQueryClient();
   const {
     fullscreen,
@@ -225,7 +227,7 @@ export function TopologyViewTools(props: TopologyViewToolsProps) {
                     void queryClient.invalidateQueries({ queryKey: queryKeys.lldpCollectDashboard });
                   })
                   .catch(() => {
-                    /* local toggle still applies to this canvas discover */
+                    showError(t("topology.policySyncFailed"));
                   });
               }}
             />

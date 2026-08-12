@@ -21,11 +21,64 @@ from netx_topology_mcp.layout_metrics import (
 NN_SWEET_LO = 140.0
 NN_SWEET_HI = 220.0
 # Ideal space_utilization band (n * rec_tile / bbox_area).
-UTIL_SWEET_LO = 0.12
+# Floor aligned with real mid-size IPRAN / hand golden (~0.08–0.10), not 0.12 fantasy.
+UTIL_SWEET_LO = 0.08
 UTIL_SWEET_HI = 0.45
 # Ideal median undirected edge length / recommended pitch.
 EDGE_SWEET_LO = 0.7
 EDGE_SWEET_HI = 2.2
+
+# Score profiles: weights must sum to 1.0.
+# default = metro/flat canvases; eye = dual-portal arc-band sinks (diagonals expected).
+_SCORE_WEIGHTS: dict[str, dict[str, float]] = {
+    "default": {
+        "overlap": 0.24,
+        "crossing": 0.17,
+        "utilization": 0.13,
+        "chain": 0.10,
+        "rings": 0.06,
+        "edge_clearance": 0.10,
+        "edge_axis": 0.06,
+        "grid": 0.05,
+        "nn": 0.04,
+        "hull": 0.03,
+        "stretch": 0.02,
+    },
+    "eye": {
+        "overlap": 0.24,
+        "crossing": 0.16,
+        "utilization": 0.14,
+        "chain": 0.10,
+        "rings": 0.05,
+        "edge_clearance": 0.12,
+        "edge_axis": 0.03,  # arc-band eyes intentionally diagonal
+        "grid": 0.05,
+        "nn": 0.04,
+        "hull": 0.05,
+        "stretch": 0.02,
+    },
+}
+
+
+def resolve_score_profile(
+    requested: str | None,
+    *,
+    node_count: int = 0,
+    space_utilization: float | None = None,
+    axis_frac: float | None = None,
+) -> str:
+    """Map request → default|eye. ``auto`` uses size/sparsity/axis heuristic."""
+    raw = str(requested or "auto").strip().lower() or "auto"
+    if raw in {"default", "metro", "flat", "corridor"}:
+        return "default"
+    if raw in {"eye", "dual", "dual_unit", "access_eye"}:
+        return "eye"
+    util = float(space_utilization) if space_utilization is not None else 1.0
+    axis = float(axis_frac) if axis_frac is not None else 1.0
+    # Large, still-sparse, diagonal-heavy → treat as dual-eye sink for scoring.
+    if int(node_count) >= 80 and util < 0.10 and axis < 0.55:
+        return "eye"
+    return "default"
 
 
 def _convex_hull(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
@@ -175,11 +228,15 @@ def compute_density_stats(
     }
 
 
-def score_layout_components(metrics: dict[str, Any]) -> dict[str, Any]:
+def score_layout_components(
+    metrics: dict[str, Any],
+    *,
+    score_profile: str | None = None,
+) -> dict[str, Any]:
     """Weighted sub-scores in [0,1] + total in [0,100].
 
     Hard gate: any footprint/label overlap → total capped near 0 (still report parts).
-    Mid-tier: chain（直链成一体）+ rings（最小环不被穿）, each weight 0.10.
+    Profiles: ``default`` (metro) | ``eye`` (dual-portal arc sink) | ``auto``.
     """
     n = int(metrics.get("node_count") or 0)
     overlaps = int(metrics.get("footprint_overlap_pairs") or 0)
@@ -204,6 +261,19 @@ def score_layout_components(metrics: dict[str, Any]) -> dict[str, Any]:
         if metrics.get("edge_axis_score") is not None
         else 1.0
     )
+    axis_frac = metrics.get("axis_frac")
+    try:
+        axis_frac_f = float(axis_frac) if axis_frac is not None else None
+    except (TypeError, ValueError):
+        axis_frac_f = None
+
+    profile = resolve_score_profile(
+        score_profile if score_profile is not None else metrics.get("score_profile"),
+        node_count=n,
+        space_utilization=util,
+        axis_frac=axis_frac_f,
+    )
+    weights = dict(_SCORE_WEIGHTS.get(profile) or _SCORE_WEIGHTS["default"])
 
     # Crossing: UME mid-size ~0.16; 0 → 1.0, 0.30 → 0
     if n <= 50:
@@ -221,29 +291,22 @@ def score_layout_components(metrics: dict[str, Any]) -> dict[str, Any]:
 
     overlap_s = 1.0 if overlaps == 0 and label_ov == 0 else 0.0
     nn_s = _band_score(nn, NN_SWEET_LO, NN_SWEET_HI, hard_lo=40.0, hard_hi=500.0)
-    util_s = _band_score(util, UTIL_SWEET_LO, UTIL_SWEET_HI, hard_lo=0.01, hard_hi=1.2)
-    hull_s = _band_score(hull_u, UTIL_SWEET_LO, UTIL_SWEET_HI + 0.1, hard_lo=0.02, hard_hi=1.5)
-    grid_s = _band_score(grid_occ, 0.25, 0.75, hard_lo=0.02, hard_hi=1.0)
+    # Eye sinks: blend bbox util with hull util so long corridors don't auto-fail.
+    if profile == "eye":
+        util_blend = 0.55 * util + 0.45 * hull_u
+        util_s = _band_score(util_blend, UTIL_SWEET_LO, UTIL_SWEET_HI, hard_lo=0.02, hard_hi=1.2)
+        hull_s = _band_score(hull_u, UTIL_SWEET_LO, UTIL_SWEET_HI + 0.1, hard_lo=0.03, hard_hi=1.5)
+    else:
+        util_s = _band_score(util, UTIL_SWEET_LO, UTIL_SWEET_HI, hard_lo=0.02, hard_hi=1.2)
+        hull_s = _band_score(hull_u, UTIL_SWEET_LO, UTIL_SWEET_HI + 0.1, hard_lo=0.03, hard_hi=1.5)
+    grid_s = _band_score(grid_occ, 0.20, 0.75, hard_lo=0.02, hard_hi=1.0)
     stretch_s = _band_score(stretch_f, EDGE_SWEET_LO, EDGE_SWEET_HI, hard_lo=0.2, hard_hi=8.0)
-    white_s = max(0.0, 1.0 - white)  # less whitespace → better
+    white_s = max(0.0, 1.0 - white)  # less whitespace → better (diagnostic only)
     chain_s = max(0.0, min(1.0, chain_s))
     rings_s = max(0.0, min(1.0, rings_s))
     edge_clr_s = max(0.0, min(1.0, edge_clr_s))
     edge_axis_s = max(0.0, min(1.0, edge_axis_s))
 
-    weights = {
-        "overlap": 0.24,
-        "crossing": 0.18,
-        "utilization": 0.12,
-        "chain": 0.10,
-        "rings": 0.10,
-        "edge_clearance": 0.08,
-        "edge_axis": 0.06,
-        "grid": 0.04,
-        "nn": 0.04,
-        "hull": 0.02,
-        "stretch": 0.02,
-    }
     parts = {
         "overlap": round(overlap_s, 4),
         "crossing": round(cross_s, 4),
@@ -256,9 +319,9 @@ def score_layout_components(metrics: dict[str, Any]) -> dict[str, Any]:
         "nn": round(nn_s, 4),
         "hull": round(hull_s, 4),
         "stretch": round(stretch_s, 4),
+        # Diagnostic only — not in weights (avoid double-count with util/grid).
         "compactness": round(white_s, 4),
     }
-    # compactness folded into util/grid already; keep as diagnostic
     total = sum(parts[k] * weights[k] for k in weights)
     if overlap_s < 1.0:
         total *= 0.15  # hard gate: overlaps wreck the score
@@ -268,6 +331,7 @@ def score_layout_components(metrics: dict[str, Any]) -> dict[str, Any]:
         "total": total_100,
         "parts": parts,
         "weights": weights,
+        "score_profile": profile,
         "targets": {
             "nn_sweet": [NN_SWEET_LO, NN_SWEET_HI],
             "util_sweet": [UTIL_SWEET_LO, UTIL_SWEET_HI],
@@ -288,18 +352,16 @@ def score_layout_components(metrics: dict[str, Any]) -> dict[str, Any]:
             -total_100,
             int(metrics.get("edge_crossings") or 0),
             -util,
+            -edge_clr_s,
             -chain_s,
             -rings_s,
-            -edge_clr_s,
             -edge_axis_s,
         ],
         "hint": (
-            "total∈[0,100]. Overlaps hard-gate the score. "
-            "Mid-tier: chain=直链成一体、rings=最小环不被穿（各权 0.10）；"
-            "edge_clearance=网元勿贴非关联边（权 0.08）；"
-            "edge_axis=边宜水平/垂直且水平优先（权 0.06）. "
-            "Raise utilization/grid_occupancy without overlaps; "
-            "keep crossings_per_link near ~0.16 (mid-size reference) and nn_p50 in 140–220."
+            f"total∈[0,100] profile={profile}. Overlaps hard-gate. "
+            "Clearance blends nodes_hit + hits/link. "
+            "Eye profile softens axis (arc bands) and rings; raises util/clearance. "
+            "compactness is diagnostic only (not weighted)."
         ),
     }
 
@@ -313,9 +375,10 @@ def _status_from_score(part: float, *, fail_below: float = 0.01, warn_below: flo
 
 
 def _sparsity_status(util: float, white: float, grid_occ: float) -> str:
-    if util < 0.03 or white > 0.85 or grid_occ < 0.05:
+    # Aligned with UTIL_SWEET_LO=0.08: below sweet → warn; desolate → fail.
+    if util < 0.04 or white > 0.85 or grid_occ < 0.04:
         return "fail"
-    if util < 0.08 or white > 0.65 or grid_occ < 0.15:
+    if util < UTIL_SWEET_LO or white > 0.65 or grid_occ < 0.12:
         return "warn"
     return "ok"
 
@@ -594,8 +657,9 @@ def build_layout_report(metrics: dict[str, Any]) -> dict[str, Any]:
                 "只看本工具即可验收：verdict.total∈[0,100]；"
                 "overlap/crossing/spacing/sparsity/edges/chains/rings/"
                 "edge_clearance/edge_axis 各有 status。"
-                "中档：chains/rings 各权 0.10；edge_clearance=网元贴边（0.08）；"
-                "edge_axis=水平/垂直边且水平优先（0.06）。"
+                f"score_profile={score.get('score_profile') or 'default'}："
+                "eye 下调 axis/rings、上调 util/clearance；"
+                "贴边分=节点命中∪hits/link；compactness 仅诊断不加权。"
                 "扫参用 score.rank_key（先零重叠，再高 total）。"
             ),
         },
@@ -609,11 +673,13 @@ def analyze_layout_stats(
     with_meta: bool = False,
     ume_reference: bool = False,
     fast: bool = False,
+    score_profile: str | None = "auto",
 ) -> dict[str, Any]:
     """Full stats: flat metrics + composite score + unified report.
 
     ``fast=True`` skips ring-pierce (expensive on giant metro canvases) and
     still scores overlap/crossing/util/chains for apply gates + agent QA.
+    ``score_profile``: auto|default|eye — eye softens axis/rings for dual sinks.
     """
     base = analyze_positions(nodes, edges, with_meta=with_meta)
     pos: dict[str, tuple[float, float]] = {}
@@ -682,6 +748,7 @@ def analyze_layout_stats(
     merged["edge_clearance_tip"] = clr_q.get("edge_clearance_tip")
     merged["edge_clearance_thr"] = clr_q.get("edge_clearance_thr")
     merged["edge_clearance_skipped"] = clr_q.get("edge_clearance_skipped")
+    merged["hit_per_link"] = clr_q.get("hit_per_link")
     merged["edge_axis_score"] = axis_q.get("edge_axis_score", 1.0)
     merged["axis_frac"] = axis_q.get("axis_frac")
     merged["horiz_frac"] = axis_q.get("horiz_frac")
@@ -694,7 +761,8 @@ def analyze_layout_stats(
     merged["edge_axis_tip"] = axis_q.get("edge_axis_tip")
     merged["edge_axis_tol_deg"] = axis_q.get("edge_axis_tol_deg")
     merged["edge_axis_tol_px"] = axis_q.get("edge_axis_tol_px")
-    score = score_layout_components(merged)
+    merged["score_profile"] = score_profile
+    score = score_layout_components(merged, score_profile=score_profile)
     grade = grade_layout(merged, ume_reference=ume_reference)
     packed = {
         **merged,
@@ -703,6 +771,7 @@ def analyze_layout_stats(
         "summary": {
             "total": score["total"],
             "overall": grade.get("overall"),
+            "score_profile": score.get("score_profile"),
             "crossings": merged.get("edge_crossings"),
             "cpl": merged.get("crossings_per_link"),
             "overlaps": merged.get("footprint_overlap_pairs"),

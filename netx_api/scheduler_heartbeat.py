@@ -56,6 +56,12 @@ def local_device_scheduler_status(*, role: str = "unknown") -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         out["lldp_collect"] = {"running": False, "error": "unavailable"}
     try:
+        from .ne_collect_scheduler import ne_collect_scheduler_status
+
+        out["ne_collect"] = ne_collect_scheduler_status()
+    except Exception:  # noqa: BLE001
+        out["ne_collect"] = {"running": False, "error": "unavailable"}
+    try:
         from .port_traffic_scheduler import port_traffic_scheduler_status
 
         out["port_traffic"] = port_traffic_scheduler_status()

@@ -1,23 +1,33 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
+import { ListPager } from "../../components/ListPager";
+import { HelpHint } from "../../components/HelpHint";
+import { queryKeys } from "../../constants/queryKeys";
+import { useDebouncedValue } from "../../hooks/useDebouncedValue";
+import { useToast } from "../../hooks/useToast";
+import { useI18n } from "../../i18n";
 import {
   fetchCliTargets,
   fetchFabricEdges,
   fetchLldpCollectDashboard,
   fetchLldpCollectJob,
   fetchLldpCollectJobs,
+  formatErr,
   pauseLldpCollectJob,
   resumeLldpCollectJob,
   startLldpCollect,
   stopLldpCollectJob,
   updateLldpCollectPolicy,
 } from "../../services/api";
-import { queryKeys } from "../../constants/queryKeys";
-import { HelpHint } from "../../components/HelpHint";
-import { useI18n } from "../../i18n";
-import { useToast } from "../../hooks/useToast";
-import type { CliTargetItem, ConfigSyncTargetRef, TopologyDiscoverJobItem } from "../../types";
+import type {
+  CliTargetItem,
+  ConfigSyncTargetRef,
+  FabricEdge,
+  LldpCollectJobSummary,
+  TopologyDiscoverJobItem,
+} from "../../types";
+import { downloadCsv, fetchAllPages } from "../../utils/csvExport";
 import { pageCount } from "../../utils/display";
 import { formatSystemTime } from "../../utils/time";
 
@@ -89,15 +99,27 @@ export function LldpLinksPage() {
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [jobPage, setJobPage] = useState(1);
+  const [jobPageSize, setJobPageSize] = useState(20);
+  const [jobStatus, setJobStatus] = useState("");
+  const [jobKeyword, setJobKeyword] = useState("");
+  const [exportingJobs, setExportingJobs] = useState(false);
+  const debouncedJobKeyword = useDebouncedValue(jobKeyword, 300);
   const [expandedJobId, setExpandedJobId] = useState("");
   const [itemPage, setItemPage] = useState(1);
+  const [itemPageSize, setItemPageSize] = useState(20);
+  const [itemStatus, setItemStatus] = useState("");
+  const [itemKeyword, setItemKeyword] = useState("");
+  const [exportingItems, setExportingItems] = useState(false);
+  const debouncedItemKeyword = useDebouncedValue(itemKeyword, 300);
   const [itemDetail, setItemDetail] = useState<TopologyDiscoverJobItem | null>(null);
-  const ITEM_PAGE_SIZE = 20;
 
   const [edgeStatus, setEdgeStatus] = useState<"all" | "active" | "missing">("all");
+  const [edgeSource, setEdgeSource] = useState("");
   const [edgeKeyword, setEdgeKeyword] = useState("");
   const [edgePage, setEdgePage] = useState(1);
-  const EDGE_PAGE_SIZE = 20;
+  const [edgePageSize, setEdgePageSize] = useState(50);
+  const [exportingEdges, setExportingEdges] = useState(false);
+  const debouncedEdgeKeyword = useDebouncedValue(edgeKeyword, 300);
 
   const [enabled, setEnabled] = useState(false);
   const [intervalValue, setIntervalValue] = useState(1);
@@ -156,6 +178,8 @@ export function LldpLinksPage() {
     if (!jobId) return;
     setItemDetail(null);
     setItemPage(1);
+    setItemStatus("");
+    setItemKeyword("");
     setExpandedJobId(jobId);
     setSearchParams(
       (prev) => {
@@ -168,15 +192,33 @@ export function LldpLinksPage() {
   }, [searchParams, setSearchParams]);
 
   const jobsQuery = useQuery({
-    queryKey: queryKeys.lldpCollectJobs(jobPage),
-    queryFn: () => fetchLldpCollectJobs({ page: jobPage, pageSize: 10 }),
+    queryKey: queryKeys.lldpCollectJobs(jobPage, jobPageSize, jobStatus, debouncedJobKeyword),
+    queryFn: () =>
+      fetchLldpCollectJobs({
+        page: jobPage,
+        pageSize: jobPageSize,
+        status: jobStatus,
+        keyword: debouncedJobKeyword,
+      }),
     staleTime: 1000,
     refetchInterval: () => (dashQuery.data?.running_job ? POLL_MS : false),
   });
 
   const jobDetailQuery = useQuery({
-    queryKey: queryKeys.lldpCollectJob(expandedJobId, itemPage),
-    queryFn: () => fetchLldpCollectJob(expandedJobId, { page: itemPage, pageSize: ITEM_PAGE_SIZE }),
+    queryKey: queryKeys.lldpCollectJob(
+      expandedJobId,
+      itemPage,
+      itemPageSize,
+      itemStatus,
+      debouncedItemKeyword,
+    ),
+    queryFn: () =>
+      fetchLldpCollectJob(expandedJobId, {
+        page: itemPage,
+        pageSize: itemPageSize,
+        status: itemStatus,
+        keyword: debouncedItemKeyword,
+      }),
     enabled: Boolean(expandedJobId),
     staleTime: 800,
     refetchInterval: () => (dashQuery.data?.running_job?.id === expandedJobId ? POLL_MS : false),
@@ -191,13 +233,20 @@ export function LldpLinksPage() {
   });
 
   const edgesQuery = useQuery({
-    queryKey: queryKeys.fabricEdges(edgeStatus, edgeKeyword, edgePage),
+    queryKey: queryKeys.fabricEdges(
+      edgeStatus,
+      debouncedEdgeKeyword,
+      edgePage,
+      edgePageSize,
+      edgeSource,
+    ),
     queryFn: () =>
       fetchFabricEdges({
         status: edgeStatus === "all" ? "" : edgeStatus,
-        keyword: edgeKeyword,
+        keyword: debouncedEdgeKeyword,
+        source: edgeSource || undefined,
         page: edgePage,
-        pageSize: EDGE_PAGE_SIZE,
+        pageSize: edgePageSize,
       }),
     staleTime: 2000,
     refetchInterval: () => (dashQuery.data?.running_job ? POLL_MS : false),
@@ -302,14 +351,192 @@ export function LldpLinksPage() {
   const last = dash?.last_job;
   const jobs = jobsQuery.data?.items ?? [];
   const jobTotal = Number(jobsQuery.data?.total || 0);
-  const jobPages = pageCount(jobTotal, 10);
+  const jobPages = pageCount(jobTotal, jobPageSize);
   const selectedCount = useMemo(() => Object.keys(selectedMap).length, [selectedMap]);
   const detailItems = jobDetailQuery.data?.items ?? [];
   const itemTotal = Number(jobDetailQuery.data?.items_total ?? detailItems.length);
-  const itemPages = pageCount(itemTotal, ITEM_PAGE_SIZE);
+  const itemPages = pageCount(itemTotal, itemPageSize);
   const edgeItems = edgesQuery.data?.items ?? [];
   const edgeTotal = Number(edgesQuery.data?.total || 0);
-  const edgePages = pageCount(edgeTotal, EDGE_PAGE_SIZE);
+  const edgePages = pageCount(edgeTotal, edgePageSize);
+
+  const exportEdgesCsv = async () => {
+    setExportingEdges(true);
+    try {
+      const rows = await fetchAllPages<FabricEdge>({
+        pageSize: 200,
+        maxRows: 2000,
+        fetchPage: (p, ps) =>
+          fetchFabricEdges({
+            status: edgeStatus === "all" ? "" : edgeStatus,
+            keyword: debouncedEdgeKeyword,
+            source: edgeSource || undefined,
+            page: p,
+            pageSize: ps,
+          }),
+      });
+      downloadCsv(
+        `${t("lldpLinks.exportEdgesName")}-${new Date().toISOString().slice(0, 10)}.csv`,
+        rows,
+        [
+          {
+            key: "status",
+            header: t("lldpLinks.col.status"),
+            value: (e) => lldpEdgeStatusLabel(t, e.status === "stale" ? "missing" : e.status),
+          },
+          {
+            key: "a",
+            header: t("lldpLinks.col.aSide"),
+            value: (e) => e.a_name || e.a_ip || e.a_node_id,
+          },
+          { key: "a_port", header: t("lldpLinks.col.aPort") },
+          {
+            key: "b",
+            header: t("lldpLinks.col.bSide"),
+            value: (e) => e.b_name || e.b_ip || e.b_node_id,
+          },
+          { key: "b_port", header: t("lldpLinks.col.bPort") },
+          {
+            key: "source",
+            header: t("lldpLinks.col.source"),
+            value: (e) => lldpEdgeSourceLabel(t, e.source),
+          },
+          {
+            key: "last_seen_at",
+            header: t("lldpLinks.col.lastSeen"),
+            value: (e) => (e.last_seen_at ? formatSystemTime(e.last_seen_at) : ""),
+          },
+          { key: "id", header: "ID" },
+        ],
+      );
+      if (rows.length < edgeTotal) {
+        showOk(t("common.exportTruncated", { count: String(rows.length), total: String(edgeTotal) }));
+      } else {
+        showOk(t("common.exportOk", { count: String(rows.length) }));
+      }
+    } catch (err) {
+      showError(t("common.exportFailed") + ": " + formatErr(err));
+    } finally {
+      setExportingEdges(false);
+    }
+  };
+
+  const exportJobsCsv = async () => {
+    setExportingJobs(true);
+    try {
+      const rows = await fetchAllPages<LldpCollectJobSummary>({
+        pageSize: 100,
+        maxRows: 2000,
+        fetchPage: (p, ps) =>
+          fetchLldpCollectJobs({
+            page: p,
+            pageSize: ps,
+            status: jobStatus,
+            keyword: debouncedJobKeyword,
+          }),
+      });
+      downloadCsv(
+        `${t("lldpLinks.exportJobsName")}-${new Date().toISOString().slice(0, 10)}.csv`,
+        rows,
+        [
+          { key: "id", header: "ID" },
+          {
+            key: "trigger_mode",
+            header: t("lldpLinks.col.trigger"),
+            value: (j) => lldpTriggerLabel(t, j.trigger_mode),
+          },
+          {
+            key: "scope",
+            header: t("lldpLinks.col.scope"),
+            value: (j) => lldpScopeLabel(t, j.scope),
+          },
+          {
+            key: "status",
+            header: t("lldpLinks.col.status"),
+            value: (j) => lldpJobStatusLabel(t, j.status),
+          },
+          {
+            key: "progress",
+            header: t("lldpLinks.col.progress"),
+            value: (j) => `${j.done}/${j.total}`,
+          },
+          {
+            key: "edges",
+            header: t("lldpLinks.col.edges"),
+            value: (j) => `+${j.edges_added}/~${j.edges_updated}`,
+          },
+          {
+            key: "started_at",
+            header: t("lldpLinks.col.started"),
+            value: (j) => (j.started_at ? formatSystemTime(j.started_at) : ""),
+          },
+          {
+            key: "ended_at",
+            header: t("lldpLinks.col.ended"),
+            value: (j) => (j.ended_at ? formatSystemTime(j.ended_at) : ""),
+          },
+        ],
+      );
+      if (rows.length < jobTotal) {
+        showOk(t("common.exportTruncated", { count: String(rows.length), total: String(jobTotal) }));
+      } else {
+        showOk(t("common.exportOk", { count: String(rows.length) }));
+      }
+    } catch (err) {
+      showError(t("common.exportFailed") + ": " + formatErr(err));
+    } finally {
+      setExportingJobs(false);
+    }
+  };
+
+  const exportItemsCsv = async () => {
+    if (!expandedJobId) return;
+    setExportingItems(true);
+    try {
+      const rows = await fetchAllPages<TopologyDiscoverJobItem>({
+        pageSize: 100,
+        maxRows: 2000,
+        fetchPage: async (p, ps) => {
+          const job = await fetchLldpCollectJob(expandedJobId, {
+            page: p,
+            pageSize: ps,
+            status: itemStatus,
+            keyword: debouncedItemKeyword,
+          });
+          return { total: job.items_total, items: (job.items || []) as TopologyDiscoverJobItem[] };
+        },
+      });
+      downloadCsv(
+        `${t("lldpLinks.exportItemsName")}-${expandedJobId.slice(0, 8)}.csv`,
+        rows,
+        [
+          { key: "ne_name", header: t("lldpLinks.col.name") },
+          { key: "ne_ip", header: "IP" },
+          {
+            key: "result",
+            header: t("lldpLinks.col.status"),
+            value: (it) => lldpItemResultLabel(t, it),
+          },
+          { key: "neighbors", header: t("lldpLinks.col.neighbors") },
+          {
+            key: "edges",
+            header: t("lldpLinks.col.edges"),
+            value: (it) => `+${it.edges_added}/~${it.edges_updated}`,
+          },
+          { key: "error", header: t("lldpLinks.col.error") },
+        ],
+      );
+      if (rows.length < itemTotal) {
+        showOk(t("common.exportTruncated", { count: String(rows.length), total: String(itemTotal) }));
+      } else {
+        showOk(t("common.exportOk", { count: String(rows.length) }));
+      }
+    } catch (err) {
+      showError(t("common.exportFailed") + ": " + formatErr(err));
+    } finally {
+      setExportingItems(false);
+    }
+  };
 
   const toggleTarget = (row: CliTargetItem) => {
     const source = row.source === "ume" ? "ume" : "managed";
@@ -576,6 +803,17 @@ export function LldpLinksPage() {
           <option value="active">{t("lldpLinks.edgeStatusActive")}</option>
           <option value="missing">{t("lldpLinks.edgeStatusMissing")}</option>
         </select>
+        <select
+          value={edgeSource}
+          onChange={(e) => {
+            setEdgeSource(e.target.value);
+            setEdgePage(1);
+          }}
+        >
+          <option value="">{t("lldpLinks.edgeSourceAll")}</option>
+          <option value="lldp">{t("lldpLinks.edgeSource.lldp")}</option>
+          <option value="manual">{t("lldpLinks.edgeSource.manual")}</option>
+        </select>
         <input
           value={edgeKeyword}
           placeholder={t("lldpLinks.edgeKeywordPh")}
@@ -584,6 +822,13 @@ export function LldpLinksPage() {
             setEdgePage(1);
           }}
         />
+        <button
+          type="button"
+          disabled={exportingEdges || edgeTotal === 0}
+          onClick={() => void exportEdgesCsv()}
+        >
+          {exportingEdges ? t("common.exporting") : t("common.exportCsv")}
+        </button>
       </div>
       <div className="pt-list-table-wrap">
         <table className="data-table pt-list-table">
@@ -643,27 +888,54 @@ export function LldpLinksPage() {
           </tbody>
         </table>
       </div>
-      <div className="pager">
-        <button type="button" disabled={edgePage <= 1} onClick={() => setEdgePage((p) => p - 1)}>
-          {t("common.prevPage")}
-        </button>
-        <span className="muted">
-          {t("common.pagerMeta", {
-            total: String(edgeTotal),
-            page: String(edgePage),
-            pages: String(edgePages),
-          })}
-        </span>
-        <button
-          type="button"
-          disabled={edgePage >= edgePages}
-          onClick={() => setEdgePage((p) => p + 1)}
-        >
-          {t("common.nextPage")}
-        </button>
-      </div>
+      <ListPager
+        page={edgePage}
+        pages={edgePages}
+        total={edgeTotal}
+        pageSize={edgePageSize}
+        pageSizeOptions={[20, 50, 100, 200]}
+        onPageChange={setEdgePage}
+        onPageSizeChange={(size) => {
+          setEdgePageSize(size);
+          setEdgePage(1);
+        }}
+        disabled={edgesQuery.isLoading}
+      />
 
       <h3 style={{ marginTop: 24 }}>{t("lldpLinks.jobsTitle")}</h3>
+      <div className="filter-inline" style={{ marginBottom: 8 }}>
+        <select
+          value={jobStatus}
+          onChange={(e) => {
+            setJobStatus(e.target.value);
+            setJobPage(1);
+          }}
+        >
+          <option value="">{t("lldpLinks.statusAll")}</option>
+          <option value="running">{t("lldpLinks.jobStatus.running")}</option>
+          <option value="pending">{t("lldpLinks.jobStatus.pending")}</option>
+          <option value="paused">{t("lldpLinks.jobStatus.paused")}</option>
+          <option value="done">{t("lldpLinks.jobStatus.done")}</option>
+          <option value="failed">{t("lldpLinks.jobStatus.failed")}</option>
+          <option value="cancelled">{t("lldpLinks.jobStatus.cancelled")}</option>
+          <option value="stopped">{t("lldpLinks.jobStatus.stopped")}</option>
+        </select>
+        <input
+          value={jobKeyword}
+          placeholder={t("lldpLinks.jobKeywordPh")}
+          onChange={(e) => {
+            setJobKeyword(e.target.value);
+            setJobPage(1);
+          }}
+        />
+        <button
+          type="button"
+          disabled={exportingJobs || jobTotal === 0}
+          onClick={() => void exportJobsCsv()}
+        >
+          {exportingJobs ? t("common.exporting") : t("common.exportCsv")}
+        </button>
+      </div>
       <div className="pt-list-table-wrap">
         <table className="data-table pt-list-table">
           <thead>
@@ -691,6 +963,8 @@ export function LldpLinksPage() {
                       className="btn btn--sm btn--ghost"
                       onClick={() => {
                         setItemDetail(null);
+                        setItemStatus("");
+                        setItemKeyword("");
                         setExpandedJobId(job.id);
                         setItemPage(1);
                       }}
@@ -774,21 +1048,19 @@ export function LldpLinksPage() {
           </tbody>
         </table>
       </div>
-      <div className="pager">
-        <button type="button" disabled={jobPage <= 1} onClick={() => setJobPage((p) => p - 1)}>
-          {t("common.prevPage")}
-        </button>
-        <span className="muted">
-          {t("common.pagerMeta", {
-            total: String(jobTotal),
-            page: String(jobPage),
-            pages: String(jobPages),
-          })}
-        </span>
-        <button type="button" disabled={jobPage >= jobPages} onClick={() => setJobPage((p) => p + 1)}>
-          {t("common.nextPage")}
-        </button>
-      </div>
+      <ListPager
+        page={jobPage}
+        pages={jobPages}
+        total={jobTotal}
+        pageSize={jobPageSize}
+        pageSizeOptions={[10, 20, 50, 100]}
+        onPageChange={setJobPage}
+        onPageSizeChange={(size) => {
+          setJobPageSize(size);
+          setJobPage(1);
+        }}
+        disabled={jobsQuery.isLoading}
+      />
 
       {expandedJobId ? (
         <div
@@ -825,14 +1097,47 @@ export function LldpLinksPage() {
               <div className="btn-row ops-detail-modal__actions">
                 <button
                   type="button"
+                  disabled={exportingItems || itemTotal === 0}
+                  onClick={() => void exportItemsCsv()}
+                >
+                  {exportingItems ? t("common.exporting") : t("common.exportCsv")}
+                </button>
+                <button
+                  type="button"
                   onClick={() => {
                     setExpandedJobId("");
                     setItemDetail(null);
+                    setItemStatus("");
+                    setItemKeyword("");
+                    setItemPage(1);
                   }}
                 >
                   {t("networkConfigs.close")}
                 </button>
               </div>
+            </div>
+
+            <div className="filter-inline" style={{ marginBottom: 8 }}>
+              <select
+                value={itemStatus}
+                onChange={(e) => {
+                  setItemStatus(e.target.value);
+                  setItemPage(1);
+                }}
+              >
+                <option value="">{t("lldpLinks.itemResultAll")}</option>
+                <option value="ok">{t("lldpLinks.itemResult.ok")}</option>
+                <option value="warn">{t("lldpLinks.itemResult.warn")}</option>
+                <option value="fail">{t("lldpLinks.itemResult.fail")}</option>
+              </select>
+              <input
+                value={itemKeyword}
+                placeholder={t("lldpLinks.itemKeywordPh")}
+                onChange={(e) => {
+                  setItemKeyword(e.target.value);
+                  setItemPage(1);
+                }}
+              />
             </div>
 
             {jobDetailQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
@@ -897,25 +1202,19 @@ export function LldpLinksPage() {
             </div>
 
             <div className="ops-detail-modal__foot">
-              <span className="muted">
-                {t("common.pagerMeta", {
-                  total: String(itemTotal),
-                  page: String(itemPage),
-                  pages: String(itemPages),
-                })}
-              </span>
-              <div className="btn-row">
-                <button type="button" disabled={itemPage <= 1} onClick={() => setItemPage((p) => p - 1)}>
-                  {t("common.prevPage")}
-                </button>
-                <button
-                  type="button"
-                  disabled={itemPage >= itemPages}
-                  onClick={() => setItemPage((p) => p + 1)}
-                >
-                  {t("common.nextPage")}
-                </button>
-              </div>
+              <ListPager
+                page={itemPage}
+                pages={itemPages}
+                total={itemTotal}
+                pageSize={itemPageSize}
+                pageSizeOptions={[20, 50, 100]}
+                onPageChange={setItemPage}
+                onPageSizeChange={(size) => {
+                  setItemPageSize(size);
+                  setItemPage(1);
+                }}
+                disabled={jobDetailQuery.isLoading}
+              />
             </div>
           </div>
         </div>

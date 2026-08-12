@@ -2,6 +2,7 @@ import type {
   CollectionJobDetail,
   CollectionJobItem,
   CollectionDashboard,
+  CollectionPolicy,
   CollectionRunList,
   EligibleNeItem,
   IntegrationStatus,
@@ -147,6 +148,13 @@ export class ApiRequestError extends Error {
   }
 }
 
+/** User-facing message from API or thrown errors (prefers ApiRequestError.message). */
+export function formatErr(err: unknown): string {
+  if (err instanceof ApiRequestError) return err.message;
+  if (err instanceof Error) return err.message;
+  return String(err);
+}
+
 export function formatApiDetail(detail: unknown): string {
   if (typeof detail === "string") return detail;
   if (Array.isArray(detail)) {
@@ -175,16 +183,18 @@ export function formatApiDetail(detail: unknown): string {
 }
 
 export const apiGet = async <T,>(path: string): Promise<T> => {
-  let res = await fetch(path, { headers: authHeaders(), credentials: fetchCreds });
+  const doFetch = () => fetch(path, { headers: authHeaders(), credentials: fetchCreds });
+  let res = await doFetch();
   if (res.status === 401 && shouldAttemptRefresh(path) && (await tryRefreshAccessToken())) {
-    res = await fetch(path, { headers: authHeaders(), credentials: fetchCreds });
+    res = await doFetch();
   }
+  const data = await parseApiResponse(res);
   if (res.status === 401) {
     handleUnauthorized(path);
-    throw new Error("401 unauthorized");
+    throw new ApiRequestError(401, data.detail || "unauthorized");
   }
-  if (!res.ok) throw new Error(`${res.status} ${path}`);
-  return (await res.json()) as T;
+  if (!res.ok) throw new ApiRequestError(res.status, data.detail || `${res.status} ${path}`);
+  return data as T;
 };
 
 export const apiPost = async <T,>(path: string, body: unknown): Promise<T> => {
@@ -600,9 +610,12 @@ export const importManagedNe = async (file: File): Promise<ManagedNeImportResult
     handleUnauthorized(path);
     throw new Error("unauthorized");
   }
-  const text = await res.text();
-  const data = text ? JSON.parse(text) : {};
-  if (!res.ok) throw new Error(String((data as { detail?: string }).detail || `${res.status} import`));
+  const data = await parseApiResponse(res);
+  if (res.status === 401) {
+    handleUnauthorized(path);
+    throw new ApiRequestError(401, data.detail || "unauthorized");
+  }
+  if (!res.ok) throw new ApiRequestError(res.status, data.detail || `${res.status} import`);
   return data as ManagedNeImportResult;
 };
 
@@ -624,10 +637,17 @@ export const createNeCollection = (body: {
 }) =>
   apiPost<CollectionJobItem>("/v1/ne-collections", body);
 
-export const fetchNeCollections = (params: { page: number; pageSize: number }) => {
+export const fetchNeCollections = (params: {
+  page: number;
+  pageSize: number;
+  status?: string;
+  keyword?: string;
+}) => {
   const p = new URLSearchParams();
   p.set("page", String(Math.max(1, params.page)));
   p.set("page_size", String(Math.max(1, Math.min(100, params.pageSize))));
+  if (params.status?.trim()) p.set("status", params.status.trim());
+  if (params.keyword?.trim()) p.set("keyword", params.keyword.trim());
   return apiGet<{ total: number; page: number; page_size: number; items: CollectionJobItem[] }>(
     `/v1/ne-collections?${p.toString()}`,
   );
@@ -635,6 +655,14 @@ export const fetchNeCollections = (params: { page: number; pageSize: number }) =
 
 export const fetchCollectionDashboard = () =>
   apiGet<CollectionDashboard>("/v1/ne-collections/dashboard");
+
+export const fetchCollectionPolicy = () => apiGet<CollectionPolicy>("/v1/ne-collections/policy");
+
+export const updateCollectionPolicy = (body: Partial<CollectionPolicy>) =>
+  apiPut<CollectionPolicy>("/v1/ne-collections/policy", body);
+
+export const startCollectionFromPolicy = () =>
+  apiPost<CollectionJobItem>("/v1/ne-collections/start-from-policy", {});
 
 export const fetchCollectionJob = (jobId: string) => apiGet<CollectionJobDetail>(`/v1/ne-collections/${jobId}`);
 
@@ -1233,6 +1261,8 @@ export const fetchFabricSummary = () => apiGet<FabricSummary>("/v1/topology/fabr
 export const fetchFabricNodes = (params?: {
   keyword?: string;
   role?: string;
+  level?: string;
+  levelMajor?: string;
   regionFolderId?: string;
   unmatched?: string;
   linkStatus?: string;
@@ -1242,6 +1272,8 @@ export const fetchFabricNodes = (params?: {
   const p = new URLSearchParams();
   if (params?.keyword) p.set("keyword", params.keyword);
   if (params?.role) p.set("role", params.role);
+  if (params?.level) p.set("level", params.level);
+  if (params?.levelMajor) p.set("level_major", params.levelMajor);
   if (params?.regionFolderId) p.set("region_folder_id", params.regionFolderId);
   if (params?.unmatched) p.set("unmatched", params.unmatched);
   if (params?.linkStatus) p.set("link_status", params.linkStatus);
@@ -1272,6 +1304,7 @@ export const bulkTagFabricNodes = (body: {
   fabric_node_ids?: string[];
   pattern?: string;
   match_field?: string;
+  level?: number | null;
   role?: string | null;
   region_folder_id?: string | null;
   dry_run?: boolean;
@@ -1280,6 +1313,7 @@ export const bulkTagFabricNodes = (body: {
     dry_run: boolean;
     matched: number;
     updated: number;
+    level?: number | null;
     role?: string | null;
     region_folder_id?: string | null;
     samples: Array<Record<string, string>>;
@@ -1287,7 +1321,7 @@ export const bulkTagFabricNodes = (body: {
 
 export const patchFabricNodeTags = (
   fabricNodeId: string,
-  body: { role?: string | null; region_folder_id?: string | null },
+  body: { level?: number | null; role?: string | null; region_folder_id?: string | null },
 ) =>
   apiPatch<import("../types").FabricNodeSearchHit>(
     `/v1/topology/fabric/nodes/${encodeURIComponent(fabricNodeId)}/tags`,
@@ -1316,14 +1350,6 @@ export const purgePlaceholderFabricNodes = (fabricNodeIds: string[]) =>
   }>("/v1/topology/fabric/nodes/purge-placeholders", {
     fabric_node_ids: fabricNodeIds,
   });
-
-export const generateTopologySlices = (body: {
-  folder_id: string;
-  template: "core_only" | "core_agg" | "agg_access";
-  dry_run?: boolean;
-  max_nodes?: number;
-  seed_physical_cores?: boolean;
-}) => apiPost<import("../types").SliceGenerateResult>("/v1/topology/slices/generate", body);
 
 export const searchFabricNodes = (params?: { q?: string; page?: number; pageSize?: number }) => {
   const p = new URLSearchParams();
@@ -1399,10 +1425,17 @@ export const resumeLldpCollectJob = (jobId: string) =>
 export const stopLldpCollectJob = (jobId: string) =>
   apiPost<TopologyDiscoverJob>(`/v1/topology/lldp-collect/jobs/${encodeURIComponent(jobId)}/stop`, {});
 
-export const fetchLldpCollectJobs = (params: { page?: number; pageSize?: number }) => {
+export const fetchLldpCollectJobs = (params: {
+  page?: number;
+  pageSize?: number;
+  status?: string;
+  keyword?: string;
+}) => {
   const p = new URLSearchParams();
   p.set("page", String(Math.max(1, Number(params.page || 1))));
   p.set("page_size", String(Math.max(1, Math.min(100, Number(params.pageSize || 20)))));
+  if (params.status?.trim()) p.set("status", params.status.trim());
+  if (params.keyword?.trim()) p.set("keyword", params.keyword.trim());
   return apiGet<{ total: number; page: number; page_size: number; items: LldpCollectJobSummary[] }>(
     `/v1/topology/lldp-collect/jobs?${p.toString()}`,
   );
@@ -1410,11 +1443,13 @@ export const fetchLldpCollectJobs = (params: { page?: number; pageSize?: number 
 
 export const fetchLldpCollectJob = (
   jobId: string,
-  params?: { page?: number; pageSize?: number },
+  params?: { page?: number; pageSize?: number; status?: string; keyword?: string },
 ) => {
   const p = new URLSearchParams();
   p.set("page", String(Math.max(1, Number(params?.page || 1))));
   p.set("page_size", String(Math.max(1, Math.min(100, Number(params?.pageSize || 20)))));
+  if (params?.status?.trim()) p.set("status", params.status.trim());
+  if (params?.keyword?.trim()) p.set("keyword", params.keyword.trim());
   return apiGet<TopologyDiscoverJob>(
     `/v1/topology/lldp-collect/jobs/${encodeURIComponent(jobId)}?${p.toString()}`,
   );
@@ -1452,10 +1487,17 @@ export const fetchConfigSyncPolicy = () => apiGet<ConfigSyncPolicy>("/v1/config-
 export const updateConfigSyncPolicy = (body: Partial<ConfigSyncPolicy>) =>
   apiPut<ConfigSyncPolicy>("/v1/config-sync/policy", body);
 
-export const fetchConfigSyncCycles = (params: { page?: number; pageSize?: number }) => {
+export const fetchConfigSyncCycles = (params: {
+  page?: number;
+  pageSize?: number;
+  status?: string;
+  keyword?: string;
+}) => {
   const p = new URLSearchParams();
   p.set("page", String(Math.max(1, Number(params.page || 1))));
   p.set("page_size", String(Math.max(1, Math.min(100, Number(params.pageSize || 20)))));
+  if (params.status?.trim()) p.set("status", params.status.trim());
+  if (params.keyword?.trim()) p.set("keyword", params.keyword.trim());
   return apiGet<{ total: number; page: number; page_size: number; items: ConfigSyncCycle[] }>(
     `/v1/config-sync/cycles?${p.toString()}`,
   );
@@ -1554,10 +1596,17 @@ export const downloadNeConfigSnapshot = async (
 export const fetchPortTrafficDashboard = () =>
   apiGet<PortTrafficDashboard>("/v1/port-traffic/dashboard");
 
-export const fetchPortTrafficDevices = (params: { page?: number; pageSize?: number }) => {
+export const fetchPortTrafficDevices = (params: {
+  page?: number;
+  pageSize?: number;
+  status?: string;
+  keyword?: string;
+}) => {
   const p = new URLSearchParams();
   p.set("page", String(Math.max(1, Number(params.page || 1))));
   p.set("page_size", String(Math.max(1, Math.min(100, Number(params.pageSize || 20)))));
+  if (params.status?.trim()) p.set("status", params.status.trim());
+  if (params.keyword?.trim()) p.set("keyword", params.keyword.trim());
   return apiGet<{ total: number; page: number; page_size: number; items: PortTrafficDevice[] }>(
     `/v1/port-traffic/devices?${p.toString()}`,
   );

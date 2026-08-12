@@ -176,14 +176,24 @@ def compute_edge_clearance(
         per_node.append(h)
 
     hits_n = len(hits)
-    # Score by unique nodes hit / n (plan: ~0.05 warn, 0.2 → 0)
+    # Dual signal so hub chords with many segment hits actually hurt:
+    # 1) unique nodes hit / n  (0 → 1, ≥20% → 0)
+    # 2) hits / links         (≤0.02 → 1, ≥0.20 → 0) — separates sparse vs scrubbed eyes
     hit_frac = len(nodes_with_hit) / max(n_nodes, 1)
+    hit_per_link = hits_n / max(n_links, 1)
     if hit_frac <= 0.0:
-        score = 1.0
+        node_s = 1.0
     elif hit_frac >= 0.2:
-        score = 0.0
+        node_s = 0.0
     else:
-        score = 1.0 - hit_frac / 0.2
+        node_s = 1.0 - hit_frac / 0.2
+    if hit_per_link <= 0.02:
+        inten_s = 1.0
+    elif hit_per_link >= 0.20:
+        inten_s = 0.0
+    else:
+        inten_s = 1.0 - (hit_per_link - 0.02) / 0.18
+    score = 0.45 * node_s + 0.55 * inten_s
 
     def _pct(vals: list[float], p: float) -> float | None:
         if not vals:
@@ -197,6 +207,9 @@ def compute_edge_clearance(
         "nodes_hit": len(nodes_with_hit),
         "min_clearance_p50": _pct(clearances, 0.5),
         "edge_clearance_score": round(score, 4),
+        "edge_clearance_node_score": round(node_s, 4),
+        "edge_clearance_intensity_score": round(inten_s, 4),
+        "hit_per_link": round(hit_per_link, 4),
         "top_edge_hits": per_node[:top_n],
         "hit_nodes": per_node,
         "edge_clearance_tip": tip_ok,
@@ -764,7 +777,7 @@ def grade_layout(
             issues.append(f"label_overlaps={label_overlaps}>0")
 
     util_warn = 0.08
-    util_fail = 0.03
+    util_fail = 0.04
     util_f = float(util) if util is not None else None
     util_bad = util_f is not None and util_f < util_fail
     util_soft = util_f is not None and util_f < util_warn

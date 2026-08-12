@@ -81,6 +81,10 @@ class Settings(BaseSettings):
     ne_collect_pending_stale_sec: int = 180
     ne_collect_run_timeout_cap_sec: int = 600
     ne_collection_data_dir: str = "data/ne_collections"
+    # Batch CLI collect scheduler (policy.enabled defaults False — manual until turned on).
+    ne_collect_scheduler_enabled: bool = True
+    ne_collect_scheduler_tick_sec: int = 60
+    ne_collect_startup_grace_sec: int = 3600
     # Config sync (periodic running-config backup into DB)
     config_sync_scheduler_enabled: bool = True
     config_sync_scheduler_tick_sec: int = 60

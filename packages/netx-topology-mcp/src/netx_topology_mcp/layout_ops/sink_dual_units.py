@@ -20,10 +20,10 @@ def _portal_share_counts(units: list[DualUnit]) -> dict[str, int]:
 
 
 def unit_detach_score(u: DualUnit, share: dict[str, int]) -> tuple[int, int, int]:
-    """Lower is better: less shared portals, smaller unit, lower unit_id."""
+    """Tie-break only: less shared portals, then lower unit_id (stable)."""
     shared = sum(1 for p in (u.portal_a, u.portal_b) if share.get(p, 0) > 1)
     share_sum = share.get(u.portal_a, 0) + share.get(u.portal_b, 0)
-    return (shared, share_sum, len(u.member_ids()), int(u.unit_id))
+    return (shared, share_sum, int(u.unit_id))
 
 
 def select_dual_unit_batch(
@@ -31,53 +31,118 @@ def select_dual_unit_batch(
     *,
     max_units: int = 3,
     min_nodes: int = 8,
-    max_nodes: int = 80,
-    max_batch_nodes: int = 120,
+    max_nodes: int = 300,
+    max_batch_nodes: int = 400,
     exclude_ids: set[str] | None = None,
+    keep_ids: set[str] | None = None,
+    sink_ids: set[str] | None = None,
+    prefer_pure: bool = False,
+    prefer_core_eye: bool = True,
+    prefer_top_eye: bool | None = None,
+    layers: dict[str, str] | None = None,
 ) -> list[DualUnit]:
-    """Greedy pick detachable dual-units within size / batch caps."""
+    """Greedy pick detachable dual-units within size / batch caps.
+
+    Eyes walk **top→down** (core → agg → access): prefer core/agg portal
+    pairs and maximize movable membership. ``prefer_core_eye`` is an alias
+    for ``prefer_top_eye`` (default true).
+    """
     exclude_ids = exclude_ids or set()
+    keep_ids = keep_ids or set()
+    layers = layers or {}
+    if prefer_top_eye is None:
+        prefer_top_eye = prefer_core_eye
     share = _portal_share_counts(units)
     candidates: list[DualUnit] = []
     for u in units:
         members = u.member_ids()
         if not members:
             continue
+        movable = members - keep_ids
+        if sink_ids is not None:
+            movable = movable & sink_ids
+        if not movable or movable.issubset(exclude_ids):
+            continue
         n = len(members)
         if n < int(min_nodes) or n > int(max_nodes):
             continue
-        # Skip units already fully present on sink (nothing new to move).
-        if members and members.issubset(exclude_ids):
+        if members and members.issubset(exclude_ids | keep_ids):
+            continue
+        # Need enough *movable* mass for this level phase.
+        if len(movable) < max(2, min(4, int(min_nodes) // 2)):
             continue
         candidates.append(u)
-    candidates.sort(key=lambda u: unit_detach_score(u, share))
+
+    def _movable(u: DualUnit) -> set[str]:
+        m = u.member_ids() - keep_ids
+        if sink_ids is not None:
+            m = m & sink_ids
+        return m
+
+    def _portal_tier(nid: str) -> int:
+        ly = (layers.get(nid) or "").strip().lower()
+        if ly == "core":
+            return 0
+        if ly == "agg":
+            return 1
+        if ly == "access":
+            return 2
+        return 3
+
+    def _eye_key(u: DualUnit) -> tuple[int, int]:
+        t = sorted((_portal_tier(u.portal_a), _portal_tier(u.portal_b)))
+        return (t[0], t[1])
+
+    def _score(u: DualUnit) -> tuple:
+        mov = _movable(u)
+        keep_portals = sum(1 for p in (u.portal_a, u.portal_b) if p in keep_ids)
+        pure_penalty = keep_portals if prefer_pure else 0
+        # Top-down eye tier, then max movable / membership.
+        eye = _eye_key(u) if prefer_top_eye else (0, 0)
+        return (
+            pure_penalty,
+            eye,
+            -len(mov),
+            -len(u.member_ids()),
+            *unit_detach_score(u, share),
+        )
+
+    candidates.sort(key=_score)
 
     picked: list[DualUnit] = []
     claimed: set[str] = set()
     for u in candidates:
         if len(picked) >= int(max_units):
             break
-        members = u.member_ids()
-        # Prefer units whose interiors are not already claimed this batch.
-        interior = members - {u.portal_a, u.portal_b}
+        movable = _movable(u)
+        interior = movable - {u.portal_a, u.portal_b}
         if interior & claimed:
             continue
-        next_ids = claimed | members
+        next_ids = claimed | movable
         if len(next_ids) > int(max_batch_nodes):
             continue
         picked.append(u)
-        claimed |= members
+        claimed |= movable
     return picked
 
 
-def batch_node_ids(units: list[DualUnit]) -> list[str]:
+def batch_node_ids(
+    units: list[DualUnit],
+    *,
+    keep_ids: set[str] | None = None,
+    sink_ids: set[str] | None = None,
+) -> list[str]:
+    keep_ids = keep_ids or set()
     out: list[str] = []
     seen: set[str] = set()
     for u in units:
         for nid in sorted(u.member_ids()):
-            if nid and nid not in seen:
-                seen.add(nid)
-                out.append(nid)
+            if not nid or nid in seen or nid in keep_ids:
+                continue
+            if sink_ids is not None and nid not in sink_ids:
+                continue
+            seen.add(nid)
+            out.append(nid)
     return out
 
 
@@ -86,15 +151,20 @@ def leftover_batch_ids(
     *,
     max_batch_nodes: int = 120,
     exclude_ids: set[str] | None = None,
+    keep_ids: set[str] | None = None,
+    sink_ids: set[str] | None = None,
 ) -> list[str]:
     """When dual_units are exhausted, take a plain leftover chunk."""
     exclude_ids = exclude_ids or set()
+    keep_ids = keep_ids or set()
     out: list[str] = []
     for nid in source_ids:
         sid = str(nid or "").strip()
         if not sid or sid.startswith("region:"):
             continue
-        if sid in exclude_ids:
+        if sid in exclude_ids or sid in keep_ids:
+            continue
+        if sink_ids is not None and sid not in sink_ids:
             continue
         out.append(sid)
         if len(out) >= int(max_batch_nodes):

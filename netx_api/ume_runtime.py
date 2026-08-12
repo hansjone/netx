@@ -1,6 +1,6 @@
 """UME / long-task runtime helpers shared by API and optional worker process.
 
-Device collectors (config_sync / LLDP / port_traffic) run via ``start_device_schedulers``
+Device collectors (config_sync / LLDP / ne_collect / port_traffic) run via ``start_device_schedulers``
 (API inline by default; set ``NETX_RUN_INLINE_SCHEDULERS=false`` and run
 ``python -m netx_api.worker`` for a split process).
 API process also owns UME keepalive, alarm WSS, current-alarm/inventory sync loops,
@@ -53,11 +53,13 @@ def start_device_schedulers() -> None:
     from .config_sync_scheduler import start_config_sync_scheduler
     from .fabric_reconcile_scheduler import start_fabric_reconcile_scheduler
     from .lldp_collect_scheduler import start_lldp_collect_scheduler
+    from .ne_collect_scheduler import start_ne_collect_scheduler
     from .port_traffic_scheduler import start_port_traffic_scheduler
     from .scheduler_heartbeat import start_scheduler_heartbeat_publisher
 
     start_config_sync_scheduler()
     start_lldp_collect_scheduler()
+    start_ne_collect_scheduler()
     start_port_traffic_scheduler()
     start_fabric_reconcile_scheduler()
     # Publish status so API /metrics can see collectors when run in a split worker.
