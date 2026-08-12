@@ -703,7 +703,7 @@ const zh = {
       jobTitlePh: "留空则自动生成",
       commands: "采集命令（每行一条，# 开头为注释）",
       commandsPh: "display version\ndisplay current-configuration",
-      commandsHint: "命令将按顺序在每台设备上执行，输出合并为一份文本日志（格式与旧版 NetX 采集一致）。",
+      commandsHint: "命令将按顺序在每台设备上执行，输出合并为一份文本日志。",
       meta: "已选 {{ne}} 台网元 · {{cmd}} 条命令",
       start: "开始采集",
       starting: "提交中…",

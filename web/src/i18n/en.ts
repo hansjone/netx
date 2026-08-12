@@ -709,7 +709,7 @@ const en = {
       jobTitlePh: "Auto-generated if empty",
       commands: "Commands (one per line, # for comments)",
       commandsPh: "display version\ndisplay current-configuration",
-      commandsHint: "Commands run in order on each device; output is saved as a text log (legacy NetX format).",
+      commandsHint: "Commands run in order on each device; output is saved as a text log.",
       meta: "{{ne}} NE(s) selected · {{cmd}} command(s)",
       start: "Start collection",
       starting: "Submitting…",
