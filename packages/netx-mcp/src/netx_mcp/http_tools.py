@@ -345,7 +345,7 @@ def _exec_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
             "error_code": "exactly_one_of_ne_id_or_ume_ne_id_required",
             "hint": (
                 "For one NE pass ne_id OR ume_ne_id. For many NEs pass ne_ids / ume_ne_ids "
-                "(or targets[]) with shared commands — one call, concurrent on server."
+                "with shared commands, or targets[] with per-NE commands — one call, concurrent on server."
             ),
         }
     if not shared_commands:
@@ -648,9 +648,11 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
             f"Run read-only CLI via netx (show/display/ping/traceroute; "
             f"max {exec_max_commands()} commands per NE, NETX_NE_EXEC_MAX_COMMANDS). "
             "Single NE: ne_id OR ume_ne_id + commands. "
-            "Many NEs (preferred for sweeps): ne_ids[] or ume_ne_ids[] or targets[] with shared commands "
-            "— server runs them concurrently (default concurrency 4, max 20 targets). "
-            "Do NOT loop one-NE execManagedNe for the same show commands. "
+            "Many NEs (batch-first, server concurrency default 4, max 20): "
+            "(1) same CLI on all → ne_ids[]/ume_ne_ids[] + shared commands; "
+            "(2) different CLI per NE (vendor/role) → ONE targets=["
+            "{ume_ne_id|ne_id, commands:[…]}, …] — do NOT fall back to one-NE loops. "
+            "Do NOT loop one-NE execManagedNe for multi-NE work. "
             "Default read_timeout_sec=60; on timeout raise to 90–120 — do not blind-retry."
         ),
         "inputSchema": {
@@ -687,14 +689,22 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                         },
                         "additionalProperties": False,
                     },
-                    "description": "Explicit per-NE targets; optional per-target commands override shared commands.",
+                    "description": (
+                        "Preferred for mixed-vendor / per-NE command sets: "
+                        "each item is one NE (ne_id OR ume_ne_id) with its own commands[]. "
+                        "Per-target commands override top-level shared commands. "
+                        "Still one concurrent batch — not N single-NE calls."
+                    ),
                 },
                 "commands": {
                     "type": "array",
                     "items": {"type": "string"},
                     "minItems": 1,
                     "maxItems": exec_max_commands(),
-                    "description": "Commands for single NE, or shared commands for ne_ids/ume_ne_ids/targets.",
+                    "description": (
+                        "Commands for single NE, or shared commands for ne_ids/ume_ne_ids. "
+                        "Optional fallback for targets that omit per-target commands."
+                    ),
                 },
                 "read_timeout_sec": {
                     "type": "integer",
