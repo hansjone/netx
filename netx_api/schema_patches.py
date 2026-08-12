@@ -179,6 +179,26 @@ def apply_topology_schema_safety_net(conn: Connection) -> None:
     )
 
 
+def apply_collection_schema_safety_net(conn: Connection) -> None:
+    """Always-on NE collection columns (create_all will not ALTER existing tables)."""
+    _run_sql(
+        conn,
+        "ALTER TABLE ne_collection_job ADD COLUMN IF NOT EXISTS last_run_at TIMESTAMP",
+    )
+    _run_sql(
+        conn,
+        "ALTER TABLE ne_collection_job ADD COLUMN IF NOT EXISTS trigger_mode VARCHAR(32) DEFAULT 'manual'",
+    )
+    _run_sql(
+        conn,
+        "CREATE INDEX IF NOT EXISTS ix_ne_collection_job_trigger_mode ON ne_collection_job (trigger_mode)",
+    )
+    _run_sql(
+        conn,
+        "ALTER TABLE ne_collection_run ADD COLUMN IF NOT EXISTS ne_source VARCHAR(16) DEFAULT 'managed'",
+    )
+
+
 def apply_key_alert_schema_patches(
     engine: Engine | None = None,
     *,
