@@ -653,7 +653,9 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
             "(2) different CLI per NE (vendor/role) → ONE targets=["
             "{ume_ne_id|ne_id, commands:[…]}, …] — do NOT fall back to one-NE loops. "
             "Do NOT loop one-NE execManagedNe for multi-NE work. "
-            "Default read_timeout_sec=60; on timeout raise to 90–120 — do not blind-retry."
+            "Default read_timeout_sec=60; on timeout raise to 90–120 — do not blind-retry. "
+            "Large batches (≈4+ NEs) may auto-run async in oclaw: returns job_id immediately; "
+            "poll get_ne_exec_job. Pass async=true to force background, async=false to force sync."
         ),
         "inputSchema": {
             "type": "object",
@@ -719,6 +721,13 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                     "maximum": 8,
                     "default": 4,
                     "description": "Parallel NEs for batch mode (ignored for single-NE).",
+                },
+                "async": {
+                    "type": "boolean",
+                    "description": (
+                        "oclaw-only: true=background job_id + get_ne_exec_job; "
+                        "false=force sync; omit=auto for large batches (~4+ NEs)."
+                    ),
                 },
             },
             "required": [],
