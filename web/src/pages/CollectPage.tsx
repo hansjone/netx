@@ -610,27 +610,27 @@ export function CollectPage() {
           </button>
         </div>
 
-        <div className="filter-inline" style={{ marginTop: 12 }}>
-          <label className="config-sync-policy-field" style={{ flex: 1 }}>
-            <span>{t("collect.form.jobTitle")}</span>
+        <div className="form-grid form-grid--single" style={{ marginTop: 12 }}>
+          <label className="form-grid__full">
+            {t("collect.form.jobTitle")}
             <input
               value={policyTitle}
               placeholder={t("collect.form.jobTitlePh")}
               onChange={(e) => setPolicyTitle(e.target.value)}
             />
           </label>
+          <label className="form-grid__full">
+            {t("collect.form.commands")}
+            <textarea
+              className="collect-commands"
+              rows={5}
+              value={policyCommands}
+              placeholder={t("collect.form.commandsPh")}
+              onChange={(e) => setPolicyCommands(e.target.value)}
+            />
+          </label>
         </div>
-        <label className="config-sync-policy-field" style={{ display: "block", marginTop: 12 }}>
-          <span>{t("collect.form.commands")}</span>
-          <textarea
-            rows={5}
-            value={policyCommands}
-            placeholder={t("collect.form.commandsPh")}
-            onChange={(e) => setPolicyCommands(e.target.value)}
-            style={{ width: "100%", fontFamily: "var(--font-mono, monospace)" }}
-          />
-          <span className="muted">{t("collect.form.commandsHint")}</span>
-        </label>
+        <p className="panel__hint">{t("collect.form.commandsHint")}</p>
 
         {policyScopeMode === "selected" ? (
           <div style={{ marginTop: 12 }}>
