@@ -108,9 +108,27 @@ class WebcrtServiceTests(unittest.TestCase):
         self.assertTrue(svc._looks_like_cli_prompt("<r1>"))
         # Stray ':' after Huawei prompt must still count as prompted (no extra Enter).
         self.assertTrue(svc._looks_like_cli_prompt("<r1>:"))
+        self.assertTrue(svc._looks_like_cli_prompt("<r1>N"))
+        # Trailing [netx] progress lines must not hide an already-visible CLI prompt.
+        self.assertTrue(svc._looks_like_cli_prompt("<HW>\r\n[netx] password-change → N\r\n"))
         self.assertEqual(svc.prepare_bootstrap_output("banner\n<r1>:"), "banner\n<r1>")
         self.assertTrue(svc._looks_like_password_change_prompt("Change now? [Y/N]:"))
         self.assertFalse(svc._looks_like_password_change_prompt("Change now? [Y/N]:N"))
+        # Still pending only while sitting on Change-now with no answer/prompt after.
+        self.assertTrue(svc._password_change_still_pending("Change now? [Y/N]:"))
+        # Netmiko already sent N — do not send a second N (would become <r1>N).
+        self.assertFalse(
+            svc._password_change_still_pending(
+                "Change now? [Y/N]:\nN\nInfo: VTY\n<r1>"
+            )
+        )
+        self.assertFalse(svc._password_change_still_pending("Change now? [Y/N]:\nN"))
+        self.assertFalse(
+            svc._password_change_still_pending(
+                "The password needs to be changed. Change now? [Y/N]:\n"
+                "Info: The max number of VTY users is 5\n<r1>"
+            )
+        )
         # Bare / stelnet host-key [Y/N] must not be treated as password-change.
         self.assertFalse(svc._looks_like_password_change_prompt("[Y/N]:"))
         self.assertFalse(
@@ -173,9 +191,10 @@ class WebcrtServiceTests(unittest.TestCase):
         )
         sess = svc.get_session(out["session_id"])
         assert sess is not None
-        boot = sess.bootstrap_output.decode("utf-8", errors="replace")
-        self.assertIn("****", boot)
-        self.assertIn("R2#", boot)
+        # Live connect-echo owns the login transcript (bootstrap stays empty to avoid double play).
+        echo = sess.connect_echo_text()
+        self.assertIn("****", echo)
+        self.assertIn("R2#", echo)
         svc.close_session(out["session_id"], reason="test")
 
     @patch.object(reg, "_audit")
@@ -318,9 +337,9 @@ class WebcrtServiceTests(unittest.TestCase):
         self.assertFalse(out.get("cli_hop"))  # bastion hop is not vendor CLI hop guard
         sess = svc.get_session(out["session_id"])
         assert sess is not None
-        boot = sess.bootstrap_output.decode("utf-8", errors="replace")
-        self.assertIn("Username:huawei", boot)
-        self.assertIn("<r1>", boot)
+        echo = sess.connect_echo_text()
+        self.assertIn("Username:huawei", echo)
+        self.assertIn("<r1>", echo)
         self.assertFalse(sess.needs_live_prompt)
         before = list(fake.written)
         sess.write_stdin("\n")

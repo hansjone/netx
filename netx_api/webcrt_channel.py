@@ -128,25 +128,48 @@ def _session_log_text(buf: io.BytesIO | None) -> str:
     return str(raw or "")
 
 
-def _looks_like_cli_prompt(text: str) -> bool:
-    s = str(text or "").rstrip()
-    if not s:
+def _cli_prompt_candidate_lines(text: str) -> list[str]:
+    """Non-empty transcript lines, stripping ANSI and ignoring trailing ``[netx]`` markers."""
+    s = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    s = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", s)
+    lines = [ln.strip() for ln in s.split("\n") if ln.strip()]
+    while lines and lines[-1].startswith("[netx]"):
+        lines.pop()
+    return lines
+
+
+def _line_looks_like_cli_prompt(line: str) -> bool:
+    last = str(line or "").strip()
+    if not last:
         return False
-    # Buffer races can leave a stray ':' after Huawei ``<r1>`` (from prior ``[Y/N]:``).
-    if s.endswith(":") and ">" in s:
-        s = s[:-1].rstrip()
-    # Common network CLI prompts: <r1>  [HUAWEI]  Router#  Router>
-    return bool(re.search(r"(?:[>\]]|#)\s*$", s)) or bool(re.search(r"<[^>\r\n]+>\s*$", s))
+    # Buffer races: ``<r1>:`` (stray from [Y/N]:) or ``<r1>N`` (password-change answer glued).
+    if last.endswith(":") and (">" in last or "]" in last):
+        last = last[:-1].rstrip()
+    if len(last) >= 2 and last[-1] in "NYny" and (last[-2] in ">]" or last.endswith(">")):
+        # ``<r1>N`` / ``[HW]Y`` after Change-now answer — treat as prompted.
+        last = last[:-1].rstrip()
+    return bool(re.search(r"(?:[>\]]|#)\s*$", last)) or bool(re.search(r"<[^>\r\n]+>\s*$", last))
+
+
+def _looks_like_cli_prompt(text: str) -> bool:
+    lines = _cli_prompt_candidate_lines(text)
+    if not lines:
+        return False
+    return _line_looks_like_cli_prompt(lines[-1])
 
 
 def _looks_like_login_prompt(text: str) -> bool:
     """True when the transcript ends at Username:/Login:/Password: (interactive auth)."""
-    s = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
-    lines = [ln.strip() for ln in s.split("\n") if ln.strip()]
+    lines = _cli_prompt_candidate_lines(text)
     if not lines:
         return False
     last = lines[-1]
     return bool(re.search(r"(?i)(user\s*name|login|password)\s*:\s*$", last))
+
+
+_PASSWORD_CHANGE_LINE_RE = re.compile(
+    r"(?i)(change\s*now|please\s*choose|password\s+needs\s+to\s+be\s+changed).{0,80}:\s*$"
+)
 
 
 def _looks_like_password_change_prompt(text: str) -> bool:
@@ -155,17 +178,40 @@ def _looks_like_password_change_prompt(text: str) -> bool:
     Do not match bare ``[Y/N]:`` — stelnet host-key trust prompts share that suffix
     and are answered in ``_interactive_target_auth``, not by skipping Enter here.
     """
-    s = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
-    lines = [ln.strip() for ln in s.split("\n") if ln.strip()]
+    lines = _cli_prompt_candidate_lines(text)
     if not lines:
         return False
-    last = lines[-1]
-    return bool(
-        re.search(
-            r"(?i)(change\s*now|please\s*choose|password\s+needs\s+to\s+be\s+changed).{0,80}:\s*$",
-            last,
-        )
-    )
+    return bool(_PASSWORD_CHANGE_LINE_RE.search(lines[-1]))
+
+
+def _password_change_still_pending(text: str) -> bool:
+    """True only when Change-now is still awaiting an answer.
+
+    Netmiko ``HuaweiTelnet.telnet_login`` often already sent ``N`` before WebCRT
+    ``_finish_connect`` runs. Re-sending ``N`` lands as a command on ``<r1>``.
+    Treat a lone ``N``/``Y`` echo (or a later CLI prompt) as already answered.
+    """
+    lines = _cli_prompt_candidate_lines(text)
+    if not lines:
+        return False
+    last_change = -1
+    for i, ln in enumerate(lines):
+        if _PASSWORD_CHANGE_LINE_RE.search(ln):
+            last_change = i
+    if last_change < 0:
+        return False
+    after = lines[last_change + 1 :]
+    if not after:
+        # Still sitting on Change now? [Y/N]:
+        return True
+    if any(_line_looks_like_cli_prompt(ln) for ln in after):
+        return False
+    # Device already echoed N/Y from Netmiko (or a prior answer) — do not send again.
+    if any(ln.strip().upper() in {"N", "Y"} for ln in after):
+        return False
+    # Banner / last-login text after Change-now without a prompt yet: Netmiko may still
+    # be draining; do not inject a second N (would race onto the prompt).
+    return False
 
 
 # Cisco/Netmiko often yields "R2#R2#" when a sync Enter is appended without a newline.

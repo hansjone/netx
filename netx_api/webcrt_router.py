@@ -464,6 +464,7 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
         loop = asyncio.get_running_loop()
         budget = max(30, int(settings.webcrt_connect_timeout_sec or 90)) + 15
         deadline = time.time() + budget
+        early_stdin: list[str] = []
 
         async def _flush_connect_echo(cur_sess: Any) -> None:
             try:
@@ -480,6 +481,50 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
                     await websocket.send_json({"type": "stdout", "data": text})
                 except Exception:
                     return
+
+        async def _drain_client_during_connect() -> bool:
+            """Handle ping/stdin/resize while connect runs. False = client gone."""
+            nonlocal early_stdin
+            while True:
+                try:
+                    msg_raw = await asyncio.wait_for(websocket.receive(), timeout=0.01)
+                except asyncio.TimeoutError:
+                    return True
+                except Exception:
+                    return False
+                if msg_raw.get("type") == "websocket.disconnect":
+                    return False
+                raw = msg_raw.get("text")
+                if raw is None:
+                    # Binary frames during connect: treat as stdin if decodeable.
+                    if "bytes" in msg_raw and msg_raw["bytes"] is not None:
+                        try:
+                            early_stdin.append(
+                                _decode_bytes(bytes(msg_raw["bytes"]), sess.encoding)
+                            )
+                        except Exception:
+                            pass
+                    continue
+                try:
+                    msg = json.loads(raw)
+                except json.JSONDecodeError:
+                    early_stdin.append(str(raw))
+                    continue
+                mtype = str(msg.get("type") or "").strip().lower()
+                if mtype == "ping":
+                    try:
+                        await websocket.send_json({"type": "pong"})
+                    except Exception:
+                        return False
+                elif mtype == "stdin":
+                    data = msg.get("data")
+                    if data is not None:
+                        early_stdin.append(str(data))
+                elif mtype == "resize":
+                    # Ignore until ready (PTY size already set from create).
+                    pass
+                elif mtype == "close":
+                    return False
 
         while True:
             cur = get_session(session_id) or sess
@@ -505,6 +550,14 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
                 # Client dropped during connect wait (StrictMode remount etc.) — keep PTY.
                 return
             await _flush_connect_echo(cur)
+            if not await _drain_client_during_connect():
+                return
+            # If connect finished while we drained client frames, exit promptly.
+            cur = get_session(session_id) or sess
+            if cur.state != "connecting":
+                await _flush_connect_echo(cur)
+                sess = cur
+                break
             remaining = deadline - time.time()
             if remaining <= 0:
                 await websocket.send_json(
@@ -512,7 +565,7 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
                 )
                 await websocket.close(code=4502)
                 return
-            slice_timeout = min(0.35, max(0.15, remaining))
+            slice_timeout = min(0.25, max(0.12, remaining))
             try:
                 await loop.run_in_executor(
                     webcrt_io_executor(),
@@ -545,6 +598,18 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
                 await websocket.close(code=4502)
                 return
 
+        # Keystrokes typed while login was already on screen (before ready).
+        if early_stdin and sess is not None and not sess.closed and sess.conn is not None:
+            try:
+                await loop.run_in_executor(
+                    webcrt_io_executor(),
+                    sess.write_stdin,
+                    "".join(early_stdin),
+                )
+            except Exception:
+                _log.debug(
+                    "webcrt early stdin flush failed session=%s", session_id, exc_info=True
+                )
     # Session may have been deleted while the previous wait loop was exiting.
     if get_session(session_id) is None or sess.closed or sess.state in {"closed", "error"}:
         if sess.state == "error":
@@ -559,6 +624,21 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
             except Exception:
                 pass
         return
+
+    # Drain any leftover connect-echo (e.g. WS attached after connect already ready).
+    try:
+        leftover_echo = sess.drain_connect_echo()
+    except Exception:
+        leftover_echo = ""
+    if leftover_echo:
+        raw = _encode_text(leftover_echo, getattr(sess, "encoding", None) or "utf-8")
+        try:
+            await websocket.send_bytes(raw)
+        except Exception:
+            try:
+                await websocket.send_json({"type": "stdout", "data": leftover_echo})
+            except Exception:
+                pass
 
     await websocket.send_json(
         {

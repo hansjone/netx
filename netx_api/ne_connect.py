@@ -194,6 +194,11 @@ def _classify_connect_error(creds: dict[str, Any], exc: BaseException) -> str:
             return "target_auth_failed: " + detail
         if "timed out" in raw or "timeout" in raw or "hop_connect_failed" in raw:
             return "hop_connect_failed: " + detail
+        if "no existing session" in raw:
+            return (
+                "hop_connect_failed: SSH handshake dropped (often hop VTY/session limit "
+                "or concurrent WebCRT). Close spare terminals and retry. " + detail
+            )
         if hop_v in ("linux", "bastion"):
             if "vault" in raw or "bastion" in raw:
                 return "bastion_auth_failed: " + detail
@@ -247,7 +252,15 @@ def _probe_device(creds: dict[str, Any]) -> tuple[str, str, str | None, str]:
     session_timeout = 180 if creds.get("hop_enabled") else None
     conn = None
     try:
-        conn = open_netmiko_connection(creds, session_timeout=session_timeout)
+        # CLI hop (Huawei/ZTE/Cisco): use interactive driver so Change-now / prompt
+        # waits match WebCRT (stock Netmiko ``[\]>]`` matches ``[Y/N]`` and breaks hop login).
+        hop_v = str(creds.get("hop_vendor") or "").strip().lower()
+        use_interactive = bool(creds.get("hop_enabled")) and hop_v not in ("linux", "bastion", "")
+        conn = open_netmiko_connection(
+            creds,
+            session_timeout=session_timeout,
+            interactive=use_interactive,
+        )
         prompt = str(conn.find_prompt() or "")
         command = hostname_probe_command(creds["device_type"], vendor)
         output = ""

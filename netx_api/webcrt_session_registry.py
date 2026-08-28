@@ -4,6 +4,7 @@ from __future__ import annotations
 import io
 import logging
 import queue
+import re
 import threading
 import time
 import uuid
@@ -29,7 +30,7 @@ from .webcrt_channel import (
     _is_prompt_only_echo,
     _looks_like_cli_prompt,
     _looks_like_login_prompt,
-    _looks_like_password_change_prompt,
+    _password_change_still_pending,
     _normalize_encoding,
     _prime_interactive_channel,
     _session_log_text,
@@ -278,53 +279,97 @@ def _finish_connect(
     pre_log = _session_log_text(log_buf)
     # Pull post-auth banner/MOTD from the PTY. With interactive no-op session_preparation
     # (generic_termserver), Netmiko session_log is often empty — do not discard these bytes.
+    # Keep this short: live echo already streamed login; long settle blocks WS stdin.
     try:
-        early = _capture_raw_channel(conn, duration=0.35)
+        early = _capture_raw_channel(conn, duration=0.2)
     except Exception:
         early = ""
     if early:
         sess.push_connect_echo(early)
     seed = f"{pre_log}{early}"
     already_prompted = _looks_like_cli_prompt(seed) or _looks_like_cli_prompt(pre_log)
+    saw_password_change = bool(
+        re.search(
+            r"(?i)(change\s*now|please\s*choose|password\s+needs\s+to\s+be\s+changed).{0,80}:",
+            seed,
+        )
+    )
     primed = ""
-    # Auto-answer Huawei post-login password-change only if still sitting on the prompt
-    # (Netmiko telnet_login usually already answered N — do not send a second N/Enter).
-    if _looks_like_password_change_prompt(seed) and not already_prompted:
+    # Huawei Telnet/SSH interactive drivers already answer Change-now during login.
+    # Never send a second N here — it lands as ``<r1>N`` / Unrecognized command.
+    netmiko_handles_pw_change = any(
+        getattr(c, "__name__", "") in {"HuaweiTelnet", "HuaweiSSH", "HuaweiVrpv8SSH"}
+        for c in type(conn).__mro__
+    )
+    if (
+        (not netmiko_handles_pw_change)
+        and _password_change_still_pending(seed)
+        and not already_prompted
+    ):
+        # Brief peek — another path may have answered while session_log still ends on Change-now.
         try:
-            conn.write_channel("N" + (getattr(conn, "RETURN", None) or "\n"))
-            sess.push_connect_echo("\r\n[netx] password-change → N\r\n")
-            primed = _capture_raw_channel(conn, duration=0.9)
-            if primed:
-                sess.push_connect_echo(primed)
+            peek = _capture_raw_channel(conn, duration=0.35)
         except Exception:
-            primed = ""
+            peek = ""
+        if peek:
+            sess.push_connect_echo(peek)
+            seed = f"{seed}{peek}"
+            already_prompted = _looks_like_cli_prompt(seed)
+        if _password_change_still_pending(seed) and not already_prompted:
+            try:
+                conn.write_channel("N" + (getattr(conn, "RETURN", None) or "\n"))
+                sess.push_connect_echo("\r\n[netx] password-change → N\r\n")
+                primed = _capture_raw_channel(conn, duration=0.6)
+                if primed:
+                    sess.push_connect_echo(primed)
+            except Exception:
+                primed = ""
     elif _looks_like_login_prompt(seed):
         # Do not send Enter at Username:/Password: (would empty-submit login).
         try:
-            primed = _capture_raw_channel(conn, duration=0.9)
+            primed = _capture_raw_channel(conn, duration=0.45)
             if primed:
                 sess.push_connect_echo(primed)
         except Exception:
             primed = ""
-    else:
+    elif not already_prompted and not saw_password_change:
+        # Only nudge Enter when we do not already have a CLI prompt (avoids duplicate
+        # prompts and delays ready while the user can already see login via live echo).
+        # After Huawei Change-now, Netmiko already drove login — Enter here reorders MOTD.
         try:
-            primed = _prime_interactive_channel(conn, already_prompted=already_prompted)
+            primed = _prime_interactive_channel(conn, already_prompted=False)
+            if primed:
+                sess.push_connect_echo(primed)
+        except Exception:
+            primed = ""
+    elif not already_prompted and saw_password_change:
+        # Drain MOTD/prompt only — never Enter (would glue onto <r1> or reprint prompt).
+        try:
+            primed = _capture_raw_channel(conn, duration=0.45)
             if primed:
                 sess.push_connect_echo(primed)
         except Exception:
             primed = ""
     combined = f"{seed}{primed}"
-    # Final settle: keep stragglers (normalize collapses duplicate prompts when bootstrapping).
+    # Brief settle only — do not burn seconds here while the terminal shows a prompt.
+    settle_sec = 0.12 if already_prompted or _looks_like_cli_prompt(combined) else 0.3
     try:
-        more = _capture_raw_channel(conn, duration=0.35)
+        more = _capture_raw_channel(conn, duration=settle_sec)
         if more:
-            sess.push_connect_echo(more)
-            combined += more
+            # Drop a second ``<r1>`` that often races in after password-change login.
+            hint = ""
+            for ln in reversed(str(combined).replace("\r\n", "\n").split("\n")):
+                if _looks_like_cli_prompt(ln):
+                    hint = ln.strip()
+                    break
+            if not (hint and _is_prompt_only_echo(more, hint)):
+                sess.push_connect_echo(more)
+                combined += more
     except Exception:
         pass
     if not str(combined).strip():
         try:
-            combined = _drain_channel(conn, rounds=6, wait=0.08)
+            combined = _drain_channel(conn, rounds=4, wait=0.06)
             if combined:
                 sess.push_connect_echo(combined)
         except Exception:
@@ -334,22 +379,38 @@ def _finish_connect(
     # Replaying prepare_bootstrap_output(combined) caused a full duplicate login.
     echoed = sess.connect_echo_text()
     bootstrap = ""
+    # Prefer last real prompt line as hint so we can drop duplicate prompt leftovers.
+    prompt_hint = ""
+    if echoed or combined:
+        for ln in reversed(
+            str(echoed or combined).replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        ):
+            if _looks_like_cli_prompt(ln):
+                prompt_hint = ln.strip()
+                break
     if not echoed.strip():
         bootstrap = prepare_bootstrap_output(combined)
         try:
-            leftover = _capture_raw_channel(conn, duration=0.12)
+            leftover = _capture_raw_channel(conn, duration=0.1)
         except Exception:
             leftover = ""
-        if leftover and leftover.strip() not in {":", ">", "#", "]", "$"}:
+        if (
+            leftover
+            and leftover.strip() not in {":", ">", "#", "]", "$"}
+            and not _is_prompt_only_echo(leftover, prompt_hint)
+        ):
             sess.push_connect_echo(leftover)
             bootstrap = prepare_bootstrap_output(f"{bootstrap}{leftover}")
     else:
-        # Optional unseen tail only (already pushed to connect-echo above when present).
         try:
-            leftover = _capture_raw_channel(conn, duration=0.12)
+            leftover = _capture_raw_channel(conn, duration=0.08)
         except Exception:
             leftover = ""
-        if leftover and leftover.strip() not in {":", ">", "#", "]", "$"}:
+        if (
+            leftover
+            and leftover.strip() not in {":", ">", "#", "]", "$"}
+            and not _is_prompt_only_echo(leftover, prompt_hint)
+        ):
             sess.push_connect_echo(leftover)
 
     hop_guard = get_cli_hop_guard(conn)
@@ -360,8 +421,11 @@ def _finish_connect(
     # Nudge Enter on WS attach only when we still need a shell prompt.
     # Never when already at CLI prompt or Username:/Password: (would empty-submit login).
     final_view = echoed or bootstrap
+    # After Huawei Change-now, never send a sync Enter on WS attach (reorders MOTD / glues N).
     sess.needs_live_prompt = (
-        not _looks_like_cli_prompt(final_view) and not _looks_like_login_prompt(final_view)
+        not saw_password_change
+        and not _looks_like_cli_prompt(final_view)
+        and not _looks_like_login_prompt(final_view)
     )
     sess.open_session_log()
     log_seed = echoed or bootstrap
@@ -369,10 +433,9 @@ def _finish_connect(
         sess.append_session_log(log_seed if str(log_seed).endswith("\n") else str(log_seed) + "\n")
     sess.start_reader()
     # Drop late prompt echoes that race into the queue right after reader start.
-    prompt_hint = ""
-    if final_view:
+    if not prompt_hint and final_view:
         prompt_hint = str(final_view).replace("\r\n", "\n").replace("\r", "\n").strip().split("\n")[-1].strip()
-    settle_deadline = time.time() + 0.45
+    settle_deadline = time.time() + (0.2 if already_prompted or saw_password_change else 0.35)
     while time.time() < settle_deadline:
         try:
             chunk = sess.out_queue.get_nowait()
@@ -395,12 +458,39 @@ def _finish_connect(
         sess.run_post_login_commands()
     except Exception:
         _log.debug("post_login failed session=%s", sess.session_id, exc_info=True)
-    # Same SSH transport: open SFTP channel when the device supports it.
-    sftp_ok = sess.try_attach_sftp()
+
+    # Mark ready BEFORE SFTP. Opening an SFTP channel on some Huawei SSH boxes can
+    # block for a long time; meanwhile live echo already showed login and the WS
+    # wait loop still rejects stdin — looks like "logged in but cannot type", then
+    # connect_timeout / proxy 1011.
     sess.state = "ready"
     sess.connect_finished_at = time.time()
     sess._ready_event.set()
     elapsed_ms = int((sess.connect_finished_at - sess.connect_started_at) * 1000)
+
+    def _probe_sftp() -> None:
+        try:
+            ok = bool(sess.try_attach_sftp())
+            if ok:
+                _audit(
+                    "session_sftp_ready",
+                    session_id=sess.session_id,
+                    ne_id=sess.ne_id,
+                    ne_ip=sess.ne_ip,
+                    client=client or "",
+                )
+        except Exception:
+            _log.debug("deferred sftp probe failed session=%s", sess.session_id, exc_info=True)
+
+    if str(sess.protocol or "ssh").lower() == "ssh" and not hop_guard:
+        threading.Thread(
+            target=_probe_sftp,
+            name=f"webcrt-sftp-{sess.session_id[:8]}",
+            daemon=True,
+        ).start()
+    else:
+        sess.sftp_ready = False
+
     _audit(
         "session_created",
         session_id=sess.session_id,
@@ -414,7 +504,7 @@ def _finish_connect(
         hop_vendor=str(creds.get("hop_vendor") or "") if creds.get("hop_enabled") else "",
         cli_hop_guard=bool(hop_guard),
         cli_hop_prompt=str((hop_guard or {}).get("hop_prompt") or ""),
-        sftp_ready=bool(sftp_ok),
+        sftp_ready=bool(sess.sftp_ready),
         client=client or "",
         connect_ms=elapsed_ms,
         active=active_session_count(),

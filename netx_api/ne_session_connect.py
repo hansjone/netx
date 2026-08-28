@@ -142,12 +142,17 @@ def _netmiko_driver_class(device_type: str) -> type:
 def _interactive_driver_class(base_cls: type) -> type:
     """Subclass for WebCRT: raw interactive PTY after transport auth (SecureCRT-like).
 
-    Skips Netmiko session prep (prompt discovery, terminal length/width, force RETURN)
-    and Huawei ``special_login_handler`` (read_until prompt / password-change). Those
-    waits are why WebCRT stuck on ``waiting_prompt`` while connectivity probes succeed:
-    collection still runs full Netmiko login; WebCRT must leave the PTY for live echo
-    and hop secondary auth instead.
+    Skips Netmiko session prep (prompt discovery, terminal length/width, force RETURN).
+    Huawei password-change is handled with a *safe* prompt pattern (never bare ``]``,
+    which matches ``[Y/N]`` and scrambles login).
     """
+
+    _REAL_PROMPT = r"(?:<[^>\r\n]{1,64}>|\[[^\]\r\n]{1,64}\])"
+    _mro_names = {getattr(c, "__name__", "") for c in getattr(base_cls, "__mro__", ())}
+    _is_huawei_telnet = "HuaweiTelnet" in _mro_names or getattr(base_cls, "__name__", "") == "HuaweiTelnet"
+    _is_huawei_ssh = bool(_mro_names & {"HuaweiSSH", "HuaweiVrpv8SSH"}) or getattr(
+        base_cls, "__name__", ""
+    ) in {"HuaweiSSH", "HuaweiVrpv8SSH"}
 
     class _InteractiveSession(base_cls):  # type: ignore[misc,valid-type]
         def disable_paging(self, *args: Any, **kwargs: Any) -> str:  # noqa: ANN401
@@ -160,7 +165,35 @@ def _interactive_driver_class(base_cls: type) -> type:
             return None
 
         def special_login_handler(self, delay_factor: float = 1.0) -> None:  # noqa: ARG002
-            return None
+            # Non-Huawei: leave the PTY alone (SecureCRT-like).
+            if not (_is_huawei_ssh or hasattr(self, "password_change_prompt")):
+                return
+            if _is_huawei_telnet:
+                # Telnet answers Change-now inside telnet_login (below).
+                return
+            if not _is_huawei_ssh:
+                return
+            import re as _re
+
+            # Huawei SSH: answer Change-now, wait for real ``<sysname>`` / ``[sysname]``.
+            # Do NOT use stock ``[\]>]`` — it matches ``]`` in ``[Y/N]``.
+            wait_pat = rf"(?:Change now|Please choose|{_REAL_PROMPT})"
+            data = self.read_until_pattern(pattern=wait_pat)
+            if _re.search(r"(?:Change now|Please choose)", data):
+                self.write_channel("N" + self.RETURN)
+                self.read_until_pattern(pattern=_REAL_PROMPT)
+            # Optional "security risks in the configuration file" (stock HuaweiSSH).
+            if _re.search(
+                r"security\srisks\sin\sthe\sconfiguration\sfile.*\[y\/n\]",
+                data,
+                flags=_re.I,
+            ):
+                try:
+                    self.send_command("Y", expect_string=r"(?i)continue.*\[y\/n\]")
+                    self.send_command("Y", expect_string=r"saved\ssuccessfully", read_timeout=60)
+                    self.read_until_pattern(pattern=_REAL_PROMPT)
+                except Exception:
+                    pass
 
         def _try_session_preparation(self, force_data: bool = True) -> None:  # noqa: FBT001, FBT002
             del force_data
@@ -169,6 +202,55 @@ def _interactive_driver_class(base_cls: type) -> type:
             except Exception:
                 self.disconnect()
                 raise
+
+    # Huawei Telnet: stock prompt_pattern ``[\]>]`` matches the ``]`` inside
+    # ``Change now? [Y/N]:``, so after sending N Netmiko can return before the
+    # Info banner / real ``<r1>`` — live echo then looks like ``<r1>N`` + late MOTD.
+    if _is_huawei_telnet:
+        def telnet_login(  # type: ignore[no-redef]
+            self,
+            pri_prompt_terminator: str = r"",
+            alt_prompt_terminator: str = r"",
+            username_pattern: str = r"(?:user:|username|login|user name)",
+            pwd_pattern: str = r"assword",
+            delay_factor: float = 1.0,
+            max_loops: int = 20,
+        ) -> str:
+            import re as _re
+
+            from netmiko.exceptions import NetmikoAuthenticationException
+
+            del pri_prompt_terminator, alt_prompt_terminator, delay_factor, max_loops
+            output = ""
+            return_msg = ""
+            try:
+                output = self.read_until_pattern(pattern=username_pattern, re_flags=_re.I)
+                return_msg += output
+                self.write_channel(self.username + self.TELNET_RETURN)
+
+                output = self.read_until_pattern(pattern=pwd_pattern, re_flags=_re.I)
+                return_msg += output
+                assert self.password is not None
+                self.write_channel(self.password + "\r")
+
+                wait_pat = rf"(?:Change now|Please choose|{_REAL_PROMPT})"
+                output = self.read_until_pattern(pattern=wait_pat)
+                return_msg += output
+
+                if _re.search(r"(?:Change now|Please choose)", output):
+                    self.write_channel("N" + self.TELNET_RETURN)
+                    output = self.read_until_pattern(pattern=_REAL_PROMPT)
+                    return_msg += output
+                    return return_msg
+                if _re.search(_REAL_PROMPT, output):
+                    return return_msg
+                raise EOFError
+            except EOFError:
+                assert self.remote_conn is not None
+                self.remote_conn.close()
+                raise NetmikoAuthenticationException(f"Login failed: {self.host}")
+
+        _InteractiveSession.telnet_login = telnet_login  # type: ignore[method-assign]
 
     _InteractiveSession.__name__ = f"Interactive{getattr(base_cls, '__name__', 'Netmiko')}"
     return _InteractiveSession
@@ -367,6 +449,9 @@ def _base_connect_kwargs(
     keepalive: int | None = None,
 ) -> dict[str, Any]:
     timeout = int(settings.ne_connect_timeout_sec or 30)
+    # Hop / long session_timeout paths need a roomier SSH handshake (busy VTY / MOTD).
+    if session_timeout is not None:
+        timeout = max(timeout, min(int(session_timeout), 60))
     dev: dict[str, Any] = {
         "device_type": device_type,
         "host": host,
@@ -538,14 +623,41 @@ def _looks_like_target_cli_prompt(text: str) -> bool:
     return bool(re.search(r"(?:[>#\]])\s*$", tail)) or bool(re.search(r"^<[^>\r\n]+>\s*$", tail))
 
 
+def _looks_like_password_change_prompt(text: str) -> bool:
+    """Huawei/VRP ``Change now? [Y/N]:`` after successful password (not host-key)."""
+    tail = _auth_prompt_tail(text, lines=2)
+    if not tail:
+        return False
+    return bool(
+        re.search(
+            r"(?i)(change\s*now|please\s*choose|password\s+needs\s+to\s+be\s+changed).{0,80}:\s*$",
+            tail,
+        )
+    )
+
+
+def _saw_huawei_last_login(text: str) -> bool:
+    return bool(
+        re.search(
+            r"(?is)(?:user\s+last\s+login\s+information|last\s+login\s+time|上次登录)",
+            str(text or ""),
+        )
+    )
+
+
 def _interactive_target_auth(
     conn: ConnectHandler,
     username: str,
     password: str,
     *,
     progress_cb: Any = None,
+    emit_raw: bool = True,
 ) -> None:
-    """Respond to username/password (and Huawei stelnet host-key) prompts after hop command."""
+    """Respond to username/password (and Huawei stelnet host-key) prompts after hop command.
+
+    When ``emit_raw`` is False, device bytes are assumed to already reach the UI via
+    ``session_log`` ProgressBytesIO — only emit ``[netx]`` markers (avoids doubled echo).
+    """
     from .ne_cli_errors import find_auth_failure_snippet
 
     # Hop stelnet can show Trying/Connected + two [Y/N] before password; keep budget generous.
@@ -554,13 +666,15 @@ def _interactive_target_auth(
     sent_pass = False
     answered_continue = False
     answered_save_key = False
+    answered_pw_change = False
     empty_after_pass = 0
     acc = ""
     while time.time() < deadline:
         buf = _read_channel(conn, wait=0.12, max_loops=12)
         if buf:
             acc += buf
-            _emit_progress(progress_cb, buf)
+            if emit_raw:
+                _emit_progress(progress_cb, buf)
             denied = find_auth_failure_snippet(acc)
             if denied:
                 raise paramiko.AuthenticationException(f"target_auth_rejected: {denied}")
@@ -576,6 +690,15 @@ def _interactive_target_auth(
             _emit_progress(progress_cb, "\r\n[netx] save public key → N\r\n")
             _send_line(conn, "N")
             answered_save_key = True
+            continue
+
+        # Post-auth password-change must be answered or auth loops until timeout while
+        # the terminal already shows a near-login state (live echo) and stdin is blocked.
+        if sent_pass and not answered_pw_change and _looks_like_password_change_prompt(acc):
+            _emit_progress(progress_cb, "\r\n[netx] password-change → N\r\n")
+            _send_line(conn, "N")
+            answered_pw_change = True
+            empty_after_pass = 0
             continue
 
         need_user, need_pass = _prompt_needs_auth(acc)
@@ -597,15 +720,20 @@ def _interactive_target_auth(
                 raise paramiko.AuthenticationException(f"target_auth_rejected: {denied}")
             if _looks_like_target_cli_prompt(acc):
                 return
+            # Last-login banner already printed — hand off quickly even if prompt parse lags.
+            if _saw_huawei_last_login(acc) and empty_after_pass >= 1:
+                return
             # Do not treat a single empty read right after password as success —
             # Huawei still prints last-login banner / prompt.
             if not buf.strip():
                 empty_after_pass += 1
-                if empty_after_pass >= 4:
+                # Faster handoff: live echo already shows login; WS cannot accept stdin
+                # until open_netmiko_connection returns.
+                if empty_after_pass >= (2 if _saw_huawei_last_login(acc) else 3):
                     return
             else:
                 empty_after_pass = 0
-            time.sleep(0.15)
+            time.sleep(0.12)
             continue
 
         if not buf.strip():
@@ -702,13 +830,16 @@ def _connect_via_cli_hop(
         keepalive=keepalive,
     )
     _emit_progress(progress_cb, f"\r\n[netx] connecting hop {_hop_vendor(creds)} {hop_host}…\r\n")
+    # WebCRT passes ProgressBytesIO(session_log) that already tees device bytes to progress_cb.
+    # Re-emitting the same reads doubles every line (stelnet, Y/N, MOTD, prompts).
+    teed = isinstance(session_log, _ProgressBytesIO)
     conn = _build_netmiko_connection(hop_dev, interactive=interactive)
     try:
         # MUST resize before stelnet/telnet — nested session captures hop TTY size at start
         # and often ignores later WINCH. Wrong width → mid-line edit redraw wraps in WebCRT.
         _resize_pty(conn, cols, rows)
         pre = _read_channel(conn, wait=0.35)
-        if pre:
+        if pre and not teed:
             _emit_progress(progress_cb, pre)
         hop_prompt = extract_cli_prompt_marker(pre)
         if not hop_prompt:
@@ -718,7 +849,7 @@ def _connect_via_cli_hop(
             except Exception:
                 _send_line(conn, "")
             more = _read_channel(conn, wait=0.25, max_loops=12)
-            if more:
+            if more and not teed:
                 _emit_progress(progress_cb, more)
             pre = pre + more
             hop_prompt = extract_cli_prompt_marker(pre)
@@ -728,7 +859,8 @@ def _connect_via_cli_hop(
             for _ in range(6):
                 more = _read_channel(conn, wait=0.3, max_loops=10)
                 if more:
-                    _emit_progress(progress_cb, more)
+                    if not teed:
+                        _emit_progress(progress_cb, more)
                     pre += more
                     hop_prompt = extract_cli_prompt_marker(pre)
                     if hop_prompt:
@@ -741,6 +873,7 @@ def _connect_via_cli_hop(
             str(creds["username"]),
             str(creds["password"]),
             progress_cb=progress_cb,
+            emit_raw=not teed,
         )
         _attach_cli_hop_guard(
             conn,
@@ -776,10 +909,11 @@ def _maybe_secondary_target_auth(
     *,
     progress_cb: Any = None,
     force: bool = False,
+    emit_raw: bool = True,
 ) -> None:
     """Run interactive target auth when the PTY still shows login / host-key prompts."""
     peek = _read_channel(conn, wait=0.45, max_loops=14)
-    if peek:
+    if peek and emit_raw:
         _emit_progress(progress_cb, peek)
     need_user, need_pass = _prompt_needs_auth(peek)
     cont, save = _prompt_needs_host_key_confirm(peek)
@@ -796,7 +930,13 @@ def _maybe_secondary_target_auth(
     if not target_user and need_user:
         _emit_progress(progress_cb, "\r\n[netx] username prompt but target username empty\r\n")
         return
-    _interactive_target_auth(conn, target_user, target_pass, progress_cb=progress_cb)
+    _interactive_target_auth(
+        conn,
+        target_user,
+        target_pass,
+        progress_cb=progress_cb,
+        emit_raw=emit_raw,
+    )
 
 
 def _connect_via_bastion(
@@ -860,20 +1000,25 @@ def _connect_via_bastion(
         raise
 
     auth_mode = str(creds.get("hop_target_auth_mode") or "bastion_managed").strip().lower()
+    teed = isinstance(session_log, _ProgressBytesIO)
     try:
         if auth_mode == "manual":
             target_pass = str(creds.get("password") or "")
             if target_pass:
-                _maybe_secondary_target_auth(conn, creds, progress_cb=progress_cb, force=True)
+                _maybe_secondary_target_auth(
+                    conn, creds, progress_cb=progress_cb, force=True, emit_raw=not teed
+                )
             else:
                 # Still drain banner so WebCRT live echo shows what the proxy printed.
                 peek = _read_channel(conn, wait=0.4, max_loops=12)
-                if peek:
+                if peek and not teed:
                     _emit_progress(progress_cb, peek)
         else:
             # bastion_managed: normally no secondary auth, but if the proxy still presents
             # Username/Password or Huawei host-key prompts, answer them when creds exist.
-            _maybe_secondary_target_auth(conn, creds, progress_cb=progress_cb, force=False)
+            _maybe_secondary_target_auth(
+                conn, creds, progress_cb=progress_cb, force=False, emit_raw=not teed
+            )
     except Exception:
         try:
             conn.disconnect()
