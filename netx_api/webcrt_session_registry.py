@@ -19,6 +19,7 @@ from .ne_session_factory import (
     get_cli_hop_guard,
     open_netmiko_connection,
 )
+from .ne_session_connect import _ProgressBytesIO
 from .webcrt_channel import (
     _audit,
     _capture_raw_channel,
@@ -222,10 +223,11 @@ def _finish_connect(
     connect_timeout: int,
     client: str,
 ) -> None:
-    log_buf = io.BytesIO()
-
     def _progress(text: str) -> None:
         sess.push_connect_echo(text)
+
+    # Must be BufferedIOBase subclass — Netmiko rejects custom log wrappers.
+    log_buf = _ProgressBytesIO(_progress)
 
     try:
         conn = open_netmiko_connection(

@@ -14,6 +14,16 @@ from netx_api.ne_session_connect import (
 
 
 class PromptDetectTests(unittest.TestCase):
+    def test_progress_bytesio_is_netmiko_compatible(self) -> None:
+        import io
+
+        from netx_api.ne_session_connect import _ProgressBytesIO
+
+        buf = _ProgressBytesIO(lambda _t: None)
+        self.assertIsInstance(buf, io.BufferedIOBase)
+        # Plain custom log objects are what broke every WebCRT connect (ValueError).
+        self.assertFalse(isinstance(object(), io.BufferedIOBase))
+
     def test_huawei_username_and_password(self) -> None:
         self.assertEqual(
             _prompt_needs_auth("Please input the username:"),

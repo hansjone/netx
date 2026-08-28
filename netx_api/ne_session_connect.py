@@ -184,32 +184,41 @@ def _emit_progress(progress_cb: Any, text: str) -> None:
         _log.debug("connect progress_cb failed", exc_info=True)
 
 
-class _ProgressSessionLog:
-    """Tee Netmiko ``session_log`` writes into a progress callback + BytesIO."""
+class _ProgressBytesIO(io.BytesIO):
+    """BytesIO session_log that also tees reads into a connect-progress callback.
+
+    Netmiko only accepts ``io.BufferedIOBase`` (or path / SessionLog). A plain
+    custom log object raises ``ValueError`` and breaks every WebCRT connect.
+    """
 
     def __init__(self, progress_cb: Any = None) -> None:
-        self._buf = io.BytesIO()
+        super().__init__()
         self._progress_cb = progress_cb
-        self._lock = threading.Lock()
 
-    def write(self, data: Any) -> int:
-        if isinstance(data, bytes):
-            raw = data
-            text = data.decode("utf-8", errors="replace")
-        else:
-            text = str(data or "")
-            raw = text.encode("utf-8", errors="replace")
-        with self._lock:
-            self._buf.write(raw)
-        _emit_progress(self._progress_cb, text)
-        return len(raw)
+    def write(self, b: Any) -> int:  # noqa: ANN401
+        raw = b if isinstance(b, (bytes, bytearray)) else str(b or "").encode("utf-8", errors="replace")
+        if raw:
+            try:
+                _emit_progress(self._progress_cb, bytes(raw).decode("utf-8", errors="replace"))
+            except Exception:
+                pass
+        return super().write(raw)
+
+
+class _ProgressSessionLog:
+    """Deprecated alias kept for imports; prefer ``_ProgressBytesIO``."""
+
+    def __init__(self, progress_cb: Any = None) -> None:
+        self._buf = _ProgressBytesIO(progress_cb)
+
+    def write(self, data: Any) -> int:  # noqa: ANN401
+        return self._buf.write(data)
 
     def flush(self) -> None:
-        return None
+        self._buf.flush()
 
     def getvalue(self) -> bytes:
-        with self._lock:
-            return self._buf.getvalue()
+        return self._buf.getvalue()
 
 
 def _cisco_ios_collection_driver_class(base_cls: type) -> type:
@@ -979,35 +988,9 @@ def open_netmiko_connection(
     ka = keepalive
     if ka is None and interactive:
         ka = int(getattr(settings, "webcrt_keepalive_sec", 0) or 0) or None
+    # Never wrap session_log in a non-BufferedIOBase object — Netmiko rejects it
+    # with ValueError and every WebCRT session fails to open.
     log = session_log
-    if progress_cb is not None:
-        class _TeeLog(_ProgressSessionLog):
-            def write(self, data: Any) -> int:  # noqa: ANN401
-                n = super().write(data)
-                if session_log is None:
-                    return n
-                try:
-                    if isinstance(data, (bytes, bytearray)):
-                        session_log.write(data)
-                    else:
-                        session_log.write(str(data).encode("utf-8", errors="replace"))
-                except Exception:
-                    try:
-                        session_log.write(data)
-                    except Exception:
-                        pass
-                return n
-
-            def getvalue(self) -> bytes:
-                if session_log is not None and hasattr(session_log, "getvalue"):
-                    try:
-                        raw = session_log.getvalue()
-                        return raw if isinstance(raw, (bytes, bytearray)) else str(raw).encode()
-                    except Exception:
-                        pass
-                return super().getvalue()
-
-        log = _TeeLog(progress_cb)
     if creds.get("hop_enabled"):
         vendor = _hop_vendor(creds)
         if vendor == "linux":
