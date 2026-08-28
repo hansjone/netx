@@ -157,6 +157,18 @@ class LldpParserTests(unittest.TestCase):
         key, stub = lldp.parser_meta(vendor="Ericsson", device_type="ericsson_ipos")
         self.assertTrue(stub)
 
+    def test_pick_command_vendor_wins_on_dtype_conflict(self) -> None:
+        # Stale/default zte_zxros must not force ZTE LLDP on a Huawei-labeled NE.
+        self.assertEqual(
+            lldp.pick_neighbor_command(vendor="Huawei", device_type="zte_zxros")[0],
+            "display lldp neighbor",
+        )
+        self.assertEqual(lldp.resolve_vendor_key("Huawei", "zte_zxros"), "huawei")
+        self.assertEqual(
+            lldp.pick_neighbor_command(vendor="Huawei", device_type="huawei")[0],
+            "display lldp neighbor",
+        )
+
 
 class DeadlockHelperTests(unittest.TestCase):
     def test_is_deadlock_error_detects_pg_message(self) -> None:

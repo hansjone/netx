@@ -52,8 +52,11 @@ _DEVICE_TYPE_PREFIX_RULES: tuple[tuple[str, str], ...] = (
 _VENDOR_LABEL_TO_KEY: dict[str, str] = {
     "cisco": "cisco",
     "huawei": "huawei",
+    "华为": "huawei",
+    "hw": "huawei",
     "h3c": "h3c",
     "zte": "zte",
+    "中兴": "zte",
     "juniper": "juniper",
     "nokia": "nokia",
     "ericsson": "ericsson",
@@ -110,23 +113,49 @@ VENDOR_LLDP_PROFILES: dict[str, VendorLldpProfile] = {
 STUB_PARSER_KEYS = frozenset({"nokia", "ericsson", "generic"})
 
 
-def resolve_vendor_key(vendor: str = "", device_type: str = "") -> str:
-    """Map inventory device_type (preferred) or vendor label -> profile key."""
+def _key_from_device_type(device_type: str) -> str:
     dtype = str(device_type or "").strip().lower()
-    if dtype:
-        for prefix, key in _DEVICE_TYPE_PREFIX_RULES:
-            if dtype == prefix.rstrip("_") or dtype.startswith(prefix):
-                return key
-        if dtype in VENDOR_LLDP_PROFILES and dtype != "generic":
-            return dtype
+    if not dtype:
+        return ""
+    for prefix, key in _DEVICE_TYPE_PREFIX_RULES:
+        if dtype == prefix.rstrip("_") or dtype.startswith(prefix):
+            return key
+    if dtype in VENDOR_LLDP_PROFILES and dtype != "generic":
+        return dtype
+    return ""
 
+
+def _key_from_vendor_label(vendor: str) -> str:
     label = str(vendor or "").strip().lower()
-    if label:
-        if label in _VENDOR_LABEL_TO_KEY:
-            return _VENDOR_LABEL_TO_KEY[label]
-        for token, key in _VENDOR_LABEL_TO_KEY.items():
-            if label == token or label.startswith(f"{token} ") or label.startswith(f"{token}-"):
-                return key
+    if not label:
+        return ""
+    if label in _VENDOR_LABEL_TO_KEY:
+        return _VENDOR_LABEL_TO_KEY[label]
+    for token, key in _VENDOR_LABEL_TO_KEY.items():
+        if label == token or label.startswith(f"{token} ") or label.startswith(f"{token}-"):
+            return key
+        # Substring for values like "Huawei Technologies"
+        if len(token) >= 3 and token in label:
+            return key
+    return ""
+
+
+def resolve_vendor_key(vendor: str = "", device_type: str = "") -> str:
+    """Map inventory vendor / device_type -> LLDP profile key.
+
+    Prefer Netmiko ``device_type`` when it is specific. When vendor label and
+    device_type disagree (e.g. vendor=Huawei but dtype still zte_zxros from a
+    default profile), prefer the vendor label so Huawei gets ``display lldp``
+    instead of ZTE's ``show lldp neighbor brief``.
+    """
+    dtype_key = _key_from_device_type(device_type)
+    label_key = _key_from_vendor_label(vendor)
+    if label_key and dtype_key and label_key != dtype_key:
+        return label_key
+    if dtype_key:
+        return dtype_key
+    if label_key:
+        return label_key
     return "generic"
 
 
@@ -138,6 +167,7 @@ def get_vendor_profile(vendor: str = "", device_type: str = "") -> VendorLldpPro
 def lldp_command_for_vendor(vendor: str = "", device_type: str = "") -> str:
     dtype = str(device_type or "").strip().lower()
     # AOS has a community template; SROS profile command differs.
+    # Keep AOS command even when vendor label says Nokia/Alcatel.
     if dtype.startswith("alcatel_aos"):
         return "show lldp remote-system"
     return get_vendor_profile(vendor, device_type).lldp_command

@@ -92,7 +92,6 @@ def _discover_one_target(
                 "raw_preview": "",
             }
 
-        cmd, _proto = pick_neighbor_command(vendor=vendor, device_type=device_type)
         exec_kwargs: dict[str, Any] = {"read_timeout_sec": 60}
         if target.get("ume_ne_id") and not db.get(ManagedNE, target["ne_id"]):
             exec_kwargs["ume_ne_id"] = target["ume_ne_id"]
@@ -108,9 +107,14 @@ def _discover_one_target(
             return {
                 **base,
                 "ok": False,
-                "command": cmd,
+                "command": "",
                 "error": str(exc.detail or "resolve_failed")[:500],
             }
+        # Prefer resolved session identity (overrides / profile) for the LLDP verb.
+        vendor = str(creds.get("vendor") or vendor or "")
+        device_type = str(creds.get("device_type") or device_type or "")
+        pkey, is_stub = parser_meta(vendor=vendor, device_type=device_type)
+        cmd, _proto = pick_neighbor_command(vendor=vendor, device_type=device_type)
         skip = cli_creds_skip_reason(creds, interactive=False)
         if skip:
             return {**base, "ok": False, "command": cmd, "error": skip}

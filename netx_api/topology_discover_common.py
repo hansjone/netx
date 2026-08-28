@@ -175,17 +175,35 @@ def _ume_target_dict(db: Session, uid: str, default_profile: Any) -> dict[str, s
     ume = db.query(UmeInventoryNE).filter(UmeInventoryNE.ne_id == uid).one_or_none()
     if ume is None:
         return None
+    inv_vendor = str(ume.vendor or "").strip()
     if default_profile is not None:
         dtype, vendor = infer_device_type_vendor(str(ume.ne_type or ""), default_profile)
     else:
-        dtype, vendor = "zte_zxros", (ume.vendor or "ZTE")
+        dtype, vendor = "zte_zxros", (inv_vendor or "ZTE")
+    # Prefer UME inventory vendor over CLI-profile defaults so Huawei is not
+    # treated as ZTE (show lldp neighbor brief) when ne_type rules miss.
+    if inv_vendor:
+        vendor = inv_vendor
+        from .topology_lldp import _key_from_device_type, _key_from_vendor_label
+
+        label_key = _key_from_vendor_label(inv_vendor)
+        dtype_key = _key_from_device_type(str(dtype or ""))
+        if label_key and label_key != dtype_key:
+            dtype = {
+                "huawei": "huawei",
+                "cisco": "cisco_ios",
+                "zte": "zte_zxros",
+                "h3c": "hp_comware",
+                "juniper": "juniper_junos",
+                "nokia": "nokia_sros",
+            }.get(label_key, dtype)
     name = (ume.host_name or ume.ne_name or ume.user_label or ume.ip_address or uid).strip()
     return {
         "ne_id": uid,
         "ume_ne_id": uid,
         "ne_name": name,
         "ne_ip": ume.ip_address or "",
-        "vendor": vendor or (ume.vendor or "ZTE"),
+        "vendor": vendor or (inv_vendor or "ZTE"),
         "device_type": dtype or "zte_zxros",
     }
 
