@@ -82,6 +82,8 @@ type Props = {
   ) => void;
   onReady?: () => void;
   onStdout?: (data: string) => void;
+  /** Seed text when mounting (frozen view after disconnect, or pre-WS buffer). */
+  initialOutput?: string;
 };
 
 function serializeTerminal(term: Terminal): string {
@@ -177,8 +179,8 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
   {
     wsUrl,
     sessionId,
-    title,
-    recording,
+    title: _title,
+    recording: _recording,
     autoFocus = true,
     encoding = "utf-8",
     fontSize = 13,
@@ -190,6 +192,7 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
     onStatus,
     onReady,
     onStdout,
+    initialOutput,
   },
   ref,
 ) {
@@ -208,7 +211,6 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
   const onStatusRef = useRef(onStatus);
   const onReadyRef = useRef(onReady);
   const onStdoutRef = useRef(onStdout);
-  const recordingRef = useRef(!!recording);
   const autoFocusRef = useRef(autoFocus);
   const encodingRef = useRef(encoding);
   const fontSizeRef = useRef(Math.max(10, Math.min(28, Number(fontSize) || 13)));
@@ -237,10 +239,6 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
     onReadyRef.current = onReady;
     onStdoutRef.current = onStdout;
   }, [onStatus, onReady, onStdout]);
-
-  useEffect(() => {
-    recordingRef.current = !!recording;
-  }, [recording]);
 
   useEffect(() => {
     autoFocusRef.current = autoFocus;
@@ -406,10 +404,13 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
-    if (!sessionId && !wsUrl) return;
+    const live = Boolean(sessionId || wsUrl);
+    const seed = String(initialOutput || "");
+    if (!live && !seed.trim()) return;
 
     const term = new Terminal({
-      cursorBlink: true,
+      cursorBlink: live,
+      disableStdin: !live,
       fontSize: fontSizeRef.current,
       fontFamily: 'Consolas, "Courier New", monospace',
       // Lower than CRT-style 10k: remounts + multi-tab stay lighter; server replays log tail on attach.
@@ -444,6 +445,26 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
       }, 50);
     });
 
+    if (seed) {
+      term.write(applyKeywordHighlight(seed.endsWith("\n") ? seed : `${seed}\n`, keywordHighlightRef.current));
+    }
+
+    // Frozen transcript after disconnect / login failure — no WebSocket.
+    // Do not emit onStatus("closed"/"error"): parent already owns that state;
+    // re-emitting would bump termEpoch and remount in a loop.
+    if (!live) {
+      onReadyRef.current?.();
+      return () => {
+        try {
+          term.dispose();
+        } catch {
+          /* ignore */
+        }
+        termRef.current = null;
+        fitRef.current = null;
+      };
+    }
+
     // Guard against React StrictMode remount: the first WS teardown must not
     // report closed/error after a newer socket owns the terminal.
     let cancelled = false;
@@ -467,7 +488,8 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
     const writeStdout = (raw: string) => {
       if (!raw || !isActiveSocket()) return;
       lastStdoutAtRef.current = performance.now();
-      if (recordingRef.current) onStdoutRef.current?.(raw);
+      // Always forward to parent (log buffer / frozen failure transcript); recording flag only gates download.
+      onStdoutRef.current?.(raw);
       writeBuf += raw;
       if (writeBuf.length >= 16384) {
         if (writeRaf) {
@@ -557,7 +579,23 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
               return;
             }
             if (state === "closed" || state === "error") {
-              const detail = msg.message ? `: ${msg.message}` : "";
+              const rawMsg = String(msg.message || "");
+              // Device login failures are already live-echoed into the terminal
+              // (incl. Netmiko detail). Avoid dumping a second toast-sized blob.
+              let detail = "";
+              if (rawMsg) {
+                if (/connect_failed|NetmikoTimeoutException|TCP connection to device failed/i.test(rawMsg)) {
+                  const one = rawMsg
+                    .replace(/^.*connect_failed:/i, "")
+                    .split("\n---")[0]
+                    .split("\n")[0]
+                    .trim()
+                    .slice(0, 240);
+                  detail = one ? `: ${one}` : "";
+                } else {
+                  detail = `: ${rawMsg}`;
+                }
+              }
               term.writeln(
                 `\r\n\x1b[33m${tRef.current("webcrt.term.sessionStatus", {
                   state,
@@ -764,7 +802,7 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
     // Fresh ticket per mount when sessionId is set. Do not re-run when a late
     // parent wsUrl fill-in arrives — that remount dropped the wait-loop WS and
     // left Quick Connect stuck on "authenticating".
-  }, [sessionId || wsUrl]);
+  }, [sessionId || wsUrl, initialOutput]);
 
   const pasteFromClipboard = async () => {
     setCtxMenu(null);

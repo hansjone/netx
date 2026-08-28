@@ -162,6 +162,8 @@ type TermTab = {
   status: "connecting" | "connected" | "error" | "closed";
   connectPhase?: ConnectPhase;
   errorMessage?: string;
+  /** Frozen CRT transcript after disconnect/login failure (no overlay). */
+  frozenOutput?: string;
   recording: boolean;
   encoding: string;
   /** From session create — nested CLI hop cannot use SFTP. */
@@ -173,16 +175,6 @@ type TermTab = {
 type TabMenuState = { key: string; x: number; y: number };
 
 type TreeMenuState = { target: CliTargetItem; x: number; y: number };
-
-function connectPhaseLabel(
-  phase: ConnectPhase | undefined,
-  t: (key: string, vars?: Record<string, string | number>) => string,
-): string {
-  if (phase === "waiting_prompt") return t("webcrt.phase.waitingPrompt");
-  if (phase === "authenticating") return t("webcrt.phase.authenticating");
-  if (phase === "creating") return t("webcrt.phase.creating");
-  return t("webcrt.status.connecting");
-}
 
 function defaultSessionOptions(): SessionOptions {
   return {
@@ -646,9 +638,9 @@ function webcrtErrorMessage(err: unknown, t: (key: string, vars?: Record<string,
   if (raw.includes("ip_address_conflict_restart_required")) return t("webcrt.err.ipConflictRestart");
   if (raw.includes("ip_address_required")) return t("webcrt.newSession.ipRequired");
   if (raw.includes("cli_connect_profile_not_configured")) return t("webcrt.err.cliProfile");
-  if (raw.includes("connect_failed")) {
-    const detail = raw.replace(/^.*connect_failed:/, "").split("\n---")[0].trim();
-    return t("webcrt.err.connectFailed", { detail: detail.slice(0, 180) });
+  if (raw.includes("connect_failed") || /NetmikoTimeoutException|TCP connection to device failed/i.test(raw)) {
+    const detail = raw.replace(/^.*connect_failed:/i, "").split("\n---")[0].trim();
+    return t("webcrt.err.connectFailed", { detail: (detail || raw).slice(0, 180) });
   }
   if (raw.includes("sftp_hop_not_supported")) return t("webcrt.err.sftpHop");
   if (raw.includes("sftp_requires_ssh")) return t("webcrt.err.sftpSsh");
@@ -657,6 +649,29 @@ function webcrtErrorMessage(err: unknown, t: (key: string, vars?: Record<string,
   if (raw.includes("aborted")) return t("webcrt.err.sftpAborted");
   if (raw.includes("websocket_error")) return t("webcrt.err.websocket");
   return raw;
+}
+
+/** Device TCP/login failures belong in the terminal transcript, not a toast popup. */
+function isDeviceLoginFailureMessage(msg: string): boolean {
+  const raw = String(msg || "");
+  return (
+    raw.includes("connect_failed") ||
+    raw.includes("登录设备失败") ||
+    raw.includes("Device login failed") ||
+    /NetmikoTimeoutException|TCP connection to device failed/i.test(raw)
+  );
+}
+
+/** Format connect failure for CRT-style terminal echo (no modal). */
+function formatConnectFailureForTerm(raw: string): string {
+  let body = String(raw || "").trim();
+  if (!body) return "\r\n[netx] connect failed\r\n";
+  if (/connect_failed:/i.test(body)) {
+    body = body.replace(/^[\s\S]*?connect_failed:/i, "").trim();
+  }
+  // Live echo already showed device transcript; keep the exception summary only.
+  const main = body.split(/\n---\s*device transcript\s*---/i)[0].trim();
+  return `\r\n[netx] connect failed\r\n${main}\r\n`;
 }
 
 function targetFromManagedNe(ne: ManagedNeItem, fallback?: Partial<CliTargetItem>): CliTargetItem {
@@ -1009,6 +1024,7 @@ export function WebcrtPage() {
         recording: prior?.recording || existing?.recording || false,
         encoding,
         errorMessage: undefined,
+        frozenOutput: undefined,
       };
       setTabs((prev) => {
         const without = prev.filter((x) => x.key !== key);
@@ -1046,9 +1062,12 @@ export function WebcrtPage() {
           status: "connecting",
           connectPhase: "authenticating",
           termEpoch: pending.termEpoch + 1,
+          frozenOutput: undefined,
+          errorMessage: undefined,
           cliHop: Boolean(sess.cli_hop),
           sftpReady: typeof sess.sftp_ready === "boolean" ? sess.sftp_ready : undefined,
         });
+        logBuffersRef.current.set(key, []);
         showOk(t("webcrt.opened", { name: deviceLabel(target) }));
       } catch (err) {
         const message = webcrtErrorMessage(err, t);
@@ -1057,10 +1076,21 @@ export function WebcrtPage() {
           (String(err).includes("credentials_incomplete") ||
             String(err).includes("connect_failed") ||
             isSshAuthFailure(err));
-        updateTab(key, { status: "error", connectPhase: undefined, errorMessage: message });
+        const frozen = formatConnectFailureForTerm(String(err));
+        updateTab(key, {
+          status: "error",
+          connectPhase: undefined,
+          errorMessage: message,
+          frozenOutput: frozen,
+          termEpoch: pending.termEpoch + 1,
+          sessionId: "",
+          wsUrl: "",
+        });
+        logBuffersRef.current.set(key, [frozen]);
         if (needAuth) {
           openAuthForTarget(target, message);
-        } else {
+        } else if (!isDeviceLoginFailureMessage(message) && !isDeviceLoginFailureMessage(String(err))) {
+          // Non-device errors (session limit, etc.) may still toast.
           showError(message);
         }
       } finally {
@@ -1080,6 +1110,7 @@ export function WebcrtPage() {
         connectPhase: "authenticating",
         termEpoch: tab.termEpoch + 1,
         errorMessage: undefined,
+        frozenOutput: undefined,
       });
       setActiveTabKey(tab.key);
       return true;
@@ -2241,9 +2272,6 @@ export function WebcrtPage() {
                   >
                     <span>
                       {deviceLabel(tab.target)}
-                      {tab.status === "connecting"
-                        ? ` (${connectPhaseLabel(tab.connectPhase, t)})`
-                        : ""}
                       {tab.status === "closed" ? ` (${t("webcrt.status.closed")})` : ""}
                       {tab.status === "error" ? ` (${t("webcrt.status.error")})` : ""}
                       <span
@@ -2332,13 +2360,12 @@ export function WebcrtPage() {
               <div className="webcrt-main__terms">
               {tabs.map((tab) => {
                 const isActive = activeTabKey === tab.key;
-                // Cap concurrent xterm+WS: active always mounts; keep recent tabs warm.
-                // Do not mount while disconnected — reconnect is manual (no silent remount).
+                const frozen = Boolean(tab.frozenOutput);
+                // Live session, or frozen CRT transcript after login failure / disconnect.
                 const mountTerminal = Boolean(
-                  tab.sessionId &&
-                    tab.status !== "closed" &&
-                    tab.status !== "error" &&
-                    (isActive || warmTabKeys.has(tab.key)),
+                  (isActive || warmTabKeys.has(tab.key)) &&
+                    ((tab.sessionId && tab.status !== "closed" && tab.status !== "error") ||
+                      (frozen && (tab.status === "error" || tab.status === "closed"))),
                 );
                 return (
                 <div
@@ -2346,51 +2373,12 @@ export function WebcrtPage() {
                   className="webcrt-main__pane"
                   hidden={!isActive}
                 >
-                  {tab.status === "connecting" && !tab.sessionId ? (
+                  {tab.status === "connecting" && !tab.sessionId && !frozen ? (
                     <div className="webcrt-main__placeholder">
-                      <div>{connectPhaseLabel(tab.connectPhase, t)}…</div>
-                      <p className="panel__hint">{t("webcrt.phase.hint")}</p>
+                      <div>{t("webcrt.status.connecting")}…</div>
                     </div>
                   ) : null}
-                  {tab.status === "error" && !tab.sessionId ? (
-                    <div className="webcrt-main__placeholder webcrt-main__placeholder--error">
-                      <div>{t("webcrt.status.error")}</div>
-                      {tab.errorMessage ? <pre className="webcrt-error-detail">{tab.errorMessage}</pre> : null}
-                      <button type="button" className="webcrt-action-btn is-warn" onClick={() => void reconnectTab(tab)}>
-                        {t("webcrt.actions.reconnect")}
-                      </button>
-                    </div>
-                  ) : null}
-                  {tab.sessionId ? (
-                    <>
-                      {tab.status === "connecting" ? (
-                        <div className="webcrt-connect-banner" role="status">
-                          <div className="webcrt-connect-banner__text">
-                            <strong>{connectPhaseLabel(tab.connectPhase, t)}…</strong>
-                            <span>{t("webcrt.phase.hint")}</span>
-                          </div>
-                        </div>
-                      ) : null}
-                      {tab.status === "closed" || tab.status === "error" ? (
-                        <div className="webcrt-disconnect-banner" role="status">
-                          <div className="webcrt-disconnect-banner__text">
-                            <strong>
-                              {tab.status === "error"
-                                ? t("webcrt.disconnectBannerError")
-                                : t("webcrt.disconnectBanner")}
-                            </strong>
-                            {tab.errorMessage ? <span>{tab.errorMessage}</span> : null}
-                          </div>
-                          <button
-                            type="button"
-                            className="webcrt-action-btn is-warn"
-                            onClick={() => void reconnectTab(tab)}
-                          >
-                            {t("webcrt.actions.reconnect")}
-                          </button>
-                        </div>
-                      ) : null}
-                      {mountTerminal ? (
+                  {mountTerminal ? (
                       <Suspense
                         fallback={
                           <div className="webcrt-main__placeholder" role="status">
@@ -2404,8 +2392,9 @@ export function WebcrtPage() {
                           if (handle) termRefs.current.set(tab.key, handle);
                           else termRefs.current.delete(tab.key);
                         }}
-                        sessionId={tab.sessionId || undefined}
-                        wsUrl={tab.wsUrl || undefined}
+                        sessionId={frozen ? undefined : tab.sessionId || undefined}
+                        wsUrl={frozen ? undefined : tab.wsUrl || undefined}
+                        initialOutput={frozen ? tab.frozenOutput : undefined}
                         title={deviceLabel(tab.target)}
                         recording={tab.recording}
                         encoding={tab.encoding}
@@ -2443,6 +2432,7 @@ export function WebcrtPage() {
                               status: "connected",
                               connectPhase: undefined,
                               errorMessage: undefined,
+                              frozenOutput: undefined,
                               ...(typeof meta?.sftpReady === "boolean" ? { sftpReady: meta.sftpReady } : {}),
                               ...(typeof meta?.cliHop === "boolean" ? { cliHop: meta.cliHop } : {}),
                             });
@@ -2475,47 +2465,63 @@ export function WebcrtPage() {
                           } else if (state === "error") {
                             const errMsg = message || t("webcrt.disconnectBannerError");
                             const sid = tab.sessionId;
-                            // Session gone / auth failure: stop here — user must click Reconnect.
-                            if (sid && isSessionGoneError(errMsg)) {
-                              updateTab(tab.key, {
-                                status: "closed",
-                                sessionId: "",
-                                wsUrl: "",
-                                connectPhase: undefined,
-                                errorMessage: webcrtErrorMessage(errMsg, t),
-                              });
-                              return;
-                            }
+                            const pretty = webcrtErrorMessage(errMsg, t);
+                            const termText = termRefs.current.get(tab.key)?.getText() || "";
+                            const buf = (logBuffersRef.current.get(tab.key) || []).join("");
+                            const base = (buf || termText).replace(/\s+$/g, "");
+                            const failLine =
+                              isDeviceLoginFailureMessage(errMsg) || /connect_failed/i.test(String(message || ""))
+                                ? formatConnectFailureForTerm(String(message || errMsg))
+                                : `\r\n[netx] ${pretty}\r\n`;
+                            const frozenOut =
+                              base.includes("[netx] connect failed") || (pretty && base.includes(pretty))
+                                ? `${base}\r\n`
+                                : `${base}${failLine}`;
                             updateTab(tab.key, {
                               status: "error",
                               sessionId: "",
                               wsUrl: "",
                               connectPhase: undefined,
-                              errorMessage: webcrtErrorMessage(errMsg, t),
+                              errorMessage: pretty,
+                              frozenOutput: frozenOut,
+                              termEpoch: tab.termEpoch + 1,
                             });
+                            logBuffersRef.current.set(tab.key, [frozenOut]);
                             if (sid) {
                               void closeWebcrtSession(sid).catch(() => undefined);
                             }
                             if (isInventorySsh(tab.target) && isSshAuthFailure(errMsg)) {
-                              openAuthForTarget(tab.target, webcrtErrorMessage(errMsg, t));
+                              openAuthForTarget(tab.target, pretty);
                             }
                           } else if (state === "closed") {
                             const msg = String(message || "");
-                            // No silent remount / auto re-login — show banner; user clicks Reconnect.
                             const deviceGone = isDeviceClosedMessage(msg);
+                            const termText = termRefs.current.get(tab.key)?.getText() || "";
+                            const buf = (logBuffersRef.current.get(tab.key) || []).join("");
+                            const base = (buf || termText).replace(/\s+$/g, "");
+                            const note = msg
+                              ? `\r\n[netx] session closed: ${msg}\r\n`
+                              : "\r\n[netx] session closed\r\n";
+                            const frozenOut = base ? `${base}${note}` : note;
+                            // Keep sessionId when soft-closed so toolbar Reconnect can reattach;
+                            // frozen mount still omits WS (sessionId passed as undefined when frozen).
                             updateTab(tab.key, {
                               status: "closed",
                               sessionId: deviceGone ? "" : tab.sessionId,
                               wsUrl: deviceGone ? "" : tab.wsUrl,
                               connectPhase: undefined,
                               errorMessage: msg || t("webcrt.disconnectBanner"),
+                              frozenOutput: frozenOut,
+                              termEpoch: tab.termEpoch + 1,
                             });
+                            logBuffersRef.current.set(tab.key, [frozenOut]);
+                            if (deviceGone && tab.sessionId) {
+                              void closeWebcrtSession(tab.sessionId).catch(() => undefined);
+                            }
                           }
                         }}
                       />
                       </Suspense>
-                      ) : null}
-                    </>
                   ) : null}
                 </div>
                 );

@@ -285,10 +285,11 @@ def _finish_connect(
     if early:
         sess.push_connect_echo(early)
     seed = f"{pre_log}{early}"
-    already_prompted = _looks_like_cli_prompt(seed)
+    already_prompted = _looks_like_cli_prompt(seed) or _looks_like_cli_prompt(pre_log)
     primed = ""
-    # Auto-answer Huawei post-login password-change (Netmiko would have sent N).
-    if _looks_like_password_change_prompt(seed):
+    # Auto-answer Huawei post-login password-change only if still sitting on the prompt
+    # (Netmiko telnet_login usually already answered N — do not send a second N/Enter).
+    if _looks_like_password_change_prompt(seed) and not already_prompted:
         try:
             conn.write_channel("N" + (getattr(conn, "RETURN", None) or "\n"))
             sess.push_connect_echo("\r\n[netx] password-change → N\r\n")
@@ -313,7 +314,7 @@ def _finish_connect(
         except Exception:
             primed = ""
     combined = f"{seed}{primed}"
-    # Final settle: keep stragglers in bootstrap (normalize collapses duplicate prompts).
+    # Final settle: keep stragglers (normalize collapses duplicate prompts when bootstrapping).
     try:
         more = _capture_raw_channel(conn, duration=0.35)
         if more:
@@ -328,27 +329,28 @@ def _finish_connect(
                 sess.push_connect_echo(combined)
         except Exception:
             combined = ""
-    bootstrap = prepare_bootstrap_output(combined)
-    # Discard lone punctuation left on the wire (would glue onto ``<r1>`` in xterm).
-    try:
-        leftover = _capture_raw_channel(conn, duration=0.12)
-    except Exception:
-        leftover = ""
-    if leftover and leftover.strip() not in {":", ">", "#", "]", "$"}:
-        sess.push_connect_echo(leftover)
-        bootstrap = prepare_bootstrap_output(f"{bootstrap}{leftover}")
-
-    # Prefer live echo already shown on the terminal; only bootstrap the delta.
+    # Do not rebuild a second login transcript for bootstrap. Live connect-echo
+    # already streamed session_log + settle bytes to the terminal (CRT-like).
+    # Replaying prepare_bootstrap_output(combined) caused a full duplicate login.
     echoed = sess.connect_echo_text()
-    if echoed and bootstrap:
-        # If bootstrap is fully covered by live echo, skip replaying it.
-        norm_boot = bootstrap.replace("\r\n", "\n").strip()
-        norm_echo = echoed.replace("\r\n", "\n")
-        if norm_boot and norm_boot in norm_echo:
-            bootstrap = ""
-        elif norm_echo and norm_boot.startswith(norm_echo.strip()[-min(200, len(norm_echo)) :]):
-            # Overlap at the end of echo — keep only unseen suffix when possible.
-            bootstrap = bootstrap
+    bootstrap = ""
+    if not echoed.strip():
+        bootstrap = prepare_bootstrap_output(combined)
+        try:
+            leftover = _capture_raw_channel(conn, duration=0.12)
+        except Exception:
+            leftover = ""
+        if leftover and leftover.strip() not in {":", ">", "#", "]", "$"}:
+            sess.push_connect_echo(leftover)
+            bootstrap = prepare_bootstrap_output(f"{bootstrap}{leftover}")
+    else:
+        # Optional unseen tail only (already pushed to connect-echo above when present).
+        try:
+            leftover = _capture_raw_channel(conn, duration=0.12)
+        except Exception:
+            leftover = ""
+        if leftover and leftover.strip() not in {":", ">", "#", "]", "$"}:
+            sess.push_connect_echo(leftover)
 
     hop_guard = get_cli_hop_guard(conn)
     sess.conn = conn
@@ -357,7 +359,7 @@ def _finish_connect(
     sess.bootstrap_output = _encode_text(str(bootstrap or ""), sess.encoding)
     # Nudge Enter on WS attach only when we still need a shell prompt.
     # Never when already at CLI prompt or Username:/Password: (would empty-submit login).
-    final_view = bootstrap or echoed
+    final_view = echoed or bootstrap
     sess.needs_live_prompt = (
         not _looks_like_cli_prompt(final_view) and not _looks_like_login_prompt(final_view)
     )
