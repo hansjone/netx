@@ -173,6 +173,7 @@ def update_managed_ne(db: Session, ne_id: str, body: ManagedNeUpdate) -> Managed
         "hop_command_template",
         "hop_vrf",
         "hop_target_auth_mode",
+        "hop_enter_system_view",
     )
     if any(k in data for k in hop_keys):
         _apply_hop_update(row, data)
@@ -239,6 +240,7 @@ def batch_apply_hop_proxy(db: Session, ids: list[str], hop: HopProxyConfig) -> d
         row.hop_command_template = template
         row.hop_vrf = str(hop.hop_vrf or "").strip()
         row.hop_target_auth_mode = hop_auth_mode
+        row.hop_enter_system_view = bool(getattr(hop, "hop_enter_system_view", False))
         row.updated_at = now
     db.commit()
     return {"ok": True, "updated": len(rows)}

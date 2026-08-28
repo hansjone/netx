@@ -555,6 +555,7 @@ export const batchApplyHopManagedNe = (
     hop_vrf: string;
     hop_vendor?: string;
     hop_target_auth_mode?: string;
+    hop_enter_system_view?: boolean;
   },
 ) => apiPost<{ ok: boolean; updated: number }>("/v1/managed-ne/batch-hop", { ids, hop });
 

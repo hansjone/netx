@@ -128,9 +128,16 @@ export function patchHopVendorChange(
   hop_command_template: string;
   hop_port?: number;
   hop_target_auth_mode?: HopTargetAuthMode;
+  hop_enter_system_view?: boolean;
 } {
   if (vendor === "linux") {
-    return { hop_vendor: "linux", hop_protocol: "ssh", hop_vrf: "", hop_command_template: "" };
+    return {
+      hop_vendor: "linux",
+      hop_protocol: "ssh",
+      hop_vrf: "",
+      hop_command_template: "",
+      hop_enter_system_view: false,
+    };
   }
   if (vendor === "bastion") {
     return {
@@ -140,6 +147,7 @@ export function patchHopVendorChange(
       hop_vrf: "",
       hop_command_template: bastionHopTemplate(),
       hop_target_auth_mode: "bastion_managed" as HopTargetAuthMode,
+      hop_enter_system_view: false,
     };
   }
   const protocol = prev.hop_protocol || "ssh";
@@ -149,6 +157,8 @@ export function patchHopVendorChange(
     hop_protocol: protocol,
     hop_vrf: vrf,
     hop_command_template: defaultHopTemplate(vendor, protocol, vrf),
+    // Explicit Huawei option only; reset when leaving/entering other CLI hop vendors.
+    hop_enter_system_view: false,
   };
 }
 

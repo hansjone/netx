@@ -22,6 +22,7 @@ export type HopProxyFieldsState = {
   hop_command_template: string;
   hop_vrf: string;
   hop_target_auth_mode: HopTargetAuthMode;
+  hop_enter_system_view: boolean;
 };
 
 export const emptyHopProxyFields = (): HopProxyFieldsState => ({
@@ -34,6 +35,7 @@ export const emptyHopProxyFields = (): HopProxyFieldsState => ({
   hop_command_template: defaultHopTemplate("zte", "ssh", ""),
   hop_vrf: "",
   hop_target_auth_mode: "bastion_managed",
+  hop_enter_system_view: false,
 });
 
 function FormLabel({ children, required }: { children: ReactNode; required?: boolean }) {
@@ -224,6 +226,19 @@ export function HopProxyFields({
               }}
             />
           </label>
+          {huawei ? (
+            <label className="form-grid__full">
+              <FormLabel>{t("managedNe.hop.enterSystemView")}</FormLabel>
+              <select
+                value={value.hop_enter_system_view ? "yes" : "no"}
+                onChange={(e) => set({ hop_enter_system_view: e.target.value === "yes" })}
+              >
+                <option value="no">{t("managedNe.hop.enterSystemViewNo")}</option>
+                <option value="yes">{t("managedNe.hop.enterSystemViewYes")}</option>
+              </select>
+              <span className="form-field-hint">{t("managedNe.hop.enterSystemViewHint")}</span>
+            </label>
+          ) : null}
           <label className="form-grid__full">
             <FormLabel>{t("managedNe.hop.commandTemplate")}</FormLabel>
             <input

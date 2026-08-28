@@ -199,6 +199,18 @@ def apply_collection_schema_safety_net(conn: Connection) -> None:
     )
 
 
+def apply_hop_schema_safety_net(conn: Connection) -> None:
+    """Always-on hop columns (Alembic head stamp skips legacy domain patches)."""
+    _run_sql(
+        conn,
+        "ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS hop_enter_system_view BOOLEAN DEFAULT FALSE",
+    )
+    _run_sql(
+        conn,
+        "ALTER TABLE cli_connect_profile ADD COLUMN IF NOT EXISTS hop_enter_system_view BOOLEAN DEFAULT FALSE",
+    )
+
+
 def apply_key_alert_schema_patches(
     engine: Engine | None = None,
     *,
@@ -348,6 +360,8 @@ def apply_domain_schema_patches(conn: Connection) -> None:
         "ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS hop_command_template TEXT DEFAULT ''",
         "ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS hop_vrf VARCHAR(128) DEFAULT ''",
         "ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS hop_target_auth_mode VARCHAR(32) DEFAULT 'bastion_managed'",
+        "ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS hop_enter_system_view BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE cli_connect_profile ADD COLUMN IF NOT EXISTS hop_enter_system_view BOOLEAN DEFAULT FALSE",
         "ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS source VARCHAR(64) DEFAULT ''",
         "ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS source_ref VARCHAR(128) DEFAULT ''",
         "ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS connect_detail TEXT DEFAULT ''",
@@ -409,6 +423,7 @@ def apply_domain_schema_patches(conn: Connection) -> None:
                 hop_command_template TEXT DEFAULT '',
                 hop_vrf VARCHAR(128) DEFAULT '',
                 hop_target_auth_mode VARCHAR(32) DEFAULT 'bastion_managed',
+                hop_enter_system_view BOOLEAN DEFAULT FALSE,
                 created_at TIMESTAMP,
                 updated_at TIMESTAMP
             )

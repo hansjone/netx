@@ -27,6 +27,7 @@ class CliConnectProfileCreate(BaseModel):
     hop_command_template: str = ""
     hop_vrf: str = ""
     hop_target_auth_mode: str = "bastion_managed"
+    hop_enter_system_view: bool = False
 
     @field_validator("vendor_default")
     @classmethod
@@ -60,6 +61,7 @@ class CliConnectProfileUpdate(BaseModel):
     hop_command_template: str | None = None
     hop_vrf: str | None = None
     hop_target_auth_mode: str | None = None
+    hop_enter_system_view: bool | None = None
 
 
 class CliConnectProfileOut(BaseModel):
@@ -81,6 +83,7 @@ class CliConnectProfileOut(BaseModel):
     hop_command_template: str
     hop_vrf: str
     hop_target_auth_mode: str
+    hop_enter_system_view: bool = False
     created_at: datetime
     updated_at: datetime
 

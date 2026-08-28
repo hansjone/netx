@@ -91,6 +91,84 @@ class CliHopReturnDetectionTests(unittest.TestCase):
         self.assertEqual(guard["hop_prompt"], "<HOP>")
         self.assertEqual(guard["hop_vendor"], "huawei")
 
+    @patch("netx_api.ne_session_connect._interactive_target_auth")
+    @patch("netx_api.ne_session_connect._read_channel")
+    @patch("netx_api.ne_session_connect.ConnectHandler")
+    def test_huawei_skips_system_view_by_default(
+        self,
+        mock_ch: MagicMock,
+        mock_read: MagicMock,
+        mock_auth: MagicMock,
+    ) -> None:
+        from netx_api.ne_session_factory import _connect_via_cli_hop
+
+        conn = MagicMock()
+        conn.remote_conn = MagicMock()
+        mock_ch.return_value = conn
+        mock_read.side_effect = ["<HOP>\n", ""]
+        mock_auth.return_value = None
+        creds = {
+            "hop_host": "10.0.0.1",
+            "hop_username": "admin",
+            "hop_password": "hop-pass",
+            "hop_protocol": "ssh",
+            "hop_vendor": "huawei",
+            "hop_port": 22,
+            "hop_vrf": "",
+            "hop_command_template": "stelnet {target_ip}",
+            "hop_enter_system_view": False,
+            "username": "target",
+            "password": "target-pass",
+            "ip_address": "10.0.0.2",
+            "port": 22,
+        }
+        _connect_via_cli_hop(creds, cols=80, rows=24)
+        wrote = "".join(str(c.args[0]) for c in conn.write_channel.call_args_list)
+        self.assertNotIn("system-view", wrote)
+        self.assertIn("stelnet", wrote)
+
+    @patch("netx_api.ne_session_connect._interactive_target_auth")
+    @patch("netx_api.ne_session_connect._read_channel")
+    @patch("netx_api.ne_session_connect.ConnectHandler")
+    def test_huawei_enters_system_view_when_flag_set(
+        self,
+        mock_ch: MagicMock,
+        mock_read: MagicMock,
+        mock_auth: MagicMock,
+    ) -> None:
+        from netx_api.ne_session_factory import _connect_via_cli_hop
+
+        conn = MagicMock()
+        conn.remote_conn = MagicMock()
+        mock_ch.return_value = conn
+        # First read: user-view prompt; later reads: system-view prompt after system-view.
+        mock_read.side_effect = ["<HOP>\n", "[~HOP]\n", "[~HOP]\n", ""]
+        mock_auth.return_value = None
+        creds = {
+            "hop_host": "10.0.0.1",
+            "hop_username": "admin",
+            "hop_password": "hop-pass",
+            "hop_protocol": "ssh",
+            "hop_vendor": "huawei",
+            "hop_port": 22,
+            "hop_vrf": "",
+            "hop_command_template": "stelnet {target_ip}",
+            "hop_enter_system_view": True,
+            "username": "target",
+            "password": "target-pass",
+            "ip_address": "10.0.0.2",
+            "port": 22,
+        }
+        _connect_via_cli_hop(creds, cols=80, rows=24)
+        wrote = "".join(str(c.args[0]) for c in conn.write_channel.call_args_list)
+        self.assertIn("system-view", wrote)
+        self.assertIn("stelnet", wrote)
+        # system-view must come before stelnet
+        self.assertLess(wrote.find("system-view"), wrote.find("stelnet"))
+        guard = get_cli_hop_guard(conn)
+        assert guard is not None
+        self.assertEqual(guard["hop_prompt"], "[~HOP]")
+
 
 if __name__ == "__main__":
     unittest.main()

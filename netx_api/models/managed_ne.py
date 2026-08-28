@@ -46,6 +46,8 @@ class ManagedNE(Base):
     hop_command_template: Mapped[str] = mapped_column(Text, default="")
     hop_vrf: Mapped[str] = mapped_column(String(128), default="")
     hop_target_auth_mode: Mapped[str] = mapped_column(String(32), default="bastion_managed")
+    # Huawei CLI hop: run ``system-view`` before stelnet/telnet (default: stay in user-view).
+    hop_enter_system_view: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
 
@@ -75,6 +77,7 @@ class CliConnectProfile(Base):
     hop_command_template: Mapped[str] = mapped_column(Text, default="")
     hop_vrf: Mapped[str] = mapped_column(String(128), default="")
     hop_target_auth_mode: Mapped[str] = mapped_column(String(32), default="bastion_managed")
+    hop_enter_system_view: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
 

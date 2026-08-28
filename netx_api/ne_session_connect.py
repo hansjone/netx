@@ -798,6 +798,31 @@ def _resize_pty(conn: ConnectHandler, cols: int | None = None, rows: int | None 
         _log.debug("resize_pty failed cols=%s rows=%s", c, r, exc_info=True)
 
 
+def _huawei_enter_system_view(
+    conn: ConnectHandler,
+    *,
+    progress_cb: Any = None,
+    emit_raw: bool = True,
+) -> str:
+    """Enter Huawei system-view; return the new ``[sysname]`` prompt marker if seen."""
+    _emit_progress(progress_cb, "\r\n[netx] hop system-view…\r\n")
+    _send_line(conn, "system-view")
+    acc = ""
+    for _ in range(8):
+        part = _read_channel(conn, wait=0.2, max_loops=10)
+        if not part:
+            time.sleep(0.15)
+            continue
+        acc += part
+        if emit_raw:
+            _emit_progress(progress_cb, part)
+        marker = extract_cli_prompt_marker(acc)
+        # System-view prompts are ``[sysname]`` / ``[~sysname]`` (not ``<sysname>``).
+        if marker.startswith("["):
+            return marker
+    return extract_cli_prompt_marker(acc)
+
+
 def _connect_via_cli_hop(
     creds: dict[str, Any],
     *,
@@ -833,13 +858,14 @@ def _connect_via_cli_hop(
     # WebCRT passes ProgressBytesIO(session_log) that already tees device bytes to progress_cb.
     # Re-emitting the same reads doubles every line (stelnet, Y/N, MOTD, prompts).
     teed = isinstance(session_log, _ProgressBytesIO)
+    emit_raw = not teed
     conn = _build_netmiko_connection(hop_dev, interactive=interactive)
     try:
         # MUST resize before stelnet/telnet — nested session captures hop TTY size at start
         # and often ignores later WINCH. Wrong width → mid-line edit redraw wraps in WebCRT.
         _resize_pty(conn, cols, rows)
         pre = _read_channel(conn, wait=0.35)
-        if pre and not teed:
+        if pre and emit_raw:
             _emit_progress(progress_cb, pre)
         hop_prompt = extract_cli_prompt_marker(pre)
         if not hop_prompt:
@@ -849,7 +875,7 @@ def _connect_via_cli_hop(
             except Exception:
                 _send_line(conn, "")
             more = _read_channel(conn, wait=0.25, max_loops=12)
-            if more and not teed:
+            if more and emit_raw:
                 _emit_progress(progress_cb, more)
             pre = pre + more
             hop_prompt = extract_cli_prompt_marker(pre)
@@ -859,39 +885,48 @@ def _connect_via_cli_hop(
             for _ in range(6):
                 more = _read_channel(conn, wait=0.3, max_loops=10)
                 if more:
-                    if not teed:
+                    if emit_raw:
                         _emit_progress(progress_cb, more)
                     pre += more
                     hop_prompt = extract_cli_prompt_marker(pre)
                     if hop_prompt:
                         break
+
+        vendor = _hop_vendor(creds)
+        # Explicit hop option only (default False): never auto-enter system-view on failure.
+        if vendor == "huawei" and bool(creds.get("hop_enter_system_view")):
+            sv_prompt = _huawei_enter_system_view(conn, progress_cb=progress_cb, emit_raw=emit_raw)
+            if sv_prompt:
+                hop_prompt = sv_prompt
+
         hop_cmd = render_hop_command(str(creds.get("hop_command_template") or ""), creds)
         _emit_progress(progress_cb, f"\r\n[netx] hop jump: {hop_cmd}\r\n")
         _send_line(conn, hop_cmd)
+
         _interactive_target_auth(
             conn,
             str(creds["username"]),
             str(creds["password"]),
             progress_cb=progress_cb,
-            emit_raw=not teed,
+            emit_raw=emit_raw,
         )
         _attach_cli_hop_guard(
             conn,
             hop_prompt=hop_prompt,
-            hop_vendor=_hop_vendor(creds),
+            hop_vendor=vendor,
             hop_host=hop_host,
         )
         if hop_prompt:
             _log.info(
                 "cli hop guard armed vendor=%s hop=%s prompt=%r",
-                _hop_vendor(creds),
+                vendor,
                 hop_host,
                 hop_prompt,
             )
         else:
             _log.warning(
                 "cli hop guard armed without hop prompt vendor=%s hop=%s (nested-close only)",
-                _hop_vendor(creds),
+                vendor,
                 hop_host,
             )
         return conn

@@ -931,6 +931,11 @@ const en = {
       vrf: "Mgmt VRF (optional)",
       vpnInstance: "VPN-Instance (optional)",
       vrfCisco: "VRF (optional, e.g. MGMT)",
+      enterSystemView: "Huawei system-view before jump",
+      enterSystemViewNo: "Stay in user-view (default)",
+      enterSystemViewYes: "Enter system-view first",
+      enterSystemViewHint:
+        "Some Huawei hops only accept stelnet/telnet in system-view. Choose explicitly; NetX will not auto-retry.",
       commandTemplate: "Jump command template",
       templateHint:
         "ZTE CLI: telnet {target_ip}, telnet {target_ip} vrf {vrf}, ssh {target_ip}, ssh {target_ip} vrf {vrf}. Auto-suggested from jump protocol/VRF; same when left blank. Target credentials via secondary auth prompts.",

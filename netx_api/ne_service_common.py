@@ -172,6 +172,7 @@ def _apply_hop_create(row: ManagedNE, body: ManagedNeCreate) -> None:
     row.hop_command_template = str(body.hop_command_template or "").strip()
     row.hop_vrf = str(body.hop_vrf or "").strip()
     row.hop_target_auth_mode = _normalize_hop_target_auth_mode(body.hop_target_auth_mode)
+    row.hop_enter_system_view = bool(body.hop_enter_system_view)
 
 
 def _apply_hop_update(row: ManagedNE, data: dict[str, Any]) -> None:
@@ -196,6 +197,8 @@ def _apply_hop_update(row: ManagedNE, data: dict[str, Any]) -> None:
         row.hop_vrf = str(data["hop_vrf"]).strip()
     if "hop_target_auth_mode" in data and data["hop_target_auth_mode"] is not None:
         row.hop_target_auth_mode = _normalize_hop_target_auth_mode(data["hop_target_auth_mode"])
+    if "hop_enter_system_view" in data and data["hop_enter_system_view"] is not None:
+        row.hop_enter_system_view = bool(data["hop_enter_system_view"])
     if "hop_host" in data or "hop_username" in data or "hop_vendor" in data:
         hop_host, hop_username = _normalize_saved_hop_endpoint(
             hop_vendor=str(row.hop_vendor or ""),
@@ -247,6 +250,7 @@ def row_to_out(row: ManagedNE) -> ManagedNeOut:
         hop_command_template=str(row.hop_command_template or ""),
         hop_vrf=str(row.hop_vrf or ""),
         hop_target_auth_mode=str(row.hop_target_auth_mode or "bastion_managed"),
+        hop_enter_system_view=bool(getattr(row, "hop_enter_system_view", False)),
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -279,4 +283,5 @@ def get_device_credentials(row: ManagedNE) -> dict[str, Any]:
         "hop_command_template": str(row.hop_command_template or ""),
         "hop_vrf": str(row.hop_vrf or ""),
         "hop_target_auth_mode": str(row.hop_target_auth_mode or "bastion_managed"),
+        "hop_enter_system_view": bool(getattr(row, "hop_enter_system_view", False)),
     }

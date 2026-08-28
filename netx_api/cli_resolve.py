@@ -107,6 +107,7 @@ def profile_to_creds(
         "hop_command_template": str(profile.hop_command_template or ""),
         "hop_vrf": str(profile.hop_vrf or ""),
         "hop_target_auth_mode": str(profile.hop_target_auth_mode or "bastion_managed"),
+        "hop_enter_system_view": bool(getattr(profile, "hop_enter_system_view", False)),
     }
 
 

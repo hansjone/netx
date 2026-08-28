@@ -923,6 +923,11 @@ const zh = {
       vrf: "管理 VRF（可选）",
       vpnInstance: "VPN-Instance（可选）",
       vrfCisco: "VRF（可选，如 MGMT）",
+      enterSystemView: "跳登前是否进入系统视图",
+      enterSystemViewNo: "不进入（用户视图，默认）",
+      enterSystemViewYes: "进入系统视图（system-view）",
+      enterSystemViewHint:
+        "部分华为跳板仅在系统视图下支持 stelnet/telnet。需自行选择；不会因失败自动重试。",
       commandTemplate: "跳登命令模板",
       templateHint:
         "ZTE 常用：telnet {target_ip}、telnet {target_ip} vrf {vrf}、ssh {target_ip}、ssh {target_ip} vrf {vrf}。按跳板协议与 VRF 自动推荐；留空时后端同样规则。目标账号密码由二次认证提示输入。",

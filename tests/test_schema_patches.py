@@ -13,6 +13,7 @@ import netx_api.models  # noqa: F401
 from netx_api.schema_patches import (
     apply_auth_schema_patches,
     apply_domain_schema_patches,
+    apply_hop_schema_safety_net,
     apply_topology_schema_safety_net,
 )
 
@@ -59,6 +60,37 @@ class SchemaPatchesTests(unittest.TestCase):
         cols = {c["name"] for c in inspect(self.engine).get_columns("ume_topo_link")}
         self.assertIn("a_ifname", cols)
         self.assertIn("z_ifname", cols)
+
+    def test_hop_safety_net_adds_enter_system_view(self) -> None:
+        with self.engine.begin() as conn:
+            conn.execute(text("DROP TABLE IF EXISTS managed_ne"))
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE managed_ne (
+                        id VARCHAR(64) PRIMARY KEY,
+                        hop_enabled BOOLEAN DEFAULT 0
+                    )
+                    """
+                )
+            )
+            conn.execute(text("DROP TABLE IF EXISTS cli_connect_profile"))
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE cli_connect_profile (
+                        id VARCHAR(64) PRIMARY KEY,
+                        hop_enabled BOOLEAN DEFAULT 0
+                    )
+                    """
+                )
+            )
+            apply_hop_schema_safety_net(conn)
+            apply_hop_schema_safety_net(conn)
+        ne_cols = {c["name"] for c in inspect(self.engine).get_columns("managed_ne")}
+        profile_cols = {c["name"] for c in inspect(self.engine).get_columns("cli_connect_profile")}
+        self.assertIn("hop_enter_system_view", ne_cols)
+        self.assertIn("hop_enter_system_view", profile_cols)
 
     def test_domain_patches_do_not_raise(self) -> None:
         with self.engine.begin() as conn:

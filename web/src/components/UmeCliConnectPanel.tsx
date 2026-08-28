@@ -84,6 +84,7 @@ function profileToForm(row: CliConnectProfileItem): ProfileForm {
       hop_command_template: row.hop_command_template ?? "",
       hop_vrf: row.hop_vrf ?? "",
       hop_target_auth_mode: (row.hop_target_auth_mode || "bastion_managed") as HopProxyFieldsState["hop_target_auth_mode"],
+      hop_enter_system_view: Boolean(row.hop_enter_system_view),
     },
   };
 }
@@ -153,6 +154,7 @@ export function UmeCliConnectPanel({ enabled = true, embedded = false }: { enabl
         hop_command_template: form.hop.hop_command_template,
         hop_vrf: form.hop.hop_vrf,
         hop_target_auth_mode: form.hop.hop_target_auth_mode,
+        hop_enter_system_view: form.hop.hop_enter_system_view,
       };
       if (form.id) {
         return apiPatch<CliConnectProfileItem>(`/v1/cli/profiles/${form.id}`, body);

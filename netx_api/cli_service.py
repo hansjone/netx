@@ -69,6 +69,7 @@ def _profile_out(row: CliConnectProfile) -> CliConnectProfileOut:
         hop_command_template=str(row.hop_command_template or ""),
         hop_vrf=str(row.hop_vrf or ""),
         hop_target_auth_mode=str(row.hop_target_auth_mode or "bastion_managed"),
+        hop_enter_system_view=bool(getattr(row, "hop_enter_system_view", False)),
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -133,6 +134,7 @@ def create_cli_profile(db: Session, body: CliConnectProfileCreate) -> CliConnect
         hop_command_template=str(body.hop_command_template or "").strip(),
         hop_vrf=str(body.hop_vrf or "").strip(),
         hop_target_auth_mode=_normalize_hop_target_auth_mode(body.hop_target_auth_mode),
+        hop_enter_system_view=bool(body.hop_enter_system_view),
     )
     if body.is_default or db.query(CliConnectProfile).count() == 0:
         db.query(CliConnectProfile).update({CliConnectProfile.is_default: False})
@@ -180,6 +182,7 @@ def update_cli_profile(db: Session, profile_id: str, body: CliConnectProfileUpda
         "hop_command_template",
         "hop_vrf",
         "hop_target_auth_mode",
+        "hop_enter_system_view",
     )
     for key in hop_keys:
         if key in data and data[key] is not None:
@@ -190,6 +193,8 @@ def update_cli_profile(db: Session, profile_id: str, body: CliConnectProfileUpda
         row.hop_protocol = _normalize_protocol(data["hop_protocol"])
     if "hop_target_auth_mode" in data and data["hop_target_auth_mode"] is not None:
         row.hop_target_auth_mode = _normalize_hop_target_auth_mode(data["hop_target_auth_mode"])
+    if "hop_enter_system_view" in data and data["hop_enter_system_view"] is not None:
+        row.hop_enter_system_view = bool(data["hop_enter_system_view"])
     if "hop_password" in data and data["hop_password"]:
         _require_crypto()
         row.hop_password_enc = encrypt_secret(str(data["hop_password"]))

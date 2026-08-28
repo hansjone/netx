@@ -61,6 +61,7 @@ type FormState = {
   hop_command_template: string;
   hop_vrf: string;
   hop_target_auth_mode: "bastion_managed" | "manual";
+  hop_enter_system_view: boolean;
 };
 
 type AccountState = {
@@ -98,6 +99,7 @@ const emptyForm = (): FormState => ({
   hop_command_template: defaultHopTemplate("zte", "ssh", ""),
   hop_vrf: "",
   hop_target_auth_mode: "bastion_managed",
+  hop_enter_system_view: false,
 });
 
 const emptyAccount = (): AccountState => ({
@@ -250,6 +252,7 @@ export function NePage() {
         hop_command_template: form.hop_command_template,
         hop_vrf: form.hop_vrf,
         hop_target_auth_mode: form.hop_target_auth_mode,
+        hop_enter_system_view: form.hop_enter_system_view,
         ...(form.password ? { password: form.password } : {}),
         ...(form.hop_password ? { hop_password: form.hop_password } : {}),
       };
@@ -315,6 +318,7 @@ export function NePage() {
         hop_command_template: batchHop.hop_command_template.trim(),
         hop_vrf: batchHop.hop_vrf.trim(),
         hop_target_auth_mode: batchHop.hop_target_auth_mode,
+        hop_enter_system_view: batchHop.hop_enter_system_view,
       }),
     onSuccess: async (res) => {
       setBatchHopOpen(false);
@@ -415,6 +419,7 @@ export function NePage() {
         hop_command_template: bulkHop.hop_command_template.trim(),
         hop_vrf: bulkHop.hop_vrf.trim(),
         hop_target_auth_mode: bulkHop.hop_target_auth_mode,
+        hop_enter_system_view: bulkHop.hop_enter_system_view,
       });
       return { type: "proxy" as const, n: res.updated };
     },
@@ -485,6 +490,7 @@ export function NePage() {
       hop_vrf: row.hop_vrf,
       hop_target_auth_mode:
         row.hop_target_auth_mode === "manual" ? "manual" : "bastion_managed",
+      hop_enter_system_view: Boolean(row.hop_enter_system_view),
     });
     setModalOpen(true);
   };
@@ -1129,6 +1135,7 @@ export function NePage() {
                     hop_command_template: form.hop_command_template,
                     hop_vrf: form.hop_vrf,
                     hop_target_auth_mode: form.hop_target_auth_mode,
+                    hop_enter_system_view: form.hop_enter_system_view,
                   }}
                   onChange={(patch) => setForm((prev) => ({ ...prev, ...patch }))}
                   hopPasswordRequired={!editing}

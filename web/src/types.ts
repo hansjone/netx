@@ -214,6 +214,7 @@ export type ManagedNeItem = {
   hop_command_template: string;
   hop_vrf: string;
   hop_target_auth_mode: string;
+  hop_enter_system_view?: boolean;
   created_at: string;
   updated_at: string;
 };
@@ -255,6 +256,7 @@ export type CliConnectProfileItem = {
   hop_command_template: string;
   hop_vrf: string;
   hop_target_auth_mode: string;
+  hop_enter_system_view?: boolean;
   created_at: string;
   updated_at: string;
 };
