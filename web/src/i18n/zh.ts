@@ -1263,7 +1263,7 @@ const zh = {
       creating: "创建会话",
       authenticating: "正在认证",
       waitingPrompt: "等待设备提示符",
-      hint: "设备较慢时可能需要十几秒，请稍候",
+      hint: "登录过程会实时显示在终端中；设备较慢时可能需要十几秒",
     },
     tabMenu: {
       close: "关闭",

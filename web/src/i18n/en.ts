@@ -1272,7 +1272,7 @@ const en = {
       creating: "Creating session",
       authenticating: "Authenticating",
       waitingPrompt: "Waiting for device prompt",
-      hint: "Slow devices may take more than 10 seconds",
+      hint: "Login progress streams into the terminal; slow devices may take >10s",
     },
     tabMenu: {
       close: "Close",

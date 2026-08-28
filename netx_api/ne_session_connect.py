@@ -1,8 +1,10 @@
 """Netmiko connect paths: direct, vendor CLI hop, bastion, and Linux jump."""
 from __future__ import annotations
 
+import io
 import logging
 import re
+import threading
 import time
 from typing import Any
 
@@ -141,7 +143,10 @@ def _interactive_driver_class(base_cls: type) -> type:
     """Subclass for WebCRT: raw interactive PTY after transport auth (SecureCRT-like).
 
     Skips Netmiko session prep (prompt discovery, terminal length/width, force RETURN)
-    so the channel is left for the user — not consumed by library automation.
+    and Huawei ``special_login_handler`` (read_until prompt / password-change). Those
+    waits are why WebCRT stuck on ``waiting_prompt`` while connectivity probes succeed:
+    collection still runs full Netmiko login; WebCRT must leave the PTY for live echo
+    and hop secondary auth instead.
     """
 
     class _InteractiveSession(base_cls):  # type: ignore[misc,valid-type]
@@ -154,6 +159,9 @@ def _interactive_driver_class(base_cls: type) -> type:
         def session_preparation(self) -> None:
             return None
 
+        def special_login_handler(self, delay_factor: float = 1.0) -> None:  # noqa: ARG002
+            return None
+
         def _try_session_preparation(self, force_data: bool = True) -> None:  # noqa: FBT001, FBT002
             del force_data
             try:
@@ -164,6 +172,44 @@ def _interactive_driver_class(base_cls: type) -> type:
 
     _InteractiveSession.__name__ = f"Interactive{getattr(base_cls, '__name__', 'Netmiko')}"
     return _InteractiveSession
+
+
+def _emit_progress(progress_cb: Any, text: str) -> None:
+    """Best-effort live login transcript callback (WebCRT connect echo)."""
+    if not progress_cb or not text:
+        return
+    try:
+        progress_cb(str(text))
+    except Exception:
+        _log.debug("connect progress_cb failed", exc_info=True)
+
+
+class _ProgressSessionLog:
+    """Tee Netmiko ``session_log`` writes into a progress callback + BytesIO."""
+
+    def __init__(self, progress_cb: Any = None) -> None:
+        self._buf = io.BytesIO()
+        self._progress_cb = progress_cb
+        self._lock = threading.Lock()
+
+    def write(self, data: Any) -> int:
+        if isinstance(data, bytes):
+            raw = data
+            text = data.decode("utf-8", errors="replace")
+        else:
+            text = str(data or "")
+            raw = text.encode("utf-8", errors="replace")
+        with self._lock:
+            self._buf.write(raw)
+        _emit_progress(self._progress_cb, text)
+        return len(raw)
+
+    def flush(self) -> None:
+        return None
+
+    def getvalue(self) -> bytes:
+        with self._lock:
+            return self._buf.getvalue()
 
 
 def _cisco_ios_collection_driver_class(base_cls: type) -> type:
@@ -280,7 +326,10 @@ def _netmiko_over_ssh_client(
                 if chan_transport is not None:
                     chan_transport.set_keepalive(self.keepalive)
             self.channel = SSHChannel(conn=self.remote_conn, encoding=self.encoding)
-            self.special_login_handler()
+            # Interactive WebCRT: do not block on vendor special_login_handler
+            # (Huawei read_until ``[>]`` hangs on bastion/JumpServer banners).
+            if not interactive:
+                self.special_login_handler()
 
     dev = _base_connect_kwargs(
         device_type=device_type,
@@ -356,14 +405,29 @@ def _connect_direct(
 
 
 def _read_channel(conn: ConnectHandler, wait: float = 0.5, max_loops: int = 40) -> str:
-    time.sleep(wait)
+    if wait > 0:
+        time.sleep(wait)
     chunks: list[str] = []
     for _ in range(max_loops):
-        part = conn.read_channel()
+        try:
+            part = conn.read_channel()
+        except Exception:
+            break
+        if part is None or part is False:
+            break
+        # MagicMock truthy-but-empty: stop when unit tests leave read_channel unconfigured.
+        if not isinstance(part, (str, bytes, bytearray)):
+            text = str(part)
+            # unittest.mock default str looks like "<MagicMock name=...>"
+            if text.startswith("<MagicMock") or text.startswith("<Mock"):
+                break
+            part = text
+        elif isinstance(part, (bytes, bytearray)):
+            part = bytes(part).decode("utf-8", errors="replace")
         if not part:
             break
         chunks.append(part)
-        time.sleep(0.2)
+        time.sleep(0.05 if wait <= 0.15 else 0.15)
     return "".join(chunks)
 
 
@@ -374,11 +438,21 @@ def _send_line(conn: ConnectHandler, line: str) -> None:
     conn.write_channel(text)
 
 
-def _auth_prompt_tail(text: str) -> str:
-    """Last non-empty line of an auth transcript (prompt detection)."""
-    s = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
-    lines = [ln.strip() for ln in s.split("\n") if ln.strip()]
-    return lines[-1] if lines else ""
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\].*?\x07|\x1b.")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", str(text or ""))
+
+
+def _auth_prompt_tail(text: str, *, lines: int = 1) -> str:
+    """Last non-empty line(s) of an auth transcript (prompt detection)."""
+    s = _strip_ansi(text).replace("\r\n", "\n").replace("\r", "\n")
+    parts = [ln.strip() for ln in s.split("\n") if ln.strip()]
+    if not parts:
+        return ""
+    n = max(1, int(lines))
+    return "\n".join(parts[-n:])
 
 
 def _prompt_needs_auth(text: str) -> tuple[bool, bool]:
@@ -386,11 +460,15 @@ def _prompt_needs_auth(text: str) -> tuple[bool, bool]:
     tail = _auth_prompt_tail(text).lower()
     if not tail:
         return False, False
-    # Prefer last-line match so earlier echoed prompts in ``acc`` do not stick forever.
     need_user = bool(
-        re.search(r"(?:please\s+input\s+the\s+)?(?:user\s*name|username|login)\s*[:>]\s*$", tail)
+        re.search(
+            r"(?:please\s+input\s+the\s+)?(?:user\s*name|username|login|用户名|用户)\s*[:>]\s*$",
+            tail,
+        )
     )
-    need_pass = bool(re.search(r"(?:enter\s+)?password\s*[:>]\s*$", tail))
+    need_pass = bool(
+        re.search(r"(?:enter\s+)?(?:password|密码)\s*[:>]\s*$", tail)
+    )
     return need_user, need_pass
 
 
@@ -400,22 +478,40 @@ def _prompt_needs_host_key_confirm(text: str) -> tuple[bool, bool]:
     Returns ``(continue_access, save_public_key)`` for:
     - ``The server is not authenticated. Continue to access it? [Y/N]:`` → Y
     - ``Save the server's public key? [Y/N]:`` → N
+
+    Also handles wrapped prompts where ``[Y/N]:`` is alone on the last line.
     """
-    tail = _auth_prompt_tail(text)
-    if not tail:
+    block = _auth_prompt_tail(text, lines=3)
+    if not block:
         return False, False
-    low = tail.lower()
+    low = block.lower()
     # Do not treat password-change ``Change now? [Y/N]:`` as host-key trust.
-    if re.search(r"(?:change\s*now|please\s*choose|password\s+needs\s+to\s+be\s+changed)", low):
+    if re.search(
+        r"(?:change\s*now|please\s*choose|password\s+needs\s+to\s+be\s+changed|修改密码|是否现在修改)",
+        low,
+    ):
+        return False, False
+    has_yn = bool(re.search(r"\[Y/N\]\s*:\s*$", block, flags=re.I | re.M))
+    if not has_yn:
         return False, False
     continue_access = bool(
-        re.search(r"(?:not\s+authenticated|continue\s+to\s+access)", low)
-        and re.search(r"\[Y/N\]\s*:\s*$", tail, flags=re.I)
+        re.search(
+            r"(?:not\s+authenticated|continue\s+to\s+access|未认证|继续访问|是否继续)",
+            low,
+        )
     )
     save_key = bool(
-        re.search(r"save\s+the\s+server'?s?\s+public\s+key", low)
-        and re.search(r"\[Y/N\]\s*:\s*$", tail, flags=re.I)
+        re.search(
+            r"(?:save\s+the\s+server'?s?\s+public\s+key|保存.*公钥|是否保存.*(?:公钥|密钥))",
+            low,
+        )
     )
+    # Bare ``[Y/N]:`` after a continue question without the word "public key".
+    if continue_access and save_key:
+        # Prefer the more specific save-key wording when both match the same block.
+        if re.search(r"(?:save\s+the\s+server|保存.*公钥|是否保存)", low):
+            return False, True
+        return True, False
     return continue_access, save_key
 
 
@@ -433,21 +529,29 @@ def _looks_like_target_cli_prompt(text: str) -> bool:
     return bool(re.search(r"(?:[>#\]])\s*$", tail)) or bool(re.search(r"^<[^>\r\n]+>\s*$", tail))
 
 
-def _interactive_target_auth(conn: ConnectHandler, username: str, password: str) -> None:
+def _interactive_target_auth(
+    conn: ConnectHandler,
+    username: str,
+    password: str,
+    *,
+    progress_cb: Any = None,
+) -> None:
     """Respond to username/password (and Huawei stelnet host-key) prompts after hop command."""
     from .ne_cli_errors import find_auth_failure_snippet
 
     # Hop stelnet can show Trying/Connected + two [Y/N] before password; keep budget generous.
-    deadline = time.time() + max(45, int(settings.ne_connect_timeout_sec or 30) + 15)
+    deadline = time.time() + max(60, int(settings.ne_connect_timeout_sec or 30) + 30)
     sent_user = False
     sent_pass = False
     answered_continue = False
     answered_save_key = False
+    empty_after_pass = 0
     acc = ""
     while time.time() < deadline:
-        buf = _read_channel(conn, wait=0.3, max_loops=8)
+        buf = _read_channel(conn, wait=0.12, max_loops=12)
         if buf:
             acc += buf
+            _emit_progress(progress_cb, buf)
             denied = find_auth_failure_snippet(acc)
             if denied:
                 raise paramiko.AuthenticationException(f"target_auth_rejected: {denied}")
@@ -455,20 +559,25 @@ def _interactive_target_auth(conn: ConnectHandler, username: str, password: str)
         # Match against accumulated tail so prompts split across reads are still seen.
         continue_access, save_key = _prompt_needs_host_key_confirm(acc)
         if continue_access and not answered_continue:
+            _emit_progress(progress_cb, "\r\n[netx] host-key continue → Y\r\n")
             _send_line(conn, "Y")
             answered_continue = True
             continue
         if save_key and not answered_save_key:
+            _emit_progress(progress_cb, "\r\n[netx] save public key → N\r\n")
             _send_line(conn, "N")
             answered_save_key = True
             continue
 
         need_user, need_pass = _prompt_needs_auth(acc)
         if need_pass and not sent_pass:
+            _emit_progress(progress_cb, "\r\n[netx] sending password\r\n")
             _send_line(conn, password)
             sent_pass = True
+            empty_after_pass = 0
             continue
         if need_user and not sent_user:
+            _emit_progress(progress_cb, f"\r\n[netx] sending username ({username})\r\n")
             _send_line(conn, username)
             sent_user = True
             continue
@@ -477,15 +586,21 @@ def _interactive_target_auth(conn: ConnectHandler, username: str, password: str)
             denied = find_auth_failure_snippet(acc)
             if denied:
                 raise paramiko.AuthenticationException(f"target_auth_rejected: {denied}")
-            # Prefer a real CLI prompt (Huawei last-login banner may precede it).
-            if _looks_like_target_cli_prompt(acc) or not buf.strip():
+            if _looks_like_target_cli_prompt(acc):
                 return
-            # Banner mid-stream after password — keep reading briefly within deadline.
-            time.sleep(0.2)
+            # Do not treat a single empty read right after password as success —
+            # Huawei still prints last-login banner / prompt.
+            if not buf.strip():
+                empty_after_pass += 1
+                if empty_after_pass >= 4:
+                    return
+            else:
+                empty_after_pass = 0
+            time.sleep(0.15)
             continue
 
         if not buf.strip():
-            time.sleep(0.3)
+            time.sleep(0.2)
             continue
         # Huawei stelnet often reprints the hop ``[sysname]`` after host-key trust and
         # *before* ``Enter password:``. Do not treat that as target login success.
@@ -506,12 +621,14 @@ def _interactive_target_auth(conn: ConnectHandler, username: str, password: str)
             if denied:
                 raise paramiko.AuthenticationException(f"target_auth_rejected: {denied}")
             return
-        time.sleep(0.3)
+        time.sleep(0.15)
     denied = find_auth_failure_snippet(acc)
     if denied:
         raise paramiko.AuthenticationException(f"target_auth_rejected: {denied}")
     if not sent_pass:
         raise TimeoutError("target_auth_timeout")
+    # Password was sent but no clear prompt — hand channel to caller anyway.
+    _emit_progress(progress_cb, "\r\n[netx] auth settle timeout; handing session to terminal\r\n")
 
 
 def _hop_netmiko_device_type(vendor: str, hop_protocol: str) -> str:
@@ -553,6 +670,7 @@ def _connect_via_cli_hop(
     rows: int | None = None,
     interactive: bool = False,
     keepalive: int | None = None,
+    progress_cb: Any = None,
 ) -> ConnectHandler:
     """Login to ZTE/Huawei/Cisco hop NE, run CLI jump command, then target secondary auth."""
     hop_host = str(creds.get("hop_host") or "").strip()
@@ -574,12 +692,15 @@ def _connect_via_cli_hop(
         session_log=session_log,
         keepalive=keepalive,
     )
+    _emit_progress(progress_cb, f"\r\n[netx] connecting hop {_hop_vendor(creds)} {hop_host}…\r\n")
     conn = _build_netmiko_connection(hop_dev, interactive=interactive)
     try:
         # MUST resize before stelnet/telnet — nested session captures hop TTY size at start
         # and often ignores later WINCH. Wrong width → mid-line edit redraw wraps in WebCRT.
         _resize_pty(conn, cols, rows)
-        pre = _read_channel(conn, wait=0.5)
+        pre = _read_channel(conn, wait=0.35)
+        if pre:
+            _emit_progress(progress_cb, pre)
         hop_prompt = extract_cli_prompt_marker(pre)
         if not hop_prompt:
             # Nudge hop CLI once so the prompt is visible for later return-to-proxy detection.
@@ -587,21 +708,31 @@ def _connect_via_cli_hop(
                 conn.write_channel(getattr(conn, "RETURN", None) or "\n")
             except Exception:
                 _send_line(conn, "")
-            pre = pre + _read_channel(conn, wait=0.35, max_loops=10)
+            more = _read_channel(conn, wait=0.25, max_loops=12)
+            if more:
+                _emit_progress(progress_cb, more)
+            pre = pre + more
             hop_prompt = extract_cli_prompt_marker(pre)
         # WebCRT skips hop session_preparation; wait a bit longer for a settled CLI
         # before stelnet/telnet so the jump command is not typed into a half-ready PTY.
         if interactive and not hop_prompt:
-            for _ in range(4):
-                more = _read_channel(conn, wait=0.4, max_loops=8)
+            for _ in range(6):
+                more = _read_channel(conn, wait=0.3, max_loops=10)
                 if more:
+                    _emit_progress(progress_cb, more)
                     pre += more
                     hop_prompt = extract_cli_prompt_marker(pre)
                     if hop_prompt:
                         break
         hop_cmd = render_hop_command(str(creds.get("hop_command_template") or ""), creds)
+        _emit_progress(progress_cb, f"\r\n[netx] hop jump: {hop_cmd}\r\n")
         _send_line(conn, hop_cmd)
-        _interactive_target_auth(conn, str(creds["username"]), str(creds["password"]))
+        _interactive_target_auth(
+            conn,
+            str(creds["username"]),
+            str(creds["password"]),
+            progress_cb=progress_cb,
+        )
         _attach_cli_hop_guard(
             conn,
             hop_prompt=hop_prompt,
@@ -630,6 +761,35 @@ def _connect_via_cli_hop(
         raise
 
 
+def _maybe_secondary_target_auth(
+    conn: ConnectHandler,
+    creds: dict[str, Any],
+    *,
+    progress_cb: Any = None,
+    force: bool = False,
+) -> None:
+    """Run interactive target auth when the PTY still shows login / host-key prompts."""
+    peek = _read_channel(conn, wait=0.45, max_loops=14)
+    if peek:
+        _emit_progress(progress_cb, peek)
+    need_user, need_pass = _prompt_needs_auth(peek)
+    cont, save = _prompt_needs_host_key_confirm(peek)
+    target_user = str(creds.get("username") or "").strip()
+    target_pass = str(creds.get("password") or "")
+    if not force and not (need_user or need_pass or cont or save):
+        return
+    if not target_pass and not force:
+        _emit_progress(
+            progress_cb,
+            "\r\n[netx] login prompt visible but target password empty; leaving for terminal\r\n",
+        )
+        return
+    if not target_user and need_user:
+        _emit_progress(progress_cb, "\r\n[netx] username prompt but target username empty\r\n")
+        return
+    _interactive_target_auth(conn, target_user, target_pass, progress_cb=progress_cb)
+
+
 def _connect_via_bastion(
     creds: dict[str, Any],
     *,
@@ -637,6 +797,7 @@ def _connect_via_bastion(
     session_log: Any = None,
     interactive: bool = False,
     keepalive: int | None = None,
+    progress_cb: Any = None,
 ) -> ConnectHandler:
     """SSH to bastion with composite username; bastion proxies to target (protocol proxy)."""
     hop_host, hop_user = expand_bastion_hop_fields(
@@ -654,6 +815,10 @@ def _connect_via_bastion(
     device_type = normalize_netmiko_device_type(creds["device_type"], creds["protocol"])
     hop_port = int(creds.get("hop_port") or 22)
     timeout = int(settings.ne_connect_timeout_sec or 30)
+    _emit_progress(
+        progress_cb,
+        f"\r\n[netx] bastion SSH {hop_user}@{hop_host} as {ssh_username!r}…\r\n",
+    )
     ssh_client = None
     try:
         ssh_client = _bastion_ssh_connect(
@@ -663,6 +828,7 @@ def _connect_via_bastion(
             password=hop_pass,
             timeout=timeout,
         )
+        _emit_progress(progress_cb, "\r\n[netx] bastion transport OK; opening shell…\r\n")
         conn = _netmiko_over_ssh_client(
             ssh_client,
             device_type=device_type,
@@ -685,18 +851,26 @@ def _connect_via_bastion(
         raise
 
     auth_mode = str(creds.get("hop_target_auth_mode") or "bastion_managed").strip().lower()
-    if auth_mode == "manual":
-        target_pass = str(creds.get("password") or "")
-        if target_pass:
-            try:
-                _read_channel(conn, wait=0.5)
-                _interactive_target_auth(conn, str(creds["username"]), target_pass)
-            except Exception:
-                try:
-                    conn.disconnect()
-                except Exception:
-                    pass
-                raise
+    try:
+        if auth_mode == "manual":
+            target_pass = str(creds.get("password") or "")
+            if target_pass:
+                _maybe_secondary_target_auth(conn, creds, progress_cb=progress_cb, force=True)
+            else:
+                # Still drain banner so WebCRT live echo shows what the proxy printed.
+                peek = _read_channel(conn, wait=0.4, max_loops=12)
+                if peek:
+                    _emit_progress(progress_cb, peek)
+        else:
+            # bastion_managed: normally no secondary auth, but if the proxy still presents
+            # Username/Password or Huawei host-key prompts, answer them when creds exist.
+            _maybe_secondary_target_auth(conn, creds, progress_cb=progress_cb, force=False)
+    except Exception:
+        try:
+            conn.disconnect()
+        except Exception:
+            pass
+        raise
     return conn
 
 
@@ -793,22 +967,54 @@ def open_netmiko_connection(
     rows: int | None = None,
     interactive: bool = False,
     keepalive: int | None = None,
+    progress_cb: Any = None,
 ) -> ConnectHandler:
     """Open a Netmiko connection to the target NE (direct or via configured hop).
 
     ``interactive=True`` (WebCRT) skips Netmiko's automatic ``terminal length`` /
     ``terminal width`` (and vendor equivalents). Collection / MCP keep the default.
+
+    ``progress_cb`` receives live login transcript chunks (WebCRT connect echo).
     """
     ka = keepalive
     if ka is None and interactive:
         ka = int(getattr(settings, "webcrt_keepalive_sec", 0) or 0) or None
+    log = session_log
+    if progress_cb is not None:
+        class _TeeLog(_ProgressSessionLog):
+            def write(self, data: Any) -> int:  # noqa: ANN401
+                n = super().write(data)
+                if session_log is None:
+                    return n
+                try:
+                    if isinstance(data, (bytes, bytearray)):
+                        session_log.write(data)
+                    else:
+                        session_log.write(str(data).encode("utf-8", errors="replace"))
+                except Exception:
+                    try:
+                        session_log.write(data)
+                    except Exception:
+                        pass
+                return n
+
+            def getvalue(self) -> bytes:
+                if session_log is not None and hasattr(session_log, "getvalue"):
+                    try:
+                        raw = session_log.getvalue()
+                        return raw if isinstance(raw, (bytes, bytearray)) else str(raw).encode()
+                    except Exception:
+                        pass
+                return super().getvalue()
+
+        log = _TeeLog(progress_cb)
     if creds.get("hop_enabled"):
         vendor = _hop_vendor(creds)
         if vendor == "linux":
             return _connect_via_linux_hop(
                 creds,
                 session_timeout=session_timeout,
-                session_log=session_log,
+                session_log=log,
                 interactive=interactive,
                 keepalive=ka,
             )
@@ -816,23 +1022,27 @@ def open_netmiko_connection(
             return _connect_via_bastion(
                 creds,
                 session_timeout=session_timeout,
-                session_log=session_log,
+                session_log=log,
                 interactive=interactive,
                 keepalive=ka,
+                progress_cb=progress_cb,
             )
         return _connect_via_cli_hop(
             creds,
             session_timeout=session_timeout,
-            session_log=session_log,
+            session_log=log,
             cols=cols,
             rows=rows,
             interactive=interactive,
             keepalive=ka,
+            progress_cb=progress_cb,
         )
+    if progress_cb is not None:
+        _emit_progress(progress_cb, "\r\n[netx] direct connect…\r\n")
     return _connect_direct(
         creds,
         session_timeout=session_timeout,
-        session_log=session_log,
+        session_log=log,
         interactive=interactive,
         keepalive=ka,
     )

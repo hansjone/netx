@@ -458,14 +458,34 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
         }
     )
 
-    # Wait for async connect without blocking the event loop; emit phase updates.
+    # Wait for async connect without blocking the event loop; emit phase updates
+    # and live login transcript (hop/stelnet/bastion) into the terminal.
     if sess.state == "connecting":
         loop = asyncio.get_running_loop()
         budget = max(30, int(settings.webcrt_connect_timeout_sec or 90)) + 15
         deadline = time.time() + budget
+
+        async def _flush_connect_echo(cur_sess: Any) -> None:
+            try:
+                text = cur_sess.drain_connect_echo()
+            except Exception:
+                return
+            if not text:
+                return
+            raw = _encode_text(text, getattr(cur_sess, "encoding", None) or "utf-8")
+            try:
+                await websocket.send_bytes(raw)
+            except Exception:
+                try:
+                    await websocket.send_json({"type": "stdout", "data": text})
+                except Exception:
+                    return
+
         while True:
             cur = get_session(session_id) or sess
             if cur.state != "connecting":
+                # Drain any last connect-echo chunks before leaving the wait loop.
+                await _flush_connect_echo(cur)
                 sess = cur
                 break
             elapsed = max(0.0, time.time() - float(cur.connect_started_at or time.time()))
@@ -484,6 +504,7 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
             except Exception:
                 # Client dropped during connect wait (StrictMode remount etc.) — keep PTY.
                 return
+            await _flush_connect_echo(cur)
             remaining = deadline - time.time()
             if remaining <= 0:
                 await websocket.send_json(
@@ -491,7 +512,7 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
                 )
                 await websocket.close(code=4502)
                 return
-            slice_timeout = min(1.0, max(0.2, remaining))
+            slice_timeout = min(0.35, max(0.15, remaining))
             try:
                 await loop.run_in_executor(
                     webcrt_io_executor(),
@@ -503,6 +524,7 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
                 if sess.state == "connecting":
                     # wait_session_ready should not return while still connecting.
                     continue
+                await _flush_connect_echo(sess)
                 break
             except HTTPException as exc:
                 if exc.status_code == 504:

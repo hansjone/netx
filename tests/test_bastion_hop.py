@@ -280,7 +280,7 @@ class BastionConnectImplTests(unittest.TestCase):
             password="bastion-pass",
             timeout=unittest.mock.ANY,
         )
-        interact.assert_called_once_with(conn, "target-user", "target-pass")
+        interact.assert_called_once_with(conn, "target-user", "target-pass", progress_cb=None)
 
 
 class BastionInteractiveHandlerTests(unittest.TestCase):

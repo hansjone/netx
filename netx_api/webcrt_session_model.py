@@ -59,6 +59,10 @@ class WebcrtSession:
     bootstrap_output: bytes = b""
     # First WS attach gets login bootstrap; later attaches prefer session-log tail.
     bootstrap_replayed: bool = False
+    # Live connect transcript (hop/stelnet/bastion) streamed to WS before ready.
+    connect_echo_acc: str = ""
+    connect_echo_q: queue.Queue = field(default_factory=queue.Queue, repr=False)
+    _connect_echo_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     needs_live_prompt: bool = True
     # React StrictMode remounts open a second WS before the first fully tears down.
     # Only the newest attach_gen may consume out_queue / mark detach.
@@ -86,6 +90,32 @@ class WebcrtSession:
 
     def touch(self) -> None:
         self.last_activity = time.time()
+
+    def push_connect_echo(self, text: str) -> None:
+        """Queue login transcript for the WS wait-loop (thread-safe)."""
+        chunk = str(text or "")
+        if not chunk or self.closed:
+            return
+        with self._connect_echo_lock:
+            self.connect_echo_acc += chunk
+        try:
+            self.connect_echo_q.put_nowait(chunk)
+        except Exception:
+            pass
+
+    def drain_connect_echo(self) -> str:
+        """Pop all pending connect-echo chunks (called from asyncio WS loop)."""
+        parts: list[str] = []
+        while True:
+            try:
+                parts.append(self.connect_echo_q.get_nowait())
+            except queue.Empty:
+                break
+        return "".join(parts)
+
+    def connect_echo_text(self) -> str:
+        with self._connect_echo_lock:
+            return str(self.connect_echo_acc or "")
 
     def close_sftp(self) -> None:
         with self._sftp_lock:

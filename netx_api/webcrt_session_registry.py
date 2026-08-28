@@ -223,6 +223,10 @@ def _finish_connect(
     client: str,
 ) -> None:
     log_buf = io.BytesIO()
+
+    def _progress(text: str) -> None:
+        sess.push_connect_echo(text)
+
     try:
         conn = open_netmiko_connection(
             creds,
@@ -232,15 +236,20 @@ def _finish_connect(
             rows=sess.rows,
             interactive=True,
             keepalive=int(sess.keepalive_sec or 0),
+            progress_cb=_progress,
         )
     except Exception as exc:
-        partial = _session_log_text(log_buf).strip()
+        partial = (_session_log_text(log_buf) or sess.connect_echo_text()).strip()
         from .ne_cli_errors import format_cli_failure
 
         classified = format_cli_failure(exc, partial)
         detail = f"connect_failed:{classified}"
         if partial:
             detail = f"{detail}\n--- device transcript ---\n{partial[-4000:]}"
+        # Surface failure transcript on the live terminal before status:error.
+        if partial and not sess.connect_echo_text().strip():
+            sess.push_connect_echo(partial[-4000:])
+        sess.push_connect_echo(f"\r\n[netx] connect failed: {classified}\r\n")
         sess.state = "error"
         sess.connect_error = detail
         sess.connect_finished_at = time.time()
@@ -271,30 +280,50 @@ def _finish_connect(
         early = _capture_raw_channel(conn, duration=0.35)
     except Exception:
         early = ""
+    if early:
+        sess.push_connect_echo(early)
     seed = f"{pre_log}{early}"
     already_prompted = _looks_like_cli_prompt(seed)
     primed = ""
-    # Do not send Enter at Username:/Password: or Huawei password-change [Y/N]:
-    # (Netmiko telnet_login already answers password-change with "N").
-    if _looks_like_login_prompt(seed) or _looks_like_password_change_prompt(seed):
+    # Auto-answer Huawei post-login password-change (Netmiko would have sent N).
+    if _looks_like_password_change_prompt(seed):
+        try:
+            conn.write_channel("N" + (getattr(conn, "RETURN", None) or "\n"))
+            sess.push_connect_echo("\r\n[netx] password-change → N\r\n")
+            primed = _capture_raw_channel(conn, duration=0.9)
+            if primed:
+                sess.push_connect_echo(primed)
+        except Exception:
+            primed = ""
+    elif _looks_like_login_prompt(seed):
+        # Do not send Enter at Username:/Password: (would empty-submit login).
         try:
             primed = _capture_raw_channel(conn, duration=0.9)
+            if primed:
+                sess.push_connect_echo(primed)
         except Exception:
             primed = ""
     else:
         try:
             primed = _prime_interactive_channel(conn, already_prompted=already_prompted)
+            if primed:
+                sess.push_connect_echo(primed)
         except Exception:
             primed = ""
     combined = f"{seed}{primed}"
     # Final settle: keep stragglers in bootstrap (normalize collapses duplicate prompts).
     try:
-        combined += _capture_raw_channel(conn, duration=0.35)
+        more = _capture_raw_channel(conn, duration=0.35)
+        if more:
+            sess.push_connect_echo(more)
+            combined += more
     except Exception:
         pass
     if not str(combined).strip():
         try:
             combined = _drain_channel(conn, rounds=6, wait=0.08)
+            if combined:
+                sess.push_connect_echo(combined)
         except Exception:
             combined = ""
     bootstrap = prepare_bootstrap_output(combined)
@@ -304,7 +333,20 @@ def _finish_connect(
     except Exception:
         leftover = ""
     if leftover and leftover.strip() not in {":", ">", "#", "]", "$"}:
+        sess.push_connect_echo(leftover)
         bootstrap = prepare_bootstrap_output(f"{bootstrap}{leftover}")
+
+    # Prefer live echo already shown on the terminal; only bootstrap the delta.
+    echoed = sess.connect_echo_text()
+    if echoed and bootstrap:
+        # If bootstrap is fully covered by live echo, skip replaying it.
+        norm_boot = bootstrap.replace("\r\n", "\n").strip()
+        norm_echo = echoed.replace("\r\n", "\n")
+        if norm_boot and norm_boot in norm_echo:
+            bootstrap = ""
+        elif norm_echo and norm_boot.startswith(norm_echo.strip()[-min(200, len(norm_echo)) :]):
+            # Overlap at the end of echo — keep only unseen suffix when possible.
+            bootstrap = bootstrap
 
     hop_guard = get_cli_hop_guard(conn)
     sess.conn = conn
@@ -313,17 +355,19 @@ def _finish_connect(
     sess.bootstrap_output = _encode_text(str(bootstrap or ""), sess.encoding)
     # Nudge Enter on WS attach only when we still need a shell prompt.
     # Never when already at CLI prompt or Username:/Password: (would empty-submit login).
+    final_view = bootstrap or echoed
     sess.needs_live_prompt = (
-        not _looks_like_cli_prompt(bootstrap) and not _looks_like_login_prompt(bootstrap)
+        not _looks_like_cli_prompt(final_view) and not _looks_like_login_prompt(final_view)
     )
     sess.open_session_log()
-    if bootstrap:
-        sess.append_session_log(bootstrap if bootstrap.endswith("\n") else bootstrap + "\n")
+    log_seed = echoed or bootstrap
+    if log_seed:
+        sess.append_session_log(log_seed if str(log_seed).endswith("\n") else str(log_seed) + "\n")
     sess.start_reader()
     # Drop late prompt echoes that race into the queue right after reader start.
     prompt_hint = ""
-    if bootstrap:
-        prompt_hint = str(bootstrap).replace("\r\n", "\n").replace("\r", "\n").strip().split("\n")[-1].strip()
+    if final_view:
+        prompt_hint = str(final_view).replace("\r\n", "\n").replace("\r", "\n").strip().split("\n")[-1].strip()
     settle_deadline = time.time() + 0.45
     while time.time() < settle_deadline:
         try:

@@ -32,6 +32,13 @@ class PromptDetectTests(unittest.TestCase):
         self.assertFalse(cont)
         self.assertTrue(save)
 
+    def test_host_key_wrapped_yn_line(self) -> None:
+        cont, save = _prompt_needs_host_key_confirm(
+            "The server is not authenticated. Continue to access it?\n[Y/N]:"
+        )
+        self.assertTrue(cont)
+        self.assertFalse(save)
+
     def test_password_change_not_host_key(self) -> None:
         cont, save = _prompt_needs_host_key_confirm("Change now? [Y/N]:")
         self.assertFalse(cont)
@@ -80,11 +87,14 @@ class HuaweiStelnetAuthTests(unittest.TestCase):
             ),
         ]
         conn = MagicMock()
-        _interactive_target_auth(conn, "ipran", "secret")
+        seen: list[str] = []
+        _interactive_target_auth(conn, "ipran", "secret", progress_cb=seen.append)
         self.assertEqual(
             [c.args[1] for c in mock_send.call_args_list],
             ["ipran", "Y", "N", "secret"],
         )
+        self.assertTrue(any("host-key continue" in p for p in seen))
+        self.assertTrue(any("Please input the username" in p for p in seen))
 
     @patch("netx_api.ne_session_connect._read_channel")
     @patch("netx_api.ne_session_connect._send_line")
@@ -101,6 +111,9 @@ class HuaweiStelnetAuthTests(unittest.TestCase):
             "[HW-VM-AR1000V-1]\n",  # hop reprint — must keep waiting
             "Enter password:",
             "<TARGET>\n",
+            "",
+            "",
+            "",
             "",
         ]
         conn = MagicMock()
