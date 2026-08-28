@@ -111,6 +111,13 @@ class WebcrtServiceTests(unittest.TestCase):
         self.assertEqual(svc.prepare_bootstrap_output("banner\n<r1>:"), "banner\n<r1>")
         self.assertTrue(svc._looks_like_password_change_prompt("Change now? [Y/N]:"))
         self.assertFalse(svc._looks_like_password_change_prompt("Change now? [Y/N]:N"))
+        # Bare / stelnet host-key [Y/N] must not be treated as password-change.
+        self.assertFalse(svc._looks_like_password_change_prompt("[Y/N]:"))
+        self.assertFalse(
+            svc._looks_like_password_change_prompt(
+                "The server is not authenticated. Continue to access it? [Y/N]:"
+            )
+        )
         # WS attach must not send Enter when bootstrap is a login prompt.
         self.assertFalse(
             (not svc._looks_like_cli_prompt("Username:") and not svc._looks_like_login_prompt("Username:"))

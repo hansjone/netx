@@ -374,20 +374,75 @@ def _send_line(conn: ConnectHandler, line: str) -> None:
     conn.write_channel(text)
 
 
+def _auth_prompt_tail(text: str) -> str:
+    """Last non-empty line of an auth transcript (prompt detection)."""
+    s = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = [ln.strip() for ln in s.split("\n") if ln.strip()]
+    return lines[-1] if lines else ""
+
+
 def _prompt_needs_auth(text: str) -> tuple[bool, bool]:
-    low = text.lower()
-    need_user = bool(re.search(r"(username|login|user\s*name)\s*[:>]", low))
-    need_pass = bool(re.search(r"password\s*[:>]", low))
+    """Detect username/password prompts (Huawei stelnet: ``Please input the username:``)."""
+    tail = _auth_prompt_tail(text).lower()
+    if not tail:
+        return False, False
+    # Prefer last-line match so earlier echoed prompts in ``acc`` do not stick forever.
+    need_user = bool(
+        re.search(r"(?:please\s+input\s+the\s+)?(?:user\s*name|username|login)\s*[:>]\s*$", tail)
+    )
+    need_pass = bool(re.search(r"(?:enter\s+)?password\s*[:>]\s*$", tail))
     return need_user, need_pass
 
 
+def _prompt_needs_host_key_confirm(text: str) -> tuple[bool, bool]:
+    """Huawei VRP stelnet first-connect host-key prompts.
+
+    Returns ``(continue_access, save_public_key)`` for:
+    - ``The server is not authenticated. Continue to access it? [Y/N]:`` → Y
+    - ``Save the server's public key? [Y/N]:`` → N
+    """
+    tail = _auth_prompt_tail(text)
+    if not tail:
+        return False, False
+    low = tail.lower()
+    # Do not treat password-change ``Change now? [Y/N]:`` as host-key trust.
+    if re.search(r"(?:change\s*now|please\s*choose|password\s+needs\s+to\s+be\s+changed)", low):
+        return False, False
+    continue_access = bool(
+        re.search(r"(?:not\s+authenticated|continue\s+to\s+access)", low)
+        and re.search(r"\[Y/N\]\s*:\s*$", tail, flags=re.I)
+    )
+    save_key = bool(
+        re.search(r"save\s+the\s+server'?s?\s+public\s+key", low)
+        and re.search(r"\[Y/N\]\s*:\s*$", tail, flags=re.I)
+    )
+    return continue_access, save_key
+
+
+def _looks_like_target_cli_prompt(text: str) -> bool:
+    """True when transcript ends at a device CLI prompt (not ``[Y/N]:`` / login)."""
+    tail = _auth_prompt_tail(text)
+    if not tail:
+        return False
+    if re.search(r"\[Y/N\]", tail, flags=re.I):
+        return False
+    need_user, need_pass = _prompt_needs_auth(tail)
+    if need_user or need_pass:
+        return False
+    # Huawei ``<sysname>`` / ``[sysname]``; Cisco ``R1#`` / ``R1>``.
+    return bool(re.search(r"(?:[>#\]])\s*$", tail)) or bool(re.search(r"^<[^>\r\n]+>\s*$", tail))
+
+
 def _interactive_target_auth(conn: ConnectHandler, username: str, password: str) -> None:
-    """Respond to username/password prompts after hop command (target credentials)."""
+    """Respond to username/password (and Huawei stelnet host-key) prompts after hop command."""
     from .ne_cli_errors import find_auth_failure_snippet
 
-    deadline = time.time() + int(settings.ne_connect_timeout_sec or 30)
+    # Hop stelnet can show Trying/Connected + two [Y/N] before password; keep budget generous.
+    deadline = time.time() + max(45, int(settings.ne_connect_timeout_sec or 30) + 15)
     sent_user = False
     sent_pass = False
+    answered_continue = False
+    answered_save_key = False
     acc = ""
     while time.time() < deadline:
         buf = _read_channel(conn, wait=0.3, max_loops=8)
@@ -396,7 +451,19 @@ def _interactive_target_auth(conn: ConnectHandler, username: str, password: str)
             denied = find_auth_failure_snippet(acc)
             if denied:
                 raise paramiko.AuthenticationException(f"target_auth_rejected: {denied}")
-        need_user, need_pass = _prompt_needs_auth(buf)
+
+        # Match against accumulated tail so prompts split across reads are still seen.
+        continue_access, save_key = _prompt_needs_host_key_confirm(acc)
+        if continue_access and not answered_continue:
+            _send_line(conn, "Y")
+            answered_continue = True
+            continue
+        if save_key and not answered_save_key:
+            _send_line(conn, "N")
+            answered_save_key = True
+            continue
+
+        need_user, need_pass = _prompt_needs_auth(acc)
         if need_pass and not sent_pass:
             _send_line(conn, password)
             sent_pass = True
@@ -405,20 +472,40 @@ def _interactive_target_auth(conn: ConnectHandler, username: str, password: str)
             _send_line(conn, username)
             sent_user = True
             continue
-        if sent_pass and not need_user and not need_pass:
+
+        if sent_pass and not need_user and not need_pass and not continue_access and not save_key:
+            denied = find_auth_failure_snippet(acc)
+            if denied:
+                raise paramiko.AuthenticationException(f"target_auth_rejected: {denied}")
+            # Prefer a real CLI prompt (Huawei last-login banner may precede it).
+            if _looks_like_target_cli_prompt(acc) or not buf.strip():
+                return
+            # Banner mid-stream after password — keep reading briefly within deadline.
+            time.sleep(0.2)
+            continue
+
+        if not buf.strip():
+            time.sleep(0.3)
+            continue
+        # Huawei stelnet often reprints the hop ``[sysname]`` after host-key trust and
+        # *before* ``Enter password:``. Do not treat that as target login success.
+        if sent_pass and _looks_like_target_cli_prompt(buf):
             denied = find_auth_failure_snippet(acc)
             if denied:
                 raise paramiko.AuthenticationException(f"target_auth_rejected: {denied}")
             return
-        if not buf.strip():
-            time.sleep(0.3)
-            continue
-        if re.search(r"[>#]\s*$", buf):
+        if (
+            sent_user
+            and not sent_pass
+            and not answered_continue
+            and not answered_save_key
+            and _looks_like_target_cli_prompt(buf)
+        ):
+            # Passwordless target after username only (no stelnet host-key dance).
             denied = find_auth_failure_snippet(acc)
             if denied:
                 raise paramiko.AuthenticationException(f"target_auth_rejected: {denied}")
-            if sent_pass or (sent_user and not need_pass):
-                return
+            return
         time.sleep(0.3)
     denied = find_auth_failure_snippet(acc)
     if denied:
@@ -502,6 +589,16 @@ def _connect_via_cli_hop(
                 _send_line(conn, "")
             pre = pre + _read_channel(conn, wait=0.35, max_loops=10)
             hop_prompt = extract_cli_prompt_marker(pre)
+        # WebCRT skips hop session_preparation; wait a bit longer for a settled CLI
+        # before stelnet/telnet so the jump command is not typed into a half-ready PTY.
+        if interactive and not hop_prompt:
+            for _ in range(4):
+                more = _read_channel(conn, wait=0.4, max_loops=8)
+                if more:
+                    pre += more
+                    hop_prompt = extract_cli_prompt_marker(pre)
+                    if hop_prompt:
+                        break
         hop_cmd = render_hop_command(str(creds.get("hop_command_template") or ""), creds)
         _send_line(conn, hop_cmd)
         _interactive_target_auth(conn, str(creds["username"]), str(creds["password"]))

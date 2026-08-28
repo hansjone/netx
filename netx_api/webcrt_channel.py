@@ -150,14 +150,21 @@ def _looks_like_login_prompt(text: str) -> bool:
 
 
 def _looks_like_password_change_prompt(text: str) -> bool:
-    """Huawei/VRP post-auth ``Change now? [Y/N]:`` (Netmiko already answers N)."""
+    """Huawei/VRP post-auth ``Change now? [Y/N]:`` (Netmiko already answers N).
+
+    Do not match bare ``[Y/N]:`` — stelnet host-key trust prompts share that suffix
+    and are answered in ``_interactive_target_auth``, not by skipping Enter here.
+    """
     s = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
     lines = [ln.strip() for ln in s.split("\n") if ln.strip()]
     if not lines:
         return False
     last = lines[-1]
-    return bool(re.search(r"(?i)(change\s*now|please\s*choose|password\s+needs\s+to\s+be\s+changed).{0,80}:\s*$", last)) or bool(
-        re.search(r"\[Y/N\]\s*:\s*$", last, flags=re.I)
+    return bool(
+        re.search(
+            r"(?i)(change\s*now|please\s*choose|password\s+needs\s+to\s+be\s+changed).{0,80}:\s*$",
+            last,
+        )
     )
 
 
