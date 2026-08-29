@@ -81,13 +81,16 @@ def execute_managed_ne_commands(
     try:
         output = _collect_on_device(creds, cmds, read_timeout_sec=read_timeout)
     except Exception as exc:
+        detail = str(exc)[:4000]
         return {
             "ok": False,
             "device": device,
             "commands": cmds,
             "read_timeout_sec": read_timeout,
             "error": type(exc).__name__,
-            "detail": str(exc)[:2000],
+            "detail": detail,
+            # Preserve whatever echo was captured so LLDP discover / ops can show it.
+            "output": detail,
         }
 
     if len(output) > _EXEC_MAX_OUTPUT:

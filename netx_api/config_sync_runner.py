@@ -35,7 +35,7 @@ def _utcnow() -> datetime:
 
 
 def _format_error(exc: BaseException) -> str:
-    return format_cli_failure(exc, limit=1020)
+    return format_cli_failure(exc, limit=4000)
 
 
 def _pool_for_cycle(cycle_id: str, concurrency: int) -> ThreadPoolExecutor:
@@ -124,16 +124,27 @@ def _collect_commands(
     *,
     conn_holder: dict[str, Any] | None = None,
 ) -> list[str]:
+    from .ne_netmiko import disable_target_paging
+
     per_cmd = int(settings.ne_collect_read_timeout_sec or 120)
     session_timeout = per_cmd * max(1, len(commands)) + 60
     log_buf = io.BytesIO()
     try:
         conn = open_netmiko_connection(creds, session_timeout=session_timeout, session_log=log_buf)
     except Exception as exc:
-        raise RuntimeError(format_cli_failure(exc, session_log_text(log_buf))) from exc
+        raise RuntimeError(format_cli_failure(exc, session_log_text(log_buf), limit=4000)) from exc
     if conn_holder is not None:
         conn_holder["conn"] = conn
+        conn_holder["session_log"] = log_buf
     try:
+        try:
+            disable_target_paging(
+                conn,
+                vendor=str(creds.get("vendor") or ""),
+                device_type=str(creds.get("device_type") or ""),
+            )
+        except Exception:
+            pass
         outputs: list[str] = []
         for command in commands:
             if conn_holder is not None and conn_holder.get("timed_out"):
@@ -141,9 +152,13 @@ def _collect_commands(
             try:
                 out = send_show_command(conn, command, read_timeout=per_cmd)
             except Exception as exc:
-                raise RuntimeError(format_cli_failure(exc, session_log_text(log_buf))) from exc
+                raise RuntimeError(format_cli_failure(exc, session_log_text(log_buf), limit=4000)) from exc
             outputs.append(str(out or ""))
         return outputs
+    except Exception as exc:
+        if isinstance(exc, TimeoutError):
+            raise RuntimeError(format_cli_failure(exc, session_log_text(log_buf), limit=4000)) from exc
+        raise
     finally:
         if conn_holder is not None:
             conn_holder.pop("conn", None)
@@ -157,13 +172,18 @@ def _collect_with_timeout(creds: dict[str, Any], commands: list[str]) -> list[st
     cap = int(settings.ne_collect_run_timeout_cap_sec or 600)
     budget = min(cap, per_cmd * max(1, len(commands)) + 90)
     holder: dict[str, Any] = {}
-    return run_cli_with_timeout(
-        lambda: _collect_commands(creds, commands, conn_holder=holder),
-        timeout_sec=budget,
-        conn_holder=holder,
-        label="config_sync",
-        acquire_budget=True,
-    )
+    try:
+        return run_cli_with_timeout(
+            lambda: _collect_commands(creds, commands, conn_holder=holder),
+            timeout_sec=budget,
+            conn_holder=holder,
+            label="config_sync",
+            acquire_budget=True,
+        )
+    except TimeoutError as exc:
+        raise RuntimeError(
+            format_cli_failure(exc, session_log_text(holder.get("session_log")), limit=4000)
+        ) from exc
 
 
 def _history_keep(db) -> int:

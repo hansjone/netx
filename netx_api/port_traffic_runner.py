@@ -260,10 +260,20 @@ def _sample_targets_shared_session(device_id: str, target_ids: list[str]) -> tup
     holder: dict[str, Any] = {}
 
     def _run_session() -> tuple[int, str]:
+        from .ne_netmiko import disable_target_paging
+
         conn = open_netmiko_connection(creds, session_timeout=budget)
         holder["conn"] = conn
         local_errors = 0
         try:
+            try:
+                disable_target_paging(
+                    conn,
+                    vendor=str(creds.get("vendor") or ""),
+                    device_type=str(creds.get("device_type") or ""),
+                )
+            except Exception:
+                pass
             for tid, ifname in ifaces:
                 if holder.get("timed_out"):
                     raise TimeoutError("port_traffic_aborted")

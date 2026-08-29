@@ -47,9 +47,12 @@ def shutdown_ne_collect_executor(*, wait: bool = False) -> None:
 
 def _format_run_error(exc: BaseException) -> str:
     head = f"{type(exc).__name__}: {exc}"
+    # RuntimeError from format_cli_failure already carries session log — keep it.
+    if isinstance(exc, RuntimeError) and "--- session log ---" in str(exc):
+        return str(exc)[:4000]
     tb = traceback.format_exc().strip()
     text = f"{head}\n{tb}" if tb else head
-    return text[:1020]
+    return text[:4000]
 
 
 def _safe_filename_part(text: str) -> str:
@@ -64,23 +67,61 @@ def _collect_on_device(
     read_timeout_sec: int | None = None,
     conn_holder: dict[str, Any] | None = None,
 ) -> str:
+    import io
+
+    from .ne_cli_errors import format_cli_failure, session_log_text
+    from .ne_netmiko import disable_target_paging
+
     per_cmd = int(read_timeout_sec if read_timeout_sec is not None else (settings.ne_collect_read_timeout_sec or 120))
     session_timeout = per_cmd * max(1, len(commands)) + 60
-    conn = open_netmiko_connection(creds, session_timeout=session_timeout)
-    if conn_holder is not None:
-        conn_holder["conn"] = conn
+    log_buf = io.BytesIO()
+    chunks: list[str] = []
+    conn = None
     try:
+        try:
+            conn = open_netmiko_connection(
+                creds, session_timeout=session_timeout, session_log=log_buf
+            )
+        except Exception as exc:
+            raise RuntimeError(format_cli_failure(exc, session_log_text(log_buf), limit=4000)) from exc
+        if conn_holder is not None:
+            conn_holder["conn"] = conn
+            conn_holder["session_log"] = log_buf
+        # Belt-and-suspenders: hop/bastion nested CLIs and missed session_prep.
+        try:
+            disable_target_paging(
+                conn,
+                vendor=str(creds.get("vendor") or ""),
+                device_type=str(creds.get("device_type") or ""),
+            )
+        except Exception:
+            _log.debug("collection paging disable failed", exc_info=True)
         prompt = str(conn.find_prompt() or "")
-        chunks: list[str] = []
         for command in commands:
             if conn_holder is not None and conn_holder.get("timed_out"):
                 raise TimeoutError("collection_aborted")
             ts = datetime.now().isoformat(timespec="seconds")
             chunks.append(f'>>> [{ts}] {{"String":"{command}", "Match":"{prompt}", "Timeout":0}}\n')
-            out = send_show_command(conn, command, read_timeout=per_cmd)
+            try:
+                out = send_show_command(conn, command, read_timeout=per_cmd)
+            except Exception as exc:
+                partial = "".join(chunks)
+                transcript = session_log_text(log_buf) or partial
+                raise RuntimeError(
+                    format_cli_failure(exc, transcript, limit=4000)
+                ) from exc
             chunks.append(str(out or ""))
             chunks.append("\n")
         return "".join(chunks)
+    except Exception as exc:
+        # Surface echo for mid-command Netmiko failures not already wrapped.
+        if isinstance(exc, RuntimeError) and "--- session log ---" in str(exc):
+            raise
+        partial = "".join(chunks)
+        transcript = session_log_text(log_buf) or partial
+        if transcript:
+            raise RuntimeError(format_cli_failure(exc, transcript, limit=4000)) from exc
+        raise
     finally:
         if conn_holder is not None:
             conn_holder.pop("conn", None)
@@ -94,20 +135,25 @@ def _collect_with_timeout(
     read_timeout_sec: int | None = None,
 ) -> str:
     from .cli_timeout import run_cli_with_timeout
+    from .ne_cli_errors import format_cli_failure, session_log_text
 
     per_cmd = int(read_timeout_sec if read_timeout_sec is not None else (settings.ne_collect_read_timeout_sec or 120))
     cap = int(settings.ne_collect_run_timeout_cap_sec or 600)
     budget = min(cap, per_cmd * max(1, len(commands)) + 90)
     holder: dict[str, Any] = {}
-    return run_cli_with_timeout(
-        lambda: _collect_on_device(
-            creds, commands, read_timeout_sec=per_cmd, conn_holder=holder
-        ),
-        timeout_sec=budget,
-        conn_holder=holder,
-        label="collection",
-        acquire_budget=True,
-    )
+    try:
+        return run_cli_with_timeout(
+            lambda: _collect_on_device(
+                creds, commands, read_timeout_sec=per_cmd, conn_holder=holder
+            ),
+            timeout_sec=budget,
+            conn_holder=holder,
+            label="collection",
+            acquire_budget=True,
+        )
+    except TimeoutError as exc:
+        transcript = session_log_text(holder.get("session_log"))
+        raise RuntimeError(format_cli_failure(exc, transcript, limit=4000)) from exc
 
 
 def _update_run(run_id: str, **fields: Any) -> None:

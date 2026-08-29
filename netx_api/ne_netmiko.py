@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 
@@ -35,6 +36,63 @@ def is_cisco_ios_device_type(device_type: str) -> bool:
 
 def is_zte_device_type(device_type: str) -> bool:
     return "zte" in str(device_type or "").strip().lower()
+
+
+def is_huawei_device_type(device_type: str) -> bool:
+    return "huawei" in str(device_type or "").strip().lower()
+
+
+def paging_disable_commands(*, vendor: str = "", device_type: str = "") -> list[str]:
+    """Vendor CLI commands to disable --More-- paging (collection / LLDP / sync)."""
+    dt = str(device_type or "").strip().lower()
+    v = str(vendor or "").strip().lower()
+    blob = f"{dt} {v}"
+    if "huawei" in blob or "华为" in v:
+        return ["screen-length 0 temporary"]
+    if "hp_comware" in blob or "h3c" in blob or "comware" in blob:
+        return ["screen-length disable"]
+    if "juniper" in blob or "junos" in blob:
+        return ["set cli screen-length 0"]
+    if "nokia" in blob or "alcatel_sros" in blob or "sros" in blob:
+        return ["environment no more"]
+    if "alcatel_aos" in blob:
+        return ["terminal length 0"]
+    # Cisco / ZTE / generic SSH CLIs
+    return ["terminal length 0"]
+
+
+def disable_target_paging(
+    conn: Any,
+    *,
+    vendor: str = "",
+    device_type: str = "",
+) -> str:
+    """Send paging-off on the *current* CLI (critical after CLI hop / bastion jump).
+
+    Nested stelnet/telnet lands on the target without Netmiko ``session_preparation``,
+    so --More-- stays enabled and long ``display/show lldp`` / config dumps time out.
+    Uses timing reads so a wrong hop ``base_prompt`` does not block.
+    """
+    cmds = paging_disable_commands(vendor=vendor, device_type=device_type)
+    chunks: list[str] = []
+    for cmd in cmds:
+        try:
+            out = conn.send_command_timing(cmd, read_timeout=15)
+            chunks.append(str(out or ""))
+            continue
+        except Exception:
+            pass
+        try:
+            ret = getattr(conn, "RETURN", None) or "\n"
+            conn.write_channel(str(cmd) + ret)
+            time.sleep(0.35)
+            if hasattr(conn, "read_channel"):
+                part = conn.read_channel()
+                if part:
+                    chunks.append(str(part))
+        except Exception:
+            pass
+    return "".join(chunks)
 
 
 def send_show_command(conn: Any, command: str, *, read_timeout: int = 120) -> str:

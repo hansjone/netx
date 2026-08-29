@@ -20,11 +20,13 @@ class CliAuthClassifyTests(unittest.TestCase):
         self.assertIn("Permission denied", msg)
         self.assertIn("prompt_timeout", msg)
 
-    def test_plain_timeout_unchanged(self):
+    def test_plain_timeout_includes_session_log(self):
         exc = RuntimeError("ReadTimeout: Pattern not detected: '[>#]' in output.")
-        msg = format_cli_failure(exc, "show running-config\n...still dumping...\n")
+        msg = format_cli_failure(exc, "show running-config\n...still dumping...\n---- More ----\n")
         self.assertIn("ReadTimeout", msg)
         self.assertFalse(msg.startswith("auth_rejected:"))
+        self.assertIn("session log", msg)
+        self.assertIn("More", msg)
 
     def test_authentication_exception(self):
         class AuthenticationException(Exception):
@@ -53,6 +55,8 @@ class CliAuthClassifyTests(unittest.TestCase):
         self.assertIsNone(find_auth_failure_snippet(text))
         msg = format_cli_failure("ReadTimeout: Pattern not detected", text)
         self.assertFalse(msg.startswith("auth_rejected:"))
+        # Still attach transcript for diagnostics (Huawei banner is not auth_rejected).
+        self.assertIn("session log", msg)
 
     def test_real_auth_failure_still_detected_near_banner(self):
         text = (

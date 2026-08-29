@@ -57,6 +57,12 @@ class ZteCollectionPrepTests(unittest.TestCase):
         self.assertIsNot(wrapped, base)
         self.assertTrue(wrapped.__name__.startswith("ZteCollection"))
 
+    def test_collection_driver_selects_huawei_wrapper(self) -> None:
+        base = _netmiko_driver_class("huawei")
+        wrapped = _collection_driver_class("huawei", base)
+        self.assertIsNot(wrapped, base)
+        self.assertTrue(wrapped.__name__.startswith("HuaweiCollection"))
+
     def test_prompt_timeout_sends_return_then_retries(self) -> None:
         base = _netmiko_driver_class("zte_zxros_ssh")
         cls = _zte_collection_driver_class(base)

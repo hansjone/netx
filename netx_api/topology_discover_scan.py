@@ -134,12 +134,16 @@ def _discover_one_target(
                 "error": detail,
             }
         if not exec_out.get("ok"):
-            err = str(exec_out.get("error") or exec_out.get("detail") or "exec_failed")[:500]
+            raw = str(exec_out.get("output") or exec_out.get("detail") or "")
+            err = str(exec_out.get("detail") or exec_out.get("error") or "exec_failed")[:4000]
             return {
                 **base,
                 "ok": False,
                 "command": cmd,
+                "parser_key": pkey,
+                "parser_stub": bool(is_stub),
                 "error": err,
+                "raw_preview": _raw_preview(raw or err),
             }
 
         raw = str(exec_out.get("output") or "")

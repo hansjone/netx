@@ -360,14 +360,60 @@ def _zte_collection_driver_class(base_cls: type) -> type:
     return _ZteCollectionSession
 
 
+def _huawei_collection_driver_class(base_cls: type) -> type:
+    """Huawei VRP collection: ensure screen-length is off before long display cmds."""
+
+    class _HuaweiCollectionSession(base_cls):  # type: ignore[misc,valid-type]
+        def session_preparation(self) -> None:
+            prompt_pat = r"(?:<[^>\r\n]{1,64}>|\[[^\]\r\n]{1,64}\])"
+            try:
+                self._test_channel_read(pattern=prompt_pat)
+            except Exception:
+                try:
+                    self.write_channel(self.RETURN)
+                except Exception:
+                    pass
+                try:
+                    self._test_channel_read(pattern=prompt_pat)
+                except Exception:
+                    # Fall back to stock prompt family.
+                    self._test_channel_read(pattern=r"[>\]]")
+            try:
+                self.set_base_prompt()
+            except Exception:
+                pass
+            try:
+                self.disable_paging(
+                    command="screen-length 0 temporary",
+                    cmd_verify=False,
+                    pattern=prompt_pat,
+                )
+            except Exception:
+                try:
+                    self.send_command_timing("screen-length 0 temporary", read_timeout=15)
+                except Exception:
+                    pass
+            try:
+                self.clear_buffer()
+            except Exception:
+                pass
+
+    _HuaweiCollectionSession.__name__ = (
+        f"HuaweiCollection{getattr(base_cls, '__name__', 'Netmiko')}"
+    )
+    return _HuaweiCollectionSession
+
+
 def _collection_driver_class(device_type: str, base_cls: type) -> type:
     """Vendor-specific collection session prep (non-interactive CLI / LLDP / sync)."""
-    from .ne_netmiko import is_cisco_ios_device_type, is_zte_device_type
+    from .ne_netmiko import is_cisco_ios_device_type, is_huawei_device_type, is_zte_device_type
 
     if is_cisco_ios_device_type(device_type):
         return _cisco_ios_collection_driver_class(base_cls)
     if is_zte_device_type(device_type):
         return _zte_collection_driver_class(base_cls)
+    if is_huawei_device_type(device_type):
+        return _huawei_collection_driver_class(base_cls)
     return base_cls
 
 
@@ -910,6 +956,20 @@ def _connect_via_cli_hop(
             progress_cb=progress_cb,
             emit_raw=emit_raw,
         )
+        # Nested target CLI never got Netmiko session_preparation — turn off paging now.
+        if not interactive:
+            from .ne_netmiko import disable_target_paging
+
+            try:
+                paging_out = disable_target_paging(
+                    conn,
+                    vendor=str(creds.get("vendor") or ""),
+                    device_type=str(creds.get("device_type") or ""),
+                )
+                if paging_out and emit_raw:
+                    _emit_progress(progress_cb, paging_out)
+            except Exception:
+                _log.debug("cli hop target paging disable failed", exc_info=True)
         _attach_cli_hop_guard(
             conn,
             hop_prompt=hop_prompt,
@@ -1060,6 +1120,21 @@ def _connect_via_bastion(
         except Exception:
             pass
         raise
+    # After secondary auth (or bastion-managed landing), ensure target paging is off.
+    # session_preparation may have run too early against proxy banners.
+    if not interactive:
+        from .ne_netmiko import disable_target_paging
+
+        try:
+            paging_out = disable_target_paging(
+                conn,
+                vendor=str(creds.get("vendor") or ""),
+                device_type=str(creds.get("device_type") or ""),
+            )
+            if paging_out and not teed:
+                _emit_progress(progress_cb, paging_out)
+        except Exception:
+            _log.debug("bastion target paging disable failed", exc_info=True)
     return conn
 
 

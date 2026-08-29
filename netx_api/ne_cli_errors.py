@@ -89,7 +89,17 @@ def format_cli_failure(exc: BaseException | str, transcript: str = "", *, limit:
         else:
             msg = f"auth_rejected: {auth}"
         return msg[:limit]
-    return exc_text[:limit]
+    # Non-auth: keep a session-log tail so operators can see where the CLI stuck
+    # (More prompt, half-auth, wrong command echo, etc.).
+    tail = str(transcript or "").strip()
+    if not tail:
+        return exc_text[:limit]
+    sep = "\n--- session log ---\n"
+    budget = max(120, int(limit) - len(exc_text) - len(sep) - 8)
+    clipped = tail[-budget:]
+    if len(tail) > budget:
+        clipped = "…\n" + clipped
+    return f"{exc_text}{sep}{clipped}"[:limit]
 
 
 def session_log_text(session_log: Any) -> str:
