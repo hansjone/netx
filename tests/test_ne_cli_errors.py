@@ -67,6 +67,37 @@ class CliAuthClassifyTests(unittest.TestCase):
         )
         self.assertIn("Username or password is wrong", find_auth_failure_snippet(text) or "")
 
+    def test_zte_post_login_banner_not_auth_failure(self):
+        """ZTE nested ssh hop: '0 authentication failure occurred' is login stats."""
+        text = (
+            "Welcome to ZXR10 ZXCTN 6120H Carrier-Class Router of ZTE Corporation\n"
+            "Login at 09:43:53 08-31-2026 from 10.229.147.122 through SSH.\n"
+            "The last successful login was performed at 09:43:44 08-31-2026 "
+            "from 10.229.147.122 through SSH. Afterwards, 0 authentication "
+            "failure occurred.\n"
+            "AL5458-ACC-6120HS#"
+        )
+        self.assertIsNone(find_auth_failure_snippet(text))
+
+    def test_zte_wrapped_afterwards_banner_not_auth_failure(self):
+        """Narrow PTY wraps 'Afterwards' — must not classify as auth reject."""
+        text = (
+            "The last successful login was performed at 09:43:44 08-31-2026 "
+            "from 10.229.147.122 through SSH. After\n"
+            "wards, 0 authentication failure occurred.\n"
+            "AL5458-ACC-6120HS#"
+        )
+        self.assertIsNone(find_auth_failure_snippet(text))
+
+    def test_zte_severely_wrapped_afterwards_banner_not_auth_failure(self):
+        """Production saw 'rwards' after mid-word wrap — still login stats, not reject."""
+        text = (
+            "from 10.229.147.122 through SSH. Afterwa\n"
+            "rwards, 0 authentication failure occurred.\n"
+            "AL5458-ACC-6120HS#"
+        )
+        self.assertIsNone(find_auth_failure_snippet(text))
+
 
 if __name__ == "__main__":
     unittest.main()

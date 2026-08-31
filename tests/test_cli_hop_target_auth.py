@@ -156,5 +156,34 @@ class HuaweiStelnetAuthTests(unittest.TestCase):
         self.assertTrue(any("password-change" in p for p in seen))
 
 
+class ZteHopAuthTests(unittest.TestCase):
+    @patch("netx_api.ne_session_connect._read_channel")
+    @patch("netx_api.ne_session_connect._send_line")
+    def test_zte_banner_with_prompt_not_auth_failure(
+        self,
+        mock_send: MagicMock,
+        mock_read: MagicMock,
+    ) -> None:
+        """ZTE login stats contain 'authentication failure' — prompt is ground truth."""
+        mock_read.side_effect = [
+            "Username:",
+            "Password:",
+            (
+                "Welcome to ZXR10 ZXCTN 6120H\n"
+                "Login at 09:43:53 08-31-2026 from 10.229.147.122 through SSH.\n"
+                "The last successful login was performed at 09:43:44 08-31-2026 "
+                "from 10.229.147.122 through SSH. Afterwa\n"
+                "rwards, 0 authentication failure occurred.\n"
+                "AL5458-ACC-6120HS#"
+            ),
+        ]
+        conn = MagicMock()
+        _interactive_target_auth(conn, "ipran", "secret")
+        self.assertEqual(
+            [c.args[1] for c in mock_send.call_args_list],
+            ["ipran", "secret"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

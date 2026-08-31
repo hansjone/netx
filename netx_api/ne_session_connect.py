@@ -669,6 +669,20 @@ def _looks_like_target_cli_prompt(text: str) -> bool:
     return bool(re.search(r"(?:[>#\]])\s*$", tail)) or bool(re.search(r"^<[^>\r\n]+>\s*$", tail))
 
 
+def _target_auth_failure_snippet(text: str, *, sent_pass: bool) -> str | None:
+    """Return auth-reject snippet unless we already reached target CLI prompt.
+
+    Prompt-at-tail is the ground truth for hop login success; banner/stat lines
+    (e.g. ZTE ``0 authentication failure occurred``) must not override it.
+    """
+    from .ne_cli_errors import find_auth_failure_snippet
+
+    acc = str(text or "")
+    if sent_pass and _looks_like_target_cli_prompt(acc):
+        return None
+    return find_auth_failure_snippet(acc)
+
+
 def _looks_like_password_change_prompt(text: str) -> bool:
     """Huawei/VRP ``Change now? [Y/N]:`` after successful password (not host-key)."""
     tail = _auth_prompt_tail(text, lines=2)
@@ -691,6 +705,12 @@ def _saw_huawei_last_login(text: str) -> bool:
     )
 
 
+def _saw_zte_login_banner(text: str) -> bool:
+    from .ne_cli_errors import saw_zte_login_banner
+
+    return saw_zte_login_banner(text)
+
+
 def _interactive_target_auth(
     conn: ConnectHandler,
     username: str,
@@ -704,8 +724,6 @@ def _interactive_target_auth(
     When ``emit_raw`` is False, device bytes are assumed to already reach the UI via
     ``session_log`` ProgressBytesIO — only emit ``[netx]`` markers (avoids doubled echo).
     """
-    from .ne_cli_errors import find_auth_failure_snippet
-
     # Hop stelnet can show Trying/Connected + two [Y/N] before password; keep budget generous.
     deadline = time.time() + max(60, int(settings.ne_connect_timeout_sec or 30) + 30)
     sent_user = False
@@ -721,7 +739,9 @@ def _interactive_target_auth(
             acc += buf
             if emit_raw:
                 _emit_progress(progress_cb, buf)
-            denied = find_auth_failure_snippet(acc)
+            if sent_pass and _looks_like_target_cli_prompt(acc):
+                return
+            denied = _target_auth_failure_snippet(acc, sent_pass=sent_pass)
             if denied:
                 raise paramiko.AuthenticationException(f"target_auth_rejected: {denied}")
 
@@ -761,21 +781,23 @@ def _interactive_target_auth(
             continue
 
         if sent_pass and not need_user and not need_pass and not continue_access and not save_key:
-            denied = find_auth_failure_snippet(acc)
-            if denied:
-                raise paramiko.AuthenticationException(f"target_auth_rejected: {denied}")
             if _looks_like_target_cli_prompt(acc):
                 return
+            denied = _target_auth_failure_snippet(acc, sent_pass=True)
+            if denied:
+                raise paramiko.AuthenticationException(f"target_auth_rejected: {denied}")
             # Last-login banner already printed — hand off quickly even if prompt parse lags.
-            if _saw_huawei_last_login(acc) and empty_after_pass >= 1:
+            if (_saw_huawei_last_login(acc) or _saw_zte_login_banner(acc)) and empty_after_pass >= 1:
                 return
             # Do not treat a single empty read right after password as success —
-            # Huawei still prints last-login banner / prompt.
+            # Huawei/ZTE still prints last-login banner / prompt.
             if not buf.strip():
                 empty_after_pass += 1
                 # Faster handoff: live echo already shows login; WS cannot accept stdin
                 # until open_netmiko_connection returns.
-                if empty_after_pass >= (2 if _saw_huawei_last_login(acc) else 3):
+                if empty_after_pass >= (
+                    2 if (_saw_huawei_last_login(acc) or _saw_zte_login_banner(acc)) else 3
+                ):
                     return
             else:
                 empty_after_pass = 0
@@ -788,7 +810,7 @@ def _interactive_target_auth(
         # Huawei stelnet often reprints the hop ``[sysname]`` after host-key trust and
         # *before* ``Enter password:``. Do not treat that as target login success.
         if sent_pass and _looks_like_target_cli_prompt(buf):
-            denied = find_auth_failure_snippet(acc)
+            denied = _target_auth_failure_snippet(acc, sent_pass=True)
             if denied:
                 raise paramiko.AuthenticationException(f"target_auth_rejected: {denied}")
             return
@@ -800,12 +822,12 @@ def _interactive_target_auth(
             and _looks_like_target_cli_prompt(buf)
         ):
             # Passwordless target after username only (no stelnet host-key dance).
-            denied = find_auth_failure_snippet(acc)
+            denied = _target_auth_failure_snippet(acc, sent_pass=False)
             if denied:
                 raise paramiko.AuthenticationException(f"target_auth_rejected: {denied}")
             return
         time.sleep(0.15)
-    denied = find_auth_failure_snippet(acc)
+    denied = _target_auth_failure_snippet(acc, sent_pass=sent_pass)
     if denied:
         raise paramiko.AuthenticationException(f"target_auth_rejected: {denied}")
     if not sent_pass:

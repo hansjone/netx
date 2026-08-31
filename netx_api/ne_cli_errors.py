@@ -6,6 +6,8 @@ import re
 from typing import Any
 
 # Prefer specific auth signals over generic Netmiko prompt timeouts.
+# Note: do NOT match bare ``authentication failure`` — ZTE/Huawei success banners
+# say ``0 authentication failure occurred`` (stats, not a reject), often line-wrapped.
 _AUTH_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
     re.compile(p, re.I)
     for p in (
@@ -13,8 +15,7 @@ _AUTH_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         r"permission denied\s*\([^)]*publickey[^)]*\)",
         r"permission denied",
         r"authentication failed",
-        r"authentication failure",
-        r"auth(?:entication)?\s*fail",
+        r"auth(?:entication)?\s*fail(?!ures?\s+occurred)",
         r"login\s*(?:invalid|failed|incorrect|rejected)",
         r"access denied",
         r"bad (?:secret|password|secrets)",
@@ -26,16 +27,20 @@ _AUTH_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
     )
 )
 
-# Huawei / ZTE post-login security banner (success path via SSH or bastion hop).
+# Huawei / ZTE post-login security banner (success path via SSH or CLI hop).
 # Example: "Afterwards, 0 authentication failure occurred."
+# ZTE may wrap mid-word: "... SSH. After" + "wards, 0 authentication failure occurred."
+# or worse: "...Afterwa" + "rds, 0 ..." leaving "rwards, 0 authentication failure occurred."
 _LOGIN_SUCCESS_NOTICE = re.compile(
-    r"^.*(?:"
-    r"last\s+successful\s+login\s+was\s+performed"
-    r"|afterwards,\s*\d+\s+authentication\s+failures?\s+occurred"
-    r"|上次成功登录"
-    r"|之后发生了?\s*\d+\s*次认证失败"
-    r").*$",
-    re.I | re.M,
+    r"(?is)(?:"
+    r"last\s+successful\s+login\s+was\s+performed[^\n]*"
+    r"|login\s+at\s+[^\n]*through\s+ssh[^\n]*"
+    r"|(?:after)?wards,\s*\d+\s+authentication\s+failures?\s+occurred[^\n]*"
+    r"|afterwards,\s*\d+\s+authentication\s+failures?\s+occurred[^\n]*"
+    r"|\d+\s+authentication\s+failures?\s+occurred[^\n]*"
+    r"|上次成功登录[^\n]*"
+    r"|之后发生了?\s*\d+\s*次认证失败[^\n]*"
+    r")"
 )
 
 _PROMPT_TIMEOUT = re.compile(r"pattern not detected|readtimeout|read timeout", re.I)
@@ -60,6 +65,11 @@ def find_auth_failure_snippet(text: str, *, max_len: int = 220) -> str | None:
             line = m.group(0).strip()
         return line[:max_len]
     return None
+
+
+def saw_zte_login_banner(text: str) -> bool:
+    """True when ZTE post-login MOTD is present (nested ssh hop success path)."""
+    return bool(_LOGIN_SUCCESS_NOTICE.search(str(text or "")))
 
 
 def format_cli_failure(exc: BaseException | str, transcript: str = "", *, limit: int = 1020) -> str:
