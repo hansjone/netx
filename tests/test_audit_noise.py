@@ -42,8 +42,15 @@ class AuditShouldPersistTests(unittest.TestCase):
         self.assertTrue(audit_should_persist(action="webcrt.command", status_code=0))
         self.assertTrue(audit_should_persist(action="webcrt.session_closed", status_code=0))
 
+    def test_drop_auth_me_poll(self) -> None:
+        self.assertFalse(audit_should_persist(action="auth.me", method="GET", status_code=200))
+        self.assertFalse(audit_should_persist(action="auth.sessions", method="GET", status_code=200))
+        # Failures still useful (expired session / forbidden).
+        self.assertTrue(audit_should_persist(action="auth.me", method="GET", status_code=401))
+
     def test_keep_business_prefixes(self) -> None:
         self.assertTrue(audit_should_persist(action="auth.login", status_code=200))
+        self.assertTrue(audit_should_persist(action="auth.logout", status_code=200))
         self.assertTrue(audit_should_persist(action="ne.exec", status_code=200))
         self.assertTrue(audit_should_persist(action="port_traffic.device.start", status_code=200))
         self.assertTrue(audit_should_persist(action="config_sync.start", status_code=200))

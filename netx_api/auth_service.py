@@ -745,6 +745,8 @@ def list_audit_logs(
             "webcrt.delete",
             "users.get",
             "api_tokens.get",
+            "auth.me",
+            "auth.sessions",
         )
         q = q.filter(~AuditLog.action.like("http.%"))
         q = q.filter(~AuditLog.action.in_(noise_actions))

@@ -32,6 +32,15 @@ _MIDDLEWARE_NOISE_ACTIONS = frozenset(
     }
 )
 
+# Frontend/session polls under /v1/auth/* — middleware tags them auth.{tail}.
+# Keep failures (expired session etc.); drop successful chatter.
+_AUTH_READ_NOISE_ACTIONS = frozenset(
+    {
+        "auth.me",
+        "auth.sessions",
+    }
+)
+
 _ALWAYS_KEEP_PREFIXES = (
     "auth.",
     "users.",
@@ -62,7 +71,9 @@ def audit_should_persist(
     """Decide whether a candidate audit event is worth writing.
 
     Policy:
-    - Always keep auth / users / tokens / NE / port_traffic / config_sync / semantic webcrt.
+    - Always keep auth login/logout/security events, users/tokens/NE/port_traffic/config_sync,
+      and semantic webcrt session/command events.
+    - Drop successful ``auth.me`` / ``auth.sessions`` polls (UI session checks).
     - Always keep HTTP failures (status >= 400), except pure list noise.
     - Drop successful GET/HEAD/OPTIONS ``http.*`` (page polling).
     - Always keep mutating ``http.*`` (POST/PUT/PATCH/DELETE) — no sampling.
@@ -74,6 +85,10 @@ def audit_should_persist(
     code = int(status_code or 0)
 
     if act in _MIDDLEWARE_NOISE_ACTIONS:
+        return False
+
+    # /v1/auth/me and /v1/auth/sessions are polled constantly by the UI.
+    if act in _AUTH_READ_NOISE_ACTIONS and code < 400:
         return False
 
     if act.startswith("webcrt.session_") or act == "webcrt.command":
