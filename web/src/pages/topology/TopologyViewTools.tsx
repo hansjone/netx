@@ -13,6 +13,9 @@ import {
   SCALE_BUNDLE_WIDTH_KEY,
   SEP,
   SHOW_PLACEHOLDER_BADGE_KEY,
+  SHOW_CONNECT_STATUS_KEY,
+  SHOW_ALARM_OVERLAY_KEY,
+  SHOW_LEVEL_COLORS_KEY,
 } from "./constants";
 import {
   DEFAULT_LABEL_COLORS,
@@ -47,6 +50,12 @@ export type TopologyViewToolsProps = {
   onHideVendorChange: (v: boolean) => void;
   showPlaceholderBadge: boolean;
   onShowPlaceholderBadgeChange: (v: boolean) => void;
+  showConnectStatus: boolean;
+  onShowConnectStatusChange: (v: boolean) => void;
+  showAlarmOverlay: boolean;
+  onShowAlarmOverlayChange: (v: boolean) => void;
+  showLevelColors: boolean;
+  onShowLevelColorsChange: (v: boolean) => void;
   hidePorts: boolean;
   onHidePortsChange: (v: boolean) => void;
   expandPhysicalLinks: boolean;
@@ -101,6 +110,12 @@ export function TopologyViewTools(props: TopologyViewToolsProps) {
     onHideVendorChange,
     showPlaceholderBadge,
     onShowPlaceholderBadgeChange,
+    showConnectStatus,
+    onShowConnectStatusChange,
+    showAlarmOverlay,
+    onShowAlarmOverlayChange,
+    showLevelColors,
+    onShowLevelColorsChange,
     hidePorts,
     onHidePortsChange,
     expandPhysicalLinks,
@@ -168,6 +183,42 @@ export function TopologyViewTools(props: TopologyViewToolsProps) {
               }}
             />
             {t("topology.showPlaceholderBadge")}
+          </label>
+          <label className="topo-display-toggles__item">
+            <input
+              type="checkbox"
+              checked={showConnectStatus}
+              onChange={(e) => {
+                const next = e.target.checked;
+                onShowConnectStatusChange(next);
+                persistBoolFlag(SHOW_CONNECT_STATUS_KEY, next);
+              }}
+            />
+            {t("topology.showConnectStatus")}
+          </label>
+          <label className="topo-display-toggles__item">
+            <input
+              type="checkbox"
+              checked={showAlarmOverlay}
+              onChange={(e) => {
+                const next = e.target.checked;
+                onShowAlarmOverlayChange(next);
+                persistBoolFlag(SHOW_ALARM_OVERLAY_KEY, next);
+              }}
+            />
+            {t("topology.showAlarmOverlay")}
+          </label>
+          <label className="topo-display-toggles__item">
+            <input
+              type="checkbox"
+              checked={showLevelColors}
+              onChange={(e) => {
+                const next = e.target.checked;
+                onShowLevelColorsChange(next);
+                persistBoolFlag(SHOW_LEVEL_COLORS_KEY, next);
+              }}
+            />
+            {t("topology.showLevelColors")}
           </label>
           <label className="topo-display-toggles__item">
             <input type="checkbox" checked={hidePorts} onChange={(e) => onHidePortsChange(e.target.checked)} />

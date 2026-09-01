@@ -49,6 +49,8 @@ export function graphToFlow(
         vendor: n.vendor || "",
         connect_status: n.connect_status || "",
         managed_source: n.managed_source || "",
+        level: n.level ?? null,
+        fabric_role: n.role || "",
         kind: (n.kind as NeNodeData["kind"]) || (isRegion ? "region" : "ne"),
         folder_id: n.folder_id || "",
         view_id: n.view_id || "",
@@ -104,7 +106,7 @@ export function graphFingerprint(graph: TopologyViewGraph): string {
   const nodes = [...graph.nodes]
     .map(
       (n) =>
-        `${n.fabric_node_id}:${Math.round(Number(n.x) || 0)}:${Math.round(Number(n.y) || 0)}:${n.label || n.name || ""}`,
+        `${n.fabric_node_id}:${Math.round(Number(n.x) || 0)}:${Math.round(Number(n.y) || 0)}:${n.label || n.name || ""}:${n.connect_status || ""}:${n.level ?? ""}:${n.role || ""}`,
     )
     .sort()
     .join("|");
@@ -113,6 +115,58 @@ export function graphFingerprint(graph: TopologyViewGraph): string {
     .sort()
     .join("|");
   return `${nodes}#${edges}#${graph.outside_peers?.length || 0}#${graph.world_transform?.lod || ""}#${graph.scatter?.length || 0}#${graph.world_transform?.total || 0}`;
+}
+
+/** Overlay / inventory fields safe to refresh while the canvas has unsaved geometry edits. */
+export function overlayFingerprint(graph: TopologyViewGraph): string {
+  return [...graph.nodes]
+    .map(
+      (n) =>
+        `${n.fabric_node_id}:${n.connect_status || ""}:${n.level ?? ""}:${n.role || ""}:${n.ume_ne_id || ""}:${n.managed_ne_id || ""}:${n.ip || ""}:${n.vendor || ""}:${n.managed_source || ""}`,
+    )
+    .sort()
+    .join("|");
+}
+
+/**
+ * Patch live overlay fields onto existing RF nodes without touching positions/selection.
+ * Used when dirty lock blocks a full graph apply.
+ */
+export function mergeOverlayIntoNodes(
+  current: Node<NeNodeData>[],
+  graph: TopologyViewGraph,
+): { nodes: Node<NeNodeData>[]; changed: boolean } {
+  const byId = new Map(graph.nodes.map((n) => [n.fabric_node_id, n]));
+  let changed = false;
+  const nodes = current.map((node) => {
+    const g = byId.get(node.id);
+    if (!g || node.data.kind === "region") return node;
+    const next = {
+      connect_status: g.connect_status || "",
+      level: g.level ?? null,
+      fabric_role: g.role || "",
+      ume_ne_id: g.ume_ne_id || "",
+      managed_ne_id: g.managed_ne_id || "",
+      ne_ip: g.ip || "",
+      vendor: g.vendor || "",
+      managed_source: g.managed_source || "",
+    };
+    if (
+      node.data.connect_status === next.connect_status &&
+      (node.data.level ?? null) === next.level &&
+      (node.data.fabric_role || "") === next.fabric_role &&
+      (node.data.ume_ne_id || "") === next.ume_ne_id &&
+      (node.data.managed_ne_id || "") === next.managed_ne_id &&
+      (node.data.ne_ip || "") === next.ne_ip &&
+      (node.data.vendor || "") === next.vendor &&
+      (node.data.managed_source || "") === next.managed_source
+    ) {
+      return node;
+    }
+    changed = true;
+    return { ...node, data: { ...node.data, ...next } };
+  });
+  return { nodes, changed };
 }
 
 export function applyViewGraph(

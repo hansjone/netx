@@ -537,6 +537,10 @@ export type TopologyViewNodeItem = {
   device_type: string;
   connect_status: string;
   managed_source?: string;
+  /** Fabric classify rank; smaller = closer to external/WAN. */
+  level?: number | null;
+  /** Synced alias from floor(level): external|core|aggregation|access|edge|"" */
+  role?: string;
   /** ne | region — region drills into a child canvas */
   kind?: string;
   folder_id?: string;

@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ListPager } from "../../components/ListPager";
 import { queryKeys } from "../../constants/queryKeys";
@@ -25,6 +26,7 @@ function severityClass(sev: string | null | undefined): string {
 export function NetworkAlarmsPage() {
   const { t } = useI18n();
   const { showOk, showError } = useToast();
+  const [searchParams] = useSearchParams();
   const [curSeverity, setCurSeverity] = useState("");
   const [curCleared, setCurCleared] = useState("");
   const [curHostName, setCurHostName] = useState("");
@@ -32,6 +34,32 @@ export function NetworkAlarmsPage() {
   const [curPage, setCurPage] = useState(1);
   const [curPageSize, setCurPageSize] = useState(50);
   const [exporting, setExporting] = useState(false);
+
+  // Deep-link from topology (and similar): ?host=&cleared=&severity=&keyword=
+  useEffect(() => {
+    const host = searchParams.get("host");
+    const cleared = searchParams.get("cleared");
+    const severity = searchParams.get("severity");
+    const keyword = searchParams.get("keyword");
+    let touched = false;
+    if (host != null) {
+      setCurHostName(host);
+      touched = true;
+    }
+    if (cleared != null) {
+      setCurCleared(cleared);
+      touched = true;
+    }
+    if (severity != null) {
+      setCurSeverity(severity);
+      touched = true;
+    }
+    if (keyword != null) {
+      setCurKeyword(keyword);
+      touched = true;
+    }
+    if (touched) setCurPage(1);
+  }, [searchParams]);
 
   const debouncedKeyword = useDebouncedValue(curKeyword, 300);
   const debouncedHost = useDebouncedValue(curHostName, 300);

@@ -1635,6 +1635,8 @@ const en = {
     removeSelected: "Remove selected ({{count}})",
     openWebcrt: "Open terminal",
     openNe: "NE details",
+    openAlarms: "View alarms",
+    noAlarmLink: "Cannot build an alarm filter for this node",
     removeNode: "Remove from canvas",
     deletePlaceholder: "Delete placeholder",
     deletePlaceholderConfirm:
@@ -1661,6 +1663,10 @@ const en = {
     createNeIpPh: "Can fill later during setup",
     createNeDone: "Created placeholder {{name}}",
     createManagedNeDone: "Created and placed {{name}}",
+    createManagedNePlaceFailed:
+      "{{name}} was created in inventory, but placing on the map failed: {{error}}. Add it again from NE management or the sidebar.",
+    createManagedNePosFailed:
+      "{{name}} is on the map, but could not move to the click position (kept default layout coords)",
     createNeBusy: "Creating…",
     connectTest: "Connectivity test",
     connectTestSelected: "Connectivity test ({{count}})",
@@ -1723,6 +1729,17 @@ const en = {
     hideIp: "Hide IP",
     hideVendor: "Hide vendor",
     showPlaceholderBadge: "Show placeholder badge (TOPO/LLDP)",
+    showConnectStatus: "Show connect-status dots",
+    showAlarmOverlay: "Show alarm overlay",
+    showLevelColors: "Color by classify level",
+    levelUnmatched: "Unclassified",
+    level: {
+      external: "External",
+      core: "Core",
+      aggregation: "Aggregation",
+      access: "Access",
+      edge: "Edge",
+    },
     hidePorts: "Hide ports",
     edgeFlow: "Edge flow",
     collapseSidebar: "Collapse sidebar",

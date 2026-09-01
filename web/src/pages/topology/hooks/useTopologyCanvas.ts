@@ -12,7 +12,7 @@ import {
 } from "../constants";
 import type { EdgeDefaults, EdgeStyleData } from "../edgeStyle";
 import { withEdgeVisual } from "../edgeStyle";
-import { graphFingerprint, graphToFlow } from "../graphFlow";
+import { graphFingerprint, graphToFlow, mergeOverlayIntoNodes, overlayFingerprint } from "../graphFlow";
 import {
   buildLinkDisplayEdges,
   type LinkMember,
@@ -45,6 +45,9 @@ export type UseTopologyCanvasOptions = {
   hideVendor: boolean;
   hidePorts: boolean;
   showPlaceholderBadge: boolean;
+  showConnectStatus: boolean;
+  showAlarmOverlay: boolean;
+  showLevelColors: boolean;
   expandPhysicalLinks: boolean;
   scaleBundleWidth: boolean;
   edgeFlow: boolean;
@@ -82,6 +85,9 @@ export function useTopologyCanvas(opts: UseTopologyCanvasOptions) {
     hideVendor,
     hidePorts,
     showPlaceholderBadge,
+    showConnectStatus,
+    showAlarmOverlay,
+    showLevelColors,
     expandPhysicalLinks,
     scaleBundleWidth,
     edgeFlow,
@@ -106,6 +112,7 @@ export function useTopologyCanvas(opts: UseTopologyCanvasOptions) {
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const appliedMapIdRef = useRef("");
   const appliedGraphFpRef = useRef("");
+  const appliedOverlayFpRef = useRef("");
   const pendingFitRef = useRef(false);
   const nodesRef = useRef<Node<NeNodeData>[]>([]);
   const [canvasZoom, setCanvasZoom] = useState(1);
@@ -149,9 +156,22 @@ export function useTopologyCanvas(opts: UseTopologyCanvasOptions) {
       hidePorts,
       connectMode: toolMode === "connect",
       showPlaceholderBadge,
+      showConnectStatus,
+      showAlarmOverlay,
+      showLevelColors,
       worldVisualLod,
     }),
-    [hideIp, hideVendor, hidePorts, toolMode, showPlaceholderBadge, worldVisualLod],
+    [
+      hideIp,
+      hideVendor,
+      hidePorts,
+      toolMode,
+      showPlaceholderBadge,
+      showConnectStatus,
+      showAlarmOverlay,
+      showLevelColors,
+      worldVisualLod,
+    ],
   );
 
   const displayEdges = useMemo(() => {
@@ -286,13 +306,27 @@ export function useTopologyCanvas(opts: UseTopologyCanvasOptions) {
   useEffect(() => {
     appliedMapIdRef.current = "";
     appliedGraphFpRef.current = "";
+    appliedOverlayFpRef.current = "";
   }, [mapId]);
 
   useEffect(() => {
     if (!canvasMode) return;
     if (!mapId || !graphQuery.data) return;
     const entering = appliedMapIdRef.current !== mapId;
-    if (!entering && dirtyRef.current) return;
+
+    // Dirty geometry: still refresh connect/level/inventory overlays from live graph.
+    if (!entering && dirtyRef.current) {
+      const ofp = overlayFingerprint(graphQuery.data);
+      if (ofp === appliedOverlayFpRef.current) return;
+      const { nodes: merged, changed } = mergeOverlayIntoNodes(nodesRef.current, graphQuery.data);
+      appliedOverlayFpRef.current = ofp;
+      if (changed) {
+        historyLockRef.current = true;
+        setNodes(merged);
+        historyLockRef.current = false;
+      }
+      return;
+    }
 
     const fp = graphFingerprint(graphQuery.data);
     if (!entering && fp === appliedGraphFpRef.current) return;
@@ -310,6 +344,7 @@ export function useTopologyCanvas(opts: UseTopologyCanvasOptions) {
     setNodes(nextNodes);
     setEdges(rfEdges);
     appliedGraphFpRef.current = fp;
+    appliedOverlayFpRef.current = overlayFingerprint(graphQuery.data);
     if (entering) {
       appliedMapIdRef.current = mapId;
       historyRef.current = [];

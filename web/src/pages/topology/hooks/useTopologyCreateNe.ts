@@ -167,38 +167,56 @@ export function useTopologyCreateNe({
   const onManagedFormSaved = useCallback(
     async (item: ManagedNeItem) => {
       setManagedFormOpen(false);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.managedNeAll });
+      void queryClient.invalidateQueries({ queryKey: ["webcrtTargets"] });
       if (!mapId) {
         showOk(t("managedNe.form.created"));
         return;
       }
       const at = placeAtRef.current || { flowX: 80, flowY: 80 };
+      const displayName = item.name || item.ip_address || item.id;
       setManagedBusy(true);
       try {
-        const graph = await addTopologyViewNodes(mapId, {
+        let graph = await addTopologyViewNodes(mapId, {
           managed_ne_ids: [item.id],
           layout: "grid",
         });
         const added = graph.nodes.find((n) => n.managed_ne_id === item.id);
+        let placedAtClick = false;
         if (added?.fabric_node_id) {
-          await patchTopologyPositions(mapId, [
-            {
-              fabric_node_id: added.fabric_node_id,
-              x: at.flowX,
-              y: at.flowY,
-              label: added.label || added.name || item.name || "",
-            },
-          ]);
+          try {
+            await patchTopologyPositions(mapId, [
+              {
+                fabric_node_id: added.fabric_node_id,
+                x: at.flowX,
+                y: at.flowY,
+                label: added.label || added.name || item.name || "",
+              },
+            ]);
+            graph = await fetchTopologyGraph(mapId);
+            placedAtClick = true;
+          } catch {
+            // NE is already on the map; keep grid layout coords.
+          }
         }
-        const refreshed = await fetchTopologyGraph(mapId);
-        applyGraph(refreshed);
+        applyGraph(graph);
         if (added?.fabric_node_id) {
           focusNode(added.fabric_node_id, false);
         }
-        showOk(t("topology.createManagedNeDone").replace("{{name}}", item.name || item.ip_address));
-        void queryClient.invalidateQueries({ queryKey: queryKeys.managedNeAll });
-        void queryClient.invalidateQueries({ queryKey: ["webcrtTargets"] });
+        if (placedAtClick) {
+          showOk(t("topology.createManagedNeDone").replace("{{name}}", displayName));
+        } else if (added?.fabric_node_id) {
+          showError(t("topology.createManagedNePosFailed").replace("{{name}}", displayName));
+        } else {
+          showOk(t("topology.createManagedNeDone").replace("{{name}}", displayName));
+        }
       } catch (err) {
-        showError(String(err));
+        // Inventory already has the NE; placement failed → avoid silent orphan confusion.
+        showError(
+          t("topology.createManagedNePlaceFailed")
+            .replace("{{name}}", displayName)
+            .replace("{{error}}", String(err)),
+        );
       } finally {
         setManagedBusy(false);
       }

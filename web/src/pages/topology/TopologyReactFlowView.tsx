@@ -27,6 +27,12 @@ import { ParallelEdge } from "./ParallelEdge";
 import { isAggregateEdgeId } from "./linkDisplay";
 import type { ToolMode, ToolModeBehavior } from "./toolMode";
 import type { TopologyViewRole, TopologyWorldTransform } from "../../types";
+import { isPlaceholderSource } from "./searchUtils";
+import { nodeIconTone } from "./vendorTone";
+import { levelToneKey } from "./levelTone";
+import type { NodeAlarmSummary } from "./alarmOverlay";
+
+export { isPlaceholderSource };
 
 export type NeNodeData = {
   label: string;
@@ -36,6 +42,10 @@ export type NeNodeData = {
   vendor: string;
   connect_status: string;
   managed_source?: string;
+  /** Fabric classify level (from graph). */
+  level?: number | null;
+  /** Fabric role alias (external|core|aggregation|access|edge). */
+  fabric_role?: string;
   kind?: "ne" | "region" | "layer";
   folder_id?: string;
   view_id?: string;
@@ -50,6 +60,9 @@ export type TopoDisplayOpts = {
   hidePorts: boolean;
   connectMode: boolean;
   showPlaceholderBadge: boolean;
+  showConnectStatus: boolean;
+  showAlarmOverlay: boolean;
+  showLevelColors: boolean;
   worldVisualLod: "dot" | "pin" | "full";
 };
 
@@ -59,15 +72,24 @@ const TopoDisplayContext = createContext<TopoDisplayOpts>({
   hidePorts: true,
   connectMode: false,
   showPlaceholderBadge: false,
+  showConnectStatus: true,
+  showAlarmOverlay: true,
+  showLevelColors: true,
   worldVisualLod: "full",
 });
 
+const TopoAlarmContext = createContext<ReadonlyMap<string, NodeAlarmSummary>>(new Map());
+const emptyAlarmMap: ReadonlyMap<string, NodeAlarmSummary> = new Map();
+
 const SEP = " / ";
 
-import { isPlaceholderSource } from "./searchUtils";
-import { nodeIconTone } from "./vendorTone";
-
-export { isPlaceholderSource };
+function normalizeConnectStatus(raw: string | undefined): "pass" | "fail" | "testing" | "unknown" {
+  const s = String(raw || "").trim().toLowerCase();
+  if (s === "pass" || s === "ok") return "pass";
+  if (s === "fail" || s === "error") return "fail";
+  if (s === "testing") return "testing";
+  return "unknown";
+}
 
 function RouterIcon() {
   return (
@@ -107,13 +129,25 @@ function FullscreenIcon({ exit }: { exit?: boolean }) {
   );
 }
 
-const NeNode = memo(function NeNode({ data, selected }: NodeProps<Node<NeNodeData>>) {
-  const { hideIp, hideVendor, connectMode, showPlaceholderBadge, worldVisualLod } =
-    useContext(TopoDisplayContext);
+const NeNode = memo(function NeNode({ id, data, selected }: NodeProps<Node<NeNodeData>>) {
+  const {
+    hideIp,
+    hideVendor,
+    connectMode,
+    showPlaceholderBadge,
+    showConnectStatus,
+    showAlarmOverlay,
+    showLevelColors,
+    worldVisualLod,
+  } = useContext(TopoDisplayContext);
+  const alarmMap = useContext(TopoAlarmContext);
   const isRegion = data.kind === "region";
   const tone = isRegion ? "region" : nodeIconTone(data.vendor, data.managed_ne_id, data.ume_ne_id);
   const placeholder = !isRegion && isPlaceholderSource(data.managed_source, data.ne_ip);
   const showBadge = placeholder && showPlaceholderBadge;
+  const connect = normalizeConnectStatus(data.connect_status);
+  const levelKey = levelToneKey(data.level, data.fabric_role);
+  const alarm = !isRegion && showAlarmOverlay ? alarmMap.get(id) : undefined;
   const name = data.label || (!hideIp ? data.ne_ip : "") || (isRegion ? "Region" : "NE");
   const secondary = isRegion
     ? []
@@ -122,12 +156,22 @@ const NeNode = memo(function NeNode({ data, selected }: NodeProps<Node<NeNodeDat
         hideVendor || !data.vendor ? "" : data.vendor,
       ].filter(Boolean);
 
+  const statusClass = [
+    `topo-node--${tone}`,
+    selected ? "is-selected" : "",
+    connectMode && !isRegion ? "is-connect-mode" : "",
+    showBadge ? "is-placeholder" : "",
+    isRegion ? "is-region" : "",
+    showConnectStatus && !isRegion ? `is-connect-${connect}` : "",
+    showLevelColors && !isRegion && levelKey ? `is-level-${levelKey}` : "",
+    alarm ? `has-alarm has-alarm--${alarm.severity}` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   if (!isRegion && worldVisualLod === "dot") {
     return (
-      <div
-        className={`topo-node topo-node--dot topo-node--${tone}${selected ? " is-selected" : ""}`}
-        title={name}
-      >
+      <div className={`topo-node topo-node--dot ${statusClass}`} title={name}>
         <Handle type="target" position={Position.Left} className="topo-node__handle topo-node__handle--dot" />
         <Handle type="source" position={Position.Right} className="topo-node__handle topo-node__handle--dot" />
         <span className="topo-node__pixel" aria-hidden="true" />
@@ -136,10 +180,7 @@ const NeNode = memo(function NeNode({ data, selected }: NodeProps<Node<NeNodeDat
   }
   if (!isRegion && worldVisualLod === "pin") {
     return (
-      <div
-        className={`topo-node topo-node--pin topo-node--${tone}${selected ? " is-selected" : ""}`}
-        title={name}
-      >
+      <div className={`topo-node topo-node--pin ${statusClass}`} title={name}>
         <Handle type="target" position={Position.Left} className="topo-node__handle topo-node__handle--dot" />
         <Handle type="source" position={Position.Right} className="topo-node__handle topo-node__handle--dot" />
         <span className="topo-node__pin" aria-hidden="true" />
@@ -149,10 +190,16 @@ const NeNode = memo(function NeNode({ data, selected }: NodeProps<Node<NeNodeDat
 
   return (
     <div
-      className={`topo-node topo-node--${tone}${selected ? " is-selected" : ""}${
-        connectMode && !isRegion ? " is-connect-mode" : ""
-      }${showBadge ? " is-placeholder" : ""}${isRegion ? " is-region" : ""}`}
-      title={isRegion ? name : showBadge ? data.managed_source || "placeholder" : name}
+      className={`topo-node ${statusClass}`}
+      title={
+        alarm
+          ? `${name} · alarm ${alarm.severity}×${alarm.count}`
+          : isRegion
+            ? name
+            : showBadge
+              ? data.managed_source || "placeholder"
+              : name
+      }
     >
       <div className="topo-node__glyph">
         <Handle
@@ -168,7 +215,14 @@ const NeNode = memo(function NeNode({ data, selected }: NodeProps<Node<NeNodeDat
           isConnectable={connectMode && !isRegion}
         />
         {!isRegion ? <RouterIcon /> : <RegionCanvasIcon />}
-        {showBadge ? (
+        {showConnectStatus && !isRegion ? (
+          <span className={`topo-node__conn topo-node__conn--${connect}`} aria-hidden />
+        ) : null}
+        {alarm ? (
+          <span className={`topo-node__alarm topo-node__alarm--${alarm.severity}`} aria-hidden>
+            {alarm.count > 99 ? "99+" : alarm.count}
+          </span>
+        ) : showBadge ? (
           <span className="topo-node__badge" aria-hidden>
             {String(data.managed_source || "ph").slice(0, 4)}
           </span>
@@ -249,6 +303,7 @@ type CtxMenuLike =
 
 export type TopologyReactFlowViewProps = {
   displayOpts: TopoDisplayOpts;
+  alarmByNodeId?: ReadonlyMap<string, NodeAlarmSummary>;
   nodes: Node<NeNodeData>[];
   setNodes: Dispatch<SetStateAction<Node<NeNodeData>[]>>;
   edges: Edge[];
@@ -297,6 +352,7 @@ export type TopologyReactFlowViewProps = {
 export default function TopologyReactFlowView(props: TopologyReactFlowViewProps) {
   const {
     displayOpts,
+    alarmByNodeId,
     nodes,
     setNodes,
     setEdges,
@@ -338,6 +394,7 @@ export default function TopologyReactFlowView(props: TopologyReactFlowViewProps)
 
   return (
     <TopoDisplayContext.Provider value={displayOpts}>
+      <TopoAlarmContext.Provider value={alarmByNodeId || emptyAlarmMap}>
       <ReactFlow
         nodes={
           isWorldFlatCanvas && worldVisualLod !== "full"
@@ -513,6 +570,7 @@ export default function TopologyReactFlowView(props: TopologyReactFlowViewProps)
           />
         ) : null}
       </ReactFlow>
+      </TopoAlarmContext.Provider>
     </TopoDisplayContext.Provider>
   );
 }

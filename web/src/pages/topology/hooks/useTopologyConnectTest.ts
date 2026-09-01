@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type Dispatch, type SetStateAction } from "react";
 import type { Node } from "@xyflow/react";
+import { useQueryClient } from "@tanstack/react-query";
 import { connectTestManagedNe, fetchManagedNeById } from "../../../services/api";
+import { queryKeys } from "../../../constants/queryKeys";
 import { useI18n } from "../../../i18n";
 import { useToast } from "../../../hooks/useToast";
 import type { ManagedNeItem } from "../../../types";
@@ -8,30 +10,101 @@ import type { NeNodeData } from "../TopologyReactFlowView";
 
 type Args = {
   closeCtxMenu: () => void;
+  mapId?: string | null;
+  setNodes: Dispatch<SetStateAction<Node<NeNodeData>[]>>;
 };
 
-export function useTopologyConnectTest({ closeCtxMenu }: Args) {
+/** Patch canvas node connect_status without wiping dirty local edits. */
+function patchNodesConnectStatus(
+  setNodes: Dispatch<SetStateAction<Node<NeNodeData>[]>>,
+  updates: Array<{ id: string; status: string }>,
+) {
+  if (!updates.length) return;
+  const byId = new Map(updates.map((u) => [u.id, u.status]));
+  setNodes((ns) =>
+    ns.map((n) => {
+      const mid = String(n.data.managed_ne_id || "").trim();
+      if (!mid || !byId.has(mid)) return n;
+      const status = byId.get(mid) || "unknown";
+      if (n.data.connect_status === status) return n;
+      return { ...n, data: { ...n.data, connect_status: status } };
+    }),
+  );
+}
+
+export function useTopologyConnectTest({ closeCtxMenu, mapId, setNodes }: Args) {
   const { t } = useI18n();
   const { showOk, showError } = useToast();
+  const queryClient = useQueryClient();
   const [detailRow, setDetailRow] = useState<ManagedNeItem | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  /** Managed NE ids whose canvas dots should track poll results. */
+  const [trackingIds, setTrackingIds] = useState<string[]>([]);
 
-  const refreshRow = useCallback(async (id: string) => {
-    const row = await fetchManagedNeById(id);
-    setDetailRow(row);
-    return row;
-  }, []);
+  const finishTracking = useCallback(() => {
+    setTrackingIds([]);
+    if (mapId) {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.topologyGraph(mapId) });
+    }
+    void queryClient.invalidateQueries({ queryKey: queryKeys.managedNeAll });
+  }, [mapId, queryClient]);
 
+  // Poll tracked connect tests → update dots (works even when graph apply is dirty-locked).
   useEffect(() => {
-    if (!detailRow || detailRow.connect_status !== "testing") return;
-    const id = detailRow.id;
-    const timer = window.setInterval(() => {
-      void refreshRow(id).catch(() => {
+    if (!trackingIds.length) return;
+    let cancelled = false;
+    const ids = trackingIds;
+
+    const tick = async () => {
+      try {
+        const rows = await Promise.all(ids.map((id) => fetchManagedNeById(id)));
+        if (cancelled) return;
+        patchNodesConnectStatus(
+          setNodes,
+          rows.map((row) => ({ id: row.id, status: row.connect_status || "unknown" })),
+        );
+        setDetailRow((prev) => {
+          if (!prev) {
+            return ids.length === 1 ? rows[0] : prev;
+          }
+          const match = rows.find((r) => r.id === prev.id);
+          return match || prev;
+        });
+        if (rows.every((r) => r.connect_status !== "testing")) {
+          finishTracking();
+        }
+      } catch {
         /* ignore transient poll errors */
-      });
-    }, 2000);
-    return () => window.clearInterval(timer);
-  }, [detailRow?.id, detailRow?.connect_status, refreshRow]);
+      }
+    };
+
+    void tick();
+    const timer = window.setInterval(() => void tick(), 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [trackingIds, setNodes, finishTracking]);
+
+  const startTracking = useCallback(
+    (ids: string[], openDetail: boolean) => {
+      const unique = [...new Set(ids.map((x) => String(x || "").trim()).filter(Boolean))];
+      if (!unique.length) return;
+      patchNodesConnectStatus(
+        setNodes,
+        unique.map((id) => ({ id, status: "testing" })),
+      );
+      setTrackingIds(unique);
+      if (openDetail && unique.length === 1) {
+        void fetchManagedNeById(unique[0])
+          .then((row) => setDetailRow(row))
+          .catch(() => {
+            /* ignore */
+          });
+      }
+    },
+    [setNodes],
+  );
 
   const runForNode = useCallback(
     async (node: Node<NeNodeData> | null) => {
@@ -45,17 +118,16 @@ export function useTopologyConnectTest({ closeCtxMenu }: Args) {
       try {
         const res = await connectTestManagedNe([managedId]);
         showOk(t("managedNe.connect.submitted", { n: res.submitted }));
-        await refreshRow(managedId);
+        startTracking([managedId], true);
       } catch (err) {
         showError(String(err));
       } finally {
         setSubmitting(false);
       }
     },
-    [closeCtxMenu, refreshRow, showError, showOk, t],
+    [closeCtxMenu, showError, showOk, startTracking, t],
   );
 
-  /** Batch: submit connect tests; open detail only when exactly one managed NE. */
   const runForNodes = useCallback(
     async (nodes: Node<NeNodeData>[]) => {
       closeCtxMenu();
@@ -70,7 +142,7 @@ export function useTopologyConnectTest({ closeCtxMenu }: Args) {
         showError(t("topology.connectTestNeedManaged"));
         return;
       }
-      const skipped = nodes.length - ids.length;
+      const skipped = Math.max(0, nodes.length - ids.length);
       setSubmitting(true);
       try {
         const res = await connectTestManagedNe(ids);
@@ -80,24 +152,22 @@ export function useTopologyConnectTest({ closeCtxMenu }: Args) {
             ? `${msg} · ${t("topology.connectTestSkipped").replace("{{count}}", String(skipped))}`
             : msg,
         );
-        if (ids.length === 1) {
-          await refreshRow(ids[0]);
-        }
+        startTracking(ids, ids.length === 1);
       } catch (err) {
         showError(String(err));
       } finally {
         setSubmitting(false);
       }
     },
-    [closeCtxMenu, refreshRow, showError, showOk, t],
+    [closeCtxMenu, showError, showOk, startTracking, t],
   );
 
   const onRetestSubmitted = useCallback(
     (rowId: string) => {
       showOk(t("managedNe.connect.submitted", { n: 1 }));
-      void refreshRow(rowId);
+      startTracking([rowId], true);
     },
-    [refreshRow, showOk, t],
+    [showOk, startTracking, t],
   );
 
   return {

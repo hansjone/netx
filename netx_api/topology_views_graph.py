@@ -197,6 +197,8 @@ def get_view_graph(db: Session, view_id: str) -> TopologyViewGraphOut:
             label = (fn.name or fn.ip or vn.fabric_node_id)[:256]
         connect_status = ""
         managed_source = ""
+        level: float | None = None
+        role = ""
         if fn is not None:
             mid = str(fn.managed_ne_id or "").strip()
             uid = str(fn.ume_ne_id or "").strip()
@@ -206,6 +208,8 @@ def get_view_graph(db: Session, view_id: str) -> TopologyViewGraphOut:
                 managed_source = str(mne.source or "").strip()
             elif uid and uid in ume_by_id:
                 connect_status = ume_by_id[uid].connection_status or ""
+            level = fn.level
+            role = str(fn.role or "").strip()
         nodes_out.append(
             ViewNodeOut(
                 fabric_node_id=vn.fabric_node_id,
@@ -221,6 +225,8 @@ def get_view_graph(db: Session, view_id: str) -> TopologyViewGraphOut:
                 device_type=(fn.device_type if fn else "") or "",
                 connect_status=connect_status,
                 managed_source=managed_source,
+                level=level,
+                role=role,
             )
         )
     # Child regions without a placement row still appear (legacy / missed create).

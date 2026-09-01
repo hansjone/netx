@@ -43,6 +43,7 @@ export type TopologyCtxMenuProps = {
   onDiscoverOne: (node: Node<NeNodeData> | null) => void;
   onOpenWebcrt: (node: Node<NeNodeData> | null) => void;
   onOpenNe: (node: Node<NeNodeData> | null) => void;
+  onOpenAlarms: (node: Node<NeNodeData> | null) => void;
   onConnectTest: (node: Node<NeNodeData> | null) => void;
   connectTestBusy?: boolean;
   onPurgePlaceholder: (id: string) => void;
@@ -86,6 +87,7 @@ export function TopologyCtxMenu({
   onDiscoverOne,
   onOpenWebcrt,
   onOpenNe,
+  onOpenAlarms,
   onConnectTest,
   connectTestBusy = false,
   onPurgePlaceholder,
@@ -275,6 +277,16 @@ export function TopologyCtxMenu({
               onClick={() => onOpenNe(selectedNode)}
             >
               {t("topology.openNe")}
+            </button>
+          </li>
+          <li role="none">
+            <button
+              type="button"
+              className="topo-ctx__item"
+              role="menuitem"
+              onClick={() => onOpenAlarms(selectedNode)}
+            >
+              {t("topology.openAlarms")}
             </button>
           </li>
           <li role="none">

@@ -5,6 +5,9 @@ import {
   SCALE_BUNDLE_WIDTH_KEY,
   SEP,
   SHOW_PLACEHOLDER_BADGE_KEY,
+  SHOW_CONNECT_STATUS_KEY,
+  SHOW_ALARM_OVERLAY_KEY,
+  SHOW_LEVEL_COLORS_KEY,
   WORLD_MAP_ENABLED,
 } from "./topology/constants";
 import type { CtxMenu, PaletteItem, PaletteSource } from "./topology/pageTypes";
@@ -53,6 +56,7 @@ import { useTopologyTreeNav } from "./topology/hooks/useTopologyTreeNav";
 import { useTopologyCanvas } from "./topology/hooks/useTopologyCanvas";
 import { useTopologyCreateNe } from "./topology/hooks/useTopologyCreateNe";
 import { useTopologyConnectTest } from "./topology/hooks/useTopologyConnectTest";
+import { useTopologyAlarmOverlay } from "./topology/hooks/useTopologyAlarmOverlay";
 import {
   lazy,
   Suspense,
@@ -138,6 +142,15 @@ export function TopologyPage() {
   /** TOPO/LLDP corner badge hidden by default; toggle in Display menu. */
   const [showPlaceholderBadge, setShowPlaceholderBadge] = useState(() =>
     loadBoolFlag(SHOW_PLACEHOLDER_BADGE_KEY, false),
+  );
+  const [showConnectStatus, setShowConnectStatus] = useState(() =>
+    loadBoolFlag(SHOW_CONNECT_STATUS_KEY, true),
+  );
+  const [showAlarmOverlay, setShowAlarmOverlay] = useState(() =>
+    loadBoolFlag(SHOW_ALARM_OVERLAY_KEY, true),
+  );
+  const [showLevelColors, setShowLevelColors] = useState(() =>
+    loadBoolFlag(SHOW_LEVEL_COLORS_KEY, true),
   );
   const [edgeFlow, setEdgeFlow] = useState(false);
   const [edgeDefaults, setEdgeDefaults] = useState<EdgeDefaults>(() => loadEdgeDefaults());
@@ -317,6 +330,9 @@ export function TopologyPage() {
     hideVendor,
     hidePorts,
     showPlaceholderBadge,
+    showConnectStatus,
+    showAlarmOverlay,
+    showLevelColors,
     expandPhysicalLinks,
     scaleBundleWidth,
     edgeFlow,
@@ -728,6 +744,11 @@ export function TopologyPage() {
   const selectedNodes = useMemo(() => nodes.filter((n) => n.selected), [nodes]);
   const selectedNode = selectedNodes[0] || null;
   const selectedNodeIds = useMemo(() => selectedNodes.map((n) => n.id), [selectedNodes]);
+
+  const { alarmByNodeId } = useTopologyAlarmOverlay({
+    enabled: canvasMode && showAlarmOverlay && !isWorldFlatCanvas,
+    nodes,
+  });
   const selectedEdge = useMemo(() => {
     if (!selectedEdgeId) return null;
     return (
@@ -844,7 +865,7 @@ export function TopologyPage() {
     onManagedFormSaved,
   } = createNe;
 
-  const connectTest = useTopologyConnectTest({ closeCtxMenu });
+  const connectTest = useTopologyConnectTest({ closeCtxMenu, mapId, setNodes });
   const {
     connectDetailRow,
     connectTestSubmitting,
@@ -1385,6 +1406,22 @@ export function TopologyPage() {
       return;
     }
     showError(t("topology.noNeLink"));
+  };
+
+  const openAlarmsFor = (node: Node<NeNodeData> | null) => {
+    closeCtxMenu();
+    if (!node || node.data.kind === "region") {
+      showError(t("topology.noAlarmLink"));
+      return;
+    }
+    const host = String(node.data.label || node.data.ne_ip || "").trim();
+    const q = new URLSearchParams();
+    if (host) q.set("host", host);
+    q.set("cleared", "false");
+    openOrFocusModule({
+      moduleId: "network",
+      path: `/network/alarms?${q.toString()}`,
+    });
   };
 
   const openPortTrafficForEdge = (edge: Edge | null) => {
@@ -2104,6 +2141,12 @@ export function TopologyPage() {
               onHideVendorChange={setHideVendor}
               showPlaceholderBadge={showPlaceholderBadge}
               onShowPlaceholderBadgeChange={setShowPlaceholderBadge}
+              showConnectStatus={showConnectStatus}
+              onShowConnectStatusChange={setShowConnectStatus}
+              showAlarmOverlay={showAlarmOverlay}
+              onShowAlarmOverlayChange={setShowAlarmOverlay}
+              showLevelColors={showLevelColors}
+              onShowLevelColorsChange={setShowLevelColors}
               hidePorts={hidePorts}
               onHidePortsChange={setHidePorts}
               expandPhysicalLinks={expandPhysicalLinks}
@@ -2210,6 +2253,7 @@ export function TopologyPage() {
                 >
                   <TopologyReactFlowView
                     displayOpts={displayOpts}
+                    alarmByNodeId={alarmByNodeId}
                     nodes={nodes}
                     setNodes={setNodes}
                     edges={edges}
@@ -2450,6 +2494,7 @@ export function TopologyPage() {
           onDiscoverOne={discoverOneFor}
           onOpenWebcrt={openWebcrtFor}
           onOpenNe={openNeFor}
+          onOpenAlarms={openAlarmsFor}
           onConnectTest={runConnectTestForNode}
           connectTestBusy={connectTestSubmitting}
           onPurgePlaceholder={purgePlaceholderById}

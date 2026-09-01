@@ -7603,6 +7603,109 @@ pre {
   pointer-events: none;
 }
 
+.topo-node__conn {
+  position: absolute;
+  left: -2px;
+  bottom: -2px;
+  z-index: 2;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(15, 23, 42, 0.9);
+  pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.25);
+}
+.topo-node__conn--pass {
+  background: #22c55e;
+}
+.topo-node__conn--fail {
+  background: #ef4444;
+}
+.topo-node__conn--testing {
+  background: #f59e0b;
+}
+.topo-node__conn--unknown {
+  background: #64748b;
+}
+
+.topo-node__alarm {
+  position: absolute;
+  top: -4px;
+  right: -5px;
+  z-index: 3;
+  min-width: 14px;
+  padding: 0 3px;
+  border-radius: 8px;
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1.35;
+  color: #fff;
+  pointer-events: none;
+  border: 1px solid rgba(15, 23, 42, 0.75);
+}
+.topo-node__alarm--critical {
+  background: #dc2626;
+}
+.topo-node__alarm--major {
+  background: #ea580c;
+}
+.topo-node__alarm--minor {
+  background: #ca8a04;
+}
+.topo-node__alarm--warning,
+.topo-node__alarm--indeterminate,
+.topo-node__alarm--unknown {
+  background: #d97706;
+}
+
+.topo-node__unmatched {
+  position: absolute;
+  top: -3px;
+  right: -4px;
+  z-index: 2;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(51, 65, 85, 0.95);
+  border: 1px solid rgba(148, 163, 184, 0.55);
+  color: #e2e8f0;
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.topo-node.is-level-external .topo-node__glyph {
+  box-shadow: inset 0 0 0 2px #38bdf8;
+}
+.topo-node.is-level-core .topo-node__glyph {
+  box-shadow: inset 0 0 0 2px #a78bfa;
+}
+.topo-node.is-level-aggregation .topo-node__glyph {
+  box-shadow: inset 0 0 0 2px #34d399;
+}
+.topo-node.is-level-access .topo-node__glyph {
+  box-shadow: inset 0 0 0 2px #fbbf24;
+}
+.topo-node.is-level-edge .topo-node__glyph {
+  box-shadow: inset 0 0 0 2px #fb7185;
+}
+.topo-node.is-level-unmatched .topo-node__glyph {
+  box-shadow: inset 0 0 0 2px rgba(148, 163, 184, 0.55);
+}
+
+.topo-node.has-alarm--critical .topo-node__glyph {
+  outline: 2px solid rgba(220, 38, 38, 0.85);
+  outline-offset: 1px;
+}
+.topo-node.has-alarm--major .topo-node__glyph {
+  outline: 2px solid rgba(234, 88, 12, 0.85);
+  outline-offset: 1px;
+}
+
 .topo-truncate-banner {
   position: absolute;
   top: 8px;

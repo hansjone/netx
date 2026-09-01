@@ -291,6 +291,9 @@ class ViewNodeOut(BaseModel):
     device_type: str = ""
     connect_status: str = ""
     managed_source: str = ""  # manual | ume_sync | lldp | topology | webcrt | …
+    # Fabric classify: smaller level = closer to external/WAN; role synced from floor(level).
+    level: float | None = None
+    role: str = ""
     # ne | region — region nodes drill into child UME canvases
     kind: str = "ne"
     folder_id: str = ""
