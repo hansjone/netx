@@ -1877,7 +1877,6 @@ const en = {
     filterNeExec: "Device exec",
     filterAuth: "Auth",
     filterHttp: "HTTP",
-    noiseHint: "Page-refresh HTTP noise is hidden by default; writes and failed requests are kept.",
     summary: {
       connecting: "Connecting to {{device}}",
       loginOk: "Logged in to {{device}}",

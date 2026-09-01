@@ -1855,7 +1855,6 @@ const zh = {
     filterNeExec: "设备执行",
     filterAuth: "登录认证",
     filterHttp: "HTTP",
-    noiseHint: "默认隐藏页面刷新类 HTTP 噪声；写操作与失败请求仍会保留。",
     summary: {
       connecting: "正在登录 {{device}}",
       loginOk: "登录 {{device}}",

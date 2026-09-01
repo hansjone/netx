@@ -156,9 +156,6 @@ export function AuditPage() {
         <div className="panel__toolbar">
           <h2>{t("audit.logsTitle")}</h2>
         </div>
-        <p className="panel__hint">
-          {isAdmin ? t("auth.auditHintAdmin") : t("auth.auditHintUser")} {t("audit.noiseHint")}
-        </p>
 
         <div className="pt-list">
           <div className="filter-inline audit-quick-filters">
