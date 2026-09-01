@@ -1,9 +1,13 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
+from .auth_deps import AuthContext, require_user
+from .auth_service import write_audit
 from .db import get_db
 from .device_types import SUPPORTED_VENDORS
 from .ne_connect import schedule_connect_tests
@@ -37,6 +41,16 @@ from .ne_service import (
 from .models import ManagedNE
 
 router = APIRouter(prefix="/v1/managed-ne", tags=["managed-ne"])
+
+
+def _actor(ctx: AuthContext | None = None, request: Request | None = None) -> tuple[str, str]:
+    if ctx is not None and ctx.user is not None:
+        return str(ctx.user.id or ""), str(ctx.user.username or "")
+    if request is not None:
+        user = getattr(request.state, "auth_user", None)
+        if user:
+            return str(getattr(user, "id", "") or ""), str(getattr(user, "username", "") or "")
+    return "", ""
 
 
 @router.get("")
@@ -131,24 +145,55 @@ def api_delete_ume_synced_managed_ne(db: Session = Depends(get_db)):
 
 
 @router.post("/exec")
-def api_exec_managed_ne(body: ManagedNeExecRequest, db: Session = Depends(get_db)):
+def api_exec_managed_ne(
+    body: ManagedNeExecRequest,
+    ctx: Annotated[AuthContext, Depends(require_user)],
+    db: Session = Depends(get_db),
+):
     """Login to a managed NE or UME inventory NE and run read-only CLI (show/display/ping/traceroute)."""
-    return execute_managed_ne_commands(
+    uid, uname = _actor(ctx)
+    out = execute_managed_ne_commands(
         db,
         body.commands,
         ne_id=body.ne_id,
         ume_ne_id=body.ume_ne_id,
         read_timeout_sec=body.read_timeout_sec,
     )
+    device = out.get("device") if isinstance(out.get("device"), dict) else {}
+    write_audit(
+        db,
+        action="ne.exec",
+        actor_user_id=uid,
+        actor_username=uname,
+        method="POST",
+        path="/v1/managed-ne/exec",
+        status_code=200 if out.get("ok") else 502,
+        detail={
+            "ne_id": body.ne_id or "",
+            "ume_ne_id": body.ume_ne_id or "",
+            "ne_name": str(device.get("name") or device.get("ne_name") or ""),
+            "ne_ip": str(device.get("ip_address") or device.get("ip") or device.get("mgmt_ip") or ""),
+            "commands": list(out.get("commands") or body.commands or [])[:20],
+            "ok": bool(out.get("ok")),
+            "error": str(out.get("error") or "")[:500],
+            "output_len": len(str(out.get("output") or "")),
+        },
+    )
+    return out
 
 
 @router.post("/exec-batch")
-def api_exec_managed_ne_batch(body: ManagedNeExecBatchRequest):
+def api_exec_managed_ne_batch(
+    body: ManagedNeExecBatchRequest,
+    ctx: Annotated[AuthContext, Depends(require_user)],
+    db: Session = Depends(get_db),
+):
     """Run read-only CLI on many NEs concurrently (field multi-NE sweeps)."""
+    uid, uname = _actor(ctx)
     targets = None
     if body.targets:
         targets = [t.model_dump() for t in body.targets]
-    return execute_managed_ne_commands_batch(
+    out = execute_managed_ne_commands_batch(
         targets=targets,
         ne_ids=body.ne_ids,
         ume_ne_ids=body.ume_ne_ids,
@@ -156,6 +201,33 @@ def api_exec_managed_ne_batch(body: ManagedNeExecBatchRequest):
         read_timeout_sec=body.read_timeout_sec,
         concurrency=body.concurrency,
     )
+    items = out.get("items") if isinstance(out, dict) else None
+    ok_n = 0
+    fail_n = 0
+    if isinstance(items, list):
+        for row in items:
+            if isinstance(row, dict) and row.get("ok"):
+                ok_n += 1
+            else:
+                fail_n += 1
+    write_audit(
+        db,
+        action="ne.exec_batch",
+        actor_user_id=uid,
+        actor_username=uname,
+        method="POST",
+        path="/v1/managed-ne/exec-batch",
+        status_code=200,
+        detail={
+            "ne_ids": list(body.ne_ids or [])[:100],
+            "ume_ne_ids": list(body.ume_ne_ids or [])[:100],
+            "target_count": len(targets or []) + len(body.ne_ids or []) + len(body.ume_ne_ids or []),
+            "commands": list(body.commands or [])[:20],
+            "ok_count": ok_n,
+            "fail_count": fail_n,
+        },
+    )
+    return out
 
 
 @router.post("/connect-test")

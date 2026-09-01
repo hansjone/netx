@@ -10664,3 +10664,49 @@ option {
   border-color: rgba(148, 163, 184, 0.2) !important;
   color: #e2e8f0 !important;
 }
+
+/* Operation audit logs */
+.system-page .audit-quick-filters button.is-active {
+  background: rgba(37, 99, 235, 0.18);
+  border-color: rgba(59, 130, 246, 0.55);
+  color: #1e3a8a;
+  font-weight: 600;
+}
+
+.system-page .audit-summary-cell {
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.system-page button.linkish {
+  background: transparent;
+  border: none;
+  color: #2563eb;
+  cursor: pointer;
+  padding: 0;
+  height: auto;
+  font: inherit;
+  text-decoration: underline;
+}
+
+.system-page .audit-detail-row td {
+  background: rgba(15, 23, 42, 0.04);
+  padding: 10px 12px 14px;
+}
+
+.system-page .audit-detail-pre {
+  margin: 0;
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.system-page .audit-detail-meta {
+  margin: 8px 0 0;
+}

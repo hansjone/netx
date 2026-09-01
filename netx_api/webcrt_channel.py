@@ -468,7 +468,86 @@ def read_session_log_tail(session_id: str, *, max_bytes: int = 49152) -> str:
         return ""
 
 
+# Lifecycle + command events also land in audit_log (ops UI). Attach/detach/sftp stay file-only.
+_DB_AUDIT_EVENTS = frozenset(
+    {
+        "session_connecting",
+        "session_created",
+        "session_open_failed",
+        "session_closed",
+        "command",
+    }
+)
+
+_PASSWORD_PROMPT_RE = re.compile(
+    r"(?:enter\s+)?(?:password|密码|passwd)\s*[:>]\s*$",
+    re.IGNORECASE,
+)
+
+
+def looks_like_password_prompt(text: str) -> bool:
+    """True when device stdout tail asks for a password (interactive auth)."""
+    s = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    # Drop ANSI so prompt detection is stable.
+    s = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\].*?\x07|\x1b.", "", s)
+    parts = [ln.strip() for ln in s.split("\n") if ln.strip()]
+    if not parts:
+        return False
+    return bool(_PASSWORD_PROMPT_RE.search(parts[-1]))
+
+
+def feed_command_line_buffer(buf: str, data: str, *, max_line: int = 512) -> tuple[str, list[str]]:
+    """Accumulate stdin into completed command lines (Enter / CR / LF).
+
+    Handles backspace, ignores most control chars, truncates over-long lines.
+    Returns ``(new_buffer, completed_lines)``.
+    """
+    cur = str(buf or "")
+    completed: list[str] = []
+    limit = max(64, min(int(max_line or 512), 4096))
+    for ch in str(data or ""):
+        if ch in ("\r", "\n"):
+            if cur:
+                completed.append(cur[:limit])
+            cur = ""
+            continue
+        if ch in ("\b", "\x7f"):
+            cur = cur[:-1] if cur else ""
+            continue
+        if ch == "\x03":  # Ctrl-C — abandon current line
+            cur = ""
+            continue
+        if ord(ch) < 32 and ch != "\t":
+            continue
+        if len(cur) < limit:
+            cur += ch
+    return cur, completed
+
+
 def _audit(event: str, **fields: Any) -> None:
+    """Write WebCRT audit to jsonl; dual-write selected events into audit_log."""
+    # Enrich actor / device fields from the live session when callers omit them.
+    sid = str(fields.get("session_id") or "").strip()
+    if sid and (
+        not fields.get("owner_user_id")
+        or not fields.get("owner_username")
+        or not fields.get("ne_name")
+        or "protocol" not in fields
+    ):
+        try:
+            from .webcrt_session_registry import get_session
+
+            sess = get_session(sid)
+            if sess is not None:
+                fields.setdefault("owner_user_id", sess.owner_user_id)
+                fields.setdefault("owner_username", sess.owner_username)
+                fields.setdefault("ne_id", sess.ne_id)
+                fields.setdefault("ne_name", sess.ne_name)
+                fields.setdefault("ne_ip", sess.ne_ip)
+                fields.setdefault("protocol", sess.protocol)
+        except Exception:
+            pass
+
     record = {"ts": _utc_iso(), "event": event, **fields}
     try:
         path = webcrt_data_root() / "audit.jsonl"
@@ -477,3 +556,35 @@ def _audit(event: str, **fields: Any) -> None:
     except Exception:
         _log.exception("webcrt audit write failed")
     _log.info("webcrt.%s %s", event, {k: v for k, v in fields.items() if k != "detail"})
+
+    if str(event or "") not in _DB_AUDIT_EVENTS:
+        return
+    try:
+        from .audit_async import enqueue_audit
+
+        actor_uid = str(fields.get("owner_user_id") or fields.get("actor_user_id") or "")
+        actor_name = str(fields.get("owner_username") or fields.get("actor_username") or "")
+        detail = {
+            k: v
+            for k, v in fields.items()
+            if k
+            not in {
+                "owner_user_id",
+                "owner_username",
+                "actor_user_id",
+                "actor_username",
+            }
+        }
+        enqueue_audit(
+            action=f"webcrt.{event}",
+            actor_user_id=actor_uid,
+            actor_username=actor_name,
+            method="",
+            path=f"/v1/webcrt/sessions/{sid}" if sid else "/v1/webcrt",
+            status_code=0,
+            client_ip=str(fields.get("client_ip") or ""),
+            user_agent=str(fields.get("client") or "")[:512],
+            detail=detail,
+        )
+    except Exception:
+        _log.exception("webcrt audit_log enqueue failed event=%s", event)

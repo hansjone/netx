@@ -18,10 +18,13 @@ from .ne_session_factory import (
 )
 from .webcrt_channel import (
     _BoundedByteQueue,
+    _audit,
     _decode_bytes,
     _encode_text,
     _session_log_path,
     _utc_iso,
+    feed_command_line_buffer,
+    looks_like_password_prompt,
     map_network_cli_enter,
     map_network_cli_keys,
 )
@@ -87,6 +90,11 @@ class WebcrtSession:
     sftp_ready: bool = False
     _sftp: Any = field(default=None, repr=False)
     _sftp_lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
+    # Interactive command audit: line buffer + password-prompt redaction.
+    _cmd_buf: str = field(default="", repr=False)
+    _cmd_buf_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _password_mode: bool = field(default=False, repr=False)
+    _stdout_tail: str = field(default="", repr=False)
 
     def touch(self) -> None:
         self.last_activity = time.time()
@@ -302,7 +310,7 @@ class WebcrtSession:
                     return "stale"
                 return chunk  # bytes | None
 
-    def write_stdin(self, data: str) -> None:
+    def write_stdin(self, data: str, *, audit_source: str = "stdin") -> None:
         if self.closed or self.conn is None:
             raise RuntimeError("session_closed")
         text = str(data or "")
@@ -318,6 +326,7 @@ class WebcrtSession:
             text = map_network_cli_enter(text, self.conn)
         if not text:
             return
+        self._note_stdin_for_audit(text, source=audit_source)
         with self._write_lock:
             # Prefer raw channel I/O for interactive typing (char echo / backspace).
             channel = getattr(self.conn, "remote_conn", None)
@@ -344,6 +353,43 @@ class WebcrtSession:
                 self.conn.write_channel(text)
                 self.bytes_in += len(text)
         self.touch()
+
+    def _note_stdin_for_audit(self, text: str, *, source: str = "stdin") -> None:
+        """Extract completed command lines from stdin and emit webcrt.command audits."""
+        with self._cmd_buf_lock:
+            self._cmd_buf, lines = feed_command_line_buffer(self._cmd_buf, text)
+            redacted = bool(self._password_mode)
+            if redacted and lines:
+                self._password_mode = False
+        for cmd in lines:
+            if not str(cmd).strip():
+                continue
+            try:
+                _audit(
+                    "command",
+                    session_id=self.session_id,
+                    ne_id=self.ne_id,
+                    ne_name=self.ne_name,
+                    ne_ip=self.ne_ip,
+                    protocol=self.protocol,
+                    owner_user_id=self.owner_user_id,
+                    owner_username=self.owner_username,
+                    command="***" if redacted else str(cmd)[:512],
+                    redacted=bool(redacted),
+                    source=str(source or "stdin")[:32],
+                )
+            except Exception:
+                _log.debug("webcrt command audit failed session=%s", self.session_id, exc_info=True)
+
+    def _note_stdout_for_audit(self, text: str) -> None:
+        """Track device prompts so the next typed line can be redacted if it is a password."""
+        chunk = str(text or "")
+        if not chunk:
+            return
+        with self._cmd_buf_lock:
+            self._stdout_tail = (self._stdout_tail + chunk)[-4000:]
+            if looks_like_password_prompt(self._stdout_tail):
+                self._password_mode = True
 
     def send_break(self) -> None:
         """Send SSH break / Telnet IAC BREAK to interrupt paging or hung commands."""
@@ -472,7 +518,9 @@ class WebcrtSession:
                     self.bytes_out += len(chunk)
                     self.out_queue.put(chunk)
                     try:
-                        self.append_session_log(_decode_bytes(chunk, self.encoding))
+                        decoded = _decode_bytes(chunk, self.encoding)
+                        self.append_session_log(decoded)
+                        self._note_stdout_for_audit(decoded)
                     except Exception:
                         pass
                     if self.cli_hop_guard and self._note_cli_hop_output(chunk):
@@ -516,7 +564,7 @@ class WebcrtSession:
             return
         for cmd in cmds[:20]:
             try:
-                self.write_stdin(cmd + "\r")
+                self.write_stdin(cmd + "\r", audit_source="post_login")
                 time.sleep(0.15)
             except Exception:
                 _log.debug("post_login command failed session=%s", self.session_id, exc_info=True)

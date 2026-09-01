@@ -99,8 +99,14 @@ def enqueue_audit(
 ) -> None:
     global _dropped
     act = str(action or "")
-    # Always persist auth / security-relevant events.
-    if act.startswith("auth.") or act.startswith("users.") or act.startswith("api_tokens.") or act.startswith("webcrt."):
+    # Always persist auth / security / device-op events.
+    if (
+        act.startswith("auth.")
+        or act.startswith("users.")
+        or act.startswith("api_tokens.")
+        or act.startswith("webcrt.")
+        or act.startswith("ne.")
+    ):
         pass
     elif act.startswith("http.") and not _sample_ok():
         return

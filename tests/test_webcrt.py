@@ -44,7 +44,8 @@ class WebcrtServiceTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.setUp()
 
-    def test_session_write_resize_and_close(self) -> None:
+    @patch("netx_api.webcrt_session_model._audit")
+    def test_session_write_resize_and_close(self, _mock_audit: MagicMock) -> None:
         conn = _FakeConn()
         sess = svc.WebcrtSession(
             session_id="s1",
@@ -342,7 +343,8 @@ class WebcrtServiceTests(unittest.TestCase):
         self.assertIn("<r1>", echo)
         self.assertFalse(sess.needs_live_prompt)
         before = list(fake.written)
-        sess.write_stdin("\n")
+        with patch("netx_api.webcrt_session_model._audit"):
+            sess.write_stdin("\n")
         self.assertEqual(fake.written[len(before) :], ["\n"])
         svc.close_session(out["session_id"], reason="test")
 
