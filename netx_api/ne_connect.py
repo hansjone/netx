@@ -209,14 +209,86 @@ def _classify_connect_error(creds: dict[str, Any], exc: BaseException) -> str:
     return detail
 
 
+def _exc_headline(exc: BaseException) -> str:
+    """First line of the exception only (Netmiko often appends multi-line advice)."""
+    text = str(exc).strip() or type(exc).__name__
+    first = text.splitlines()[0].strip()
+    return f"{type(exc).__name__}: {first}"[:480]
+
+
+def _root_cause_headline(exc: BaseException) -> str | None:
+    """Underlying OS/socket error when Netmiko wraps TimeoutError / etc."""
+    cause = exc.__cause__ or exc.__context__
+    if cause is None or cause is exc:
+        return None
+    # Prefer the deepest non-trivial cause one level down (TimeoutError under NetmikoTimeout).
+    headline = _exc_headline(cause)
+    outer = _exc_headline(exc)
+    if headline == outer:
+        return None
+    return headline
+
+
+def _is_network_reachability_fail(exc: BaseException) -> bool:
+    """TCP timeout / refused / unreachable — stack traces add noise, not diagnosis."""
+    chunks = [str(exc)]
+    if exc.__cause__ is not None:
+        chunks.append(str(exc.__cause__))
+    if exc.__context__ is not None:
+        chunks.append(str(exc.__context__))
+    raw = " ".join(chunks).lower()
+    name = type(exc).__name__.lower()
+    if "timeout" in name or "timeout" in raw:
+        return True
+    if "connection refused" in raw or "10060" in raw or "10061" in raw:
+        return True
+    if "no route" in raw or "network is unreachable" in raw or "name or service not known" in raw:
+        return True
+    return False
+
+
+def _compact_traceback(*, max_frames: int = 8) -> str:
+    """File/line frames only; drop exception body (already shown on error=)."""
+    tb = traceback.format_exc().strip()
+    if not tb:
+        return ""
+    frames: list[str] = []
+    for line in tb.splitlines():
+        s = line.rstrip()
+        if s.startswith("Traceback ") or s.startswith("During handling"):
+            continue
+        # Exception summary / advice paragraphs (no leading indent, not a frame header).
+        if frames and s and not s.startswith(" ") and not s.startswith("File "):
+            break
+        if s.startswith("  File ") or (frames and s.startswith("    ")):
+            frames.append(s)
+            continue
+        if s.startswith("File "):
+            frames.append(s)
+    if not frames:
+        return ""
+    # Keep the deepest frames (closest to failure).
+    if len(frames) > max_frames * 2:
+        # each frame is typically 2 lines (File + code)
+        frames = frames[-(max_frames * 2) :]
+    return "\n".join(frames)
+
+
 def _format_failure_detail(creds: dict[str, Any], exc: BaseException) -> str:
     lines = _connect_context_lines(creds)
-    lines.append(f"result=fail")
-    lines.append(f"error={type(exc).__name__}: {exc}")
-    tb = traceback.format_exc().strip()
-    if tb:
-        lines.append("")
-        lines.append(tb)
+    lines.append("result=fail")
+    lines.append(f"error={_exc_headline(exc)}")
+    root = _root_cause_headline(exc)
+    if root:
+        lines.append(f"cause={root}")
+    # Reachability failures: context + one-liners are enough.
+    # Auth/CLI/hop surprises still get a short stack for support.
+    if not _is_network_reachability_fail(exc):
+        stack = _compact_traceback()
+        if stack:
+            lines.append("")
+            lines.append("stack:")
+            lines.append(stack)
     return _truncate_detail("\n".join(lines))
 
 
@@ -386,7 +458,20 @@ def _run_single(ne_id: str) -> None:
         _update_row(ne_id, status, message, discovered, detail=detail)
     except Exception as exc:
         _log.exception("connect test failed for %s", ne_id)
-        _update_row(ne_id, "fail", str(exc)[:480], detail=_truncate_detail(traceback.format_exc()))
+        detail = _format_failure_detail(
+            {
+                "ip_address": "?",
+                "port": "?",
+                "protocol": "?",
+                "device_type": "?",
+                "vendor": "?",
+                "username": "?",
+                "hop_enabled": False,
+            },
+            exc,
+        )
+        # Prefer short message; full multi-line Netmiko advice is not useful in the pill.
+        _update_row(ne_id, "fail", _exc_headline(exc)[:480], detail=detail)
     finally:
         db.close()
 
@@ -436,8 +521,19 @@ def _run_single_ume(ume_ne_id: str) -> None:
         try:
             creds, _device = resolve_cli_target(db, ume_ne_id=uid)
         except Exception as exc:
-            detail = _truncate_detail(traceback.format_exc())
-            _update_ume_override_row(uid, "fail", str(exc)[:480], detail=detail)
+            detail = _format_failure_detail(
+                {
+                    "ip_address": "?",
+                    "port": "?",
+                    "protocol": "?",
+                    "device_type": "?",
+                    "vendor": "?",
+                    "username": "?",
+                    "hop_enabled": False,
+                },
+                exc,
+            )
+            _update_ume_override_row(uid, "fail", _exc_headline(exc)[:480], detail=detail)
             return
         skip = cli_creds_skip_reason(creds, interactive=False)
         if skip:
@@ -450,7 +546,19 @@ def _run_single_ume(ume_ne_id: str) -> None:
         _update_ume_override_row(uid, status, message, discovered, detail=detail)
     except Exception as exc:
         _log.exception("ume connect test failed for %s", ume_ne_id)
-        _update_ume_override_row(ume_ne_id, "fail", str(exc)[:480], detail=_truncate_detail(traceback.format_exc()))
+        detail = _format_failure_detail(
+            {
+                "ip_address": "?",
+                "port": "?",
+                "protocol": "?",
+                "device_type": "?",
+                "vendor": "?",
+                "username": "?",
+                "hop_enabled": False,
+            },
+            exc,
+        )
+        _update_ume_override_row(ume_ne_id, "fail", _exc_headline(exc)[:480], detail=detail)
     finally:
         db.close()
 

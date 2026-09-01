@@ -33,12 +33,18 @@ export type TopologyCtxMenuProps = {
   onClose: () => void;
   onToggleFullscreen: () => void;
   onRemoveSelected: () => void;
+  onDiscoverSelected: () => void;
+  onConnectTestSelected: () => void;
+  selectedDiscoverableCount: number;
+  selectedConnectableCount: number;
   onOpenCreateNe: (flowX: number, flowY: number) => void;
   onPromptNewSubRegion: () => void;
   onRenameSelectedNode: () => void;
   onDiscoverOne: (node: Node<NeNodeData> | null) => void;
   onOpenWebcrt: (node: Node<NeNodeData> | null) => void;
   onOpenNe: (node: Node<NeNodeData> | null) => void;
+  onConnectTest: (node: Node<NeNodeData> | null) => void;
+  connectTestBusy?: boolean;
   onPurgePlaceholder: (id: string) => void;
   onRemoveNode: (id: string) => void;
   onExpandPhysicalLinks: () => void;
@@ -70,12 +76,18 @@ export function TopologyCtxMenu({
   onClose,
   onToggleFullscreen,
   onRemoveSelected,
+  onDiscoverSelected,
+  onConnectTestSelected,
+  selectedDiscoverableCount,
+  selectedConnectableCount,
   onOpenCreateNe,
   onPromptNewSubRegion,
   onRenameSelectedNode,
   onDiscoverOne,
   onOpenWebcrt,
   onOpenNe,
+  onConnectTest,
+  connectTestBusy = false,
   onPurgePlaceholder,
   onRemoveNode,
   onExpandPhysicalLinks,
@@ -98,7 +110,47 @@ export function TopologyCtxMenu({
         <>
           <li className="topo-ctx__head" role="presentation">
             {t("topology.selectionMenu")}
+            <span className="topo-ctx__count"> · {selectedNodeCount}</span>
           </li>
+          <li role="none">
+            <button
+              type="button"
+              className="topo-ctx__item"
+              role="menuitem"
+              disabled={discovering || selectedDiscoverableCount === 0}
+              title={
+                selectedDiscoverableCount === 0 ? t("topology.discoverOneNeedNe") : undefined
+              }
+              onClick={() => onDiscoverSelected()}
+            >
+              {t("topology.discoverSelected").replace(
+                "{{count}}",
+                String(selectedDiscoverableCount || selectedNodeCount),
+              )}
+            </button>
+          </li>
+          <li role="none">
+            <button
+              type="button"
+              className="topo-ctx__item"
+              role="menuitem"
+              disabled={connectTestBusy || selectedConnectableCount === 0}
+              title={
+                selectedConnectableCount === 0
+                  ? t("topology.connectTestNeedManaged")
+                  : undefined
+              }
+              onClick={() => onConnectTestSelected()}
+            >
+              {connectTestBusy
+                ? t("managedNe.connect.running")
+                : t("topology.connectTestSelected").replace(
+                    "{{count}}",
+                    String(selectedConnectableCount || selectedNodeCount),
+                  )}
+            </button>
+          </li>
+          <li className="topo-ctx__sep" aria-hidden />
           <li role="none">
             <button
               type="button"
@@ -223,6 +275,24 @@ export function TopologyCtxMenu({
               onClick={() => onOpenNe(selectedNode)}
             >
               {t("topology.openNe")}
+            </button>
+          </li>
+          <li role="none">
+            <button
+              type="button"
+              className="topo-ctx__item"
+              role="menuitem"
+              disabled={
+                connectTestBusy || !String(selectedNode?.data.managed_ne_id || "").trim()
+              }
+              title={
+                !String(selectedNode?.data.managed_ne_id || "").trim()
+                  ? t("topology.connectTestNeedManaged")
+                  : undefined
+              }
+              onClick={() => onConnectTest(selectedNode)}
+            >
+              {connectTestBusy ? t("managedNe.connect.running") : t("topology.connectTest")}
             </button>
           </li>
           <li className="topo-ctx__sep" aria-hidden />

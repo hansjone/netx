@@ -6,7 +6,6 @@ import {
   batchApplyHopManagedNe,
   batchDeleteManagedNe,
   connectTestManagedNe,
-  createManagedNe,
   deleteUmeManagedNe,
   deleteManagedNe,
   fetchIdsByTag,
@@ -17,7 +16,6 @@ import {
   importManagedNe,
   downloadManagedNeImportTemplate,
   syncUmeManagedNe,
-  updateManagedNe,
   type ManagedNeStats,
 } from "../services/api";
 import { HelpHint } from "../components/HelpHint";
@@ -30,98 +28,28 @@ import type { ManagedNeItem } from "../types";
 import { pageCount } from "../utils/display";
 import { formatSystemTime } from "../utils/time";
 import { openOrFocusModule } from "../utils/moduleWindows";
+import { ManagedNeFormDialog } from "./managedNe/ManagedNeFormDialog";
+import { ManagedNeConnectDetailDialog } from "./managedNe/ManagedNeConnectDetailDialog";
+import { connectStatusClass } from "./managedNe/connectStatus";
 import {
-  defaultHopTemplate,
-  isAutoHopTemplate,
-  patchHopVendorChange,
-  type HopVendor,
-} from "../utils/hopProxy";
+  deviceTypeForVendor,
+  emptyManagedNeForm,
+  managedSourceKey,
+  type ManagedNeFormState,
+} from "./managedNe/formState";
 
 /** Hide UME→managed sync/delete controls until needed again. APIs remain available. */
 const SHOW_UME_MANAGED_SYNC = false;
-
-type FormState = {
-  name: string;
-  vendor: string;
-  device_type: string;
-  ip_address: string;
-  port: number;
-  protocol: string;
-  username: string;
-  password: string;
-  tags: string;
-  remark: string;
-  hop_enabled: boolean;
-  hop_vendor: HopVendor;
-  hop_host: string;
-  hop_port: number;
-  hop_protocol: string;
-  hop_username: string;
-  hop_password: string;
-  hop_command_template: string;
-  hop_vrf: string;
-  hop_target_auth_mode: "bastion_managed" | "manual";
-  hop_enter_system_view: boolean;
-};
 
 type AccountState = {
   username: string;
   password: string;
 };
 
-function deviceTypeForVendor(vendor: string): string {
-  if (vendor === "ZTE") return "zte_zxros";
-  if (vendor === "Huawei") return "huawei";
-  if (vendor === "Cisco") return "cisco_ios";
-  if (vendor === "Juniper") return "juniper_junos";
-  if (vendor === "Nokia") return "nokia_sros";
-  return "generic";
-}
-
-const emptyForm = (): FormState => ({
-  name: "",
-  vendor: "ZTE",
-  device_type: "zte_zxros",
-  ip_address: "",
-  port: 22,
-  protocol: "ssh",
-  username: "",
-  password: "",
-  tags: "",
-  remark: "",
-  hop_enabled: false,
-  hop_vendor: "zte",
-  hop_host: "",
-  hop_port: 22,
-  hop_protocol: "ssh",
-  hop_username: "",
-  hop_password: "",
-  hop_command_template: defaultHopTemplate("zte", "ssh", ""),
-  hop_vrf: "",
-  hop_target_auth_mode: "bastion_managed",
-  hop_enter_system_view: false,
-});
-
 const emptyAccount = (): AccountState => ({
   username: "",
   password: "",
 });
-
-function applyHopTemplate(prev: FormState, protocol: string, vrf: string, force = false): Partial<FormState> {
-  if (!force && !isAutoHopTemplate(prev.hop_command_template, prev.hop_vendor, prev.hop_protocol, prev.hop_vrf)) {
-    return {};
-  }
-  return { hop_command_template: defaultHopTemplate(prev.hop_vendor, protocol, vrf) };
-}
-
-function managedSourceKey(
-  source: string | undefined,
-): "manual" | "ume_sync" | "webcrt" | "lldp" | "topology" | "" {
-  const s = String(source || "").trim().toLowerCase();
-  if (!s) return "manual";
-  if (s === "ume_sync" || s === "webcrt" || s === "lldp" || s === "topology") return s;
-  return "";
-}
 
 function FormLabel({ children, required }: { children: ReactNode; required?: boolean }) {
   return (
@@ -135,21 +63,6 @@ function FormLabel({ children, required }: { children: ReactNode; required?: boo
       ) : null}
     </span>
   );
-}
-
-function connectStatusClass(status: string): string {
-  if (status === "pass") return "pt-list-status--ok";
-  if (status === "fail") return "pt-list-status--failed";
-  if (status === "testing") return "pt-list-status--running";
-  return "pt-list-status--unknown";
-}
-
-function connectPillLevel(status: string): "up" | "down" | "unknown" | "warn" {
-  const s = String(status || "").toLowerCase();
-  if (s === "pass" || s === "ok") return "up";
-  if (s === "fail" || s === "error") return "down";
-  if (s === "testing") return "warn";
-  return "unknown";
 }
 
 export function NePage() {
@@ -172,7 +85,7 @@ export function NePage() {
   const [batchHopOpen, setBatchHopOpen] = useState(false);
   const [batchAccountOpen, setBatchAccountOpen] = useState(false);
   const [editing, setEditing] = useState<ManagedNeItem | null>(null);
-  const [form, setForm] = useState<FormState>(emptyForm);
+  const [formSeed, setFormSeed] = useState<Partial<ManagedNeFormState> | undefined>();
   const [batchHop, setBatchHop] = useState<HopProxyFieldsState>(emptyHopProxyFields);
   const [batchAccount, setBatchAccount] = useState<AccountState>(emptyAccount);
   const [connectDetailRow, setConnectDetailRow] = useState<ManagedNeItem | null>(null);
@@ -230,53 +143,6 @@ export function NePage() {
   const perPage = (n: number) => t("common.perPage", { n });
 
   const invalidateList = () => queryClient.invalidateQueries({ queryKey: queryKeys.managedNeAll });
-
-  const saveMutation = useMutation({
-    mutationFn: async () => {
-      const body = {
-        name: form.name,
-        vendor: form.vendor,
-        device_type: form.device_type,
-        ip_address: form.ip_address,
-        port: form.port,
-        protocol: form.protocol,
-        username: form.username,
-        tags: form.tags,
-        remark: form.remark,
-        hop_enabled: form.hop_enabled,
-        hop_vendor: form.hop_vendor,
-        hop_host: form.hop_host,
-        hop_port: form.hop_port,
-        hop_protocol: form.hop_protocol,
-        hop_username: form.hop_username,
-        hop_command_template: form.hop_command_template,
-        hop_vrf: form.hop_vrf,
-        hop_target_auth_mode: form.hop_target_auth_mode,
-        hop_enter_system_view: form.hop_enter_system_view,
-        ...(form.password ? { password: form.password } : {}),
-        ...(form.hop_password ? { hop_password: form.hop_password } : {}),
-      };
-      if (form.hop_enabled) {
-        if (!form.hop_host.trim()) throw new Error(t("managedNe.hop.hostRequired"));
-        if (!form.hop_username.trim()) throw new Error(t("managedNe.hop.userRequired"));
-        if (!editing && !form.hop_password) throw new Error(t("managedNe.hop.passwordRequired"));
-      }
-      if (editing) {
-        if (!form.password) delete (body as { password?: string }).password;
-        if (!form.hop_password) delete (body as { hop_password?: string }).hop_password;
-        return updateManagedNe(editing.id, body);
-      }
-      return createManagedNe({ ...body, password: form.password || "" });
-    },
-    onSuccess: async () => {
-      setModalOpen(false);
-      setEditing(null);
-      setForm(emptyForm());
-      showOk(editing ? t("managedNe.form.updated") : t("managedNe.form.created"));
-      await invalidateList();
-    },
-    onError: (err) => showError(String(err)),
-  });
 
   const deleteMutation = useMutation({
     mutationFn: deleteManagedNe,
@@ -438,12 +304,6 @@ export function NePage() {
   });
 
   const vendors = metaQuery.data?.vendors ?? [];
-  const deviceTypes = useMemo(() => {
-    const base = metaQuery.data?.device_types ?? [];
-    const cur = String(form.device_type || "").trim();
-    if (cur && !base.includes(cur)) return [cur, ...base];
-    return base;
-  }, [metaQuery.data?.device_types, form.device_type]);
   const credsOk = metaQuery.data?.credentials_configured ?? false;
 
   const allSelected = useMemo(() => {
@@ -453,45 +313,13 @@ export function NePage() {
 
   const openCreate = () => {
     setEditing(null);
-    setForm(emptyForm());
+    setFormSeed(undefined);
     setModalOpen(true);
   };
 
   const openEdit = (row: ManagedNeItem) => {
     setEditing(row);
-    setForm({
-      name: row.name,
-      vendor: row.vendor,
-      device_type: row.device_type,
-      ip_address: row.ip_address,
-      port: row.port,
-      protocol: row.protocol,
-      username: row.username,
-      password: "",
-      tags: row.tags,
-      remark: row.remark,
-      hop_enabled: row.hop_enabled,
-      hop_vendor: (["linux", "huawei", "cisco", "zte", "bastion"].includes(row.hop_vendor)
-        ? row.hop_vendor
-        : "zte") as HopVendor,
-      hop_host: row.hop_host,
-      hop_port: row.hop_port,
-      hop_protocol: row.hop_protocol,
-      hop_username: row.hop_username,
-      hop_password: "",
-      hop_command_template: isAutoHopTemplate(
-        row.hop_command_template,
-        row.hop_vendor,
-        row.hop_protocol,
-        row.hop_vrf,
-      )
-        ? defaultHopTemplate(row.hop_vendor, row.hop_protocol, row.hop_vrf)
-        : row.hop_command_template || defaultHopTemplate(row.hop_vendor, row.hop_protocol, row.hop_vrf),
-      hop_vrf: row.hop_vrf,
-      hop_target_auth_mode:
-        row.hop_target_auth_mode === "manual" ? "manual" : "bastion_managed",
-      hop_enter_system_view: Boolean(row.hop_enter_system_view),
-    });
+    setFormSeed(undefined);
     setModalOpen(true);
   };
 
@@ -538,11 +366,10 @@ export function NePage() {
     const name = String(searchParams.get("name") || "").trim();
     const ip = String(searchParams.get("ip_address") || "").trim();
     const vendorRaw = String(searchParams.get("vendor") || "").trim();
-    const base = emptyForm();
+    const base = emptyManagedNeForm();
     const vendor = vendorRaw || base.vendor;
     setEditing(null);
-    setForm({
-      ...base,
+    setFormSeed({
       name,
       vendor,
       device_type: deviceTypeForVendor(vendor),
@@ -999,161 +826,24 @@ export function NePage() {
         </div>
       </section>
 
-      {modalOpen ? (
-        <div className="modal-backdrop" role="presentation" onClick={() => setModalOpen(false)}>
-          <div className="modal" role="dialog" onClick={(e) => e.stopPropagation()}>
-            <h3>{editing ? t("managedNe.form.editTitle") : t("managedNe.form.createTitle")}</h3>
-            <p className="form-hint">{t("managedNe.form.requiredHint")}</p>
-            <div className="form-grid">
-              <label>
-                <FormLabel>{t("managedNe.col.name")}</FormLabel>
-                <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-                <span className="form-field-hint">{t("managedNe.form.nameConnectHint")}</span>
-              </label>
-              <label>
-                <FormLabel required>{t("managedNe.col.vendor")}</FormLabel>
-                <select required value={form.vendor} onChange={(e) => {
-                  const vendor = e.target.value;
-                  setForm((prev) => {
-                    const next = { ...prev, vendor };
-                    const dt = String(prev.device_type || "").trim().toLowerCase();
-                    // LLDP/WebCRT placeholders use generic — pick a sensible driver when vendor is set.
-                    if (!dt || dt === "generic" || dt === "other" || dt === "linux") {
-                      if (vendor === "ZTE") next.device_type = "zte_zxros";
-                      else if (vendor === "Huawei") next.device_type = "huawei";
-                      else if (vendor === "Cisco") next.device_type = "cisco_ios";
-                      else if (vendor === "Juniper") next.device_type = "juniper_junos";
-                      else if (vendor === "Nokia") next.device_type = "nokia_sros";
-                    }
-                    return next;
-                  });
-                }}>
-                  {vendors.map((v) => (
-                    <option key={v} value={v}>
-                      {v}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                <FormLabel required>{t("managedNe.col.deviceType")}</FormLabel>
-                <select
-                  required
-                  value={form.device_type}
-                  onChange={(e) => setForm({ ...form, device_type: e.target.value })}
-                >
-                  {deviceTypes.map((dt) => (
-                    <option key={dt} value={dt}>
-                      {dt}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                <FormLabel required>{t("managedNe.col.ip")}</FormLabel>
-                <input
-                  required
-                  value={form.ip_address}
-                  onChange={(e) => setForm({ ...form, ip_address: e.target.value })}
-                />
-              </label>
-              <label>
-                <FormLabel>{t("managedNe.col.port")}</FormLabel>
-                <input
-                  type="number"
-                  value={form.port}
-                  onChange={(e) => setForm({ ...form, port: Number(e.target.value) || 22 })}
-                />
-              </label>
-              <label>
-                <FormLabel>{t("managedNe.col.protocol")}</FormLabel>
-                <select value={form.protocol} onChange={(e) => setForm({ ...form, protocol: e.target.value })}>
-                  <option value="ssh">ssh</option>
-                  <option value="telnet">telnet</option>
-                </select>
-              </label>
-              <label>
-                <FormLabel required>{t("managedNe.col.user")}</FormLabel>
-                <input
-                  required
-                  value={form.username}
-                  onChange={(e) => setForm({ ...form, username: e.target.value })}
-                />
-              </label>
-              <label>
-                <FormLabel>
-                  {t("managedNe.col.password")}
-                  <span className="form-label__optional"> ({t("managedNe.form.passwordOptional")})</span>
-                </FormLabel>
-                <input
-                  type="password"
-                  value={form.password}
-                  onChange={(e) => setForm({ ...form, password: e.target.value })}
-                />
-              </label>
-              <label>
-                <FormLabel>{t("managedNe.col.tags")}</FormLabel>
-                <input value={form.tags} onChange={(e) => setForm({ ...form, tags: e.target.value })} />
-              </label>
-              <label className="form-grid__full">
-                <FormLabel>{t("managedNe.col.remark")}</FormLabel>
-                <input value={form.remark} onChange={(e) => setForm({ ...form, remark: e.target.value })} />
-              </label>
-            </div>
-
-            <fieldset className="form-fieldset form-grid__full">
-              <legend>{t("managedNe.hop.sectionTitle")}</legend>
-              <label className="form-check">
-                <input
-                  type="checkbox"
-                  checked={form.hop_enabled}
-                  onChange={(e) => {
-                    const hop_enabled = e.target.checked;
-                    setForm((prev) => ({
-                      ...prev,
-                      hop_enabled,
-                      ...(hop_enabled
-                        ? {
-                            ...patchHopVendorChange(prev.hop_vendor, prev),
-                            ...applyHopTemplate(prev, prev.hop_protocol, prev.hop_vrf, true),
-                          }
-                        : {}),
-                    }));
-                  }}
-                />
-                <span className="form-check__text">{t("managedNe.hop.enable")}</span>
-              </label>
-              {form.hop_enabled ? (
-                <HopProxyFields
-                  value={{
-                    hop_vendor: form.hop_vendor,
-                    hop_host: form.hop_host,
-                    hop_port: form.hop_port,
-                    hop_protocol: form.hop_protocol,
-                    hop_username: form.hop_username,
-                    hop_password: form.hop_password,
-                    hop_command_template: form.hop_command_template,
-                    hop_vrf: form.hop_vrf,
-                    hop_target_auth_mode: form.hop_target_auth_mode,
-                    hop_enter_system_view: form.hop_enter_system_view,
-                  }}
-                  onChange={(patch) => setForm((prev) => ({ ...prev, ...patch }))}
-                  hopPasswordRequired={!editing}
-                  hopPasswordOptional={Boolean(editing)}
-                />
-              ) : null}
-            </fieldset>
-            <div className="modal__actions">
-              <button type="button" onClick={() => setModalOpen(false)}>
-                {t("managedNe.form.cancel")}
-              </button>
-              <button type="button" disabled={saveMutation.isPending} onClick={() => saveMutation.mutate()}>
-                {saveMutation.isPending ? t("managedNe.form.saving") : t("managedNe.form.save")}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <ManagedNeFormDialog
+        open={modalOpen}
+        editing={editing}
+        initialValues={formSeed}
+        onClose={() => {
+          setModalOpen(false);
+          setEditing(null);
+          setFormSeed(undefined);
+        }}
+        onSaved={async () => {
+          const wasEdit = Boolean(editing);
+          setModalOpen(false);
+          setEditing(null);
+          setFormSeed(undefined);
+          showOk(wasEdit ? t("managedNe.form.updated") : t("managedNe.form.created"));
+          await invalidateList();
+        }}
+      />
 
       {batchHopOpen ? (
         <div className="modal-backdrop" role="presentation" onClick={() => setBatchHopOpen(false)}>
@@ -1335,47 +1025,13 @@ export function NePage() {
         </div>
       ) : null}
 
-      {connectDetailRow ? (
-        <div className="modal-backdrop" role="presentation" onClick={() => setConnectDetailRow(null)}>
-          <div className="modal modal--wide" role="dialog" onClick={(e) => e.stopPropagation()}>
-            <h3>{t("managedNe.connectDetailTitle")}</h3>
-            <p className="form-hint">
-              {connectDetailRow.name || connectDetailRow.ip_address} · {connectDetailRow.ip_address}:
-              {connectDetailRow.port}/{connectDetailRow.protocol}
-              {connectDetailRow.connect_tested_at
-                ? ` · ${formatSystemTime(connectDetailRow.connect_tested_at, { assumeUtcNaive: true })}`
-                : ""}
-            </p>
-            <p>
-              <span className={`conn-pill conn-pill--${connectPillLevel(connectDetailRow.connect_status)}`}>
-                {connectDetailRow.connect_status}
-              </span>
-              {connectDetailRow.connect_message ? (
-                <span className="connect-detail-summary"> — {connectDetailRow.connect_message}</span>
-              ) : null}
-            </p>
-            <pre className="connect-log">
-              {connectDetailRow.connect_detail?.trim() ||
-                connectDetailRow.connect_message?.trim() ||
-                t("managedNe.connectDetailEmpty")}
-            </pre>
-            <div className="modal__actions">
-              <button
-                type="button"
-                disabled={connectMutation.isPending}
-                onClick={() => {
-                  connectMutation.mutate([connectDetailRow.id]);
-                }}
-              >
-                {connectMutation.isPending ? t("managedNe.connect.running") : t("managedNe.connect.retest")}
-              </button>
-              <button type="button" onClick={() => setConnectDetailRow(null)}>
-                {t("managedNe.form.cancel")}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <ManagedNeConnectDetailDialog
+        row={connectDetailRow}
+        onClose={() => setConnectDetailRow(null)}
+        onRetestSubmitted={() => {
+          void invalidateList();
+        }}
+      />
     </div>
   );
 }

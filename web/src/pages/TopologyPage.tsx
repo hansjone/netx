@@ -51,6 +51,8 @@ import { useTopologyHistory } from "./topology/hooks/useTopologyHistory";
 import { useTopologyDiscover } from "./topology/hooks/useTopologyDiscover";
 import { useTopologyTreeNav } from "./topology/hooks/useTopologyTreeNav";
 import { useTopologyCanvas } from "./topology/hooks/useTopologyCanvas";
+import { useTopologyCreateNe } from "./topology/hooks/useTopologyCreateNe";
+import { useTopologyConnectTest } from "./topology/hooks/useTopologyConnectTest";
 import {
   lazy,
   Suspense,
@@ -73,7 +75,6 @@ import type {
 import {
   addTopologyViewNodes,
   createFabricManualEdge,
-  createTopologyPlaceholder,
   deleteFabricEdges,
   purgePlaceholderFabricNodes,
   fetchLldpCollectDashboard,
@@ -165,13 +166,6 @@ export function TopologyPage() {
   const [paletteSource, setPaletteSource] = useState<PaletteSource>("managed");
   const [paletteSelectedKeys, setPaletteSelectedKeys] = useState<string[]>([]);
   const [paletteAdding, setPaletteAdding] = useState(false);
-  const [createNeDialog, setCreateNeDialog] = useState<{
-    flowX: number;
-    flowY: number;
-    name: string;
-    ip_address: string;
-  } | null>(null);
-  const [createNeBusy, setCreateNeBusy] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   /** Opt-in poll so MCP / other clients painting the open map can be watched. Off by default. */
   const [liveSync, setLiveSync] = useState(false);
@@ -821,6 +815,45 @@ export function TopologyPage() {
 
   const closeCtxMenu = useCallback(() => setCtxMenu(null), []);
 
+  const createNe = useTopologyCreateNe({
+    mapId,
+    activeViewName: activeView?.name,
+    canWrite: canWriteTopology,
+    edgeDefaults,
+    setNodes,
+    setEdges,
+    clearDirty,
+    historyLockRef,
+    focusNode,
+    closeCtxMenu,
+  });
+  const {
+    modeOpen: createNeModeOpen,
+    openCreateNeAt,
+    closeMode: closeCreateNeMode,
+    pickManaged: pickCreateManaged,
+    pickPlaceholder: pickCreatePlaceholder,
+    placeholderDialog,
+    setPlaceholderDialog,
+    placeholderBusy,
+    closePlaceholder,
+    submitPlaceholder,
+    managedFormOpen,
+    managedFormInitial,
+    closeManagedForm,
+    onManagedFormSaved,
+  } = createNe;
+
+  const connectTest = useTopologyConnectTest({ closeCtxMenu });
+  const {
+    connectDetailRow,
+    connectTestSubmitting,
+    closeConnectDetail,
+    runConnectTestForNode,
+    runConnectTestForNodes,
+    onConnectRetestSubmitted,
+  } = connectTest;
+
   useEffect(() => {
     const syncFs = () => {
       const el = canvasRef.current;
@@ -1400,14 +1433,43 @@ export function TopologyPage() {
     void runDiscover([id]);
   };
 
-  const openCreateNeAt = (flowX: number, flowY: number) => {
-    if (isWorldFlatViewName(activeView?.name)) {
-      showError(t("topology.worldMapNoDirectNes"));
+  const selectedDiscoverableCount = useMemo(
+    () =>
+      selectedNodes.filter((n) =>
+        Boolean(String(n.data.managed_ne_id || n.data.ume_ne_id || "").trim()),
+      ).length,
+    [selectedNodes],
+  );
+
+  const selectedConnectableCount = useMemo(
+    () =>
+      selectedNodes.filter((n) => Boolean(String(n.data.managed_ne_id || "").trim())).length,
+    [selectedNodes],
+  );
+
+  const discoverSelectedFor = useCallback(() => {
+    closeCtxMenu();
+    if (!canWriteTopology) {
+      showError(t("topology.readOnlyHint"));
       return;
     }
-    closeCtxMenu();
-    setCreateNeDialog({ flowX, flowY, name: "", ip_address: "" });
-  };
+    const ids = [
+      ...new Set(
+        selectedNodes
+          .map((n) => String(n.data.managed_ne_id || n.data.ume_ne_id || "").trim())
+          .filter(Boolean),
+      ),
+    ];
+    if (!ids.length) {
+      showError(t("topology.discoverOneNeedNe"));
+      return;
+    }
+    void runDiscover(ids);
+  }, [closeCtxMenu, canWriteTopology, selectedNodes, runDiscover, showError, t]);
+
+  const connectTestSelectedFor = useCallback(() => {
+    void runConnectTestForNodes(selectedNodes);
+  }, [runConnectTestForNodes, selectedNodes]);
 
   const placeCtxMenu = (clientX: number, clientY: number, size?: { w?: number; h?: number }): { x: number; y: number } => {
     const pad = 8;
@@ -1417,58 +1479,6 @@ export function TopologyPage() {
     const y = Math.min(clientY, window.innerHeight - h - pad);
     return { x: Math.max(pad, x), y: Math.max(pad, y) };
   };
-
-  const submitCreateNe = useCallback(async () => {
-    if (!mapId || !createNeDialog) return;
-    const name = createNeDialog.name.trim();
-    if (!name) {
-      showError(t("topology.createNeNameRequired"));
-      return;
-    }
-    setCreateNeBusy(true);
-    try {
-      const graph = await createTopologyPlaceholder(mapId, {
-        name,
-        ip_address: createNeDialog.ip_address.trim(),
-        x: createNeDialog.flowX,
-        y: createNeDialog.flowY,
-      });
-      queryClient.setQueryData(queryKeys.topologyGraph(mapId), graph);
-      historyLockRef.current = true;
-      applyViewGraph(graph, edgeDefaults, setNodes, setEdges);
-      historyLockRef.current = false;
-      clearDirty();
-      const created = graph.nodes.find(
-        (n) =>
-          String(n.name || "").trim() === name &&
-          Math.abs(Number(n.x) - createNeDialog.flowX) < 0.5 &&
-          Math.abs(Number(n.y) - createNeDialog.flowY) < 0.5,
-      );
-      if (created?.fabric_node_id) {
-        focusNode(created.fabric_node_id, false);
-      }
-      setCreateNeDialog(null);
-      showOk(t("topology.createNeDone").replace("{{name}}", name));
-      void queryClient.invalidateQueries({ queryKey: ["managedNe"] });
-      void queryClient.invalidateQueries({ queryKey: ["webcrtTargets"] });
-    } catch (err) {
-      showError(String(err));
-    } finally {
-      setCreateNeBusy(false);
-    }
-  }, [
-    mapId,
-    createNeDialog,
-    queryClient,
-    edgeDefaults,
-    setNodes,
-    setEdges,
-    clearDirty,
-    showError,
-    showOk,
-    t,
-    focusNode,
-  ]);
 
   const pendingLocateWorldRef = useRef<{
     id: string;
@@ -2351,13 +2361,24 @@ export function TopologyPage() {
         onCloseNewRoot={() => setNewRootDialog(null)}
         onSubmitNewRoot={submitNewRoot}
         createRegionPending={createRegionMut.isPending}
-        createNeDialog={createNeDialog}
-        createNeBusy={createNeBusy}
-        onCreateNeChange={(patch) =>
-          setCreateNeDialog((prev) => (prev ? { ...prev, ...patch } : prev))
+        createNeModeOpen={createNeModeOpen}
+        onCloseCreateNeMode={closeCreateNeMode}
+        onPickCreateManaged={pickCreateManaged}
+        onPickCreatePlaceholder={pickCreatePlaceholder}
+        placeholderDialog={placeholderDialog}
+        placeholderBusy={placeholderBusy}
+        onPlaceholderChange={(patch) =>
+          setPlaceholderDialog((prev) => (prev ? { ...prev, ...patch } : prev))
         }
-        onCloseCreateNe={() => setCreateNeDialog(null)}
-        onSubmitCreateNe={submitCreateNe}
+        onClosePlaceholder={closePlaceholder}
+        onSubmitPlaceholder={submitPlaceholder}
+        managedFormOpen={managedFormOpen}
+        managedFormInitial={managedFormInitial}
+        onCloseManagedForm={closeManagedForm}
+        onManagedFormSaved={(item) => void onManagedFormSaved(item)}
+        connectDetailRow={connectDetailRow}
+        onCloseConnectDetail={closeConnectDetail}
+        onConnectRetestSubmitted={onConnectRetestSubmitted}
         outsidePeersOpen={outsidePeersOpen}
         outsidePeers={outsidePeers}
         outsidePeersVisible={outsidePeersVisible}
@@ -2419,12 +2440,18 @@ export function TopologyPage() {
           onClose={closeCtxMenu}
           onToggleFullscreen={toggleFullscreen}
           onRemoveSelected={removeSelected}
+          onDiscoverSelected={discoverSelectedFor}
+          onConnectTestSelected={connectTestSelectedFor}
+          selectedDiscoverableCount={selectedDiscoverableCount}
+          selectedConnectableCount={selectedConnectableCount}
           onOpenCreateNe={openCreateNeAt}
           onPromptNewSubRegion={promptNewSubRegion}
           onRenameSelectedNode={renameSelectedNode}
           onDiscoverOne={discoverOneFor}
           onOpenWebcrt={openWebcrtFor}
           onOpenNe={openNeFor}
+          onConnectTest={runConnectTestForNode}
+          connectTestBusy={connectTestSubmitting}
           onPurgePlaceholder={purgePlaceholderById}
           onRemoveNode={removeNodeById}
           onExpandPhysicalLinks={() => setExpandPhysicalLinks(true)}
