@@ -167,7 +167,8 @@ class Settings(BaseSettings):
     docs_enabled: bool = False
     # Refuse start when bind host is non-loopback and insecure defaults remain.
     allow_insecure_defaults: bool = False
-    # Async audit writer; sample_n>1 keeps 1/N of generic http.* events.
+    # Async audit writer. Successful GET http.* are dropped; mutating http.* always kept.
+    # sample_n only applies to leftover unclassified events.
     audit_async: bool = True
     audit_sample_n: int = 5
     # Prefer Alembic on API start; brownfield patches live in schema_patches + revisions.

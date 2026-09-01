@@ -17,7 +17,8 @@ type AuditItem = {
   detail: Record<string, unknown>;
 };
 
-type QuickFilter = "" | "webcrt." | "ne.exec" | "auth.";
+/** Quick filters map to action substring and/or exclude_noise flag. */
+type QuickFilter = "business" | "webcrt." | "ne.exec" | "auth." | "http." | "all";
 
 function statusClass(code: number): string {
   if (code >= 500) return "pt-list-status--failed";
@@ -43,6 +44,7 @@ export function auditSummary(
   action: string,
   detail: Record<string, unknown>,
   t: (key: string, vars?: Record<string, string>) => string,
+  row?: Pick<AuditItem, "method" | "path">,
 ): string {
   const d = detail || {};
   const device = deviceLabel(d);
@@ -87,7 +89,19 @@ export function auditSummary(
   if (action.startsWith("auth.")) {
     return action.replace(/^auth\./, "");
   }
+  if (action.startsWith("http.") || action.startsWith("ume.")) {
+    const method = row?.method || action.replace(/^http\./, "").toUpperCase();
+    const path = row?.path || "";
+    return path ? `${method} ${path}` : method;
+  }
   return "";
+}
+
+function quickToQuery(quick: QuickFilter): { action: string; excludeNoise: boolean } {
+  if (quick === "business") return { action: "", excludeNoise: true };
+  if (quick === "all") return { action: "", excludeNoise: false };
+  if (quick === "http.") return { action: "http.", excludeNoise: false };
+  return { action: quick, excludeNoise: true };
 }
 
 export function AuditPage() {
@@ -96,17 +110,20 @@ export function AuditPage() {
   const [page, setPage] = useState(1);
   const [username, setUsername] = useState("");
   const [action, setAction] = useState("");
-  const [quick, setQuick] = useState<QuickFilter>("");
+  const [quick, setQuick] = useState<QuickFilter>("business");
   const [expanded, setExpanded] = useState<string | null>(null);
 
-  const effectiveAction = action.trim() || quick;
+  const derived = quickToQuery(quick);
+  const effectiveAction = action.trim() || derived.action;
+  const excludeNoise = action.trim() ? false : derived.excludeNoise;
 
   const query = useQuery({
-    queryKey: ["auditLogs", page, username, effectiveAction],
+    queryKey: ["auditLogs", page, username, effectiveAction, excludeNoise],
     queryFn: () => {
       const p = new URLSearchParams();
       p.set("page", String(page));
       p.set("page_size", "50");
+      p.set("exclude_noise", excludeNoise ? "true" : "false");
       if (username.trim()) p.set("username", username.trim());
       if (effectiveAction) p.set("action", effectiveAction);
       return apiGet<{ total: number; page: number; page_size: number; items: AuditItem[] }>(
@@ -119,12 +136,13 @@ export function AuditPage() {
   const items = useMemo(() => query.data?.items || [], [query.data]);
   const total = query.data?.total || 0;
   const pages = Math.max(1, Math.ceil(total / 50));
-  const hasFilters = Boolean(username.trim() || action.trim() || quick);
+  const hasFilters = Boolean(username.trim() || action.trim() || quick !== "business");
 
   const setQuickFilter = (next: QuickFilter) => {
     setPage(1);
     setQuick(next);
-    if (next) setAction("");
+    if (next !== "all" && next !== "business") setAction("");
+    else setAction("");
   };
 
   return (
@@ -133,20 +151,24 @@ export function AuditPage() {
         <div className="panel__toolbar">
           <h2>{t("audit.logsTitle")}</h2>
         </div>
-        <p className="panel__hint">{isAdmin ? t("auth.auditHintAdmin") : t("auth.auditHintUser")}</p>
+        <p className="panel__hint">
+          {isAdmin ? t("auth.auditHintAdmin") : t("auth.auditHintUser")} {t("audit.noiseHint")}
+        </p>
 
         <div className="pt-list">
           <div className="filter-inline audit-quick-filters">
             {(
               [
-                ["", "audit.filterAll"],
+                ["business", "audit.filterBusiness"],
                 ["webcrt.", "audit.filterWebcrt"],
                 ["ne.exec", "audit.filterNeExec"],
                 ["auth.", "audit.filterAuth"],
+                ["http.", "audit.filterHttp"],
+                ["all", "audit.filterAll"],
               ] as const
             ).map(([value, labelKey]) => (
               <button
-                key={value || "all"}
+                key={value}
                 type="button"
                 className={quick === value && !action.trim() ? "is-active" : undefined}
                 onClick={() => setQuickFilter(value)}
@@ -173,7 +195,7 @@ export function AuditPage() {
               onChange={(e) => {
                 setPage(1);
                 setAction(e.target.value);
-                if (e.target.value.trim()) setQuick("");
+                if (e.target.value.trim()) setQuick("all");
               }}
             />
             <button type="button" onClick={() => void query.refetch()} disabled={query.isFetching}>
@@ -185,7 +207,7 @@ export function AuditPage() {
               onClick={() => {
                 setUsername("");
                 setAction("");
-                setQuick("");
+                setQuick("business");
                 setPage(1);
               }}
             >
@@ -216,7 +238,7 @@ export function AuditPage() {
                 <tbody>
                   {items.map((row) => {
                     const open = expanded === row.id;
-                    const summary = auditSummary(row.action, row.detail || {}, t);
+                    const summary = auditSummary(row.action, row.detail || {}, t, row);
                     return (
                       <Fragment key={row.id}>
                         <tr>

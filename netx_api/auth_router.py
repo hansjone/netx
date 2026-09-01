@@ -394,6 +394,7 @@ def api_audit_logs(
     page_size: int = Query(default=50, ge=1, le=200),
     username: str = Query(default=""),
     action: str = Query(default=""),
+    exclude_noise: bool = Query(default=True),
 ) -> dict[str, Any]:
     return list_audit_logs(
         db,
@@ -402,6 +403,7 @@ def api_audit_logs(
         page_size=page_size,
         username=username,
         action=action,
+        exclude_noise=exclude_noise,
     )
 
 

@@ -1849,10 +1849,13 @@ const zh = {
     colDetail: "详情",
     showDetail: "展开",
     hideDetail: "收起",
+    filterBusiness: "业务",
     filterAll: "全部",
     filterWebcrt: "设备终端",
     filterNeExec: "设备执行",
     filterAuth: "登录认证",
+    filterHttp: "HTTP",
+    noiseHint: "默认隐藏页面刷新类 HTTP 噪声；写操作与失败请求仍会保留。",
     summary: {
       connecting: "正在登录 {{device}}",
       loginOk: "登录 {{device}}",

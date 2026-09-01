@@ -1871,10 +1871,13 @@ const en = {
     colDetail: "Detail",
     showDetail: "Expand",
     hideDetail: "Collapse",
+    filterBusiness: "Business",
     filterAll: "All",
     filterWebcrt: "Device terminal",
     filterNeExec: "Device exec",
     filterAuth: "Auth",
+    filterHttp: "HTTP",
+    noiseHint: "Page-refresh HTTP noise is hidden by default; writes and failed requests are kept.",
     summary: {
       connecting: "Connecting to {{device}}",
       loginOk: "Logged in to {{device}}",

@@ -723,6 +723,7 @@ def list_audit_logs(
     page_size: int = 50,
     username: str = "",
     action: str = "",
+    exclude_noise: bool = True,
 ) -> dict[str, Any]:
     page = max(1, int(page or 1))
     page_size = max(1, min(200, int(page_size or 50)))
@@ -733,6 +734,20 @@ def list_audit_logs(
         q = q.filter(AuditLog.actor_username == username.strip())
     if action.strip():
         q = q.filter(AuditLog.action.ilike(f"%{action.strip()}%"))
+    if exclude_noise:
+        # Hide historical HTTP polling + middleware wrappers; keep semantic webcrt.*.
+        noise_actions = (
+            "audit.list",
+            "webcrt.get",
+            "webcrt.post",
+            "webcrt.put",
+            "webcrt.patch",
+            "webcrt.delete",
+            "users.get",
+            "api_tokens.get",
+        )
+        q = q.filter(~AuditLog.action.like("http.%"))
+        q = q.filter(~AuditLog.action.in_(noise_actions))
     total = int(q.count())
     rows = (
         q.order_by(AuditLog.ts.desc())
@@ -761,4 +776,5 @@ def list_audit_logs(
         "page": page,
         "page_size": page_size,
         "items": items,
+        "exclude_noise": bool(exclude_noise),
     }

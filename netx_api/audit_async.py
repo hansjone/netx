@@ -18,15 +18,92 @@ _lock = threading.Lock()
 _counter = 0
 _dropped = 0
 
+# Middleware-tagged HTTP wrappers that duplicate semantic business audits.
+_MIDDLEWARE_NOISE_ACTIONS = frozenset(
+    {
+        "audit.list",
+        "webcrt.get",
+        "webcrt.post",
+        "webcrt.put",
+        "webcrt.patch",
+        "webcrt.delete",
+        "users.get",
+        "api_tokens.get",
+    }
+)
+
+_ALWAYS_KEEP_PREFIXES = (
+    "auth.",
+    "users.",
+    "api_tokens.",
+    "ne.",
+    "port_traffic.",
+    "config_sync.",
+)
+
 
 def _sample_ok() -> bool:
-    """When sample_n > 1, keep 1/N of http.* audits; always keep auth/security actions."""
+    """When sample_n > 1, keep 1/N of leftover generic events."""
     global _counter
     n = int(getattr(settings, "audit_sample_n", 1) or 1)
     if n <= 1:
         return True
     _counter += 1
     return (_counter % n) == 0
+
+
+def audit_should_persist(
+    *,
+    action: str,
+    method: str = "",
+    status_code: int = 0,
+    path: str = "",
+) -> bool:
+    """Decide whether a candidate audit event is worth writing.
+
+    Policy:
+    - Always keep auth / users / tokens / NE / port_traffic / config_sync / semantic webcrt.
+    - Always keep HTTP failures (status >= 400), except pure list noise.
+    - Drop successful GET/HEAD/OPTIONS ``http.*`` (page polling).
+    - Always keep mutating ``http.*`` (POST/PUT/PATCH/DELETE) — no sampling.
+    - Drop middleware ``webcrt.{method}`` / ``audit.list`` (covered by business events).
+    """
+    del path  # reserved for future path allow/deny lists
+    act = str(action or "")
+    method_u = str(method or "").upper()
+    code = int(status_code or 0)
+
+    if act in _MIDDLEWARE_NOISE_ACTIONS:
+        return False
+
+    if act.startswith("webcrt.session_") or act == "webcrt.command":
+        return True
+
+    if any(act.startswith(p) for p in _ALWAYS_KEEP_PREFIXES):
+        return True
+
+    if code >= 400:
+        return True
+
+    if act.startswith("http."):
+        if method_u in ("GET", "HEAD", "OPTIONS") or act in ("http.get", "http.head", "http.options"):
+            return False
+        if method_u in ("POST", "PUT", "PATCH", "DELETE") or act in (
+            "http.post",
+            "http.put",
+            "http.patch",
+            "http.delete",
+        ):
+            return True
+        return _sample_ok()
+
+    # e.g. ume.token.* — keep writes, drop successful reads
+    if act.startswith("ume."):
+        if method_u in ("GET", "HEAD", "OPTIONS"):
+            return False
+        return True
+
+    return _sample_ok()
 
 
 def audit_queue_status() -> dict[str, int]:
@@ -99,16 +176,7 @@ def enqueue_audit(
 ) -> None:
     global _dropped
     act = str(action or "")
-    # Always persist auth / security / device-op events.
-    if (
-        act.startswith("auth.")
-        or act.startswith("users.")
-        or act.startswith("api_tokens.")
-        or act.startswith("webcrt.")
-        or act.startswith("ne.")
-    ):
-        pass
-    elif act.startswith("http.") and not _sample_ok():
+    if not audit_should_persist(action=act, method=method, status_code=status_code, path=path):
         return
     payload = {
         "action": act,
