@@ -113,16 +113,20 @@ class AuthAuditMiddleware(BaseHTTPMiddleware):
         try:
             resolved = resolve_user_from_token(db, token) if token else None
             if resolved is None:
-                write_audit(
-                    db,
-                    action="auth.unauthorized",
-                    method=request.method,
-                    path=path,
-                    status_code=401,
-                    client_ip=_client_ip(request),
-                    user_agent=str(request.headers.get("user-agent") or "")[:512],
-                    detail={},
-                )
+                client_ip = _client_ip(request)
+                from .audit_async import should_audit_unauthorized
+
+                if should_audit_unauthorized(client_ip=client_ip, method=request.method, path=path):
+                    write_audit(
+                        db,
+                        action="auth.unauthorized",
+                        method=request.method,
+                        path=path,
+                        status_code=401,
+                        client_ip=client_ip,
+                        user_agent=str(request.headers.get("user-agent") or "")[:512],
+                        detail={},
+                    )
                 return JSONResponse(status_code=401, content={"detail": "unauthorized"})
             user, via, scopes, token_id, jti = resolved
             if bool(getattr(user, "must_change_password", False)):

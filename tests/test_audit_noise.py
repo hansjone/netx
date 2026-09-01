@@ -60,5 +60,33 @@ class AuditShouldPersistTests(unittest.TestCase):
         self.assertFalse(audit_should_persist(action="ume.token.get", method="GET", status_code=200))
 
 
+class UnauthorizedDedupeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        from netx_api import audit_async as aa
+
+        with aa._unauth_lock:
+            aa._unauth_recent.clear()
+
+    def test_dedupes_same_ip_path(self) -> None:
+        from netx_api.audit_async import should_audit_unauthorized
+
+        self.assertTrue(
+            should_audit_unauthorized(client_ip="127.0.0.1", method="GET", path="/v1/topology")
+        )
+        self.assertFalse(
+            should_audit_unauthorized(client_ip="127.0.0.1", method="GET", path="/v1/topology")
+        )
+        # Different path still recorded once.
+        self.assertTrue(
+            should_audit_unauthorized(client_ip="127.0.0.1", method="GET", path="/v1/managed-ne")
+        )
+
+    def test_different_ip_not_deduped(self) -> None:
+        from netx_api.audit_async import should_audit_unauthorized
+
+        self.assertTrue(should_audit_unauthorized(client_ip="1.1.1.1", method="GET", path="/v1/x"))
+        self.assertTrue(should_audit_unauthorized(client_ip="2.2.2.2", method="GET", path="/v1/x"))
+
+
 if __name__ == "__main__":
     unittest.main()

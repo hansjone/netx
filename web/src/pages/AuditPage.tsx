@@ -87,6 +87,11 @@ export function auditSummary(
     });
   }
   if (action.startsWith("auth.")) {
+    if (action === "auth.unauthorized") {
+      const method = row?.method || "GET";
+      const path = row?.path || "";
+      return path ? `${method} ${path}` : "unauthorized";
+    }
     return action.replace(/^auth\./, "");
   }
   if (action.startsWith("http.") || action.startsWith("ume.")) {

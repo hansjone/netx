@@ -747,6 +747,7 @@ def list_audit_logs(
             "api_tokens.get",
             "auth.me",
             "auth.sessions",
+            "auth.unauthorized",
         )
         q = q.filter(~AuditLog.action.like("http.%"))
         q = q.filter(~AuditLog.action.in_(noise_actions))

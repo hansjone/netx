@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import queue
 import threading
+import time
 from typing import Any
 
 from .config import settings
@@ -17,6 +18,13 @@ _worker: threading.Thread | None = None
 _lock = threading.Lock()
 _counter = 0
 _dropped = 0
+
+# Dedupe unauthenticated request floods (SPA fires many parallel 401s).
+_unauth_lock = threading.Lock()
+_unauth_recent: dict[str, float] = {}
+_UNAUTH_DEDUP_GET_SEC = 60.0
+_UNAUTH_DEDUP_WRITE_SEC = 15.0
+_UNAUTH_RECENT_MAX = 4000
 
 # Middleware-tagged HTTP wrappers that duplicate semantic business audits.
 _MIDDLEWARE_NOISE_ACTIONS = frozenset(
@@ -59,6 +67,32 @@ def _sample_ok() -> bool:
         return True
     _counter += 1
     return (_counter % n) == 0
+
+
+def should_audit_unauthorized(*, client_ip: str, method: str, path: str) -> bool:
+    """Rate-limit auth.unauthorized writes: one row per IP+method+path per window.
+
+    Unauthenticated page loads often fan out dozens of GETs in the same second;
+    keeping every 401 drowns real login/security events.
+    """
+    method_u = str(method or "GET").upper()
+    window = (
+        _UNAUTH_DEDUP_WRITE_SEC
+        if method_u in ("POST", "PUT", "PATCH", "DELETE")
+        else _UNAUTH_DEDUP_GET_SEC
+    )
+    key = f"{client_ip or '-'}|{method_u}|{path or '/'}"
+    now = time.monotonic()
+    with _unauth_lock:
+        global _unauth_recent
+        last = float(_unauth_recent.get(key) or 0.0)
+        if now - last < window:
+            return False
+        _unauth_recent[key] = now
+        if len(_unauth_recent) > _UNAUTH_RECENT_MAX:
+            cutoff = now - max(_UNAUTH_DEDUP_GET_SEC * 5, 300.0)
+            _unauth_recent = {k: v for k, v in _unauth_recent.items() if float(v) >= cutoff}
+        return True
 
 
 def audit_should_persist(
