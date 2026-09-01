@@ -12,7 +12,6 @@ from starlette.responses import JSONResponse, Response
 
 from .auth_deps import resolve_user_from_token
 from .auth_scopes import has_scope, required_scope_for_request
-from .auth_service import write_audit
 from .config import settings
 from .db import SessionLocal
 
@@ -113,55 +112,19 @@ class AuthAuditMiddleware(BaseHTTPMiddleware):
         try:
             resolved = resolve_user_from_token(db, token) if token else None
             if resolved is None:
-                client_ip = _client_ip(request)
-                from .audit_async import should_audit_unauthorized
-
-                if should_audit_unauthorized(client_ip=client_ip, method=request.method, path=path):
-                    write_audit(
-                        db,
-                        action="auth.unauthorized",
-                        method=request.method,
-                        path=path,
-                        status_code=401,
-                        client_ip=client_ip,
-                        user_agent=str(request.headers.get("user-agent") or "")[:512],
-                        detail={},
-                    )
+                # Do not audit anonymous 401s — SPA fan-out floods the log.
+                # Intentional auth ops (login/logout/login_failed) are written in auth_router.
                 return JSONResponse(status_code=401, content={"detail": "unauthorized"})
             user, via, scopes, token_id, jti = resolved
             if bool(getattr(user, "must_change_password", False)):
                 allow_key = (request.method.upper(), path.rstrip("/") if len(path) > 1 else path)
                 if allow_key not in _PASSWORD_CHANGE_ALLOW:
-                    write_audit(
-                        db,
-                        action="auth.password_change_required",
-                        actor_user_id=str(user.id),
-                        actor_username=str(user.username),
-                        method=request.method,
-                        path=path,
-                        status_code=403,
-                        client_ip=_client_ip(request),
-                        user_agent=str(request.headers.get("user-agent") or "")[:512],
-                        detail={"auth_via": via},
-                    )
                     return JSONResponse(
                         status_code=403,
                         content={"detail": "password_change_required"},
                     )
             need = required_scope_for_request(request.method, path)
             if need and not has_scope(scopes, need):
-                write_audit(
-                    db,
-                    action="auth.forbidden_scope",
-                    actor_user_id=str(user.id),
-                    actor_username=str(user.username),
-                    method=request.method,
-                    path=path,
-                    status_code=403,
-                    client_ip=_client_ip(request),
-                    user_agent=str(request.headers.get("user-agent") or "")[:512],
-                    detail={"required": need, "granted": sorted(scopes), "auth_via": via},
-                )
                 return JSONResponse(
                     status_code=403,
                     content={

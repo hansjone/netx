@@ -153,19 +153,7 @@ def api_refresh(
             detail={},
         )
         raise
-    user = out.get("user") or {}
-    write_audit(
-        db,
-        action="auth.refresh",
-        actor_user_id=str(user.get("id") or ""),
-        actor_username=str(user.get("username") or ""),
-        method="POST",
-        path="/v1/auth/refresh",
-        status_code=200,
-        client_ip=ip,
-        user_agent=ua,
-        detail={},
-    )
+    # Successful silent token refresh is not an operator action — skip audit.
     return _token_response(response, request, out)
 
 

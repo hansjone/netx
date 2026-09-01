@@ -31,7 +31,16 @@ class AuditShouldPersistTests(unittest.TestCase):
             )
 
     def test_drop_middleware_noise(self) -> None:
-        for action in ("audit.list", "webcrt.get", "webcrt.post", "users.get", "api_tokens.get"):
+        for action in (
+            "audit.list",
+            "webcrt.get",
+            "webcrt.post",
+            "users.get",
+            "api_tokens.get",
+            "auth.unauthorized",
+            "auth.password_change_required",
+            "auth.forbidden_scope",
+        ):
             self.assertFalse(
                 audit_should_persist(action=action, method="GET", status_code=200),
                 msg=action,
@@ -42,15 +51,18 @@ class AuditShouldPersistTests(unittest.TestCase):
         self.assertTrue(audit_should_persist(action="webcrt.command", status_code=0))
         self.assertTrue(audit_should_persist(action="webcrt.session_closed", status_code=0))
 
-    def test_drop_auth_me_poll(self) -> None:
+    def test_drop_auth_polls(self) -> None:
         self.assertFalse(audit_should_persist(action="auth.me", method="GET", status_code=200))
         self.assertFalse(audit_should_persist(action="auth.sessions", method="GET", status_code=200))
-        # Failures still useful (expired session / forbidden).
-        self.assertTrue(audit_should_persist(action="auth.me", method="GET", status_code=401))
+        self.assertFalse(audit_should_persist(action="auth.refresh", method="POST", status_code=200))
+
+    def test_keep_intentional_auth_ops(self) -> None:
+        self.assertTrue(audit_should_persist(action="auth.login", status_code=200))
+        self.assertTrue(audit_should_persist(action="auth.login_failed", status_code=401))
+        self.assertTrue(audit_should_persist(action="auth.logout", status_code=200))
+        self.assertTrue(audit_should_persist(action="auth.change_password", status_code=200))
 
     def test_keep_business_prefixes(self) -> None:
-        self.assertTrue(audit_should_persist(action="auth.login", status_code=200))
-        self.assertTrue(audit_should_persist(action="auth.logout", status_code=200))
         self.assertTrue(audit_should_persist(action="ne.exec", status_code=200))
         self.assertTrue(audit_should_persist(action="port_traffic.device.start", status_code=200))
         self.assertTrue(audit_should_persist(action="config_sync.start", status_code=200))
@@ -58,34 +70,6 @@ class AuditShouldPersistTests(unittest.TestCase):
 
     def test_drop_ume_token_get(self) -> None:
         self.assertFalse(audit_should_persist(action="ume.token.get", method="GET", status_code=200))
-
-
-class UnauthorizedDedupeTests(unittest.TestCase):
-    def setUp(self) -> None:
-        from netx_api import audit_async as aa
-
-        with aa._unauth_lock:
-            aa._unauth_recent.clear()
-
-    def test_dedupes_same_ip_path(self) -> None:
-        from netx_api.audit_async import should_audit_unauthorized
-
-        self.assertTrue(
-            should_audit_unauthorized(client_ip="127.0.0.1", method="GET", path="/v1/topology")
-        )
-        self.assertFalse(
-            should_audit_unauthorized(client_ip="127.0.0.1", method="GET", path="/v1/topology")
-        )
-        # Different path still recorded once.
-        self.assertTrue(
-            should_audit_unauthorized(client_ip="127.0.0.1", method="GET", path="/v1/managed-ne")
-        )
-
-    def test_different_ip_not_deduped(self) -> None:
-        from netx_api.audit_async import should_audit_unauthorized
-
-        self.assertTrue(should_audit_unauthorized(client_ip="1.1.1.1", method="GET", path="/v1/x"))
-        self.assertTrue(should_audit_unauthorized(client_ip="2.2.2.2", method="GET", path="/v1/x"))
 
 
 if __name__ == "__main__":

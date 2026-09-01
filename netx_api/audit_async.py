@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import queue
 import threading
-import time
 from typing import Any
 
 from .config import settings
@@ -19,13 +18,6 @@ _lock = threading.Lock()
 _counter = 0
 _dropped = 0
 
-# Dedupe unauthenticated request floods (SPA fires many parallel 401s).
-_unauth_lock = threading.Lock()
-_unauth_recent: dict[str, float] = {}
-_UNAUTH_DEDUP_GET_SEC = 60.0
-_UNAUTH_DEDUP_WRITE_SEC = 15.0
-_UNAUTH_RECENT_MAX = 4000
-
 # Middleware-tagged HTTP wrappers that duplicate semantic business audits.
 _MIDDLEWARE_NOISE_ACTIONS = frozenset(
     {
@@ -37,6 +29,10 @@ _MIDDLEWARE_NOISE_ACTIONS = frozenset(
         "webcrt.delete",
         "users.get",
         "api_tokens.get",
+        # Legacy auto-gate noise (no longer written; hide historical rows).
+        "auth.unauthorized",
+        "auth.password_change_required",
+        "auth.forbidden_scope",
     }
 )
 
@@ -46,6 +42,7 @@ _AUTH_READ_NOISE_ACTIONS = frozenset(
     {
         "auth.me",
         "auth.sessions",
+        "auth.refresh",
     }
 )
 
@@ -69,32 +66,6 @@ def _sample_ok() -> bool:
     return (_counter % n) == 0
 
 
-def should_audit_unauthorized(*, client_ip: str, method: str, path: str) -> bool:
-    """Rate-limit auth.unauthorized writes: one row per IP+method+path per window.
-
-    Unauthenticated page loads often fan out dozens of GETs in the same second;
-    keeping every 401 drowns real login/security events.
-    """
-    method_u = str(method or "GET").upper()
-    window = (
-        _UNAUTH_DEDUP_WRITE_SEC
-        if method_u in ("POST", "PUT", "PATCH", "DELETE")
-        else _UNAUTH_DEDUP_GET_SEC
-    )
-    key = f"{client_ip or '-'}|{method_u}|{path or '/'}"
-    now = time.monotonic()
-    with _unauth_lock:
-        global _unauth_recent
-        last = float(_unauth_recent.get(key) or 0.0)
-        if now - last < window:
-            return False
-        _unauth_recent[key] = now
-        if len(_unauth_recent) > _UNAUTH_RECENT_MAX:
-            cutoff = now - max(_UNAUTH_DEDUP_GET_SEC * 5, 300.0)
-            _unauth_recent = {k: v for k, v in _unauth_recent.items() if float(v) >= cutoff}
-        return True
-
-
 def audit_should_persist(
     *,
     action: str,
@@ -105,13 +76,12 @@ def audit_should_persist(
     """Decide whether a candidate audit event is worth writing.
 
     Policy:
-    - Always keep auth login/logout/security events, users/tokens/NE/port_traffic/config_sync,
-      and semantic webcrt session/command events.
-    - Drop successful ``auth.me`` / ``auth.sessions`` polls (UI session checks).
-    - Always keep HTTP failures (status >= 400), except pure list noise.
-    - Drop successful GET/HEAD/OPTIONS ``http.*`` (page polling).
-    - Always keep mutating ``http.*`` (POST/PUT/PATCH/DELETE) — no sampling.
-    - Drop middleware ``webcrt.{method}`` / ``audit.list`` (covered by business events).
+    - Keep intentional ops: auth.login/logout/login_failed, users/tokens/NE/port_traffic/
+      config_sync, semantic webcrt session/command.
+    - Drop anonymous 401 / auto-gate noise (unauthorized, forbidden_scope, …).
+    - Drop successful ``auth.me`` / ``auth.sessions`` / ``auth.refresh`` polls.
+    - Drop successful GET/HEAD/OPTIONS ``http.*``; keep mutating http.* and failures.
+    - Drop middleware ``webcrt.{method}`` / ``audit.list``.
     """
     del path  # reserved for future path allow/deny lists
     act = str(action or "")
