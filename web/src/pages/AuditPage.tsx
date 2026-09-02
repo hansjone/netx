@@ -81,7 +81,7 @@ export function auditSummary(
   }
   if (action === "ne.exec_batch") {
     return t("audit.summary.neExecBatch", {
-      n: String(d.target_count ?? ((d.ne_ids as unknown[]) || []).length || 0),
+      n: String(d.target_count ?? (((d.ne_ids as unknown[]) || []).length || 0)),
       ok: String(d.ok_count ?? 0),
       fail: String(d.fail_count ?? 0),
     });
