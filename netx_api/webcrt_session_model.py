@@ -310,12 +310,13 @@ class WebcrtSession:
                     return "stale"
                 return chunk  # bytes | None
 
-    def write_stdin(self, data: str, *, audit_source: str = "stdin") -> None:
+    def write_stdin(self, data: str, *, audit_source: str = "stdin", audit_line: str | None = None) -> None:
         if self.closed or self.conn is None:
             raise RuntimeError("session_closed")
         text = str(data or "")
         if not text:
             return
+        audit_override = str(audit_line).strip() if audit_line is not None else None
         if self.cli_keymap:
             text = map_network_cli_keys(
                 text,
@@ -326,7 +327,7 @@ class WebcrtSession:
             text = map_network_cli_enter(text, self.conn)
         if not text:
             return
-        self._note_stdin_for_audit(text, source=audit_source)
+        self._note_stdin_for_audit(text, source=audit_source, audit_line=audit_override)
         with self._write_lock:
             # Prefer raw channel I/O for interactive typing (char echo / backspace).
             channel = getattr(self.conn, "remote_conn", None)
@@ -354,13 +355,26 @@ class WebcrtSession:
                 self.bytes_in += len(text)
         self.touch()
 
-    def _note_stdin_for_audit(self, text: str, *, source: str = "stdin") -> None:
+    def _note_stdin_for_audit(
+        self,
+        text: str,
+        *,
+        source: str = "stdin",
+        audit_line: str | None = None,
+    ) -> None:
         """Extract completed command lines from stdin and emit webcrt.command audits."""
         with self._cmd_buf_lock:
-            self._cmd_buf, lines = feed_command_line_buffer(self._cmd_buf, text)
+            self._cmd_buf, buf_lines = feed_command_line_buffer(self._cmd_buf, text)
             redacted = bool(self._password_mode)
-            if redacted and lines:
+            if redacted and (buf_lines or audit_line):
                 self._password_mode = False
+            if audit_line is not None and ("\r" in text or "\n" in text):
+                from .webcrt_channel import normalize_audit_line
+
+                cmd = normalize_audit_line(audit_line)
+                lines = [cmd] if cmd.strip() else []
+            else:
+                lines = buf_lines
         for cmd in lines:
             if not str(cmd).strip():
                 continue

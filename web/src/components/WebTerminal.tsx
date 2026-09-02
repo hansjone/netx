@@ -86,7 +86,43 @@ type Props = {
   initialOutput?: string;
 };
 
+function stripAnsi(text: string): string {
+  return text.replace(/\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*(\x07|$)|\x1b./g, "");
+}
+
+/** Visible xterm row on Enter — keep device prompt prefix, drop ANSI only. */
+export function normalizeAuditLine(line: string): string {
+  return stripAnsi(line).replace(/\r/g, "").replace(/\s+$/, "");
+}
+
+function currentCommandLine(term: Terminal): string {
+  const buf = term.buffer.active;
+  const line = buf.getLine(buf.cursorY);
+  if (!line) return "";
+  return normalizeAuditLine(line.translateToString(true));
+}
+
+function auditLineForEnter(term: Terminal | null, explicitLine?: string): string | undefined {
+  if (explicitLine != null && explicitLine.trim()) {
+    const cmd = normalizeAuditLine(explicitLine);
+    return cmd.trim() ? cmd : undefined;
+  }
+  if (!term) return undefined;
+  const cmd = currentCommandLine(term);
+  return cmd.trim() ? cmd : undefined;
+}
+
 function serializeTerminal(term: Terminal): string {
+  const buf = term.buffer.active;
+  const lines: string[] = [];
+  for (let i = 0; i < buf.length; i += 1) {
+    const line = buf.getLine(i);
+    if (!line) continue;
+    lines.push(line.translateToString(true));
+  }
+  return lines.join("\n").replace(/\s+$/g, "");
+}
+
   const buf = term.buffer.active;
   const lines: string[] = [];
   for (let i = 0; i < buf.length; i += 1) {
@@ -292,9 +328,18 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
     }
   };
 
-  const sendStdinImmediate = (data: string) => {
+  const sendStdinWithAudit = (data: string, explicitAuditLine?: string) => {
     if (!data) return;
-    sendJson({ type: "stdin", data });
+    const payload: Record<string, unknown> = { type: "stdin", data };
+    if (data.includes("\r") || data.includes("\n")) {
+      const auditLine = auditLineForEnter(termRef.current, explicitAuditLine);
+      if (auditLine) payload.audit_line = auditLine.slice(0, 512);
+    }
+    sendJson(payload);
+  };
+
+  const sendStdinImmediate = (data: string) => {
+    sendStdinWithAudit(data);
   };
 
   /** Wait until device echoes (stdout after sentAt) or maxMs elapses — whichever first. */
@@ -324,11 +369,11 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
    * Line-by-line paste paced by device echo.
    * pasteDelayMs is a *maximum* wait per line; fast responses advance immediately.
    */
-  const sendStdinThrottled = (data: string) => {
+  const sendStdinThrottled = (data: string, explicitAuditLine?: string) => {
     if (!data) return;
     const maxDelay = pasteDelayRef.current;
     if (maxDelay <= 0 || data.length < 8) {
-      sendStdinImmediate(data);
+      sendStdinWithAudit(data, explicitAuditLine);
       return;
     }
     pasteQueueRef.current = pasteQueueRef.current.then(async () => {
@@ -340,7 +385,7 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
           const line = lines[i];
           const chunk = i < lines.length - 1 ? `${line}\r` : line;
           const sentAt = performance.now();
-          if (chunk) sendStdinImmediate(chunk);
+          if (chunk) sendStdinWithAudit(chunk, line.trim() || undefined);
           setPasteStatus({ done: i + 1, total });
           if (i < lines.length - 1) {
             await waitForEchoOrTimeout(maxDelay, sentAt);
@@ -660,11 +705,16 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
 
     const dataDisposable = term.onData((data) => {
       const normalized = data.replace(/\x7f/g, "\x08");
+      // Capture visible line before Enter moves the cursor to the next row.
+      const auditLine =
+        normalized.includes("\r") || normalized.includes("\n")
+          ? auditLineForEnter(term)
+          : undefined;
       // Large pastes from xterm arrive as one onData blob.
       if (normalized.length > 32 || normalized.includes("\r") || normalized.includes("\n")) {
-        sendStdinThrottled(normalized);
+        sendStdinThrottled(normalized, auditLine);
       } else {
-        sendStdinImmediate(normalized);
+        sendStdinWithAudit(normalized, auditLine);
       }
     });
 

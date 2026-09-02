@@ -10,6 +10,7 @@ from netx_api.webcrt_channel import (
     _audit,
     feed_command_line_buffer,
     looks_like_password_prompt,
+    normalize_audit_line,
 )
 from netx_api.webcrt_session_model import WebcrtSession
 
@@ -54,6 +55,33 @@ class FeedCommandLineBufferTests(unittest.TestCase):
         self.assertEqual(buf, "")
         self.assertEqual(len(lines), 1)
         self.assertEqual(len(lines[0]), 512)
+
+    def test_ignores_delete_key_sequence(self) -> None:
+        buf, lines = feed_command_line_buffer("", "dis\x1b[3~play\n")
+        self.assertEqual(lines, ["display"])
+
+
+class NormalizeAuditLineTests(unittest.TestCase):
+    def test_keeps_zte_hash_prompt(self) -> None:
+        self.assertEqual(
+            normalize_audit_line("AL5458-ACC-6120HS#display version"),
+            "AL5458-ACC-6120HS#display version",
+        )
+
+    def test_keeps_huawei_angle_prompt(self) -> None:
+        self.assertEqual(
+            normalize_audit_line("<HW-TARGET>display version"),
+            "<HW-TARGET>display version",
+        )
+
+    def test_keeps_bracket_prompt(self) -> None:
+        self.assertEqual(normalize_audit_line("[6150]show run"), "[6150]show run")
+
+    def test_strips_ansi(self) -> None:
+        self.assertEqual(
+            normalize_audit_line("\x1b[31m6150#show run\x1b[0m"),
+            "6150#show run",
+        )
 
 
 class PasswordPromptTests(unittest.TestCase):
@@ -149,6 +177,32 @@ class SessionCommandAuditTests(unittest.TestCase):
         self.assertEqual(kwargs["owner_username"], "bob")
         self.assertEqual(kwargs["ne_name"], "lab")
         self.assertFalse(kwargs["redacted"])
+
+    @patch("netx_api.webcrt_session_model._audit")
+    def test_audit_line_overrides_stdin_buffer(self, mock_audit: MagicMock) -> None:
+        """Tab-completed command: xterm-visible line wins over stdin keystrokes."""
+        conn = MagicMock()
+        conn.RETURN = "\n"
+        conn.remote_conn = MagicMock(spec=["recv_ready", "recv", "exit_status_ready", "resize_pty"])
+        del conn.remote_conn.send
+        conn.write_channel = MagicMock()
+
+        sess = WebcrtSession(
+            session_id="s-tab",
+            ne_id="ne1",
+            ne_name="lab",
+            ne_ip="1.2.3.4",
+            protocol="ssh",
+            cols=80,
+            rows=24,
+            cli_keymap=False,
+            owner_user_id="u1",
+            owner_username="bob",
+            conn=conn,
+        )
+        sess.write_stdin("dis\t\r", audit_line="AL5458-ACC-6120HS#display version")
+        kwargs = mock_audit.call_args.kwargs
+        self.assertEqual(kwargs["command"], "AL5458-ACC-6120HS#display version")
 
     @patch("netx_api.webcrt_session_model._audit")
     def test_password_mode_redacts_command(self, mock_audit: MagicMock) -> None:

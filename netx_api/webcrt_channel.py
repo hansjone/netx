@@ -496,6 +496,12 @@ def looks_like_password_prompt(text: str) -> bool:
     return bool(_PASSWORD_PROMPT_RE.search(parts[-1]))
 
 
+def normalize_audit_line(line: str) -> str:
+    """Normalize xterm-visible input line for audit (keep device prompt prefix)."""
+    s = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\].*?\x07|\x1b.", "", str(line or ""))
+    return s.replace("\r", "").rstrip()
+
+
 def feed_command_line_buffer(buf: str, data: str, *, max_line: int = 512) -> tuple[str, list[str]]:
     """Accumulate stdin into completed command lines (Enter / CR / LF).
 
@@ -505,22 +511,41 @@ def feed_command_line_buffer(buf: str, data: str, *, max_line: int = 512) -> tup
     cur = str(buf or "")
     completed: list[str] = []
     limit = max(64, min(int(max_line or 512), 4096))
-    for ch in str(data or ""):
+    raw = str(data or "")
+    i = 0
+    while i < len(raw):
+        ch = raw[i]
+        if ch == "\x1b" and i + 1 < len(raw):
+            # Skip CSI / SS3 cursor-key sequences (Delete, arrows, etc.).
+            if raw[i + 1] == "[":
+                j = i + 2
+                while j < len(raw) and raw[j] not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz~":
+                    j += 1
+                i = j + 1 if j < len(raw) else len(raw)
+                continue
+            if raw[i + 1] == "O" and i + 2 < len(raw):
+                i += 3
+                continue
         if ch in ("\r", "\n"):
             if cur:
                 completed.append(cur[:limit])
             cur = ""
+            i += 1
             continue
         if ch in ("\b", "\x7f"):
             cur = cur[:-1] if cur else ""
+            i += 1
             continue
         if ch == "\x03":  # Ctrl-C — abandon current line
             cur = ""
+            i += 1
             continue
         if ord(ch) < 32 and ch != "\t":
+            i += 1
             continue
         if len(cur) < limit:
             cur += ch
+        i += 1
     return cur, completed
 
 

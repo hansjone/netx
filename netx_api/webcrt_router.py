@@ -693,16 +693,22 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
 
     stop = asyncio.Event()
     stdin_buf: list[str] = []
+    stdin_audit_line: str | None = None
     stdin_flush_task: asyncio.Task[None] | None = None
 
     async def flush_stdin() -> None:
-        nonlocal stdin_buf
+        nonlocal stdin_buf, stdin_audit_line
         if not stdin_buf:
             return
         data = "".join(stdin_buf)
+        audit_line = stdin_audit_line
         stdin_buf = []
+        stdin_audit_line = None
         try:
-            await asyncio.get_running_loop().run_in_executor(webcrt_io_executor(), sess.write_stdin, data)
+            await asyncio.get_running_loop().run_in_executor(
+                webcrt_io_executor(),
+                lambda: sess.write_stdin(data, audit_line=audit_line),
+            )
         except Exception as exc:
             await websocket.send_json(
                 {"type": "status", "state": "error", "message": f"write_failed:{exc}"}
@@ -825,6 +831,9 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
                 data = msg.get("data")
                 if data is None:
                     continue
+                audit_raw = msg.get("audit_line")
+                if audit_raw is not None and str(audit_raw).strip():
+                    stdin_audit_line = str(audit_raw).strip()[:512]
                 stdin_buf.append(str(data))
                 # Coalesce high-frequency keystrokes briefly.
                 if len(stdin_buf) >= 8:
