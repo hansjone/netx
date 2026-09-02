@@ -370,16 +370,28 @@ class WebcrtSession:
             if redacted and (buf_lines or audit_line):
                 self._password_mode = False
             if "\r" in text or "\n" in text:
-                from .webcrt_channel import extract_last_prompt_command, normalize_audit_line
+                from .webcrt_channel import (
+                    extract_last_prompt_command,
+                    is_auditable_command_line,
+                    normalize_audit_line,
+                )
 
                 # Ground truth: xterm visible row at Enter (frontend). PTY stdout/stdin
                 # still carry intermediate backspaces / tab redraws — do not prefer those.
+                cmd: str | None = None
                 if audit_line and str(audit_line).strip():
-                    cmd = normalize_audit_line(audit_line)
-                else:
-                    raw = extract_last_prompt_command(self._stdout_tail) or self._last_prompt_line
-                    cmd = raw if raw else (buf_lines[-1] if buf_lines else None)
-                lines = [cmd] if cmd and str(cmd).strip() else []
+                    candidate = normalize_audit_line(audit_line)
+                    if is_auditable_command_line(candidate):
+                        cmd = candidate
+                if not cmd:
+                    raw = extract_last_prompt_command(self._stdout_tail)
+                    if raw and is_auditable_command_line(raw):
+                        cmd = raw
+                    elif buf_lines and str(buf_lines[-1]).strip():
+                        last = str(buf_lines[-1]).strip()
+                        if is_auditable_command_line(last):
+                            cmd = last
+                lines = [cmd] if cmd else []
                 self._last_prompt_line = ""
             else:
                 lines = []
@@ -415,6 +427,12 @@ class WebcrtSession:
             line = extract_last_prompt_command(self._stdout_tail)
             if line:
                 self._last_prompt_line = line
+            else:
+                from .webcrt_channel import _is_prompt_only_line, _strip_ansi
+
+                tail = _strip_ansi(self._stdout_tail).rsplit("\r", 1)[-1].split("\n")[-1]
+                if _is_prompt_only_line(tail):
+                    self._last_prompt_line = ""
             if looks_like_password_prompt(self._stdout_tail):
                 self._password_mode = True
 

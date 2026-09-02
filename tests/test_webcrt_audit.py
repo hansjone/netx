@@ -13,6 +13,8 @@ from netx_api.webcrt_channel import (
     normalize_audit_line,
     extract_last_prompt_command,
     finalize_audit_line,
+    is_auditable_command_line,
+    _is_prompt_only_line,
 )
 from netx_api.webcrt_session_model import WebcrtSession
 
@@ -118,6 +120,18 @@ class FinalizeAuditLineTests(unittest.TestCase):
     def test_applies_echoed_backspaces(self) -> None:
         raw = "6150#disX\bplay version"
         self.assertEqual(finalize_audit_line(raw), "6150#display version")
+
+
+class AuditableCommandLineTests(unittest.TestCase):
+    def test_prompt_only_not_auditable(self) -> None:
+        line = "AL5458-ACC-6120HS(config-if-loopback127)#"
+        self.assertTrue(_is_prompt_only_line(line))
+        self.assertFalse(is_auditable_command_line(line))
+
+    def test_command_with_prompt_is_auditable(self) -> None:
+        line = "AL5458-ACC-6120HS(config-if-loopback127)#ip address 1.1.1.11 255.255.255.255"
+        self.assertFalse(_is_prompt_only_line(line))
+        self.assertTrue(is_auditable_command_line(line))
 
 
 class PasswordPromptTests(unittest.TestCase):
@@ -243,6 +257,30 @@ class SessionCommandAuditTests(unittest.TestCase):
         sess.write_stdin("\r", audit_line=final)
         kwargs = mock_audit.call_args.kwargs
         self.assertEqual(kwargs["command"], final)
+
+    @patch("netx_api.webcrt_session_model._audit")
+    def test_empty_enter_not_audited(self, mock_audit: MagicMock) -> None:
+        conn = MagicMock()
+        conn.RETURN = "\n"
+        conn.remote_conn = MagicMock(spec=["recv_ready", "recv", "exit_status_ready", "resize_pty"])
+        del conn.remote_conn.send
+        conn.write_channel = MagicMock()
+
+        sess = WebcrtSession(
+            session_id="s-empty",
+            ne_id="ne1",
+            ne_name="lab",
+            ne_ip="1.2.3.4",
+            protocol="ssh",
+            cols=80,
+            rows=24,
+            cli_keymap=False,
+            conn=conn,
+        )
+        sess._last_prompt_line = "AL5458-ACC-6120HS(config-if-loopback127)#ip address 1.1.1.11 255.255.255.255"
+        sess._note_stdout_for_audit("AL5458-ACC-6120HS(config-if-loopback127)#\r\n")
+        sess.write_stdin("\r", audit_line="AL5458-ACC-6120HS(config-if-loopback127)#")
+        mock_audit.assert_not_called()
 
     @patch("netx_api.webcrt_session_model._audit")
     def test_password_mode_redacts_command(self, mock_audit: MagicMock) -> None:

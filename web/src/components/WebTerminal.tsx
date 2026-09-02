@@ -95,27 +95,31 @@ export function normalizeAuditLine(line: string): string {
   return stripAnsi(line).replace(/\r/g, "").replace(/\s+$/, "");
 }
 
+/** True when the row is only a device prompt (empty Enter — not auditable). */
+export function isPromptOnlyLine(line: string): boolean {
+  const s = normalizeAuditLine(line);
+  if (!s) return true;
+  return /^(?:[\w.-]+(?:\([^)]+\))*[#>]\s*|<[^>]+>\s*|\[[^\]]+\]\s*)$/.test(s);
+}
+
 function currentCommandLine(term: Terminal): string {
   const buf = term.buffer.active;
-  for (let y = buf.cursorY; y >= Math.max(0, buf.cursorY - 3); y -= 1) {
-    const line = buf.getLine(y);
-    if (!line) continue;
-    const text = normalizeAuditLine(line.translateToString(true));
-    if (/[#>\]]\s*\S/.test(text) || /#[^\s]/.test(text)) return text;
+  const cur = buf.getLine(buf.cursorY);
+  if (cur) {
+    return normalizeAuditLine(cur.translateToString(true));
   }
-  const line = buf.getLine(buf.cursorY);
-  if (!line) return "";
-  return normalizeAuditLine(line.translateToString(true));
+  return "";
 }
 
 function auditLineForEnter(term: Terminal | null, explicitLine?: string): string | undefined {
-  if (explicitLine != null && explicitLine.trim()) {
-    const cmd = normalizeAuditLine(explicitLine);
-    return cmd.trim() ? cmd : undefined;
-  }
-  if (!term) return undefined;
-  const cmd = currentCommandLine(term);
-  return cmd.trim() ? cmd : undefined;
+  const raw =
+    explicitLine != null && explicitLine.trim()
+      ? normalizeAuditLine(explicitLine)
+      : term
+        ? currentCommandLine(term)
+        : "";
+  if (!raw.trim() || isPromptOnlyLine(raw)) return undefined;
+  return raw;
 }
 
 function serializeTerminal(term: Terminal): string {

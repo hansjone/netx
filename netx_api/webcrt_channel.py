@@ -539,6 +539,34 @@ def _is_prompt_command_line(line: str) -> bool:
     )
 
 
+def is_auditable_command_line(line: str) -> bool:
+    """False for empty Enter (prompt only, no command text)."""
+    s = normalize_audit_line(line)
+    if not s.strip():
+        return False
+    if _is_prompt_only_line(s):
+        return False
+    return True
+
+
+def _is_prompt_only_line(line: str) -> bool:
+    """True when line is a device prompt with no command typed."""
+    s = normalize_audit_line(line)
+    if not s:
+        return True
+    return bool(
+        re.match(
+            r"^(?:"
+            r"[\w.-]+(?:\([^)]+\))*[#>]\s*"
+            r"|<[^>]+>\s*"
+            r"|\[[^\]]+\]\s*"
+            r")$",
+            s,
+            flags=re.I,
+        )
+    )
+
+
 def extract_last_prompt_command(text: str) -> str | None:
     """Last prompt+command line in PTY transcript (tab-complete redraw aware).
 
