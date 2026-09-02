@@ -385,28 +385,26 @@ class WebcrtSession:
             if redacted and (buf_lines or audit_line):
                 self._password_mode = False
             if "\r" in text or "\n" in text:
-                from .webcrt_channel import (
-                    extract_last_prompt_command,
-                    is_auditable_command_line,
-                    normalize_audit_line,
-                )
+                from .webcrt_channel import is_auditable_command_line, normalize_audit_line
 
-                # Ground truth: xterm visible row at Enter (frontend). PTY stdout/stdin
-                # still carry intermediate backspaces / tab redraws — do not prefer those.
+                src = str(source or "stdin")
                 cmd: str | None = None
-                if audit_line and str(audit_line).strip():
+                if redacted and (audit_line or buf_lines):
+                    lines = ["***"]
+                elif src == "prompt_sync":
+                    lines = []
+                elif audit_line and str(audit_line).strip():
                     candidate = normalize_audit_line(audit_line)
                     if is_auditable_command_line(candidate):
                         cmd = candidate
-                if not cmd:
-                    raw = extract_last_prompt_command(self._stdout_tail)
-                    if raw and is_auditable_command_line(raw):
-                        cmd = raw
-                    elif buf_lines and str(buf_lines[-1]).strip():
-                        last = str(buf_lines[-1]).strip()
-                        if is_auditable_command_line(last):
-                            cmd = last
-                lines = [cmd] if cmd else []
+                    lines = [cmd] if cmd else []
+                elif src == "post_login":
+                    if buf_lines and str(buf_lines[-1]).strip():
+                        cmd = str(buf_lines[-1]).strip()
+                    lines = [cmd] if cmd else []
+                else:
+                    # Interactive WebCRT: only trust frontend audit_line at Enter.
+                    lines = []
                 self._last_prompt_line = ""
             else:
                 lines = []

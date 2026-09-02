@@ -14,6 +14,7 @@ from netx_api.webcrt_channel import (
     extract_last_prompt_command,
     finalize_audit_line,
     is_auditable_command_line,
+    _is_device_output_line,
     _is_prompt_only_line,
 )
 from netx_api.webcrt_session_model import WebcrtSession
@@ -133,6 +134,14 @@ class AuditableCommandLineTests(unittest.TestCase):
         self.assertFalse(_is_prompt_only_line(line))
         self.assertTrue(is_auditable_command_line(line))
 
+    def test_device_error_not_auditable(self) -> None:
+        line = "%Error 140303: Invalid input detected at '^' marker."
+        self.assertTrue(_is_device_output_line(line))
+        self.assertFalse(is_auditable_command_line(line))
+
+    def test_plain_stdin_without_prompt_not_auditable(self) -> None:
+        self.assertFalse(is_auditable_command_line("display version"))
+
 
 class PasswordPromptTests(unittest.TestCase):
     def test_detects_password_prompt(self) -> None:
@@ -218,12 +227,12 @@ class SessionCommandAuditTests(unittest.TestCase):
             owner_username="bob",
             conn=conn,
         )
-        sess.write_stdin("display version\r")
+        sess.write_stdin("\r", audit_line="6150#display version")
         mock_audit.assert_called()
         event = mock_audit.call_args[0][0]
         self.assertEqual(event, "command")
         kwargs = mock_audit.call_args.kwargs
-        self.assertEqual(kwargs["command"], "display version")
+        self.assertEqual(kwargs["command"], "6150#display version")
         self.assertEqual(kwargs["owner_username"], "bob")
         self.assertEqual(kwargs["ne_name"], "lab")
         self.assertFalse(kwargs["redacted"])
@@ -305,6 +314,55 @@ class SessionCommandAuditTests(unittest.TestCase):
         sess.write_stdin("\r", audit_line=line)
         sess.write_stdin("\r", audit_line=line)
         self.assertEqual(mock_audit.call_count, 1)
+
+    @patch("netx_api.webcrt_session_model._audit")
+    def test_prompt_sync_enter_not_audited(self, mock_audit: MagicMock) -> None:
+        conn = MagicMock()
+        conn.RETURN = "\n"
+        conn.remote_conn = MagicMock(spec=["recv_ready", "recv", "exit_status_ready", "resize_pty"])
+        del conn.remote_conn.send
+        conn.write_channel = MagicMock()
+
+        sess = WebcrtSession(
+            session_id="s-sync",
+            ne_id="ne1",
+            ne_name="lab",
+            ne_ip="1.2.3.4",
+            protocol="ssh",
+            cols=80,
+            rows=24,
+            cli_keymap=False,
+            conn=conn,
+        )
+        sess._last_prompt_line = "AL5458-ACC-6120HS#configure terminal"
+        sess._note_stdout_for_audit("AL5458-ACC-6120HS#configure terminal\r\n")
+        sess.write_stdin("\r", audit_source="prompt_sync")
+        mock_audit.assert_not_called()
+
+    @patch("netx_api.webcrt_session_model._audit")
+    def test_device_error_audit_line_rejected(self, mock_audit: MagicMock) -> None:
+        conn = MagicMock()
+        conn.RETURN = "\n"
+        conn.remote_conn = MagicMock(spec=["recv_ready", "recv", "exit_status_ready", "resize_pty"])
+        del conn.remote_conn.send
+        conn.write_channel = MagicMock()
+
+        sess = WebcrtSession(
+            session_id="s-err",
+            ne_id="ne1",
+            ne_name="lab",
+            ne_ip="1.2.3.4",
+            protocol="ssh",
+            cols=80,
+            rows=24,
+            cli_keymap=False,
+            conn=conn,
+        )
+        sess.write_stdin(
+            "\r",
+            audit_line="%Error 140303: Invalid input detected at '^' marker.",
+        )
+        mock_audit.assert_not_called()
 
     @patch("netx_api.webcrt_session_model._audit")
     def test_password_mode_redacts_command(self, mock_audit: MagicMock) -> None:

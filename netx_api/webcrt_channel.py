@@ -539,14 +539,49 @@ def _is_prompt_command_line(line: str) -> bool:
     )
 
 
+def _has_cli_prompt_prefix(line: str) -> bool:
+    s = normalize_audit_line(line)
+    return bool(
+        re.match(
+            r"^(?:"
+            r"[\w.-]+(?:\([^)]+\))*[#>]"
+            r"|>[\w.-]+"
+            r"|<[^>]+>"
+            r"|\[[^\]]+\]"
+            r")",
+            s,
+            flags=re.I,
+        )
+    )
+
+
+def _is_device_output_line(line: str) -> bool:
+    """Device error/warning echo — never an operator-typed command."""
+    s = normalize_audit_line(line).strip()
+    if not s:
+        return False
+    low = s.lower()
+    if low.startswith("%error") or low.startswith("%warning"):
+        return True
+    if "invalid input detected" in low:
+        return True
+    if re.match(r"^\^+\s*$", s):
+        return True
+    if re.match(r"^enter configuration commands", low):
+        return True
+    return False
+
+
 def is_auditable_command_line(line: str) -> bool:
-    """False for empty Enter (prompt only, no command text)."""
+    """False for empty Enter, device output, or lines without a CLI prompt prefix."""
     s = normalize_audit_line(line)
     if not s.strip():
         return False
     if _is_prompt_only_line(s):
         return False
-    return True
+    if _is_device_output_line(s):
+        return False
+    return _has_cli_prompt_prefix(s)
 
 
 def _is_prompt_only_line(line: str) -> bool:

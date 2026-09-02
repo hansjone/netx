@@ -801,7 +801,10 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
     if sess.needs_live_prompt:
         sess.needs_live_prompt = False
         try:
-            await asyncio.get_running_loop().run_in_executor(webcrt_io_executor(), sess.write_stdin, "\r")
+            await asyncio.get_running_loop().run_in_executor(
+                webcrt_io_executor(),
+                lambda: sess.write_stdin("\r", audit_source="prompt_sync"),
+            )
         except Exception:
             _log.debug("webcrt live prompt sync failed session=%s", session_id, exc_info=True)
     try:

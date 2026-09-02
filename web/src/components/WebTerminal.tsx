@@ -102,13 +102,55 @@ export function isPromptOnlyLine(line: string): boolean {
   return /^(?:[\w.-]+(?:\([^)]+\))*[#>]\s*|<[^>]+>\s*|\[[^\]]+\]\s*)$/.test(s);
 }
 
+const CLI_PROMPT_PREFIX = /^(?:[\w.-]+(?:\([^)]+\))*[#>]|>[\w.-]+|<[^>]+>|\[[^\]]+\])/;
+
+export function hasCliPromptPrefix(line: string): boolean {
+  return CLI_PROMPT_PREFIX.test(normalizeAuditLine(line));
+}
+
+/** Device error/warning lines must never be audited as operator commands. */
+export function isDeviceOutputLine(line: string): boolean {
+  const s = normalizeAuditLine(line).trim();
+  if (!s) return false;
+  const low = s.toLowerCase();
+  if (low.startsWith("%error") || low.startsWith("%warning")) return true;
+  if (low.includes("invalid input detected")) return true;
+  if (/^\^+\s*$/.test(s)) return true;
+  if (low.startsWith("enter configuration commands")) return true;
+  return false;
+}
+
+export function isAuditableCommandLine(line: string): boolean {
+  const s = normalizeAuditLine(line);
+  if (!s.trim() || isPromptOnlyLine(s) || isDeviceOutputLine(s)) return false;
+  return hasCliPromptPrefix(s);
+}
+
 function currentCommandLine(term: Terminal): string {
   const buf = term.buffer.active;
-  const cur = buf.getLine(buf.cursorY);
-  if (cur) {
-    return normalizeAuditLine(cur.translateToString(true));
+  const y = buf.cursorY;
+  const rows: string[] = [];
+  let sawPrompt = false;
+
+  for (let i = y; i >= Math.max(0, y - 5); i -= 1) {
+    const text = normalizeAuditLine(buf.getLine(i)?.translateToString(true) ?? "");
+    if (!text.trim()) {
+      if (rows.length) break;
+      continue;
+    }
+    if (isDeviceOutputLine(text)) break;
+    rows.unshift(text);
+    if (hasCliPromptPrefix(text)) {
+      sawPrompt = true;
+      break;
+    }
   }
-  return "";
+
+  if (!sawPrompt && rows.length === 0) {
+    const cur = buf.getLine(y);
+    return cur ? normalizeAuditLine(cur.translateToString(true)) : "";
+  }
+  return rows.join("").trimEnd();
 }
 
 function auditLineForEnter(term: Terminal | null, explicitLine?: string): string | undefined {
@@ -118,7 +160,7 @@ function auditLineForEnter(term: Terminal | null, explicitLine?: string): string
       : term
         ? currentCommandLine(term)
         : "";
-  if (!raw.trim() || isPromptOnlyLine(raw)) return undefined;
+  if (!isAuditableCommandLine(raw)) return undefined;
   return raw;
 }
 
