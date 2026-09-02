@@ -393,17 +393,37 @@ class WebcrtSession:
         audit_lines: list[str] | None = None,
     ) -> None:
         """Extract completed command lines from stdin and emit webcrt.command audits."""
+        need_echo_settle = False
         with self._cmd_buf_lock:
             self._cmd_buf, buf_lines = feed_command_line_buffer(self._cmd_buf, text)
             redacted = bool(self._password_mode)
             if redacted and (buf_lines or audit_line or audit_lines):
                 self._password_mode = False
             if "\r" in text or "\n" in text:
-                from .webcrt_channel import resolve_audit_commands
+                # Tab completion / abbrev expansion often lands in stdout just after Enter.
+                # History-arrow edits only send a short fragment ("33"/"ip") — wait for
+                # the device CSI redraw of the full line before picking the audit text.
+                from .webcrt_channel import _looks_like_edit_fragment
 
-                if redacted and (buf_lines or audit_line or audit_lines):
-                    lines = ["***"] * max(1, len(buf_lines))
-                else:
+                need_echo_settle = any("\t" in str(x) for x in buf_lines) or ("\t" in str(text))
+                if not need_echo_settle and self._last_prompt_line:
+                    need_echo_settle = any(
+                        _looks_like_edit_fragment(str(x), self._last_prompt_line) for x in buf_lines
+                    )
+            else:
+                return
+
+        if need_echo_settle and str(source or "stdin") == "stdin" and not redacted:
+            # Let device redraw / execute-echo update _stdout_tail before we pick the line.
+            time.sleep(0.12)
+
+        with self._cmd_buf_lock:
+            from .webcrt_channel import resolve_audit_commands
+
+            if redacted and (buf_lines or audit_line or audit_lines):
+                lines = ["***"] * max(1, len(buf_lines) or 1)
+            else:
+                try:
                     lines = resolve_audit_commands(
                         buf_lines,
                         audit_line=audit_line,
@@ -412,9 +432,12 @@ class WebcrtSession:
                         stdout_tail=self._stdout_tail,
                         source=str(source or "stdin"),
                     )
-                self._last_prompt_line = ""
-            else:
-                lines = []
+                except Exception:
+                    _log.exception(
+                        "webcrt resolve_audit_commands failed session=%s", self.session_id
+                    )
+                    lines = []
+            self._last_prompt_line = ""
         for cmd in lines:
             if not str(cmd).strip():
                 continue

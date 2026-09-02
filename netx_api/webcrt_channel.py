@@ -499,12 +499,16 @@ def looks_like_password_prompt(text: str) -> bool:
 def normalize_audit_line(line: str) -> str:
     """Normalize xterm-visible input line for audit (keep device prompt prefix)."""
     s = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\].*?\x07|\x1b.", "", str(line or ""))
-    return s.replace("\r", "").rstrip()
+    # Never glue multiple PTY rows into one audit command.
+    s = s.replace("\r", "\n").split("\n", 1)[0]
+    return s.rstrip()
 
 
 def finalize_audit_line(line: str) -> str:
     """Apply echoed backspaces then normalize (PTY stdout fallback only)."""
     s = _strip_ansi(str(line or ""))
+    # Keep a single logical line — swallowing \\n used to glue command + device legend.
+    s = s.replace("\r", "\n").split("\n", 1)[0]
     out: list[str] = []
     for ch in s:
         if ch in ("\b", "\x7f"):
@@ -519,6 +523,56 @@ def finalize_audit_line(line: str) -> str:
 
 def _strip_ansi(text: str) -> str:
     return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\].*?\x07|\x1b.", "", str(text or ""))
+
+
+# Huawei/ZTE interface-brief legends and pager crumbs often stick to the prompt line
+# after ANSI cursor moves are stripped — never treat them as part of the command.
+_AUDIT_CMD_CONTAMINATION = re.compile(
+    r"(?:"
+    r"\*down:"
+    r"|!down:"
+    r"|\^down:"
+    r"|\([a-z]{1,3}\):"
+    r"|PHY:\s*Physical"
+    r"|----\s*More\s*----"
+    r"|InUti/OutUti"
+    r"|Interface\s+PHY\b"
+    r"|The number of interface"
+    r"|Local Intf\s+Neighbor"
+    r")",
+    flags=re.I,
+)
+
+
+def sanitize_audit_command(line: str | None) -> str | None:
+    """Clip prompt+command and drop device-output contamination."""
+    if line is None:
+        return None
+    s = normalize_audit_line(line)
+    if not s.strip():
+        return None
+    m = _AUDIT_CMD_CONTAMINATION.search(s)
+    if m:
+        s = s[: m.start()].rstrip()
+    if not is_auditable_command_line(s):
+        return None
+    # Collapse spaces left by mid-line overwrite deletes (``dis  interface``).
+    prompt_m = re.match(
+        r"^(?:[\w.-]+(?:\([^)]+\))*[#>]|<[^>]+>|\[[^\]]+\])\s*",
+        s,
+        flags=re.I,
+    )
+    if prompt_m:
+        s = prompt_m.group(0) + " ".join(s[prompt_m.end() :].split())
+    else:
+        s = " ".join(s.split())
+    cmd = _command_tail(s)
+    # Guard against absurd glued blobs that still look like a prompt line.
+    if len(cmd) > 240 or len(s) > 300:
+        return None
+    if _AUDIT_CMD_CONTAMINATION.search(s):
+        return None
+    return s[:512]
 
 
 def _is_prompt_command_line(line: str) -> bool:
@@ -569,6 +623,14 @@ def _is_device_output_line(line: str) -> bool:
         return True
     if re.match(r"^enter configuration commands", low):
         return True
+    if _AUDIT_CMD_CONTAMINATION.search(s):
+        # Legend / pager text alone, or glued onto a prompt line.
+        if not _has_cli_prompt_prefix(s):
+            return True
+        # Prompt + legend glued (ANSI stripped): treat as contaminated output.
+        cmd = _command_tail(s)
+        if _AUDIT_CMD_CONTAMINATION.search(cmd):
+            return True
     return False
 
 
@@ -602,24 +664,106 @@ def _is_prompt_only_line(line: str) -> bool:
     )
 
 
-def extract_last_prompt_command(text: str) -> str | None:
-    """Last prompt+command line in PTY transcript (tab-complete redraw aware).
+def _stdout_has_inplace_edit(text: str) -> bool:
+    """True when the *current* input row was rewritten with cursor CSI.
 
-  Network devices often refresh the current input with ``\\r`` after tab; the
-  final segment after the last carriage return is the ground truth for audit.
+    Only inspects the last fragment (live input line). Older history-edit CSI still
+    sitting in ``stdout_tail`` must not make bare Enter look like an in-place edit.
+    Excludes the common ``---- More ----`` wipe (``ESC[16D``).
     """
-    s = _strip_ansi(text)
+    s = str(text or "")[-4000:]
+    if not s:
+        return False
+    s = re.sub(r"----\s*More\s*----\x1b\[16D\s*\x1b\[16D", "", s, flags=re.I)
+    frags = [f for f in re.split(r"\n+", s) if f.strip()]
+    if not frags:
+        return False
+    frag = frags[-1]
+    rendered = render_pty_line(frag)
+    if _is_prompt_only_line(rendered) or _is_prompt_only_line(normalize_audit_line(frag)):
+        return False
+    if not _is_prompt_command_line(rendered):
+        return False
+    for m in re.finditer(r"\x1b\[([0-9]*)([DCP@])", frag):
+        n_s, cmd = m.group(1), m.group(2)
+        try:
+            n = int(n_s) if n_s else 1
+        except ValueError:
+            n = 1
+        if cmd in "CP@":
+            return True
+        if cmd == "D" and n != 16:
+            return True
+    return False
+
+
+def _live_input_line(stdout_tail: str) -> str:
+    """Visible text on the current input row (after last NL / CR redraw).
+
+    Huawei/ZTE often redraw the next prompt with bare ``\\r`` onto the previous
+    output row. Taking the last *non-empty* CR segment avoids leftover glyphs
+    (``Ethernet...\\r<r1>`` → ``<r1>``) and trailing CRs (``[~r1]\\r\\r`` → ``[~r1]``).
+    """
+    s = str(stdout_tail or "")[-2000:]
+    frags = [f for f in re.split(r"\n+", s) if f.strip()]
+    if not frags:
+        return ""
+    last = frags[-1]
+    if "\r" in last:
+        parts = last.split("\r")
+        non_empty = [p for p in parts if p.strip()]
+        last = non_empty[-1] if non_empty else ""
+    return render_pty_line(last).strip()
+
+
+def _live_input_idle(stdout_tail: str) -> bool:
+    """True when the device is sitting on a bare prompt (no current command text).
+
+    Empty stdout is *not* idle — callers may only have an xterm audit_line (unit tests
+    / early enter). Idle requires a positive bare-prompt observation.
+    """
+    if not str(stdout_tail or "").strip():
+        return False
+    live = _live_input_line(stdout_tail)
+    return (not live) or _is_prompt_only_line(live)
+
+
+def extract_last_prompt_command(text: str) -> str | None:
+    """Last prompt+command line in PTY transcript (tab-complete / history-recall aware).
+
+    Network devices often refresh the current input with ``\\r`` after tab, or rewrite
+    the line in-place with CSI cursor moves after Up-arrow history recall. Plain ANSI
+    stripping would glue ``commit`` + ``ip address...``; we render CSI first.
+    """
+    s = str(text or "")
     if not s.strip():
         return None
-    # Prefer the tail after the last in-line refresh (tab completion / prompt rewrite).
-    tail = s.rsplit("\r", 1)[-1]
-    tail_line = tail.split("\n")[-1].rstrip()
-    if _is_prompt_command_line(tail_line):
-        return finalize_audit_line(tail_line)[:512]
-    for frag in reversed(re.split(r"[\r\n]+", s)):
-        line = frag.strip()
+
+    candidates: list[tuple[int, str]] = []
+    for frag in re.split(r"\n+", s):
+        if not frag.strip("\r"):
+            continue
+        edited = 1 if re.search(r"\x1b\[[0-9]*[DCP@]", frag) else 0
+        rendered = render_pty_line(frag)
+        if rendered.strip():
+            candidates.append((edited, rendered))
+        if "\r" in frag:
+            sub = frag.rsplit("\r", 1)[-1]
+            edited_sub = 1 if re.search(r"\x1b\[[0-9]*[DCP@]", sub) else 0
+            candidates.append((edited_sub, render_pty_line(sub)))
+
+    # Prefer chronologically later rows; among the last few, prefer CSI-edited rows
+    # so a stale pre-edit recall does not win over the post-edit line.
+    for edited, line in reversed(candidates):
+        if edited and line and _is_prompt_command_line(line):
+            clipped = sanitize_audit_command(normalize_audit_line(line))
+            if clipped:
+                return clipped
+    for _edited, line in reversed(candidates):
         if line and _is_prompt_command_line(line):
-            return finalize_audit_line(line)[:512]
+            clipped = sanitize_audit_command(normalize_audit_line(line))
+            if clipped:
+                return clipped
     return None
 
 
@@ -634,6 +778,151 @@ def _command_tail(line: str) -> str:
         if m:
             return m.group(1).strip()
     return s.strip()
+
+
+def _token_appears(token: str, cmd: str) -> bool:
+    """Whole-token match so ``ip`` does not hit the letters inside ``display``."""
+    t = str(token or "").replace("\t", "").strip()
+    if not t:
+        return False
+    parts = str(cmd or "").split()
+    if t in parts:
+        return True
+    if parts and (parts[-1].startswith(t) or t.startswith(parts[-1])):
+        return True
+    return False
+
+
+def _looks_like_edit_fragment(typed: str, full_line: str) -> bool:
+    """True when stdin bytes look like a mid-line history edit, not a full command.
+
+    Up-arrow recall + cursor edit only sends newly typed chars (``33``, ``ip``), while
+    the device / xterm holds the full ``ip address ... 33`` line.
+    """
+    t = str(typed or "").replace("\t", "").strip()
+    if not t or not full_line:
+        return False
+    ph_cmd = _command_tail(full_line)
+    if not ph_cmd or ph_cmd == t:
+        return False
+    # Multi-word recalled command vs short typed fragment.
+    if len(ph_cmd.split()) >= 2 and (" " not in t) and len(t) <= 64:
+        return True
+    if len(t) * 2 < len(ph_cmd) and (_token_appears(t, ph_cmd) or ph_cmd.endswith(t)):
+        return True
+    return False
+
+
+def render_pty_line(text: str) -> str:
+    """Best-effort single-row CSI renderer for Huawei/ZTE history-recall redraws."""
+    raw = str(text or "").split("\n")[-1]
+    cells: list[str] = []
+    cursor = 0
+    i = 0
+    while i < len(raw):
+        ch = raw[i]
+        if ch == "\x1b" and i + 1 < len(raw):
+            nxt = raw[i + 1]
+            if nxt == "[":
+                j = i + 2
+                while j < len(raw) and raw[j] not in "ABCDEFGHJKSTfhlmnpsu":
+                    j += 1
+                if j >= len(raw):
+                    break
+                final = raw[j]
+                params_s = raw[i + 2 : j]
+                try:
+                    n = int(params_s) if params_s else 1
+                except ValueError:
+                    n = 1
+                if final == "D":
+                    cursor = max(0, cursor - n)
+                elif final == "C":
+                    cursor = min(len(cells), cursor + n)
+                elif final == "G":
+                    cursor = max(0, n - 1) if n > 0 else 0
+                    if cursor > len(cells):
+                        cells.extend([" "] * (cursor - len(cells)))
+                elif final == "K":
+                    mode = int(params_s) if params_s else 0
+                    if mode == 0:
+                        cells = cells[:cursor]
+                    elif mode == 1:
+                        for k in range(min(cursor, len(cells))):
+                            cells[k] = " "
+                    elif mode == 2:
+                        cells = []
+                        cursor = 0
+                elif final == "P":
+                    del cells[cursor : cursor + n]
+                elif final == "@":
+                    cells[cursor:cursor] = [" "] * n
+                i = j + 1
+                continue
+            if nxt == "O" and i + 2 < len(raw):
+                i += 3
+                continue
+            i += 2
+            continue
+        if ch == "\r":
+            cursor = 0
+            i += 1
+            continue
+        if ch in ("\b", "\x7f"):
+            if cursor > 0:
+                cursor -= 1
+                if cursor < len(cells):
+                    del cells[cursor]
+            i += 1
+            continue
+        if ord(ch) < 32:
+            i += 1
+            continue
+        if cursor < len(cells):
+            cells[cursor] = ch
+        else:
+            if cursor > len(cells):
+                cells.extend([" "] * (cursor - len(cells)))
+            cells.append(ch)
+        cursor += 1
+        i += 1
+    return "".join(cells).rstrip()
+
+
+def _is_cli_expansion(short_line: str, long_line: str) -> bool:
+    """True when ``long_line`` looks like Tab / abbreviation expansion of ``short_line``."""
+    short = sanitize_audit_command(short_line) or normalize_audit_line(short_line)
+    long = sanitize_audit_command(long_line)
+    if not long:
+        return False
+    a = " ".join(_command_tail(short).split())
+    b = " ".join(_command_tail(long).split())
+    if not a or not b or a == b:
+        return False
+    # Reject glued device legends that merely startswith the short command.
+    if _AUDIT_CMD_CONTAMINATION.search(_command_tail(long_line) or ""):
+        return False
+    if len(b) > len(a) + 80:
+        return False
+    if b.startswith(a) and len(b) > len(a):
+        # Expansion should stay within CLI token charset (no *!^ legend glue).
+        extra = b[len(a) :]
+        if re.search(r"[*!^]", extra):
+            return False
+        return True
+    ta, tb = a.split(), b.split()
+    if not ta or len(ta) > len(tb):
+        return False
+    # Only allow long tokens to extend short tokens (Tab), never the reverse
+    # (``interface`` vs ``ip`` used to false-match via startswith both ways).
+    # Case-insensitive: Huawei expands ``lo`` → ``LoopBack``.
+    for i, tok in enumerate(ta):
+        other = tb[i]
+        if other.lower() == tok.lower() or other.lower().startswith(tok.lower()):
+            continue
+        return False
+    # Remaining long tokens are Tab-inserted middle/trailing words.
+    return len(tb) >= len(ta) and len(b) <= len(a) + 80
 
 
 def _attach_prompt_prefix(typed: str, hint: str) -> str | None:
@@ -664,45 +953,185 @@ def pick_audit_command(
     source: str = "stdin",
 ) -> str | None:
     """Pick auditable text for one completed stdin line (actual send + optional xterm hint)."""
-    typed = normalize_audit_line(stdin_line).strip()
+    typed_raw = str(stdin_line or "")
+    typed_has_tab = "\t" in typed_raw
+    typed = normalize_audit_line(typed_raw).strip()
     hint = normalize_audit_line(audit_hint) if audit_hint else ""
     src = str(source or "stdin")
+    compact_typed = typed.replace("\t", "").strip()
+
+    def _out(cmd: str | None) -> str | None:
+        if not cmd:
+            return None
+        cleaned = sanitize_audit_command(cmd)
+        if cleaned:
+            return cleaned
+        # early/post_login may lack a prompt prefix — still strip legend glue.
+        s = normalize_audit_line(cmd)
+        m = _AUDIT_CMD_CONTAMINATION.search(s)
+        if m:
+            s = s[: m.start()].rstrip()
+        if not s or _AUDIT_CMD_CONTAMINATION.search(s):
+            return None
+        if src in ("post_login", "early_stdin") or (
+            src == "stdin" and not _has_cli_prompt_prefix(s) and not _is_prompt_only_line(s)
+        ):
+            return s[:512]
+        return None
 
     if typed and _is_device_output_line(typed):
         return None
 
     if src == "post_login" and typed:
-        return typed
+        return _out(typed.replace("\t", " ").strip() or typed)
+
+    # No keystroke payload and no auditable xterm snapshot → only scrape stdout when
+    # the device just did an in-place history edit (CSI). Bare Enter must not re-audit.
+    if not compact_typed and not (hint and is_auditable_command_line(hint)):
+        if src != "early_stdin":
+            if _stdout_has_inplace_edit(stdout_tail):
+                echoed = extract_last_prompt_command(stdout_tail)
+                if echoed:
+                    return _out(echoed)
+            return None
+
+    # Empty Enter while the live row is a bare prompt: never trust a stale xterm hint
+    # (walk-up into the previous command echo). Applies even when callers skip the
+    # resolve_audit_commands idle gate.
+    if not compact_typed and src == "stdin" and str(stdout_tail or "").strip():
+        live = _live_input_line(stdout_tail)
+        if ((not live) or _is_prompt_only_line(live)) and not _stdout_has_inplace_edit(
+            stdout_tail
+        ):
+            return None
+
+    def _from_device_echo() -> str | None:
+        def _usable(full: str) -> bool:
+            if not full or not is_auditable_command_line(full):
+                return False
+            ph_cmd = _command_tail(full) or full
+            if typed_has_tab or not compact_typed:
+                return True
+            if ph_cmd.startswith(compact_typed) or compact_typed.startswith(ph_cmd):
+                return True
+            if _token_appears(compact_typed, ph_cmd):
+                return True
+            # History fragment: only accept echo that already contains the typed token.
+            if _looks_like_edit_fragment(compact_typed, full):
+                return _token_appears(compact_typed, ph_cmd)
+            return False
+
+        # Prefer live stdout (CSI-rendered history line) over possibly stale prompt_hint.
+        if stdout_tail:
+            ext = extract_last_prompt_command(stdout_tail)
+            if ext and _usable(ext):
+                return ext
+        if prompt_hint:
+            ph = sanitize_audit_command(prompt_hint) or (
+                normalize_audit_line(prompt_hint)
+                if is_auditable_command_line(prompt_hint)
+                else ""
+            )
+            if ph and _usable(ph):
+                return ph
+        return None
+
+    def _prefer_expanded(base: str) -> str:
+        """Reconcile xterm hint with live device echo (Tab / history mid-line edits)."""
+        echoed = _from_device_echo()
+        if not echoed:
+            return base
+        base_n = sanitize_audit_command(base) or normalize_audit_line(base)
+        echo_n = sanitize_audit_command(echoed) or echoed
+        bc = " ".join(_command_tail(base_n).split())
+        ec = " ".join(_command_tail(echo_n).split())
+        if not ec or ec == bc:
+            return base_n
+        # In-place history edit on the device: always trust the CSI-rendered echo.
+        if _stdout_has_inplace_edit(stdout_tail):
+            return echo_n
+        # Tab completion only: accept longer real expansions. Never re-inflate a
+        # shorter post-delete snapshot back into a longer stale echo without Tab.
+        if typed_has_tab and _is_cli_expansion(base_n, echo_n):
+            return echo_n
+        # Tab: prefer the longer device expansion when token heads match
+        # (``interface lo`` → ``interface LoopBack 1``).
+        if typed_has_tab:
+            bt, et = bc.split(), ec.split()
+            if bt and et and bt[0].lower() == et[0].lower() and len(ec) > len(bc):
+                return echo_n
+        bt, et = bc.split(), ec.split()
+        if bt and et and bt[0].lower() == et[0].lower():
+            if len(et) < len(bt):
+                return echo_n
+            if len(et) == len(bt) and et != bt:
+                return echo_n
+            return base_n
+        return base_n
+
+    # Tab completion: device echo is authoritative (xterm snapshot may still show
+    # the pre-expansion fragment ``interface lo`` when Enter is delayed after Tab).
+    if typed_has_tab:
+        echoed = _from_device_echo()
+        if echoed:
+            return _out(echoed)
+        if hint and is_auditable_command_line(hint):
+            return _out(hint)
+        # Never persist literal Tab into audit_log.
+        typed = compact_typed
+
+    # xterm visible row at Enter is usually authoritative — but history mid-line
+    # deletes may leave a stale longer snapshot in audit_line while device echo
+    # is already shorter.
+    if hint and is_auditable_command_line(hint):
+        return _out(_prefer_expanded(hint))
 
     if src == "early_stdin" and typed and not _is_prompt_only_line(typed):
-        return typed
-
-    if hint and is_auditable_command_line(hint):
-        if not typed:
-            return hint
-        hint_cmd = _command_tail(hint) or hint
-        if typed == hint_cmd or hint_cmd.startswith(typed):
-            return hint
-        # Material disagreement — record bytes actually sent, not xterm hint.
-        return typed if typed else hint
+        echoed = _from_device_echo()
+        if echoed:
+            return _out(echoed)
+        return _out(typed)
 
     if typed and is_auditable_command_line(typed):
-        return typed
+        return _out(_prefer_expanded(typed))
+
+    # History/arrow edits: stdin may be only the newly typed fragment ("33", "ip").
+    # Never glue that onto the prompt as "[*r1]33" — prefer device-rendered full line.
+    for candidate in (
+        sanitize_audit_command(hint) if hint else None,
+        _from_device_echo(),
+        sanitize_audit_command(prompt_hint) if prompt_hint else None,
+    ):
+        if not candidate or not is_auditable_command_line(candidate):
+            continue
+        if not _looks_like_edit_fragment(typed, candidate):
+            continue
+        # Require the candidate to already reflect the typed edit (token-level).
+        if compact_typed and not _token_appears(compact_typed, _command_tail(candidate)):
+            continue
+        return _out(candidate)
 
     for prefix_src in (hint, prompt_hint):
+        if prefix_src and _looks_like_edit_fragment(typed, prefix_src):
+            continue
         enriched = _attach_prompt_prefix(typed, prefix_src)
         if enriched and is_auditable_command_line(enriched):
-            return enriched
+            # Reject enrichment that clearly dropped the recalled command body.
+            if prompt_hint and _looks_like_edit_fragment(typed, prompt_hint):
+                continue
+            return _out(_prefer_expanded(enriched))
 
-    if stdout_tail:
-        ext = extract_last_prompt_command(stdout_tail)
-        if ext and is_auditable_command_line(ext):
-            ext_cmd = _command_tail(ext) or ext
-            if typed and (typed in ext_cmd or ext_cmd.endswith(typed)):
-                return ext
+    echoed = _from_device_echo()
+    if echoed:
+        return _out(echoed)
 
     if src == "stdin" and typed and not _is_prompt_only_line(typed):
-        return typed
+        # Last resort: still avoid publishing bare fragments when we have a full echo.
+        if prompt_hint and _looks_like_edit_fragment(typed, prompt_hint):
+            ph = sanitize_audit_command(prompt_hint)
+            if ph:
+                return _out(ph)
+        return _out(typed)
 
     return None
 
@@ -722,8 +1151,35 @@ def resolve_audit_commands(
         return []
 
     if not buf_lines:
-        if audit_line and is_auditable_command_line(normalize_audit_line(audit_line)):
-            return [normalize_audit_line(audit_line)]
+        # History mid-line CSI edits can complete Enter with empty stdin.
+        hint = str(audit_line or "").strip()
+        has_stdout = bool(str(stdout_tail or "").strip())
+        live = _live_input_line(stdout_tail) if has_stdout else ""
+        inplace = _stdout_has_inplace_edit(stdout_tail)
+        # Bare Enter / empty stdin: never re-audit from a stale xterm audit_line that
+        # walked up into the previous command echo. Only proceed when the *live*
+        # device row still shows a command (history recall) or an in-place CSI edit.
+        if has_stdout and not inplace:
+            if (not live) or _is_prompt_only_line(live) or not is_auditable_command_line(live):
+                return []
+        if hint and is_auditable_command_line(normalize_audit_line(hint)):
+            cmd = pick_audit_command(
+                "",
+                hint,
+                prompt_hint=prompt_hint,
+                stdout_tail=stdout_tail,
+                source=src,
+            )
+            return [cmd] if cmd else []
+        if inplace:
+            cmd = pick_audit_command(
+                "",
+                None,
+                prompt_hint=prompt_hint,
+                stdout_tail=stdout_tail,
+                source=src,
+            )
+            return [cmd] if cmd else []
         return []
 
     hints: list[str | None] = [None] * len(buf_lines)
@@ -737,10 +1193,14 @@ def resolve_audit_commands(
     if merged:
         if len(merged) == len(buf_lines):
             hints = list(merged)
-        else:
-            start = max(0, len(buf_lines) - len(merged))
+        elif len(merged) < len(buf_lines):
+            start = len(buf_lines) - len(merged)
             for j, h in enumerate(merged):
                 hints[start + j] = h
+        else:
+            # Duplicate Enter can produce more audit_line snapshots than completed
+            # stdin lines — keep the trailing hints (most recent).
+            hints = list(merged[-len(buf_lines) :])
 
     out: list[str] = []
     for i, typed in enumerate(buf_lines):

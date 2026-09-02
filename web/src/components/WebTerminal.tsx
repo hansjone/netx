@@ -92,7 +92,13 @@ function stripAnsi(text: string): string {
 
 /** Visible xterm row on Enter — keep device prompt prefix, drop ANSI only. */
 export function normalizeAuditLine(line: string): string {
-  return stripAnsi(line).replace(/\r/g, "").replace(/\s+$/, "");
+  let s = stripAnsi(line).replace(/\r/g, "\n").split("\n")[0] ?? "";
+  // Clip Huawei/ZTE legend glue that ANSI stripping can append to the prompt row.
+  s = s.replace(
+    /(?:\*down:|!down:|\^down:|\([a-z]{1,3}\):|PHY:\s*Physical|----\s*More\s*----|InUti\/OutUti|Local Intf\s+Neighbor).*$/i,
+    "",
+  );
+  return s.replace(/\s+$/, "");
 }
 
 /** True when the row is only a device prompt (empty Enter — not auditable). */
@@ -110,13 +116,25 @@ export function hasCliPromptPrefix(line: string): boolean {
 
 /** Device error/warning lines must never be audited as operator commands. */
 export function isDeviceOutputLine(line: string): boolean {
+  const raw = stripAnsi(line).replace(/\r/g, "").trim();
   const s = normalizeAuditLine(line).trim();
-  if (!s) return false;
+  if (!s) {
+    // Pure legend row (clipped to empty) counts as device output.
+    return /(?:\*down:|!down:|\^down:|PHY:\s*Physical|----\s*More\s*----)/i.test(raw);
+  }
   const low = s.toLowerCase();
   if (low.startsWith("%error") || low.startsWith("%warning")) return true;
   if (low.includes("invalid input detected")) return true;
   if (/^\^+\s*$/.test(s)) return true;
   if (low.startsWith("enter configuration commands")) return true;
+  if (
+    !CLI_PROMPT_PREFIX.test(s) &&
+    /(?:\*down:|!down:|\^down:|\([a-z]{1,3}\):|PHY:\s*Physical|----\s*More\s*----|InUti\/OutUti|Local Intf\s+Neighbor)/i.test(
+      raw,
+    )
+  ) {
+    return true;
+  }
   return false;
 }
 
@@ -129,26 +147,28 @@ export function isAuditableCommandLine(line: string): boolean {
 function currentCommandLine(term: Terminal): string {
   const buf = term.buffer.active;
   const y = buf.cursorY;
-  const rows: string[] = [];
-  let sawPrompt = false;
+  const curText = normalizeAuditLine(buf.getLine(y)?.translateToString(true) ?? "");
 
-  for (let i = y; i >= Math.max(0, y - 5); i -= 1) {
-    const text = normalizeAuditLine(buf.getLine(i)?.translateToString(true) ?? "");
-    if (!text.trim()) {
-      if (rows.length) break;
-      continue;
-    }
-    if (isDeviceOutputLine(text)) break;
-    rows.unshift(text);
-    if (hasCliPromptPrefix(text)) {
-      sawPrompt = true;
-      break;
-    }
+  // Sitting on a bare prompt / blank row after output — never walk up into the
+  // previous command echo (that caused bare Enter to re-audit the last command).
+  if (!curText.trim() || isPromptOnlyLine(curText)) {
+    return curText;
   }
 
-  if (!sawPrompt && rows.length === 0) {
-    const cur = buf.getLine(y);
-    return cur ? normalizeAuditLine(cur.translateToString(true)) : "";
+  // Prompt+command already on the cursor row.
+  if (hasCliPromptPrefix(curText)) {
+    return curText.trimEnd();
+  }
+
+  // Soft-wrap continuation: join upward until the prompt row; abort on device output.
+  const rows: string[] = [curText];
+  for (let i = y - 1; i >= Math.max(0, y - 5); i -= 1) {
+    const text = normalizeAuditLine(buf.getLine(i)?.translateToString(true) ?? "");
+    if (!text.trim() || isDeviceOutputLine(text) || isPromptOnlyLine(text)) break;
+    rows.unshift(text);
+    if (hasCliPromptPrefix(text)) {
+      return rows.join("").trimEnd();
+    }
   }
   return rows.join("").trimEnd();
 }
@@ -313,6 +333,8 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
   const findInputRef = useRef<HTMLInputElement | null>(null);
   /** Suppress duplicate Enter frames (keydown + xterm onData both fire). */
   const enterHandledAtRef = useRef(0);
+  /** Last Tab keystroke — Enter soon after must wait for device completion redraw. */
+  const lastTabAtRef = useRef(0);
 
   useEffect(() => {
     onStatusRef.current = onStatus;
@@ -383,6 +405,17 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
   };
 
   const sendEnterStdin = (term: Terminal, explicitAuditLine?: string) => {
+    const recentTab = performance.now() - lastTabAtRef.current < 450;
+    if (recentTab) {
+      // Re-read xterm after device Tab redraw; ignore any stale snapshot.
+      // Mark Enter handled now so onData duplicate frame is suppressed while we wait.
+      enterHandledAtRef.current = performance.now();
+      window.setTimeout(() => {
+        enterHandledAtRef.current = performance.now();
+        sendStdinWithAudit("\r", auditLineForEnter(term));
+      }, 100);
+      return;
+    }
     enterHandledAtRef.current = performance.now();
     sendStdinWithAudit("\r", explicitAuditLine ?? auditLineForEnter(term));
   };
@@ -759,17 +792,27 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
 
     const dataDisposable = term.onData((data) => {
       const normalized = data.replace(/\x7f/g, "\x08");
-      if (isDuplicateEnterFrame(normalized)) return;
-      // Capture visible line before Enter moves the cursor to the next row.
-      const auditLine =
-        normalized.includes("\r") || normalized.includes("\n")
-          ? auditLineForEnter(term)
-          : undefined;
-      if (normalized.includes("\r") || normalized.includes("\n")) {
-        enterHandledAtRef.current = performance.now();
+      if (normalized.includes("\t")) {
+        lastTabAtRef.current = performance.now();
       }
+      if (isDuplicateEnterFrame(normalized)) return;
+
+      const isEnter = normalized.includes("\r") || normalized.includes("\n");
+      if (isEnter) {
+        enterHandledAtRef.current = performance.now();
+        const recentTab = performance.now() - lastTabAtRef.current < 450;
+        // After Tab, wait briefly so Huawei/ZTE redraw lands in xterm before we snapshot.
+        if (recentTab && /^[\r\n]+$/.test(normalized)) {
+          window.setTimeout(() => {
+            sendStdinWithAudit("\r", auditLineForEnter(term));
+          }, 100);
+          return;
+        }
+      }
+
+      const auditLine = isEnter ? auditLineForEnter(term) : undefined;
       // Large pastes from xterm arrive as one onData blob.
-      if (normalized.length > 32 || normalized.includes("\r") || normalized.includes("\n")) {
+      if (normalized.length > 32 || isEnter) {
         sendStdinThrottled(normalized, auditLine);
       } else {
         sendStdinWithAudit(normalized, auditLine);
@@ -841,7 +884,7 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
       e.stopPropagation();
       maybeFocus();
       if (e.key === "Enter") {
-        sendEnterStdin(term, auditLineForEnter(term));
+        sendEnterStdin(term);
         return;
       }
       sendStdinWithAudit(data);

@@ -169,14 +169,265 @@ class ResolveAuditCommandsTests(unittest.TestCase):
         self.assertIn("show ll n b", out[1])
         self.assertIn("show intf", out[2])
 
-    def test_hint_disagreement_records_actual_stdin(self) -> None:
+    def test_hint_wins_over_corrupt_stdin(self) -> None:
         cmd = pick_audit_command(
             "how ll n b",
             "AL5458#show ll n b",
             prompt_hint="AL5458#",
             source="stdin",
         )
-        self.assertEqual(cmd, "how ll n b")
+        self.assertEqual(cmd, "AL5458#show ll n b")
+
+    def test_tab_in_stdin_uses_prompt_hint(self) -> None:
+        cmd = pick_audit_command(
+            "dis ip int\tbr",
+            None,
+            prompt_hint="[~r1]display ip interface brief",
+            source="stdin",
+        )
+        self.assertEqual(cmd, "[~r1]display ip interface brief")
+
+    def test_tab_completion_hint_beats_stdin(self) -> None:
+        out = resolve_audit_commands(
+            ["dis ip int\tbr"],
+            audit_lines=["[~r1]display ip interface brief"],
+            source="stdin",
+        )
+        self.assertEqual(out, ["[~r1]display ip interface brief"])
+
+    def test_insert_edit_hint_beats_stdin(self) -> None:
+        cmd = pick_audit_command(
+            "dislay version",
+            "[~r1]display version",
+            source="stdin",
+        )
+        self.assertEqual(cmd, "[~r1]display version")
+
+    def test_device_echo_expands_stale_tab_hint(self) -> None:
+        """xterm may still show mid-Tab text while device already redrew the full command."""
+        cmd = pick_audit_command(
+            "dis inter\t",
+            "[~r1]dis interface br",
+            prompt_hint="[~r1]dis interface brief",
+            source="stdin",
+        )
+        self.assertEqual(cmd, "[~r1]dis interface brief")
+
+    def test_is_cli_expansion_abbrev_tokens(self) -> None:
+        from netx_api.webcrt_channel import _is_cli_expansion
+
+        self.assertTrue(_is_cli_expansion("[~r1]dis interface br", "[~r1]dis interface brief"))
+        self.assertTrue(_is_cli_expansion("<r1>dis ip int", "<r1>display ip interface brief"))
+        self.assertFalse(_is_cli_expansion("[~r1]dis arp all", "[~r1]dis interface brief"))
+
+    def test_rejects_glued_interface_legend(self) -> None:
+        from netx_api.webcrt_channel import _is_cli_expansion, sanitize_audit_command
+
+        dirty = (
+            "[~r1]display ip interface brief"
+            "*down: administratively down"
+            "!down: FIB overload down"
+            "^down: standby"
+            "(l): loopback"
+        )
+        self.assertEqual(sanitize_audit_command(dirty), "[~r1]display ip interface brief")
+        cmd = pick_audit_command(
+            "dis ip int\t",
+            dirty,
+            prompt_hint=dirty,
+            stdout_tail=dirty + "\nInterface PHY\n",
+            source="stdin",
+        )
+        self.assertEqual(cmd, "[~r1]display ip interface brief")
+        self.assertFalse(_is_cli_expansion("[~r1]display ip interface brief", dirty))
+
+    def test_history_recall_csi_render(self) -> None:
+        from netx_api.webcrt_channel import extract_last_prompt_command, render_pty_line
+
+        raw = "[~r1-LoopBack1]commit\x1b[6D      \x1b[6Dip address 10.1.1.1 33"
+        self.assertEqual(render_pty_line(raw), "[~r1-LoopBack1]ip address 10.1.1.1 33")
+        self.assertEqual(
+            extract_last_prompt_command(raw + "\n"),
+            "[~r1-LoopBack1]ip address 10.1.1.1 33",
+        )
+
+    def test_history_edit_fragment_not_glued_to_prompt(self) -> None:
+        """Up-arrow edit only types '33' — must not audit as '[*r1-LoopBack1]33'."""
+        cmd = pick_audit_command(
+            "33",
+            None,
+            prompt_hint="[*r1-LoopBack1]ip address 10.1.1.1 25",
+            stdout_tail="[*r1-LoopBack1]ip address 10.1.1.1 25\x1b[2D33\n",
+            source="stdin",
+        )
+        self.assertEqual(cmd, "[*r1-LoopBack1]ip address 10.1.1.1 33")
+        # Even with no usable stdout, never publish bare prompt+fragment.
+        cmd2 = pick_audit_command(
+            "33",
+            None,
+            prompt_hint="[*r1-LoopBack1]ip address 10.1.1.1 25",
+            source="stdin",
+        )
+        self.assertEqual(cmd2, "[*r1-LoopBack1]ip address 10.1.1.1 25")
+
+    def test_history_insert_fragment_ip(self) -> None:
+        # Real Huawei redraws include a trailing space before CSI left.
+        stdout = (
+            "[~r1]display interface brief "
+            "\x1b[24D                        \x1b[24D"
+            "display ip interface brief"
+        )
+        cmd = pick_audit_command(
+            "ip",
+            None,
+            prompt_hint="[~r1]display interface brief",
+            stdout_tail=stdout,
+            source="stdin",
+        )
+        self.assertEqual(cmd, "[~r1]display ip interface brief")
+
+    def test_history_midline_delete_prefers_device_echo(self) -> None:
+        """Up-arrow then delete middle ``ip`` — must not keep stale longer audit_line."""
+        frag = (
+            "<r1>dis ip interface brief "
+            + ("\x1b[1D" * 18)
+            + " interface brief  \x1b[18D\x1b[1D interface brief  \x1b[18D\x1b[17C"
+        )
+        # Stale xterm snapshot still has ``ip``; device echo already deleted it.
+        cmd = pick_audit_command(
+            "",
+            "<r1>dis ip interface brief",
+            prompt_hint="<r1>dis ip interface brief",
+            stdout_tail=frag + "\n",
+            source="stdin",
+        )
+        self.assertEqual(cmd, "<r1>dis interface brief")
+        out = resolve_audit_commands(
+            [],
+            audit_line="<r1>dis ip interface brief",
+            prompt_hint="<r1>dis ip interface brief",
+            stdout_tail=frag + "\n",
+            source="stdin",
+        )
+        self.assertEqual(out, ["<r1>dis interface brief"])
+
+    def test_bare_enter_does_not_reaudit_previous_command(self) -> None:
+        """Empty Enter after a prior command must not invent another audit from stdout."""
+        out = resolve_audit_commands(
+            [],
+            audit_line=None,
+            prompt_hint="<r1>dis interface",
+            stdout_tail="<r1>dis interface \nEthernet1/0/0 current state : UP\n<r1>",
+            source="stdin",
+        )
+        self.assertEqual(out, [])
+        out2 = resolve_audit_commands(
+            [],
+            audit_line="<r1>",  # prompt-only from xterm
+            prompt_hint="<r1>dis interface",
+            stdout_tail="<r1>dis interface \n",
+            source="stdin",
+        )
+        self.assertEqual(out2, [])
+        # Stale audit_line harvested from previous command row on screen.
+        out3 = resolve_audit_commands(
+            [],
+            audit_line="<r1>dis interface brief",
+            prompt_hint="<r1>dis interface brief",
+            stdout_tail=(
+                "<r1>dis interface brief \n"
+                "PHY: Physical\n"
+                "*down: administratively down\n"
+                "<r1>"
+            ),
+            source="stdin",
+        )
+        self.assertEqual(out3, [])
+        # Prompt redrawn with CR onto the previous output row (common on Huawei).
+        out4 = resolve_audit_commands(
+            [],
+            audit_line="<r1>dis interface brief",
+            prompt_hint="<r1>dis interface brief",
+            stdout_tail="Ethernet1/0/0 UP\r<r1>",
+            source="stdin",
+        )
+        self.assertEqual(out4, [])
+        # Leftover glyphs after CR must not look like a live command row.
+        out5 = resolve_audit_commands(
+            [],
+            audit_line="<r1>dis interface brief",
+            stdout_tail="Interface PHY Protocol\r<r1>",
+            source="stdin",
+        )
+        self.assertEqual(out5, [])
+        # Trailing CR after bare prompt must still look idle (not empty → stale hint).
+        out6 = resolve_audit_commands(
+            [],
+            audit_line="<r1>sys",
+            stdout_tail=(
+                "---- More ----\x1b[16D                \x1b[16D<r1>sys\r\r\n"
+                "Enter system view, return user view with return command.\r\r\n"
+                "[~r1]\r\r\n"
+            ),
+            source="stdin",
+        )
+        self.assertEqual(out6, [])
+        # pick() itself must also refuse stale hint on bare prompt.
+        self.assertIsNone(
+            pick_audit_command(
+                "",
+                "<r1>sys",
+                stdout_tail="[~r1]\r\r\n",
+                source="stdin",
+            )
+        )
+
+    def test_tab_interface_loopback_from_session_transcript(self) -> None:
+        """Tab ``inter``→``interface LoopBack 1`` must audit the expanded line."""
+        stdout = (
+            "[~r1]inter\t\r\r\n"
+            "[~r1]interface lo\t\r\r\n"
+            "[~r1]interface LoopBack 1\r\r\n"
+            "[~r1-LoopBack1]\r\r\n"
+        )
+        # Incomplete xterm snapshot must not win over device expansion.
+        out = resolve_audit_commands(
+            ["inter\tlo\t1"],
+            audit_line="[~r1]interface lo",
+            stdout_tail=stdout,
+            source="stdin",
+        )
+        self.assertEqual(out, ["[~r1]interface LoopBack 1"])
+        # Extra audit_line from duplicate Enter must not IndexError / drop the line.
+        out2 = resolve_audit_commands(
+            ["inter\tlo\t1"],
+            audit_lines=["[~r1]interface lo", "[~r1]interface LoopBack 1"],
+            stdout_tail=stdout,
+            source="stdin",
+        )
+        self.assertEqual(out2, ["[~r1]interface LoopBack 1"])
+
+    def test_history_trailing_delete_without_audit_line(self) -> None:
+        """Delete trailing ``brief`` via CSI — audit even if xterm snapshot is missing."""
+        frag = (
+            "<r1>dis ip interface brief "
+            + "".join("\x1b[1D \x1b[1D" for _ in range(6))
+        )
+        out = resolve_audit_commands(
+            [],
+            audit_line=None,
+            stdout_tail=frag + "\n",
+            source="stdin",
+        )
+        self.assertEqual(out, ["<r1>dis ip interface"])
+        # Stale longer audit_line must not win over CSI-shortened echo.
+        out2 = resolve_audit_commands(
+            [],
+            audit_line="<r1>dis ip interface brief",
+            stdout_tail=frag + "\n",
+            source="stdin",
+        )
+        self.assertEqual(out2, ["<r1>dis ip interface"])
 
     def test_early_stdin_plain_command(self) -> None:
         out = resolve_audit_commands(
