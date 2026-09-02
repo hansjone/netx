@@ -12,6 +12,7 @@ from netx_api.webcrt_channel import (
     looks_like_password_prompt,
     normalize_audit_line,
     extract_last_prompt_command,
+    finalize_audit_line,
 )
 from netx_api.webcrt_session_model import WebcrtSession
 
@@ -113,6 +114,12 @@ class ExtractPromptCommandTests(unittest.TestCase):
         )
 
 
+class FinalizeAuditLineTests(unittest.TestCase):
+    def test_applies_echoed_backspaces(self) -> None:
+        raw = "6150#disX\bplay version"
+        self.assertEqual(finalize_audit_line(raw), "6150#display version")
+
+
 class PasswordPromptTests(unittest.TestCase):
     def test_detects_password_prompt(self) -> None:
         self.assertTrue(looks_like_password_prompt("Password:"))
@@ -208,8 +215,8 @@ class SessionCommandAuditTests(unittest.TestCase):
         self.assertFalse(kwargs["redacted"])
 
     @patch("netx_api.webcrt_session_model._audit")
-    def test_stdout_prompt_line_wins_over_stdin_on_enter(self, mock_audit: MagicMock) -> None:
-        """Tab-completed command is in device stdout, not stdin keystrokes."""
+    def test_audit_line_wins_over_stdout_backspaces(self, mock_audit: MagicMock) -> None:
+        """Frontend xterm row at Enter is authoritative; PTY stdout has edit noise."""
         conn = MagicMock()
         conn.RETURN = "\n"
         conn.remote_conn = MagicMock(spec=["recv_ready", "recv", "exit_status_ready", "resize_pty"])
@@ -217,7 +224,7 @@ class SessionCommandAuditTests(unittest.TestCase):
         conn.write_channel = MagicMock()
 
         sess = WebcrtSession(
-            session_id="s-stdout",
+            session_id="s-xterm",
             ne_id="ne1",
             ne_name="lab",
             ne_ip="1.2.3.4",
@@ -230,15 +237,12 @@ class SessionCommandAuditTests(unittest.TestCase):
             conn=conn,
         )
         sess._note_stdout_for_audit(
-            "AL5458-ACC-6120HS(config-if-loopback127)#ip ad"
-            "\rAL5458-ACC-6120HS(config-if-loopback127)#ip address 1.1.1.11 32"
+            "AL5458-ACC-6120HS(config-if-loopback127)#ip address 11\b\b\bip ad\b\bip address 1.1.1.11 32"
         )
-        sess.write_stdin("\r", audit_line="AL5458-ACC-6120HS(config-if-loopback127)#ip ad")
+        final = "AL5458-ACC-6120HS(config-if-loopback127)#ip address 1.1.1.11 255.255.255.255"
+        sess.write_stdin("\r", audit_line=final)
         kwargs = mock_audit.call_args.kwargs
-        self.assertEqual(
-            kwargs["command"],
-            "AL5458-ACC-6120HS(config-if-loopback127)#ip address 1.1.1.11 32",
-        )
+        self.assertEqual(kwargs["command"], final)
 
     @patch("netx_api.webcrt_session_model._audit")
     def test_password_mode_redacts_command(self, mock_audit: MagicMock) -> None:

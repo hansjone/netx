@@ -778,7 +778,11 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
       e.preventDefault();
       e.stopPropagation();
       maybeFocus();
-      sendStdinImmediate(data);
+      if (e.key === "Enter") {
+        sendStdinWithAudit("\r", auditLineForEnter(term));
+        return;
+      }
+      sendStdinWithAudit(data);
     };
     window.addEventListener("keydown", onKeyDownCapture, true);
 

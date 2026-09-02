@@ -372,13 +372,14 @@ class WebcrtSession:
             if "\r" in text or "\n" in text:
                 from .webcrt_channel import extract_last_prompt_command, normalize_audit_line
 
-                cmd = extract_last_prompt_command(self._stdout_tail) or self._last_prompt_line
-                if not cmd and audit_line:
+                # Ground truth: xterm visible row at Enter (frontend). PTY stdout/stdin
+                # still carry intermediate backspaces / tab redraws — do not prefer those.
+                if audit_line and str(audit_line).strip():
                     cmd = normalize_audit_line(audit_line)
-                if cmd and str(cmd).strip():
-                    lines = [cmd]
                 else:
-                    lines = buf_lines
+                    raw = extract_last_prompt_command(self._stdout_tail) or self._last_prompt_line
+                    cmd = raw if raw else (buf_lines[-1] if buf_lines else None)
+                lines = [cmd] if cmd and str(cmd).strip() else []
                 self._last_prompt_line = ""
             else:
                 lines = []

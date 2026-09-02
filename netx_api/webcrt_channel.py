@@ -502,6 +502,21 @@ def normalize_audit_line(line: str) -> str:
     return s.replace("\r", "").rstrip()
 
 
+def finalize_audit_line(line: str) -> str:
+    """Apply echoed backspaces then normalize (PTY stdout fallback only)."""
+    s = _strip_ansi(str(line or ""))
+    out: list[str] = []
+    for ch in s:
+        if ch in ("\b", "\x7f"):
+            if out:
+                out.pop()
+            continue
+        if ord(ch) < 32 and ch != "\t":
+            continue
+        out.append(ch)
+    return normalize_audit_line("".join(out))
+
+
 def _strip_ansi(text: str) -> str:
     return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\].*?\x07|\x1b.", "", str(text or ""))
 
@@ -537,11 +552,11 @@ def extract_last_prompt_command(text: str) -> str | None:
     tail = s.rsplit("\r", 1)[-1]
     tail_line = tail.split("\n")[-1].rstrip()
     if _is_prompt_command_line(tail_line):
-        return tail_line[:512]
+        return finalize_audit_line(tail_line)[:512]
     for frag in reversed(re.split(r"[\r\n]+", s)):
         line = frag.strip()
         if line and _is_prompt_command_line(line):
-            return line[:512]
+            return finalize_audit_line(line)[:512]
     return None
 
 
