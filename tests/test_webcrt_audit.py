@@ -16,6 +16,8 @@ from netx_api.webcrt_channel import (
     is_auditable_command_line,
     _is_device_output_line,
     _is_prompt_only_line,
+    resolve_audit_commands,
+    pick_audit_command,
 )
 from netx_api.webcrt_session_model import WebcrtSession
 
@@ -141,6 +143,48 @@ class AuditableCommandLineTests(unittest.TestCase):
 
     def test_plain_stdin_without_prompt_not_auditable(self) -> None:
         self.assertFalse(is_auditable_command_line("display version"))
+        out = resolve_audit_commands(
+            ["display version"],
+            prompt_hint="6150#",
+            source="stdin",
+        )
+        self.assertEqual(out, ["6150#display version"])
+
+    def test_plain_stdin_records_actual_without_hint(self) -> None:
+        out = resolve_audit_commands(["display version"], source="stdin")
+        self.assertEqual(out, ["display version"])
+
+
+class ResolveAuditCommandsTests(unittest.TestCase):
+    def test_merged_flush_audits_all_buf_lines(self) -> None:
+        """Interleave flush: multiple Enter in one write_stdin must not drop middle commands."""
+        out = resolve_audit_commands(
+            ["show version", "show ll n b", "show intf"],
+            audit_lines=["AL5458#show intf"],
+            prompt_hint="AL5458#show version",
+            source="stdin",
+        )
+        self.assertEqual(len(out), 3)
+        self.assertIn("show version", out[0])
+        self.assertIn("show ll n b", out[1])
+        self.assertIn("show intf", out[2])
+
+    def test_hint_disagreement_records_actual_stdin(self) -> None:
+        cmd = pick_audit_command(
+            "how ll n b",
+            "AL5458#show ll n b",
+            prompt_hint="AL5458#",
+            source="stdin",
+        )
+        self.assertEqual(cmd, "how ll n b")
+
+    def test_early_stdin_plain_command(self) -> None:
+        out = resolve_audit_commands(
+            ["show version"],
+            source="early_stdin",
+            prompt_hint="AL5458#",
+        )
+        self.assertEqual(out, ["show version"])
 
 
 class PasswordPromptTests(unittest.TestCase):
@@ -338,6 +382,36 @@ class SessionCommandAuditTests(unittest.TestCase):
         sess._note_stdout_for_audit("AL5458-ACC-6120HS#configure terminal\r\n")
         sess.write_stdin("\r", audit_source="prompt_sync")
         mock_audit.assert_not_called()
+
+    @patch("netx_api.webcrt_session_model._audit")
+    def test_merged_write_stdin_audits_every_command(self, mock_audit: MagicMock) -> None:
+        conn = MagicMock()
+        conn.RETURN = "\n"
+        conn.remote_conn = MagicMock(spec=["recv_ready", "recv", "exit_status_ready", "resize_pty"])
+        del conn.remote_conn.send
+        conn.write_channel = MagicMock()
+
+        sess = WebcrtSession(
+            session_id="s-merge",
+            ne_id="ne1",
+            ne_name="lab",
+            ne_ip="1.2.3.4",
+            protocol="ssh",
+            cols=80,
+            rows=24,
+            cli_keymap=False,
+            conn=conn,
+        )
+        sess._last_prompt_line = "AL5458#"
+        sess.write_stdin(
+            "show version\rshow ll n b\rshow intf\r",
+            audit_lines=["AL5458#show intf"],
+        )
+        self.assertEqual(mock_audit.call_count, 3)
+        recorded = [c.kwargs["command"] for c in mock_audit.call_args_list]
+        self.assertTrue(any("show version" in x for x in recorded))
+        self.assertTrue(any("show ll n b" in x for x in recorded))
+        self.assertTrue(any("show intf" in x for x in recorded))
 
     @patch("netx_api.webcrt_session_model._audit")
     def test_device_error_audit_line_rejected(self, mock_audit: MagicMock) -> None:

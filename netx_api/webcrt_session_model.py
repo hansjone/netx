@@ -326,13 +326,21 @@ class WebcrtSession:
                     return "stale"
                 return chunk  # bytes | None
 
-    def write_stdin(self, data: str, *, audit_source: str = "stdin", audit_line: str | None = None) -> None:
+    def write_stdin(
+        self,
+        data: str,
+        *,
+        audit_source: str = "stdin",
+        audit_line: str | None = None,
+        audit_lines: list[str] | None = None,
+    ) -> None:
         if self.closed or self.conn is None:
             raise RuntimeError("session_closed")
         text = str(data or "")
         if not text:
             return
         audit_override = str(audit_line).strip() if audit_line is not None else None
+        audit_list = [str(x).strip() for x in (audit_lines or []) if str(x).strip()] or None
         if self.cli_keymap:
             text = map_network_cli_keys(
                 text,
@@ -343,7 +351,12 @@ class WebcrtSession:
             text = map_network_cli_enter(text, self.conn)
         if not text:
             return
-        self._note_stdin_for_audit(text, source=audit_source, audit_line=audit_override)
+        self._note_stdin_for_audit(
+            text,
+            source=audit_source,
+            audit_line=audit_override,
+            audit_lines=audit_list,
+        )
         with self._write_lock:
             # Prefer raw channel I/O for interactive typing (char echo / backspace).
             channel = getattr(self.conn, "remote_conn", None)
@@ -377,34 +390,28 @@ class WebcrtSession:
         *,
         source: str = "stdin",
         audit_line: str | None = None,
+        audit_lines: list[str] | None = None,
     ) -> None:
         """Extract completed command lines from stdin and emit webcrt.command audits."""
         with self._cmd_buf_lock:
             self._cmd_buf, buf_lines = feed_command_line_buffer(self._cmd_buf, text)
             redacted = bool(self._password_mode)
-            if redacted and (buf_lines or audit_line):
+            if redacted and (buf_lines or audit_line or audit_lines):
                 self._password_mode = False
             if "\r" in text or "\n" in text:
-                from .webcrt_channel import is_auditable_command_line, normalize_audit_line
+                from .webcrt_channel import resolve_audit_commands
 
-                src = str(source or "stdin")
-                cmd: str | None = None
-                if redacted and (audit_line or buf_lines):
-                    lines = ["***"]
-                elif src == "prompt_sync":
-                    lines = []
-                elif audit_line and str(audit_line).strip():
-                    candidate = normalize_audit_line(audit_line)
-                    if is_auditable_command_line(candidate):
-                        cmd = candidate
-                    lines = [cmd] if cmd else []
-                elif src == "post_login":
-                    if buf_lines and str(buf_lines[-1]).strip():
-                        cmd = str(buf_lines[-1]).strip()
-                    lines = [cmd] if cmd else []
+                if redacted and (buf_lines or audit_line or audit_lines):
+                    lines = ["***"] * max(1, len(buf_lines))
                 else:
-                    # Interactive WebCRT: only trust frontend audit_line at Enter.
-                    lines = []
+                    lines = resolve_audit_commands(
+                        buf_lines,
+                        audit_line=audit_line,
+                        audit_lines=audit_lines,
+                        prompt_hint=self._last_prompt_line,
+                        stdout_tail=self._stdout_tail,
+                        source=str(source or "stdin"),
+                    )
                 self._last_prompt_line = ""
             else:
                 lines = []

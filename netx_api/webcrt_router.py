@@ -464,7 +464,8 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
         loop = asyncio.get_running_loop()
         budget = max(30, int(settings.webcrt_connect_timeout_sec or 90)) + 15
         deadline = time.time() + budget
-        early_stdin: list[str] = []
+        early_stdin_parts: list[str] = []
+        early_audit_lines: list[str] = []
 
         async def _flush_connect_echo(cur_sess: Any) -> None:
             try:
@@ -484,7 +485,7 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
 
         async def _drain_client_during_connect() -> bool:
             """Handle ping/stdin/resize while connect runs. False = client gone."""
-            nonlocal early_stdin
+            nonlocal early_stdin_parts, early_audit_lines
             while True:
                 try:
                     msg_raw = await asyncio.wait_for(websocket.receive(), timeout=0.01)
@@ -499,7 +500,7 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
                     # Binary frames during connect: treat as stdin if decodeable.
                     if "bytes" in msg_raw and msg_raw["bytes"] is not None:
                         try:
-                            early_stdin.append(
+                            early_stdin_parts.append(
                                 _decode_bytes(bytes(msg_raw["bytes"]), sess.encoding)
                             )
                         except Exception:
@@ -508,7 +509,7 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
                 try:
                     msg = json.loads(raw)
                 except json.JSONDecodeError:
-                    early_stdin.append(str(raw))
+                    early_stdin_parts.append(str(raw))
                     continue
                 mtype = str(msg.get("type") or "").strip().lower()
                 if mtype == "ping":
@@ -519,7 +520,10 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
                 elif mtype == "stdin":
                     data = msg.get("data")
                     if data is not None:
-                        early_stdin.append(str(data))
+                        early_stdin_parts.append(str(data))
+                        audit_raw = msg.get("audit_line")
+                        if audit_raw is not None and str(audit_raw).strip():
+                            early_audit_lines.append(str(audit_raw).strip()[:512])
                 elif mtype == "resize":
                     # Ignore until ready (PTY size already set from create).
                     pass
@@ -599,12 +603,15 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
                 return
 
         # Keystrokes typed while login was already on screen (before ready).
-        if early_stdin and sess is not None and not sess.closed and sess.conn is not None:
+        if early_stdin_parts and sess is not None and not sess.closed and sess.conn is not None:
             try:
                 await loop.run_in_executor(
                     webcrt_io_executor(),
-                    sess.write_stdin,
-                    "".join(early_stdin),
+                    lambda: sess.write_stdin(
+                        "".join(early_stdin_parts),
+                        audit_source="early_stdin",
+                        audit_lines=early_audit_lines or None,
+                    ),
                 )
             except Exception:
                 _log.debug(
@@ -693,21 +700,25 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
 
     stop = asyncio.Event()
     stdin_buf: list[str] = []
-    stdin_audit_line: str | None = None
+    stdin_audit_lines: list[str] = []
     stdin_flush_task: asyncio.Task[None] | None = None
 
     async def flush_stdin() -> None:
-        nonlocal stdin_buf, stdin_audit_line
+        nonlocal stdin_buf, stdin_audit_lines
         if not stdin_buf:
             return
         data = "".join(stdin_buf)
-        audit_line = stdin_audit_line
+        audit_lines = list(stdin_audit_lines)
         stdin_buf = []
-        stdin_audit_line = None
+        stdin_audit_lines = []
         try:
             await asyncio.get_running_loop().run_in_executor(
                 webcrt_io_executor(),
-                lambda: sess.write_stdin(data, audit_line=audit_line),
+                lambda: sess.write_stdin(
+                    data,
+                    audit_lines=audit_lines or None,
+                    audit_line=audit_lines[-1] if audit_lines else None,
+                ),
             )
         except Exception as exc:
             await websocket.send_json(
@@ -836,7 +847,7 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
                     continue
                 audit_raw = msg.get("audit_line")
                 if audit_raw is not None and str(audit_raw).strip():
-                    stdin_audit_line = str(audit_raw).strip()[:512]
+                    stdin_audit_lines.append(str(audit_raw).strip()[:512])
                 stdin_buf.append(str(data))
                 # Coalesce high-frequency keystrokes briefly.
                 if len(stdin_buf) >= 8:

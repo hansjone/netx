@@ -623,6 +623,139 @@ def extract_last_prompt_command(text: str) -> str | None:
     return None
 
 
+def _command_tail(line: str) -> str:
+    s = normalize_audit_line(line)
+    for pat in (
+        r"^[\w.-]+(?:\([^)]+\))*[#>]\s*(.*)$",
+        r"^<[^>]+>\s*(.*)$",
+        r"^\[[^\]]+\]\s*(.*)$",
+    ):
+        m = re.match(pat, s, flags=re.I)
+        if m:
+            return m.group(1).strip()
+    return s.strip()
+
+
+def _attach_prompt_prefix(typed: str, hint: str) -> str | None:
+    cmd = str(typed or "").strip()
+    if not cmd:
+        return None
+    h = normalize_audit_line(hint)
+    if not _has_cli_prompt_prefix(h):
+        return None
+    m = re.match(r"^([\w.-]+(?:\([^)]+\))*[#>])\s*", h, flags=re.I)
+    if m:
+        return f"{m.group(1)}{cmd}"
+    m = re.match(r"^(<[^>]+>)\s*", h)
+    if m:
+        return f"{m.group(1)}{cmd}"
+    m = re.match(r"^(\[[^\]]+\])\s*", h)
+    if m:
+        return f"{m.group(1)}{cmd}"
+    return None
+
+
+def pick_audit_command(
+    stdin_line: str,
+    audit_hint: str | None,
+    *,
+    prompt_hint: str = "",
+    stdout_tail: str = "",
+    source: str = "stdin",
+) -> str | None:
+    """Pick auditable text for one completed stdin line (actual send + optional xterm hint)."""
+    typed = normalize_audit_line(stdin_line).strip()
+    hint = normalize_audit_line(audit_hint) if audit_hint else ""
+    src = str(source or "stdin")
+
+    if typed and _is_device_output_line(typed):
+        return None
+
+    if src == "post_login" and typed:
+        return typed
+
+    if src == "early_stdin" and typed and not _is_prompt_only_line(typed):
+        return typed
+
+    if hint and is_auditable_command_line(hint):
+        if not typed:
+            return hint
+        hint_cmd = _command_tail(hint) or hint
+        if typed == hint_cmd or hint_cmd.startswith(typed):
+            return hint
+        # Material disagreement — record bytes actually sent, not xterm hint.
+        return typed if typed else hint
+
+    if typed and is_auditable_command_line(typed):
+        return typed
+
+    for prefix_src in (hint, prompt_hint):
+        enriched = _attach_prompt_prefix(typed, prefix_src)
+        if enriched and is_auditable_command_line(enriched):
+            return enriched
+
+    if stdout_tail:
+        ext = extract_last_prompt_command(stdout_tail)
+        if ext and is_auditable_command_line(ext):
+            ext_cmd = _command_tail(ext) or ext
+            if typed and (typed in ext_cmd or ext_cmd.endswith(typed)):
+                return ext
+
+    if src == "stdin" and typed and not _is_prompt_only_line(typed):
+        return typed
+
+    return None
+
+
+def resolve_audit_commands(
+    buf_lines: list[str],
+    *,
+    audit_line: str | None = None,
+    audit_lines: list[str] | None = None,
+    prompt_hint: str = "",
+    stdout_tail: str = "",
+    source: str = "stdin",
+) -> list[str]:
+    """Map all completed stdin lines in one flush to auditable command strings."""
+    src = str(source or "stdin")
+    if src == "prompt_sync":
+        return []
+
+    if not buf_lines:
+        if audit_line and is_auditable_command_line(normalize_audit_line(audit_line)):
+            return [normalize_audit_line(audit_line)]
+        return []
+
+    hints: list[str | None] = [None] * len(buf_lines)
+    merged: list[str] = [str(x).strip() for x in (audit_lines or []) if str(x).strip()]
+    if audit_line and str(audit_line).strip():
+        if not merged:
+            merged = [str(audit_line).strip()]
+        elif merged[-1] != str(audit_line).strip():
+            merged.append(str(audit_line).strip())
+
+    if merged:
+        if len(merged) == len(buf_lines):
+            hints = list(merged)
+        else:
+            start = max(0, len(buf_lines) - len(merged))
+            for j, h in enumerate(merged):
+                hints[start + j] = h
+
+    out: list[str] = []
+    for i, typed in enumerate(buf_lines):
+        cmd = pick_audit_command(
+            typed,
+            hints[i],
+            prompt_hint=prompt_hint,
+            stdout_tail=stdout_tail if i == len(buf_lines) - 1 else "",
+            source=src,
+        )
+        if cmd:
+            out.append(cmd[:512])
+    return out
+
+
 def feed_command_line_buffer(buf: str, data: str, *, max_line: int = 512) -> tuple[str, list[str]]:
     """Accumulate stdin into completed command lines (Enter / CR / LF).
 
