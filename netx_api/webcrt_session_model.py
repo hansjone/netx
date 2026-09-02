@@ -96,9 +96,24 @@ class WebcrtSession:
     _password_mode: bool = field(default=False, repr=False)
     _stdout_tail: str = field(default="", repr=False)
     _last_prompt_line: str = field(default="", repr=False)
+    _last_audited_command: str = field(default="", repr=False)
+    _last_audited_at: float = field(default=0.0, repr=False)
 
     def touch(self) -> None:
         self.last_activity = time.time()
+
+    def _should_emit_command_audit(self, cmd: str, *, dedup_sec: float = 0.45) -> bool:
+        """Drop duplicate audits from double-fired Enter (same command within dedup_sec)."""
+        norm = str(cmd or "").strip()
+        if not norm:
+            return False
+        now = time.time()
+        with self._cmd_buf_lock:
+            if norm == self._last_audited_command and (now - self._last_audited_at) < dedup_sec:
+                return False
+            self._last_audited_command = norm
+            self._last_audited_at = now
+        return True
 
     def push_connect_echo(self, text: str) -> None:
         """Queue login transcript for the WS wait-loop (thread-safe)."""
@@ -397,6 +412,8 @@ class WebcrtSession:
                 lines = []
         for cmd in lines:
             if not str(cmd).strip():
+                continue
+            if not self._should_emit_command_audit(cmd):
                 continue
             try:
                 _audit(

@@ -283,6 +283,30 @@ class SessionCommandAuditTests(unittest.TestCase):
         mock_audit.assert_not_called()
 
     @patch("netx_api.webcrt_session_model._audit")
+    def test_duplicate_enter_same_command_deduped(self, mock_audit: MagicMock) -> None:
+        conn = MagicMock()
+        conn.RETURN = "\n"
+        conn.remote_conn = MagicMock(spec=["recv_ready", "recv", "exit_status_ready", "resize_pty"])
+        del conn.remote_conn.send
+        conn.write_channel = MagicMock()
+
+        sess = WebcrtSession(
+            session_id="s-dedup",
+            ne_id="ne1",
+            ne_name="lab",
+            ne_ip="1.2.3.4",
+            protocol="ssh",
+            cols=80,
+            rows=24,
+            cli_keymap=False,
+            conn=conn,
+        )
+        line = "AL5458-ACC-6120HS(config)#intt"
+        sess.write_stdin("\r", audit_line=line)
+        sess.write_stdin("\r", audit_line=line)
+        self.assertEqual(mock_audit.call_count, 1)
+
+    @patch("netx_api.webcrt_session_model._audit")
     def test_password_mode_redacts_command(self, mock_audit: MagicMock) -> None:
         conn = MagicMock()
         conn.RETURN = "\n"

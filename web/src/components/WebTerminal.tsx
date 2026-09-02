@@ -269,6 +269,8 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
   const pasteBridgeOpenRef = useRef(false);
   pasteBridgeOpenRef.current = pasteBridgeOpen;
   const findInputRef = useRef<HTMLInputElement | null>(null);
+  /** Suppress duplicate Enter frames (keydown + xterm onData both fire). */
+  const enterHandledAtRef = useRef(0);
 
   useEffect(() => {
     onStatusRef.current = onStatus;
@@ -336,6 +338,16 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
       if (auditLine) payload.audit_line = auditLine.slice(0, 512);
     }
     sendJson(payload);
+  };
+
+  const sendEnterStdin = (term: Terminal, explicitAuditLine?: string) => {
+    enterHandledAtRef.current = performance.now();
+    sendStdinWithAudit("\r", explicitAuditLine ?? auditLineForEnter(term));
+  };
+
+  const isDuplicateEnterFrame = (data: string): boolean => {
+    if (!/^[\r\n]+$/.test(data)) return false;
+    return performance.now() - enterHandledAtRef.current < 120;
   };
 
   const sendStdinImmediate = (data: string) => {
@@ -705,11 +717,15 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
 
     const dataDisposable = term.onData((data) => {
       const normalized = data.replace(/\x7f/g, "\x08");
+      if (isDuplicateEnterFrame(normalized)) return;
       // Capture visible line before Enter moves the cursor to the next row.
       const auditLine =
         normalized.includes("\r") || normalized.includes("\n")
           ? auditLineForEnter(term)
           : undefined;
+      if (normalized.includes("\r") || normalized.includes("\n")) {
+        enterHandledAtRef.current = performance.now();
+      }
       // Large pastes from xterm arrive as one onData blob.
       if (normalized.length > 32 || normalized.includes("\r") || normalized.includes("\n")) {
         sendStdinThrottled(normalized, auditLine);
@@ -783,7 +799,7 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
       e.stopPropagation();
       maybeFocus();
       if (e.key === "Enter") {
-        sendStdinWithAudit("\r", auditLineForEnter(term));
+        sendEnterStdin(term, auditLineForEnter(term));
         return;
       }
       sendStdinWithAudit(data);
