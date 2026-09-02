@@ -502,6 +502,49 @@ def normalize_audit_line(line: str) -> str:
     return s.replace("\r", "").rstrip()
 
 
+def _strip_ansi(text: str) -> str:
+    return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\].*?\x07|\x1b.", "", str(text or ""))
+
+
+def _is_prompt_command_line(line: str) -> bool:
+    """True when line looks like ``hostname#command`` (non-empty command tail)."""
+    s = str(line or "").strip()
+    if not s:
+        return False
+    return bool(
+        re.match(
+            r"^(?:"
+            r"[\w.-]+(?:\([^)]+\))*[#>]\s*\S"
+            r"|<[^>]+>\s*\S"
+            r"|\[[^\]]+\]\s*\S"
+            r")",
+            s,
+            flags=re.I,
+        )
+    )
+
+
+def extract_last_prompt_command(text: str) -> str | None:
+    """Last prompt+command line in PTY transcript (tab-complete redraw aware).
+
+  Network devices often refresh the current input with ``\\r`` after tab; the
+  final segment after the last carriage return is the ground truth for audit.
+    """
+    s = _strip_ansi(text)
+    if not s.strip():
+        return None
+    # Prefer the tail after the last in-line refresh (tab completion / prompt rewrite).
+    tail = s.rsplit("\r", 1)[-1]
+    tail_line = tail.split("\n")[-1].rstrip()
+    if _is_prompt_command_line(tail_line):
+        return tail_line[:512]
+    for frag in reversed(re.split(r"[\r\n]+", s)):
+        line = frag.strip()
+        if line and _is_prompt_command_line(line):
+            return line[:512]
+    return None
+
+
 def feed_command_line_buffer(buf: str, data: str, *, max_line: int = 512) -> tuple[str, list[str]]:
     """Accumulate stdin into completed command lines (Enter / CR / LF).
 

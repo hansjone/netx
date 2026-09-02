@@ -95,6 +95,7 @@ class WebcrtSession:
     _cmd_buf_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _password_mode: bool = field(default=False, repr=False)
     _stdout_tail: str = field(default="", repr=False)
+    _last_prompt_line: str = field(default="", repr=False)
 
     def touch(self) -> None:
         self.last_activity = time.time()
@@ -368,13 +369,19 @@ class WebcrtSession:
             redacted = bool(self._password_mode)
             if redacted and (buf_lines or audit_line):
                 self._password_mode = False
-            if audit_line is not None and ("\r" in text or "\n" in text):
-                from .webcrt_channel import normalize_audit_line
+            if "\r" in text or "\n" in text:
+                from .webcrt_channel import extract_last_prompt_command, normalize_audit_line
 
-                cmd = normalize_audit_line(audit_line)
-                lines = [cmd] if cmd.strip() else []
+                cmd = extract_last_prompt_command(self._stdout_tail) or self._last_prompt_line
+                if not cmd and audit_line:
+                    cmd = normalize_audit_line(audit_line)
+                if cmd and str(cmd).strip():
+                    lines = [cmd]
+                else:
+                    lines = buf_lines
+                self._last_prompt_line = ""
             else:
-                lines = buf_lines
+                lines = []
         for cmd in lines:
             if not str(cmd).strip():
                 continue
@@ -401,7 +408,12 @@ class WebcrtSession:
         if not chunk:
             return
         with self._cmd_buf_lock:
-            self._stdout_tail = (self._stdout_tail + chunk)[-4000:]
+            self._stdout_tail = (self._stdout_tail + chunk)[-8000:]
+            from .webcrt_channel import extract_last_prompt_command
+
+            line = extract_last_prompt_command(self._stdout_tail)
+            if line:
+                self._last_prompt_line = line
             if looks_like_password_prompt(self._stdout_tail):
                 self._password_mode = True
 

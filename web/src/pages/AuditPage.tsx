@@ -87,8 +87,8 @@ export function auditSummary(
         : neIds.length;
     return t("audit.summary.neExecBatch", {
       n: String(Number.isFinite(targetCount) ? targetCount : 0),
-      ok: String(d.ok_count ?? 0),
-      fail: String(d.fail_count ?? 0),
+      ok: String(d.ok_count != null ? Number(d.ok_count) : 0),
+      fail: String(d.fail_count != null ? Number(d.fail_count) : 0),
     });
   }
   if (action.startsWith("auth.")) {

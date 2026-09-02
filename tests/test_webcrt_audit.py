@@ -11,6 +11,7 @@ from netx_api.webcrt_channel import (
     feed_command_line_buffer,
     looks_like_password_prompt,
     normalize_audit_line,
+    extract_last_prompt_command,
 )
 from netx_api.webcrt_session_model import WebcrtSession
 
@@ -81,6 +82,34 @@ class NormalizeAuditLineTests(unittest.TestCase):
         self.assertEqual(
             normalize_audit_line("\x1b[31m6150#show run\x1b[0m"),
             "6150#show run",
+        )
+
+
+class ExtractPromptCommandTests(unittest.TestCase):
+    def test_tab_redraw_after_carriage_return(self) -> None:
+        """ZTE tab completion redraws the line with \\r — audit must use that tail."""
+        transcript = (
+            "AL5458-ACC-6120HS(config-if-loopback127)#ip ad"
+            "\rAL5458-ACC-6120HS(config-if-loopback127)#ip address "
+            "1.1.1.11 32"
+        )
+        self.assertEqual(
+            extract_last_prompt_command(transcript),
+            "AL5458-ACC-6120HS(config-if-loopback127)#ip address 1.1.1.11 32",
+        )
+
+    def test_config_mode_interface(self) -> None:
+        transcript = "AL5458-ACC-6120HS(config)#interface loopback127"
+        self.assertEqual(
+            extract_last_prompt_command(transcript),
+            "AL5458-ACC-6120HS(config)#interface loopback127",
+        )
+
+    def test_show_partial_command(self) -> None:
+        transcript = "AL5458-ACC-6120HS(config-if-loopback127)#show th"
+        self.assertEqual(
+            extract_last_prompt_command(transcript),
+            "AL5458-ACC-6120HS(config-if-loopback127)#show th",
         )
 
 
@@ -179,8 +208,8 @@ class SessionCommandAuditTests(unittest.TestCase):
         self.assertFalse(kwargs["redacted"])
 
     @patch("netx_api.webcrt_session_model._audit")
-    def test_audit_line_overrides_stdin_buffer(self, mock_audit: MagicMock) -> None:
-        """Tab-completed command: xterm-visible line wins over stdin keystrokes."""
+    def test_stdout_prompt_line_wins_over_stdin_on_enter(self, mock_audit: MagicMock) -> None:
+        """Tab-completed command is in device stdout, not stdin keystrokes."""
         conn = MagicMock()
         conn.RETURN = "\n"
         conn.remote_conn = MagicMock(spec=["recv_ready", "recv", "exit_status_ready", "resize_pty"])
@@ -188,7 +217,7 @@ class SessionCommandAuditTests(unittest.TestCase):
         conn.write_channel = MagicMock()
 
         sess = WebcrtSession(
-            session_id="s-tab",
+            session_id="s-stdout",
             ne_id="ne1",
             ne_name="lab",
             ne_ip="1.2.3.4",
@@ -200,9 +229,16 @@ class SessionCommandAuditTests(unittest.TestCase):
             owner_username="bob",
             conn=conn,
         )
-        sess.write_stdin("dis\t\r", audit_line="AL5458-ACC-6120HS#display version")
+        sess._note_stdout_for_audit(
+            "AL5458-ACC-6120HS(config-if-loopback127)#ip ad"
+            "\rAL5458-ACC-6120HS(config-if-loopback127)#ip address 1.1.1.11 32"
+        )
+        sess.write_stdin("\r", audit_line="AL5458-ACC-6120HS(config-if-loopback127)#ip ad")
         kwargs = mock_audit.call_args.kwargs
-        self.assertEqual(kwargs["command"], "AL5458-ACC-6120HS#display version")
+        self.assertEqual(
+            kwargs["command"],
+            "AL5458-ACC-6120HS(config-if-loopback127)#ip address 1.1.1.11 32",
+        )
 
     @patch("netx_api.webcrt_session_model._audit")
     def test_password_mode_redacts_command(self, mock_audit: MagicMock) -> None:

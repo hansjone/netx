@@ -97,6 +97,12 @@ export function normalizeAuditLine(line: string): string {
 
 function currentCommandLine(term: Terminal): string {
   const buf = term.buffer.active;
+  for (let y = buf.cursorY; y >= Math.max(0, buf.cursorY - 3); y -= 1) {
+    const line = buf.getLine(y);
+    if (!line) continue;
+    const text = normalizeAuditLine(line.translateToString(true));
+    if (/[#>\]]\s*\S/.test(text) || /#[^\s]/.test(text)) return text;
+  }
   const line = buf.getLine(buf.cursorY);
   if (!line) return "";
   return normalizeAuditLine(line.translateToString(true));
