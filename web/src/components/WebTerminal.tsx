@@ -123,16 +123,6 @@ function serializeTerminal(term: Terminal): string {
   return lines.join("\n").replace(/\s+$/g, "");
 }
 
-  const buf = term.buffer.active;
-  const lines: string[] = [];
-  for (let i = 0; i < buf.length; i += 1) {
-    const line = buf.getLine(i);
-    if (!line) continue;
-    lines.push(line.translateToString(true));
-  }
-  return lines.join("\n").replace(/\s+$/g, "");
-}
-
 /** Line-wise search — avoids serializing the full scrollback on every Find. */
 function findBufferLine(
   term: Terminal,

@@ -80,8 +80,13 @@ export function auditSummary(
     });
   }
   if (action === "ne.exec_batch") {
+    const neIds = Array.isArray(d.ne_ids) ? (d.ne_ids as unknown[]) : [];
+    const targetCount =
+      d.target_count != null && d.target_count !== ""
+        ? Number(d.target_count)
+        : neIds.length;
     return t("audit.summary.neExecBatch", {
-      n: String(d.target_count ?? (((d.ne_ids as unknown[]) || []).length || 0)),
+      n: String(Number.isFinite(targetCount) ? targetCount : 0),
       ok: String(d.ok_count ?? 0),
       fail: String(d.fail_count ?? 0),
     });
