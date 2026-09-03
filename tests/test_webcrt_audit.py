@@ -286,6 +286,111 @@ class ResolveAuditCommandsTests(unittest.TestCase):
         )
         self.assertEqual(cmd, "[~r1]display ip interface brief")
 
+    def test_zte_history_insert_partial_hint_prefers_echo(self) -> None:
+        """ZTE redraws via ESC[K + backspace (no CSI cursor moves).
+
+        Up-arrow recalls ``show interface brief``, the operator inserts ``ip`` so
+        the device redraws ``show ip interface brief``. The xterm visible row can
+        lag a partial ``show ip`` snapshot at Enter — the full device echo must win.
+        """
+        from netx_api.webcrt_channel import _stdout_has_inplace_edit
+
+        prompt = "AL5458-ACC-6120HS#"
+        # ZTE recall + ESC[K reprint of the fully-edited line.
+        stdout = (
+            "\r\r\n" + prompt + "\x1b[Kshow interface brief"
+            + "\x08\x08\x08\x1b[Kshow interface brief"
+            + "\r" + prompt + "\x1b[Kshow ip interface brief"
+        )
+        # ZTE redraw carries no [DCP@] CSI — without the ESC[K path this is False.
+        self.assertTrue(_stdout_has_inplace_edit(stdout))
+        # Lagging partial xterm hint; device echo is the full line.
+        cmd = pick_audit_command(
+            "ip",
+            prompt + "show ip",
+            prompt_hint=prompt + "show interface brief",
+            stdout_tail=stdout,
+            source="stdin",
+        )
+        self.assertEqual(cmd, prompt + "show ip interface brief")
+        # Same even when the frontend managed to send the full hint.
+        cmd2 = pick_audit_command(
+            "ip",
+            prompt + "show ip interface brief",
+            prompt_hint=prompt + "show interface brief",
+            stdout_tail=stdout,
+            source="stdin",
+        )
+        self.assertEqual(cmd2, prompt + "show ip interface brief")
+        # Resolve path (Enter flush) must also pick the full line.
+        out = resolve_audit_commands(
+            ["ip"],
+            audit_line=prompt + "show ip",
+            prompt_hint=prompt + "show interface brief",
+            stdout_tail=stdout,
+            source="stdin",
+        )
+        self.assertEqual(out, [prompt + "show ip interface brief"])
+
+    def test_zte_real_backspace_redraw_reconstructs_full_command(self) -> None:
+        """Real ZTE device redraws via backspace runs (not CSI cursor moves).
+
+        Up-arrow recalls ``show interface brief``, left-arrows move the cursor
+        after ``show``, then ``ip`` is inserted.  The device redraws using
+        long ``\\x08`` backspace sequences + ``ESC[K`` reprints — it never
+        echoes the full ``show ip interface brief`` as one contiguous string.
+
+        ``render_pty_line`` must treat ``\\x08`` as non-destructive cursor-left
+        (standard terminal behaviour) so the recalled text survives the redraw
+        and the full edited line is reconstructed.
+        """
+        import os
+
+        from netx_api.webcrt_channel import (
+            _live_input_line,
+            _stdout_has_inplace_edit,
+            extract_last_prompt_command,
+            render_pty_line,
+        )
+
+        fixture = os.path.join(os.path.dirname(__file__), "fixtures",
+                               "zte_history_edit_stdout.txt")
+        with open(fixture, encoding="utf-8") as f:
+            stdout = f.read()
+
+        prompt = "AL5458-ACC-6120HS#"
+        expected = prompt + "show ip interface brief"
+
+        # render_pty_line must reconstruct the full edited command.
+        self.assertEqual(render_pty_line(stdout.split("\n")[-1]), expected)
+        # extract_last_prompt_command must find the full line.
+        self.assertEqual(extract_last_prompt_command(stdout), expected)
+        # Live input line must show the full edited command.
+        self.assertEqual(_live_input_line(stdout), expected)
+        # In-place edit detected (ESC[K redraw).
+        self.assertTrue(_stdout_has_inplace_edit(stdout))
+
+        # Even with a lagging partial xterm hint ("show ip"), the full device
+        # echo must win.
+        cmd = pick_audit_command(
+            "ip",
+            prompt + "show ip",
+            prompt_hint=prompt + "show interface brief",
+            stdout_tail=stdout,
+            source="stdin",
+        )
+        self.assertEqual(cmd, expected)
+
+        # Resolve path (Enter flush) must also pick the full line.
+        out = resolve_audit_commands(
+            ["ip"],
+            audit_line=prompt + "show ip",
+            prompt_hint=prompt + "show interface brief",
+            stdout_tail=stdout,
+            source="stdin",
+        )
+        self.assertEqual(out, [expected])
+
     def test_history_midline_delete_prefers_device_echo(self) -> None:
         """Up-arrow then delete middle ``ip`` — must not keep stale longer audit_line."""
         frag = (

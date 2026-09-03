@@ -670,6 +670,11 @@ def _stdout_has_inplace_edit(text: str) -> bool:
     Only inspects the last fragment (live input line). Older history-edit CSI still
     sitting in ``stdout_tail`` must not make bare Enter look like an in-place edit.
     Excludes the common ``---- More ----`` wipe (``ESC[16D``).
+
+    Huawei rewrites the input row with CSI cursor moves (``ESC[<n>D/C/P/@``). ZTE
+    instead erases-to-EOL (``ESC[K``) and reprints, so the ``[DCP@]`` scan alone
+    misses ZTE history recalls — also treat a live prompt+command fragment that
+    carries ``ESC[K`` as an in-place redraw.
     """
     s = str(text or "")[-4000:]
     if not s:
@@ -694,6 +699,11 @@ def _stdout_has_inplace_edit(text: str) -> bool:
             return True
         if cmd == "D" and n != 16:
             return True
+    # ZTE redraws the live input row with ESC[K (erase-to-EOL) + reprint / backspace
+    # rather than CSI cursor moves. A prompt+command fragment carrying ESC[K is an
+    # in-place edit (a trailing prompt cleanup alone renders as prompt-only above).
+    if "\x1b[K" in frag and _command_tail(rendered).strip():
+        return True
     return False
 
 
@@ -868,7 +878,18 @@ def render_pty_line(text: str) -> str:
             cursor = 0
             i += 1
             continue
-        if ch in ("\b", "\x7f"):
+        if ch == "\b":
+            # Backspace (0x08) in PTY output is cursor-left WITHOUT erasing —
+            # ZTE line redraws move the cursor via long backspace runs then
+            # overwrite/ESC[K to repaint.  A destructive delete here mangles
+            # the recalled command text, so render_pty_line ends up with a
+            # fragment ("p") instead of the full "show ip interface brief".
+            if cursor > 0:
+                cursor -= 1
+            i += 1
+            continue
+        if ch == "\x7f":
+            # DEL (0x7f) deletes the cell to the left of the cursor.
             if cursor > 0:
                 cursor -= 1
                 if cursor < len(cells):
@@ -1065,6 +1086,15 @@ def pick_audit_command(
             if len(et) < len(bt):
                 return echo_n
             if len(et) == len(bt) and et != bt:
+                return echo_n
+            # Echo longer with the xterm hint as a token-prefix of the fully
+            # redrawn device line: the xterm visible row lagged a partial prefix
+            # at Enter (ZTE reprints via ESC[K, so the snapshot can still read
+            # ``show ip`` while the device already shows ``show ip interface
+            # brief``). Trust the complete device echo.
+            if len(et) > len(bt) and all(
+                et[i].lower() == bt[i].lower() for i in range(len(bt))
+            ):
                 return echo_n
             return base_n
         return base_n
