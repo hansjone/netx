@@ -97,6 +97,14 @@ def _collect_on_device(
         except Exception:
             _log.debug("collection paging disable failed", exc_info=True)
         prompt = str(conn.find_prompt() or "")
+        # find_prompt / paging-off often leave an extra prompt in the channel;
+        # drain before the first show or Netmiko returns empty (IOSv).
+        try:
+            from .ne_netmiko import drain_read_channel
+
+            drain_read_channel(conn)
+        except Exception:
+            _log.debug("collection channel drain failed", exc_info=True)
         for command in commands:
             if conn_holder is not None and conn_holder.get("timed_out"):
                 raise TimeoutError("collection_aborted")

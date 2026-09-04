@@ -131,25 +131,38 @@ function Test-NetxApiListening {
     return $false
 }
 
+function Reset-LogFile {
+    param([string]$Path)
+    try {
+        Set-Content -Path $Path -Value "" -Encoding utf8 -ErrorAction Stop
+        return $Path
+    } catch {
+        $alt = "$Path.$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+        Write-Host "[WARN] cannot truncate $Path ($($_.Exception.Message))" -ForegroundColor Yellow
+        Write-Host "       using $alt (old worker may still hold the previous file; run stop_netx.ps1 elevated)" -ForegroundColor Yellow
+        return $alt
+    }
+}
+
 function Start-NetxWorker {
     if ($InlineSchedulers) {
         return
     }
-    Set-Content -Path $workerLogFile -Value "" -Encoding utf8
-    Set-Content -Path $workerErrFile -Value "" -Encoding utf8
+    $outLog = Reset-LogFile -Path $workerLogFile
+    $errLog = Reset-LogFile -Path $workerErrFile
     Write-Host "==> Starting netx worker (config_sync / lldp / port_traffic)"
     $workerProc = Start-Process -FilePath $pythonExe `
         -ArgumentList @("-m", "netx_api.worker") `
         -WorkingDirectory $projectRoot `
         -WindowStyle Hidden `
-        -RedirectStandardOutput $workerLogFile `
-        -RedirectStandardError $workerErrFile `
+        -RedirectStandardOutput $outLog `
+        -RedirectStandardError $errLog `
         -PassThru
     Set-Content -Path $workerPidFile -Value "$($workerProc.Id)"
     Write-Host "worker.pid = $workerPidFile"
     Write-Host "PID = $($workerProc.Id)"
-    Write-Host "Log = $workerLogFile"
-    Write-Host "Err = $workerErrFile"
+    Write-Host "Log = $outLog"
+    Write-Host "Err = $errLog"
     Start-Sleep -Seconds 1
     $alive = $false
     try {

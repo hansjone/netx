@@ -95,18 +95,45 @@ def disable_target_paging(
     return "".join(chunks)
 
 
-def send_show_command(conn: Any, command: str, *, read_timeout: int = 120) -> str:
-    """Send a show/display command via ``send_command`` (wait for device prompt).
+def drain_read_channel(
+    conn: Any,
+    *,
+    idle_reads: int = 4,
+    pause_sec: float = 0.05,
+) -> str:
+    """Read until the SSH/Telnet channel is quiet.
 
-    Do not use ``send_command_timing`` for Cisco config collection: long idle during
-    ``Building configuration...`` is treated as end-of-output and truncates the config.
-
-    ``cmd_verify=False``: Netmiko's default echo check often raises
-    ``Pattern not detected: 'show\\ lldp\\ ...'`` on IOSv / hop / slow echo paths.
+    Cisco IOSv (and similar) often leave an extra ``R2#`` in the buffer after
+    ``find_prompt`` / ``terminal length 0``. Netmiko ``send_command`` then matches
+    that leftover prompt immediately and returns empty after strip — while a
+    human terminal still echoes show output normally.
     """
-    cmd = str(command or "").strip()
-    if not cmd:
+    chunks: list[str] = []
+    idle = 0
+    read = getattr(conn, "read_channel", None)
+    if not callable(read):
+        clear = getattr(conn, "clear_buffer", None)
+        if callable(clear):
+            try:
+                clear()
+            except Exception:
+                pass
         return ""
+    while idle < max(1, int(idle_reads)):
+        try:
+            part = read()
+        except Exception:
+            break
+        if part:
+            chunks.append(str(part))
+            idle = 0
+            continue
+        idle += 1
+        time.sleep(max(0.0, float(pause_sec)))
+    return "".join(chunks)
+
+
+def _send_command_expect_prompt(conn: Any, cmd: str, *, read_timeout: int) -> str:
     try:
         return str(
             conn.send_command(
@@ -119,3 +146,36 @@ def send_show_command(conn: Any, command: str, *, read_timeout: int = 120) -> st
     except TypeError:
         # Older Netmiko without cmd_verify kwarg.
         return str(conn.send_command(command_string=cmd, read_timeout=read_timeout) or "")
+
+
+def send_show_command(conn: Any, command: str, *, read_timeout: int = 120) -> str:
+    """Send a show/display command via ``send_command`` (wait for device prompt).
+
+    Do not use ``send_command_timing`` as the primary path for Cisco config
+    collection: long idle during ``Building configuration...`` is treated as
+    end-of-output and truncates the config. Timing is only a fallback when
+    expect-prompt returns empty after a channel drain (IOSv leftover-prompt bug).
+
+    ``cmd_verify=False``: Netmiko's default echo check often raises
+    ``Pattern not detected: 'show\\ lldp\\ ...'`` on IOSv / hop / slow echo paths.
+    """
+    cmd = str(command or "").strip()
+    if not cmd:
+        return ""
+
+    drain_read_channel(conn)
+    out = _send_command_expect_prompt(conn, cmd, read_timeout=read_timeout)
+    if out.strip():
+        return out
+
+    # Leftover prompt matched before command echo — drain again and retry once.
+    drain_read_channel(conn)
+    out = _send_command_expect_prompt(conn, cmd, read_timeout=read_timeout)
+    if out.strip():
+        return out
+
+    drain_read_channel(conn)
+    try:
+        return str(conn.send_command_timing(cmd, read_timeout=read_timeout) or "")
+    except Exception:
+        return ""

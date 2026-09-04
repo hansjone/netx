@@ -1,15 +1,34 @@
 param(
     [int]$Port = 8890,
     [int]$WebPort = 5173,
-    [switch]$Force = $false
+    # Windows often ignores graceful Stop-Process on python; default hard-kill.
+    [switch]$Force = $true,
+    [switch]$NoForce = $false
 )
 
 $ErrorActionPreference = "Continue"
+$useForce = if ($NoForce) { $false } else { [bool]$Force }
 
 $runDir = Join-Path $PSScriptRoot ".run"
 $pidFile = Join-Path $runDir "netx.pid"
 $workerPidFile = Join-Path $runDir "worker.pid"
 $webPidFile = Join-Path $runDir "web.pid"
+
+function Stop-OnePid {
+    param([int]$ProcId, [string]$Label)
+    if ($ProcId -le 4) { return }
+    if ($ProcId -eq $PID) { return }
+    try {
+        Stop-Process -Id $ProcId -Force:$useForce -ErrorAction Stop
+        Write-Host "Stopped $Label PID=$ProcId"
+    } catch {
+        $msg = $_.Exception.Message
+        Write-Host "[WARN] Failed to stop $Label PID=$ProcId : $msg"
+        if ($msg -match 'Access|Denied|拒绝|拒绝访问') {
+            Write-Host "       Run elevated PowerShell, then: taskkill /F /PID $ProcId" -ForegroundColor Yellow
+        }
+    }
+}
 
 function Get-ListenPids {
     param([int]$LocalPort)
@@ -40,19 +59,28 @@ function Get-ListenPids {
     @($ids)
 }
 
-Write-Host "==> Stopping netx"
+function Stop-NetxByCommandLine {
+    # Orphan workers often have no worker.pid but still hold worker.out.log.
+    $hits = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -match 'netx_api\.(main|worker)' })
+    if ($hits.Count -eq 0) {
+        Write-Host "[INFO] No netx_api.main/worker process by command line"
+        return
+    }
+    foreach ($p in $hits) {
+        $kind = if ($p.CommandLine -match 'netx_api\.worker') { "worker(cmd)" } else { "api(cmd)" }
+        Stop-OnePid -ProcId ([int]$p.ProcessId) -Label $kind
+    }
+}
+
+Write-Host "==> Stopping netx (Force=$useForce)"
 
 if (Test-Path $pidFile) {
     $pidText = (Get-Content -Path $pidFile -ErrorAction SilentlyContinue | Select-Object -First 1)
     $procId = 0
     [void][int]::TryParse("$pidText", [ref]$procId)
     if ($procId -gt 0) {
-        try {
-            Stop-Process -Id $procId -Force:$Force -ErrorAction Stop
-            Write-Host "Stopped API PID=$procId"
-        } catch {
-            Write-Host "[WARN] PID file process not running: $procId"
-        }
+        Stop-OnePid -ProcId $procId -Label "API"
     }
     Remove-Item -Path $pidFile -Force -ErrorAction SilentlyContinue
 } else {
@@ -64,12 +92,7 @@ if (Test-Path $workerPidFile) {
     $workerProcId = 0
     [void][int]::TryParse("$workerPidText", [ref]$workerProcId)
     if ($workerProcId -gt 0) {
-        try {
-            Stop-Process -Id $workerProcId -Force:$Force -ErrorAction Stop
-            Write-Host "Stopped worker PID=$workerProcId"
-        } catch {
-            Write-Host "[WARN] worker PID file process not running: $workerProcId"
-        }
+        Stop-OnePid -ProcId $workerProcId -Label "worker"
     }
     Remove-Item -Path $workerPidFile -Force -ErrorAction SilentlyContinue
 } else {
@@ -81,26 +104,17 @@ if (Test-Path $webPidFile) {
     $webProcId = 0
     [void][int]::TryParse("$webPidText", [ref]$webProcId)
     if ($webProcId -gt 0) {
-        try {
-            Stop-Process -Id $webProcId -Force:$Force -ErrorAction Stop
-            Write-Host "Stopped web PID=$webProcId"
-        } catch {
-            Write-Host "[WARN] web PID file process not running: $webProcId"
-        }
+        Stop-OnePid -ProcId $webProcId -Label "web"
     }
     Remove-Item -Path $webPidFile -Force -ErrorAction SilentlyContinue
 }
 
+Stop-NetxByCommandLine
+
 $owningApi = @(Get-ListenPids -LocalPort $Port)
 if ($owningApi.Count -gt 0) {
     foreach ($procId in $owningApi) {
-        if ($procId -eq $PID) { continue }
-        try {
-            Stop-Process -Id $procId -Force:$Force -ErrorAction Stop
-            Write-Host "Stopped by port PID=$procId"
-        } catch {
-            Write-Host "[WARN] Failed to stop PID=$procId by port"
-        }
+        Stop-OnePid -ProcId $procId -Label "port:$Port"
     }
 } else {
     Write-Host "[INFO] No listener found on port $Port"
@@ -109,13 +123,7 @@ if ($owningApi.Count -gt 0) {
 $owningWeb = @(Get-ListenPids -LocalPort $WebPort)
 if ($owningWeb.Count -gt 0) {
     foreach ($procId in $owningWeb) {
-        if ($procId -eq $PID) { continue }
-        try {
-            Stop-Process -Id $procId -Force:$Force -ErrorAction Stop
-            Write-Host "Stopped web by port PID=$procId"
-        } catch {
-            Write-Host "[WARN] Failed to stop web PID=$procId by port"
-        }
+        Stop-OnePid -ProcId $procId -Label "port:$WebPort"
     }
 } else {
     Write-Host "[INFO] No listener found on web port $WebPort"
