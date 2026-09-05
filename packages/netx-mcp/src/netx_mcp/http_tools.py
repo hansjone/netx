@@ -1,4 +1,8 @@
-"""MCP tool schemas and HTTP-backed handlers (UME + managed NE)."""
+"""MCP tool schemas and HTTP-backed handlers (NMS adapter + managed NE).
+
+Model-facing tool names use generic Nms*; REST paths remain /v1/ume/* for the
+current zte-ume provider. Params prefer nms_ne_id with ume_ne_id aliases.
+"""
 
 from __future__ import annotations
 
@@ -251,6 +255,14 @@ def _list_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
     return http_json("GET", "/v1/managed-ne", params=params)
 
 
+def _first_str(*vals: Any) -> str:
+    for v in vals:
+        s = str(v or "").strip()
+        if s:
+            return s
+    return ""
+
+
 def _get_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
     ne_id = str(
         args.get("ne_id") or args.get("managed_ne_id") or args.get("id") or ""
@@ -262,11 +274,11 @@ def _get_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
             "error_code": "ne_id_required",
             "hint": (
                 "Pass managed NE id from listManagedNe/listCliTargets (source=managed). "
-                "For UME inventory UUIDs use execManagedNe(ume_ne_id=...) or getUmeNe, not getManagedNe."
+                "For NMS inventory UUIDs use execManagedNe(nms_ne_id=...) or getNmsNe, not getManagedNe."
             ),
             "example": {"ne_id": "<managed-ne-uuid-from-listManagedNe>"},
         }
-    # UME ne_id is typically a UUID; managed NE may differ. Soft-guide when callers mix them.
+    # NMS ne_id is typically a UUID; managed NE may differ. Soft-guide when callers mix them.
     out = http_json("GET", f"/v1/managed-ne/{ne_id}", params=None)
     if isinstance(out, dict) and out.get("ok") is False:
         detail = str(out.get("detail") or out.get("error") or "")
@@ -275,8 +287,8 @@ def _get_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
             out = dict(out)
             out["hint"] = (
                 "Managed NE not found for this ne_id. Call listManagedNe(keyword=...) or "
-                "listCliTargets(source=managed) first. If this is a UME ne_id, use "
-                "execManagedNe(ume_ne_id=...) / getUmeNe instead of getManagedNe."
+                "listCliTargets(source=managed) first. If this is an NMS ne_id, use "
+                "execManagedNe(nms_ne_id=...) / getNmsNe instead of getManagedNe."
             )
     return out
 
@@ -284,7 +296,9 @@ def _get_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
 def _exec_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
     targets_raw = args.get("targets")
     ne_ids_raw = args.get("ne_ids")
-    ume_ne_ids_raw = args.get("ume_ne_ids")
+    nms_ne_ids_raw = args.get("nms_ne_ids")
+    if not isinstance(nms_ne_ids_raw, list) or not nms_ne_ids_raw:
+        nms_ne_ids_raw = args.get("ume_ne_ids")
     shared_cmds_raw = args.get("commands")
     shared_commands = (
         [str(c).strip() for c in shared_cmds_raw if str(c).strip()]
@@ -294,7 +308,7 @@ def _exec_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
     multi = bool(
         (isinstance(targets_raw, list) and targets_raw)
         or (isinstance(ne_ids_raw, list) and ne_ids_raw)
-        or (isinstance(ume_ne_ids_raw, list) and ume_ne_ids_raw)
+        or (isinstance(nms_ne_ids_raw, list) and nms_ne_ids_raw)
     )
     if multi:
         body: dict[str, Any] = {}
@@ -306,8 +320,10 @@ def _exec_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
                 row: dict[str, Any] = {}
                 if str(t.get("ne_id") or "").strip():
                     row["ne_id"] = str(t.get("ne_id")).strip()
-                if str(t.get("ume_ne_id") or "").strip():
-                    row["ume_ne_id"] = str(t.get("ume_ne_id")).strip()
+                # Wire still uses ume_ne_id on REST; accept nms_ne_id as preferred model param.
+                nms_id = _first_str(t.get("nms_ne_id"), t.get("ume_ne_id"))
+                if nms_id:
+                    row["ume_ne_id"] = nms_id
                 cmds = t.get("commands")
                 if isinstance(cmds, list) and cmds:
                     row["commands"] = [str(c).strip() for c in cmds if str(c).strip()]
@@ -316,8 +332,8 @@ def _exec_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
             body["targets"] = cleaned_targets
         if isinstance(ne_ids_raw, list) and ne_ids_raw:
             body["ne_ids"] = [str(x).strip() for x in ne_ids_raw if str(x).strip()]
-        if isinstance(ume_ne_ids_raw, list) and ume_ne_ids_raw:
-            body["ume_ne_ids"] = [str(x).strip() for x in ume_ne_ids_raw if str(x).strip()]
+        if isinstance(nms_ne_ids_raw, list) and nms_ne_ids_raw:
+            body["ume_ne_ids"] = [str(x).strip() for x in nms_ne_ids_raw if str(x).strip()]
         if shared_commands:
             if len(shared_commands) > exec_max_commands():
                 return {"ok": False, "error": "too_many_commands", "error_code": "too_many_commands"}
@@ -337,15 +353,16 @@ def _exec_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
         return {"ok": True, "data": data}
 
     ne_id = str(args.get("ne_id") or "").strip()
-    ume_ne_id = str(args.get("ume_ne_id") or "").strip()
-    if bool(ne_id) == bool(ume_ne_id):
+    nms_ne_id = _first_str(args.get("nms_ne_id"), args.get("ume_ne_id"))
+    if bool(ne_id) == bool(nms_ne_id):
         return {
             "ok": False,
-            "error": "exactly_one_of_ne_id_or_ume_ne_id_required",
-            "error_code": "exactly_one_of_ne_id_or_ume_ne_id_required",
+            "error": "exactly_one_of_ne_id_or_nms_ne_id_required",
+            "error_code": "exactly_one_of_ne_id_or_nms_ne_id_required",
             "hint": (
-                "For one NE pass ne_id OR ume_ne_id. For many NEs pass ne_ids / ume_ne_ids "
-                "with shared commands, or targets[] with per-NE commands — one call, concurrent on server."
+                "For one NE pass ne_id OR nms_ne_id (alias ume_ne_id). For many NEs pass "
+                "ne_ids / nms_ne_ids with shared commands, or targets[] with per-NE commands — "
+                "one call, concurrent on server."
             ),
         }
     if not shared_commands:
@@ -355,8 +372,8 @@ def _exec_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
     body = {"commands": shared_commands}
     if ne_id:
         body["ne_id"] = ne_id
-    if ume_ne_id:
-        body["ume_ne_id"] = ume_ne_id
+    if nms_ne_id:
+        body["ume_ne_id"] = nms_ne_id
     # Default 60s matches netx API default; slow show commands often exceed 30s.
     rts = args.get("read_timeout_sec")
     body["read_timeout_sec"] = int(rts) if rts is not None else 60
@@ -373,22 +390,24 @@ def _list_cli_targets(args: dict[str, Any]) -> dict[str, Any]:
     page = max(1, int(args.get("page") or 1))
     page_size = min(500, max(1, int(args.get("page_size") or 50)))
     params: dict[str, Any] = {"page": page, "page_size": page_size}
-    if str(args.get("source") or "").strip():
-        params["source"] = str(args.get("source")).strip()
+    source = str(args.get("source") or "").strip()
+    if source:
+        # API still uses source=ume; accept model-facing "nms".
+        params["source"] = "ume" if source.lower() == "nms" else source
     if str(args.get("keyword") or "").strip():
         params["keyword"] = str(args.get("keyword")).strip()
     return http_json("GET", "/v1/cli/targets", params=params)
 
 
 def _find_topology_paths(args: dict[str, Any]) -> dict[str, Any]:
-    from_uid = str(args.get("from_ume_ne_id") or "").strip()
+    from_uid = _first_str(args.get("from_nms_ne_id"), args.get("from_ume_ne_id"))
     from_mid = str(args.get("from_managed_ne_id") or "").strip()
-    to_uid = str(args.get("to_ume_ne_id") or "").strip()
+    to_uid = _first_str(args.get("to_nms_ne_id"), args.get("to_ume_ne_id"))
     to_mid = str(args.get("to_managed_ne_id") or "").strip()
     if bool(from_uid) == bool(from_mid):
-        return {"ok": False, "error": "exactly_one_of_from_ume_ne_id_or_from_managed_ne_id_required"}
+        return {"ok": False, "error": "exactly_one_of_from_nms_ne_id_or_from_managed_ne_id_required"}
     if bool(to_uid) == bool(to_mid):
-        return {"ok": False, "error": "exactly_one_of_to_ume_ne_id_or_to_managed_ne_id_required"}
+        return {"ok": False, "error": "exactly_one_of_to_nms_ne_id_or_to_managed_ne_id_required"}
     detail = str(args.get("detail") or "summary").strip().lower() or "summary"
     if detail not in {"summary", "full"}:
         detail = "summary"
@@ -411,9 +430,9 @@ def _find_topology_paths(args: dict[str, Any]) -> dict[str, Any]:
 
 HTTP_MCP_TOOLS: list[dict[str, Any]] = [
     {
-        "name": "queryUmeAlarms",
+        "name": "queryNmsAlarms",
         "description": (
-            "Query UME current alarms (each row includes host_name). "
+            "Query NMS current alarms (each row includes host_name). "
             "Supports severity/ne_id/host_name/keyword, last_seen time_from/time_to, pagination. "
             "Prefer host_name for display; ne_id is for filters only. "
             "Field keyword examples (native_probable_cause): LOS, Fiber Break, bandwidth, CRC, "
@@ -445,14 +464,14 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "aggregateUmeAlarms",
+        "name": "aggregateNmsAlarms",
         "description": (
-            "Aggregate UME current alarms (by_severity + top by_ne). "
+            "Aggregate NMS current alarms (by_severity + top by_ne). "
             "Optional severity filter (e.g. critical) for risk Top-N. "
             "by_ne is capped by top_ne (default 50) and excludes missing host_name by default "
             "(see by_ne_missing). meta.last_seen_min/max show data freshness. "
             "If group_by is set (e.g. alarm_host_name), automatically routes to the same "
-            "behavior as aggregateUmeAlarmsRaw — preferred for custom dimensions. "
+            "behavior as aggregateNmsAlarmsRaw — preferred for custom dimensions. "
             "Snapshot volumes are large (tens of thousands); always filter severity/keyword/time "
             "before paging — do not dump unfiltered lists."
         ),
@@ -482,7 +501,7 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                     "enum": UME_RAW_GROUP_FIELDS,
                     "description": (
                         "Optional. When set, routes to dynamic raw aggregation "
-                        "(same as aggregateUmeAlarmsRaw). Prefer alarm_host_name for NE Top."
+                        "(same as aggregateNmsAlarmsRaw). Prefer alarm_host_name for NE Top."
                     ),
                 },
                 "group_by2": {
@@ -507,16 +526,16 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "runUmeDiagnostics",
+        "name": "runNmsDiagnostics",
         "description": (
-            "UME alarm diagnostics: severity, top_event_types, top_alarm_codes (UME alarmCode), "
+            "NMS alarm diagnostics: severity, top_event_types, top_alarm_codes (vendor alarmCode), "
             "top_ne (excludes missing host), protocol buckets, and meta.last_seen_min/max freshness."
         ),
         "inputSchema": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
     },
     {
-        "name": "queryUmeNeInventory",
-        "description": "Paged UME NE inventory synced in netx (keyword matches ne_id/ne_name/user_label/ip/host_name).",
+        "name": "queryNmsNeInventory",
+        "description": "Paged NMS NE inventory synced in netx (keyword matches ne_id/ne_name/user_label/ip/host_name).",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -529,8 +548,8 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "getUmeNe",
-        "description": "Get single UME NE detail by ne_id (UUID).",
+        "name": "getNmsNe",
+        "description": "Get single NMS NE detail by ne_id (UUID).",
         "inputSchema": {
             "type": "object",
             "properties": {"ne_id": {"type": "string"}},
@@ -539,10 +558,10 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "queryUmeAlarmsRaw",
+        "name": "queryNmsAlarmsRaw",
         "description": (
-            "Power query UME current alarms with full alarm_* + ne_* fields; optional field_preset or select_fields. "
-            "Use field_preset=evidence for WA citations. Same keyword vocabulary as queryUmeAlarms "
+            "Power query NMS current alarms with full alarm_* + ne_* fields; optional field_preset or select_fields. "
+            "Use field_preset=evidence for WA citations. Same keyword vocabulary as queryNmsAlarms "
             "(LOS / Fiber Break / bandwidth / CRC / BN EMS / dying gasp / License / optical power). "
             "For area asks: keyword then keep hosts starting with AREA- (e.g. PAD-, ACH-, BPP-)."
         ),
@@ -555,7 +574,7 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                 "event_type": {"type": "string"},
                 "keyword": {
                     "type": "string",
-                    "description": "Substring filter; see queryUmeAlarms keyword examples.",
+                    "description": "Substring filter; see queryNmsAlarms keyword examples.",
                 },
                 "time_from": {"type": "string"},
                 "time_to": {"type": "string"},
@@ -574,9 +593,9 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "aggregateUmeAlarmsRaw",
+        "name": "aggregateNmsAlarmsRaw",
         "description": (
-            "Dynamic aggregation on UME raw fields (group_by/group_by2); prefer alarm_host_name. "
+            "Dynamic aggregation on NMS raw fields (group_by/group_by2); prefer alarm_host_name. "
             "When grouping by host fields, (host_name missing) is omitted by default "
             "(see by_ne_missing)."
         ),
@@ -604,16 +623,16 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "listUmeAlarmFields",
-        "description": "List available fields for UME raw alarm queries.",
+        "name": "listNmsAlarmFields",
+        "description": "List available fields for NMS raw alarm queries.",
         "inputSchema": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
     },
     {
-        "name": "sqlQueryUme",
+        "name": "sqlQueryNms",
         "description": (
-            "Read-only SELECT on UME tables (ume_alarms_current/ume_inventory_ne); server enforces limits. "
-            "Requires netx scope sql:query. If insufficient_scope, use aggregateUmeAlarms / "
-            "queryUmeAlarmsRaw / ume_alarm_xlsx_report instead."
+            "Read-only SELECT on NMS tables (ume_alarms_current/ume_inventory_ne; zte-ume adapter); "
+            "server enforces limits. Requires netx scope sql:query. If insufficient_scope, use "
+            "aggregateNmsAlarms / queryNmsAlarmsRaw instead."
         ),
         "inputSchema": {
             "type": "object",
@@ -646,14 +665,14 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
         "name": "getManagedNe",
         "description": (
             "Get one **managed** NE by managed ne_id (from listManagedNe / listCliTargets source=managed). "
-            "Do NOT pass UME inventory UUID here — use getUmeNe or execManagedNe(ume_ne_id=...) instead."
+            "Do NOT pass NMS inventory UUID here — use getNmsNe or execManagedNe(nms_ne_id=...) instead."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "ne_id": {
                     "type": "string",
-                    "description": "Managed NE id (not UME host_name / not UME ne_id unless they coincide).",
+                    "description": "Managed NE id (not NMS host_name / not NMS ne_id unless they coincide).",
                 },
                 "managed_ne_id": {"type": "string", "description": "Alias for ne_id."},
                 "id": {"type": "string", "description": "Alias for ne_id."},
@@ -667,11 +686,11 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
         "description": (
             f"Run read-only CLI via netx (show/display/ping/traceroute; "
             f"max {exec_max_commands()} commands per NE, NETX_NE_EXEC_MAX_COMMANDS). "
-            "Single NE: ne_id OR ume_ne_id + commands. "
+            "Single NE: ne_id OR nms_ne_id (+ alias ume_ne_id) + commands. "
             "Many NEs (batch-first, server concurrency default 4, max 20): "
-            "(1) same CLI on all → ne_ids[]/ume_ne_ids[] + shared commands; "
+            "(1) same CLI on all → ne_ids[]/nms_ne_ids[] + shared commands; "
             "(2) different CLI per NE (vendor/role) → ONE targets=["
-            "{ume_ne_id|ne_id, commands:[…]}, …] — do NOT fall back to one-NE loops. "
+            "{nms_ne_id|ne_id, commands:[…]}, …] — do NOT fall back to one-NE loops. "
             "Do NOT loop one-NE execManagedNe for multi-NE work. "
             "Default read_timeout_sec=60; on timeout raise to 90–120 — do not blind-retry. "
             "Large batches (≈4+ NEs) may auto-run async in oclaw: returns job_id immediately; "
@@ -681,18 +700,25 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "ne_id": {"type": "string"},
-                "ume_ne_id": {"type": "string"},
+                "nms_ne_id": {"type": "string", "description": "NMS inventory id (preferred)."},
+                "ume_ne_id": {"type": "string", "description": "Legacy alias of nms_ne_id."},
                 "ne_ids": {
                     "type": "array",
                     "items": {"type": "string"},
                     "maxItems": 20,
                     "description": "Managed NE ids for concurrent batch (shared commands).",
                 },
+                "nms_ne_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "maxItems": 20,
+                    "description": "NMS inventory ne_ids for concurrent batch (shared commands).",
+                },
                 "ume_ne_ids": {
                     "type": "array",
                     "items": {"type": "string"},
                     "maxItems": 20,
-                    "description": "UME inventory ne_ids for concurrent batch (shared commands).",
+                    "description": "Legacy alias of nms_ne_ids.",
                 },
                 "targets": {
                     "type": "array",
@@ -701,7 +727,8 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                         "type": "object",
                         "properties": {
                             "ne_id": {"type": "string"},
-                            "ume_ne_id": {"type": "string"},
+                            "nms_ne_id": {"type": "string"},
+                            "ume_ne_id": {"type": "string", "description": "Legacy alias of nms_ne_id."},
                             "commands": {
                                 "type": "array",
                                 "items": {"type": "string"},
@@ -713,7 +740,7 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                     },
                     "description": (
                         "Preferred for mixed-vendor / per-NE command sets: "
-                        "each item is one NE (ne_id OR ume_ne_id) with its own commands[]. "
+                        "each item is one NE (ne_id OR nms_ne_id) with its own commands[]. "
                         "Per-target commands override top-level shared commands. "
                         "Still one concurrent batch — not N single-NE calls."
                     ),
@@ -724,7 +751,7 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                     "minItems": 1,
                     "maxItems": exec_max_commands(),
                     "description": (
-                        "Commands for single NE, or shared commands for ne_ids/ume_ne_ids. "
+                        "Commands for single NE, or shared commands for ne_ids/nms_ne_ids. "
                         "Optional fallback for targets that omit per-target commands."
                     ),
                 },
@@ -757,14 +784,19 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
     {
         "name": "listCliTargets",
         "description": (
-            "List CLI-capable targets (managed NE and/or UME inventory). "
-            "Call once per session with keyword/source, cache ume_ne_id/ne_id, "
+            "List CLI-capable targets (managed NE and/or NMS inventory). "
+            "Call once per session with keyword/source, cache nms_ne_id/ne_id, "
             "then execManagedNe — do not re-list before every command."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "source": {"type": "string", "enum": ["managed", "ume", "all"], "default": "all"},
+                "source": {
+                    "type": "string",
+                    "enum": ["managed", "nms", "ume", "all"],
+                    "default": "all",
+                    "description": "nms preferred; ume is a legacy alias mapped to the same inventory.",
+                },
                 "keyword": {"type": "string"},
                 "page": {"type": "integer", "minimum": 1, "default": 1},
                 "page_size": {"type": "integer", "minimum": 1, "maximum": 500, "default": 50},
@@ -777,18 +809,38 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
         "name": "findTopologyPaths",
         "description": (
             "Find up to max_paths simple paths between two fabric nodes for troubleshooting. "
-            "For each endpoint provide exactly one of ume_ne_id (from UME alarm ne_id) or "
-            "managed_ne_id — resolved to fabric node internally. Returns shortest paths "
-            "first with compact label + node/edge summary (detail=summary default). "
+            "For each endpoint provide exactly one of nms_ne_id (from NMS alarm ne_id; alias "
+            "from_ume_ne_id) or managed_ne_id — resolved to fabric node internally. Returns "
+            "shortest paths first with compact label + node/edge summary (detail=summary default). "
             "Use after critical alarms to correlate neighboring NEs before CLI login."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "from_ume_ne_id": {"type": "string", "description": "Source UME ne_id (from alarm ne_id); mutually exclusive with from_managed_ne_id"},
-                "from_managed_ne_id": {"type": "string", "description": "Source managed NE id; mutually exclusive with from_ume_ne_id"},
-                "to_ume_ne_id": {"type": "string", "description": "Target UME ne_id; mutually exclusive with to_managed_ne_id"},
-                "to_managed_ne_id": {"type": "string", "description": "Target managed NE id; mutually exclusive with to_ume_ne_id"},
+                "from_nms_ne_id": {
+                    "type": "string",
+                    "description": "Source NMS ne_id (from alarm ne_id); mutually exclusive with from_managed_ne_id",
+                },
+                "from_ume_ne_id": {
+                    "type": "string",
+                    "description": "Legacy alias of from_nms_ne_id",
+                },
+                "from_managed_ne_id": {
+                    "type": "string",
+                    "description": "Source managed NE id; mutually exclusive with from_nms_ne_id",
+                },
+                "to_nms_ne_id": {
+                    "type": "string",
+                    "description": "Target NMS ne_id; mutually exclusive with to_managed_ne_id",
+                },
+                "to_ume_ne_id": {
+                    "type": "string",
+                    "description": "Legacy alias of to_nms_ne_id",
+                },
+                "to_managed_ne_id": {
+                    "type": "string",
+                    "description": "Target managed NE id; mutually exclusive with to_nms_ne_id",
+                },
                 "max_paths": {"type": "integer", "minimum": 1, "maximum": 10, "default": 3},
                 "max_hops": {"type": "integer", "minimum": 1, "maximum": 12, "default": 6},
                 "layer": {"type": "string", "default": "physical"},
@@ -806,15 +858,15 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
 ]
 
 _HANDLERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
-    "queryUmeAlarms": _query_ume_alarms,
-    "aggregateUmeAlarms": _aggregate_ume_alarms,
-    "runUmeDiagnostics": _run_ume_diagnostics,
-    "queryUmeNeInventory": _query_ume_ne_inventory,
-    "getUmeNe": _get_ume_ne,
-    "queryUmeAlarmsRaw": _query_ume_alarms_raw,
-    "aggregateUmeAlarmsRaw": _aggregate_ume_alarms_raw,
-    "listUmeAlarmFields": _list_ume_alarm_fields,
-    "sqlQueryUme": _sql_query_ume,
+    "queryNmsAlarms": _query_ume_alarms,
+    "aggregateNmsAlarms": _aggregate_ume_alarms,
+    "runNmsDiagnostics": _run_ume_diagnostics,
+    "queryNmsNeInventory": _query_ume_ne_inventory,
+    "getNmsNe": _get_ume_ne,
+    "queryNmsAlarmsRaw": _query_ume_alarms_raw,
+    "aggregateNmsAlarmsRaw": _aggregate_ume_alarms_raw,
+    "listNmsAlarmFields": _list_ume_alarm_fields,
+    "sqlQueryNms": _sql_query_ume,
     "listManagedNe": _list_managed_ne,
     "getManagedNe": _get_managed_ne,
     "execManagedNe": _exec_managed_ne,
@@ -824,15 +876,15 @@ _HANDLERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
 
 # Minimum scope required to advertise / invoke each tool (matches netx API RBAC).
 TOOL_REQUIRED_SCOPE: dict[str, str] = {
-    "queryUmeAlarms": "alarms:read",
-    "aggregateUmeAlarms": "alarms:read",
-    "runUmeDiagnostics": "alarms:read",
-    "queryUmeNeInventory": "ne:read",
-    "getUmeNe": "ne:read",
-    "queryUmeAlarmsRaw": "alarms:read",
-    "aggregateUmeAlarmsRaw": "alarms:read",
-    "listUmeAlarmFields": "alarms:read",
-    "sqlQueryUme": "sql:query",
+    "queryNmsAlarms": "alarms:read",
+    "aggregateNmsAlarms": "alarms:read",
+    "runNmsDiagnostics": "alarms:read",
+    "queryNmsNeInventory": "ne:read",
+    "getNmsNe": "ne:read",
+    "queryNmsAlarmsRaw": "alarms:read",
+    "aggregateNmsAlarmsRaw": "alarms:read",
+    "listNmsAlarmFields": "alarms:read",
+    "sqlQueryNms": "sql:query",
     "listManagedNe": "ne:read",
     "getManagedNe": "ne:read",
     "execManagedNe": "ne:exec",

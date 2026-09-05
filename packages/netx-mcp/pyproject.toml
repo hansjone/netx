@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "netx-mcp"
-version = "0.2.0"
-description = "stdio MCP server for netx REST API (UME alarms, managed NE CLI)"
+version = "0.3.0"
+description = "stdio MCP server for netx REST API (NMS alarms, managed NE CLI)"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

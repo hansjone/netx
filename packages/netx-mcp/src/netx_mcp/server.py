@@ -91,7 +91,7 @@ def run_stdio_loop() -> None:
                     {
                         "protocolVersion": "2024-11-05",
                         "capabilities": {"tools": {}},
-                        "serverInfo": {"name": "netx-mcp", "version": "0.2.1", "mode": "http"},
+                        "serverInfo": {"name": "netx-mcp", "version": "0.3.0", "mode": "http"},
                     },
                 )
                 continue
@@ -111,7 +111,7 @@ def run_stdio_loop() -> None:
                         (
                             f"insufficient_scope:{need}. "
                             "Ask a netx admin to grant this scope on the API token; "
-                            "for sql:query prefer aggregateUmeAlarms/queryUmeAlarmsRaw/ume_alarm_xlsx_report instead."
+                            "for sql:query prefer aggregateNmsAlarms/queryNmsAlarmsRaw instead."
                         ),
                     )
                     continue

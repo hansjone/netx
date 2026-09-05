@@ -1,13 +1,20 @@
 ---
 name: netx-topology
 description: >-
-  用 netx-topology MCP 查邻接、分类打标；先 dual_unit 一次抽最大核心眼，再换其它算法下沉/布图（不污染 Fabric）。
-  触发：画拓扑、布图、拖图、分类、LLDP、Fabric、netx-topology。先读本 skill 再调工具。
+  用 netx-topology MCP / DSH topology 组查邻接、分类打标；先 dual_unit 一次抽最大核心眼，
+  再换其它算法下沉/布图（不污染 Fabric）。触发：画拓扑、布图、拖图、分类、LLDP、Fabric、netx-topology。
 ---
 
 # netx 拓扑（通用）
 
-只用 **`netx-topology`** MCP（包 `netx-topology-mcp`）。安装与 scopes：仓库 [`docs/MCP_TOPOLOGY.md`](../../../docs/MCP_TOPOLOGY.md)。
+## Hosts（MCP + DSH）
+
+| Host | Tools |
+|------|--------|
+| **MCP** `netx-topology-mcp` | 裸名（`sinkTopologyDualUnits` …）；安装见 [`docs/MCP_TOPOLOGY.md`](../../../docs/MCP_TOPOLOGY.md) |
+| **DSH** `dsh-netxops` | `netx__` + 同 stem。整组工具 + skill **`netx-topology`**（能力组 **topology**，默认关）。缺布局引擎能力时用 MCP。 |
+
+Canonical: `netx/skills/topology/netx-topology/`（唯一正文）。
 
 **原则**：
 1. **第一步用 dual_units**：从**核心**出发，选**覆盖网元最多**的那一只眼（`prefer_top_eye` + max cover）。
@@ -16,7 +23,7 @@ description: >-
 4. **眼图已定型 → 门控精修**：对该 sink 只用下表「允许」动作；禁止全局拆眼工具。
 5. 布眼目标：少交叉、眼心空旷、少重叠（椭圆弧带；长链在眼外）。对照人工金标时还要看：**紧凑度、正交边、贴边清开**（见「算法天花板」）。
 
-**禁止**写临时 py 穷举坐标或直接调 HTTP；验证与压交叉**只调 MCP**。不造 Fabric 边。  
+**禁止**写临时 py 穷举坐标或直接调 HTTP；验证与压交叉**只调 MCP**（或 DSH 已实现的同名工具）。不造 Fabric 边。  
 **脱敏（硬）**：勿把客户网元名、站点/区域名、具体交叉数、具体 view_id 写进本 skill。角色只用通用词：门户 / 枢纽 / 汇聚 / 接入 / 末梢。**禁止**在 skill 正文写站点缩写或设备角色缩写当专名举例。
 
 ---

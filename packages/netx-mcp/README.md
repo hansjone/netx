@@ -4,6 +4,8 @@
 
 **安装、更新、各宿主配置、排错** → 仓库主文档 **[docs/MCP.md](../../docs/MCP.md)**（请优先阅读）。
 
+**Skills（唯一真源在仓库根 [`skills/`](../../skills/README.md)）** — 本包不镜像 skills。
+
 ## 速查：安装
 
 ```powershell
@@ -36,13 +38,20 @@ python -m netx_mcp
 
 [`mcp.json`](./mcp.json) — `command: python`，`args: ["-m", "netx_mcp"]`，`env` 见文件。
 
-## 工具（13）
+## 工具（14）
 
-UME：`queryUmeAlarms`, `aggregateUmeAlarms`, `runUmeDiagnostics`, `queryUmeNeInventory`, `getUmeNe`, `queryUmeAlarmsRaw`, `aggregateUmeAlarmsRaw`, `listUmeAlarmFields`, `sqlQueryUme`
+**NMS**（模型面通用名；当前适配器 zte-ume，REST 仍 `/v1/ume/*`）：  
+`queryNmsAlarms`, `aggregateNmsAlarms`, `runNmsDiagnostics`, `queryNmsNeInventory`, `getNmsNe`, `queryNmsAlarmsRaw`, `aggregateNmsAlarmsRaw`, `listNmsAlarmFields`, `sqlQueryNms`
 
-托管网元：`listManagedNe`, `getManagedNe`, `execManagedNe`, `listCliTargets`
+**common**：`listManagedNe`, `getManagedNe`, `execManagedNe`, `listCliTargets`, `findTopologyPaths`
+
+参数优先 `nms_ne_id` / `nms_ne_ids`（保留 `ume_*` 别名）。
 
 拓扑画布 / Fabric → 请单独安装 [`netx-topology-mcp`](../netx-topology-mcp)（见 [docs/MCP_TOPOLOGY.md](../../docs/MCP_TOPOLOGY.md)）。
+
+## Breaking (0.3.0)
+
+模型工具名从 `*Ume*` 改为 `*Nms*`（与 dsh-netxops 对齐）。请更新 skills / 提示词并重启 MCP 宿主。
 
 ## 兼容
 

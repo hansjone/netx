@@ -113,7 +113,7 @@ pip install "git+https://github.com/hansjone/netx.git#subdirectory=packages/netx
 
 1. 完成上文 **§1**（用 **oclaw 同机同一个 `python`** 安装 `netx-mcp`）。
 2. Admin → MCP → 粘贴 `mcp.json` 全文 → 点击 **Install from JSON**（安装状态在下方一行小字）。
-3. **Health** → **Sync Tools**（应看到 **13** 个工具）。
+3. **Health** → **Sync Tools**（应看到 **14** 个工具）。
 4. 在 **MCP 专家绑定** 中为 ops 专家勾选 `server_id=netx`。
 
 更细的 oclaw 说明（双轨内置工具、锚点注入等）见 oclaw 仓库：  
@@ -121,20 +121,24 @@ pip install "git+https://github.com/hansjone/netx.git#subdirectory=packages/netx
 
 可选：oclaw 专用字段展开版 [`mcp_install_payload.json`](../mcp_install_payload.json)（与 `mcp.json` 等价）。
 
-**拓扑画布 MCP**（独立安装/绑定）见 [`MCP_TOPOLOGY.md`](./MCP_TOPOLOGY.md)（`server_id=netx-topology`，13 个工具）。
+**Skills（真源）**：仓库根 [`skills/`](../skills/README.md) — `netx-nms` / `netx-common` / `netx-topology`。MCP 包不再带 skills 镜像；Cursor 直接指 `netx/skills/`。dsh-netxops 发版前可 `sync-skills-from-netx.ps1`。oclaw 旧 playbook 不再维护。
+
+**拓扑画布 MCP**（独立安装/绑定）见 [`MCP_TOPOLOGY.md`](./MCP_TOPOLOGY.md)（`server_id=netx-topology`）。
 
 ---
 
 ## 5. 暴露的工具
 
+模型面使用通用 **Nms** 命名（当前适配器仍为 zte-ume，HTTP 仍 `/v1/ume/*`）。**0.3.0** 起不再暴露 `*Ume*` 工具名。
+
 | 类别 | 工具名 |
 |------|--------|
-| UME 告警 | `queryUmeAlarms`, `aggregateUmeAlarms`, `runUmeDiagnostics` |
-| UME 网元 | `queryUmeNeInventory`, `getUmeNe` |
-| UME 原始/SQL | `queryUmeAlarmsRaw`, `aggregateUmeAlarmsRaw`, `listUmeAlarmFields`, `sqlQueryUme` |
-| 托管网元 CLI | `listManagedNe`, `getManagedNe`, `execManagedNe`, `listCliTargets` |
+| NMS 告警 | `queryNmsAlarms`, `aggregateNmsAlarms`, `runNmsDiagnostics` |
+| NMS 网元 | `queryNmsNeInventory`, `getNmsNe` |
+| NMS 原始/SQL | `queryNmsAlarmsRaw`, `aggregateNmsAlarmsRaw`, `listNmsAlarmFields`, `sqlQueryNms` |
+| common（CLI + 路径） | `listManagedNe`, `getManagedNe`, `execManagedNe`, `listCliTargets`, `findTopologyPaths` |
 
-拓扑 Fabric / 画布工具已拆到 **[`netx-topology-mcp`](./MCP_TOPOLOGY.md)**（含原 `queryTopologyEdges`）。oclaw 中名称带前缀：`mcp__netx__<toolName>`。
+参数优先 `nms_ne_id` / `nms_ne_ids`（保留 `ume_*` 别名）。拓扑 Fabric / 画布工具在 **[`netx-topology-mcp`](./MCP_TOPOLOGY.md)**。oclaw 中名称带前缀：`mcp__netx__<toolName>`；DSH：`netx__<toolName>`。
 
 ---
 

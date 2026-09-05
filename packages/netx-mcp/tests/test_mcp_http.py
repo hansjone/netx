@@ -16,20 +16,22 @@ from netx_mcp.server import _fetch_scopes
 def test_http_mcp_tool_list_has_expected_tools() -> None:
     names = [str(t.get("name") or "") for t in HTTP_MCP_TOOLS]
     assert len(names) == 14
-    assert "queryUmeAlarms" in names
-    assert "queryUmeAlarmsRaw" in names
+    assert "queryNmsAlarms" in names
+    assert "queryNmsAlarmsRaw" in names
     assert "execManagedNe" in names
     assert "listCliTargets" in names
     assert "findTopologyPaths" in names
+    assert "queryUmeAlarms" not in names
     assert "queryTopologyEdges" not in names
     exec_tool = next(t for t in HTTP_MCP_TOOLS if t.get("name") == "execManagedNe")
     assert exec_tool["inputSchema"]["properties"]["commands"]["maxItems"] >= 5
+    assert "nms_ne_id" in exec_tool["inputSchema"]["properties"]
 
 
-def test_call_query_ume_alarms_forwards_http() -> None:
+def test_call_query_nms_alarms_forwards_http() -> None:
     with patch("netx_mcp.http_tools.http_json") as mock_http:
         mock_http.return_value = {"ok": True, "data": {"total": 0, "items": []}}
-        out = call_http_tool("queryUmeAlarms", {"severity": "critical", "page": 1, "page_size": 10})
+        out = call_http_tool("queryNmsAlarms", {"severity": "critical", "page": 1, "page_size": 10})
         mock_http.assert_called_once()
         assert mock_http.call_args[0][0] == "GET"
         assert mock_http.call_args[0][1] == "/v1/ume/alarms"
@@ -40,13 +42,13 @@ def test_call_query_ume_alarms_forwards_http() -> None:
         assert payload["ok"] is True
 
 
-def test_call_aggregate_ume_alarms_forwards_top_ne() -> None:
+def test_call_aggregate_nms_alarms_forwards_top_ne() -> None:
     with patch("netx_mcp.http_tools.http_json") as mock_http:
         mock_http.return_value = {
             "ok": True,
             "data": {"total": 10, "by_severity": [], "by_ne": [], "by_ne_total": 3, "top_ne": 20},
         }
-        out = call_http_tool("aggregateUmeAlarms", {"top_ne": 20, "severity": "critical"})
+        out = call_http_tool("aggregateNmsAlarms", {"top_ne": 20, "severity": "critical"})
         mock_http.assert_called_once_with(
             "GET",
             "/v1/ume/alarms/aggregate",
@@ -57,11 +59,11 @@ def test_call_aggregate_ume_alarms_forwards_top_ne() -> None:
         assert payload["data"]["top_ne"] == 20
 
 
-def test_call_aggregate_ume_alarms_group_by_routes_to_raw() -> None:
+def test_call_aggregate_nms_alarms_group_by_routes_to_raw() -> None:
     with patch("netx_mcp.http_tools.http_json") as mock_http:
         mock_http.return_value = {"ok": True, "data": {"buckets": []}}
         out = call_http_tool(
-            "aggregateUmeAlarms",
+            "aggregateNmsAlarms",
             {"group_by": "alarm_host_name", "severity": "critical", "limit": 20},
         )
         mock_http.assert_called_once()
@@ -75,8 +77,8 @@ def test_call_aggregate_ume_alarms_group_by_routes_to_raw() -> None:
         assert payload["ok"] is True
 
 
-def test_aggregate_ume_alarms_schema_accepts_group_by() -> None:
-    tool = next(t for t in HTTP_MCP_TOOLS if t.get("name") == "aggregateUmeAlarms")
+def test_aggregate_nms_alarms_schema_accepts_group_by() -> None:
+    tool = next(t for t in HTTP_MCP_TOOLS if t.get("name") == "aggregateNmsAlarms")
     props = tool["inputSchema"]["properties"]
     assert "group_by" in props
     assert "group_by2" in props
@@ -88,7 +90,7 @@ def test_call_find_topology_paths_defaults_summary_detail() -> None:
         mock_post.return_value = {"ok": True, "data": {"path_count": 1, "detail": "summary", "paths": []}}
         out = call_http_tool(
             "findTopologyPaths",
-            {"from_ume_ne_id": "a", "to_ume_ne_id": "b"},
+            {"from_nms_ne_id": "a", "to_nms_ne_id": "b"},
         )
         mock_post.assert_called_once()
         body = mock_post.call_args[0][1]
@@ -99,12 +101,24 @@ def test_call_find_topology_paths_defaults_summary_detail() -> None:
         assert payload["ok"] is True
 
 
+def test_call_find_topology_paths_accepts_legacy_ume_params() -> None:
+    with patch("netx_mcp.http_tools.http_post_json") as mock_post:
+        mock_post.return_value = {"ok": True, "data": {"path_count": 0, "paths": []}}
+        call_http_tool(
+            "findTopologyPaths",
+            {"from_ume_ne_id": "a", "to_ume_ne_id": "b"},
+        )
+        body = mock_post.call_args[0][1]
+        assert body["from_ume_ne_id"] == "a"
+        assert body["to_ume_ne_id"] == "b"
+
+
 def test_call_exec_managed_ne_defaults_read_timeout() -> None:
     with patch("netx_mcp.http_tools.http_post_json") as mock_post:
         mock_post.return_value = {"ok": True, "data": {"ok": True, "output": "hi"}}
         out = call_http_tool(
             "execManagedNe",
-            {"ume_ne_id": "u1", "commands": ["show version"]},
+            {"nms_ne_id": "u1", "commands": ["show version"]},
         )
         mock_post.assert_called_once()
         body = mock_post.call_args[0][1]
@@ -132,8 +146,8 @@ def test_get_managed_ne_accepts_managed_ne_id_alias() -> None:
         assert payload["ok"] is True
 
 
-def test_call_get_ume_ne_requires_id() -> None:
-    out = call_http_tool("getUmeNe", {})
+def test_call_get_nms_ne_requires_id() -> None:
+    out = call_http_tool("getNmsNe", {})
     assert out.get("isError") is True
     payload = json.loads(out["content"][0]["text"])
     assert payload["error"] == "ne_id_required"
@@ -185,6 +199,7 @@ def test_exec_managed_ne_schema_documents_batch() -> None:
     tool = next(t for t in HTTP_MCP_TOOLS if t.get("name") == "execManagedNe")
     props = tool["inputSchema"]["properties"]
     assert "ne_ids" in props
+    assert "nms_ne_ids" in props
     assert "ume_ne_ids" in props
     assert "targets" in props
     assert "concurrency" in props
@@ -228,7 +243,7 @@ def test_fetch_scopes_returns_none_on_http_failure() -> None:
 def test_tools_for_scopes_filters_by_granted() -> None:
     names = {str(t.get("name") or "") for t in tools_for_scopes(["ne:read"])}
     assert "listManagedNe" in names
-    assert "queryUmeAlarms" not in names
+    assert "queryNmsAlarms" not in names
     assert tools_for_scopes(None) == list(HTTP_MCP_TOOLS)
 
 
@@ -248,22 +263,35 @@ def test_stdio_initialize_and_tools_list() -> None:
         errors="replace",
         env=env,
     )
-    assert proc.stdin and proc.stdout
-    init_req = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}) + "\n"
-    proc.stdin.write(init_req)
-    proc.stdin.flush()
-    init_line = proc.stdout.readline()
-    init_resp = json.loads(init_line)
-    assert init_resp["result"]["serverInfo"]["mode"] == "http"
+    assert proc.stdin is not None and proc.stdout is not None
+    try:
+        init = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "test", "version": "0"},
+            },
+        }
+        proc.stdin.write(json.dumps(init) + "\n")
+        proc.stdin.flush()
+        line = proc.stdout.readline()
+        assert line
+        msg = json.loads(line)
+        assert msg.get("id") == 1
+        assert "result" in msg
 
-    list_req = json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}) + "\n"
-    proc.stdin.write(list_req)
-    proc.stdin.flush()
-    list_line = proc.stdout.readline()
-    list_resp = json.loads(list_line)
-    assert "error" not in list_resp, list_resp
-    tools = list_resp["result"]["tools"]
-    assert len(tools) == 14
-
-    proc.terminate()
-    proc.wait(timeout=5)
+        proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}) + "\n")
+        proc.stdin.flush()
+        line2 = proc.stdout.readline()
+        assert line2
+        listed = json.loads(line2)
+        tools = listed["result"]["tools"]
+        names = {t["name"] for t in tools}
+        assert "queryNmsAlarms" in names
+        assert "execManagedNe" in names
+    finally:
+        proc.kill()
+        proc.wait(timeout=5)

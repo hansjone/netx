@@ -12,19 +12,19 @@ import pytest
 from netx_mcp.http_tools import HTTP_MCP_TOOLS, call_http_tool
 
 
-def test_http_mcp_tool_list_has_thirteen_tools() -> None:
+def test_http_mcp_tool_list_has_fourteen_tools() -> None:
     names = [str(t.get("name") or "") for t in HTTP_MCP_TOOLS]
     assert len(names) == 14
-    assert "queryUmeAlarms" in names
-    assert "queryUmeAlarmsRaw" in names
+    assert "queryNmsAlarms" in names
+    assert "queryNmsAlarmsRaw" in names
     assert "execManagedNe" in names
     assert "listCliTargets" in names
 
 
-def test_call_query_ume_alarms_forwards_http() -> None:
+def test_call_query_nms_alarms_forwards_http() -> None:
     with patch("netx_mcp.http_tools.http_json") as mock_http:
         mock_http.return_value = {"ok": True, "data": {"total": 0, "items": []}}
-        out = call_http_tool("queryUmeAlarms", {"severity": "critical", "page": 1, "page_size": 10})
+        out = call_http_tool("queryNmsAlarms", {"severity": "critical", "page": 1, "page_size": 10})
         mock_http.assert_called_once()
         assert mock_http.call_args[0][0] == "GET"
         assert mock_http.call_args[0][1] == "/v1/ume/alarms"
@@ -35,8 +35,8 @@ def test_call_query_ume_alarms_forwards_http() -> None:
         assert payload["ok"] is True
 
 
-def test_call_get_ume_ne_requires_id() -> None:
-    out = call_http_tool("getUmeNe", {})
+def test_call_get_nms_ne_requires_id() -> None:
+    out = call_http_tool("getNmsNe", {})
     assert out.get("isError") is True
     text = out["content"][0]["text"]
     payload = json.loads(text)
@@ -61,6 +61,11 @@ def test_call_exec_managed_ne_posts_body() -> None:
 
 
 def test_stdio_initialize_and_tools_list() -> None:
+    import os
+
+    env = os.environ.copy()
+    env["NETX_API_URL"] = "http://127.0.0.1:1"
+    env.pop("NETX_API_TOKEN", None)
     proc = subprocess.Popen(
         [sys.executable, "-m", "netx_mcp"],
         stdin=subprocess.PIPE,
@@ -69,6 +74,7 @@ def test_stdio_initialize_and_tools_list() -> None:
         text=True,
         encoding="utf-8",
         errors="replace",
+        env=env,
     )
     assert proc.stdin and proc.stdout
     init_req = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}) + "\n"
@@ -85,7 +91,10 @@ def test_stdio_initialize_and_tools_list() -> None:
     list_resp = json.loads(list_line)
     assert "error" not in list_resp, list_resp
     tools = list_resp["result"]["tools"]
+    names = {t["name"] for t in tools}
     assert len(tools) == 14
+    assert "queryNmsAlarms" in names
+    assert "findTopologyPaths" in names
 
     proc.terminate()
     proc.wait(timeout=5)
