@@ -45,10 +45,14 @@ _BOOT_MONO = time.monotonic()
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    import asyncio
+
     from .app_startup import run_api_startup
     from .app_shutdown import shutdown_runtime
+    from .dsh_alarm_hub import bind_event_loop
 
     run_api_startup()
+    bind_event_loop(asyncio.get_running_loop())
     try:
         yield
     finally:

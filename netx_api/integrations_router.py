@@ -5,15 +5,22 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, WebSocket
 from sqlalchemy import text as sql_text
 from sqlalchemy.orm import Session
 
 from .config import settings
 from .db import get_db
+from .dsh_alarm_hub import dsh_alarm_ws_loop, hub_status
 from .oclaw_alarm_forwarder import forwarder_status
 
 router = APIRouter(tags=["health"])
+
+
+@router.websocket("/v1/integrations/dsh-alarm/ws")
+async def dsh_alarm_subscribe(websocket: WebSocket) -> None:
+    """netxops dials out here to receive matched key-alert pushes."""
+    await dsh_alarm_ws_loop(websocket)
 
 
 @router.get("/health/live", status_code=200)
@@ -130,4 +137,9 @@ def integrations_status(db: Session = Depends(get_db)) -> dict:
             "forwarder": fwd,
         }
 
-    return {"netx_api": netx_api, "db": db_status, "oclaw_bridge": oclaw_status}
+    return {
+        "netx_api": netx_api,
+        "db": db_status,
+        "oclaw_bridge": oclaw_status,
+        "dsh_alarm_hub": hub_status(),
+    }

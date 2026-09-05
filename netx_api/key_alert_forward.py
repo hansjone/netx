@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from .key_alert_matcher import match_key_alert_rule
 from .models import UmeInventoryNE, UmeKeyAlertForwardLog
 from .oclaw_alarm_forwarder import enqueue_alarm_forward, is_forwarder_operational
+from .dsh_alarm_hub import publish_alarm
 from .ume_sync_service import (
     _derive_ne_id_from_alarm,
     _pick,
@@ -69,8 +70,6 @@ def maybe_forward_key_alert(
     alarm_key: str,
     action: str,
 ) -> bool:
-    if not is_forwarder_operational():
-        return False
     rule = match_key_alert_rule(db, norm=norm, action=action)
     if rule is None:
         return False
@@ -96,9 +95,22 @@ def maybe_forward_key_alert(
     payload["ne"] = _ne_payload(db, ne_id)
     payload["rule_key"] = str(rule.notification_id or "")
 
-    queued = enqueue_alarm_forward(payload)
-    if not queued:
+    hub_sent = publish_alarm(payload)
+    oclaw_queued = False
+    if is_forwarder_operational():
+        oclaw_queued = bool(enqueue_alarm_forward(payload))
+    if hub_sent <= 0 and not oclaw_queued:
         return False
+
+    # Hub-only delivery already reached DSH clients — mark ok for dedup.
+    # Oclaw path stays pending until the bridge records a result.
+    delivered_ok = hub_sent > 0 and not oclaw_queued
+    status = []
+    if hub_sent > 0:
+        status.append(f"dsh_hub:{hub_sent}")
+    if oclaw_queued:
+        status.append("oclaw_queued")
+    status_text = ",".join(status) if status else "queued"
 
     row = existing
     if row is None:
@@ -108,16 +120,16 @@ def maybe_forward_key_alert(
             rule_key=str(rule.notification_id or ""),
             notification_id=notification_id_from_norm(norm),
             forwarded_at=_utc_now_naive(),
-            oclaw_ok=0,
-            error="queued",
+            oclaw_ok=1 if delivered_ok else 0,
+            error="" if delivered_ok else status_text,
         )
         db.add(row)
     else:
         row.notification_id = notification_id_from_norm(norm)
         row.rule_key = str(rule.notification_id or "")
         row.forwarded_at = _utc_now_naive()
-        row.oclaw_ok = 0
-        row.error = "queued"
+        row.oclaw_ok = 1 if delivered_ok else 0
+        row.error = "" if delivered_ok else status_text
     try:
         db.commit()
     except IntegrityError:
