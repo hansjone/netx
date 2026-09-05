@@ -38,16 +38,17 @@ python -m netx_mcp
 
 [`mcp.json`](./mcp.json) — `command: python`，`args: ["-m", "netx_mcp"]`，`env` 见文件。
 
-## 工具（14）
+## 工具（14）— skill 组 **ops**（`netx-ops`）
 
 **NMS**（模型面通用名；当前适配器 zte-ume，REST 仍 `/v1/ume/*`）：  
 `queryNmsAlarms`, `aggregateNmsAlarms`, `runNmsDiagnostics`, `queryNmsNeInventory`, `getNmsNe`, `queryNmsAlarmsRaw`, `aggregateNmsAlarmsRaw`, `listNmsAlarmFields`, `sqlQueryNms`
 
-**common**：`listManagedNe`, `getManagedNe`, `execManagedNe`, `listCliTargets`, `findTopologyPaths`
+**Managed CLI + paths**（问「能否登录」必须走这里，不要只查 inventory）：  
+`listManagedNe`, `getManagedNe`, `execManagedNe`, `listCliTargets`, `findTopologyPaths`
 
 参数优先 `nms_ne_id` / `nms_ne_ids`（保留 `ume_*` 别名）。
 
-拓扑画布 / Fabric → 请单独安装 [`netx-topology-mcp`](../netx-topology-mcp)（见 [docs/MCP_TOPOLOGY.md](../../docs/MCP_TOPOLOGY.md)）。
+拓扑画布 / Fabric → skill **topology** / [`netx-topology-mcp`](../netx-topology-mcp)（见 [docs/MCP_TOPOLOGY.md](../../docs/MCP_TOPOLOGY.md)）。
 
 ## Breaking (0.3.0)
 

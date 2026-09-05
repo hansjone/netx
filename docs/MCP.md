@@ -121,7 +121,7 @@ pip install "git+https://github.com/hansjone/netx.git#subdirectory=packages/netx
 
 可选：oclaw 专用字段展开版 [`mcp_install_payload.json`](../mcp_install_payload.json)（与 `mcp.json` 等价）。
 
-**Skills（真源）**：仓库根 [`skills/`](../skills/README.md) — `netx-nms` / `netx-common` / `netx-topology`。MCP 包不再带 skills 镜像；Cursor 直接指 `netx/skills/`。dsh-netxops 发版前可 `sync-skills-from-netx.ps1`。oclaw 旧 playbook 不再维护。
+**Skills（真源）**：仓库根 [`skills/`](../skills/README.md) — `netx-ops` / `netx-topology` (ops = NMS + managed CLI)。MCP 包不再带 skills 镜像；Cursor 直接指 `netx/skills/`。dsh-netxops 发版前可 `sync-skills-from-netx.ps1`。oclaw 旧 playbook 不再维护。
 
 **拓扑画布 MCP**（独立安装/绑定）见 [`MCP_TOPOLOGY.md`](./MCP_TOPOLOGY.md)（`server_id=netx-topology`）。
 
