@@ -34,6 +34,7 @@ from .models import (
     UmeKeyAlertRule,
     UmeSyncJob,
 )
+from .dsh_alarm_hub import hub_status as dsh_alarm_hub_status
 from .oclaw_alarm_forwarder import (
     forwarder_status,
     request_forwarder_reconnect,
@@ -146,7 +147,15 @@ def ume_list_key_alert_rules(
         for row in rows
     ]
     fwd = forwarder_status()
-    return {"items": items, "total": total, "page": page, "page_size": page_size, "forwarder": fwd}
+    hub = dsh_alarm_hub_status()
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "forwarder": fwd,
+        "dsh_alarm_hub": hub,
+    }
 
 
 @router.get("/v1/ume/key-alert-monitor")
@@ -173,6 +182,8 @@ def ume_key_alert_monitor(
         "page": int(base.get("page") or page),
         "page_size": int(base.get("page_size") or page_size),
         "config": get_key_alert_monitor_config(db),
+        "dsh_alarm_hub": base.get("dsh_alarm_hub") or dsh_alarm_hub_status(),
+        # Legacy OClaw outbound bridge (optional; demoted in UI).
         "forwarder": base.get("forwarder") or forwarder_status(),
     }
 

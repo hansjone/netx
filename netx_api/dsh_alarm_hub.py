@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import uuid
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
@@ -24,7 +26,7 @@ from .db import SessionLocal
 _log = logging.getLogger("netx.dsh.alarm_hub")
 
 _LOCK = threading.Lock()
-_CLIENTS: set[WebSocket] = set()
+_CLIENTS: dict[WebSocket, "SubscriberInfo"] = {}
 _LOOP: asyncio.AbstractEventLoop | None = None
 _STATS = {
     "published": 0,
@@ -34,8 +36,31 @@ _STATS = {
 }
 
 
+@dataclass
+class SubscriberInfo:
+    """One authenticated netxops (or other DSH) subscriber."""
+
+    id: str
+    user: str
+    remote: str = ""
+    client: str = ""
+    connected_at: str = field(default_factory=lambda: _utc_now_iso())
+    last_seen_at: str = field(default_factory=lambda: _utc_now_iso())
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _client_remote(websocket: WebSocket) -> str:
+    client = getattr(websocket, "client", None)
+    if client is None:
+        return ""
+    host = getattr(client, "host", None) or ""
+    port = getattr(client, "port", None)
+    if host and port is not None:
+        return f"{host}:{port}"
+    return str(host or "")
 
 
 def bind_event_loop(loop: asyncio.AbstractEventLoop | None) -> None:
@@ -51,16 +76,28 @@ def subscriber_count() -> int:
 
 def hub_status() -> dict[str, Any]:
     with _LOCK:
-        clients = len(_CLIENTS)
+        clients = list(_CLIENTS.values())
         stats = dict(_STATS)
-    stats["subscribers"] = clients
+        stats["subscribers"] = len(clients)
+    connections = [
+        {
+            "id": info.id,
+            "user": info.user,
+            "remote": info.remote,
+            "client": info.client,
+            "connected_at": info.connected_at,
+            "last_seen_at": info.last_seen_at,
+        }
+        for info in sorted(clients, key=lambda x: x.connected_at)
+    ]
     return {
         "enabled": True,
         "path": "/v1/integrations/dsh-alarm/ws",
-        "subscribers": clients,
+        "subscribers": len(connections),
         "published": int(stats.get("published") or 0),
         "deliver_ok": int(stats.get("deliver_ok") or 0),
         "deliver_fail": int(stats.get("deliver_fail") or 0),
+        "connections": connections,
     }
 
 
@@ -96,9 +133,19 @@ async def _send_json(ws: WebSocket, payload: dict[str, Any]) -> bool:
         return False
 
 
+def _drop_clients(dead: list[WebSocket]) -> None:
+    if not dead:
+        return
+    with _LOCK:
+        for ws in dead:
+            _CLIENTS.pop(ws, None)
+        _STATS["subscribers"] = len(_CLIENTS)
+        _STATS["deliver_fail"] += len(dead)
+
+
 async def _broadcast(payload: dict[str, Any]) -> int:
     with _LOCK:
-        clients = list(_CLIENTS)
+        clients = list(_CLIENTS.keys())
     if not clients:
         return 0
     envelope = {
@@ -115,11 +162,7 @@ async def _broadcast(payload: dict[str, Any]) -> int:
         else:
             dead.append(ws)
     if dead:
-        with _LOCK:
-            for ws in dead:
-                _CLIENTS.discard(ws)
-            _STATS["subscribers"] = len(_CLIENTS)
-            _STATS["deliver_fail"] += len(dead)
+        _drop_clients(dead)
         for ws in dead:
             try:
                 await ws.close()
@@ -161,6 +204,7 @@ async def dsh_alarm_ws_loop(websocket: WebSocket) -> None:
     await websocket.accept()
     bind_event_loop(asyncio.get_running_loop())
     authed = False
+    info: SubscriberInfo | None = None
     try:
         while True:
             raw = await websocket.receive_text()
@@ -185,20 +229,41 @@ async def dsh_alarm_ws_loop(websocket: WebSocket) -> None:
                     await _send_json(websocket, {"type": "auth-fail", "error": detail})
                     await websocket.close(code=4401)
                     return
+                client_label = str(
+                    msg.get("client") or msg.get("host") or msg.get("client_id") or ""
+                ).strip()[:120]
+                now = _utc_now_iso()
+                info = SubscriberInfo(
+                    id=uuid.uuid4().hex[:12],
+                    user=detail,
+                    remote=_client_remote(websocket),
+                    client=client_label,
+                    connected_at=now,
+                    last_seen_at=now,
+                )
                 authed = True
                 with _LOCK:
-                    _CLIENTS.add(websocket)
+                    _CLIENTS[websocket] = info
                     _STATS["subscribers"] = len(_CLIENTS)
                 await _send_json(
                     websocket,
                     {
                         "type": "auth-ok",
                         "user": detail,
-                        "ts": _utc_now_iso(),
+                        "connection_id": info.id,
+                        "ts": now,
                     },
                 )
-                _log.info("dsh alarm hub subscriber connected (%s)", detail)
+                _log.info(
+                    "dsh alarm hub subscriber connected id=%s user=%s remote=%s client=%s",
+                    info.id,
+                    detail,
+                    info.remote,
+                    info.client or "-",
+                )
                 continue
+            if info is not None:
+                info.last_seen_at = _utc_now_iso()
             if mtype == "ping":
                 await _send_json(websocket, {"type": "pong", "ts": _utc_now_iso()})
                 continue
@@ -207,6 +272,10 @@ async def dsh_alarm_ws_loop(websocket: WebSocket) -> None:
         return
     finally:
         with _LOCK:
-            _CLIENTS.discard(websocket)
+            _CLIENTS.pop(websocket, None)
             _STATS["subscribers"] = len(_CLIENTS)
-        _log.info("dsh alarm hub subscriber disconnected")
+        _log.info(
+            "dsh alarm hub subscriber disconnected id=%s user=%s",
+            info.id if info else "-",
+            info.user if info else "-",
+        )
