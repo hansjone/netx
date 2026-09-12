@@ -1,5 +1,5 @@
 import { Button, Checkbox, Input, Label, TextField } from "@heroui/react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   apiDelete,
@@ -9,6 +9,7 @@ import {
   fetchCliProfiles,
   fetchManagedNeMeta,
   fetchUmeCliOverride,
+  fetchUmeNe,
   postUmeConnectTest,
 } from "../services/api";
 import { HopProxyFields, emptyHopProxyFields, type HopProxyFieldsState } from "./HopProxyFields";
@@ -17,7 +18,7 @@ import { FieldSelect } from "./ui/FieldSelect";
 import { queryKeys } from "../constants/queryKeys";
 import { useI18n } from "../i18n";
 import { useToast } from "../hooks/useToast";
-import type { CliConnectProfileItem, UmeCliOverrideItem } from "../types";
+import type { CliConnectProfileItem, UmeCliOverrideItem, UmeNeItem } from "../types";
 import { defaultHopTemplate, isAutoHopTemplate, patchHopVendorChange } from "../utils/hopProxy";
 import { formatSystemTime } from "../utils/time";
 
@@ -27,6 +28,14 @@ function connectPillLevel(status: string): "up" | "down" | "unknown" | "warn" {
   if (s === "fail" || s === "error") return "down";
   if (s === "testing") return "warn";
   return "unknown";
+}
+
+function formatUmeNePickLabel(row: UmeNeItem): string {
+  const name = String(row.user_label || row.ne_name || row.host_name || "").trim();
+  const ip = String(row.ip_address || "").trim();
+  const id = String(row.ne_id || "").trim();
+  const head = [name, ip].filter(Boolean).join(" · ");
+  return head ? `${head} · ${id}` : id;
 }
 
 type ProfileForm = {
@@ -97,9 +106,18 @@ export function UmeCliConnectPanel({ enabled = true, embedded = false }: { enabl
   const queryClient = useQueryClient();
   const [form, setForm] = useState<ProfileForm>(emptyForm);
   const [sampleUmeNeId, setSampleUmeNeId] = useState("");
+  const [sampleFilter, setSampleFilter] = useState("");
+  const [sampleOpen, setSampleOpen] = useState(false);
+  const [debouncedFilter, setDebouncedFilter] = useState("");
   const [testPending, setTestPending] = useState(false);
+  const sampleSuggestRef = useRef<HTMLDivElement | null>(null);
 
   const testNeId = sampleUmeNeId.trim();
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedFilter(sampleFilter.trim()), 220);
+    return () => window.clearTimeout(timer);
+  }, [sampleFilter]);
 
   useEffect(() => {
     setTestPending(false);
@@ -108,6 +126,36 @@ export function UmeCliConnectPanel({ enabled = true, embedded = false }: { enabl
   const metaQuery = useQuery({ queryKey: queryKeys.cliMeta, queryFn: fetchCliMeta, enabled });
   const neMetaQuery = useQuery({ queryKey: queryKeys.managedNeMeta, queryFn: fetchManagedNeMeta, enabled });
   const profilesQuery = useQuery({ queryKey: queryKeys.cliProfiles, queryFn: fetchCliProfiles, enabled });
+  const sampleNeQuery = useQuery({
+    queryKey: queryKeys.umeNE(debouncedFilter, 1, 5),
+    queryFn: () => fetchUmeNe({ keyword: debouncedFilter, page: 1, pageSize: 5 }),
+    enabled: enabled && sampleOpen,
+    staleTime: 5000,
+  });
+  const sampleHits = useMemo(
+    () => (sampleNeQuery.data?.items || []).slice(0, 5),
+    [sampleNeQuery.data],
+  );
+
+  useEffect(() => {
+    if (!sampleOpen) return;
+    const el = sampleSuggestRef.current;
+    if (!el) return;
+    const timer = window.setTimeout(() => {
+      const body = el.closest<HTMLElement>('[data-slot="modal-body"], .modal__body');
+      if (body) {
+        const elRect = el.getBoundingClientRect();
+        const bodyRect = body.getBoundingClientRect();
+        const overflow = elRect.bottom - bodyRect.bottom + 16;
+        if (overflow > 0) {
+          body.scrollBy({ top: overflow, behavior: "smooth" });
+          return;
+        }
+      }
+      el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }, 50);
+    return () => window.clearTimeout(timer);
+  }, [sampleOpen, sampleHits.length, sampleNeQuery.isFetching]);
   const overrideQuery = useQuery({
     queryKey: queryKeys.umeCliOverride(testNeId),
     queryFn: () => fetchUmeCliOverride(testNeId),
@@ -333,22 +381,85 @@ export function UmeCliConnectPanel({ enabled = true, embedded = false }: { enabl
       </div>
       <div className={embedded ? undefined : "panel"} style={{ marginTop: 20 }}>
         <h3 className={embedded ? "card__section-title" : undefined}>{t("ume.cli.connectTestTitle")}</h3>
-        <div className="cli-connect-test-row">
-          <Input
-            value={sampleUmeNeId}
-            onChange={(e) => setSampleUmeNeId(e.target.value)}
-            placeholder={t("ume.cli.sampleNePh")}
-          />
-          <Button
-            size="sm"
-            variant="secondary"
-            isDisabled={connectTestMutation.isPending}
-            onPress={() => connectTestMutation.mutate()}
-          >
-            {connectTestMutation.isPending || overrideTesting
-              ? t("managedNe.connect.running")
-              : t("managedNe.connect.run")}
-          </Button>
+        <div className="cli-connect-test">
+          <div className="cli-connect-test-row">
+            <div className="cli-connect-test-pick">
+              <Input
+                value={sampleFilter}
+                onChange={(e) => {
+                  setSampleFilter(e.target.value);
+                  setSampleUmeNeId("");
+                  setSampleOpen(true);
+                }}
+                onFocus={() => setSampleOpen(true)}
+                onBlur={() => {
+                  window.setTimeout(() => setSampleOpen(false), 160);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    setSampleOpen(false);
+                    (e.target as HTMLInputElement).blur();
+                  }
+                  if (e.key === "Enter" && sampleHits[0]) {
+                    e.preventDefault();
+                    const row = sampleHits[0];
+                    setSampleUmeNeId(row.ne_id);
+                    setSampleFilter(formatUmeNePickLabel(row));
+                    setSampleOpen(false);
+                  }
+                }}
+                placeholder={t("ume.cli.sampleNePh")}
+                aria-label={t("ume.cli.connectTestTitle")}
+                aria-autocomplete="list"
+                aria-expanded={sampleOpen}
+              />
+            </div>
+            <Button
+              size="sm"
+              variant="secondary"
+              isDisabled={connectTestMutation.isPending || !testNeId}
+              onPress={() => connectTestMutation.mutate()}
+            >
+              {connectTestMutation.isPending || overrideTesting
+                ? t("managedNe.connect.running")
+                : t("managedNe.connect.run")}
+            </Button>
+          </div>
+          {sampleOpen ? (
+            <div ref={sampleSuggestRef} className="cli-connect-test-suggest" role="listbox">
+              {sampleNeQuery.isLoading ? (
+                <div className="cli-connect-test-suggest__empty">{t("ume.cli.sampleNeLoading")}</div>
+              ) : sampleHits.length === 0 ? (
+                <div className="cli-connect-test-suggest__empty">{t("ume.cli.sampleNeEmpty")}</div>
+              ) : (
+                sampleHits.map((row) => {
+                  const title =
+                    String(row.user_label || row.ne_name || row.ne_id).trim() || row.ne_id;
+                  const meta = [row.ip_address, row.ne_type].filter(Boolean).join(" · ");
+                  return (
+                    <button
+                      key={row.ne_id}
+                      type="button"
+                      className={`cli-connect-test-suggest__item${
+                        row.ne_id === sampleUmeNeId ? " is-active" : ""
+                      }`}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => {
+                        setSampleUmeNeId(row.ne_id);
+                        setSampleFilter(formatUmeNePickLabel(row));
+                        setSampleOpen(false);
+                      }}
+                    >
+                      <span className="cli-connect-test-suggest__name">{title}</span>
+                      <span className="cli-connect-test-suggest__meta">
+                        {meta || row.ne_id}
+                      </span>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          ) : null}
         </div>
         {testNeId ? (
           <div style={{ marginTop: 12 }}>

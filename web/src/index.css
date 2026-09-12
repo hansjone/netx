@@ -2902,17 +2902,95 @@ pre {
   margin-bottom: 0;
 }
 
-.cli-connect-test-row {
+.cli-connect-test {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 8px;
-  align-items: center;
+  width: 100%;
+  min-width: 0;
 }
 
-.cli-connect-test-row input {
-  flex: 1 1 320px;
-  min-width: 240px;
+.cli-connect-test-row {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+}
+
+.cli-connect-test-pick {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.cli-connect-test-pick > input,
+.cli-connect-test-pick [data-slot="input"],
+.cli-connect-test-pick .input {
+  width: 100%;
   margin-bottom: 0;
+}
+
+.cli-connect-test-suggest {
+  width: 100%;
+  margin: 0;
+  padding: 4px;
+  border: 1px solid rgba(56, 189, 248, 0.28);
+  border-radius: 6px;
+  background: rgba(2, 8, 23, 0.92);
+  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.55);
+  overflow: visible;
+}
+
+.cli-connect-test-suggest__item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  margin: 0;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+}
+
+.cli-connect-test-suggest__item + .cli-connect-test-suggest__item {
+  margin-top: 2px;
+}
+
+.cli-connect-test-suggest__item:hover,
+.cli-connect-test-suggest__item.is-active {
+  background: rgba(56, 189, 248, 0.12);
+}
+
+.cli-connect-test-suggest__name {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 650;
+  color: #e2e8f0;
+}
+
+.cli-connect-test-suggest__meta {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: #94a3b8;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+}
+
+.cli-connect-test-suggest__empty {
+  padding: 10px 12px;
+  font-size: 12px;
+  color: #64748b;
 }
 
 .form-grid {
