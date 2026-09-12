@@ -342,9 +342,15 @@ export type RuntimeMetrics = {
   port_traffic?: { running?: boolean };
   device_schedulers?: {
     stale?: boolean;
-    config_sync?: { running?: boolean };
-    lldp_collect?: { running?: boolean };
-    port_traffic?: { running?: boolean };
+    mode?: string;
+    source?: string;
+    age_sec?: number | null;
+    hint?: string | null;
+    config_sync?: { running?: boolean; last_tick_age_sec?: number | null };
+    lldp_collect?: { running?: boolean; last_tick_age_sec?: number | null };
+    ne_collect?: { running?: boolean; last_tick_age_sec?: number | null };
+    port_traffic?: { running?: boolean; last_tick_age_sec?: number | null };
+    fabric_reconcile?: { running?: boolean; last_run_age_sec?: number | null };
   };
   [key: string]: unknown;
 };
