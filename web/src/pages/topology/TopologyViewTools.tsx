@@ -1,3 +1,4 @@
+import { Button, Input } from "@heroui/react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { RefObject } from "react";
 import type { Node } from "@xyflow/react";
@@ -299,16 +300,17 @@ export function TopologyViewTools(props: TopologyViewToolsProps) {
           <div className="topo-display-defaults topo-display-defaults--canvas-bg topo-display-defaults--colors">
             <div className="topo-display-defaults__head">
               <strong>{t("topology.canvasBg")}</strong>
-              <button
+              <Button
                 type="button"
-                className="btn btn--sm btn--ghost"
-                onClick={() => {
+                size="sm"
+                variant="ghost"
+                onPress={() => {
                   onCanvasBgChange(DEFAULT_CANVAS_BG);
                   persistCanvasBg(DEFAULT_CANVAS_BG);
                 }}
               >
                 {t("topology.canvasBgReset")}
-              </button>
+              </Button>
             </div>
             <div className="topo-display-defaults__row">
               <span className="topo-display-defaults__name">{t("topology.canvasBgColor")}</span>
@@ -342,16 +344,17 @@ export function TopologyViewTools(props: TopologyViewToolsProps) {
           <div className="topo-display-defaults topo-display-defaults--canvas-bg topo-display-defaults--colors">
             <div className="topo-display-defaults__head">
               <strong>{t("topology.textColors")}</strong>
-              <button
+              <Button
                 type="button"
-                className="btn btn--sm btn--ghost"
-                onClick={() => {
+                size="sm"
+                variant="ghost"
+                onPress={() => {
                   onLabelColorsChange({ ...DEFAULT_LABEL_COLORS });
                   persistLabelColors({ ...DEFAULT_LABEL_COLORS });
                 }}
               >
                 {t("topology.textColorsReset")}
-              </button>
+              </Button>
             </div>
             {(
               [
@@ -393,16 +396,17 @@ export function TopologyViewTools(props: TopologyViewToolsProps) {
           <div className="topo-display-defaults topo-display-defaults--canvas-bg topo-display-defaults--colors">
             <div className="topo-display-defaults__head">
               <strong>{t("topology.vendorColors")}</strong>
-              <button
+              <Button
                 type="button"
-                className="btn btn--sm btn--ghost"
-                onClick={() => {
+                size="sm"
+                variant="ghost"
+                onPress={() => {
                   onVendorColorsChange({ ...DEFAULT_VENDOR_COLORS });
                   persistVendorColors({ ...DEFAULT_VENDOR_COLORS });
                 }}
               >
                 {t("topology.vendorColorsReset")}
-              </button>
+              </Button>
             </div>
             {VENDOR_TONE_KEYS.map((key) => {
               const label = t(`topology.vendorTone.${key}`);
@@ -444,9 +448,9 @@ export function TopologyViewTools(props: TopologyViewToolsProps) {
           <div className="topo-display-defaults">
             <div className="topo-display-defaults__head">
               <strong>{t("topology.edgeDefaults")}</strong>
-              <button type="button" className="btn btn--sm btn--ghost" onClick={onResetEdgeDefaults}>
+              <Button type="button" size="sm" variant="ghost" onPress={onResetEdgeDefaults}>
                 {t("topology.edgeDefaultsReset")}
-              </button>
+              </Button>
             </div>
             {(
               [
@@ -528,7 +532,7 @@ export function TopologyViewTools(props: TopologyViewToolsProps) {
         aria-label={t("topology.findNode")}
         ref={findBoxRef}
       >
-        <input
+        <Input
           className="topo-toolbar__find"
           value={canvasQuery}
           onChange={(e) => onCanvasQueryChange(e.target.value)}
@@ -571,20 +575,20 @@ export function TopologyViewTools(props: TopologyViewToolsProps) {
               <div className="topo-find-suggest__empty">{t("topology.findNoMatch")}</div>
             ) : (
               canvasHits.slice(0, 12).map((n, idx) => (
-                <button
+                <Button
                   key={n.id}
                   type="button"
-                  role="option"
-                  aria-selected={idx === findActiveIdx}
+                  variant="ghost"
+                  size="sm"
                   className={`topo-find-suggest__item${idx === findActiveIdx ? " is-active" : ""}`}
-                  onMouseEnter={() => onFindActiveIdxChange(idx)}
-                  onClick={() => onFindOnCanvas(n.id)}
+                  onHoverStart={() => onFindActiveIdxChange(idx)}
+                  onPress={() => onFindOnCanvas(n.id)}
                 >
                   <span className="topo-find-suggest__name">{n.data.label || n.id}</span>
                   <span className="topo-find-suggest__meta">
                     {[n.data.ne_ip, n.data.vendor].filter(Boolean).join(SEP)}
                   </span>
-                </button>
+                </Button>
               ))
             )}
             {canvasHits.length > 12 ? (

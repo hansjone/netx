@@ -1,3 +1,5 @@
+import { Button, Chip, Input, Modal } from "@heroui/react";
+import { TopoModalShell } from "../../../components/ui/TopoModalShell";
 import type { TopologyOutsidePeer } from "../../../types";
 import { useI18n } from "../../../i18n";
 
@@ -29,40 +31,20 @@ export function OutsidePeersDialog({
   onAddOutsidePeers,
 }: OutsidePeersDialogProps) {
   const { t } = useI18n();
-  if (!open) return null;
 
   return (
-    <div
-      className="topo-modal"
-      role="dialog"
-      aria-modal="true"
-      aria-label={t("topology.outsidePeersTitle")}
-    >
-      <div
-        className="topo-modal__backdrop"
-        onClick={() => {
-          if (outsidePeersAdding) return;
-          onClose();
-        }}
-      />
-      <div className="topo-modal__panel topo-modal__panel--wide">
-        <div className="topo-modal__head">
-          <strong>
-            {t("topology.outsidePeersTitle")}
-            <span className="topo-modal__count"> · {outsidePeers.length}</span>
-          </strong>
-          <button
-            type="button"
-            className="btn btn--sm btn--ghost"
-            disabled={outsidePeersAdding}
-            onClick={onClose}
-          >
-            {t("topology.discoverClose")}
-          </button>
-        </div>
-        <p className="panel__hint topo-modal__hint">{t("topology.outsidePeersHint")}</p>
-        <input
-          className="input"
+    <TopoModalShell open={open} onClose={onClose} dismissible={!outsidePeersAdding} size="lg">
+      <Modal.Header>
+        <Modal.Heading>
+          {t("topology.outsidePeersTitle")}
+          <span className="topo-modal__count"> · {outsidePeers.length}</span>
+        </Modal.Heading>
+        <Modal.CloseTrigger isDisabled={outsidePeersAdding} />
+      </Modal.Header>
+      <Modal.Body className="flex flex-col gap-3">
+        <p className="text-sm text-muted">{t("topology.outsidePeersHint")}</p>
+        <Input
+          className="w-full"
           value={outsidePeerQuery}
           onChange={(e) => onOutsidePeerQueryChange(e.target.value)}
           placeholder={t("topology.outsidePeersFilterPh")}
@@ -95,12 +77,14 @@ export function OutsidePeersDialog({
               />
               <span>{t("topology.selectAllVisible")}</span>
             </label>
-            <span className="panel__hint">
-              {t("topology.selectedCount").replace(
-                "{{count}}",
-                String(outsidePeerSelectedIds.length),
-              )}
-            </span>
+            <Chip size="sm" variant="soft">
+              <Chip.Label>
+                {t("topology.selectedCount").replace(
+                  "{{count}}",
+                  String(outsidePeerSelectedIds.length),
+                )}
+              </Chip.Label>
+            </Chip>
           </div>
         ) : null}
         <ul className="topo-palette topo-modal__list">
@@ -157,30 +141,25 @@ export function OutsidePeersDialog({
             })
           )}
         </ul>
-        <div className="topo-modal__foot">
-          <button
-            type="button"
-            className="btn btn--sm btn--ghost"
-            disabled={outsidePeersAdding}
-            onClick={onClose}
-          >
-            {t("topology.discoverClose")}
-          </button>
-          <button
-            type="button"
-            className="btn btn--sm"
-            disabled={outsidePeerSelectedIds.length === 0 || outsidePeersAdding}
-            onClick={() => void onAddOutsidePeers(outsidePeerSelectedIds)}
-          >
-            {outsidePeersAdding
-              ? t("topology.addingNe")
-              : t("topology.addSelected").replace(
-                  "{{count}}",
-                  String(outsidePeerSelectedIds.length),
-                )}
-          </button>
-        </div>
-      </div>
-    </div>
+      </Modal.Body>
+      <Modal.Footer>
+        <Button variant="tertiary" size="sm" isDisabled={outsidePeersAdding} onPress={onClose}>
+          {t("topology.discoverClose")}
+        </Button>
+        <Button
+          variant="primary"
+          size="sm"
+          isDisabled={outsidePeerSelectedIds.length === 0 || outsidePeersAdding}
+          onPress={() => void onAddOutsidePeers(outsidePeerSelectedIds)}
+        >
+          {outsidePeersAdding
+            ? t("topology.addingNe")
+            : t("topology.addSelected").replace(
+                "{{count}}",
+                String(outsidePeerSelectedIds.length),
+              )}
+        </Button>
+      </Modal.Footer>
+    </TopoModalShell>
   );
 }

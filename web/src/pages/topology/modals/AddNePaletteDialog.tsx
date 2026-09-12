@@ -1,4 +1,6 @@
 import type { DragEvent } from "react";
+import { Button, Chip, Input, Modal } from "@heroui/react";
+import { TopoModalShell } from "../../../components/ui/TopoModalShell";
 import { useI18n } from "../../../i18n";
 import type { PaletteItem, PaletteSource } from "../pageTypes";
 
@@ -34,54 +36,37 @@ export function AddNePaletteDialog({
   onAddSelected,
 }: AddNePaletteDialogProps) {
   const { t } = useI18n();
-  if (!open) return null;
 
   return (
-    <div className="topo-modal" role="dialog" aria-modal="true" aria-label={t("topology.addNe")}>
-      <div
-        className="topo-modal__backdrop"
-        onClick={() => {
-          if (paletteAdding) return;
-          onClose();
-        }}
-      />
-      <div className="topo-modal__panel">
-        <div className="topo-modal__head">
-          <strong>{t("topology.addNe")}</strong>
-          <button
-            type="button"
-            className="btn btn--sm btn--ghost"
-            disabled={paletteAdding}
-            onClick={onClose}
-          >
-            {t("topology.discoverClose")}
-          </button>
-        </div>
-        <p className="panel__hint topo-modal__hint">{t("topology.paletteHint")}</p>
-        <div className="topo-palette-source" role="tablist">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={paletteSource === "managed"}
-            className={`topo-palette-source__btn${paletteSource === "managed" ? " is-active" : ""}`}
-            disabled={paletteAdding}
-            onClick={() => onPaletteSourceChange("managed")}
+    <TopoModalShell open={open} onClose={onClose} dismissible={!paletteAdding} size="md">
+      <Modal.Header>
+        <Modal.Heading>{t("topology.addNe")}</Modal.Heading>
+        <Modal.CloseTrigger isDisabled={paletteAdding} />
+      </Modal.Header>
+      <Modal.Body className="flex flex-col gap-3">
+        <p className="text-sm text-muted">{t("topology.paletteHint")}</p>
+        <div className="topo-palette-source flex gap-2" role="tablist">
+          <Button
+            size="sm"
+            variant={paletteSource === "managed" ? "primary" : "secondary"}
+            isDisabled={paletteAdding}
+            className="flex-1"
+            onPress={() => onPaletteSourceChange("managed")}
           >
             {t("topology.paletteManaged")}
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={paletteSource === "ume"}
-            className={`topo-palette-source__btn${paletteSource === "ume" ? " is-active" : ""}`}
-            disabled={paletteAdding}
-            onClick={() => onPaletteSourceChange("ume")}
+          </Button>
+          <Button
+            size="sm"
+            variant={paletteSource === "ume" ? "primary" : "secondary"}
+            isDisabled={paletteAdding}
+            className="flex-1"
+            onPress={() => onPaletteSourceChange("ume")}
           >
             {t("topology.paletteUme")}
-          </button>
+          </Button>
         </div>
-        <input
-          className="input"
+        <Input
+          className="w-full"
           value={keyword}
           onChange={(e) => onKeywordChange(e.target.value)}
           placeholder={t("topology.filterPh")}
@@ -109,9 +94,11 @@ export function AddNePaletteDialog({
               />
               <span>{t("topology.selectAllVisible")}</span>
             </label>
-            <span className="panel__hint">
-              {t("topology.selectedCount").replace("{{count}}", String(paletteSelectedKeys.length))}
-            </span>
+            <Chip size="sm" variant="soft">
+              <Chip.Label>
+                {t("topology.selectedCount").replace("{{count}}", String(paletteSelectedKeys.length))}
+              </Chip.Label>
+            </Chip>
           </div>
         ) : null}
         <ul className="topo-palette topo-modal__list">
@@ -168,27 +155,22 @@ export function AddNePaletteDialog({
             })
           )}
         </ul>
-        <div className="topo-modal__foot">
-          <button
-            type="button"
-            className="btn btn--sm btn--ghost"
-            disabled={paletteAdding}
-            onClick={onClose}
-          >
-            {t("topology.discoverClose")}
-          </button>
-          <button
-            type="button"
-            className="btn btn--sm"
-            disabled={paletteSelectedKeys.length === 0 || paletteAdding}
-            onClick={() => void onAddSelected()}
-          >
-            {paletteAdding
-              ? t("topology.addingNe")
-              : t("topology.addSelected").replace("{{count}}", String(paletteSelectedKeys.length))}
-          </button>
-        </div>
-      </div>
-    </div>
+      </Modal.Body>
+      <Modal.Footer>
+        <Button variant="tertiary" size="sm" isDisabled={paletteAdding} onPress={onClose}>
+          {t("topology.discoverClose")}
+        </Button>
+        <Button
+          variant="primary"
+          size="sm"
+          isDisabled={paletteSelectedKeys.length === 0 || paletteAdding}
+          onPress={() => void onAddSelected()}
+        >
+          {paletteAdding
+            ? t("topology.addingNe")
+            : t("topology.addSelected").replace("{{count}}", String(paletteSelectedKeys.length))}
+        </Button>
+      </Modal.Footer>
+    </TopoModalShell>
   );
 }

@@ -1,5 +1,7 @@
+import { Alert, Button, Chip, Modal } from "@heroui/react";
 import { useMutation } from "@tanstack/react-query";
 import { connectTestManagedNe } from "../../services/api";
+import { AppModalShell } from "../../components/ui/AppModalShell";
 import { useI18n } from "../../i18n";
 import { formatSystemTime } from "../../utils/time";
 import type { ManagedNeItem } from "../../types";
@@ -11,6 +13,13 @@ export type ManagedNeConnectDetailDialogProps = {
   /** Called after a retest is submitted so parent can refresh/poll. */
   onRetestSubmitted?: (rowId: string) => void;
 };
+
+function chipColor(level: string): "success" | "danger" | "warning" | "default" {
+  if (level === "up" || level === "pass") return "success";
+  if (level === "down" || level === "fail") return "danger";
+  if (level === "testing") return "warning";
+  return "default";
+}
 
 export function ManagedNeConnectDetailDialog({
   row,
@@ -25,47 +34,61 @@ export function ManagedNeConnectDetailDialog({
     },
   });
 
-  if (!row) return null;
+  const open = Boolean(row);
+  const level = row ? connectPillLevel(row.connect_status) : "unknown";
 
   return (
-    <div className="modal-backdrop" role="presentation" onClick={onClose}>
-      <div className="modal modal--wide" role="dialog" onClick={(e) => e.stopPropagation()}>
-        <h3>{t("managedNe.connectDetailTitle")}</h3>
-        <p className="form-hint">
-          {row.name || row.ip_address} · {row.ip_address}:{row.port}/{row.protocol}
-          {row.connect_tested_at
-            ? ` · ${formatSystemTime(row.connect_tested_at, { assumeUtcNaive: true })}`
-            : ""}
-        </p>
-        <p>
-          <span className={`conn-pill conn-pill--${connectPillLevel(row.connect_status)}`}>
-            {row.connect_status}
-          </span>
-          {row.connect_message ? (
-            <span className="connect-detail-summary"> — {row.connect_message}</span>
-          ) : null}
-        </p>
-        <pre className="connect-log">
-          {row.connect_detail?.trim() || row.connect_message?.trim() || t("managedNe.connectDetailEmpty")}
-        </pre>
-        <div className="modal__actions">
-          <button
-            type="button"
-            disabled={connectMutation.isPending}
-            onClick={() => connectMutation.mutate([row.id])}
-          >
-            {connectMutation.isPending ? t("managedNe.connect.running") : t("managedNe.connect.retest")}
-          </button>
-          <button type="button" onClick={onClose}>
-            {t("managedNe.form.cancel")}
-          </button>
-        </div>
-        {connectMutation.isError ? (
-          <p className="form-hint" role="alert">
-            {String(connectMutation.error)}
-          </p>
+    <AppModalShell open={open} onClose={onClose} size="lg">
+      <Modal.Header>
+        <Modal.Heading>{t("managedNe.connectDetailTitle")}</Modal.Heading>
+        <Modal.CloseTrigger />
+      </Modal.Header>
+      <Modal.Body className="flex flex-col gap-3">
+        {row ? (
+          <>
+            <p className="text-sm text-muted">
+              {row.name || row.ip_address} · {row.ip_address}:{row.port}/{row.protocol}
+              {row.connect_tested_at
+                ? ` · ${formatSystemTime(row.connect_tested_at, { assumeUtcNaive: true })}`
+                : ""}
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <Chip size="sm" color={chipColor(level)} variant="soft">
+                <Chip.Label>{row.connect_status}</Chip.Label>
+              </Chip>
+              {row.connect_message ? (
+                <span className="connect-detail-summary text-sm">— {row.connect_message}</span>
+              ) : null}
+            </div>
+            <pre className="connect-log">
+              {row.connect_detail?.trim() ||
+                row.connect_message?.trim() ||
+                t("managedNe.connectDetailEmpty")}
+            </pre>
+          </>
         ) : null}
-      </div>
-    </div>
+        {connectMutation.isError ? (
+          <Alert status="danger">
+            <Alert.Content>
+              <Alert.Description>{String(connectMutation.error)}</Alert.Description>
+            </Alert.Content>
+          </Alert>
+        ) : null}
+      </Modal.Body>
+      <Modal.Footer>
+        <Button
+          variant="primary"
+          isDisabled={!row || connectMutation.isPending}
+          onPress={() => {
+            if (row) connectMutation.mutate([row.id]);
+          }}
+        >
+          {connectMutation.isPending ? t("managedNe.connect.running") : t("managedNe.connect.retest")}
+        </Button>
+        <Button variant="tertiary" onPress={onClose}>
+          {t("managedNe.form.cancel")}
+        </Button>
+      </Modal.Footer>
+    </AppModalShell>
   );
 }

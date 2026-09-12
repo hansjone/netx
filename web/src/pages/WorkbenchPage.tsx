@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { Button } from "@heroui/react";
 import { useI18n } from "../i18n";
 import { WorkbenchCardIcon } from "../components/WorkbenchCardIcon";
 import { modulesInSection, type ModuleDefinition, type WorkbenchSection } from "../config/modules";
@@ -250,16 +251,16 @@ export function WorkbenchPage() {
             </div>
             <div className="wb-grid">
               {mods.map((mod) => (
-                <button
+                <Button
                   key={mod.moduleId}
-                  type="button"
+                  variant="ghost"
                   className={`wb-card wb-card--${mod.iconTone}`}
-                  title={t("workbench.openModule")}
-                  onClick={() => openOrFocusModule({ moduleId: mod.moduleId, path: mod.path })}
+                  aria-label={t("workbench.openModule")}
+                  onPress={() => openOrFocusModule({ moduleId: mod.moduleId, path: mod.path })}
                 >
                   <WorkbenchCardIcon tone={mod.iconTone} kind={mod.iconKind} />
                   <span className="wb-card__label">{t(mod.labelKey)}</span>
-                </button>
+                </Button>
               ))}
             </div>
           </section>

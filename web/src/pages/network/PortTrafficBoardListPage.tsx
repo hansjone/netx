@@ -1,3 +1,4 @@
+import { Button } from "@heroui/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   createPortTrafficBoard,
@@ -52,90 +53,91 @@ export function PortTrafficBoardListPage() {
       <div className="panel__toolbar">
         <h2>{t("portTraffic.wallTitle")}</h2>
         <div className="btn-row">
-          <button
-            type="button"
-            className="btn-primary"
-            disabled={createMut.isPending}
-            onClick={() => createMut.mutate()}
+          <Button
+            size="sm"
+            variant="primary"
+            isDisabled={createMut.isPending}
+            onPress={() => createMut.mutate()}
           >
             {t("portTraffic.boardCreate")}
-          </button>
+          </Button>
         </div>
       </div>
 
       <div className="pt-list">
-      {boardsQuery.isLoading ? (
-        <p className="muted">…</p>
-      ) : boardsQuery.isError ? (
-        <p className="error">{(boardsQuery.error as Error)?.message || t("common.opFailed")}</p>
-      ) : !boards.length ? (
-        <div className="pt-list-empty">
-          <p>{t("portTraffic.boardEmpty")}</p>
-          <button
-            type="button"
-            className="btn-primary"
-            disabled={createMut.isPending}
-            onClick={() => createMut.mutate()}
-          >
-            {t("portTraffic.boardCreate")}
-          </button>
-        </div>
-      ) : (
-        <div className="pt-list-table-wrap">
-          <table className="data-table pt-list-table">
-            <thead>
-              <tr>
-                <th>{t("portTraffic.boardName")}</th>
-                <th>{t("portTraffic.boardPanelCount")}</th>
-                <th>{t("portTraffic.boardCols")}</th>
-                <th>{t("portTraffic.boardUpdated")}</th>
-                <th>{t("portTraffic.col.actions")}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {boards.map((b) => (
-                <tr key={b.id}>
-                  <td>
-                    <button
-                      type="button"
-                      className="link-btn pt-list-task-name"
-                      onClick={() => openPortTrafficBoardWindow(b.id)}
-                    >
-                      {b.name || t("portTraffic.boardDefaultName")}
-                    </button>
-                  </td>
-                  <td>{b.panel_count}</td>
-                  <td>{b.cols}</td>
-                  <td>{b.updated_at ? formatSystemTime(b.updated_at) : "—"}</td>
-                  <td>
-                    <div className="btn-row table-actions">
-                      <button
-                        type="button"
-                        className="btn-primary"
-                        onClick={() => openPortTrafficBoardWindow(b.id)}
-                      >
-                        {t("portTraffic.boardOpen")}
-                      </button>
-                      <button
-                        type="button"
-                        className="btn--danger"
-                        disabled={deleteMut.isPending}
-                        onClick={() => {
-                          if (window.confirm(t("portTraffic.boardConfirmDelete"))) {
-                            deleteMut.mutate(b.id);
-                          }
-                        }}
-                      >
-                        {t("portTraffic.delete")}
-                      </button>
-                    </div>
-                  </td>
+        {boardsQuery.isLoading ? (
+          <p className="muted">…</p>
+        ) : boardsQuery.isError ? (
+          <p className="error">{(boardsQuery.error as Error)?.message || t("common.opFailed")}</p>
+        ) : !boards.length ? (
+          <div className="pt-list-empty">
+            <p>{t("portTraffic.boardEmpty")}</p>
+            <Button
+              size="sm"
+              variant="primary"
+              isDisabled={createMut.isPending}
+              onPress={() => createMut.mutate()}
+            >
+              {t("portTraffic.boardCreate")}
+            </Button>
+          </div>
+        ) : (
+          <div className="pt-list-table-wrap">
+            <table className="data-table pt-list-table">
+              <thead>
+                <tr>
+                  <th>{t("portTraffic.boardName")}</th>
+                  <th>{t("portTraffic.boardPanelCount")}</th>
+                  <th>{t("portTraffic.boardCols")}</th>
+                  <th>{t("portTraffic.boardUpdated")}</th>
+                  <th>{t("portTraffic.col.actions")}</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+              </thead>
+              <tbody>
+                {boards.map((b) => (
+                  <tr key={b.id}>
+                    <td>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="link-btn pt-list-task-name"
+                        onPress={() => openPortTrafficBoardWindow(b.id)}
+                      >
+                        {b.name || t("portTraffic.boardDefaultName")}
+                      </Button>
+                    </td>
+                    <td>{b.panel_count}</td>
+                    <td>{b.cols}</td>
+                    <td>{b.updated_at ? formatSystemTime(b.updated_at) : "—"}</td>
+                    <td>
+                      <div className="btn-row table-actions">
+                        <Button
+                          size="sm"
+                          variant="primary"
+                          onPress={() => openPortTrafficBoardWindow(b.id)}
+                        >
+                          {t("portTraffic.boardOpen")}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="danger"
+                          isDisabled={deleteMut.isPending}
+                          onPress={() => {
+                            if (window.confirm(t("portTraffic.boardConfirmDelete"))) {
+                              deleteMut.mutate(b.id);
+                            }
+                          }}
+                        >
+                          {t("portTraffic.delete")}
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </section>
   );

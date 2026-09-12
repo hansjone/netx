@@ -440,6 +440,30 @@ class AuthApiTests(unittest.TestCase):
         )
         self.assertEqual(empty.status_code, 400)
 
+    def test_api_token_max_count(self) -> None:
+        token = self._login()
+        with patch("netx_api.auth_service.settings.auth_api_token_max_count", 2):
+            listed = self.client.get("/v1/api-tokens", headers={"Authorization": f"Bearer {token}"})
+            self.assertEqual(listed.status_code, 200, listed.text)
+            body = listed.json()
+            self.assertEqual(body.get("max_count"), 2)
+            active = int(body.get("active_count") or 0)
+            while active < 2:
+                created = self.client.post(
+                    "/v1/api-tokens",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={"name": f"cap-{active}", "expires_in_days": 7},
+                )
+                self.assertEqual(created.status_code, 200, created.text)
+                active += 1
+            blocked = self.client.post(
+                "/v1/api-tokens",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"name": "over-cap", "expires_in_days": 7},
+            )
+            self.assertEqual(blocked.status_code, 400, blocked.text)
+            self.assertIn("api_token_limit_reached", str(blocked.json().get("detail") or ""))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,7 +1,9 @@
+import { Button, Input, Modal } from "@heroui/react";
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { ListPager } from "../components/ListPager";
+import { AppModalShell } from "../components/ui/AppModalShell";
 import {
   createNeCollection,
   deleteCollectionJob,
@@ -29,8 +31,8 @@ import { pageCount } from "../utils/display";
 import { formatSystemTime } from "../utils/time";
 
 const POLL_MS = 2000;
-const ELIGIBLE_PAGE_SIZE = 20;
-const POLICY_TARGET_PAGE_SIZE = 20;
+const ELIGIBLE_PAGE_SIZE = 10;
+const POLICY_TARGET_PAGE_SIZE = 10;
 const JOB_STATUS_OPTIONS = ["draft", "pending", "running", "paused", "done", "failed", "cancelled"] as const;
 const JOB_PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
 const RUN_PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
@@ -71,7 +73,7 @@ export function CollectPage() {
   const [neKeyword, setNeKeyword] = useState("");
   const [nePage, setNePage] = useState(1);
   const [jobPage, setJobPage] = useState(1);
-  const [jobPageSize, setJobPageSize] = useState(20);
+  const [jobPageSize, setJobPageSize] = useState(10);
   const [jobStatus, setJobStatus] = useState("");
   const [jobKeyword, setJobKeyword] = useState("");
   const [exportingJobs, setExportingJobs] = useState(false);
@@ -468,35 +470,42 @@ export function CollectPage() {
             ) : null}
           </div>
           <div className="btn-row">
-            <button
-              type="button"
-              disabled={exportingJobs || jobTotal === 0}
-              onClick={() => void exportJobsCsv()}
+            <Button
+              size="sm"
+              variant="secondary"
+              isDisabled={exportingJobs || jobTotal === 0}
+              onPress={() => void exportJobsCsv()}
             >
               {exportingJobs ? t("common.exporting") : t("common.exportCsv")}
-            </button>
-            <button type="button" onClick={refreshAll} disabled={jobsQuery.isFetching || dashQuery.isFetching}>
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              isDisabled={jobsQuery.isFetching || dashQuery.isFetching}
+              onPress={refreshAll}
+            >
               {jobsQuery.isFetching || dashQuery.isFetching ? t("common.refreshing") : t("common.refresh")}
-            </button>
-            <button
-              type="button"
-              className="btn-primary"
-              disabled={startFromPolicyMutation.isPending || jobActive}
-              onClick={() => startFromPolicyMutation.mutate()}
+            </Button>
+            <Button
+              size="sm"
+              variant="primary"
+              isDisabled={startFromPolicyMutation.isPending || jobActive}
+              onPress={() => startFromPolicyMutation.mutate()}
             >
               {startFromPolicyMutation.isPending ? t("collect.form.starting") : t("collect.collectNow")}
-            </button>
-            <button type="button" onClick={() => setCreateOpen(true)}>
+            </Button>
+            <Button size="sm" variant="secondary" onPress={() => setCreateOpen(true)}>
               {t("collect.create.expand")}
-            </button>
+            </Button>
             {running?.status === "running" || running?.status === "pending" ? (
-              <button
-                type="button"
-                onClick={() => pauseMutation.mutate(running.id)}
-                disabled={pauseMutation.isPending}
+              <Button
+                size="sm"
+                variant="secondary"
+                isDisabled={pauseMutation.isPending}
+                onPress={() => pauseMutation.mutate(running.id)}
               >
                 {t("collect.jobs.pause")}
-              </button>
+              </Button>
             ) : null}
           </div>
         </div>
@@ -600,14 +609,13 @@ export function CollectPage() {
               <option value="selected">{t("collect.scopeSelected")}</option>
             </select>
           </label>
-          <button
-            type="button"
-            className="btn-primary"
-            disabled={savePolicyMutation.isPending}
-            onClick={() => savePolicyMutation.mutate()}
+          <Button
+            variant="primary"
+            isDisabled={savePolicyMutation.isPending}
+            onPress={() => savePolicyMutation.mutate()}
           >
             {t("collect.savePolicy")}
-          </button>
+          </Button>
         </div>
 
         <div className="form-grid form-grid--single" style={{ marginTop: 12 }}>
@@ -726,17 +734,18 @@ export function CollectPage() {
                 </option>
               ))}
             </select>
-            <button
-              type="button"
-              disabled={!hasJobFilters}
-              onClick={() => {
+            <Button
+              size="sm"
+              variant="tertiary"
+              isDisabled={!hasJobFilters}
+              onPress={() => {
                 setJobKeyword("");
                 setJobStatus("");
                 setJobPage(1);
               }}
             >
               {t("common.clearFilters")}
-            </button>
+            </Button>
           </div>
 
           {jobsQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
@@ -795,324 +804,312 @@ export function CollectPage() {
         </div>
       </section>
 
-      {createOpen ? (
-        <div className="modal-backdrop" role="presentation" onClick={() => setCreateOpen(false)}>
-          <div
-            className="modal modal--wide ops-detail-modal ops-detail-modal--xl"
-            role="dialog"
-            aria-modal="true"
-            aria-label={t("collect.create.title")}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="ops-detail-modal__head">
-              <div className="ops-detail-modal__title">
-                <h3>{t("collect.create.title")}</h3>
-                <p className="muted">{t("collect.create.hint")}</p>
+      <AppModalShell
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        dismissible={!createMutation.isPending}
+        size="lg"
+        className="ops-detail-modal"
+      >
+        <Modal.Header>
+          <Modal.Heading>{t("collect.create.title")}</Modal.Heading>
+          <Modal.CloseTrigger isDisabled={createMutation.isPending} />
+        </Modal.Header>
+        <Modal.Body className="flex flex-col gap-3">
+          <p className="muted">{t("collect.create.hint")}</p>
+          <div className="collect-create-modal">
+            <div className="form-grid form-grid--single">
+              <label className="form-grid__full">
+                {t("collect.form.jobTitle")}
+                <Input
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  placeholder={t("collect.form.jobTitlePh")}
+                />
+              </label>
+              <label className="form-grid__full">
+                {t("collect.form.commands")}
+                <textarea
+                  className="collect-commands"
+                  rows={6}
+                  value={commands}
+                  onChange={(e) => setCommands(e.target.value)}
+                  placeholder={t("collect.form.commandsPh")}
+                />
+              </label>
+            </div>
+            <p className="panel__hint">{t("collect.form.commandsHint")}</p>
+
+            <div className="collect-selected-block">
+              <div className="collect-selected-block__head">
+                <h3>{t("collect.create.selectedTitle")}</h3>
+                <span className="collect-meta">
+                  {t("collect.create.selectedCount", { count: selectedList.length })}
+                </span>
+                {selectedList.length > 0 ? (
+                  <Button size="sm" variant="ghost" className="link-btn" onPress={clearSelected}>
+                    {t("collect.create.clearSelected")}
+                  </Button>
+                ) : null}
               </div>
-              <div className="btn-row ops-detail-modal__actions">
-                <button type="button" onClick={() => setCreateOpen(false)}>
-                  {t("networkConfigs.close")}
-                </button>
-              </div>
+              {selectedList.length === 0 ? (
+                <p className="panel__hint">{t("collect.create.selectedEmpty")}</p>
+              ) : (
+                <div className="collect-selected-list">
+                  {selectedList.map((row) => {
+                    const key = eligibleKey(row);
+                    const src = String(row.source || "managed").toLowerCase();
+                    return (
+                      <div key={key} className="collect-selected-chip">
+                        <span className="collect-selected-chip__main">
+                          <strong>{row.name || row.ip_address}</strong>
+                          <span className="collect-selected-chip__meta">
+                            {src}
+                            {row.ip_address ? ` · ${row.ip_address}` : ""}
+                            {row.vendor ? ` · ${row.vendor}` : ""}
+                          </span>
+                        </span>
+                        <Button size="sm" variant="ghost" className="link-btn" onPress={() => removeNe(key)}>
+                          {t("collect.create.remove")}
+                        </Button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
-            <div className="ops-detail-modal__scroll ops-detail-modal__scroll--pad collect-create-modal">
-              <div className="form-grid form-grid--single">
-                <label className="form-grid__full">
-                  {t("collect.form.jobTitle")}
-                  <input
-                    value={title}
-                    onChange={(e) => setTitle(e.target.value)}
-                    placeholder={t("collect.form.jobTitlePh")}
-                  />
-                </label>
-                <label className="form-grid__full">
-                  {t("collect.form.commands")}
-                  <textarea
-                    className="collect-commands"
-                    rows={6}
-                    value={commands}
-                    onChange={(e) => setCommands(e.target.value)}
-                    placeholder={t("collect.form.commandsPh")}
-                  />
-                </label>
-              </div>
-              <p className="panel__hint">{t("collect.form.commandsHint")}</p>
-
-              <div className="collect-selected-block">
-                <div className="collect-selected-block__head">
-                  <h3>{t("collect.create.selectedTitle")}</h3>
-                  <span className="collect-meta">
-                    {t("collect.create.selectedCount", { count: selectedList.length })}
-                  </span>
-                  {selectedList.length > 0 ? (
-                    <button type="button" className="link-btn" onClick={clearSelected}>
-                      {t("collect.create.clearSelected")}
-                    </button>
-                  ) : null}
+            <div className="collect-pick-block">
+              <div className="panel__toolbar">
+                <div>
+                  <h3>{t("collect.create.pickTitle")}</h3>
+                  <p className="panel__hint">{t("collect.create.pickHint")}</p>
                 </div>
-                {selectedList.length === 0 ? (
-                  <p className="panel__hint">{t("collect.create.selectedEmpty")}</p>
-                ) : (
-                  <div className="collect-selected-list">
-                    {selectedList.map((row) => {
+                <div className="table-actions">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="link-btn"
+                    isDisabled={batchPickCount === 0}
+                    onPress={() => {
+                      const rows = eligibleItems.filter(
+                        (x) => pickSelectedIds.includes(eligibleKey(x)) && !selectedMap[eligibleKey(x)],
+                      );
+                      addBatchNe(rows);
+                      setPickSelectedIds([]);
+                    }}
+                  >
+                    {t("collect.create.addBatch", { count: batchPickCount })}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    isDisabled={eligibleQuery.isFetching}
+                    onPress={() => void eligibleQuery.refetch()}
+                  >
+                    {eligibleQuery.isFetching ? t("common.refreshing") : t("common.refresh")}
+                  </Button>
+                </div>
+              </div>
+              <div className="ops-detail-modal__toolbar filter-inline">
+                <Input
+                  type="search"
+                  value={neKeyword}
+                  placeholder={t("collect.create.filterKeywordPh")}
+                  onChange={(e) => {
+                    setNeKeyword(e.target.value);
+                    setNePage(1);
+                    setPickSelectedIds([]);
+                  }}
+                />
+              </div>
+              {eligibleQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
+              <div className="pt-list-table-wrap">
+                <table className="data-table pt-list-table">
+                  <thead>
+                    <tr>
+                      <th>
+                        <input
+                          type="checkbox"
+                          checked={allPickSelected}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setPickSelectedIds(selectablePickItems.map((row) => eligibleKey(row)));
+                              return;
+                            }
+                            setPickSelectedIds([]);
+                          }}
+                          aria-label="pick all"
+                        />
+                      </th>
+                      <th>{t("managedNe.col.source")}</th>
+                      <th>{t("managedNe.col.name")}</th>
+                      <th>{t("managedNe.col.vendor")}</th>
+                      <th>{t("managedNe.col.ip")}</th>
+                      <th>{t("managedNe.col.connect")}</th>
+                      <th />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {eligibleItems.map((row) => {
                       const key = eligibleKey(row);
+                      const picked = Boolean(selectedMap[key]);
                       const src = String(row.source || "managed").toLowerCase();
                       return (
-                        <div key={key} className="collect-selected-chip">
-                          <span className="collect-selected-chip__main">
-                            <strong>{row.name || row.ip_address}</strong>
-                            <span className="collect-selected-chip__meta">
-                              {src}
-                              {row.ip_address ? ` · ${row.ip_address}` : ""}
-                              {row.vendor ? ` · ${row.vendor}` : ""}
-                            </span>
-                          </span>
-                          <button type="button" className="link-btn" onClick={() => removeNe(key)}>
-                            {t("collect.create.remove")}
-                          </button>
-                        </div>
+                        <tr key={key}>
+                          <td>
+                            <input
+                              type="checkbox"
+                              checked={pickSelectedIds.includes(key)}
+                              disabled={picked}
+                              onChange={(e) => {
+                                if (picked) return;
+                                setPickSelectedIds((prev) =>
+                                  e.target.checked
+                                    ? [...new Set([...prev, key])]
+                                    : prev.filter((id) => id !== key),
+                                );
+                              }}
+                            />
+                          </td>
+                          <td>
+                            <span className="table-tag">{src}</span>
+                          </td>
+                          <td>{row.name || row.ip_address}</td>
+                          <td>{row.vendor}</td>
+                          <td>{row.ip_address}</td>
+                          <td>
+                            <span className="conn-pill conn-pill--up">{row.connect_status}</span>
+                          </td>
+                          <td className="table-actions">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="link-btn"
+                              isDisabled={picked}
+                              onPress={() => {
+                                addNe(row);
+                                setPickSelectedIds((prev) => prev.filter((id) => id !== key));
+                              }}
+                            >
+                              {picked ? t("collect.create.added") : t("collect.create.add")}
+                            </Button>
+                          </td>
+                        </tr>
                       );
                     })}
-                  </div>
-                )}
+                    {!eligibleQuery.isLoading && eligibleItems.length === 0 ? (
+                      <tr>
+                        <td colSpan={7} className="muted">
+                          {t("collect.create.pickEmpty")}
+                        </td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
               </div>
-
-              <div className="collect-pick-block">
-                <div className="panel__toolbar">
-                  <div>
-                    <h3>{t("collect.create.pickTitle")}</h3>
-                    <p className="panel__hint">{t("collect.create.pickHint")}</p>
-                  </div>
-                  <div className="table-actions">
-                    <button
-                      type="button"
-                      className="link-btn"
-                      disabled={batchPickCount === 0}
-                      onClick={() => {
-                        const rows = eligibleItems.filter(
-                          (x) => pickSelectedIds.includes(eligibleKey(x)) && !selectedMap[eligibleKey(x)],
-                        );
-                        addBatchNe(rows);
+              {neTotal > 0 ? (
+                <div className="ops-detail-modal__foot" style={{ marginTop: 10 }}>
+                  <span className="muted">
+                    {t("common.pagerMeta", {
+                      total: String(neTotal),
+                      page: String(nePage),
+                      pages: String(nePages),
+                    })}
+                  </span>
+                  <div className="btn-row">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      isDisabled={nePage <= 1}
+                      onPress={() => {
+                        setNePage(nePage - 1);
                         setPickSelectedIds([]);
                       }}
                     >
-                      {t("collect.create.addBatch", { count: batchPickCount })}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => eligibleQuery.refetch()}
-                      disabled={eligibleQuery.isFetching}
+                      {t("common.prevPage")}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      isDisabled={nePage >= nePages}
+                      onPress={() => {
+                        setNePage(nePage + 1);
+                        setPickSelectedIds([]);
+                      }}
                     >
-                      {eligibleQuery.isFetching ? t("common.refreshing") : t("common.refresh")}
-                    </button>
+                      {t("common.nextPage")}
+                    </Button>
                   </div>
                 </div>
-                <div className="ops-detail-modal__toolbar filter-inline">
-                  <input
-                    type="search"
-                    value={neKeyword}
-                    placeholder={t("collect.create.filterKeywordPh")}
-                    onChange={(e) => {
-                      setNeKeyword(e.target.value);
-                      setNePage(1);
-                      setPickSelectedIds([]);
-                    }}
-                  />
-                </div>
-                {eligibleQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
-                <div className="pt-list-table-wrap">
-                  <table className="data-table pt-list-table">
-                    <thead>
-                      <tr>
-                        <th>
-                          <input
-                            type="checkbox"
-                            checked={allPickSelected}
-                            onChange={(e) => {
-                              if (e.target.checked) {
-                                setPickSelectedIds(selectablePickItems.map((row) => eligibleKey(row)));
-                                return;
-                              }
-                              setPickSelectedIds([]);
-                            }}
-                            aria-label="pick all"
-                          />
-                        </th>
-                        <th>{t("managedNe.col.source")}</th>
-                        <th>{t("managedNe.col.name")}</th>
-                        <th>{t("managedNe.col.vendor")}</th>
-                        <th>{t("managedNe.col.ip")}</th>
-                        <th>{t("managedNe.col.connect")}</th>
-                        <th />
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {eligibleItems.map((row) => {
-                        const key = eligibleKey(row);
-                        const picked = Boolean(selectedMap[key]);
-                        const src = String(row.source || "managed").toLowerCase();
-                        return (
-                          <tr key={key}>
-                            <td>
-                              <input
-                                type="checkbox"
-                                checked={pickSelectedIds.includes(key)}
-                                disabled={picked}
-                                onChange={(e) => {
-                                  if (picked) return;
-                                  setPickSelectedIds((prev) =>
-                                    e.target.checked
-                                      ? [...new Set([...prev, key])]
-                                      : prev.filter((id) => id !== key),
-                                  );
-                                }}
-                              />
-                            </td>
-                            <td>
-                              <span className="table-tag">{src}</span>
-                            </td>
-                            <td>{row.name || row.ip_address}</td>
-                            <td>{row.vendor}</td>
-                            <td>{row.ip_address}</td>
-                            <td>
-                              <span className="conn-pill conn-pill--up">{row.connect_status}</span>
-                            </td>
-                            <td className="table-actions">
-                              <button
-                                type="button"
-                                className="link-btn"
-                                disabled={picked}
-                                onClick={() => {
-                                  addNe(row);
-                                  setPickSelectedIds((prev) => prev.filter((id) => id !== key));
-                                }}
-                              >
-                                {picked ? t("collect.create.added") : t("collect.create.add")}
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                      {!eligibleQuery.isLoading && eligibleItems.length === 0 ? (
-                        <tr>
-                          <td colSpan={7} className="muted">
-                            {t("collect.create.pickEmpty")}
-                          </td>
-                        </tr>
-                      ) : null}
-                    </tbody>
-                  </table>
-                </div>
-                {neTotal > 0 ? (
-                  <div className="ops-detail-modal__foot" style={{ marginTop: 10 }}>
-                    <span className="muted">
-                      {t("common.pagerMeta", {
-                        total: String(neTotal),
-                        page: String(nePage),
-                        pages: String(nePages),
-                      })}
-                    </span>
-                    <div className="btn-row">
-                      <button
-                        type="button"
-                        disabled={nePage <= 1}
-                        onClick={() => {
-                          setNePage(nePage - 1);
-                          setPickSelectedIds([]);
-                        }}
-                      >
-                        {t("common.prevPage")}
-                      </button>
-                      <button
-                        type="button"
-                        disabled={nePage >= nePages}
-                        onClick={() => {
-                          setNePage(nePage + 1);
-                          setPickSelectedIds([]);
-                        }}
-                      >
-                        {t("common.nextPage")}
-                      </button>
-                    </div>
-                  </div>
-                ) : null}
-              </div>
-            </div>
-
-            <div className="ops-detail-modal__foot">
-              <span className="muted">
-                {t("collect.create.meta", { ne: selectedIds.length, cmd: commandLines })}
-              </span>
-              <div className="btn-row">
-                <button type="button" onClick={() => setCreateOpen(false)}>
-                  {t("networkConfigs.close")}
-                </button>
-                <button
-                  type="button"
-                  className="btn-primary"
-                  disabled={selectedIds.length === 0 || commandLines === 0 || createMutation.isPending}
-                  onClick={() => createMutation.mutate()}
-                >
-                  {createMutation.isPending ? t("collect.create.creating") : t("collect.create.create")}
-                </button>
-              </div>
+              ) : null}
             </div>
           </div>
-        </div>
-      ) : null}
-
-      {expandedJobId ? (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onClick={() => setExpandedJobId("")}
-        >
-          <div
-            className="modal modal--wide ops-detail-modal ops-detail-modal--xl"
-            role="dialog"
-            aria-modal="true"
-            aria-label={t("collect.jobs.detailTitle")}
-            onClick={(e) => e.stopPropagation()}
+        </Modal.Body>
+        <Modal.Footer>
+          <span className="muted">
+            {t("collect.create.meta", { ne: selectedIds.length, cmd: commandLines })}
+          </span>
+          <Button
+            variant="tertiary"
+            isDisabled={createMutation.isPending}
+            onPress={() => setCreateOpen(false)}
           >
-            <div className="ops-detail-modal__head">
-              <div className="ops-detail-modal__title">
-                <h3>{t("collect.jobs.detailTitle")}</h3>
-                <p className="muted">
-                  {(() => {
-                    const job = jobs.find((j) => j.id === expandedJobId) || detailQuery.data?.job;
-                    return job
-                      ? `${job.title} · ${job.status} · ${job.success_count}/${job.ne_count}`
-                      : expandedJobId.slice(0, 8);
-                  })()}
-                </p>
-              </div>
-              <div className="btn-row ops-detail-modal__actions">
-                <button type="button" onClick={() => setExpandedJobId("")}>
-                  {t("networkConfigs.close")}
-                </button>
-              </div>
-            </div>
-            {detailQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
-            <JobRunsPanel
-              jobId={expandedJobId}
-              jobStatus={
-                jobs.find((j) => j.id === expandedJobId)?.status ||
-                detailQuery.data?.job.status ||
-                ""
-              }
-              failCount={
-                jobs.find((j) => j.id === expandedJobId)?.fail_count ??
-                detailQuery.data?.job.fail_count ??
-                0
-              }
-              commands={detailQuery.data?.job.commands ?? ""}
-              onRetryFailed={() => retryFailedMutation.mutate(expandedJobId)}
-              retryPending={actionPending}
-            />
-          </div>
-        </div>
-      ) : null}
+            {t("networkConfigs.close")}
+          </Button>
+          <Button
+            variant="primary"
+            isDisabled={selectedIds.length === 0 || commandLines === 0 || createMutation.isPending}
+            onPress={() => createMutation.mutate()}
+          >
+            {createMutation.isPending ? t("collect.create.creating") : t("collect.create.create")}
+          </Button>
+        </Modal.Footer>
+      </AppModalShell>
+
+      <AppModalShell
+        open={Boolean(expandedJobId)}
+        onClose={() => setExpandedJobId("")}
+        size="lg"
+        className="ops-detail-modal"
+      >
+        <Modal.Header>
+          <Modal.Heading>{t("collect.jobs.detailTitle")}</Modal.Heading>
+          <Modal.CloseTrigger />
+        </Modal.Header>
+        <Modal.Body className="flex flex-col gap-3">
+          <p className="muted">
+            {(() => {
+              const job = jobs.find((j) => j.id === expandedJobId) || detailQuery.data?.job;
+              return job
+                ? `${job.title} · ${job.status} · ${job.success_count}/${job.ne_count}`
+                : expandedJobId.slice(0, 8);
+            })()}
+          </p>
+          {detailQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
+          <JobRunsPanel
+            jobId={expandedJobId}
+            jobStatus={
+              jobs.find((j) => j.id === expandedJobId)?.status ||
+              detailQuery.data?.job.status ||
+              ""
+            }
+            failCount={
+              jobs.find((j) => j.id === expandedJobId)?.fail_count ??
+              detailQuery.data?.job.fail_count ??
+              0
+            }
+            commands={detailQuery.data?.job.commands ?? ""}
+            onRetryFailed={() => retryFailedMutation.mutate(expandedJobId)}
+            retryPending={actionPending}
+          />
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="tertiary" onPress={() => setExpandedJobId("")}>
+            {t("networkConfigs.close")}
+          </Button>
+        </Modal.Footer>
+      </AppModalShell>
     </div>
   );
 }
@@ -1156,36 +1153,49 @@ function JobRow({
       <td>{formatSystemTime(job.created_at)}</td>
       <td>{job.last_run_at ? formatSystemTime(job.last_run_at) : t("common.empty")}</td>
       <td className="table-actions">
-        <button type="button" className="link-btn" onClick={onOpenDetail}>
+        <Button size="sm" variant="ghost" className="link-btn" onPress={onOpenDetail}>
           {t("collect.jobs.expand")}
-        </button>
+        </Button>
         {canPause ? (
-          <button type="button" className="link-btn" disabled={actionPending} onClick={onPause}>
+          <Button size="sm" variant="ghost" className="link-btn" isDisabled={actionPending} onPress={onPause}>
             {t("collect.jobs.pause")}
-          </button>
+          </Button>
         ) : null}
         {canStart ? (
-          <button type="button" className="link-btn" disabled={actionPending} onClick={onStart}>
+          <Button size="sm" variant="ghost" className="link-btn" isDisabled={actionPending} onPress={onStart}>
             {startPending ? t("collect.jobs.starting") : t("collect.jobs.start")}
-          </button>
+          </Button>
         ) : null}
         {canRetryFailed ? (
-          <button type="button" className="link-btn" disabled={actionPending} onClick={onRetryFailed}>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="link-btn"
+            isDisabled={actionPending}
+            onPress={onRetryFailed}
+          >
             {t("collect.jobs.retryFailed")}
-          </button>
+          </Button>
         ) : null}
-        <button
-          type="button"
+        <Button
+          size="sm"
+          variant="ghost"
           className="link-btn"
-          disabled={actionPending || !hasResults}
-          onClick={downloadResults}
+          isDisabled={actionPending || !hasResults}
+          onPress={downloadResults}
         >
           {t("collect.jobs.downloadResults")}
-        </button>
+        </Button>
         {canDelete ? (
-          <button type="button" className="link-btn link-btn--danger" disabled={actionPending} onClick={onDelete}>
+          <Button
+            size="sm"
+            variant="danger"
+            className="link-btn link-btn--danger"
+            isDisabled={actionPending}
+            onPress={onDelete}
+          >
             {t("collect.jobs.delete")}
-          </button>
+          </Button>
         ) : null}
       </td>
     </tr>
@@ -1212,7 +1222,7 @@ function JobRunsPanel({
   const { t } = useI18n();
   const { showOk, showError } = useToast();
   const [runPage, setRunPage] = useState(1);
-  const [runPageSize, setRunPageSize] = useState(20);
+  const [runPageSize, setRunPageSize] = useState(10);
   const [runStatus, setRunStatus] = useState("");
   const [runKeyword, setRunKeyword] = useState("");
   const [exportingRuns, setExportingRuns] = useState(false);
@@ -1322,17 +1332,22 @@ function JobRunsPanel({
           ))}
         </select>
         {hasRunFilters ? (
-          <button type="button" onClick={clearRunFilters}>
+          <Button size="sm" variant="tertiary" onPress={clearRunFilters}>
             {t("common.clearFilters")}
-          </button>
+          </Button>
         ) : null}
-        <button type="button" disabled={exportingRuns || runTotal === 0} onClick={() => void exportRunsCsv()}>
+        <Button
+          size="sm"
+          variant="secondary"
+          isDisabled={exportingRuns || runTotal === 0}
+          onPress={() => void exportRunsCsv()}
+        >
           {exportingRuns ? t("common.exporting") : t("common.exportCsv")}
-        </button>
+        </Button>
         {jobStatus !== "running" && failCount > 0 ? (
-          <button type="button" disabled={retryPending} onClick={onRetryFailed}>
+          <Button size="sm" variant="secondary" isDisabled={retryPending} onPress={onRetryFailed}>
             {t("collect.jobs.retryFailed")}
-          </button>
+          </Button>
         ) : null}
       </div>
       {runsQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}

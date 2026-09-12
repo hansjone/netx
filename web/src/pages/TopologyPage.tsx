@@ -1,3 +1,4 @@
+import { Button } from "@heroui/react";
 import {
   DISCOVER_AUTO_ADD_KEY,
   DISCOVER_PROJECT_NEIGHBORS_KEY,
@@ -189,7 +190,6 @@ export function TopologyPage() {
   const searchHitTimerRef = useRef<number | null>(null);
   const findBoxRef = useRef<HTMLDivElement | null>(null);
   const displayMenuRef = useRef<HTMLDetailsElement | null>(null);
-  const exportMenuRef = useRef<HTMLDetailsElement | null>(null);
   const [exporting, setExporting] = useState(false);
   const [viewToolsToolbarSlot, setViewToolsToolbarSlot] = useState<HTMLDivElement | null>(null);
   const findJustLocatedRef = useRef(false);
@@ -1780,7 +1780,6 @@ export function TopologyPage() {
         return;
       }
       setExporting(true);
-      exportMenuRef.current?.removeAttribute("open");
       const filenameBase = activeLeafName || view.name || "topology";
       try {
         if (format === "svg") {
@@ -2027,7 +2026,6 @@ export function TopologyPage() {
             savePending={saveMut.isPending}
             onSave={() => saveMut.mutate()}
             onFit={fitCanvas}
-            exportMenuRef={exportMenuRef}
             exporting={exporting}
             onExport={runTopologyExport}
             mapId={mapId}
@@ -2304,34 +2302,34 @@ export function TopologyPage() {
               <div className="topo-canvas__empty">
                 <p className="muted">{t("topology.treeLoadFailed")}</p>
                 <div className="topo-browser__empty-actions">
-                  <button
-                    type="button"
-                    className="btn btn--sm btn--ghost"
-                    onClick={() => void treeQuery.refetch()}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onPress={() => void treeQuery.refetch()}
                   >
                     {t("topology.treeRetry")}
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn--sm"
-                    onClick={promptNewRegion}
-                    disabled={createRegionMut.isPending}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onPress={promptNewRegion}
+                    isDisabled={createRegionMut.isPending}
                   >
                     {t("topology.newRegion")}
-                  </button>
+                  </Button>
                 </div>
               </div>
             ) : (
               <div className="topo-canvas__empty">
                 <p className="muted">{t("topology.emptyMaps")}</p>
-                <button
-                  type="button"
-                  className="btn btn--sm"
-                  onClick={promptNewRegion}
-                  disabled={createRegionMut.isPending}
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onPress={promptNewRegion}
+                  isDisabled={createRegionMut.isPending}
                 >
                   {t("topology.newRegion")}
-                </button>
+                </Button>
               </div>
             )}
             {treeRoot && canvasGraphError ? (
@@ -2341,13 +2339,13 @@ export function TopologyPage() {
                   <p className="topo-canvas__overlay-hint muted">{canvasGraphErrorMsg}</p>
                 ) : null}
                 <div className="topo-browser__empty-actions">
-                  <button
-                    type="button"
-                    className="btn btn--sm btn--ghost"
-                    onClick={() => void graphQuery.refetch()}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onPress={() => void graphQuery.refetch()}
                   >
                     {t("topology.treeRetry")}
-                  </button>
+                  </Button>
                 </div>
               </div>
             ) : null}
@@ -2374,16 +2372,16 @@ export function TopologyPage() {
                 </p>
                 {worldNeedsApply ? (
                   <div className="btn-row" style={{ marginTop: 10, justifyContent: "center" }}>
-                    <button
-                      type="button"
-                      className="btn btn--sm"
-                      disabled={applyWorldMut.isPending}
-                      onClick={() => applyWorldMut.mutate()}
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      isDisabled={applyWorldMut.isPending}
+                      onPress={() => applyWorldMut.mutate()}
                     >
                       {applyWorldMut.isPending
                         ? t("topology.worldApplying")
                         : t("topology.worldApply")}
-                    </button>
+                    </Button>
                   </div>
                 ) : null}
               </div>

@@ -1,7 +1,7 @@
 /** Fixed box for onlyRenderVisibleElements (xyflow skips off-screen mount when sized + handles set). */
-export const TOPO_NODE_W = 80;
-export const TOPO_NODE_H = 25;
-export const TOPO_ICON = 25;
+export const TOPO_NODE_W = 88;
+export const TOPO_NODE_H = 28;
+export const TOPO_ICON = 28;
 /** region-building.png is 195×133 — keep aspect so icon center == handle. */
 export const TOPO_REGION_ICON_H = Math.round((TOPO_ICON * 133) / 195);
 export const TOPO_HANDLE_X = TOPO_NODE_W / 2;

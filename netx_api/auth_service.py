@@ -235,6 +235,7 @@ def ensure_default_mcp_token(db: Session, user: AppUser | None = None) -> str | 
             name="mcp-default",
             expires_in_days=0,
             scopes=list(MCP_DEFAULT_SCOPES),
+            enforce_limit=False,
         )
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(plaintext + "\n", encoding="utf-8")
@@ -571,6 +572,17 @@ def change_password(
     revoke_auth_sessions(db, user_id=str(row.id), except_jti=keep_jti)
 
 
+def count_active_api_tokens(db: Session) -> int:
+    """Non-revoked API keys (expired-but-not-revoked still occupy a slot)."""
+    return int(db.query(ApiToken).filter(ApiToken.revoked_at.is_(None)).count())
+
+
+def api_token_quota(db: Session) -> dict[str, int]:
+    max_count = max(0, int(getattr(settings, "auth_api_token_max_count", 20) or 0))
+    active = count_active_api_tokens(db)
+    return {"active_count": active, "max_count": max_count}
+
+
 def create_api_token(
     db: Session,
     *,
@@ -578,10 +590,20 @@ def create_api_token(
     name: str,
     expires_in_days: int | None = None,
     scopes: list[str] | None = None,
+    enforce_limit: bool = True,
 ) -> tuple[ApiToken, str]:
     label = str(name or "").strip() or "default"
     if len(label) > 128:
         raise HTTPException(status_code=400, detail="token_name_too_long")
+    if enforce_limit:
+        max_count = max(0, int(getattr(settings, "auth_api_token_max_count", 20) or 0))
+        if max_count > 0:
+            active = count_active_api_tokens(db)
+            if active >= max_count:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"api_token_limit_reached:{active}/{max_count}",
+                )
     expires_at: datetime | None = None
     if expires_in_days is not None and int(expires_in_days) > 0:
         expires_at = utcnow_naive() + timedelta(days=int(expires_in_days))

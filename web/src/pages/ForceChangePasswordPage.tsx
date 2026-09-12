@@ -1,3 +1,4 @@
+import { Alert, Button, Card, Form, Input, Label, TextField } from "@heroui/react";
 import { useState, type FormEvent } from "react";
 import { useAuth } from "../auth/AuthContext";
 import { useI18n } from "../i18n";
@@ -44,72 +45,79 @@ export function ForceChangePasswordPage() {
 
   return (
     <LoginShell>
-      <form className="login-card" onSubmit={(e) => void onSubmit(e)}>
-        <div className="login-card__head">
-          <h1 className="login-card__title">{t("auth.forceChangeTitle")}</h1>
+      <Card className="login-card login-card--heroui" variant="transparent">
+        <Card.Header className="login-card__head">
+          <Card.Title className="login-card__title">{t("auth.forceChangeTitle")}</Card.Title>
           <div className="login-card__brand" aria-label="NETX">
             NETX
           </div>
-        </div>
-        <p className="login-card__hint">
-          {t("auth.forceChangeHint", { user: user?.username || "admin" })}
-        </p>
-        <label className="login-card__label">
-          <span className="login-card__sr">{t("auth.oldPassword")}</span>
-          <input
-            type="password"
-            autoComplete="current-password"
-            autoFocus
-            placeholder={t("auth.oldPassword")}
-            value={oldPassword}
-            onChange={(e) => setOldPassword(e.target.value)}
-            disabled={busy}
-            required
-          />
-        </label>
-        <label className="login-card__label">
-          <span className="login-card__sr">{t("auth.newPassword")}</span>
-          <input
-            type="password"
-            autoComplete="new-password"
-            placeholder={t("auth.newPassword")}
-            value={newPassword}
-            onChange={(e) => setNewPassword(e.target.value)}
-            disabled={busy}
-            required
-            minLength={8}
-          />
-        </label>
-        <label className="login-card__label">
-          <span className="login-card__sr">{t("auth.confirmPassword")}</span>
-          <input
-            type="password"
-            autoComplete="new-password"
-            placeholder={t("auth.confirmPassword")}
-            value={confirm}
-            onChange={(e) => setConfirm(e.target.value)}
-            disabled={busy}
-            required
-            minLength={8}
-          />
-        </label>
-        {error ? (
-          <div className="login-card__error" role="alert">
-            {error}
-          </div>
-        ) : null}
-        <button type="submit" className="login-card__submit" disabled={busy}>
-          {busy ? t("auth.savingPassword") : t("auth.savePassword")}
-        </button>
-        <button
-          type="button"
-          className="login-card__submit login-card__submit--ghost"
-          disabled={busy}
-          onClick={() => void logout()}
-        >
-          {t("auth.logout")}
-        </button>
-      </form>
+        </Card.Header>
+        <Card.Content>
+          <p className="login-card__hint">
+            {t("auth.forceChangeHint", { user: user?.username || "admin" })}
+          </p>
+          <Form className="login-card__form" onSubmit={(e) => void onSubmit(e)}>
+            <TextField
+              fullWidth
+              type="password"
+              autoComplete="current-password"
+              autoFocus
+              value={oldPassword}
+              onChange={setOldPassword}
+              isDisabled={busy}
+              isRequired
+            >
+              <Label className="login-card__sr">{t("auth.oldPassword")}</Label>
+              <Input placeholder={t("auth.oldPassword")} />
+            </TextField>
+            <TextField
+              fullWidth
+              type="password"
+              autoComplete="new-password"
+              value={newPassword}
+              onChange={setNewPassword}
+              isDisabled={busy}
+              isRequired
+              minLength={8}
+            >
+              <Label className="login-card__sr">{t("auth.newPassword")}</Label>
+              <Input placeholder={t("auth.newPassword")} />
+            </TextField>
+            <TextField
+              fullWidth
+              type="password"
+              autoComplete="new-password"
+              value={confirm}
+              onChange={setConfirm}
+              isDisabled={busy}
+              isRequired
+              minLength={8}
+            >
+              <Label className="login-card__sr">{t("auth.confirmPassword")}</Label>
+              <Input placeholder={t("auth.confirmPassword")} />
+            </TextField>
+            {error ? (
+              <Alert status="danger" className="login-card__error">
+                <Alert.Content>
+                  <Alert.Description>{error}</Alert.Description>
+                </Alert.Content>
+              </Alert>
+            ) : null}
+            <Button type="submit" variant="primary" fullWidth isDisabled={busy}>
+              {busy ? t("auth.savingPassword") : t("auth.savePassword")}
+            </Button>
+            <Button
+              type="button"
+              variant="tertiary"
+              fullWidth
+              isDisabled={busy}
+              onPress={() => void logout()}
+            >
+              {t("auth.logout")}
+            </Button>
+          </Form>
+        </Card.Content>
+      </Card>
     </LoginShell>
   );
 }

@@ -12,7 +12,9 @@ import {
 } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
+import { Button, Input, Modal } from "@heroui/react";
 import type { WebTerminalHandle } from "../components/WebTerminal";
+import { AppModalShell } from "../components/ui/AppModalShell";
 import { useI18n } from "../i18n";
 import { useToast } from "../hooks/useToast";
 import {
@@ -50,7 +52,7 @@ import {
 const WebTerminal = lazy(() =>
   import("../components/WebTerminal").then((m) => ({ default: m.WebTerminal })),
 );
-const PAGE_SIZE = 50;
+const PAGE_SIZE = 10;
 const SESSION_OPTS_KEY = "netx.webcrt.sessionOptions";
 const LEGACY_TERM_PREFS_KEY = "netx.webcrt.termPrefs";
 const SFTP_WIDTH_KEY = "netx.webcrt.sftpWidth";
@@ -2222,12 +2224,26 @@ export function WebcrtPage() {
         <div className="webcrt-sidebar__pager">
           <span>{t("common.pagerMeta", { total, page, pages })}</span>
           <div className="webcrt-sidebar__pager-btns">
-            <button type="button" disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))} aria-label="prev">
+            <Button
+              size="sm"
+              variant="ghost"
+              isIconOnly
+              isDisabled={page <= 1}
+              aria-label="prev"
+              onPress={() => setPage((p) => Math.max(1, p - 1))}
+            >
               ‹
-            </button>
-            <button type="button" disabled={page >= pages} onClick={() => setPage((p) => p + 1)} aria-label="next">
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              isIconOnly
+              isDisabled={page >= pages}
+              aria-label="next"
+              onPress={() => setPage((p) => p + 1)}
+            >
               ›
-            </button>
+            </Button>
           </div>
         </div>
       </aside>
@@ -2546,15 +2562,16 @@ export function WebcrtPage() {
                     onDrop={onSftpDrop}
                   >
                     <div className="webcrt-sftp__bar">
-                      <button
-                        type="button"
-                        title={t("webcrt.sftp.up")}
-                        disabled={sftpBusy}
-                        onClick={() => navigateSftp(sftpParentPath(sftpPathRef.current))}
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        isDisabled={sftpBusy}
+                        aria-label={t("webcrt.sftp.up")}
+                        onPress={() => navigateSftp(sftpParentPath(sftpPathRef.current))}
                       >
                         {t("webcrt.sftp.up")}
-                      </button>
-                      <input
+                      </Button>
+                      <Input
                         value={sftpPath}
                         disabled={sftpBusy}
                         onChange={(e) => {
@@ -2569,40 +2586,44 @@ export function WebcrtPage() {
                           }
                         }}
                       />
-                      <button type="button" disabled={sftpBusy} onClick={() => void refreshSftp()}>
+                      <Button size="sm" variant="secondary" isDisabled={sftpBusy} onPress={() => void refreshSftp()}>
                         {t("webcrt.sftp.refresh")}
-                      </button>
-                      <button type="button" disabled={sftpBusy} onClick={() => void mkdirSftp()}>
+                      </Button>
+                      <Button size="sm" variant="secondary" isDisabled={sftpBusy} onPress={() => void mkdirSftp()}>
                         {t("webcrt.sftp.mkdir")}
-                      </button>
-                      <button
-                        type="button"
-                        disabled={sftpBusy || sftpSelected.length !== 1}
-                        onClick={() => void renameSftpSelected()}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        isDisabled={sftpBusy || sftpSelected.length !== 1}
+                        onPress={() => void renameSftpSelected()}
                       >
                         {t("webcrt.sftp.rename")}
-                      </button>
-                      <button
-                        type="button"
-                        disabled={sftpBusy || sftpSelectedFiles.length === 0}
-                        onClick={() => void downloadSftpItems(sftpSelectedFiles)}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        isDisabled={sftpBusy || sftpSelectedFiles.length === 0}
+                        onPress={() => void downloadSftpItems(sftpSelectedFiles)}
                       >
                         {t("webcrt.sftp.download")}
-                      </button>
-                      <button
-                        type="button"
-                        disabled={sftpBusy || sftpSelected.length === 0}
-                        onClick={() => void chmodSftpSelected()}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        isDisabled={sftpBusy || sftpSelected.length === 0}
+                        onPress={() => void chmodSftpSelected()}
                       >
                         {t("webcrt.sftp.chmod")}
-                      </button>
-                      <button
-                        type="button"
-                        disabled={sftpBusy || sftpSelected.length === 0}
-                        onClick={() => void removeSftpSelected()}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="danger"
+                        isDisabled={sftpBusy || sftpSelected.length === 0}
+                        onPress={() => void removeSftpSelected()}
                       >
                         {t("webcrt.sftp.delete")}
-                      </button>
+                      </Button>
                       <label className={`webcrt-sftp__upload${sftpBusy ? " is-disabled" : ""}`}>
                         {t("webcrt.sftp.upload")}
                         <input
@@ -2623,13 +2644,14 @@ export function WebcrtPage() {
                       <div className="webcrt-sftp__status" role="status">
                         <span>{sftpStatus || t("webcrt.sftp.loading")}</span>
                         {sftpTransferring ? (
-                          <button
-                            type="button"
+                          <Button
+                            size="sm"
+                            variant="tertiary"
                             className="webcrt-sftp__cancel"
-                            onClick={cancelSftpTransfer}
+                            onPress={cancelSftpTransfer}
                           >
                             {t("webcrt.sftp.cancel")}
-                          </button>
+                          </Button>
                         ) : null}
                       </div>
                     ) : null}
@@ -2792,50 +2814,55 @@ export function WebcrtPage() {
         </div>
       ) : null}
 
-      {renameDialog ? (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onClick={() => setRenameDialog(null)}
-        >
-          <div
-            className="modal webcrt-auth-modal"
-            role="dialog"
-            aria-labelledby="webcrt-rename-title"
-            onClick={(e) => e.stopPropagation()}
+      <AppModalShell
+        open={Boolean(renameDialog)}
+        onClose={() => setRenameDialog(null)}
+        size="md"
+        className="webcrt-auth-modal"
+      >
+        <Modal.Header>
+          <Modal.Heading>{t("webcrt.treeMenu.rename")}</Modal.Heading>
+          <Modal.CloseTrigger />
+        </Modal.Header>
+        <Modal.Body className="flex flex-col gap-3">
+          {renameDialog ? (
+            <>
+              <p className="form-hint">
+                {renameDialog.target.ip_address}
+                {renameDialog.target.protocol
+                  ? ` · ${String(renameDialog.target.protocol).toUpperCase()}`
+                  : ""}
+              </p>
+              <div className="form-grid">
+                <label>
+                  <FormLabel required>{t("webcrt.treeMenu.renameLabel")}</FormLabel>
+                  <Input
+                    autoFocus
+                    value={renameDialog.name}
+                    onChange={(e) => setRenameDialog({ ...renameDialog, name: e.target.value })}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") void renameWebcrtSession(renameDialog.target, renameDialog.name);
+                    }}
+                  />
+                </label>
+              </div>
+            </>
+          ) : null}
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="tertiary" onPress={() => setRenameDialog(null)}>
+            {t("webcrt.sessionOptionsCancel")}
+          </Button>
+          <Button
+            variant="primary"
+            onPress={() => {
+              if (renameDialog) void renameWebcrtSession(renameDialog.target, renameDialog.name);
+            }}
           >
-            <h3 id="webcrt-rename-title">{t("webcrt.treeMenu.rename")}</h3>
-            <p className="form-hint">
-              {renameDialog.target.ip_address}
-              {renameDialog.target.protocol ? ` · ${String(renameDialog.target.protocol).toUpperCase()}` : ""}
-            </p>
-            <div className="form-grid">
-              <label>
-                <FormLabel required>{t("webcrt.treeMenu.renameLabel")}</FormLabel>
-                <input
-                  autoFocus
-                  value={renameDialog.name}
-                  onChange={(e) => setRenameDialog({ ...renameDialog, name: e.target.value })}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") void renameWebcrtSession(renameDialog.target, renameDialog.name);
-                  }}
-                />
-              </label>
-            </div>
-            <div className="modal__actions">
-              <button type="button" onClick={() => setRenameDialog(null)}>
-                {t("webcrt.sessionOptionsCancel")}
-              </button>
-              <button
-                type="button"
-                onClick={() => void renameWebcrtSession(renameDialog.target, renameDialog.name)}
-              >
-                {t("webcrt.treeMenu.renameSave")}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+            {t("webcrt.treeMenu.renameSave")}
+          </Button>
+        </Modal.Footer>
+      </AppModalShell>
 
       {tabMenu ? (
         <div
@@ -2891,69 +2918,37 @@ export function WebcrtPage() {
         </div>
       ) : null}
 
-      {keywordHlModalOpen ? (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onClick={() => setKeywordHlModalOpen(false)}
-        >
-          <div
-            className="modal webcrt-keyword-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="webcrt-keyword-hl-title"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 id="webcrt-keyword-hl-title">{t("webcrt.keywordHl.title")}</h3>
-            <label className="webcrt-session-opts__field webcrt-session-opts__field--check">
-              <span>{t("webcrt.keywordHl.enabled")}</span>
-              <input
-                type="checkbox"
-                checked={keywordHlDraft.enabled}
-                onChange={(e) =>
-                  setKeywordHlDraft((prev) => ({ ...prev, enabled: e.target.checked }))
-                }
-              />
-            </label>
-            <div className="webcrt-keyword-add">
-              <label className="webcrt-session-opts__field">
-                <span>{t("webcrt.keywordHl.newKeyword")}</span>
-                <input
-                  type="text"
-                  value={keywordDraftText}
-                  placeholder={t("webcrt.keywordHl.newKeywordPh")}
-                  onChange={(e) => setKeywordDraftText(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key !== "Enter") return;
-                    e.preventDefault();
-                    const pattern = keywordDraftText.trim();
-                    if (!pattern) return;
-                    const row: KeywordRule = {
-                      id: newKeywordId(),
-                      pattern,
-                      regex: keywordDraftRegex,
-                    };
-                    setKeywordHlDraft((prev) => ({
-                      ...prev,
-                      enabled: true,
-                      keywords: [...prev.keywords, row],
-                    }));
-                    setKeywordSelectedId(row.id);
-                    setKeywordDraftText("");
-                  }}
-                />
-              </label>
-              <label className="webcrt-keyword-add__regex">
-                <input
-                  type="checkbox"
-                  checked={keywordDraftRegex}
-                  onChange={(e) => setKeywordDraftRegex(e.target.checked)}
-                />
-                <span>{t("webcrt.keywordHl.regex")}</span>
-              </label>
-              <button
-                type="button"
-                onClick={() => {
+      <AppModalShell
+        open={keywordHlModalOpen}
+        onClose={() => setKeywordHlModalOpen(false)}
+        size="md"
+        className="webcrt-keyword-modal"
+      >
+        <Modal.Header>
+          <Modal.Heading>{t("webcrt.keywordHl.title")}</Modal.Heading>
+          <Modal.CloseTrigger />
+        </Modal.Header>
+        <Modal.Body className="flex flex-col gap-3">
+          <label className="webcrt-session-opts__field webcrt-session-opts__field--check">
+            <span>{t("webcrt.keywordHl.enabled")}</span>
+            <input
+              type="checkbox"
+              checked={keywordHlDraft.enabled}
+              onChange={(e) =>
+                setKeywordHlDraft((prev) => ({ ...prev, enabled: e.target.checked }))
+              }
+            />
+          </label>
+          <div className="webcrt-keyword-add">
+            <label className="webcrt-session-opts__field">
+              <span>{t("webcrt.keywordHl.newKeyword")}</span>
+              <Input
+                value={keywordDraftText}
+                placeholder={t("webcrt.keywordHl.newKeywordPh")}
+                onChange={(e) => setKeywordDraftText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key !== "Enter") return;
+                  e.preventDefault();
                   const pattern = keywordDraftText.trim();
                   if (!pattern) return;
                   const row: KeywordRule = {
@@ -2969,485 +2964,515 @@ export function WebcrtPage() {
                   setKeywordSelectedId(row.id);
                   setKeywordDraftText("");
                 }}
+              />
+            </label>
+            <label className="webcrt-keyword-add__regex">
+              <input
+                type="checkbox"
+                checked={keywordDraftRegex}
+                onChange={(e) => setKeywordDraftRegex(e.target.checked)}
+              />
+              <span>{t("webcrt.keywordHl.regex")}</span>
+            </label>
+            <Button
+              size="sm"
+              variant="secondary"
+              onPress={() => {
+                const pattern = keywordDraftText.trim();
+                if (!pattern) return;
+                const row: KeywordRule = {
+                  id: newKeywordId(),
+                  pattern,
+                  regex: keywordDraftRegex,
+                };
+                setKeywordHlDraft((prev) => ({
+                  ...prev,
+                  enabled: true,
+                  keywords: [...prev.keywords, row],
+                }));
+                setKeywordSelectedId(row.id);
+                setKeywordDraftText("");
+              }}
+            >
+              {t("webcrt.keywordHl.add")}
+            </Button>
+          </div>
+          <div className="webcrt-keyword-list-wrap">
+            <div className="webcrt-keyword-list-head">
+              <span>{t("webcrt.keywordHl.colKeyword")}</span>
+              <span>{t("webcrt.keywordHl.colRegex")}</span>
+            </div>
+            <ul className="webcrt-keyword-list">
+              {keywordHlDraft.keywords.length === 0 ? (
+                <li className="webcrt-keyword-list__empty">{t("webcrt.keywordHl.empty")}</li>
+              ) : (
+                keywordHlDraft.keywords.map((kw) => (
+                  <li key={kw.id}>
+                    <button
+                      type="button"
+                      className={`webcrt-keyword-list__row${
+                        keywordSelectedId === kw.id ? " is-selected" : ""
+                      }`}
+                      onClick={() => setKeywordSelectedId(kw.id)}
+                    >
+                      <span className="webcrt-keyword-list__pattern" title={kw.pattern}>
+                        {kw.pattern}
+                      </span>
+                      <span>{kw.regex ? "✓" : ""}</span>
+                    </button>
+                  </li>
+                ))
+              )}
+            </ul>
+            <div className="webcrt-keyword-list-actions">
+              <Button
+                size="sm"
+                variant="ghost"
+                isIconOnly
+                isDisabled={!keywordSelectedId}
+                aria-label={t("webcrt.keywordHl.moveUp")}
+                onPress={() => {
+                  setKeywordHlDraft((prev) => {
+                    const idx = prev.keywords.findIndex((k) => k.id === keywordSelectedId);
+                    if (idx <= 0) return prev;
+                    const next = [...prev.keywords];
+                    [next[idx - 1], next[idx]] = [next[idx], next[idx - 1]];
+                    return { ...prev, keywords: next };
+                  });
+                }}
               >
-                {t("webcrt.keywordHl.add")}
-              </button>
+                ↑
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                isIconOnly
+                isDisabled={!keywordSelectedId}
+                aria-label={t("webcrt.keywordHl.moveDown")}
+                onPress={() => {
+                  setKeywordHlDraft((prev) => {
+                    const idx = prev.keywords.findIndex((k) => k.id === keywordSelectedId);
+                    if (idx < 0 || idx >= prev.keywords.length - 1) return prev;
+                    const next = [...prev.keywords];
+                    [next[idx + 1], next[idx]] = [next[idx], next[idx + 1]];
+                    return { ...prev, keywords: next };
+                  });
+                }}
+              >
+                ↓
+              </Button>
+              <Button
+                size="sm"
+                variant="danger"
+                isIconOnly
+                isDisabled={!keywordSelectedId}
+                aria-label={t("webcrt.keywordHl.remove")}
+                onPress={() => {
+                  setKeywordHlDraft((prev) => {
+                    const next = prev.keywords.filter((k) => k.id !== keywordSelectedId);
+                    setKeywordSelectedId(next[0]?.id || "");
+                    return { ...prev, keywords: next };
+                  });
+                }}
+              >
+                ×
+              </Button>
             </div>
-            <div className="webcrt-keyword-list-wrap">
-              <div className="webcrt-keyword-list-head">
-                <span>{t("webcrt.keywordHl.colKeyword")}</span>
-                <span>{t("webcrt.keywordHl.colRegex")}</span>
-              </div>
-              <ul className="webcrt-keyword-list">
-                {keywordHlDraft.keywords.length === 0 ? (
-                  <li className="webcrt-keyword-list__empty">{t("webcrt.keywordHl.empty")}</li>
-                ) : (
-                  keywordHlDraft.keywords.map((kw) => (
-                    <li key={kw.id}>
-                      <button
-                        type="button"
-                        className={`webcrt-keyword-list__row${
-                          keywordSelectedId === kw.id ? " is-selected" : ""
-                        }`}
-                        onClick={() => setKeywordSelectedId(kw.id)}
-                      >
-                        <span className="webcrt-keyword-list__pattern" title={kw.pattern}>
-                          {kw.pattern}
-                        </span>
-                        <span>{kw.regex ? "✓" : ""}</span>
-                      </button>
-                    </li>
-                  ))
-                )}
-              </ul>
-              <div className="webcrt-keyword-list-actions">
-                <button
-                  type="button"
-                  disabled={!keywordSelectedId}
-                  title={t("webcrt.keywordHl.moveUp")}
-                  onClick={() => {
-                    setKeywordHlDraft((prev) => {
-                      const idx = prev.keywords.findIndex((k) => k.id === keywordSelectedId);
-                      if (idx <= 0) return prev;
-                      const next = [...prev.keywords];
-                      [next[idx - 1], next[idx]] = [next[idx], next[idx - 1]];
-                      return { ...prev, keywords: next };
-                    });
-                  }}
-                >
-                  ↑
-                </button>
-                <button
-                  type="button"
-                  disabled={!keywordSelectedId}
-                  title={t("webcrt.keywordHl.moveDown")}
-                  onClick={() => {
-                    setKeywordHlDraft((prev) => {
-                      const idx = prev.keywords.findIndex((k) => k.id === keywordSelectedId);
-                      if (idx < 0 || idx >= prev.keywords.length - 1) return prev;
-                      const next = [...prev.keywords];
-                      [next[idx + 1], next[idx]] = [next[idx], next[idx + 1]];
-                      return { ...prev, keywords: next };
-                    });
-                  }}
-                >
-                  ↓
-                </button>
-                <button
-                  type="button"
-                  disabled={!keywordSelectedId}
-                  title={t("webcrt.keywordHl.remove")}
-                  onClick={() => {
-                    setKeywordHlDraft((prev) => {
-                      const next = prev.keywords.filter((k) => k.id !== keywordSelectedId);
-                      setKeywordSelectedId(next[0]?.id || "");
-                      return { ...prev, keywords: next };
-                    });
-                  }}
-                >
-                  ×
-                </button>
-              </div>
-            </div>
-            <div className="webcrt-keyword-footer">
-              <label className="webcrt-session-opts__field webcrt-session-opts__field--check">
-                <span>{t("webcrt.keywordHl.caseSensitive")}</span>
-                <input
-                  type="checkbox"
-                  checked={keywordHlDraft.caseSensitive}
-                  onChange={(e) =>
-                    setKeywordHlDraft((prev) => ({ ...prev, caseSensitive: e.target.checked }))
+          </div>
+          <div className="webcrt-keyword-footer">
+            <label className="webcrt-session-opts__field webcrt-session-opts__field--check">
+              <span>{t("webcrt.keywordHl.caseSensitive")}</span>
+              <input
+                type="checkbox"
+                checked={keywordHlDraft.caseSensitive}
+                onChange={(e) =>
+                  setKeywordHlDraft((prev) => ({ ...prev, caseSensitive: e.target.checked }))
+                }
+              />
+            </label>
+            <label className="webcrt-session-opts__field webcrt-keyword-color">
+              <span>{t("webcrt.keywordHl.color")}</span>
+              <input
+                type="color"
+                value={keywordHlDraft.color || "#ffff00"}
+                onChange={(e) =>
+                  setKeywordHlDraft((prev) => ({ ...prev, color: e.target.value }))
+                }
+              />
+            </label>
+          </div>
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="tertiary" onPress={() => setKeywordHlModalOpen(false)}>
+            {t("webcrt.sessionOptionsCancel")}
+          </Button>
+          <Button
+            variant="primary"
+            onPress={() => {
+              const keywords = keywordHlDraft.keywords
+                .map((k) => ({
+                  id: k.id || newKeywordId(),
+                  pattern: String(k.pattern || "").trim(),
+                  regex: Boolean(k.regex),
+                }))
+                .filter((k) => k.pattern);
+              const next: KeywordHighlightConfig = {
+                ...defaultKeywordHighlightConfig(),
+                enabled: keywords.length > 0,
+                caseSensitive: Boolean(keywordHlDraft.caseSensitive),
+                color: keywordHlDraft.color || "#ffff00",
+                keywords,
+              };
+              saveKeywordHighlightConfig(next);
+              setKeywordHl(next);
+              setKeywordHlDraft(next);
+              setKeywordHlModalOpen(false);
+              showOk(t("webcrt.keywordHl.saved"));
+            }}
+          >
+            {t("webcrt.sessionOptionsSave")}
+          </Button>
+        </Modal.Footer>
+      </AppModalShell>
+
+      <AppModalShell
+        open={sessionOptsModalOpen}
+        onClose={() => setSessionOptsModalOpen(false)}
+        size="md"
+        className="webcrt-session-opts-modal"
+      >
+        <Modal.Header>
+          <Modal.Heading>{t("webcrt.globalSessionOptions")}</Modal.Heading>
+          <Modal.CloseTrigger />
+        </Modal.Header>
+        <Modal.Body className="flex flex-col gap-3">
+          <div className="webcrt-session-opts">
+            <label className="webcrt-session-opts__field">
+              <span>{t("webcrt.encoding")}</span>
+              <select
+                value={sessionOptsDraft.encoding}
+                onChange={(e) =>
+                  setSessionOptsDraft((prev) => ({ ...prev, encoding: e.target.value }))
+                }
+              >
+                {ENCODING_OPTIONS.map((enc) => (
+                  <option key={enc} value={enc}>
+                    {enc}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="webcrt-session-opts__field">
+              <span>{t("webcrt.fontSize")}</span>
+              <select
+                value={sessionOptsDraft.fontSize}
+                onChange={(e) =>
+                  setSessionOptsDraft((prev) => ({
+                    ...prev,
+                    fontSize: Number(e.target.value) || 13,
+                  }))
+                }
+              >
+                {FONT_SIZE_OPTIONS.map((size) => (
+                  <option key={size} value={size}>
+                    {size}px
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="webcrt-session-opts__field">
+              <span>{t("webcrt.colorScheme")}</span>
+              <select
+                value={sessionOptsDraft.colorScheme}
+                onChange={(e) => {
+                  const id = e.target.value as ColorSchemeId;
+                  if (id !== "custom" && id in COLOR_SCHEMES) {
+                    const preset = COLOR_SCHEMES[id as Exclude<ColorSchemeId, "custom">];
+                    setSessionOptsDraft((prev) => ({
+                      ...prev,
+                      colorScheme: id,
+                      background: preset.background,
+                      foreground: preset.foreground,
+                    }));
+                    return;
                   }
-                />
-              </label>
-              <label className="webcrt-session-opts__field webcrt-keyword-color">
-                <span>{t("webcrt.keywordHl.color")}</span>
+                  setSessionOptsDraft((prev) => ({ ...prev, colorScheme: "custom" }));
+                }}
+              >
+                <option value="dark">{t("webcrt.scheme.dark")}</option>
+                <option value="blackWhite">{t("webcrt.scheme.blackWhite")}</option>
+                <option value="whiteBlack">{t("webcrt.scheme.whiteBlack")}</option>
+                <option value="greenBlack">{t("webcrt.scheme.greenBlack")}</option>
+                <option value="amberBlack">{t("webcrt.scheme.amberBlack")}</option>
+                <option value="custom">{t("webcrt.scheme.custom")}</option>
+              </select>
+            </label>
+            <div className="webcrt-session-opts__colors">
+              <label className="webcrt-session-opts__field webcrt-session-opts__color">
+                <span>{t("webcrt.backgroundColor")}</span>
                 <input
                   type="color"
-                  value={keywordHlDraft.color || "#ffff00"}
-                  onChange={(e) =>
-                    setKeywordHlDraft((prev) => ({ ...prev, color: e.target.value }))
-                  }
-                />
-              </label>
-            </div>
-            <div className="modal__actions">
-              <button type="button" onClick={() => setKeywordHlModalOpen(false)}>
-                {t("webcrt.sessionOptionsCancel")}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  const keywords = keywordHlDraft.keywords
-                    .map((k) => ({
-                      id: k.id || newKeywordId(),
-                      pattern: String(k.pattern || "").trim(),
-                      regex: Boolean(k.regex),
-                    }))
-                    .filter((k) => k.pattern);
-                  const next: KeywordHighlightConfig = {
-                    ...defaultKeywordHighlightConfig(),
-                    enabled: keywords.length > 0,
-                    caseSensitive: Boolean(keywordHlDraft.caseSensitive),
-                    color: keywordHlDraft.color || "#ffff00",
-                    keywords,
-                  };
-                  saveKeywordHighlightConfig(next);
-                  setKeywordHl(next);
-                  setKeywordHlDraft(next);
-                  setKeywordHlModalOpen(false);
-                  showOk(t("webcrt.keywordHl.saved"));
-                }}
-              >
-                {t("webcrt.sessionOptionsSave")}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      {sessionOptsModalOpen ? (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onClick={() => setSessionOptsModalOpen(false)}
-        >
-          <div
-            className="modal webcrt-session-opts-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="webcrt-session-opts-title"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 id="webcrt-session-opts-title">{t("webcrt.globalSessionOptions")}</h3>
-            <div className="webcrt-session-opts">
-              <label className="webcrt-session-opts__field">
-                <span>{t("webcrt.encoding")}</span>
-                <select
-                  value={sessionOptsDraft.encoding}
-                  onChange={(e) =>
-                    setSessionOptsDraft((prev) => ({ ...prev, encoding: e.target.value }))
-                  }
-                >
-                  {ENCODING_OPTIONS.map((enc) => (
-                    <option key={enc} value={enc}>
-                      {enc}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="webcrt-session-opts__field">
-                <span>{t("webcrt.fontSize")}</span>
-                <select
-                  value={sessionOptsDraft.fontSize}
+                  value={sessionOptsDraft.background || "#0b1220"}
                   onChange={(e) =>
                     setSessionOptsDraft((prev) => ({
                       ...prev,
-                      fontSize: Number(e.target.value) || 13,
+                      colorScheme: "custom",
+                      background: e.target.value,
                     }))
                   }
-                >
-                  {FONT_SIZE_OPTIONS.map((size) => (
-                    <option key={size} value={size}>
-                      {size}px
-                    </option>
-                  ))}
-                </select>
+                />
               </label>
-              <label className="webcrt-session-opts__field">
-                <span>{t("webcrt.colorScheme")}</span>
-                <select
-                  value={sessionOptsDraft.colorScheme}
-                  onChange={(e) => {
-                    const id = e.target.value as ColorSchemeId;
-                    if (id !== "custom" && id in COLOR_SCHEMES) {
-                      const preset = COLOR_SCHEMES[id as Exclude<ColorSchemeId, "custom">];
-                      setSessionOptsDraft((prev) => ({
-                        ...prev,
-                        colorScheme: id,
-                        background: preset.background,
-                        foreground: preset.foreground,
-                      }));
-                      return;
-                    }
-                    setSessionOptsDraft((prev) => ({ ...prev, colorScheme: "custom" }));
-                  }}
-                >
-                  <option value="dark">{t("webcrt.scheme.dark")}</option>
-                  <option value="blackWhite">{t("webcrt.scheme.blackWhite")}</option>
-                  <option value="whiteBlack">{t("webcrt.scheme.whiteBlack")}</option>
-                  <option value="greenBlack">{t("webcrt.scheme.greenBlack")}</option>
-                  <option value="amberBlack">{t("webcrt.scheme.amberBlack")}</option>
-                  <option value="custom">{t("webcrt.scheme.custom")}</option>
-                </select>
+              <label className="webcrt-session-opts__field webcrt-session-opts__color">
+                <span>{t("webcrt.foregroundColor")}</span>
+                <input
+                  type="color"
+                  value={sessionOptsDraft.foreground || "#e2e8f0"}
+                  onChange={(e) =>
+                    setSessionOptsDraft((prev) => ({
+                      ...prev,
+                      colorScheme: "custom",
+                      foreground: e.target.value,
+                    }))
+                  }
+                />
               </label>
-              <div className="webcrt-session-opts__colors">
-                <label className="webcrt-session-opts__field webcrt-session-opts__color">
-                  <span>{t("webcrt.backgroundColor")}</span>
-                  <input
-                    type="color"
-                    value={sessionOptsDraft.background || "#0b1220"}
-                    onChange={(e) =>
-                      setSessionOptsDraft((prev) => ({
-                        ...prev,
-                        colorScheme: "custom",
-                        background: e.target.value,
-                      }))
-                    }
-                  />
-                </label>
-                <label className="webcrt-session-opts__field webcrt-session-opts__color">
-                  <span>{t("webcrt.foregroundColor")}</span>
-                  <input
-                    type="color"
-                    value={sessionOptsDraft.foreground || "#e2e8f0"}
-                    onChange={(e) =>
-                      setSessionOptsDraft((prev) => ({
-                        ...prev,
-                        colorScheme: "custom",
-                        foreground: e.target.value,
-                      }))
-                    }
-                  />
-                </label>
-                <div
-                  className="webcrt-session-opts__preview"
-                  style={{
-                    background: sessionOptsDraft.background,
-                    color: sessionOptsDraft.foreground,
-                  }}
-                  aria-hidden
-                >
-                  Aa 192.168.0.1
-                </div>
+              <div
+                className="webcrt-session-opts__preview"
+                style={{
+                  background: sessionOptsDraft.background,
+                  color: sessionOptsDraft.foreground,
+                }}
+                aria-hidden
+              >
+                Aa 192.168.0.1
               </div>
-              <label className="webcrt-session-opts__field webcrt-session-opts__field--check">
-                <span>{t("webcrt.copyOnSelect")}</span>
-                <input
-                  type="checkbox"
-                  checked={sessionOptsDraft.copyOnSelect}
-                  onChange={(e) =>
-                    setSessionOptsDraft((prev) => ({ ...prev, copyOnSelect: e.target.checked }))
-                  }
-                />
-              </label>
-              <label className="webcrt-session-opts__field">
-                <span>{t("webcrt.pasteDelay")}</span>
-                <select
-                  value={sessionOptsDraft.pasteDelayMs}
-                  onChange={(e) =>
-                    setSessionOptsDraft((prev) => ({
-                      ...prev,
-                      pasteDelayMs: Number(e.target.value) || 0,
-                    }))
-                  }
-                >
-                  {PASTE_DELAY_OPTIONS.map((ms) => (
-                    <option key={ms} value={ms}>
-                      {ms === 0 ? t("webcrt.pasteDelayOff") : `${ms} ms`}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="webcrt-session-opts__field">
-                <span>{t("webcrt.keepalive")}</span>
-                <select
-                  value={sessionOptsDraft.keepaliveSec}
-                  onChange={(e) =>
-                    setSessionOptsDraft((prev) => ({
-                      ...prev,
-                      keepaliveSec: Number(e.target.value) || 0,
-                    }))
-                  }
-                >
-                  {KEEPALIVE_OPTIONS.map((sec) => (
-                    <option key={sec} value={sec}>
-                      {sec === 0 ? t("webcrt.keepaliveOff") : t("webcrt.keepaliveSec", { n: sec })}
-                    </option>
-                  ))}
-                </select>
-              </label>
             </div>
-            <div className="modal__actions">
-              <button type="button" onClick={() => setSessionOptsModalOpen(false)}>
-                {t("webcrt.sessionOptionsCancel")}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  const next = normalizeSessionOptions(sessionOptsDraft);
-                  saveSessionOptions(next);
-                  setSessionOpts(next);
-                  setSessionOptsModalOpen(false);
-                  showOk(t("webcrt.sessionOptionsSaved"));
+            <label className="webcrt-session-opts__field webcrt-session-opts__field--check">
+              <span>{t("webcrt.copyOnSelect")}</span>
+              <input
+                type="checkbox"
+                checked={sessionOptsDraft.copyOnSelect}
+                onChange={(e) =>
+                  setSessionOptsDraft((prev) => ({ ...prev, copyOnSelect: e.target.checked }))
+                }
+              />
+            </label>
+            <label className="webcrt-session-opts__field">
+              <span>{t("webcrt.pasteDelay")}</span>
+              <select
+                value={sessionOptsDraft.pasteDelayMs}
+                onChange={(e) =>
+                  setSessionOptsDraft((prev) => ({
+                    ...prev,
+                    pasteDelayMs: Number(e.target.value) || 0,
+                  }))
+                }
+              >
+                {PASTE_DELAY_OPTIONS.map((ms) => (
+                  <option key={ms} value={ms}>
+                    {ms === 0 ? t("webcrt.pasteDelayOff") : `${ms} ms`}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="webcrt-session-opts__field">
+              <span>{t("webcrt.keepalive")}</span>
+              <select
+                value={sessionOptsDraft.keepaliveSec}
+                onChange={(e) =>
+                  setSessionOptsDraft((prev) => ({
+                    ...prev,
+                    keepaliveSec: Number(e.target.value) || 0,
+                  }))
+                }
+              >
+                {KEEPALIVE_OPTIONS.map((sec) => (
+                  <option key={sec} value={sec}>
+                    {sec === 0 ? t("webcrt.keepaliveOff") : t("webcrt.keepaliveSec", { n: sec })}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="tertiary" onPress={() => setSessionOptsModalOpen(false)}>
+            {t("webcrt.sessionOptionsCancel")}
+          </Button>
+          <Button
+            variant="primary"
+            onPress={() => {
+              const next = normalizeSessionOptions(sessionOptsDraft);
+              saveSessionOptions(next);
+              setSessionOpts(next);
+              setSessionOptsModalOpen(false);
+              showOk(t("webcrt.sessionOptionsSaved"));
+            }}
+          >
+            {t("webcrt.sessionOptionsSave")}
+          </Button>
+        </Modal.Footer>
+      </AppModalShell>
+
+      <AppModalShell
+        open={Boolean(authDialog)}
+        onClose={() => {
+          if (!sessionBusy) setAuthDialog(null);
+        }}
+        dismissible={!sessionBusy}
+        size="md"
+        className="webcrt-auth-modal"
+      >
+        <Modal.Header>
+          <Modal.Heading>{t("webcrt.newSession.authTitle")}</Modal.Heading>
+          <Modal.CloseTrigger isDisabled={sessionBusy} />
+        </Modal.Header>
+        <Modal.Body className="flex flex-col gap-3">
+          {authDialog ? (
+            <>
+              <p className="form-hint">
+                {authDialog.host.ip_address}
+                {authDialog.host.port ? `:${authDialog.host.port}` : ""}
+                {" · SSH"}
+              </p>
+              {authDialog.errorHint ? (
+                <p className="form-hint webcrt-auth-error">{authDialog.errorHint}</p>
+              ) : null}
+              <div className="form-grid">
+                <label>
+                  <FormLabel required>{t("managedNe.col.user")}</FormLabel>
+                  <Input
+                    required
+                    autoFocus
+                    value={authForm.username}
+                    onChange={(e) => setAuthForm({ ...authForm, username: e.target.value })}
+                  />
+                </label>
+                <label>
+                  <FormLabel required>{t("managedNe.col.password")}</FormLabel>
+                  <Input
+                    type="password"
+                    required
+                    value={authForm.password}
+                    onChange={(e) => setAuthForm({ ...authForm, password: e.target.value })}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") void submitAuthDialog();
+                    }}
+                  />
+                </label>
+                <label className="form-check form-grid__full">
+                  <input
+                    type="checkbox"
+                    checked={authForm.savePassword}
+                    onChange={(e) => setAuthForm({ ...authForm, savePassword: e.target.checked })}
+                  />
+                  <span className="form-check__text">{t("webcrt.newSession.savePassword")}</span>
+                </label>
+              </div>
+            </>
+          ) : null}
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="tertiary" isDisabled={sessionBusy} onPress={() => setAuthDialog(null)}>
+            {t("webcrt.sessionOptionsCancel")}
+          </Button>
+          <Button variant="primary" isDisabled={sessionBusy} onPress={() => void submitAuthDialog()}>
+            {sessionBusy ? t("webcrt.newSession.connecting") : t("webcrt.newSession.connect")}
+          </Button>
+        </Modal.Footer>
+      </AppModalShell>
+
+      <AppModalShell
+        open={hostDialogOpen}
+        onClose={() => {
+          if (!sessionBusy) {
+            setHostDialogOpen(false);
+            setHostDialogClaimNeId(null);
+          }
+        }}
+        dismissible={!sessionBusy}
+        size="md"
+        className="webcrt-new-session-modal"
+      >
+        <Modal.Header>
+          <Modal.Heading>
+            {hostDialogClaimNeId
+              ? t("webcrt.newSession.claimTitle")
+              : t("webcrt.newSession.title")}
+          </Modal.Heading>
+          <Modal.CloseTrigger isDisabled={sessionBusy} />
+        </Modal.Header>
+        <Modal.Body className="flex flex-col gap-3">
+          {hostDialogClaimNeId ? (
+            <p className="form-hint">{t("webcrt.newSession.claimHint")}</p>
+          ) : null}
+          <div className="form-grid">
+            <label>
+              <FormLabel required>{t("webcrt.newSession.protocol")}</FormLabel>
+              <select
+                value={hostForm.protocol}
+                onChange={(e) => {
+                  const protocol = e.target.value === "telnet" ? "telnet" : "ssh";
+                  setHostForm((prev) => ({
+                    ...prev,
+                    protocol,
+                    port: protocol === "telnet" ? 23 : 22,
+                  }));
                 }}
               >
-                {t("webcrt.sessionOptionsSave")}
-              </button>
-            </div>
+                <option value="ssh">SSH</option>
+                <option value="telnet">Telnet</option>
+              </select>
+            </label>
+            <label>
+              <FormLabel required>{t("webcrt.newSession.host")}</FormLabel>
+              <Input
+                required
+                autoFocus
+                value={hostForm.ip_address}
+                placeholder="192.168.1.1"
+                onChange={(e) => setHostForm({ ...hostForm, ip_address: e.target.value })}
+              />
+            </label>
+            <label>
+              <FormLabel>{t("webcrt.newSession.port")}</FormLabel>
+              <Input
+                type="number"
+                value={String(hostForm.port)}
+                onChange={(e) =>
+                  setHostForm({
+                    ...hostForm,
+                    port: Number(e.target.value) || (hostForm.protocol === "telnet" ? 23 : 22),
+                  })
+                }
+              />
+            </label>
+            <label>
+              <FormLabel>{t("webcrt.newSession.sessionName")}</FormLabel>
+              <Input
+                value={hostForm.name}
+                placeholder={t("webcrt.newSession.sessionNamePh")}
+                onChange={(e) => setHostForm({ ...hostForm, name: e.target.value })}
+              />
+            </label>
           </div>
-        </div>
-      ) : null}
-
-      {authDialog ? (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onClick={() => {
-            if (!sessionBusy) setAuthDialog(null);
-          }}
-        >
-          <div
-            className="modal webcrt-auth-modal"
-            role="dialog"
-            aria-labelledby="webcrt-auth-title"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 id="webcrt-auth-title">{t("webcrt.newSession.authTitle")}</h3>
-            <p className="form-hint">
-              {authDialog.host.ip_address}
-              {authDialog.host.port ? `:${authDialog.host.port}` : ""}
-              {" · SSH"}
-            </p>
-            {authDialog.errorHint ? (
-              <p className="form-hint webcrt-auth-error">{authDialog.errorHint}</p>
-            ) : null}
-            <div className="form-grid">
-              <label>
-                <FormLabel required>{t("managedNe.col.user")}</FormLabel>
-                <input
-                  required
-                  autoFocus
-                  value={authForm.username}
-                  onChange={(e) => setAuthForm({ ...authForm, username: e.target.value })}
-                />
-              </label>
-              <label>
-                <FormLabel required>{t("managedNe.col.password")}</FormLabel>
-                <input
-                  type="password"
-                  required
-                  value={authForm.password}
-                  onChange={(e) => setAuthForm({ ...authForm, password: e.target.value })}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") void submitAuthDialog();
-                  }}
-                />
-              </label>
-              <label className="form-check form-grid__full">
-                <input
-                  type="checkbox"
-                  checked={authForm.savePassword}
-                  onChange={(e) => setAuthForm({ ...authForm, savePassword: e.target.checked })}
-                />
-                <span className="form-check__text">{t("webcrt.newSession.savePassword")}</span>
-              </label>
-            </div>
-            <div className="modal__actions">
-              <button type="button" disabled={sessionBusy} onClick={() => setAuthDialog(null)}>
-                {t("webcrt.sessionOptionsCancel")}
-              </button>
-              <button type="button" disabled={sessionBusy} onClick={() => void submitAuthDialog()}>
-                {sessionBusy ? t("webcrt.newSession.connecting") : t("webcrt.newSession.connect")}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      {hostDialogOpen ? (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onClick={() => {
-            if (!sessionBusy) {
+        </Modal.Body>
+        <Modal.Footer>
+          <Button
+            variant="tertiary"
+            isDisabled={sessionBusy}
+            onPress={() => {
               setHostDialogOpen(false);
               setHostDialogClaimNeId(null);
-            }
-          }}
-        >
-          <div
-            className="modal webcrt-new-session-modal"
-            role="dialog"
-            aria-labelledby="webcrt-new-session-title"
-            onClick={(e) => e.stopPropagation()}
+            }}
           >
-            <h3 id="webcrt-new-session-title">
-              {hostDialogClaimNeId
-                ? t("webcrt.newSession.claimTitle")
-                : t("webcrt.newSession.title")}
-            </h3>
-            {hostDialogClaimNeId ? (
-              <p className="form-hint">{t("webcrt.newSession.claimHint")}</p>
-            ) : null}
-            <div className="form-grid">
-              <label>
-                <FormLabel required>{t("webcrt.newSession.protocol")}</FormLabel>
-                <select
-                  value={hostForm.protocol}
-                  onChange={(e) => {
-                    const protocol = e.target.value === "telnet" ? "telnet" : "ssh";
-                    setHostForm((prev) => ({
-                      ...prev,
-                      protocol,
-                      port: protocol === "telnet" ? 23 : 22,
-                    }));
-                  }}
-                >
-                  <option value="ssh">SSH</option>
-                  <option value="telnet">Telnet</option>
-                </select>
-              </label>
-              <label>
-                <FormLabel required>{t("webcrt.newSession.host")}</FormLabel>
-                <input
-                  required
-                  autoFocus
-                  value={hostForm.ip_address}
-                  placeholder="192.168.1.1"
-                  onChange={(e) => setHostForm({ ...hostForm, ip_address: e.target.value })}
-                />
-              </label>
-              <label>
-                <FormLabel>{t("webcrt.newSession.port")}</FormLabel>
-                <input
-                  type="number"
-                  value={hostForm.port}
-                  onChange={(e) =>
-                    setHostForm({
-                      ...hostForm,
-                      port: Number(e.target.value) || (hostForm.protocol === "telnet" ? 23 : 22),
-                    })
-                  }
-                />
-              </label>
-              <label>
-                <FormLabel>{t("webcrt.newSession.sessionName")}</FormLabel>
-                <input
-                  value={hostForm.name}
-                  placeholder={t("webcrt.newSession.sessionNamePh")}
-                  onChange={(e) => setHostForm({ ...hostForm, name: e.target.value })}
-                />
-              </label>
-            </div>
-            <div className="modal__actions">
-              <button
-                type="button"
-                disabled={sessionBusy}
-                onClick={() => {
-                  setHostDialogOpen(false);
-                  setHostDialogClaimNeId(null);
-                }}
-              >
-                {t("webcrt.sessionOptionsCancel")}
-              </button>
-              <button type="button" disabled={sessionBusy} onClick={() => submitHostDialog()}>
-                {sessionBusy ? t("webcrt.newSession.connecting") : t("webcrt.newSession.connect")}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+            {t("webcrt.sessionOptionsCancel")}
+          </Button>
+          <Button variant="primary" isDisabled={sessionBusy} onPress={() => submitHostDialog()}>
+            {sessionBusy ? t("webcrt.newSession.connecting") : t("webcrt.newSession.connect")}
+          </Button>
+        </Modal.Footer>
+      </AppModalShell>
 
     </div>
   );

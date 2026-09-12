@@ -1,3 +1,4 @@
+import { Button } from "@heroui/react";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { fetchPortTrafficCompare } from "../../services/api";
 import { queryKeys } from "../../constants/queryKeys";
@@ -96,18 +97,18 @@ export function PortTrafficBoardPanelCell({
             {title}
           </span>
           <div className="btn-row">
-            <button type="button" onClick={() => onMove?.(-1)}>
+            <Button size="sm" variant="secondary" isIconOnly onPress={() => onMove?.(-1)}>
               ↑
-            </button>
-            <button type="button" onClick={() => onMove?.(1)}>
+            </Button>
+            <Button size="sm" variant="secondary" isIconOnly onPress={() => onMove?.(1)}>
               ↓
-            </button>
-            <button type="button" onClick={() => onEdit?.()}>
+            </Button>
+            <Button size="sm" variant="secondary" onPress={() => onEdit?.()}>
               {t("portTraffic.edit")}
-            </button>
-            <button type="button" className="btn--danger" onClick={() => onRemove?.()}>
+            </Button>
+            <Button size="sm" variant="danger" onPress={() => onRemove?.()}>
               {t("portTraffic.delete")}
-            </button>
+            </Button>
           </div>
         </div>
       ) : null}
@@ -115,9 +116,9 @@ export function PortTrafficBoardPanelCell({
         <div className="pt-board-panel__stale">
           <p>{t("portTraffic.boardPanelStale")}</p>
           {editing ? (
-            <button type="button" className="btn-primary" onClick={() => onEdit?.()}>
+            <Button variant="primary" onPress={() => onEdit?.()}>
               {t("portTraffic.boardRetarget")}
-            </button>
+            </Button>
           ) : null}
         </div>
       ) : (

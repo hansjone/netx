@@ -1,9 +1,10 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   build: {
     rollupOptions: {
       output: {
@@ -28,6 +29,8 @@ export default defineConfig({
         ws: true,
         // Keep Origin aligned with upstream for WS handshake through proxy.
         rewriteWsOrigin: true,
+        // So NetX sees the browser address instead of 127.0.0.1 (X-Forwarded-For).
+        xfwd: true,
       },
       "/metrics": {
         target: "http://127.0.0.1:8890",

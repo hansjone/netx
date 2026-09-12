@@ -1,7 +1,9 @@
+import { Button, Input } from "@heroui/react";
 import { useMemo, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Navigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
+import { FieldSelect } from "../components/ui/FieldSelect";
 import { useI18n } from "../i18n";
 import { useToast } from "../hooks/useToast";
 import { apiGet, apiPatch, apiPost } from "../services/api";
@@ -71,13 +73,13 @@ export function UsersPage() {
 
         <div className="pt-list">
           <form className="filter-inline" onSubmit={onCreate}>
-            <input
+            <Input
               placeholder={t("auth.username")}
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               required
             />
-            <input
+            <Input
               type="password"
               placeholder={t("auth.password")}
               value={password}
@@ -85,13 +87,13 @@ export function UsersPage() {
               required
               minLength={8}
             />
-            <select value={role} onChange={(e) => setRole(e.target.value)}>
+            <FieldSelect value={role} onChange={(e) => setRole(e.target.value)}>
               <option value="user">{t("auth.roleUser")}</option>
               <option value="admin">{t("auth.roleAdmin")}</option>
-            </select>
-            <button type="submit" disabled={createMut.isPending}>
+            </FieldSelect>
+            <Button type="submit" size="sm" variant="primary" isDisabled={createMut.isPending}>
               {t("auth.addUser")}
-            </button>
+            </Button>
           </form>
 
           {usersQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
@@ -127,15 +129,16 @@ export function UsersPage() {
                       </td>
                       <td>
                         <div className="btn-row pt-list-actions table-actions">
-                          <button
-                            type="button"
-                            onClick={() =>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onPress={() =>
                               patchMut.mutate({ id: u.id, body: { is_active: !u.is_active } })
                             }
                           >
                             {u.is_active ? t("auth.disable") : t("auth.enable")}
-                          </button>
-                          <select
+                          </Button>
+                          <FieldSelect
                             value={u.role}
                             onChange={(e) =>
                               patchMut.mutate({ id: u.id, body: { role: e.target.value } })
@@ -143,8 +146,8 @@ export function UsersPage() {
                           >
                             <option value="user">{t("auth.roleUser")}</option>
                             <option value="admin">{t("auth.roleAdmin")}</option>
-                          </select>
-                          <input
+                          </FieldSelect>
+                          <Input
                             type="password"
                             placeholder={t("auth.newPassword")}
                             value={resetPwd[u.id] || ""}
@@ -153,17 +156,18 @@ export function UsersPage() {
                             }
                             style={{ width: 140, minWidth: 140, flex: "0 0 auto" }}
                           />
-                          <button
-                            type="button"
-                            disabled={!resetPwd[u.id] || resetPwd[u.id].length < 8}
-                            onClick={() => {
+                          <Button
+                            size="sm"
+                            variant="primary"
+                            isDisabled={!resetPwd[u.id] || resetPwd[u.id].length < 8}
+                            onPress={() => {
                               const pwd = resetPwd[u.id];
                               patchMut.mutate({ id: u.id, body: { password: pwd } });
                               setResetPwd((m) => ({ ...m, [u.id]: "" }));
                             }}
                           >
                             {t("auth.resetPassword")}
-                          </button>
+                          </Button>
                         </div>
                       </td>
                     </tr>

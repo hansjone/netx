@@ -1,4 +1,5 @@
-import { Fragment, type RefObject } from "react";
+import { Button, Dropdown } from "@heroui/react";
+import { Fragment, type Key, type RefObject, useMemo } from "react";
 import type { Edge, Node, ReactFlowInstance } from "@xyflow/react";
 import type { TopologyTreeFolderItem, TopologyTreeViewItem } from "../../types";
 import { HelpHint } from "../../components/HelpHint";
@@ -31,7 +32,6 @@ export type TopologyToolbarProps = {
   savePending: boolean;
   onSave: () => void;
   onFit: () => void;
-  exportMenuRef: RefObject<HTMLDetailsElement | null>;
   exporting: boolean;
   onExport: (kind: "svg" | "xml") => void;
   mapId: string;
@@ -50,6 +50,16 @@ export type TopologyToolbarProps = {
     folder: TopologyTreeFolderItem | null | undefined,
   ) => TopologyTreeViewItem | null | undefined;
 };
+
+type MoreActionKey =
+  | "live-sync"
+  | "back"
+  | "undo"
+  | "redo"
+  | "fit"
+  | "export-svg"
+  | "export-xml"
+  | "remove-stale";
 
 export function TopologyToolbar({
   readOnly = false,
@@ -75,7 +85,6 @@ export function TopologyToolbar({
   savePending,
   onSave,
   onFit,
-  exportMenuRef,
   exporting,
   onExport,
   mapId,
@@ -93,6 +102,27 @@ export function TopologyToolbar({
   primaryViewOfFolder,
 }: TopologyToolbarProps) {
   const { t } = useI18n();
+
+  const canvasEmpty = !isWorldFlatCanvas && nodes.length === 0;
+
+  const moreDisabledKeys = useMemo(() => {
+    const keys: MoreActionKey[] = [];
+    if (readOnly || !canUndo) keys.push("undo");
+    if (readOnly || !canRedo) keys.push("redo");
+    if (canvasEmpty) keys.push("fit");
+    if (exporting || canvasEmpty) keys.push("export-svg");
+    if (exporting || !mapId) keys.push("export-xml");
+    if (readOnly || !staleEdgeCount) keys.push("remove-stale");
+    return keys;
+  }, [
+    readOnly,
+    canUndo,
+    canRedo,
+    canvasEmpty,
+    exporting,
+    mapId,
+    staleEdgeCount,
+  ]);
 
   const handleCreateNe = () => {
     let flowX = 80 + nodes.length * 24;
@@ -112,14 +142,51 @@ export function TopologyToolbar({
     onCreateNe(flowX, flowY);
   };
 
+  const handleMoreAction = (key: Key) => {
+    switch (key as MoreActionKey) {
+      case "live-sync":
+        onLiveSyncToggle();
+        break;
+      case "back":
+        onBackUp();
+        break;
+      case "undo":
+        onUndo();
+        break;
+      case "redo":
+        onRedo();
+        break;
+      case "fit":
+        onFit();
+        break;
+      case "export-svg":
+        void onExport("svg");
+        break;
+      case "export-xml":
+        void onExport("xml");
+        break;
+      case "remove-stale":
+        void onRemoveStale();
+        break;
+      default:
+        break;
+    }
+  };
+
   return (
     <div className="topo-toolbar">
       <div className="topo-toolbar__row">
         <div className="topo-toolbar__title">
           <div className="topo-breadcrumb">
-            <button type="button" className="topo-breadcrumb__link" onClick={() => goRoot()}>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="topo-breadcrumb__link"
+              onPress={() => goRoot()}
+            >
               {t("topology.rootName")}
-            </button>
+            </Button>
             {breadcrumbFolders.map((folder, idx) => {
               const isLast = idx === breadcrumbFolders.length - 1;
               const primaryView = primaryViewOfFolder(folder);
@@ -140,13 +207,15 @@ export function TopologyToolbar({
                       {dirty ? " *" : ""}
                     </span>
                   ) : (
-                    <button
+                    <Button
                       type="button"
+                      variant="ghost"
+                      size="sm"
                       className="topo-breadcrumb__link"
-                      onClick={() => goRegion(folder.id)}
+                      onPress={() => goRegion(folder.id)}
                     >
                       {regionDisplayName(folder, t)}
-                    </button>
+                    </Button>
                   )}
                 </Fragment>
               );
@@ -175,116 +244,81 @@ export function TopologyToolbar({
           ) : null}
           <HelpHint text={t("topology.canvasHint")} ariaLabel={t("common.help")} />
         </div>
-        <div className="topo-toolbar__actions">
-          <button
+        <div className="topo-toolbar__actions topo-toolbar__primary">
+          <Button
             type="button"
-            className={`btn btn--sm${liveSync ? "" : " btn--ghost"}`}
-            aria-pressed={liveSync}
-            title={t("topology.liveSyncHint")}
-            onClick={onLiveSyncToggle}
-          >
-            {liveSync ? t("topology.liveSyncOn") : t("topology.liveSync")}
-          </button>
-          <button
-            type="button"
-            className="btn btn--sm"
-            disabled={readOnly || isWorldFlatCanvas}
-            title={
-              readOnly
-                ? t("topology.readOnlyHint")
-                : isWorldFlatCanvas
-                  ? t("topology.worldMapNoDirectNes")
-                  : undefined
-            }
-            onClick={onAddNe}
+            size="sm"
+            variant="secondary"
+            isDisabled={readOnly || isWorldFlatCanvas}
+            onPress={onAddNe}
           >
             {t("topology.addNe")}
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
-            className="btn btn--sm"
-            disabled={readOnly || isWorldFlatCanvas}
-            title={
-              readOnly
-                ? t("topology.readOnlyHint")
-                : isWorldFlatCanvas
-                  ? t("topology.worldMapNoDirectNes")
-                  : undefined
-            }
-            onClick={handleCreateNe}
+            size="sm"
+            variant="secondary"
+            isDisabled={readOnly || isWorldFlatCanvas}
+            onPress={handleCreateNe}
           >
             {t("topology.createNe")}
-          </button>
-          <button type="button" className="btn btn--sm btn--ghost" onClick={onBackUp}>
-            {t("topology.backUp")}
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
-            className="btn btn--sm btn--ghost"
-            disabled={readOnly || !canUndo}
-            onClick={onUndo}
-            title="Ctrl+Z"
-          >
-            {t("topology.undo")}
-          </button>
-          <button
-            type="button"
-            className="btn btn--sm btn--ghost"
-            disabled={readOnly || !canRedo}
-            onClick={onRedo}
-            title="Ctrl+Y"
-          >
-            {t("topology.redo")}
-          </button>
-          <button
-            type="button"
-            className={`btn btn--sm${dirty ? "" : " btn--ghost"}`}
-            disabled={readOnly || savePending || !dirty}
-            onClick={onSave}
-            title={readOnly ? t("topology.readOnlyHint") : "Ctrl+S"}
+            size="sm"
+            className={dirty ? "topo-toolbar__save topo-toolbar__save--dirty" : "topo-toolbar__save"}
+            variant={dirty ? "primary" : "ghost"}
+            isDisabled={readOnly || savePending || !dirty}
+            onPress={onSave}
           >
             {savePending ? t("topology.saving") : dirty ? t("topology.saveDirty") : t("topology.save")}
-          </button>
-          <button
-            type="button"
-            className="btn btn--sm btn--ghost"
-            disabled={!isWorldFlatCanvas && nodes.length === 0}
-            onClick={onFit}
-          >
-            {t("topology.fit")}
-          </button>
-          <details className="topo-toolbar__export" ref={exportMenuRef}>
-            <summary>{exporting ? t("topology.exporting") : t("topology.export")}</summary>
-            <div className="topo-export-menu" role="menu" aria-label={t("topology.export")}>
-              <button
-                type="button"
-                className="topo-export-menu__btn"
-                role="menuitem"
-                disabled={exporting || (!isWorldFlatCanvas && nodes.length === 0)}
-                onClick={() => void onExport("svg")}
+          </Button>
+          <Dropdown>
+            <Button type="button" size="sm" variant="ghost" aria-label={t("topology.more")}>
+              {t("topology.more")}
+            </Button>
+            <Dropdown.Popover className="topo-toolbar__more-popover" placement="bottom end">
+              <Dropdown.Menu
+                aria-label={t("topology.more")}
+                disabledKeys={moreDisabledKeys}
+                onAction={handleMoreAction}
               >
-                {t("topology.exportSvg")}
-              </button>
-              <button
-                type="button"
-                className="topo-export-menu__btn"
-                role="menuitem"
-                disabled={exporting || !mapId}
-                onClick={() => void onExport("xml")}
-              >
-                {t("topology.exportXml")}
-              </button>
-            </div>
-          </details>
-          <button
-            type="button"
-            className="btn btn--sm btn--ghost"
-            disabled={readOnly || !staleEdgeCount}
-            title={readOnly ? t("topology.readOnlyHint") : t("topology.removeStaleHint")}
-            onClick={() => void onRemoveStale()}
-          >
-            {t("topology.removeStale").replace("{{count}}", String(staleEdgeCount))}
-          </button>
+                <Dropdown.Item id="live-sync" textValue={liveSync ? t("topology.liveSyncOn") : t("topology.liveSync")}>
+                  {liveSync ? t("topology.liveSyncOn") : t("topology.liveSync")}
+                </Dropdown.Item>
+                <Dropdown.Item id="back" textValue={t("topology.backUp")}>
+                  {t("topology.backUp")}
+                </Dropdown.Item>
+                <Dropdown.Item id="undo" textValue={t("topology.undo")}>
+                  {t("topology.undo")}
+                </Dropdown.Item>
+                <Dropdown.Item id="redo" textValue={t("topology.redo")}>
+                  {t("topology.redo")}
+                </Dropdown.Item>
+                <Dropdown.Item id="fit" textValue={t("topology.fit")}>
+                  {t("topology.fit")}
+                </Dropdown.Item>
+                <Dropdown.Item
+                  id="export-svg"
+                  textValue={exporting ? t("topology.exporting") : t("topology.exportSvg")}
+                >
+                  {exporting ? t("topology.exporting") : t("topology.exportSvg")}
+                </Dropdown.Item>
+                <Dropdown.Item
+                  id="export-xml"
+                  textValue={exporting ? t("topology.exporting") : t("topology.exportXml")}
+                >
+                  {exporting ? t("topology.exporting") : t("topology.exportXml")}
+                </Dropdown.Item>
+                <Dropdown.Item
+                  id="remove-stale"
+                  textValue={t("topology.removeStale").replace("{{count}}", String(staleEdgeCount))}
+                >
+                  {t("topology.removeStale").replace("{{count}}", String(staleEdgeCount))}
+                </Dropdown.Item>
+              </Dropdown.Menu>
+            </Dropdown.Popover>
+          </Dropdown>
         </div>
       </div>
       <div className="topo-toolbar__row topo-toolbar__row--tools">
@@ -295,23 +329,27 @@ export function TopologyToolbar({
               ["pan", t("topology.toolPan"), "H"],
               ["connect", t("topology.toolConnect"), "C"],
             ] as const
-          ).map(([mode, label, key]) => (
-            <button
-              key={mode}
-              type="button"
-              className={`topo-tools__btn${toolMode === mode ? " is-active" : ""}`}
-              title={`${label} (${key})${readOnly && mode === "connect" ? ` — ${t("topology.readOnlyHint")}` : ""}`}
-              aria-pressed={toolMode === mode}
-              disabled={readOnly && mode === "connect"}
-              onClick={() => {
-                onToolModeChange(mode);
-                onConnectClickReset();
-              }}
-            >
-              <span className="topo-tools__label">{label}</span>
-              <kbd className="topo-tools__key">{key}</kbd>
-            </button>
-          ))}
+          ).map(([mode, label, key]) => {
+            const active = toolMode === mode;
+            return (
+              <Button
+                key={mode}
+                type="button"
+                className={`topo-tools__btn${active ? " is-active" : ""}`}
+                variant={active ? "primary" : "ghost"}
+                size="sm"
+                aria-pressed={active}
+                isDisabled={readOnly && mode === "connect"}
+                onPress={() => {
+                  onToolModeChange(mode);
+                  onConnectClickReset();
+                }}
+              >
+                <span className="topo-tools__label">{label}</span>
+                <kbd className="topo-tools__key">{key}</kbd>
+              </Button>
+            );
+          })}
         </div>
         {!fullscreen ? (
           <div
@@ -322,14 +360,15 @@ export function TopologyToolbar({
           />
         ) : null}
         {outsidePeerCount > 0 ? (
-          <button
+          <Button
             type="button"
-            className="btn btn--sm btn--ghost topo-toolbar__outside-peers"
-            title={t("topology.outsidePeers").replace("{{count}}", String(outsidePeerCount))}
-            onClick={onOpenOutsidePeers}
+            size="sm"
+            variant="ghost"
+            className="topo-toolbar__outside-peers"
+            onPress={onOpenOutsidePeers}
           >
             {t("topology.outsidePeersView").replace("{{count}}", String(outsidePeerCount))}
-          </button>
+          </Button>
         ) : null}
       </div>
     </div>

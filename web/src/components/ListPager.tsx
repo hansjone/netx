@@ -1,5 +1,7 @@
+import { Button, Input } from "@heroui/react";
 import { useEffect, useState } from "react";
 import { useI18n } from "../i18n";
+import { FieldSelect } from "./ui/FieldSelect";
 
 export type ListPagerProps = {
   page: number;
@@ -19,7 +21,7 @@ export function ListPager({
   pages,
   total,
   pageSize,
-  pageSizeOptions = [20, 50, 100, 200],
+  pageSizeOptions = [10, 20, 50, 100, 200],
   onPageChange,
   onPageSizeChange,
   disabled = false,
@@ -54,17 +56,18 @@ export function ListPager({
         })}
       </div>
       <div className="pager__controls btn-row">
-        <button
+        <Button
+          size="sm"
+          variant="secondary"
           className="pager__btn"
-          type="button"
-          disabled={disabled || page <= 1}
-          onClick={() => onPageChange(Math.max(1, page - 1))}
+          isDisabled={disabled || page <= 1}
+          onPress={() => onPageChange(Math.max(1, page - 1))}
         >
           {t("common.prevPage")}
-        </button>
+        </Button>
         <label className="pager__jump">
           <span className="visually-hidden">{t("common.jumpPage")}</span>
-          <input
+          <Input
             className="pager__jump-input"
             type="number"
             min={1}
@@ -72,7 +75,6 @@ export function ListPager({
             value={jumpDraft}
             disabled={disabled}
             aria-label={t("common.jumpPage")}
-            title={t("common.jumpPage")}
             onChange={(e) => setJumpDraft(e.target.value)}
             onBlur={commitJump}
             onKeyDown={(e) => {
@@ -84,20 +86,21 @@ export function ListPager({
           />
           <span className="muted">/ {safePages}</span>
         </label>
-        <button
+        <Button
+          size="sm"
+          variant="secondary"
           className="pager__btn"
-          type="button"
-          disabled={disabled || page >= safePages}
-          onClick={() => onPageChange(Math.min(safePages, page + 1))}
+          isDisabled={disabled || page >= safePages}
+          onPress={() => onPageChange(Math.min(safePages, page + 1))}
         >
           {t("common.nextPage")}
-        </button>
+        </Button>
         {onPageSizeChange ? (
-          <select
-            className="pager__size"
+          <FieldSelect
+            className="pager__size-field"
+            aria-label={t("common.pageSize")}
             value={String(pageSize)}
             disabled={disabled}
-            aria-label={t("common.pageSize")}
             onChange={(e) => {
               const next = Number(e.target.value) || pageSizeOptions[0] || 50;
               onPageSizeChange(next);
@@ -108,7 +111,7 @@ export function ListPager({
                 {t("common.perPage", { n: String(n) })}
               </option>
             ))}
-          </select>
+          </FieldSelect>
         ) : null}
       </div>
     </div>

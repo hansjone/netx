@@ -23,6 +23,7 @@ from .auth_service import (
     change_password,
     create_api_token,
     create_user,
+    api_token_quota,
     list_api_tokens,
     list_audit_logs,
     list_auth_sessions,
@@ -42,13 +43,14 @@ from .auth_rate_limit import (
     login_lock_remaining,
     register_login_failure,
 )
+from .client_ip import resolve_client_ip
 from .db import get_db
 
 router = APIRouter(tags=["auth"])
 
 
 def _client_meta(request: Request) -> tuple[str, str]:
-    ip = str(request.client.host if request.client else "")
+    ip = resolve_client_ip(request)
     ua = str(request.headers.get("user-agent") or "")[:512]
     return ip, ua
 
@@ -401,7 +403,8 @@ def api_list_tokens(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     user_id = None if ctx.user.role == "admin" else ctx.user.id
-    return {"items": list_api_tokens(db, user_id=user_id)}
+    quota = api_token_quota(db)
+    return {"items": list_api_tokens(db, user_id=user_id), **quota}
 
 
 @router.post("/v1/api-tokens")

@@ -1,3 +1,4 @@
+import { Button } from "@heroui/react";
 import { useMemo } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
@@ -87,9 +88,14 @@ export function TaskOverviewPage() {
       <section className="panel">
         <div className="panel__toolbar">
           <h2>{t("audit.tasks.title")}</h2>
-          <button type="button" onClick={() => void query.refetch()} disabled={query.isFetching}>
+          <Button
+            size="sm"
+            variant="secondary"
+            onPress={() => void query.refetch()}
+            isDisabled={query.isFetching}
+          >
             {query.isFetching ? t("common.refreshing") : t("common.refresh")}
-          </button>
+          </Button>
         </div>
         <p className="panel__hint">{t("audit.tasks.hint")}</p>
 

@@ -1,4 +1,5 @@
 import type { MouseEvent as ReactMouseEvent, RefObject } from "react";
+import { Button, Input } from "@heroui/react";
 import type { FabricNodeSearchHit, TopologyTreeFolderItem } from "../../types";
 import { useI18n } from "../../i18n";
 import { WORLD_MAP_ENABLED } from "./constants";
@@ -71,24 +72,24 @@ export function TopologySidebar({
     <aside className="topo-sidebar" aria-label={t("topology.maps")}>
       {collapsed ? (
         <div className="topo-sidebar__rail-wrap">
-          <button
-            type="button"
+          <Button
+            isIconOnly
+            variant="ghost"
             className="topo-sidebar__rail"
-            title={t("topology.expandSidebar")}
             aria-label={t("topology.expandSidebar")}
-            onClick={onExpand}
+            onPress={onExpand}
           >
             <span className="topo-sidebar__rail-icon" aria-hidden="true">
               <SidebarFoldIcon expand />
             </span>
-          </button>
+          </Button>
         </div>
       ) : (
         <>
           <div className="topo-sidebar__section">
             <div className="topo-tree-search" ref={treeSearchRef}>
               <div className="topo-tree-search__bar">
-                <input
+                <Input
                   className="input"
                   type="search"
                   value={treeNeQuery}
@@ -100,25 +101,27 @@ export function TopologySidebar({
                   }}
                   onFocus={() => onTreeSearchOpen(true)}
                 />
-                <button
-                  type="button"
+                <Button
+                  isIconOnly
+                  size="sm"
+                  variant="ghost"
                   className="topo-sidebar__icon-btn"
-                  onClick={promptNewRegion}
-                  disabled={createRegionPending}
-                  title={t("topology.newRegion")}
+                  onPress={promptNewRegion}
+                  isDisabled={createRegionPending}
                   aria-label={t("topology.newRegion")}
                 >
                   <PlusIcon />
-                </button>
-                <button
-                  type="button"
+                </Button>
+                <Button
+                  isIconOnly
+                  size="sm"
+                  variant="ghost"
                   className="topo-sidebar__icon-btn"
-                  title={t("topology.collapseSidebar")}
                   aria-label={t("topology.collapseSidebar")}
-                  onClick={onCollapse}
+                  onPress={onCollapse}
                 >
                   <SidebarFoldIcon />
-                </button>
+                </Button>
               </div>
               {treeSearchOpen && treeNeQuery.trim() ? (
                 <div className="topo-tree-search__panel" role="listbox">
@@ -206,9 +209,9 @@ export function TopologySidebar({
                   <>
                     {t("topology.treeLoadFailed")}
                     {treeError ? <span className="muted"> ({String(treeError)})</span> : null}{" "}
-                    <button type="button" className="btn btn--sm btn--ghost" onClick={onTreeRetry}>
+                    <Button size="sm" variant="ghost" onPress={onTreeRetry}>
                       {t("topology.treeRetry")}
-                    </button>
+                    </Button>
                   </>
                 ) : (
                   t("topology.emptyMaps")

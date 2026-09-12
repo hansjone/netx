@@ -64,7 +64,9 @@ def _is_public(path: str) -> bool:
 
 
 def _client_ip(request: Request) -> str:
-    return str(request.client.host if request.client else "")
+    from .client_ip import resolve_client_ip
+
+    return resolve_client_ip(request)
 
 
 def _action_for(method: str, path: str) -> str:

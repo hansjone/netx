@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Button, Modal, Input } from "@heroui/react";
 import {
   apiPost,
   applyUmeTopologyToFabric,
@@ -24,6 +25,7 @@ import {
 } from "../services/api";
 import { HelpHint } from "../components/HelpHint";
 import { UmeCliConnectPanel } from "../components/UmeCliConnectPanel";
+import { AppModalShell } from "../components/ui/AppModalShell";
 import { queryKeys } from "../constants/queryKeys";
 import { useI18n } from "../i18n";
 import { useToast } from "../hooks/useToast";
@@ -41,10 +43,10 @@ export function UmePage() {
   const [runtimeTaskError, setRuntimeTaskError] = useState("");
   const [subscriptionOpError, setSubscriptionOpError] = useState("");
   const [syncPage, setSyncPage] = useState(1);
-  const [syncPageSize, setSyncPageSize] = useState(20);
+  const [syncPageSize, setSyncPageSize] = useState(10);
   const [neKeyword, setNeKeyword] = useState("");
   const [nePage, setNePage] = useState(1);
-  const [nePageSize, setNePageSize] = useState(50);
+  const [nePageSize, setNePageSize] = useState(10);
   const [expandedNeId, setExpandedNeId] = useState("");
   const [nePanelOpen, setNePanelOpen] = useState(false);
   const [syncStatusPanelOpen, setSyncStatusPanelOpen] = useState(false);
@@ -58,7 +60,7 @@ export function UmePage() {
     Array<{ notification_id: string; native_probable_cause_sample: string }>
   >([]);
   const [keyAlertPage, setKeyAlertPage] = useState(1);
-  const [keyAlertPageSize, setKeyAlertPageSize] = useState(20);
+  const [keyAlertPageSize, setKeyAlertPageSize] = useState(10);
   const [keyAlertFilterKeyword, setKeyAlertFilterKeyword] = useState("");
   const [keyAlertFilterEnabled, setKeyAlertFilterEnabled] = useState<"" | "true" | "false">("");
   const [keyAlertFilterMatchType, setKeyAlertFilterMatchType] = useState<"" | "notification_id" | "keyword">("");
@@ -494,9 +496,11 @@ export function UmePage() {
             ) : null}
           </div>
           <div className="actions-row actions-row--inline">
-            <button
-              onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeTokenStatus })}
-              disabled={tokenStatusQuery.isFetching}
+            <Button
+              size="sm"
+              variant="secondary"
+              isDisabled={tokenStatusQuery.isFetching}
+              onPress={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeTokenStatus })}
             >
               {tokenStatusQuery.isFetching ? (
                 <>
@@ -506,11 +510,12 @@ export function UmePage() {
               ) : (
                 t("ume.token.refreshStatus")
               )}
-            </button>
-            <button
-              type="button"
-              onClick={() => tokenRefreshMutation.mutate()}
-              disabled={tokenRefreshMutation.isPending || tokenDisconnectMutation.isPending}
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              isDisabled={tokenRefreshMutation.isPending || tokenDisconnectMutation.isPending}
+              onPress={() => tokenRefreshMutation.mutate()}
             >
               {tokenRefreshMutation.isPending ? (
                 <>
@@ -520,11 +525,12 @@ export function UmePage() {
               ) : (
                 t("ume.token.renewLogin")
               )}
-            </button>
-            <button
-              type="button"
-              onClick={() => tokenDisconnectMutation.mutate()}
-              disabled={tokenRefreshMutation.isPending || tokenDisconnectMutation.isPending}
+            </Button>
+            <Button
+              size="sm"
+              variant="danger"
+              isDisabled={tokenRefreshMutation.isPending || tokenDisconnectMutation.isPending}
+              onPress={() => tokenDisconnectMutation.mutate()}
             >
               {tokenDisconnectMutation.isPending ? (
                 <>
@@ -534,7 +540,7 @@ export function UmePage() {
               ) : (
                 t("ume.token.disconnect")
               )}
-            </button>
+            </Button>
           </div>
           {(tokenOpError || tokenRefreshMutation.error || tokenDisconnectMutation.error) && (
             <div className="pill pill--high">
@@ -550,13 +556,14 @@ export function UmePage() {
               <span className={`conn-pill conn-pill--${runningTasks.length > 0 ? "unknown" : "up"}`}>
                 {t("ume.tasks.running")}: {runningTasks.length}
               </span>
-              <button
-                type="button"
-                onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeSyncStatusAll })}
-                disabled={syncStatusQuery.isFetching}
+              <Button
+                size="sm"
+                variant="secondary"
+                isDisabled={syncStatusQuery.isFetching}
+                onPress={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeSyncStatusAll })}
               >
                 {t("common.refresh")}
-              </button>
+              </Button>
             </div>
           </div>
           {needsFabricApply ? (
@@ -572,16 +579,16 @@ export function UmePage() {
                   )}
               </div>
               <div className="btn-row" style={{ marginTop: 8 }}>
-                <button
-                  type="button"
-                  className="btn btn--sm"
-                  disabled={applyFabricMut.isPending}
-                  onClick={() => applyFabricMut.mutate()}
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  isDisabled={applyFabricMut.isPending}
+                  onPress={() => applyFabricMut.mutate()}
                 >
                   {applyFabricMut.isPending
                     ? t("ume.syncStatus.applyingFabric")
                     : t("ume.syncStatus.applyFabric")}
-                </button>
+                </Button>
               </div>
             </div>
           ) : null}
@@ -648,23 +655,25 @@ export function UmePage() {
                   <td>{runtimeLastError(x.last_error, t) || t("common.empty")}</td>
                   <td>
                     {Boolean(x.paused) ? (
-                      <button
-                        type="button"
+                      <Button
+                        size="sm"
+                        variant="ghost"
                         className="link-btn"
-                        disabled={runtimeTaskMutation.isPending}
-                        onClick={() => runtimeTaskMutation.mutate({ task: x.task, action: "resume" })}
+                        isDisabled={runtimeTaskMutation.isPending}
+                        onPress={() => runtimeTaskMutation.mutate({ task: x.task, action: "resume" })}
                       >
                         resume
-                      </button>
+                      </Button>
                     ) : (
-                      <button
-                        type="button"
+                      <Button
+                        size="sm"
+                        variant="ghost"
                         className="link-btn"
-                        disabled={runtimeTaskMutation.isPending}
-                        onClick={() => runtimeTaskMutation.mutate({ task: x.task, action: "pause" })}
+                        isDisabled={runtimeTaskMutation.isPending}
+                        onPress={() => runtimeTaskMutation.mutate({ task: x.task, action: "pause" })}
                       >
                         pause
-                      </button>
+                      </Button>
                     )}
                   </td>
                 </tr>
@@ -721,9 +730,11 @@ export function UmePage() {
             </div>
           ) : null}
           <div className="actions-row actions-row--inline">
-            <button
-              type="button"
-              onClick={() => {
+            <Button
+              size="sm"
+              variant="secondary"
+              isDisabled={subPending || (!serverSubLost && subscriptionActive) || !hasToken}
+              onPress={() => {
                 if (serverSubLost && subscriptionActive) {
                   if (window.confirm(t("ume.subscription.confirmReestablish"))) {
                     subscriptionEstablishMutation.mutate({ forceReestablish: true });
@@ -732,14 +743,6 @@ export function UmePage() {
                 }
                 subscriptionEstablishMutation.mutate(undefined);
               }}
-              disabled={subPending || (!serverSubLost && subscriptionActive) || !hasToken}
-              title={
-                !hasToken
-                  ? t("ume.subscription.titleLoginFirst")
-                  : serverSubLost
-                    ? t("ume.subscription.titleReestablish")
-                    : undefined
-              }
             >
               {subscriptionEstablishMutation.isPending ? (
                 <>
@@ -751,14 +754,15 @@ export function UmePage() {
               ) : (
                 t("ume.subscription.establish")
               )}
-            </button>
+            </Button>
             {serverSubLost && subscriptionActive ? (
-              <button
-                type="button"
-                onClick={() => {
+              <Button
+                size="sm"
+                variant="secondary"
+                isDisabled={subPending}
+                onPress={() => {
                   if (confirmClearLocalSubscription()) subscriptionClearLocalMutation.mutate();
                 }}
-                disabled={subPending}
               >
                 {subscriptionClearLocalMutation.isPending ? (
                   <>
@@ -768,12 +772,13 @@ export function UmePage() {
                 ) : (
                   t("ume.subscription.clearLocalOnly")
                 )}
-              </button>
+              </Button>
             ) : null}
-            <button
-              type="button"
-              onClick={() => subscriptionCancelMutation.mutate(undefined)}
-              disabled={subPending || !subscriptionActive}
+            <Button
+              size="sm"
+              variant="danger"
+              isDisabled={subPending || !subscriptionActive}
+              onPress={() => subscriptionCancelMutation.mutate(undefined)}
             >
               {subscriptionCancelMutation.isPending ? (
                 <>
@@ -783,14 +788,15 @@ export function UmePage() {
               ) : (
                 t("ume.subscription.cancel")
               )}
-            </button>
-            <button
-              type="button"
-              onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeAlarmSubscription })}
-              disabled={subscriptionStatusQuery.isFetching}
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              isDisabled={subscriptionStatusQuery.isFetching}
+              onPress={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeAlarmSubscription })}
             >
               {t("ume.subscription.refreshStatus")}
-            </button>
+            </Button>
           </div>
           {subscriptionOpError ? (
             <div className="pill pill--high">
@@ -839,9 +845,9 @@ export function UmePage() {
               {t("ume.cli.title")}
               <HelpHint text={t("ume.cli.hint")} ariaLabel={t("common.help")} />
             </h2>
-            <button type="button" className="btn btn--sm" onClick={() => setCliPanelOpen(true)}>
+            <Button size="sm" variant="secondary" onPress={() => setCliPanelOpen(true)}>
               {t("ume.cli.showPanel")}
-            </button>
+            </Button>
           </div>
           <p className="ume-entry__summary muted">{t("ume.cli.hint")}</p>
         </article>
@@ -852,9 +858,9 @@ export function UmePage() {
               {t("ume.keyAlert.title")}
               <HelpHint text={t("ume.keyAlert.help")} ariaLabel={t("common.help")} />
             </h2>
-            <button type="button" className="btn btn--sm" onClick={() => setKeyAlertPanelOpen(true)}>
+            <Button size="sm" variant="secondary" onPress={() => setKeyAlertPanelOpen(true)}>
               {t("ume.keyAlert.showPanel")}
-            </button>
+            </Button>
           </div>
           <div className="ume-entry__pills actions-row actions-row--inline">
             <span className={`conn-pill conn-pill--${hubWsPill}`}>
@@ -888,9 +894,9 @@ export function UmePage() {
         <article className="panel ume-entry">
           <div className="panel__toolbar">
             <h2>{t("ume.syncStatus.title")}</h2>
-            <button type="button" className="btn btn--sm" onClick={() => setSyncStatusPanelOpen(true)}>
+            <Button size="sm" variant="secondary" onPress={() => setSyncStatusPanelOpen(true)}>
               {t("ume.syncStatus.showPanel")}
-            </button>
+            </Button>
           </div>
           <p className="ume-entry__summary muted">
             {syncTotal
@@ -905,9 +911,9 @@ export function UmePage() {
         <article className="panel ume-entry">
           <div className="panel__toolbar">
             <h2>{t("ume.ne.title")}</h2>
-            <button type="button" className="btn btn--sm" onClick={() => setNePanelOpen(true)}>
+            <Button size="sm" variant="secondary" onPress={() => setNePanelOpen(true)}>
               {t("ume.ne.showPanel")}
-            </button>
+            </Button>
           </div>
           <p className="ume-entry__summary muted">
             {t("ume.ne.summary", { total: String(neTotal) })}
@@ -934,80 +940,60 @@ export function UmePage() {
       </section>
       </div>
 
-      {cliPanelOpen ? (
-        <div className="modal-backdrop" role="presentation" onClick={() => setCliPanelOpen(false)}>
-          <div
-            className="modal modal--wide ops-detail-modal ops-detail-modal--xl"
-            role="dialog"
-            aria-modal="true"
-            aria-label={t("ume.cli.title")}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="ops-detail-modal__head">
-              <div className="ops-detail-modal__title">
-                <h3>{t("ume.cli.title")}</h3>
-                <p className="muted">{t("ume.cli.hint")}</p>
-              </div>
-              <div className="btn-row ops-detail-modal__actions">
-                <button type="button" onClick={() => setCliPanelOpen(false)}>
-                  {t("networkConfigs.close")}
-                </button>
-              </div>
-            </div>
-            <div className="ops-detail-modal__scroll ops-detail-modal__scroll--pad">
-              <UmeCliConnectPanel embedded enabled />
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <AppModalShell
+        open={cliPanelOpen}
+        onClose={() => setCliPanelOpen(false)}
+        size="lg"
+        className="app-heroui-modal--xl"
+      >
+        <Modal.Header>
+          <Modal.Heading>{t("ume.cli.title")}</Modal.Heading>
+          <Modal.CloseTrigger />
+        </Modal.Header>
+        <Modal.Body className="flex flex-col gap-3">
+          <p className="muted">{t("ume.cli.hint")}</p>
+          <UmeCliConnectPanel embedded enabled />
+        </Modal.Body>
+      </AppModalShell>
 
-      {keyAlertPanelOpen ? (
-        <div className="modal-backdrop" role="presentation" onClick={() => setKeyAlertPanelOpen(false)}>
-          <div
-            className="modal modal--wide ops-detail-modal ops-detail-modal--xl"
-            role="dialog"
-            aria-modal="true"
-            aria-label={t("ume.keyAlert.title")}
-            onClick={(e) => e.stopPropagation()}
+      <AppModalShell
+        open={keyAlertPanelOpen}
+        onClose={() => setKeyAlertPanelOpen(false)}
+        size="lg"
+        className="app-heroui-modal--xl"
+      >
+        <Modal.Header>
+          <Modal.Heading>{t("ume.keyAlert.title")}</Modal.Heading>
+          <Button
+            size="sm"
+            variant="secondary"
+            isDisabled={keyAlertMonitorQuery.isFetching}
+            onPress={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeKeyAlertMonitorAll })}
           >
-            <div className="ops-detail-modal__head">
-              <div className="ops-detail-modal__title">
-                <h3>{t("ume.keyAlert.title")}</h3>
-                <p className="muted">
-                  {t("ume.keyAlert.hub")}:{" "}
-                  {keyAlertHubSubscribers > 0
-                    ? t("ume.keyAlert.hubConnected")
-                    : t("ume.keyAlert.hubEmpty")}
-                  {` · ${t("ume.keyAlert.hubSubscribers")} ${keyAlertHubSubscribers}`}
-                  {` · ${t("ume.keyAlert.hubPublished")} ${Number(keyAlertHub?.published || 0)}`}
-                  {` · ${t("ume.keyAlert.hubDeliverOk")} ${Number(keyAlertHub?.deliver_ok || 0)}`}
-                  {keyAlertHub?.path ? ` · ${t("ume.keyAlert.hubPath")} ${keyAlertHub.path}` : ""}
-                  {showLegacyOclaw
-                    ? ` · ${t("ume.keyAlert.legacyOclaw")}: ${
-                        keyAlertForwarder?.paused
-                          ? t("ume.keyAlert.wsPaused")
-                          : keyAlertForwarder?.connected
-                            ? t("ume.keyAlert.wsConnected")
-                            : t("ume.keyAlert.wsDisconnected")
-                      }`
-                    : ""}
-                </p>
-              </div>
-              <div className="btn-row ops-detail-modal__actions">
-                <button
-                  type="button"
-                  onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeKeyAlertMonitorAll })}
-                  disabled={keyAlertMonitorQuery.isFetching}
-                >
-                  {keyAlertMonitorQuery.isFetching ? t("common.refreshing") : t("common.refresh")}
-                </button>
-                <button type="button" onClick={() => setKeyAlertPanelOpen(false)}>
-                  {t("networkConfigs.close")}
-                </button>
-              </div>
-            </div>
-
-            <div className="ops-detail-modal__scroll ops-detail-modal__scroll--flow">
+            {keyAlertMonitorQuery.isFetching ? t("common.refreshing") : t("common.refresh")}
+          </Button>
+          <Modal.CloseTrigger />
+        </Modal.Header>
+        <Modal.Body className="flex flex-col gap-3">
+          <p className="muted">
+            {t("ume.keyAlert.hub")}:{" "}
+            {keyAlertHubSubscribers > 0
+              ? t("ume.keyAlert.hubConnected")
+              : t("ume.keyAlert.hubEmpty")}
+            {` · ${t("ume.keyAlert.hubSubscribers")} ${keyAlertHubSubscribers}`}
+            {` · ${t("ume.keyAlert.hubPublished")} ${Number(keyAlertHub?.published || 0)}`}
+            {` · ${t("ume.keyAlert.hubDeliverOk")} ${Number(keyAlertHub?.deliver_ok || 0)}`}
+            {keyAlertHub?.path ? ` · ${t("ume.keyAlert.hubPath")} ${keyAlertHub.path}` : ""}
+            {showLegacyOclaw
+              ? ` · ${t("ume.keyAlert.legacyOclaw")}: ${
+                  keyAlertForwarder?.paused
+                    ? t("ume.keyAlert.wsPaused")
+                    : keyAlertForwarder?.connected
+                      ? t("ume.keyAlert.wsConnected")
+                      : t("ume.keyAlert.wsDisconnected")
+                }`
+              : ""}
+          </p>
               <div className="ume-modal-form">
                 <div className="muted ume-modal-form__label">{t("ume.keyAlert.hubConnections")}</div>
                 {keyAlertHubConnections.length === 0 ? (
@@ -1105,9 +1091,10 @@ export function UmePage() {
                           </option>
                         ))}
                   </datalist>
-                  <button
-                    type="button"
-                    onClick={async () => {
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onPress={async () => {
                       try {
                         if (keyAlertMatchType === "keyword") {
                           const resp = await fetchUmeAlarmKeywords(100);
@@ -1134,16 +1121,17 @@ export function UmePage() {
                     }}
                   >
                     {t("ume.keyAlert.pickFromAlarms")}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => keyAlertAddMutation.mutate()}
-                    disabled={
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    isDisabled={
                       keyAlertAddMutation.isPending || !keyAlertMatchValue.trim() || !keyAlertLabel.trim()
                     }
+                    onPress={() => keyAlertAddMutation.mutate()}
                   >
                     {keyAlertAddMutation.isPending ? t("ume.keyAlert.adding") : t("ume.keyAlert.add")}
-                  </button>
+                  </Button>
                 </div>
 
                 <div className="muted ume-modal-form__label">{t("ume.keyAlert.neTypesLabel")}</div>
@@ -1284,29 +1272,29 @@ export function UmePage() {
                         </td>
                         <td>
                           <div className="btn-row">
-                            <button
-                              type="button"
-                              className="btn btn--sm"
-                              onClick={() => {
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              isDisabled={keyAlertEditMutation.isPending}
+                              onPress={() => {
                                 setKeyAlertEditRule(rule);
                                 setKeyAlertEditNeTypes(rule.ne_types || []);
                               }}
-                              disabled={keyAlertEditMutation.isPending}
                             >
                               {t("ume.keyAlert.edit")}
-                            </button>
-                            <button
-                              type="button"
-                              className="btn btn--sm"
-                              onClick={() => {
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="danger"
+                              isDisabled={keyAlertDeleteMutation.isPending}
+                              onPress={() => {
                                 if (window.confirm(t("ume.keyAlert.confirmDelete"))) {
                                   keyAlertDeleteMutation.mutate(rule.notification_id);
                                 }
                               }}
-                              disabled={keyAlertDeleteMutation.isPending}
                             >
                               {t("ume.keyAlert.delete")}
-                            </button>
+                            </Button>
                           </div>
                         </td>
                       </tr>
@@ -1331,25 +1319,27 @@ export function UmePage() {
                   })}
                 </span>
                 <div className="btn-row">
-                  <button
-                    type="button"
-                    disabled={keyAlertPage <= 1}
-                    onClick={() => setKeyAlertPage(Math.max(1, keyAlertPage - 1))}
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    isDisabled={keyAlertPage <= 1}
+                    onPress={() => setKeyAlertPage(Math.max(1, keyAlertPage - 1))}
                   >
                     {t("common.prevPage")}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={keyAlertPage >= keyAlertPages}
-                    onClick={() => setKeyAlertPage(keyAlertPage + 1)}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    isDisabled={keyAlertPage >= keyAlertPages}
+                    onPress={() => setKeyAlertPage(keyAlertPage + 1)}
                   >
                     {t("common.nextPage")}
-                  </button>
+                  </Button>
                   <select
                     className="pager__size"
                     value={String(keyAlertPageSize)}
                     onChange={(e) => {
-                      setKeyAlertPageSize(Number(e.target.value) || 20);
+                      setKeyAlertPageSize(Number(e.target.value) || 10);
                       setKeyAlertPage(1);
                     }}
                   >
@@ -1359,50 +1349,35 @@ export function UmePage() {
                   </select>
                 </div>
               </div>
-            </div>
-          </div>
-        </div>
-      ) : null}
+        </Modal.Body>
+      </AppModalShell>
 
-      {syncStatusPanelOpen ? (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onClick={() => setSyncStatusPanelOpen(false)}
-        >
-          <div
-            className="modal modal--wide ops-detail-modal ops-detail-modal--xl"
-            role="dialog"
-            aria-modal="true"
-            aria-label={t("ume.syncStatus.title")}
-            onClick={(e) => e.stopPropagation()}
+      <AppModalShell
+        open={syncStatusPanelOpen}
+        onClose={() => setSyncStatusPanelOpen(false)}
+        size="lg"
+        className="app-heroui-modal--xl"
+      >
+        <Modal.Header>
+          <Modal.Heading>{t("ume.syncStatus.title")}</Modal.Heading>
+          <Button
+            size="sm"
+            variant="secondary"
+            isDisabled={syncStatusQuery.isFetching}
+            onPress={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeSyncStatusAll })}
           >
-            <div className="ops-detail-modal__head">
-              <div className="ops-detail-modal__title">
-                <h3>{t("ume.syncStatus.title")}</h3>
-                <p className="muted">
-                  {t("ume.syncStatus.summary", {
-                    total: String(syncTotal),
-                    running: String(runningTasks.length),
-                  })}
-                </p>
-              </div>
-              <div className="btn-row ops-detail-modal__actions">
-                <button
-                  type="button"
-                  onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeSyncStatusAll })}
-                  disabled={syncStatusQuery.isFetching}
-                >
-                  {syncStatusQuery.isFetching ? t("common.refreshing") : t("common.refresh")}
-                </button>
-                <button type="button" onClick={() => setSyncStatusPanelOpen(false)}>
-                  {t("networkConfigs.close")}
-                </button>
-              </div>
-            </div>
-
-            <div className="ops-detail-modal__scroll">
-              <div className="pt-list-table-wrap">
+            {syncStatusQuery.isFetching ? t("common.refreshing") : t("common.refresh")}
+          </Button>
+          <Modal.CloseTrigger />
+        </Modal.Header>
+        <Modal.Body className="flex flex-col gap-3">
+          <p className="muted">
+            {t("ume.syncStatus.summary", {
+              total: String(syncTotal),
+              running: String(runningTasks.length),
+            })}
+          </p>
+            <div className="pt-list-table-wrap">
                 <table className="data-table pt-list-table">
                   <thead>
                     <tr>
@@ -1415,7 +1390,7 @@ export function UmePage() {
                       <th title={t("ume.tasks.deletedTitle")}>deleted</th>
                       <th>started_at</th>
                       <th>ended_at</th>
-                      <th>error</th>
+                      <th className="ume-col-error">error</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1432,7 +1407,9 @@ export function UmePage() {
                         <td>{Number(x.deleted ?? 0)}</td>
                         <td>{formatSystemTime(x.started_at)}</td>
                         <td>{x.ended_at ? formatSystemTime(x.ended_at) : t("common.empty")}</td>
-                        <td title={x.error_message || ""}>{x.error_message || t("common.empty")}</td>
+                        <td className="ume-col-error" title={x.error_message || ""}>
+                          {x.error_message || t("common.empty")}
+                        </td>
                       </tr>
                     ))}
                     {!syncStatusQuery.isLoading && (syncStatusQuery.data?.items || []).length === 0 ? (
@@ -1445,7 +1422,6 @@ export function UmePage() {
                   </tbody>
                 </table>
               </div>
-            </div>
 
             <div className="ops-detail-modal__foot">
               <span className="muted">
@@ -1456,28 +1432,31 @@ export function UmePage() {
                 })}
               </span>
               <div className="btn-row">
-                <button
-                  type="button"
-                  disabled={syncPage <= 1}
-                  onClick={() => setSyncPage(Math.max(1, syncPage - 1))}
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  isDisabled={syncPage <= 1}
+                  onPress={() => setSyncPage(Math.max(1, syncPage - 1))}
                 >
                   {t("common.prevPage")}
-                </button>
-                <button
-                  type="button"
-                  disabled={syncPage >= syncPages}
-                  onClick={() => setSyncPage(syncPage + 1)}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  isDisabled={syncPage >= syncPages}
+                  onPress={() => setSyncPage(syncPage + 1)}
                 >
                   {t("common.nextPage")}
-                </button>
+                </Button>
                 <select
                   className="pager__size"
                   value={String(syncPageSize)}
                   onChange={(e) => {
-                    setSyncPageSize(Number(e.target.value) || 20);
+                    setSyncPageSize(Number(e.target.value) || 10);
                     setSyncPage(1);
                   }}
                 >
+                  <option value="10">{perPage(10)}</option>
                   <option value="20">{perPage(20)}</option>
                   <option value="50">{perPage(50)}</option>
                   <option value="100">{perPage(100)}</option>
@@ -1485,46 +1464,27 @@ export function UmePage() {
                 </select>
               </div>
             </div>
-          </div>
-        </div>
-      ) : null}
+        </Modal.Body>
+      </AppModalShell>
 
-      {nePanelOpen ? (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onClick={() => {
-            setNePanelOpen(false);
-            setExpandedNeId("");
-          }}
-        >
-          <div
-            className="modal modal--wide ops-detail-modal ops-detail-modal--xl"
-            role="dialog"
-            aria-modal="true"
-            aria-label={t("ume.ne.title")}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="ops-detail-modal__head">
-              <div className="ops-detail-modal__title">
-                <h3>{t("ume.ne.title")}</h3>
-                <p className="muted">{t("ume.ne.summary", { total: String(neTotal) })}</p>
-              </div>
-              <div className="btn-row ops-detail-modal__actions">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setNePanelOpen(false);
-                    setExpandedNeId("");
-                  }}
-                >
-                  {t("networkConfigs.close")}
-                </button>
-              </div>
-            </div>
+      <AppModalShell
+        open={nePanelOpen}
+        onClose={() => {
+          setNePanelOpen(false);
+          setExpandedNeId("");
+        }}
+        size="lg"
+        className="app-heroui-modal--xl"
+      >
+        <Modal.Header>
+          <Modal.Heading>{t("ume.ne.title")}</Modal.Heading>
+          <Modal.CloseTrigger />
+        </Modal.Header>
+        <Modal.Body className="flex flex-col gap-3">
+          <p className="muted">{t("ume.ne.summary", { total: String(neTotal) })}</p>
 
             <div className="ops-detail-modal__toolbar filter-inline">
-              <input
+              <Input
                 value={neKeyword}
                 placeholder={t("ume.ne.keywordPh")}
                 onChange={(e) => {
@@ -1532,23 +1492,26 @@ export function UmePage() {
                   setNePage(1);
                 }}
               />
-              <button type="button" onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeNEAll })}>
+              <Button
+                size="sm"
+                variant="secondary"
+                onPress={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeNEAll })}
+              >
                 {t("common.query")}
-              </button>
-              <button
-                type="button"
-                title={t("ume.ne.clearTitle")}
-                onClick={() => {
+              </Button>
+              <Button
+                size="sm"
+                variant="tertiary"
+                isDisabled={!neKeyword.trim()}
+                onPress={() => {
                   setNeKeyword("");
                   setNePage(1);
                 }}
-                disabled={!neKeyword.trim()}
               >
                 {t("common.clearFilters")}
-              </button>
+              </Button>
             </div>
 
-            <div className="ops-detail-modal__scroll">
               <div className="pt-list-table-wrap">
                 <table className="data-table pt-list-table">
                   <thead>
@@ -1580,13 +1543,9 @@ export function UmePage() {
                         <td>{x.hardware_version || t("common.empty")}</td>
                         <td>{x.last_seen_at ? formatSystemTime(x.last_seen_at) : t("common.empty")}</td>
                         <td>
-                          <button
-                            type="button"
-                            className="btn btn--sm btn--ghost"
-                            onClick={() => setExpandedNeId(x.ne_id)}
-                          >
+                          <Button size="sm" variant="ghost" onPress={() => setExpandedNeId(x.ne_id)}>
                             {t("ume.ne.expand")}
-                          </button>
+                          </Button>
                         </td>
                       </tr>
                     ))}
@@ -1600,7 +1559,6 @@ export function UmePage() {
                   </tbody>
                 </table>
               </div>
-            </div>
 
             <div className="ops-detail-modal__foot">
               <span className="muted">
@@ -1611,28 +1569,31 @@ export function UmePage() {
                 })}
               </span>
               <div className="btn-row">
-                <button
-                  type="button"
-                  disabled={nePage <= 1}
-                  onClick={() => setNePage(Math.max(1, nePage - 1))}
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  isDisabled={nePage <= 1}
+                  onPress={() => setNePage(Math.max(1, nePage - 1))}
                 >
                   {t("common.prevPage")}
-                </button>
-                <button
-                  type="button"
-                  disabled={nePage >= nePages}
-                  onClick={() => setNePage(nePage + 1)}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  isDisabled={nePage >= nePages}
+                  onPress={() => setNePage(nePage + 1)}
                 >
                   {t("common.nextPage")}
-                </button>
+                </Button>
                 <select
                   className="pager__size"
                   value={String(nePageSize)}
                   onChange={(e) => {
-                    setNePageSize(Number(e.target.value) || 50);
+                    setNePageSize(Number(e.target.value) || 10);
                     setNePage(1);
                   }}
                 >
+                  <option value="10">{perPage(10)}</option>
                   <option value="20">{perPage(20)}</option>
                   <option value="50">{perPage(50)}</option>
                   <option value="100">{perPage(100)}</option>
@@ -1641,35 +1602,26 @@ export function UmePage() {
                 </select>
               </div>
             </div>
-          </div>
-        </div>
-      ) : null}
+        </Modal.Body>
+      </AppModalShell>
 
-      {expandedNe ? (
-        <div className="modal-backdrop" role="presentation" onClick={() => setExpandedNeId("")}>
-          <div
-            className="modal modal--wide ops-detail-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-label={t("ume.ne.expand")}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="ops-detail-modal__head">
-              <div className="ops-detail-modal__title">
-                <h3>{expandedNe.user_label || expandedNe.ne_id}</h3>
-                <p className="muted">
-                  {expandedNe.ne_id}
-                  {expandedNe.ip_address ? ` · ${expandedNe.ip_address}` : ""}
-                  {expandedNe.ne_type ? ` · ${expandedNe.ne_type}` : ""}
-                </p>
-              </div>
-              <div className="btn-row ops-detail-modal__actions">
-                <button type="button" onClick={() => setExpandedNeId("")}>
-                  {t("networkConfigs.close")}
-                </button>
-              </div>
-            </div>
-            <div className="ops-detail-modal__scroll ops-detail-modal__scroll--pad">
+      <AppModalShell
+        open={Boolean(expandedNe)}
+        onClose={() => setExpandedNeId("")}
+        size="lg"
+      >
+        <Modal.Header>
+          <Modal.Heading>{expandedNe?.user_label || expandedNe?.ne_id || t("ume.ne.expand")}</Modal.Heading>
+          <Modal.CloseTrigger />
+        </Modal.Header>
+        <Modal.Body className="flex flex-col gap-3">
+          {expandedNe ? (
+            <>
+              <p className="muted">
+                {expandedNe.ne_id}
+                {expandedNe.ip_address ? ` · ${expandedNe.ip_address}` : ""}
+                {expandedNe.ne_type ? ` · ${expandedNe.ne_type}` : ""}
+              </p>
               <div className="ume-ne-detail-grid">
                 <div>
                   <span className="muted">consistent_state</span>
@@ -1740,87 +1692,86 @@ export function UmePage() {
                   </div>
                 </div>
               </div>
-            </div>
-          </div>
-        </div>
-      ) : null}
+            </>
+          ) : null}
+        </Modal.Body>
+      </AppModalShell>
 
-      {keyAlertEditRule ? (
-        <div className="modal-backdrop" role="presentation" onClick={() => setKeyAlertEditRule(null)}>
-          <div
-            className="modal modal--wide ops-detail-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-label={t("ume.keyAlert.editTitle")}
-            onClick={(e) => e.stopPropagation()}
+      <AppModalShell
+        open={Boolean(keyAlertEditRule)}
+        onClose={() => {
+          if (!keyAlertEditMutation.isPending) setKeyAlertEditRule(null);
+        }}
+        dismissible={!keyAlertEditMutation.isPending}
+        size="lg"
+      >
+        <Modal.Header>
+          <Modal.Heading>{t("ume.keyAlert.editTitle")}</Modal.Heading>
+          <Modal.CloseTrigger isDisabled={keyAlertEditMutation.isPending} />
+        </Modal.Header>
+        <Modal.Body className="flex flex-col gap-3">
+          {keyAlertEditRule ? (
+            <>
+              <p className="muted">
+                {keyAlertEditRule.match_type === "keyword"
+                  ? t("ume.keyAlert.matchKeyword")
+                  : t("ume.keyAlert.matchNotificationId")}
+                : {keyAlertEditRule.match_value || keyAlertEditRule.notification_id}
+                {keyAlertEditRule.label ? ` · ${keyAlertEditRule.label}` : ""}
+              </p>
+              <div className="muted ume-modal-form__label">{t("ume.keyAlert.neTypesLabel")}</div>
+              {keyAlertNeTypesQuery.isLoading ? (
+                <span className="muted">{t("common.refreshing")}</span>
+              ) : (keyAlertNeTypesQuery.data?.items || []).length === 0 ? (
+                <span className="muted">{t("ume.keyAlert.neTypesEmpty")}</span>
+              ) : (
+                <div className="ume-ne-types ume-ne-types--tall">
+                  {(keyAlertNeTypesQuery.data?.items || []).map((item) => (
+                    <label key={item.ne_type} className="ume-ne-types__item">
+                      <input
+                        type="checkbox"
+                        checked={keyAlertEditNeTypes.includes(item.ne_type)}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setKeyAlertEditNeTypes((prev) => [...prev, item.ne_type]);
+                          } else {
+                            setKeyAlertEditNeTypes((prev) => prev.filter((x) => x !== item.ne_type));
+                          }
+                        }}
+                      />
+                      {item.ne_type}
+                      <span className="muted">({item.ne_count})</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+              <p className="muted ume-modal-form__hint">{t("ume.keyAlert.neTypesHint")}</p>
+            </>
+          ) : null}
+        </Modal.Body>
+        <Modal.Footer>
+          <Button
+            variant="tertiary"
+            isDisabled={keyAlertEditMutation.isPending}
+            onPress={() => setKeyAlertEditRule(null)}
           >
-            <div className="ops-detail-modal__head">
-              <div className="ops-detail-modal__title">
-                <h3>{t("ume.keyAlert.editTitle")}</h3>
-                <p className="muted">
-                  {keyAlertEditRule.match_type === "keyword"
-                    ? t("ume.keyAlert.matchKeyword")
-                    : t("ume.keyAlert.matchNotificationId")}
-                  : {keyAlertEditRule.match_value || keyAlertEditRule.notification_id}
-                  {keyAlertEditRule.label ? ` · ${keyAlertEditRule.label}` : ""}
-                </p>
-              </div>
-              <div className="btn-row ops-detail-modal__actions">
-                <button type="button" onClick={() => setKeyAlertEditRule(null)} disabled={keyAlertEditMutation.isPending}>
-                  {t("ume.keyAlert.cancel")}
-                </button>
-              </div>
-            </div>
-            <div className="muted ume-modal-form__label">{t("ume.keyAlert.neTypesLabel")}</div>
-            {keyAlertNeTypesQuery.isLoading ? (
-              <span className="muted">{t("common.refreshing")}</span>
-            ) : (keyAlertNeTypesQuery.data?.items || []).length === 0 ? (
-              <span className="muted">{t("ume.keyAlert.neTypesEmpty")}</span>
-            ) : (
-              <div className="ume-ne-types ume-ne-types--tall">
-                {(keyAlertNeTypesQuery.data?.items || []).map((item) => (
-                  <label key={item.ne_type} className="ume-ne-types__item">
-                    <input
-                      type="checkbox"
-                      checked={keyAlertEditNeTypes.includes(item.ne_type)}
-                      onChange={(e) => {
-                        if (e.target.checked) {
-                          setKeyAlertEditNeTypes((prev) => [...prev, item.ne_type]);
-                        } else {
-                          setKeyAlertEditNeTypes((prev) => prev.filter((x) => x !== item.ne_type));
-                        }
-                      }}
-                    />
-                    {item.ne_type}
-                    <span className="muted">({item.ne_count})</span>
-                  </label>
-                ))}
-              </div>
-            )}
-            <p className="muted ume-modal-form__hint">{t("ume.keyAlert.neTypesHint")}</p>
-            <div className="ops-detail-modal__foot">
-              <span />
-              <div className="btn-row">
-                <button
-                  type="button"
-                  onClick={() =>
-                    keyAlertEditMutation.mutate({
-                      ruleKey: keyAlertEditRule.notification_id,
-                      ne_types: keyAlertEditNeTypes,
-                    })
-                  }
-                  disabled={keyAlertEditMutation.isPending}
-                >
-                  {keyAlertEditMutation.isPending ? t("ume.keyAlert.saving") : t("ume.keyAlert.save")}
-                </button>
-                <button type="button" onClick={() => setKeyAlertEditRule(null)} disabled={keyAlertEditMutation.isPending}>
-                  {t("ume.keyAlert.cancel")}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      ) : null}
+            {t("ume.keyAlert.cancel")}
+          </Button>
+          <Button
+            variant="primary"
+            isDisabled={keyAlertEditMutation.isPending || !keyAlertEditRule}
+            onPress={() => {
+              if (!keyAlertEditRule) return;
+              keyAlertEditMutation.mutate({
+                ruleKey: keyAlertEditRule.notification_id,
+                ne_types: keyAlertEditNeTypes,
+              });
+            }}
+          >
+            {keyAlertEditMutation.isPending ? t("ume.keyAlert.saving") : t("ume.keyAlert.save")}
+          </Button>
+        </Modal.Footer>
+      </AppModalShell>
     </>
   );
 }

@@ -1,6 +1,8 @@
+import { Button, Input } from "@heroui/react";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ListPager } from "../../components/ListPager";
+import { FieldSelect } from "../../components/ui/FieldSelect";
 import { queryKeys } from "../../constants/queryKeys";
 import { useDebouncedValue } from "../../hooks/useDebouncedValue";
 import { useToast } from "../../hooks/useToast";
@@ -36,7 +38,7 @@ export function NetworkDevicesPage() {
   const [keyword, setKeyword] = useState("");
   const [source, setSource] = useState<"all" | "managed" | "ume">("all");
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
+  const [pageSize, setPageSize] = useState(10);
   const [exporting, setExporting] = useState(false);
 
   const debouncedKeyword = useDebouncedValue(keyword, 300);
@@ -91,15 +93,20 @@ export function NetworkDevicesPage() {
       <div className="panel__toolbar">
         <h2>{t("networkDevices.title")}</h2>
         <div className="btn-row">
-          <button type="button" disabled={exporting || total === 0} onClick={() => void exportCsv()}>
+          <Button
+            size="sm"
+            variant="secondary"
+            isDisabled={exporting || total === 0}
+            onPress={() => void exportCsv()}
+          >
             {exporting ? t("common.exporting") : t("common.exportCsv")}
-          </button>
+          </Button>
         </div>
       </div>
 
       <div className="pt-list">
         <div className="filter-inline">
-          <input
+          <Input
             value={keyword}
             placeholder={t("networkDevices.keywordPh")}
             onChange={(e) => {
@@ -107,7 +114,7 @@ export function NetworkDevicesPage() {
               setPage(1);
             }}
           />
-          <select
+          <FieldSelect
             value={source}
             onChange={(e) => {
               setSource(e.target.value as "all" | "managed" | "ume");
@@ -117,18 +124,19 @@ export function NetworkDevicesPage() {
             <option value="all">{t("networkDevices.allSource")}</option>
             <option value="managed">managed</option>
             <option value="ume">ume</option>
-          </select>
-          <button
-            type="button"
-            disabled={!hasFilters}
-            onClick={() => {
+          </FieldSelect>
+          <Button
+            size="sm"
+            variant="tertiary"
+            isDisabled={!hasFilters}
+            onPress={() => {
               setKeyword("");
               setSource("all");
               setPage(1);
             }}
           >
             {t("common.clearFilters")}
-          </button>
+          </Button>
         </div>
 
         {listQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
@@ -167,12 +175,13 @@ export function NetworkDevicesPage() {
                     </td>
                     <td>
                       <div className="btn-row pt-list-actions table-actions">
-                        <button type="button" onClick={() => openWebcrt(row)}>
+                        <Button size="sm" variant="secondary" onPress={() => openWebcrt(row)}>
                           WebCRT
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() =>
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onPress={() =>
                             openNewModuleWindow({
                               moduleId: "network",
                               path: `/network/configs?q=${encodeURIComponent(row.name || row.ip_address || row.id)}`,
@@ -180,7 +189,7 @@ export function NetworkDevicesPage() {
                           }
                         >
                           {t("network.nav.configs")}
-                        </button>
+                        </Button>
                       </div>
                     </td>
                   </tr>
@@ -195,7 +204,7 @@ export function NetworkDevicesPage() {
           pages={pages}
           total={total}
           pageSize={pageSize}
-          pageSizeOptions={[20, 50, 100, 200]}
+          pageSizeOptions={[10, 20, 50, 100, 200]}
           onPageChange={setPage}
           onPageSizeChange={(size) => {
             setPageSize(size);

@@ -1,7 +1,10 @@
+import { Button, Input, Modal } from "@heroui/react";
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { ListPager } from "../components/ListPager";
+import { AppModalShell } from "../components/ui/AppModalShell";
+import { FieldSelect } from "../components/ui/FieldSelect";
 import { queryKeys } from "../constants/queryKeys";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import { useToast } from "../hooks/useToast";
@@ -24,7 +27,7 @@ import { pageCount } from "../utils/display";
 import { formatSystemTime } from "../utils/time";
 
 const POLL_MS = 2500;
-const TARGET_PAGE_SIZE = 20;
+const TARGET_PAGE_SIZE = 10;
 
 export function ConfigSyncPage() {
   const { t } = useI18n();
@@ -33,13 +36,13 @@ export function ConfigSyncPage() {
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [cyclePage, setCyclePage] = useState(1);
-  const [cyclePageSize, setCyclePageSize] = useState(20);
+  const [cyclePageSize, setCyclePageSize] = useState(10);
   const [cycleStatus, setCycleStatus] = useState("");
   const [cycleKeyword, setCycleKeyword] = useState("");
   const [exportingCycles, setExportingCycles] = useState(false);
   const [expandedCycleId, setExpandedCycleId] = useState("");
   const [taskPage, setTaskPage] = useState(1);
-  const [taskPageSize, setTaskPageSize] = useState(20);
+  const [taskPageSize, setTaskPageSize] = useState(10);
   const [taskStatus, setTaskStatus] = useState("");
   const [taskKeyword, setTaskKeyword] = useState("");
   const [exportingTasks, setExportingTasks] = useState(false);
@@ -354,44 +357,61 @@ export function ConfigSyncPage() {
       <div className="panel__toolbar">
         <h2>{t("configSync.title")}</h2>
         <div className="btn-row">
-          <button type="button" onClick={() => void refresh()} disabled={dashQuery.isFetching}>
+          <Button
+            size="sm"
+            variant="secondary"
+            isDisabled={dashQuery.isFetching}
+            onPress={() => void refresh()}
+          >
             {t("common.refresh")}
-          </button>
-          <button
-            type="button"
-            className="btn-primary"
-            disabled={Boolean(running) || startMut.isPending}
-            onClick={() => startMut.mutate("full")}
+          </Button>
+          <Button
+            size="sm"
+            variant="primary"
+            isDisabled={Boolean(running) || startMut.isPending}
+            onPress={() => startMut.mutate("full")}
           >
             {t("configSync.syncNow")}
-          </button>
-          <button
-            type="button"
-            disabled={Boolean(running) || startMut.isPending || !(last && last.fail_count > 0)}
-            onClick={() => startMut.mutate("retry_failed")}
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            isDisabled={Boolean(running) || startMut.isPending || !(last && last.fail_count > 0)}
+            onPress={() => startMut.mutate("retry_failed")}
           >
             {t("configSync.retryFailed")}
-          </button>
+          </Button>
           {running?.status === "running" || running?.status === "pending" ? (
-            <button type="button" onClick={() => pauseMut.mutate(running.id)} disabled={pauseMut.isPending}>
+            <Button
+              size="sm"
+              variant="secondary"
+              isDisabled={pauseMut.isPending}
+              onPress={() => pauseMut.mutate(running.id)}
+            >
               {t("configSync.pause")}
-            </button>
+            </Button>
           ) : null}
           {running?.status === "paused" ? (
-            <button type="button" onClick={() => resumeMut.mutate(running.id)} disabled={resumeMut.isPending}>
+            <Button
+              size="sm"
+              variant="secondary"
+              isDisabled={resumeMut.isPending}
+              onPress={() => resumeMut.mutate(running.id)}
+            >
               {t("configSync.resume")}
-            </button>
+            </Button>
           ) : null}
           {running && (running.status === "running" || running.status === "paused" || running.status === "pending") ? (
-            <button
-              type="button"
-              onClick={() => {
+            <Button
+              size="sm"
+              variant="danger"
+              isDisabled={stopMut.isPending}
+              onPress={() => {
                 if (window.confirm(t("configSync.confirmStop"))) stopMut.mutate(running.id);
               }}
-              disabled={stopMut.isPending}
             >
               {t("configSync.stop")}
-            </button>
+            </Button>
           ) : null}
         </div>
       </div>
@@ -436,41 +456,41 @@ export function ConfigSyncPage() {
           </label>
           <label className="config-sync-policy-field">
             <span>{t("configSync.intervalDays")}</span>
-            <input
+            <Input
               type="number"
               min={1}
               max={365}
-              value={intervalDays}
+              value={String(intervalDays)}
               onChange={(e) => setIntervalDays(Math.max(1, Number(e.target.value) || 1))}
             />
           </label>
           <label className="config-sync-policy-field">
             <span>{t("configSync.concurrency")}</span>
-            <input
+            <Input
               type="number"
               min={1}
               max={30}
-              value={concurrency}
+              value={String(concurrency)}
               onChange={(e) => setConcurrency(Math.max(1, Math.min(30, Number(e.target.value) || 1)))}
             />
           </label>
           <label className="config-sync-policy-field">
             <span>{t("configSync.historyKeep")}</span>
-            <input
+            <Input
               type="number"
               min={0}
               max={30}
-              value={historyKeep}
+              value={String(historyKeep)}
               onChange={(e) => setHistoryKeep(Math.max(0, Math.min(30, Number(e.target.value) || 0)))}
             />
           </label>
           <label className="config-sync-policy-field">
             <span>{t("configSync.cycleKeep")}</span>
-            <input
+            <Input
               type="number"
               min={0}
               max={200}
-              value={cycleKeep}
+              value={String(cycleKeep)}
               onChange={(e) => setCycleKeep(Math.max(0, Math.min(200, Number(e.target.value) || 0)))}
             />
           </label>
@@ -484,14 +504,13 @@ export function ConfigSyncPage() {
               <option value="selected">{t("configSync.scopeSelected")}</option>
             </select>
           </label>
-          <button
-            type="button"
-            className="btn-primary"
-            disabled={savePolicyMut.isPending}
-            onClick={() => savePolicyMut.mutate()}
+          <Button
+            variant="primary"
+            isDisabled={savePolicyMut.isPending}
+            onPress={() => savePolicyMut.mutate()}
           >
             {t("configSync.savePolicy")}
-          </button>
+          </Button>
         </div>
 
         {scopeMode === "selected" ? (
@@ -540,9 +559,14 @@ export function ConfigSyncPage() {
               </tbody>
             </table>
             <div className="pager">
-              <button type="button" disabled={targetPage <= 1} onClick={() => setTargetPage((p) => p - 1)}>
+              <Button
+                size="sm"
+                variant="ghost"
+                isDisabled={targetPage <= 1}
+                onPress={() => setTargetPage((p) => p - 1)}
+              >
                 {t("common.prevPage")}
-              </button>
+              </Button>
               <span className="muted">
                 {t("common.pagerMeta", {
                   total: String(targetsQuery.data?.total ?? 0),
@@ -550,13 +574,14 @@ export function ConfigSyncPage() {
                   pages: String(pageCount(Number(targetsQuery.data?.total || 0), TARGET_PAGE_SIZE)),
                 })}
               </span>
-              <button
-                type="button"
-                disabled={targetPage >= pageCount(Number(targetsQuery.data?.total || 0), TARGET_PAGE_SIZE)}
-                onClick={() => setTargetPage((p) => p + 1)}
+              <Button
+                size="sm"
+                variant="ghost"
+                isDisabled={targetPage >= pageCount(Number(targetsQuery.data?.total || 0), TARGET_PAGE_SIZE)}
+                onPress={() => setTargetPage((p) => p + 1)}
               >
                 {t("common.nextPage")}
-              </button>
+              </Button>
             </div>
           </div>
         ) : null}
@@ -565,7 +590,7 @@ export function ConfigSyncPage() {
       <h3>{t("configSync.cyclesTitle")}</h3>
       <div className="pt-list">
         <div className="filter-inline">
-          <input
+          <Input
             value={cycleKeyword}
             placeholder={t("configSync.keywordPh")}
             onChange={(e) => {
@@ -573,7 +598,7 @@ export function ConfigSyncPage() {
               setCyclePage(1);
             }}
           />
-          <select
+          <FieldSelect
             value={cycleStatus}
             onChange={(e) => {
               setCycleStatus(e.target.value);
@@ -588,25 +613,27 @@ export function ConfigSyncPage() {
             <option value="completed">completed</option>
             <option value="failed">failed</option>
             <option value="stopped">stopped</option>
-          </select>
-          <button
-            type="button"
-            disabled={!hasCycleFilters}
-            onClick={() => {
+          </FieldSelect>
+          <Button
+            size="sm"
+            variant="tertiary"
+            isDisabled={!hasCycleFilters}
+            onPress={() => {
               setCycleKeyword("");
               setCycleStatus("");
               setCyclePage(1);
             }}
           >
             {t("common.clearFilters")}
-          </button>
-          <button
-            type="button"
-            disabled={exportingCycles || cycleTotal === 0}
-            onClick={() => void exportCyclesCsv()}
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            isDisabled={exportingCycles || cycleTotal === 0}
+            onPress={() => void exportCyclesCsv()}
           >
             {exportingCycles ? t("common.exporting") : t("common.exportCsv")}
-          </button>
+          </Button>
         </div>
 
         {cyclesQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
@@ -630,13 +657,9 @@ export function ConfigSyncPage() {
               {cycles.map((c) => (
                 <tr key={c.id}>
                   <td>
-                    <button
-                      type="button"
-                      className="btn btn--sm btn--ghost"
-                      onClick={() => openCycleTasks(c.id)}
-                    >
+                    <Button size="sm" variant="ghost" onPress={() => openCycleTasks(c.id)}>
                       {t("configSync.expand")}
-                    </button>
+                    </Button>
                   </td>
                   <td title={c.id} className="pt-list-num">{c.id.slice(0, 8)}</td>
                   <td>{c.trigger_mode}</td>
@@ -665,25 +688,36 @@ export function ConfigSyncPage() {
                   <td>
                     <div className="btn-row">
                       {c.status === "running" || c.status === "pending" ? (
-                        <button type="button" onClick={() => pauseMut.mutate(c.id)} disabled={pauseMut.isPending}>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          isDisabled={pauseMut.isPending}
+                          onPress={() => pauseMut.mutate(c.id)}
+                        >
                           {t("configSync.pause")}
-                        </button>
+                        </Button>
                       ) : null}
                       {c.status === "paused" ? (
-                        <button type="button" onClick={() => resumeMut.mutate(c.id)} disabled={resumeMut.isPending}>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          isDisabled={resumeMut.isPending}
+                          onPress={() => resumeMut.mutate(c.id)}
+                        >
                           {t("configSync.resume")}
-                        </button>
+                        </Button>
                       ) : null}
                       {c.status === "running" || c.status === "paused" || c.status === "pending" ? (
-                        <button
-                          type="button"
-                          onClick={() => {
+                        <Button
+                          size="sm"
+                          variant="danger"
+                          isDisabled={stopMut.isPending}
+                          onPress={() => {
                             if (window.confirm(t("configSync.confirmStop"))) stopMut.mutate(c.id);
                           }}
-                          disabled={stopMut.isPending}
                         >
                           {t("configSync.stop")}
-                        </button>
+                        </Button>
                       ) : null}
                     </div>
                   </td>
@@ -704,7 +738,7 @@ export function ConfigSyncPage() {
           pages={cyclePages}
           total={cycleTotal}
           pageSize={cyclePageSize}
-          pageSizeOptions={[20, 50, 100]}
+          pageSizeOptions={[10, 20, 50, 100]}
           onPageChange={setCyclePage}
           onPageSizeChange={(size) => {
             setCyclePageSize(size);
@@ -714,130 +748,117 @@ export function ConfigSyncPage() {
         />
       </div>
 
-      {expandedCycleId ? (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onClick={() => setExpandedCycleId("")}
-        >
-          <div
-            className="modal modal--wide ops-detail-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-label={t("configSync.tasksTitle")}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="ops-detail-modal__head">
-              <div className="ops-detail-modal__title">
-                <h3>{t("configSync.tasksTitle")}</h3>
-                <p className="muted">
-                  {expandedCycleId.slice(0, 8)}
-                  {(() => {
-                    const c = cycles.find((x) => x.id === expandedCycleId);
-                    return c
-                      ? ` · ${c.trigger_mode} · ${c.status} · ${c.success_count}/${c.planned_count}`
-                      : "";
-                  })()}
-                </p>
-              </div>
-              <div className="btn-row ops-detail-modal__actions">
-                <button
-                  type="button"
-                  disabled={exportingTasks || taskTotal === 0}
-                  onClick={() => void exportTasksCsv()}
-                >
-                  {exportingTasks ? t("common.exporting") : t("common.exportCsv")}
-                </button>
-                <button type="button" onClick={() => setExpandedCycleId("")}>
-                  {t("networkConfigs.close")}
-                </button>
-              </div>
-            </div>
-
-            <div className="ops-detail-modal__toolbar filter-inline">
-              <input
-                value={taskKeyword}
-                placeholder={t("configSync.taskKeywordPh")}
-                onChange={(e) => {
-                  setTaskKeyword(e.target.value);
-                  setTaskPage(1);
-                }}
-              />
-              <select
-                value={taskStatus}
-                onChange={(e) => {
-                  setTaskStatus(e.target.value);
-                  setTaskPage(1);
-                }}
-              >
-                <option value="">{t("configSync.statusAll")}</option>
-                <option value="pending">pending</option>
-                <option value="running">running</option>
-                <option value="success">success</option>
-                <option value="fail">fail</option>
-                <option value="skipped">skipped</option>
-              </select>
-            </div>
-
-            {tasksQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
-            {tasksQuery.isError ? (
-              <p className="ops-detail-modal__error">{formatErr(tasksQuery.error)}</p>
-            ) : null}
-
-            <div className="ops-detail-modal__scroll">
-              <div className="pt-list-table-wrap">
-                <table className="data-table pt-list-table">
-                  <thead>
-                    <tr>
-                      <th>{t("configSync.col.name")}</th>
-                      <th>IP</th>
-                      <th>{t("configSync.col.vendor")}</th>
-                      <th>{t("configSync.col.source")}</th>
-                      <th>{t("configSync.col.status")}</th>
-                      <th>{t("configSync.col.message")}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(tasksQuery.data?.items ?? []).map((task) => (
-                      <tr key={task.id}>
-                        <td>{task.ne_name || task.target_id}</td>
-                        <td>{task.ne_ip}</td>
-                        <td>{task.vendor || "-"}</td>
-                        <td>{task.source}</td>
-                        <td>{task.status}</td>
-                        <td title={task.message}>{task.message || "-"}</td>
-                      </tr>
-                    ))}
-                    {!tasksQuery.isLoading && !(tasksQuery.data?.items ?? []).length ? (
-                      <tr>
-                        <td colSpan={6} className="muted">
-                          {t("common.empty")}
-                        </td>
-                      </tr>
-                    ) : null}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            <div className="ops-detail-modal__foot">
-              <ListPager
-                page={taskPage}
-                pages={taskPages}
-                total={taskTotal}
-                pageSize={taskPageSize}
-                pageSizeOptions={[20, 50, 100, 200]}
-                onPageChange={setTaskPage}
-                onPageSizeChange={(size) => {
-                  setTaskPageSize(size);
-                  setTaskPage(1);
-                }}
-                disabled={tasksQuery.isLoading}
-              />
-            </div>
+      <AppModalShell
+        open={Boolean(expandedCycleId)}
+        onClose={() => setExpandedCycleId("")}
+        size="lg"
+      >
+        <Modal.Header>
+          <Modal.Heading>{t("configSync.tasksTitle")}</Modal.Heading>
+          <Modal.CloseTrigger />
+        </Modal.Header>
+        <Modal.Body className="flex flex-col gap-3">
+          <p className="text-sm text-muted">
+            {expandedCycleId.slice(0, 8)}
+            {(() => {
+              const c = cycles.find((x) => x.id === expandedCycleId);
+              return c
+                ? ` · ${c.trigger_mode} · ${c.status} · ${c.success_count}/${c.planned_count}`
+                : "";
+            })()}
+          </p>
+          <div className="filter-inline">
+            <Input
+              value={taskKeyword}
+              placeholder={t("configSync.taskKeywordPh")}
+              onChange={(e) => {
+                setTaskKeyword(e.target.value);
+                setTaskPage(1);
+              }}
+            />
+            <FieldSelect
+              value={taskStatus}
+              onChange={(e) => {
+                setTaskStatus(e.target.value);
+                setTaskPage(1);
+              }}
+            >
+              <option value="">{t("configSync.statusAll")}</option>
+              <option value="pending">pending</option>
+              <option value="running">running</option>
+              <option value="success">success</option>
+              <option value="fail">fail</option>
+              <option value="skipped">skipped</option>
+            </FieldSelect>
+            <Button
+              size="sm"
+              variant="secondary"
+              isDisabled={exportingTasks || taskTotal === 0}
+              onPress={() => void exportTasksCsv()}
+            >
+              {exportingTasks ? t("common.exporting") : t("common.exportCsv")}
+            </Button>
           </div>
-        </div>
-      ) : null}
+
+          {tasksQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
+          {tasksQuery.isError ? (
+            <p className="ops-detail-modal__error">{formatErr(tasksQuery.error)}</p>
+          ) : null}
+
+          <div className="pt-list-table-wrap">
+            <table className="data-table pt-list-table">
+              <thead>
+                <tr>
+                  <th>{t("configSync.col.name")}</th>
+                  <th>IP</th>
+                  <th>{t("configSync.col.vendor")}</th>
+                  <th>{t("configSync.col.source")}</th>
+                  <th>{t("configSync.col.status")}</th>
+                  <th>{t("configSync.col.message")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(tasksQuery.data?.items ?? []).map((task) => (
+                  <tr key={task.id}>
+                    <td>{task.ne_name || task.target_id}</td>
+                    <td>{task.ne_ip}</td>
+                    <td>{task.vendor || "-"}</td>
+                    <td>{task.source}</td>
+                    <td>{task.status}</td>
+                    <td title={task.message}>{task.message || "-"}</td>
+                  </tr>
+                ))}
+                {!tasksQuery.isLoading && !(tasksQuery.data?.items ?? []).length ? (
+                  <tr>
+                    <td colSpan={6} className="muted">
+                      {t("common.empty")}
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+
+          <ListPager
+            page={taskPage}
+            pages={taskPages}
+            total={taskTotal}
+            pageSize={taskPageSize}
+            pageSizeOptions={[10, 20, 50, 100, 200]}
+            onPageChange={setTaskPage}
+            onPageSizeChange={(size) => {
+              setTaskPageSize(size);
+              setTaskPage(1);
+            }}
+            disabled={tasksQuery.isLoading}
+          />
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="tertiary" onPress={() => setExpandedCycleId("")}>
+            {t("networkConfigs.close")}
+          </Button>
+        </Modal.Footer>
+      </AppModalShell>
     </section>
   );
 }

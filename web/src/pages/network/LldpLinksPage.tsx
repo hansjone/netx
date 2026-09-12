@@ -1,8 +1,11 @@
+import { Button, Input, Modal } from "@heroui/react";
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { ListPager } from "../../components/ListPager";
 import { HelpHint } from "../../components/HelpHint";
+import { AppModalShell } from "../../components/ui/AppModalShell";
+import { FieldSelect } from "../../components/ui/FieldSelect";
 import { queryKeys } from "../../constants/queryKeys";
 import { useDebouncedValue } from "../../hooks/useDebouncedValue";
 import { useToast } from "../../hooks/useToast";
@@ -32,7 +35,7 @@ import { pageCount } from "../../utils/display";
 import { formatSystemTime } from "../../utils/time";
 
 const POLL_MS = 2500;
-const TARGET_PAGE_SIZE = 20;
+const TARGET_PAGE_SIZE = 10;
 const SEP = " · ";
 
 function lldpJobStatusLabel(t: (k: string) => string, status: string): string {
@@ -99,14 +102,14 @@ export function LldpLinksPage() {
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [jobPage, setJobPage] = useState(1);
-  const [jobPageSize, setJobPageSize] = useState(20);
+  const [jobPageSize, setJobPageSize] = useState(10);
   const [jobStatus, setJobStatus] = useState("");
   const [jobKeyword, setJobKeyword] = useState("");
   const [exportingJobs, setExportingJobs] = useState(false);
   const debouncedJobKeyword = useDebouncedValue(jobKeyword, 300);
   const [expandedJobId, setExpandedJobId] = useState("");
   const [itemPage, setItemPage] = useState(1);
-  const [itemPageSize, setItemPageSize] = useState(20);
+  const [itemPageSize, setItemPageSize] = useState(10);
   const [itemStatus, setItemStatus] = useState("");
   const [itemKeyword, setItemKeyword] = useState("");
   const [exportingItems, setExportingItems] = useState(false);
@@ -117,7 +120,7 @@ export function LldpLinksPage() {
   const [edgeSource, setEdgeSource] = useState("");
   const [edgeKeyword, setEdgeKeyword] = useState("");
   const [edgePage, setEdgePage] = useState(1);
-  const [edgePageSize, setEdgePageSize] = useState(50);
+  const [edgePageSize, setEdgePageSize] = useState(10);
   const [exportingEdges, setExportingEdges] = useState(false);
   const debouncedEdgeKeyword = useDebouncedValue(edgeKeyword, 300);
 
@@ -554,45 +557,62 @@ export function LldpLinksPage() {
       <div className="panel__toolbar">
         <h2>{t("lldpLinks.title")}</h2>
         <div className="btn-row">
-          <button type="button" onClick={() => void refresh()} disabled={dashQuery.isFetching}>
+          <Button
+            size="sm"
+            variant="secondary"
+            isDisabled={dashQuery.isFetching}
+            onPress={() => void refresh()}
+          >
             {t("common.refresh")}
-          </button>
-          <button
-            type="button"
-            className="btn-primary"
-            disabled={Boolean(running) || startMut.isPending}
-            onClick={() => startMut.mutate("full")}
+          </Button>
+          <Button
+            size="sm"
+            variant="primary"
+            isDisabled={Boolean(running) || startMut.isPending}
+            onPress={() => startMut.mutate("full")}
           >
             {t("lldpLinks.collectNow")}
-          </button>
-          <button
-            type="button"
-            disabled={Boolean(running) || startMut.isPending || !(last && (last.fail_count || 0) > 0)}
-            onClick={() => startMut.mutate("retry_failed")}
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            isDisabled={Boolean(running) || startMut.isPending || !(last && (last.fail_count || 0) > 0)}
+            onPress={() => startMut.mutate("retry_failed")}
           >
             {t("lldpLinks.retryFailed")}
-          </button>
+          </Button>
           {running?.status === "running" || running?.status === "pending" ? (
-            <button type="button" onClick={() => pauseMut.mutate(running.id)} disabled={pauseMut.isPending}>
+            <Button
+              size="sm"
+              variant="secondary"
+              isDisabled={pauseMut.isPending}
+              onPress={() => pauseMut.mutate(running.id)}
+            >
               {t("lldpLinks.pause")}
-            </button>
+            </Button>
           ) : null}
           {running?.status === "paused" ? (
-            <button type="button" onClick={() => resumeMut.mutate(running.id)} disabled={resumeMut.isPending}>
+            <Button
+              size="sm"
+              variant="secondary"
+              isDisabled={resumeMut.isPending}
+              onPress={() => resumeMut.mutate(running.id)}
+            >
               {t("lldpLinks.resume")}
-            </button>
+            </Button>
           ) : null}
           {running &&
           (running.status === "running" || running.status === "paused" || running.status === "pending") ? (
-            <button
-              type="button"
-              onClick={() => {
+            <Button
+              size="sm"
+              variant="danger"
+              isDisabled={stopMut.isPending}
+              onPress={() => {
                 if (window.confirm(t("lldpLinks.confirmStop"))) stopMut.mutate(running.id);
               }}
-              disabled={stopMut.isPending}
             >
               {t("lldpLinks.stop")}
-            </button>
+            </Button>
           ) : null}
         </div>
       </div>
@@ -654,11 +674,11 @@ export function LldpLinksPage() {
           </label>
           <label className="config-sync-policy-field">
             <span>{t("lldpLinks.interval")}</span>
-            <input
+            <Input
               type="number"
               min={1}
               max={intervalUnit === "days" ? 365 : 8760}
-              value={intervalValue}
+              value={String(intervalValue)}
               onChange={(e) => {
                 const max = intervalUnit === "days" ? 365 : 8760;
                 setIntervalValue(Math.max(1, Math.min(max, Number(e.target.value) || 1)));
@@ -711,14 +731,13 @@ export function LldpLinksPage() {
               <option value="selected">{t("lldpLinks.scopeSelected")}</option>
             </select>
           </label>
-          <button
-            type="button"
-            className="btn-primary"
-            disabled={savePolicyMut.isPending}
-            onClick={() => savePolicyMut.mutate()}
+          <Button
+            variant="primary"
+            isDisabled={savePolicyMut.isPending}
+            onPress={() => savePolicyMut.mutate()}
           >
             {t("lldpLinks.savePolicy")}
-          </button>
+          </Button>
         </div>
 
         {scopeMode === "selected" ? (
@@ -767,9 +786,14 @@ export function LldpLinksPage() {
               </tbody>
             </table>
             <div className="pager">
-              <button type="button" disabled={targetPage <= 1} onClick={() => setTargetPage((p) => p - 1)}>
+              <Button
+                size="sm"
+                variant="ghost"
+                isDisabled={targetPage <= 1}
+                onPress={() => setTargetPage((p) => p - 1)}
+              >
                 {t("common.prevPage")}
-              </button>
+              </Button>
               <span className="muted">
                 {t("common.pagerMeta", {
                   total: String(targetsQuery.data?.total ?? 0),
@@ -777,13 +801,14 @@ export function LldpLinksPage() {
                   pages: String(pageCount(Number(targetsQuery.data?.total || 0), TARGET_PAGE_SIZE)),
                 })}
               </span>
-              <button
-                type="button"
-                disabled={targetPage >= pageCount(Number(targetsQuery.data?.total || 0), TARGET_PAGE_SIZE)}
-                onClick={() => setTargetPage((p) => p + 1)}
+              <Button
+                size="sm"
+                variant="ghost"
+                isDisabled={targetPage >= pageCount(Number(targetsQuery.data?.total || 0), TARGET_PAGE_SIZE)}
+                onPress={() => setTargetPage((p) => p + 1)}
               >
                 {t("common.nextPage")}
-              </button>
+              </Button>
             </div>
           </div>
         ) : null}
@@ -791,7 +816,7 @@ export function LldpLinksPage() {
 
       <h3>{t("lldpLinks.edgesTitle")}</h3>
       <div className="filter-inline" style={{ marginBottom: 8 }}>
-        <select
+        <FieldSelect
           value={edgeStatus}
           onChange={(e) => {
             const v = e.target.value;
@@ -802,8 +827,8 @@ export function LldpLinksPage() {
           <option value="all">{t("lldpLinks.edgeStatusAll")}</option>
           <option value="active">{t("lldpLinks.edgeStatusActive")}</option>
           <option value="missing">{t("lldpLinks.edgeStatusMissing")}</option>
-        </select>
-        <select
+        </FieldSelect>
+        <FieldSelect
           value={edgeSource}
           onChange={(e) => {
             setEdgeSource(e.target.value);
@@ -813,8 +838,8 @@ export function LldpLinksPage() {
           <option value="">{t("lldpLinks.edgeSourceAll")}</option>
           <option value="lldp">{t("lldpLinks.edgeSource.lldp")}</option>
           <option value="manual">{t("lldpLinks.edgeSource.manual")}</option>
-        </select>
-        <input
+        </FieldSelect>
+        <Input
           value={edgeKeyword}
           placeholder={t("lldpLinks.edgeKeywordPh")}
           onChange={(e) => {
@@ -822,13 +847,14 @@ export function LldpLinksPage() {
             setEdgePage(1);
           }}
         />
-        <button
-          type="button"
-          disabled={exportingEdges || edgeTotal === 0}
-          onClick={() => void exportEdgesCsv()}
+        <Button
+          size="sm"
+          variant="secondary"
+          isDisabled={exportingEdges || edgeTotal === 0}
+          onPress={() => void exportEdgesCsv()}
         >
           {exportingEdges ? t("common.exporting") : t("common.exportCsv")}
-        </button>
+        </Button>
       </div>
       <div className="pt-list-table-wrap">
         <table className="data-table pt-list-table">
@@ -893,7 +919,7 @@ export function LldpLinksPage() {
         pages={edgePages}
         total={edgeTotal}
         pageSize={edgePageSize}
-        pageSizeOptions={[20, 50, 100, 200]}
+        pageSizeOptions={[10, 20, 50, 100, 200]}
         onPageChange={setEdgePage}
         onPageSizeChange={(size) => {
           setEdgePageSize(size);
@@ -904,7 +930,7 @@ export function LldpLinksPage() {
 
       <h3 style={{ marginTop: 24 }}>{t("lldpLinks.jobsTitle")}</h3>
       <div className="filter-inline" style={{ marginBottom: 8 }}>
-        <select
+        <FieldSelect
           value={jobStatus}
           onChange={(e) => {
             setJobStatus(e.target.value);
@@ -919,8 +945,8 @@ export function LldpLinksPage() {
           <option value="failed">{t("lldpLinks.jobStatus.failed")}</option>
           <option value="cancelled">{t("lldpLinks.jobStatus.cancelled")}</option>
           <option value="stopped">{t("lldpLinks.jobStatus.stopped")}</option>
-        </select>
-        <input
+        </FieldSelect>
+        <Input
           value={jobKeyword}
           placeholder={t("lldpLinks.jobKeywordPh")}
           onChange={(e) => {
@@ -928,13 +954,14 @@ export function LldpLinksPage() {
             setJobPage(1);
           }}
         />
-        <button
-          type="button"
-          disabled={exportingJobs || jobTotal === 0}
-          onClick={() => void exportJobsCsv()}
+        <Button
+          size="sm"
+          variant="secondary"
+          isDisabled={exportingJobs || jobTotal === 0}
+          onPress={() => void exportJobsCsv()}
         >
           {exportingJobs ? t("common.exporting") : t("common.exportCsv")}
-        </button>
+        </Button>
       </div>
       <div className="pt-list-table-wrap">
         <table className="data-table pt-list-table">
@@ -958,10 +985,10 @@ export function LldpLinksPage() {
               return (
                 <tr key={job.id}>
                   <td>
-                    <button
-                      type="button"
-                      className="btn btn--sm btn--ghost"
-                      onClick={() => {
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onPress={() => {
                         setItemDetail(null);
                         setItemStatus("");
                         setItemKeyword("");
@@ -970,7 +997,7 @@ export function LldpLinksPage() {
                       }}
                     >
                       {t("lldpLinks.expand")}
-                    </button>
+                    </Button>
                   </td>
                   <td className="mono">{job.id.slice(0, 8)}</td>
                   <td>{lldpTriggerLabel(t, job.trigger_mode)}</td>
@@ -1005,33 +1032,36 @@ export function LldpLinksPage() {
                   <td>
                     <div className="btn-row">
                       {job.status === "running" || job.status === "pending" ? (
-                        <button
-                          type="button"
-                          onClick={() => pauseMut.mutate(job.id)}
-                          disabled={pauseMut.isPending}
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          isDisabled={pauseMut.isPending}
+                          onPress={() => pauseMut.mutate(job.id)}
                         >
                           {t("lldpLinks.pause")}
-                        </button>
+                        </Button>
                       ) : null}
                       {job.status === "paused" ? (
-                        <button
-                          type="button"
-                          onClick={() => resumeMut.mutate(job.id)}
-                          disabled={resumeMut.isPending}
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          isDisabled={resumeMut.isPending}
+                          onPress={() => resumeMut.mutate(job.id)}
                         >
                           {t("lldpLinks.resume")}
-                        </button>
+                        </Button>
                       ) : null}
                       {job.status === "running" || job.status === "paused" || job.status === "pending" ? (
-                        <button
-                          type="button"
-                          onClick={() => {
+                        <Button
+                          size="sm"
+                          variant="danger"
+                          isDisabled={stopMut.isPending}
+                          onPress={() => {
                             if (window.confirm(t("lldpLinks.confirmStop"))) stopMut.mutate(job.id);
                           }}
-                          disabled={stopMut.isPending}
                         >
                           {t("lldpLinks.stop")}
-                        </button>
+                        </Button>
                       ) : null}
                     </div>
                   </td>
@@ -1062,265 +1092,238 @@ export function LldpLinksPage() {
         disabled={jobsQuery.isLoading}
       />
 
-      {expandedJobId ? (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onClick={() => {
-            setExpandedJobId("");
-            setItemDetail(null);
-          }}
-        >
-          <div
-            className="modal modal--wide ops-detail-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-label={t("lldpLinks.jobDetailTitle")}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="ops-detail-modal__head">
-              <div className="ops-detail-modal__title">
-                <h3>{t("lldpLinks.jobDetailTitle")}</h3>
-                <p className="muted">
-                  {(() => {
-                    const job = jobDetailQuery.data;
-                    if (job) {
-                      return `${job.id.slice(0, 8)} · ${lldpJobStatusLabel(t, job.status)} · ${job.done}/${job.total}`;
-                    }
-                    if (jobDetailQuery.isLoading) {
-                      return `${expandedJobId.slice(0, 8)} · …`;
-                    }
-                    return expandedJobId.slice(0, 8);
-                  })()}
-                </p>
-              </div>
-              <div className="btn-row ops-detail-modal__actions">
-                <button
-                  type="button"
-                  disabled={exportingItems || itemTotal === 0}
-                  onClick={() => void exportItemsCsv()}
-                >
-                  {exportingItems ? t("common.exporting") : t("common.exportCsv")}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setExpandedJobId("");
-                    setItemDetail(null);
-                    setItemStatus("");
-                    setItemKeyword("");
-                    setItemPage(1);
-                  }}
-                >
-                  {t("networkConfigs.close")}
-                </button>
-              </div>
-            </div>
+      <AppModalShell
+        open={Boolean(expandedJobId)}
+        onClose={() => {
+          setExpandedJobId("");
+          setItemDetail(null);
+          setItemStatus("");
+          setItemKeyword("");
+          setItemPage(1);
+        }}
+        size="lg"
+      >
+        <Modal.Header>
+          <Modal.Heading>{t("lldpLinks.jobDetailTitle")}</Modal.Heading>
+          <Modal.CloseTrigger />
+        </Modal.Header>
+        <Modal.Body className="flex flex-col gap-3">
+          <p className="muted">
+            {(() => {
+              const job = jobDetailQuery.data;
+              if (job) {
+                return `${job.id.slice(0, 8)} · ${lldpJobStatusLabel(t, job.status)} · ${job.done}/${job.total}`;
+              }
+              if (jobDetailQuery.isLoading) {
+                return `${expandedJobId.slice(0, 8)} · …`;
+              }
+              return expandedJobId.slice(0, 8);
+            })()}
+          </p>
 
-            <div className="filter-inline" style={{ marginBottom: 8 }}>
-              <select
-                value={itemStatus}
-                onChange={(e) => {
-                  setItemStatus(e.target.value);
-                  setItemPage(1);
-                }}
-              >
-                <option value="">{t("lldpLinks.itemResultAll")}</option>
-                <option value="ok">{t("lldpLinks.itemResult.ok")}</option>
-                <option value="warn">{t("lldpLinks.itemResult.warn")}</option>
-                <option value="fail">{t("lldpLinks.itemResult.fail")}</option>
-              </select>
-              <input
-                value={itemKeyword}
-                placeholder={t("lldpLinks.itemKeywordPh")}
-                onChange={(e) => {
-                  setItemKeyword(e.target.value);
-                  setItemPage(1);
-                }}
-              />
-            </div>
-
-            {jobDetailQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
-            {jobDetailQuery.data?.error ? (
-              <p className="ops-detail-modal__error">{jobDetailQuery.data.error}</p>
-            ) : null}
-
-            <div className="ops-detail-modal__scroll">
-              <div className="pt-list-table-wrap">
-                <table className="data-table pt-list-table">
-                  <thead>
-                    <tr>
-                      <th>{t("lldpLinks.col.name")}</th>
-                      <th>IP</th>
-                      <th>{t("lldpLinks.col.status")}</th>
-                      <th>{t("lldpLinks.col.neighbors")}</th>
-                      <th>{t("lldpLinks.col.edges")}</th>
-                      <th>{t("lldpLinks.col.error")}</th>
-                      <th />
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {detailItems.map((it) => {
-                      const unmatchedCount = it.unmatched_count ?? (it.unmatched?.length || 0);
-                      return (
-                        <tr key={it.id}>
-                          <td>{it.ne_name || it.ne_id || "—"}</td>
-                          <td>{it.ne_ip || "—"}</td>
-                          <td>
-                            {lldpItemResultLabel(t, it)}
-                          </td>
-                          <td>{it.neighbors}</td>
-                          <td>
-                            +{it.edges_added} / ~{it.edges_updated}
-                            {unmatchedCount > 0
-                              ? ` · ${t("topology.discoverUnmatched").replace("{{count}}", String(unmatchedCount))}`
-                              : ""}
-                          </td>
-                          <td className="muted">{it.error || "—"}</td>
-                          <td>
-                            <button
-                              type="button"
-                              className="btn btn--sm btn--ghost"
-                              onClick={() => setItemDetail(it)}
-                            >
-                              {t("topology.discoverViewDetail")}
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                    {!detailItems.length && !jobDetailQuery.isLoading ? (
-                      <tr>
-                        <td colSpan={7} className="muted">
-                          {t("common.empty")}
-                        </td>
-                      </tr>
-                    ) : null}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            <div className="ops-detail-modal__foot">
-              <ListPager
-                page={itemPage}
-                pages={itemPages}
-                total={itemTotal}
-                pageSize={itemPageSize}
-                pageSizeOptions={[20, 50, 100]}
-                onPageChange={setItemPage}
-                onPageSizeChange={(size) => {
-                  setItemPageSize(size);
-                  setItemPage(1);
-                }}
-                disabled={jobDetailQuery.isLoading}
-              />
-            </div>
+          <div className="filter-inline">
+            <FieldSelect
+              value={itemStatus}
+              onChange={(e) => {
+                setItemStatus(e.target.value);
+                setItemPage(1);
+              }}
+            >
+              <option value="">{t("lldpLinks.itemResultAll")}</option>
+              <option value="ok">{t("lldpLinks.itemResult.ok")}</option>
+              <option value="warn">{t("lldpLinks.itemResult.warn")}</option>
+              <option value="fail">{t("lldpLinks.itemResult.fail")}</option>
+            </FieldSelect>
+            <Input
+              value={itemKeyword}
+              placeholder={t("lldpLinks.itemKeywordPh")}
+              onChange={(e) => {
+                setItemKeyword(e.target.value);
+                setItemPage(1);
+              }}
+            />
           </div>
-        </div>
-      ) : null}
 
-      {itemDetail ? (
-        <div className="modal-backdrop" role="presentation" onClick={() => setItemDetail(null)}>
-          <div
-            className="modal modal--wide topo-discover-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="lldp-item-detail-title"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="topo-discover-modal__head">
-              <div>
-                <h3 id="lldp-item-detail-title">
-                  {itemDetail.ne_name || itemDetail.ne_ip || itemDetail.ne_id}
-                </h3>
-                <p className="topo-discover-modal__sub">
-                  {[itemDetail.ne_ip, itemDetail.command].filter(Boolean).join(SEP)}
-                </p>
-              </div>
-              <button
-                type="button"
-                className="btn btn--sm btn--ghost"
-                onClick={() => setItemDetail(null)}
-              >
-                {t("topology.discoverClose")}
-              </button>
-            </div>
+          {jobDetailQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
+          {jobDetailQuery.data?.error ? (
+            <p className="ops-detail-modal__error">{jobDetailQuery.data.error}</p>
+          ) : null}
 
-            {!itemDetail.ok ? (
-              <p className="topo-discover__error">
-                {itemDetail.error === "vendor_or_device_type_required"
-                  ? t("topology.discoverVendorRequired")
-                  : itemDetail.error || t("topology.discoverNeFail")}
-              </p>
-            ) : null}
-            {itemDetail.parser_stub ? (
-              <p className="topo-discover__item-warn">
-                {t("topology.discoverParserStub").replace(
-                  "{{parser}}",
-                  itemDetail.parser_key || "unknown",
-                )}
-              </p>
-            ) : null}
-
-            <div className="topo-discover-modal__stats">
-              <span>
-                {t("topology.discoverNeOk")
-                  .replace("{{neighbors}}", String(itemDetail.neighbors || 0))
-                  .replace("{{added}}", String(itemDetail.edges_added || 0))
-                  .replace("{{updated}}", String(itemDetail.edges_updated || 0))}
-              </span>
-            </div>
-
-            <h4 className="topo-discover-modal__section">
-              {t("topology.discoverUnmatchedTitle").replace(
-                "{{count}}",
-                String(itemDetail.unmatched_count ?? itemDetail.unmatched?.length ?? 0),
-              )}
-            </h4>
-            {(itemDetail.unmatched || []).length === 0 ? (
-              <p className="panel__hint">{t("topology.discoverUnmatchedEmpty")}</p>
-            ) : (
-              <div className="topo-discover-modal__table-wrap">
-                <table className="topo-discover-modal__table">
-                  <thead>
-                    <tr>
-                      <th>{t("topology.discoverColRemote")}</th>
-                      <th>{t("topology.discoverColLocalPort")}</th>
-                      <th>{t("topology.discoverColRemotePort")}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(itemDetail.unmatched || []).map((u, idx) => (
-                      <tr key={`${itemDetail.id}-u-${idx}`}>
+          <div className="ops-detail-modal__scroll">
+            <div className="pt-list-table-wrap">
+              <table className="data-table pt-list-table">
+                <thead>
+                  <tr>
+                    <th>{t("lldpLinks.col.name")}</th>
+                    <th>IP</th>
+                    <th>{t("lldpLinks.col.status")}</th>
+                    <th>{t("lldpLinks.col.neighbors")}</th>
+                    <th>{t("lldpLinks.col.edges")}</th>
+                    <th>{t("lldpLinks.col.error")}</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {detailItems.map((it) => {
+                    const unmatchedCount = it.unmatched_count ?? (it.unmatched?.length || 0);
+                    return (
+                      <tr key={it.id}>
+                        <td>{it.ne_name || it.ne_id || "—"}</td>
+                        <td>{it.ne_ip || "—"}</td>
+                        <td>{lldpItemResultLabel(t, it)}</td>
+                        <td>{it.neighbors}</td>
                         <td>
-                          {(u.remote_name || u.remote_ip || "?").trim()}
-                          {u.remote_ip && u.remote_name ? ` (${u.remote_ip})` : ""}
+                          +{it.edges_added} / ~{it.edges_updated}
+                          {unmatchedCount > 0
+                            ? ` · ${t("topology.discoverUnmatched").replace("{{count}}", String(unmatchedCount))}`
+                            : ""}
                         </td>
-                        <td>{u.local_port || "?"}</td>
-                        <td>{u.remote_port || "?"}</td>
+                        <td className="muted">{it.error || "—"}</td>
+                        <td>
+                          <Button size="sm" variant="tertiary" onPress={() => setItemDetail(it)}>
+                            {t("topology.discoverViewDetail")}
+                          </Button>
+                        </td>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-
-            {itemDetail.raw_preview ? (
-              <>
-                <h4 className="topo-discover-modal__section">{t("topology.discoverRawPreview")}</h4>
-                <pre className="topo-discover-modal__raw">{itemDetail.raw_preview}</pre>
-              </>
-            ) : null}
-
-            <div className="modal__actions">
-              <button type="button" className="btn btn--sm" onClick={() => setItemDetail(null)}>
-                {t("topology.discoverClose")}
-              </button>
+                    );
+                  })}
+                  {!detailItems.length && !jobDetailQuery.isLoading ? (
+                    <tr>
+                      <td colSpan={7} className="muted">
+                        {t("common.empty")}
+                      </td>
+                    </tr>
+                  ) : null}
+                </tbody>
+              </table>
             </div>
           </div>
-        </div>
-      ) : null}
+
+          <ListPager
+            page={itemPage}
+            pages={itemPages}
+            total={itemTotal}
+            pageSize={itemPageSize}
+            pageSizeOptions={[10, 20, 50, 100]}
+            onPageChange={setItemPage}
+            onPageSizeChange={(size) => {
+              setItemPageSize(size);
+              setItemPage(1);
+            }}
+            disabled={jobDetailQuery.isLoading}
+          />
+        </Modal.Body>
+        <Modal.Footer>
+          <Button
+            variant="secondary"
+            isDisabled={exportingItems || itemTotal === 0}
+            onPress={() => void exportItemsCsv()}
+          >
+            {exportingItems ? t("common.exporting") : t("common.exportCsv")}
+          </Button>
+          <Button
+            variant="tertiary"
+            onPress={() => {
+              setExpandedJobId("");
+              setItemDetail(null);
+              setItemStatus("");
+              setItemKeyword("");
+              setItemPage(1);
+            }}
+          >
+            {t("networkConfigs.close")}
+          </Button>
+        </Modal.Footer>
+      </AppModalShell>
+
+      <AppModalShell open={Boolean(itemDetail)} onClose={() => setItemDetail(null)} size="lg">
+        <Modal.Header>
+          <Modal.Heading>
+            {itemDetail?.ne_name || itemDetail?.ne_ip || itemDetail?.ne_id}
+          </Modal.Heading>
+          <Modal.CloseTrigger />
+        </Modal.Header>
+        <Modal.Body className="flex flex-col gap-3">
+          {itemDetail ? (
+            <>
+              <p className="topo-discover-modal__sub">
+                {[itemDetail.ne_ip, itemDetail.command].filter(Boolean).join(SEP)}
+              </p>
+
+              {!itemDetail.ok ? (
+                <p className="topo-discover__error">
+                  {itemDetail.error === "vendor_or_device_type_required"
+                    ? t("topology.discoverVendorRequired")
+                    : itemDetail.error || t("topology.discoverNeFail")}
+                </p>
+              ) : null}
+              {itemDetail.parser_stub ? (
+                <p className="topo-discover__item-warn">
+                  {t("topology.discoverParserStub").replace(
+                    "{{parser}}",
+                    itemDetail.parser_key || "unknown",
+                  )}
+                </p>
+              ) : null}
+
+              <div className="topo-discover-modal__stats">
+                <span>
+                  {t("topology.discoverNeOk")
+                    .replace("{{neighbors}}", String(itemDetail.neighbors || 0))
+                    .replace("{{added}}", String(itemDetail.edges_added || 0))
+                    .replace("{{updated}}", String(itemDetail.edges_updated || 0))}
+                </span>
+              </div>
+
+              <h4 className="topo-discover-modal__section">
+                {t("topology.discoverUnmatchedTitle").replace(
+                  "{{count}}",
+                  String(itemDetail.unmatched_count ?? itemDetail.unmatched?.length ?? 0),
+                )}
+              </h4>
+              {(itemDetail.unmatched || []).length === 0 ? (
+                <p className="panel__hint">{t("topology.discoverUnmatchedEmpty")}</p>
+              ) : (
+                <div className="topo-discover-modal__table-wrap">
+                  <table className="topo-discover-modal__table">
+                    <thead>
+                      <tr>
+                        <th>{t("topology.discoverColRemote")}</th>
+                        <th>{t("topology.discoverColLocalPort")}</th>
+                        <th>{t("topology.discoverColRemotePort")}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(itemDetail.unmatched || []).map((u, idx) => (
+                        <tr key={`${itemDetail.id}-u-${idx}`}>
+                          <td>
+                            {(u.remote_name || u.remote_ip || "?").trim()}
+                            {u.remote_ip && u.remote_name ? ` (${u.remote_ip})` : ""}
+                          </td>
+                          <td>{u.local_port || "?"}</td>
+                          <td>{u.remote_port || "?"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {itemDetail.raw_preview ? (
+                <>
+                  <h4 className="topo-discover-modal__section">{t("topology.discoverRawPreview")}</h4>
+                  <pre className="topo-discover-modal__raw">{itemDetail.raw_preview}</pre>
+                </>
+              ) : null}
+            </>
+          ) : null}
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="tertiary" onPress={() => setItemDetail(null)}>
+            {t("topology.discoverClose")}
+          </Button>
+        </Modal.Footer>
+      </AppModalShell>
     </section>
   );
 }

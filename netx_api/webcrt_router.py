@@ -126,12 +126,13 @@ class WebcrtSftpChmodBody(BaseModel):
 
 
 def _client_label(request: Request | None = None, websocket: WebSocket | None = None) -> str:
-    host = ""
+    from .client_ip import resolve_client_ip, resolve_websocket_client_ip
+
     if request is not None:
-        host = request.client.host if request.client else ""
-    elif websocket is not None:
-        host = websocket.client.host if websocket.client else ""
-    return str(host or "")
+        return resolve_client_ip(request)
+    if websocket is not None:
+        return resolve_websocket_client_ip(websocket)
+    return ""
 
 
 @router.get("/sessions")

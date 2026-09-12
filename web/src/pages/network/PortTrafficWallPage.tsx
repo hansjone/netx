@@ -1,3 +1,4 @@
+import { Button, Input, Modal } from "@heroui/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "react-router-dom";
@@ -9,6 +10,8 @@ import {
   putPortTrafficBoardPanels,
   updatePortTrafficBoard,
 } from "../../services/api";
+import { AppModalShell } from "../../components/ui/AppModalShell";
+import { FieldSelect } from "../../components/ui/FieldSelect";
 import { queryKeys } from "../../constants/queryKeys";
 import { useI18n } from "../../i18n";
 import { useToast } from "../../hooks/useToast";
@@ -318,7 +321,7 @@ export function PortTrafficWallPage() {
             <>
               <label className="pt-board-toolbar__field">
                 {t("portTraffic.boardName")}
-                <input
+                <Input
                   value={draftName}
                   onChange={(e) => {
                     setDraftName(e.target.value);
@@ -326,21 +329,20 @@ export function PortTrafficWallPage() {
                   }}
                 />
               </label>
-              <label className="pt-board-toolbar__field pt-board-toolbar__field--sm">
-                {t("portTraffic.boardCols")}
-                <select
-                  value={draftCols}
-                  onChange={(e) => {
-                    setDraftCols(Number(e.target.value) || 2);
-                    setDirty(true);
-                  }}
-                >
-                  <option value={1}>1</option>
-                  <option value={2}>2</option>
-                  <option value={3}>3</option>
-                  <option value={4}>4</option>
-                </select>
-              </label>
+              <FieldSelect
+                className="pt-board-toolbar__field pt-board-toolbar__field--sm"
+                label={t("portTraffic.boardCols")}
+                value={draftCols}
+                onChange={(e) => {
+                  setDraftCols(Number(e.target.value) || 2);
+                  setDirty(true);
+                }}
+              >
+                <option value={1}>1</option>
+                <option value={2}>2</option>
+                <option value={3}>3</option>
+                <option value={4}>4</option>
+              </FieldSelect>
             </>
           ) : (
             <div className="pt-board-toolbar__title">
@@ -351,47 +353,45 @@ export function PortTrafficWallPage() {
         </div>
         <div className="btn-row pt-board-toolbar__actions">
           {panels.length && !editing ? (
-            <button
-              type="button"
+            <Button
+              size="sm"
+              variant="secondary"
               className="pt-wall-page__fs-btn pt-wall-page__fs-btn--toolbar"
-              onClick={() => void toggleFullscreen()}
-              title={fullscreen ? t("portTraffic.exitFullscreen") : t("portTraffic.fullscreen")}
+              onPress={() => void toggleFullscreen()}
               aria-label={fullscreen ? t("portTraffic.exitFullscreen") : t("portTraffic.fullscreen")}
             >
               <FullscreenIcon />
               <span>{fullscreen ? t("portTraffic.exitFullscreen") : t("portTraffic.fullscreen")}</span>
-            </button>
+            </Button>
           ) : null}
           {!editing ? (
-            <button type="button" className="btn-primary" onClick={startEdit} disabled={!board}>
+            <Button variant="primary" onPress={startEdit} isDisabled={!board}>
               {t("portTraffic.boardEdit")}
-            </button>
+            </Button>
           ) : (
             <>
-              <button
-                type="button"
-                className="btn-primary"
-                disabled={savePanelsMut.isPending}
-                onClick={() => savePanelsMut.mutate()}
+              <Button
+                variant="primary"
+                isDisabled={savePanelsMut.isPending}
+                onPress={() => savePanelsMut.mutate()}
               >
                 {t("portTraffic.boardSave")}
-              </button>
-              <button type="button" onClick={cancelEdit}>
+              </Button>
+              <Button variant="tertiary" onPress={cancelEdit}>
                 {t("portTraffic.boardCancel")}
-              </button>
+              </Button>
             </>
           )}
           {!editing ? (
-            <button
-              type="button"
-              className="btn--danger"
-              disabled={deleteMut.isPending || !board}
-              onClick={() => {
+            <Button
+              variant="danger"
+              isDisabled={deleteMut.isPending || !board}
+              onPress={() => {
                 if (window.confirm(t("portTraffic.boardConfirmDelete"))) deleteMut.mutate();
               }}
             >
               {t("portTraffic.delete")}
-            </button>
+            </Button>
           ) : null}
         </div>
       </div>
@@ -436,9 +436,9 @@ export function PortTrafficWallPage() {
                   ))}
                 </select>
               </label>
-              <button type="button" className="btn-primary" onClick={addPanel}>
+              <Button variant="primary" onPress={addPanel}>
                 {t("portTraffic.boardAddPanel")}
-              </button>
+              </Button>
             </div>
           ) : null}
 
@@ -446,9 +446,9 @@ export function PortTrafficWallPage() {
             <div className="pt-wall-shell__empty">
               <p>{t("portTraffic.boardNoPanels")}</p>
               {!editing ? (
-                <button type="button" className="btn-primary" onClick={startEdit}>
+                <Button variant="primary" onPress={startEdit}>
                   {t("portTraffic.boardEdit")}
-                </button>
+                </Button>
               ) : null}
             </div>
           ) : (
@@ -499,25 +499,23 @@ export function PortTrafficWallPage() {
       )}
 
       {editing && editPanel ? (
-        <div className="modal-backdrop" role="presentation" onClick={closePanelSettings}>
-          <div
-            className="modal"
-            role="dialog"
-            aria-modal="true"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3>{t("portTraffic.boardPanelSettings")}</h3>
-            <div className="form-grid" style={{ marginTop: 12 }}>
+        <AppModalShell open onClose={closePanelSettings} size="lg">
+          <Modal.Header>
+            <Modal.Heading>{t("portTraffic.boardPanelSettings")}</Modal.Heading>
+            <Modal.CloseTrigger />
+          </Modal.Header>
+          <Modal.Body className="flex flex-col gap-3">
+            <div className="form-grid">
               <label>
                 {t("portTraffic.boardPanelTitle")}
-                <input
+                <Input
                   value={editPanel.title}
                   onChange={(e) => updatePanel(editPanel.id, { title: e.target.value })}
                 />
               </label>
               <label>
                 {t("portTraffic.boardPickDevice")}
-                <select
+                <FieldSelect
                   value={editTargetsDeviceId}
                   onChange={(e) => {
                     setEditPickDeviceId(e.target.value);
@@ -530,11 +528,11 @@ export function PortTrafficWallPage() {
                       {d.ne_name || d.ne_ip || d.id}
                     </option>
                   ))}
-                </select>
+                </FieldSelect>
               </label>
               <label>
                 {t("portTraffic.wallPort")}
-                <select
+                <FieldSelect
                   value={editPanel.target_id}
                   disabled={!editTargetsDeviceId}
                   onChange={(e) => {
@@ -558,12 +556,12 @@ export function PortTrafficWallPage() {
                         {tgt.ifname}
                       </option>
                     ))}
-                </select>
+                </FieldSelect>
               </label>
               <label>
                 {t("portTraffic.range")}
-                <select
-                  value={editPanel.range_hours}
+                <FieldSelect
+                  value={String(editPanel.range_hours)}
                   onChange={(e) =>
                     updatePanel(editPanel.id, { range_hours: Number(e.target.value) || 24 })
                   }
@@ -571,11 +569,11 @@ export function PortTrafficWallPage() {
                   <option value={1}>1h</option>
                   <option value={6}>6h</option>
                   <option value={24}>24h</option>
-                </select>
+                </FieldSelect>
               </label>
               <label>
                 {t("portTraffic.compare")}
-                <select
+                <FieldSelect
                   value={editPanel.baseline}
                   onChange={(e) => {
                     const next = e.target.value as BaselineMode;
@@ -592,16 +590,16 @@ export function PortTrafficWallPage() {
                   <option value="week">{t("portTraffic.compareWeek")}</option>
                   <option value="shift">{t("portTraffic.compareShift")}</option>
                   <option value="custom">{t("portTraffic.compareCustom")}</option>
-                </select>
+                </FieldSelect>
               </label>
               {editPanel.baseline === "custom" ? (
                 <label>
                   {t("portTraffic.offsetHours")}
-                  <input
+                  <Input
                     type="number"
                     min={1}
                     max={24 * 90}
-                    value={editPanel.offset_hours || 48}
+                    value={String(editPanel.offset_hours || 48)}
                     onChange={(e) =>
                       updatePanel(editPanel.id, {
                         offset_hours: Number(e.target.value) || 24,
@@ -612,7 +610,7 @@ export function PortTrafficWallPage() {
               ) : null}
               <label>
                 {t("portTraffic.yMode")}
-                <select
+                <FieldSelect
                   value={editPanel.y_mode}
                   onChange={(e) =>
                     updatePanel(editPanel.id, { y_mode: e.target.value as WallYMode })
@@ -621,12 +619,12 @@ export function PortTrafficWallPage() {
                   <option value="auto">{t("portTraffic.yModeAuto")}</option>
                   <option value="current">{t("portTraffic.yModeCurrent")}</option>
                   <option value="util">{t("portTraffic.yModeUtil")}</option>
-                </select>
+                </FieldSelect>
               </label>
               <label>
                 {t("portTraffic.boardColSpan")}
-                <select
-                  value={editPanel.col_span || 1}
+                <FieldSelect
+                  value={String(editPanel.col_span || 1)}
                   onChange={(e) =>
                     updatePanel(editPanel.id, {
                       col_span: Math.min(cols, Number(e.target.value) || 1),
@@ -638,11 +636,11 @@ export function PortTrafficWallPage() {
                       {n}
                     </option>
                   ))}
-                </select>
+                </FieldSelect>
               </label>
               <label>
                 {t("portTraffic.filterMap")} · {t("portTraffic.wallDevice")}
-                <select
+                <FieldSelect
                   value={editMapBaselineDeviceId}
                   disabled={!editPanel.target_id}
                   onChange={(e) => {
@@ -659,11 +657,11 @@ export function PortTrafficWallPage() {
                       {d.ne_name || d.ne_ip || d.id}
                     </option>
                   ))}
-                </select>
+                </FieldSelect>
               </label>
               <label>
                 {t("portTraffic.mapBaselinePort")}
-                <select
+                <FieldSelect
                   value={editPanel.baseline_target_id || ""}
                   disabled={!editMapBaselineDeviceId}
                   onChange={(e) => {
@@ -682,18 +680,18 @@ export function PortTrafficWallPage() {
                       {tgt.ifname}
                     </option>
                   ))}
-                </select>
+                </FieldSelect>
               </label>
               {editPanel.baseline !== "off" || editPanel.baseline_target_id ? (
                 <label>
                   {t("portTraffic.aheadHours")}
-                  <input
+                  <Input
                     type="number"
                     min={0}
                     max={24}
                     step={1}
-                    title={t("portTraffic.aheadHoursHint")}
-                    value={editPanel.ahead_hours ?? 1}
+                    aria-label={t("portTraffic.aheadHoursHint")}
+                    value={String(editPanel.ahead_hours ?? 1)}
                     onChange={(e) =>
                       updatePanel(editPanel.id, {
                         ahead_hours: Math.max(0, Math.min(24, Number(e.target.value) || 0)),
@@ -704,22 +702,18 @@ export function PortTrafficWallPage() {
               ) : null}
             </div>
             {editPanel.baseline === "week" ? (
-              <p className="muted" style={{ marginTop: 10 }}>
-                {t("portTraffic.retentionHint")}
-              </p>
+              <p className="muted">{t("portTraffic.retentionHint")}</p>
             ) : null}
             {editPanel.baseline_target_id ? (
-              <p className="muted" style={{ marginTop: 10 }}>
-                {t("portTraffic.mapBaselineHint")}
-              </p>
+              <p className="muted">{t("portTraffic.mapBaselineHint")}</p>
             ) : null}
-            <div className="modal__actions">
-              <button type="button" className="btn-primary" onClick={closePanelSettings}>
-                {t("portTraffic.logClose")}
-              </button>
-            </div>
-          </div>
-        </div>
+          </Modal.Body>
+          <Modal.Footer>
+            <Button variant="primary" onPress={closePanelSettings}>
+              {t("portTraffic.logClose")}
+            </Button>
+          </Modal.Footer>
+        </AppModalShell>
       ) : null}
     </section>
   );

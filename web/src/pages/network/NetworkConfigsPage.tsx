@@ -1,7 +1,10 @@
+import { Button, Input, Modal } from "@heroui/react";
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { ListPager } from "../../components/ListPager";
+import { AppModalShell } from "../../components/ui/AppModalShell";
+import { FieldSelect } from "../../components/ui/FieldSelect";
 import { queryKeys } from "../../constants/queryKeys";
 import { useDebouncedValue } from "../../hooks/useDebouncedValue";
 import { useToast } from "../../hooks/useToast";
@@ -30,7 +33,7 @@ export function NetworkConfigsPage() {
   const { showOk, showError } = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
+  const [pageSize, setPageSize] = useState(10);
   const [keyword, setKeyword] = useState(() => String(searchParams.get("q") || ""));
   const [source, setSource] = useState("");
   const [vendor, setVendor] = useState("");
@@ -150,19 +153,20 @@ export function NetworkConfigsPage() {
       <div className="panel__toolbar">
         <h2>{t("networkConfigs.title")}</h2>
         <div className="btn-row">
-          <button
-            type="button"
-            disabled={exportingList || total === 0}
-            onClick={() => void exportListCsv()}
+          <Button
+            size="sm"
+            variant="secondary"
+            isDisabled={exportingList || total === 0}
+            onPress={() => void exportListCsv()}
           >
             {exportingList ? t("common.exporting") : t("common.exportCsv")}
-          </button>
+          </Button>
         </div>
       </div>
 
       <div className="pt-list">
         <div className="filter-inline">
-          <input
+          <Input
             value={keyword}
             placeholder={t("networkConfigs.keywordPh")}
             onChange={(e) => {
@@ -170,7 +174,7 @@ export function NetworkConfigsPage() {
               setPage(1);
             }}
           />
-          <select
+          <FieldSelect
             value={source}
             onChange={(e) => {
               setSource(e.target.value);
@@ -180,8 +184,8 @@ export function NetworkConfigsPage() {
             <option value="">{t("networkConfigs.allSource")}</option>
             <option value="managed">managed</option>
             <option value="ume">ume</option>
-          </select>
-          <input
+          </FieldSelect>
+          <Input
             value={vendor}
             placeholder={t("networkConfigs.vendorPh")}
             onChange={(e) => {
@@ -189,10 +193,11 @@ export function NetworkConfigsPage() {
               setPage(1);
             }}
           />
-          <button
-            type="button"
-            disabled={!hasFilters}
-            onClick={() => {
+          <Button
+            size="sm"
+            variant="tertiary"
+            isDisabled={!hasFilters}
+            onPress={() => {
               setKeyword("");
               setSource("");
               setVendor("");
@@ -200,7 +205,7 @@ export function NetworkConfigsPage() {
             }}
           >
             {t("common.clearFilters")}
-          </button>
+          </Button>
         </div>
 
         {listQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
@@ -239,22 +244,24 @@ export function NetworkConfigsPage() {
                       </td>
                       <td>
                         <div className="btn-row pt-list-actions table-actions">
-                          <button
-                            type="button"
-                            onClick={() => {
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onPress={() => {
                               setSelected({ source: row.source, id: row.target_id });
                               setTab("primary");
                             }}
                           >
                             {t("networkConfigs.view")}
-                          </button>
-                          <button
-                            type="button"
-                            disabled={
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            isDisabled={
                               exporting === exportKey ||
                               exporting.startsWith(`${row.source}:${row.target_id}:`)
                             }
-                            onClick={() =>
+                            onPress={() =>
                               void exportConfig(
                                 row.source,
                                 row.target_id,
@@ -263,10 +270,11 @@ export function NetworkConfigsPage() {
                             }
                           >
                             {t("networkConfigs.export")}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onPress={() => {
                               const path =
                                 row.source === "ume"
                                   ? `/webcrt?ne_id=${encodeURIComponent(row.target_id)}&source=ume`
@@ -275,7 +283,7 @@ export function NetworkConfigsPage() {
                             }}
                           >
                             WebCRT
-                          </button>
+                          </Button>
                         </div>
                       </td>
                     </tr>
@@ -291,7 +299,7 @@ export function NetworkConfigsPage() {
           pages={pages}
           total={total}
           pageSize={pageSize}
-          pageSizeOptions={[20, 50, 100]}
+          pageSizeOptions={[10, 20, 50, 100]}
           onPageChange={setPage}
           onPageSizeChange={(size) => {
             setPageSize(size);
@@ -301,89 +309,84 @@ export function NetworkConfigsPage() {
         />
       </div>
 
-      {selected ? (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onClick={() => setSelected(null)}
-        >
-          <div
-            className="modal modal--wide nm-config-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-label={t("networkConfigs.view")}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="nm-config-modal__head">
-              <div className="nm-config-modal__title">
-                <h3>{detail?.ne_name || selected.id}</h3>
-                <p className="muted">
-                  {selected.source} · {detail?.ne_ip || "—"} · {detail?.vendor || "—"}
-                </p>
-              </div>
-              <div className="btn-row nm-config-modal__actions">
-                <button
-                  type="button"
-                  disabled={Boolean(exporting)}
-                  onClick={() =>
-                    void exportConfig(
-                      selected.source,
-                      selected.id,
-                      showAlt ? (tab === "alt" ? "alt" : "primary") : "primary",
-                    )
-                  }
-                >
-                  {t("networkConfigs.export")}
-                </button>
-                {showAlt ? (
-                  <button
-                    type="button"
-                    disabled={Boolean(exporting)}
-                    onClick={() => void exportConfig(selected.source, selected.id, "both")}
-                  >
-                    {t("networkConfigs.exportBoth")}
-                  </button>
-                ) : null}
-                <button type="button" onClick={() => setSelected(null)}>
-                  {t("networkConfigs.close")}
-                </button>
-              </div>
-            </div>
-
-            {detailQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
-
-            {showAlt ? (
-              <div className="btn-row nm-config-modal__tabs">
-                <button
-                  type="button"
-                  className={tab === "primary" ? "btn-primary" : undefined}
-                  onClick={() => setTab("primary")}
-                >
-                  {t("networkConfigs.tabSet")}
-                </button>
-                <button
-                  type="button"
-                  className={tab === "alt" ? "btn-primary" : undefined}
-                  onClick={() => setTab("alt")}
-                >
-                  {t("networkConfigs.tabHier")}
-                </button>
-              </div>
-            ) : null}
-
-            <textarea
-              className="nm-config-modal__body"
-              readOnly
-              spellCheck={false}
-              value={tab === "alt" ? detail?.config_alt_text || "" : detail?.config_text || ""}
-            />
-            <p className="muted nm-config-modal__meta">
-              SHA-256: {tab === "alt" ? detail?.config_alt_sha256 : detail?.config_sha256} ·{" "}
-              {fmtBytes(tab === "alt" ? detail?.plain_alt_size || 0 : detail?.plain_size || 0)}
+      <AppModalShell
+        open={Boolean(selected)}
+        onClose={() => setSelected(null)}
+        size="lg"
+        className="nm-config-modal"
+      >
+        <Modal.Header>
+          <Modal.Heading>{detail?.ne_name || selected?.id || t("networkConfigs.view")}</Modal.Heading>
+          <Modal.CloseTrigger />
+        </Modal.Header>
+        <Modal.Body className="flex flex-col gap-3">
+          {selected ? (
+            <p className="muted">
+              {selected.source} · {detail?.ne_ip || "—"} · {detail?.vendor || "—"}
             </p>
-          </div>
-        </div>
-      ) : null}
+          ) : null}
+          {detailQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
+          {showAlt ? (
+            <div className="btn-row nm-config-modal__tabs">
+              <Button
+                size="sm"
+                variant={tab === "primary" ? "primary" : "secondary"}
+                onPress={() => setTab("primary")}
+              >
+                {t("networkConfigs.tabSet")}
+              </Button>
+              <Button
+                size="sm"
+                variant={tab === "alt" ? "primary" : "secondary"}
+                onPress={() => setTab("alt")}
+              >
+                {t("networkConfigs.tabHier")}
+              </Button>
+            </div>
+          ) : null}
+          <textarea
+            className="nm-config-modal__body"
+            readOnly
+            spellCheck={false}
+            value={tab === "alt" ? detail?.config_alt_text || "" : detail?.config_text || ""}
+          />
+          <p className="muted nm-config-modal__meta">
+            SHA-256: {tab === "alt" ? detail?.config_alt_sha256 : detail?.config_sha256} ·{" "}
+            {fmtBytes(tab === "alt" ? detail?.plain_alt_size || 0 : detail?.plain_size || 0)}
+          </p>
+        </Modal.Body>
+        <Modal.Footer>
+          {selected ? (
+            <>
+              <Button
+                variant="secondary"
+                isDisabled={Boolean(exporting)}
+                onPress={() =>
+                  void exportConfig(
+                    selected.source,
+                    selected.id,
+                    showAlt ? (tab === "alt" ? "alt" : "primary") : "primary",
+                  )
+                }
+              >
+                {t("networkConfigs.export")}
+              </Button>
+              {showAlt ? (
+                <Button
+                  variant="secondary"
+                  isDisabled={Boolean(exporting)}
+                  onPress={() => void exportConfig(selected.source, selected.id, "both")}
+                >
+                  {t("networkConfigs.exportBoth")}
+                </Button>
+              ) : null}
+            </>
+          ) : null}
+          <Button variant="tertiary" onPress={() => setSelected(null)}>
+            {t("networkConfigs.close")}
+          </Button>
+        </Modal.Footer>
+      </AppModalShell>
     </section>
   );
 }

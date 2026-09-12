@@ -1,7 +1,9 @@
+import { Button, Input } from "@heroui/react";
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ListPager } from "../../components/ListPager";
+import { FieldSelect } from "../../components/ui/FieldSelect";
 import { queryKeys } from "../../constants/queryKeys";
 import { useDebouncedValue } from "../../hooks/useDebouncedValue";
 import { useToast } from "../../hooks/useToast";
@@ -32,7 +34,7 @@ export function NetworkAlarmsPage() {
   const [curHostName, setCurHostName] = useState("");
   const [curKeyword, setCurKeyword] = useState("");
   const [curPage, setCurPage] = useState(1);
-  const [curPageSize, setCurPageSize] = useState(50);
+  const [curPageSize, setCurPageSize] = useState(10);
   const [exporting, setExporting] = useState(false);
 
   // Deep-link from topology (and similar): ?host=&cleared=&severity=&keyword=
@@ -135,15 +137,20 @@ export function NetworkAlarmsPage() {
       <div className="panel__toolbar">
         <h2>{t("ume.alarms.title")}</h2>
         <div className="btn-row">
-          <button type="button" disabled={exporting || curTotal === 0} onClick={() => void exportCsv()}>
+          <Button
+            size="sm"
+            variant="secondary"
+            isDisabled={exporting || curTotal === 0}
+            onPress={() => void exportCsv()}
+          >
             {exporting ? t("common.exporting") : t("common.exportCsv")}
-          </button>
+          </Button>
         </div>
       </div>
 
       <div className="pt-list">
         <div className="filter-inline">
-          <input
+          <Input
             value={curKeyword}
             placeholder={t("ume.alarms.keywordPh")}
             onChange={(e) => {
@@ -151,7 +158,7 @@ export function NetworkAlarmsPage() {
               setCurPage(1);
             }}
           />
-          <input
+          <Input
             value={curHostName}
             placeholder={t("ume.alarms.hostNamePh")}
             onChange={(e) => {
@@ -159,7 +166,7 @@ export function NetworkAlarmsPage() {
               setCurPage(1);
             }}
           />
-          <select
+          <FieldSelect
             value={curSeverity}
             onChange={(e) => {
               setCurSeverity(e.target.value);
@@ -172,8 +179,8 @@ export function NetworkAlarmsPage() {
             <option value="minor">minor</option>
             <option value="warning">warning</option>
             <option value="info">info</option>
-          </select>
-          <select
+          </FieldSelect>
+          <FieldSelect
             value={curCleared}
             onChange={(e) => {
               setCurCleared(e.target.value);
@@ -183,21 +190,22 @@ export function NetworkAlarmsPage() {
             <option value="">{t("ume.alarms.clearedAll")}</option>
             <option value="false">{t("ume.alarms.clearedNo")}</option>
             <option value="true">{t("ume.alarms.clearedYes")}</option>
-          </select>
-          <button
-            type="button"
-            title={t("ume.alarms.clearTitle")}
-            onClick={() => {
+          </FieldSelect>
+          <Button
+            size="sm"
+            variant="tertiary"
+            aria-label={t("ume.alarms.clearTitle")}
+            onPress={() => {
               setCurKeyword("");
               setCurHostName("");
               setCurSeverity("");
               setCurCleared("");
               setCurPage(1);
             }}
-            disabled={!hasFilters}
+            isDisabled={!hasFilters}
           >
             {t("common.clearFilters")}
-          </button>
+          </Button>
         </div>
 
         {currentQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
@@ -232,18 +240,19 @@ export function NetworkAlarmsPage() {
                     <td className="pt-list-num">{x.ne_id}</td>
                     <td>
                       {(x.host_name || "").trim() ? (
-                        <button
+                        <Button
+                          size="sm"
+                          variant="ghost"
                           className="link-btn pt-list-task-name"
-                          type="button"
-                          onClick={() => {
+                          onPress={() => {
                             setCurHostName(x.host_name || "");
                             setCurKeyword("");
                             setCurPage(1);
                           }}
-                          title={t("ume.alarms.filterByHost")}
+                          aria-label={t("ume.alarms.filterByHost")}
                         >
                           {x.host_name}
-                        </button>
+                        </Button>
                       ) : (
                         <span className="muted" title={t("ume.alarms.noHostName")}>
                           {t("common.empty")}
@@ -264,7 +273,7 @@ export function NetworkAlarmsPage() {
           pages={curPages}
           total={curTotal}
           pageSize={curPageSize}
-          pageSizeOptions={[50, 100, 200, 500]}
+          pageSizeOptions={[10, 20, 50, 100, 200]}
           onPageChange={setCurPage}
           onPageSizeChange={(size) => {
             setCurPageSize(size);

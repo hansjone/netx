@@ -1,5 +1,6 @@
 import type { RefObject } from "react";
 import { createPortal } from "react-dom";
+import { Button } from "@heroui/react";
 import type { Edge, Node } from "@xyflow/react";
 import { useI18n } from "../../i18n";
 import type { CtxMenu } from "./pageTypes";
@@ -372,16 +373,16 @@ export function TopologyCtxMenu({
                         ))}
                       </ul>
                       {!expandPhysicalLinks ? (
-                        <button
-                          type="button"
-                          className="btn btn--sm"
-                          onClick={() => {
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onPress={() => {
                             onExpandPhysicalLinks();
                             onClose();
                           }}
                         >
                           {t("topology.expandPhysicalLinks")}
-                        </button>
+                        </Button>
                       ) : null}
                     </div>
                   ) : null}

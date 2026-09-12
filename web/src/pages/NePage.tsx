@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Button, Checkbox, Input, Label, Modal, TextField } from "@heroui/react";
 import {
   batchApplyAccountManagedNe,
   batchApplyHopManagedNe,
@@ -20,6 +21,8 @@ import {
 } from "../services/api";
 import { HelpHint } from "../components/HelpHint";
 import { HopProxyFields, emptyHopProxyFields, type HopProxyFieldsState } from "../components/HopProxyFields";
+import { AppModalShell } from "../components/ui/AppModalShell";
+import { FieldSelect } from "../components/ui/FieldSelect";
 import { queryKeys } from "../constants/queryKeys";
 import { useI18n } from "../i18n";
 import { useToast } from "../hooks/useToast";
@@ -51,20 +54,6 @@ const emptyAccount = (): AccountState => ({
   password: "",
 });
 
-function FormLabel({ children, required }: { children: ReactNode; required?: boolean }) {
-  return (
-    <span className="form-label">
-      {children}
-      {required ? (
-        <span className="form-label__required" title="required" aria-hidden="true">
-          {" "}
-          *
-        </span>
-      ) : null}
-    </span>
-  );
-}
-
 export function NePage() {
   const { t } = useI18n();
   const { showOk, showError } = useToast();
@@ -79,7 +68,7 @@ export function NePage() {
   const [vendorFilter, setVendorFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
+  const [pageSize, setPageSize] = useState(10);
   const [selected, setSelected] = useState<string[]>([]);
   const [modalOpen, setModalOpen] = useState(false);
   const [batchHopOpen, setBatchHopOpen] = useState(false);
@@ -438,38 +427,41 @@ export function NePage() {
           <h2>{t("managedNe.stats.title")}</h2>
           <div className="panel__toolbar-end">
             <div className="panel__actions">
-              <button
-                type="button"
-                disabled={bulkByTagMutation.isPending}
-                onClick={() => {
+              <Button
+                size="sm"
+                variant="secondary"
+                isDisabled={bulkByTagMutation.isPending}
+                onPress={() => {
                   setBulkTagAction("proxy");
                   setBulkHop(emptyHopProxyFields());
                   setBulkTagModalOpen(true);
                 }}
               >
                 {t("managedNe.stats.batchProxy")}
-              </button>
-              <button
-                type="button"
-                disabled={bulkByTagMutation.isPending}
-                onClick={() => {
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                isDisabled={bulkByTagMutation.isPending}
+                onPress={() => {
                   setBulkTagAction("account");
                   setBulkAccount(emptyAccount());
                   setBulkTagModalOpen(true);
                 }}
               >
                 {t("managedNe.account.batchByTag")}
-              </button>
-              <button
-                type="button"
-                disabled={bulkByTagMutation.isPending}
-                onClick={() => {
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                isDisabled={bulkByTagMutation.isPending}
+                onPress={() => {
                   setBulkTagAction("test");
                   setBulkTagModalOpen(true);
                 }}
               >
                 {t("managedNe.stats.batchTest")}
-              </button>
+              </Button>
             </div>
           </div>
         </div>
@@ -499,50 +491,53 @@ export function NePage() {
           <h2>{t("managedNe.title")}</h2>
           <div className="panel__toolbar-end">
             <div className="panel__actions">
-              <button type="button" onClick={openCreate} disabled={!credsOk || !canWriteNe}>
+              <Button size="sm" variant="primary" onPress={openCreate} isDisabled={!credsOk || !canWriteNe}>
                 {t("managedNe.add")}
-              </button>
+              </Button>
               {SHOW_UME_MANAGED_SYNC ? (
                 <>
-                  <button
-                    type="button"
-                    onClick={() => umeSyncMutation.mutate()}
-                    disabled={umeSyncMutation.isPending}
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onPress={() => umeSyncMutation.mutate()}
+                    isDisabled={umeSyncMutation.isPending}
                   >
                     {umeSyncMutation.isPending
                       ? t("managedNe.umeSync.syncing")
                       : t("managedNe.umeSync.sync")}
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn--danger"
-                    onClick={() => {
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="danger"
+                    onPress={() => {
                       if (!window.confirm(t("managedNe.umeSync.deleteConfirm"))) return;
                       umeDeleteMutation.mutate();
                     }}
-                    disabled={umeDeleteMutation.isPending}
+                    isDisabled={umeDeleteMutation.isPending}
                   >
                     {umeDeleteMutation.isPending
                       ? t("managedNe.umeSync.deleting")
                       : t("managedNe.umeSync.delete")}
-                  </button>
+                  </Button>
                 </>
               ) : null}
-              <button
-                type="button"
-                onClick={() => {
+              <Button
+                size="sm"
+                variant="secondary"
+                onPress={() => {
                   void downloadManagedNeImportTemplate("xlsx").catch((err) => showError(String(err)));
                 }}
               >
                 {t("managedNe.downloadTemplate")}
-              </button>
-              <button
-                type="button"
-                onClick={() => importRef.current?.click()}
-                disabled={!credsOk || importMutation.isPending || !canWriteNe}
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                onPress={() => importRef.current?.click()}
+                isDisabled={!credsOk || importMutation.isPending || !canWriteNe}
               >
                 {importMutation.isPending ? t("managedNe.importing") : t("managedNe.importBtn")}
-              </button>
+              </Button>
               <input
                 ref={importRef}
                 type="file"
@@ -554,17 +549,19 @@ export function NePage() {
                   if (file) importMutation.mutate(file);
                 }}
               />
-              <button
-                type="button"
-                disabled={selected.length === 0 || connectMutation.isPending}
-                onClick={() => connectMutation.mutate(selected)}
+              <Button
+                size="sm"
+                variant="secondary"
+                isDisabled={selected.length === 0 || connectMutation.isPending}
+                onPress={() => connectMutation.mutate(selected)}
               >
                 {connectMutation.isPending ? t("managedNe.connect.running") : t("managedNe.connect.run")}
-              </button>
-              <button
-                type="button"
-                disabled={selected.length === 0 || batchHopMutation.isPending || !canWriteNe}
-                onClick={() => {
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                isDisabled={selected.length === 0 || batchHopMutation.isPending || !canWriteNe}
+                onPress={() => {
                   if (selected.length === 0) {
                     showError(t("managedNe.hop.selectRequired"));
                     return;
@@ -574,11 +571,12 @@ export function NePage() {
                 }}
               >
                 {batchHopMutation.isPending ? t("managedNe.hop.applying") : t("managedNe.hop.batchAdd")}
-              </button>
-              <button
-                type="button"
-                disabled={selected.length === 0 || batchAccountMutation.isPending || !canWriteNe}
-                onClick={() => {
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                isDisabled={selected.length === 0 || batchAccountMutation.isPending || !canWriteNe}
+                onPress={() => {
                   if (selected.length === 0) {
                     showError(t("managedNe.account.selectRequired"));
                     return;
@@ -588,12 +586,12 @@ export function NePage() {
                 }}
               >
                 {batchAccountMutation.isPending ? t("managedNe.account.applying") : t("managedNe.account.batchAdd")}
-              </button>
-              <button
-                type="button"
-                className="btn btn--danger"
-                disabled={selected.length === 0 || batchDeleteMutation.isPending || !canWriteNe}
-                onClick={() => {
+              </Button>
+              <Button
+                size="sm"
+                variant="danger"
+                isDisabled={selected.length === 0 || batchDeleteMutation.isPending || !canWriteNe}
+                onPress={() => {
                   if (selected.length === 0) {
                     showError(t("managedNe.batchDeleteSelectRequired"));
                     return;
@@ -603,10 +601,10 @@ export function NePage() {
                 }}
               >
                 {batchDeleteMutation.isPending ? t("managedNe.batchDeleting") : t("managedNe.batchDelete")}
-              </button>
-              <button type="button" onClick={() => invalidateList()}>
+              </Button>
+              <Button size="sm" variant="tertiary" onPress={() => invalidateList()}>
                 {t("common.refresh")}
-              </button>
+              </Button>
             </div>
             <HelpHint text={t("managedNe.help")} ariaLabel={t("common.help")} align="end" />
           </div>
@@ -614,7 +612,7 @@ export function NePage() {
 
         <div className="pt-list">
           <div className="filter-inline">
-            <input
+            <Input
               value={keyword}
               placeholder={t("managedNe.keywordPh")}
               onChange={(e) => {
@@ -622,7 +620,7 @@ export function NePage() {
                 setPage(1);
               }}
             />
-            <select
+            <FieldSelect
               value={vendorFilter}
               onChange={(e) => {
                 setVendorFilter(e.target.value);
@@ -635,8 +633,8 @@ export function NePage() {
                   {v}
                 </option>
               ))}
-            </select>
-            <select
+            </FieldSelect>
+            <FieldSelect
               value={statusFilter}
               onChange={(e) => {
                 setStatusFilter(e.target.value);
@@ -648,11 +646,12 @@ export function NePage() {
               <option value="testing">testing</option>
               <option value="pass">pass</option>
               <option value="fail">fail</option>
-            </select>
-            <button
-              type="button"
-              disabled={!hasFilters}
-              onClick={() => {
+            </FieldSelect>
+            <Button
+              size="sm"
+              variant="tertiary"
+              isDisabled={!hasFilters}
+              onPress={() => {
                 setKeyword("");
                 setVendorFilter("");
                 setStatusFilter("");
@@ -660,7 +659,7 @@ export function NePage() {
               }}
             >
               {t("common.clearFilters")}
-            </button>
+            </Button>
           </div>
 
           {listQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
@@ -675,12 +674,15 @@ export function NePage() {
                 <thead>
                   <tr>
                     <th>
-                      <input
-                        type="checkbox"
-                        checked={allSelected}
+                      <Checkbox
+                        isSelected={allSelected}
                         onChange={toggleSelectAll}
                         aria-label="select all"
-                      />
+                      >
+                        <Checkbox.Control>
+                          <Checkbox.Indicator />
+                        </Checkbox.Control>
+                      </Checkbox>
                     </th>
                     <th>{t("managedNe.col.name")}</th>
                     <th>{t("managedNe.col.vendor")}</th>
@@ -753,38 +755,44 @@ export function NePage() {
                       </td>
                       <td>
                         <div className="btn-row pt-list-actions table-actions">
-                          <button
-                            type="button"
-                            onClick={() =>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onPress={() =>
                               openOrFocusModule({
                                 moduleId: "webcrt",
                                 path: `/webcrt?ne_id=${encodeURIComponent(row.id)}`,
                               })
                             }
-                            title={t("managedNe.openTerminal")}
                           >
                             {t("managedNe.openTerminal")}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setConnectDetailRow(row)}
-                            disabled={!row.connect_tested_at && !row.connect_message && !row.connect_detail}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            isDisabled={!row.connect_tested_at && !row.connect_message && !row.connect_detail}
+                            onPress={() => setConnectDetailRow(row)}
                           >
                             {t("managedNe.connectDetail")}
-                          </button>
-                          <button type="button" onClick={() => openEdit(row)} disabled={!canWriteNe}>
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            isDisabled={!canWriteNe}
+                            onPress={() => openEdit(row)}
+                          >
                             {t("managedNe.edit")}
-                          </button>
-                          <button
-                            type="button"
-                            className="btn--danger"
-                            disabled={!canWriteNe}
-                            onClick={() => {
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="danger"
+                            isDisabled={!canWriteNe}
+                            onPress={() => {
                               if (window.confirm(t("managedNe.confirmDelete"))) deleteMutation.mutate(row.id);
                             }}
                           >
                             {t("managedNe.delete")}
-                          </button>
+                          </Button>
                         </div>
                       </td>
                     </tr>
@@ -804,23 +812,34 @@ export function NePage() {
               })}
             </span>
             <div className="btn-row">
-              <button type="button" disabled={page <= 1} onClick={() => setPage(Math.max(1, page - 1))}>
+              <Button
+                size="sm"
+                variant="secondary"
+                isDisabled={page <= 1}
+                onPress={() => setPage(Math.max(1, page - 1))}
+              >
                 {t("common.prevPage")}
-              </button>
-              <button type="button" disabled={page >= pages} onClick={() => setPage(page + 1)}>
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                isDisabled={page >= pages}
+                onPress={() => setPage(page + 1)}
+              >
                 {t("common.nextPage")}
-              </button>
-              <select
+              </Button>
+              <FieldSelect
                 value={String(pageSize)}
                 onChange={(e) => {
-                  setPageSize(Number(e.target.value) || 50);
+                  setPageSize(Number(e.target.value) || 10);
                   setPage(1);
                 }}
               >
+                <option value="10">{perPage(10)}</option>
                 <option value="20">{perPage(20)}</option>
                 <option value="50">{perPage(50)}</option>
                 <option value="100">{perPage(100)}</option>
-              </select>
+              </FieldSelect>
             </div>
           </div>
         </div>
@@ -845,185 +864,213 @@ export function NePage() {
         }}
       />
 
-      {batchHopOpen ? (
-        <div className="modal-backdrop" role="presentation" onClick={() => setBatchHopOpen(false)}>
-          <div className="modal" role="dialog" onClick={(e) => e.stopPropagation()}>
-            <h3>{t("managedNe.hop.batchTitle")}</h3>
-            <p className="form-hint">{t("managedNe.hop.batchHint", { n: selected.length })}</p>
-            <HopProxyFields value={batchHop} onChange={(patch) => setBatchHop((prev) => ({ ...prev, ...patch }))} />
-            <div className="modal__actions">
-              <button type="button" onClick={() => setBatchHopOpen(false)}>
-                {t("managedNe.form.cancel")}
-              </button>
-              <button
-                type="button"
-                disabled={batchHopMutation.isPending}
-                onClick={() => {
-                  if (!batchHop.hop_host.trim()) {
-                    showError(t("managedNe.hop.hostRequired"));
-                    return;
-                  }
-                  if (!batchHop.hop_username.trim()) {
-                    showError(t("managedNe.hop.userRequired"));
-                    return;
-                  }
-                    if (!batchHop.hop_password && batchHop.hop_target_auth_mode !== "bastion_managed") {
-                    showError(t("managedNe.hop.passwordRequired"));
-                    return;
-                  }
-                  batchHopMutation.mutate();
-                }}
-              >
-                {batchHopMutation.isPending ? t("managedNe.hop.applying") : t("managedNe.hop.apply")}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <AppModalShell
+        open={batchHopOpen}
+        onClose={() => setBatchHopOpen(false)}
+        dismissible={!batchHopMutation.isPending}
+        size="lg"
+      >
+        <Modal.Header>
+          <Modal.Heading>{t("managedNe.hop.batchTitle")}</Modal.Heading>
+          <Modal.CloseTrigger isDisabled={batchHopMutation.isPending} />
+        </Modal.Header>
+        <Modal.Body className="flex flex-col gap-3">
+          <p className="text-sm text-muted">{t("managedNe.hop.batchHint", { n: selected.length })}</p>
+          <HopProxyFields value={batchHop} onChange={(patch) => setBatchHop((prev) => ({ ...prev, ...patch }))} />
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="tertiary" onPress={() => setBatchHopOpen(false)}>
+            {t("managedNe.form.cancel")}
+          </Button>
+          <Button
+            variant="primary"
+            isDisabled={batchHopMutation.isPending}
+            onPress={() => {
+              if (!batchHop.hop_host.trim()) {
+                showError(t("managedNe.hop.hostRequired"));
+                return;
+              }
+              if (!batchHop.hop_username.trim()) {
+                showError(t("managedNe.hop.userRequired"));
+                return;
+              }
+              if (!batchHop.hop_password && batchHop.hop_target_auth_mode !== "bastion_managed") {
+                showError(t("managedNe.hop.passwordRequired"));
+                return;
+              }
+              batchHopMutation.mutate();
+            }}
+          >
+            {batchHopMutation.isPending ? t("managedNe.hop.applying") : t("managedNe.hop.apply")}
+          </Button>
+        </Modal.Footer>
+      </AppModalShell>
 
-      {batchAccountOpen ? (
-        <div className="modal-backdrop" role="presentation" onClick={() => setBatchAccountOpen(false)}>
-          <div className="modal" role="dialog" onClick={(e) => e.stopPropagation()}>
-            <h3>{t("managedNe.account.batchTitle")}</h3>
-            <p className="form-hint">{t("managedNe.account.batchHint", { n: selected.length })}</p>
-            <div className="form-grid">
-              <label>
-                <FormLabel>{t("managedNe.col.user")}</FormLabel>
-                <input
-                  value={batchAccount.username}
-                  onChange={(e) => setBatchAccount((prev) => ({ ...prev, username: e.target.value }))}
-                />
-              </label>
-              <label>
-                <FormLabel>
-                  {t("managedNe.col.password")}
-                  <span className="form-label__optional"> ({t("managedNe.account.passwordOptionalBatch")})</span>
-                </FormLabel>
-                <input
+      <AppModalShell
+        open={batchAccountOpen}
+        onClose={() => setBatchAccountOpen(false)}
+        dismissible={!batchAccountMutation.isPending}
+        size="md"
+      >
+        <Modal.Header>
+          <Modal.Heading>{t("managedNe.account.batchTitle")}</Modal.Heading>
+          <Modal.CloseTrigger isDisabled={batchAccountMutation.isPending} />
+        </Modal.Header>
+        <Modal.Body className="flex flex-col gap-3">
+          <p className="text-sm text-muted">{t("managedNe.account.batchHint", { n: selected.length })}</p>
+          <div className="form-grid">
+            <TextField
+              fullWidth
+              value={batchAccount.username}
+              onChange={(username) => setBatchAccount((prev) => ({ ...prev, username }))}
+            >
+              <Label>{t("managedNe.col.user")}</Label>
+              <Input />
+            </TextField>
+            <TextField
+              fullWidth
+              type="password"
+              value={batchAccount.password}
+              onChange={(password) => setBatchAccount((prev) => ({ ...prev, password }))}
+            >
+              <Label>
+                {t("managedNe.col.password")}
+                <span className="form-label__optional"> ({t("managedNe.account.passwordOptionalBatch")})</span>
+              </Label>
+              <Input />
+            </TextField>
+          </div>
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="tertiary" onPress={() => setBatchAccountOpen(false)}>
+            {t("managedNe.form.cancel")}
+          </Button>
+          <Button
+            variant="primary"
+            isDisabled={batchAccountMutation.isPending}
+            onPress={() => {
+              if (!batchAccount.username.trim() && !batchAccount.password) {
+                showError(t("managedNe.account.usernameOrPasswordRequired"));
+                return;
+              }
+              batchAccountMutation.mutate();
+            }}
+          >
+            {batchAccountMutation.isPending ? t("managedNe.account.applying") : t("managedNe.account.apply")}
+          </Button>
+        </Modal.Footer>
+      </AppModalShell>
+
+      <AppModalShell
+        open={bulkTagModalOpen}
+        onClose={() => setBulkTagModalOpen(false)}
+        dismissible={!bulkByTagMutation.isPending}
+        size="lg"
+      >
+        <Modal.Header>
+          <Modal.Heading>
+            {bulkTagAction === "proxy"
+              ? t("managedNe.stats.batchProxy")
+              : bulkTagAction === "account"
+                ? t("managedNe.account.batchByTag")
+                : t("managedNe.stats.batchTest")}
+            {bulkTagSelected && bulkTagSelected !== "__no_tag__" ? ` · ${bulkTagSelected}` : ""}
+            {bulkTagSelected === "__no_tag__" ? ` · ${t("managedNe.stats.noTag")}` : ""}
+            {bulkTagSelected === "" ? ` · ${t("managedNe.stats.allTag")}` : ""}
+          </Modal.Heading>
+          <Modal.CloseTrigger isDisabled={bulkByTagMutation.isPending} />
+        </Modal.Header>
+        <Modal.Body className="flex flex-col gap-3">
+          <FieldSelect
+            label={t("managedNe.stats.tagFilter")}
+            fullWidth
+            value={bulkTagSelected}
+            onChange={(e) => setBulkTagSelected(e.target.value)}
+          >
+            <option value="">{t("managedNe.stats.allTag")}</option>
+            <option value="__no_tag__">{t("managedNe.stats.noTag")}</option>
+            {statTags.map((tag) => (
+              <option key={tag} value={tag}>
+                {tag}
+              </option>
+            ))}
+          </FieldSelect>
+          {bulkTagAction === "proxy" ? (
+            <>
+              <p className="text-sm text-muted">{t("managedNe.hop.batchHint", { n: "?" })}</p>
+              <HopProxyFields value={bulkHop} onChange={(patch) => setBulkHop((prev) => ({ ...prev, ...patch }))} />
+            </>
+          ) : bulkTagAction === "account" ? (
+            <>
+              <p className="text-sm text-muted">{t("managedNe.account.batchByTagHint")}</p>
+              <div className="form-grid">
+                <TextField
+                  fullWidth
+                  value={bulkAccount.username}
+                  onChange={(username) => setBulkAccount((prev) => ({ ...prev, username }))}
+                >
+                  <Label>{t("managedNe.col.user")}</Label>
+                  <Input />
+                </TextField>
+                <TextField
+                  fullWidth
                   type="password"
-                  value={batchAccount.password}
-                  onChange={(e) => setBatchAccount((prev) => ({ ...prev, password: e.target.value }))}
-                />
-              </label>
-            </div>
-            <div className="modal__actions">
-              <button type="button" onClick={() => setBatchAccountOpen(false)}>
-                {t("managedNe.form.cancel")}
-              </button>
-              <button
-                type="button"
-                disabled={batchAccountMutation.isPending}
-                onClick={() => {
-                  if (!batchAccount.username.trim() && !batchAccount.password) {
-                    showError(t("managedNe.account.usernameOrPasswordRequired"));
-                    return;
-                  }
-                  batchAccountMutation.mutate();
-                }}
-              >
-                {batchAccountMutation.isPending ? t("managedNe.account.applying") : t("managedNe.account.apply")}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      {bulkTagModalOpen ? (
-        <div className="modal-backdrop" role="presentation" onClick={() => setBulkTagModalOpen(false)}>
-          <div className="modal" role="dialog" onClick={(e) => e.stopPropagation()}>
-            <h3>
-              {bulkTagAction === "proxy"
-                ? t("managedNe.stats.batchProxy")
+                  value={bulkAccount.password}
+                  onChange={(password) => setBulkAccount((prev) => ({ ...prev, password }))}
+                >
+                  <Label>
+                    {t("managedNe.col.password")}
+                    <span className="form-label__optional"> ({t("managedNe.account.passwordOptionalBatch")})</span>
+                  </Label>
+                  <Input />
+                </TextField>
+              </div>
+            </>
+          ) : (
+            <p className="text-sm text-muted">{t("managedNe.stats.confirm", { n: "?" })}</p>
+          )}
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="tertiary" onPress={() => setBulkTagModalOpen(false)}>
+            {t("managedNe.form.cancel")}
+          </Button>
+          <Button
+            variant="primary"
+            isDisabled={bulkByTagMutation.isPending}
+            onPress={() => {
+              if (bulkTagAction === "proxy") {
+                if (!bulkHop.hop_host.trim()) {
+                  showError(t("managedNe.hop.hostRequired"));
+                  return;
+                }
+                if (!bulkHop.hop_username.trim()) {
+                  showError(t("managedNe.hop.userRequired"));
+                  return;
+                }
+                if (!bulkHop.hop_password && bulkHop.hop_target_auth_mode !== "bastion_managed") {
+                  showError(t("managedNe.hop.passwordRequired"));
+                  return;
+                }
+              }
+              if (bulkTagAction === "account") {
+                if (!bulkAccount.username.trim() && !bulkAccount.password) {
+                  showError(t("managedNe.account.usernameOrPasswordRequired"));
+                  return;
+                }
+              }
+              bulkByTagMutation.mutate({ action: bulkTagAction, tag: bulkTagSelected });
+            }}
+          >
+            {bulkByTagMutation.isPending
+              ? t("managedNe.stats.loadingIds")
+              : bulkTagAction === "proxy"
+                ? t("managedNe.hop.apply")
                 : bulkTagAction === "account"
-                  ? t("managedNe.account.batchByTag")
-                  : t("managedNe.stats.batchTest")}
-              {bulkTagSelected && bulkTagSelected !== "__no_tag__" ? ` · ${bulkTagSelected}` : ""}
-              {bulkTagSelected === "__no_tag__" ? ` · ${t("managedNe.stats.noTag")}` : ""}
-              {bulkTagSelected === "" ? ` · ${t("managedNe.stats.allTag")}` : ""}
-            </h3>
-            <label>
-              <FormLabel>{t("managedNe.stats.tagFilter")}</FormLabel>
-              <select
-                className="ne-stats-card__tag-select"
-                value={bulkTagSelected}
-                onChange={(e) => setBulkTagSelected(e.target.value)}
-              >
-                <option value="">{t("managedNe.stats.allTag")}</option>
-                <option value="__no_tag__">{t("managedNe.stats.noTag")}</option>
-                {statTags.map((tag) => (
-                  <option key={tag} value={tag}>
-                    {tag}
-                  </option>
-                ))}
-              </select>
-            </label>
-            {bulkTagAction === "proxy" ? (
-              <>
-                <p className="form-hint">{t("managedNe.hop.batchHint", { n: "?" })}</p>
-                <HopProxyFields value={bulkHop} onChange={(patch) => setBulkHop((prev) => ({ ...prev, ...patch }))} />
-              </>
-            ) : bulkTagAction === "account" ? (
-              <>
-                <p className="form-hint">{t("managedNe.account.batchByTagHint")}</p>
-                <div className="form-grid">
-                  <label>
-                    <FormLabel>{t("managedNe.col.user")}</FormLabel>
-                    <input
-                      value={bulkAccount.username}
-                      onChange={(e) => setBulkAccount((prev) => ({ ...prev, username: e.target.value }))}
-                    />
-                  </label>
-                  <label>
-                    <FormLabel>
-                      {t("managedNe.col.password")}
-                      <span className="form-label__optional"> ({t("managedNe.account.passwordOptionalBatch")})</span>
-                    </FormLabel>
-                    <input
-                      type="password"
-                      value={bulkAccount.password}
-                      onChange={(e) => setBulkAccount((prev) => ({ ...prev, password: e.target.value }))}
-                    />
-                  </label>
-                </div>
-              </>
-            ) : (
-              <p className="form-hint">{t("managedNe.stats.confirm", { n: "?" })}</p>
-            )}
-            <div className="modal__actions">
-              <button type="button" onClick={() => setBulkTagModalOpen(false)}>
-                {t("managedNe.form.cancel")}
-              </button>
-              <button
-                type="button"
-                disabled={bulkByTagMutation.isPending}
-                onClick={() => {
-                  if (bulkTagAction === "proxy") {
-                    if (!bulkHop.hop_host.trim()) { showError(t("managedNe.hop.hostRequired")); return; }
-                    if (!bulkHop.hop_username.trim()) { showError(t("managedNe.hop.userRequired")); return; }
-                    if (!bulkHop.hop_password && bulkHop.hop_target_auth_mode !== "bastion_managed") {
-                      showError(t("managedNe.hop.passwordRequired")); return;
-                    }
-                  }
-                  if (bulkTagAction === "account") {
-                    if (!bulkAccount.username.trim() && !bulkAccount.password) {
-                      showError(t("managedNe.account.usernameOrPasswordRequired")); return;
-                    }
-                  }
-                  bulkByTagMutation.mutate({ action: bulkTagAction, tag: bulkTagSelected });
-                }}
-              >
-                {bulkByTagMutation.isPending
-                  ? t("managedNe.stats.loadingIds")
-                  : bulkTagAction === "proxy"
-                    ? t("managedNe.hop.apply")
-                    : bulkTagAction === "account"
-                      ? t("managedNe.account.apply")
-                      : t("managedNe.connect.run")}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+                  ? t("managedNe.account.apply")
+                  : t("managedNe.connect.run")}
+          </Button>
+        </Modal.Footer>
+      </AppModalShell>
 
       <ManagedNeConnectDetailDialog
         row={connectDetailRow}

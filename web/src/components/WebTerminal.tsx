@@ -1,3 +1,4 @@
+import { Button, Input } from "@heroui/react";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
@@ -1031,9 +1032,10 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
               }}
             />
             <div className="webcrt-paste-bridge__actions">
-              <button
-                type="button"
-                onClick={() => {
+              <Button
+                size="sm"
+                variant="primary"
+                onPress={() => {
                   const text = pasteBridgeRef.current?.value || "";
                   setPasteBridgeOpen(false);
                   if (text) sendStdinThrottled(text);
@@ -1041,23 +1043,24 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
                 }}
               >
                 {t("webcrt.term.paste")}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
+              </Button>
+              <Button
+                size="sm"
+                variant="tertiary"
+                onPress={() => {
                   setPasteBridgeOpen(false);
                   focusTerminal();
                 }}
               >
                 {t("webcrt.term.pasteBridgeCancel")}
-              </button>
+              </Button>
             </div>
           </div>
         </div>
       ) : null}
       {findOpen ? (
         <div className="webcrt-find">
-          <input
+          <Input
             ref={findInputRef}
             type="search"
             value={findQuery}
@@ -1088,11 +1091,11 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
               }
             }}
           />
-          <button
-            type="button"
+          <Button
+            size="sm"
+            variant="secondary"
             aria-label={t("webcrt.term.findPrev")}
-            title={t("webcrt.term.findPrev")}
-            onClick={() => {
+            onPress={() => {
               const term = termRef.current;
               if (!term || !findQuery) return;
               const hit = findBufferLine(term, findQuery, Math.max(0, findLineRef.current) - 1, -1);
@@ -1103,12 +1106,12 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
             }}
           >
             ↑
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
             aria-label={t("webcrt.term.findNext")}
-            title={t("webcrt.term.findNext")}
-            onClick={() => {
+            onPress={() => {
               const term = termRef.current;
               if (!term || !findQuery) return;
               const hit = findBufferLine(term, findQuery, findLineRef.current + 1, 1);
@@ -1119,18 +1122,18 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
             }}
           >
             ↓
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
             aria-label={t("webcrt.term.findClose")}
-            title={t("webcrt.term.findClose")}
-            onClick={() => {
+            onPress={() => {
               setFindOpen(false);
               focusTerminal();
             }}
           >
             ×
-          </button>
+          </Button>
         </div>
       ) : null}
       <div
@@ -1147,22 +1150,23 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
           style={{ left: ctxMenu.x, top: ctxMenu.y }}
           onMouseDown={(e) => e.stopPropagation()}
         >
-          <button type="button" onClick={() => void copySelection()}>
+          <Button size="sm" variant="ghost" onPress={() => void copySelection()}>
             {t("webcrt.term.copy")}
-          </button>
-          <button type="button" onClick={() => void pasteFromClipboard()}>
+          </Button>
+          <Button size="sm" variant="ghost" onPress={() => void pasteFromClipboard()}>
             {t("webcrt.term.paste")}
-          </button>
-          <button
-            type="button"
-            onClick={() => {
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            onPress={() => {
               termRef.current?.clear();
               termRef.current?.write("\x1b[H\x1b[2J");
               setCtxMenu(null);
             }}
           >
             {t("webcrt.term.clear")}
-          </button>
+          </Button>
         </div>
       ) : null}
     </div>

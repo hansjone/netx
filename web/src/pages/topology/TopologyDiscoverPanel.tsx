@@ -1,3 +1,4 @@
+import { Button } from "@heroui/react";
 import type { TopologyDiscoverOut } from "../../types";
 import { useI18n } from "../../i18n";
 import { openOrFocusModule } from "../../utils/moduleWindows";
@@ -48,10 +49,10 @@ export function TopologyDiscoverPanel({
     <div className="topo-discover">
       <div className="topo-discover__head">
         <strong>{t("topology.discoverReport")}</strong>
-        <button
-          type="button"
-          className="btn btn--sm btn--ghost"
-          onClick={() => {
+        <Button
+          size="sm"
+          variant="ghost"
+          onPress={() => {
             if (discovering) {
               void onCancelDiscover();
               return;
@@ -60,7 +61,7 @@ export function TopologyDiscoverPanel({
           }}
         >
           {discovering ? t("topology.discoverCancel") : t("topology.discoverClose")}
-        </button>
+        </Button>
       </div>
       {discovering && discoverProgress.total > 0 ? (
         <div className="topo-discover__progress" aria-live="polite">
@@ -96,10 +97,10 @@ export function TopologyDiscoverPanel({
               .replace("{{failed}}", String(discoverSummary.failed))}
           </p>
           <p className="panel__hint">
-            <button
-              type="button"
-              className="btn btn--sm btn--ghost"
-              onClick={() => {
+            <Button
+              size="sm"
+              variant="ghost"
+              onPress={() => {
                 const jobId = String(discoverReport?.job_id || "").trim();
                 const qs = jobId ? `?job_id=${encodeURIComponent(jobId)}` : "";
                 openOrFocusModule({
@@ -109,7 +110,7 @@ export function TopologyDiscoverPanel({
               }}
             >
               {t("topology.discoverGoLldp")}
-            </button>
+            </Button>
           </p>
         </>
       ) : null}

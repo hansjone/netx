@@ -1,3 +1,4 @@
+import { Button, Checkbox, Input, Label, TextField } from "@heroui/react";
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -12,6 +13,7 @@ import {
 } from "../services/api";
 import { HopProxyFields, emptyHopProxyFields, type HopProxyFieldsState } from "./HopProxyFields";
 import { HelpHint } from "./HelpHint";
+import { FieldSelect } from "./ui/FieldSelect";
 import { queryKeys } from "../constants/queryKeys";
 import { useI18n } from "../i18n";
 import { useToast } from "../hooks/useToast";
@@ -214,77 +216,76 @@ export function UmeCliConnectPanel({ enabled = true, embedded = false }: { enabl
         {cliReady ? t("ume.cli.statusReady") : t("ume.cli.statusNotReady")}
       </p>
       <div className="form-grid">
-        <label>
-          <span className="form-label">{t("ume.cli.profileName")}</span>
-          <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-        </label>
-        <label>
-          <span className="form-label">{t("ume.cli.targetUsername")}</span>
-          <input
-            required
-            value={form.username}
-            onChange={(e) => setForm({ ...form, username: e.target.value })}
-            placeholder="ca-oper"
-          />
-        </label>
-        <label>
-          <span className="form-label">{t("ume.cli.targetPassword")}</span>
-          <input
-            type="password"
-            value={form.password}
-            onChange={(e) => setForm({ ...form, password: e.target.value })}
-            placeholder={form.id ? t("ume.cli.passwordKeep") : ""}
-          />
-        </label>
-        <label>
-          <span className="form-label">{t("managedNe.form.deviceType")}</span>
-          <select
-            value={form.device_type_default}
-            onChange={(e) => setForm({ ...form, device_type_default: e.target.value })}
-          >
-            {deviceTypes.map((dt) => (
-              <option key={dt} value={dt}>
-                {dt}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          <span className="form-label">{t("managedNe.form.vendor")}</span>
-          <select value={form.vendor_default} onChange={(e) => setForm({ ...form, vendor_default: e.target.value })}>
-            {vendors.map((v) => (
-              <option key={v} value={v}>
-                {v}
-              </option>
-            ))}
-          </select>
-        </label>
+        <TextField fullWidth value={form.name} onChange={(name) => setForm({ ...form, name })}>
+          <Label>{t("ume.cli.profileName")}</Label>
+          <Input />
+        </TextField>
+        <TextField
+          fullWidth
+          isRequired
+          value={form.username}
+          onChange={(username) => setForm({ ...form, username })}
+        >
+          <Label>{t("ume.cli.targetUsername")}</Label>
+          <Input placeholder="ca-oper" />
+        </TextField>
+        <TextField
+          fullWidth
+          type="password"
+          value={form.password}
+          onChange={(password) => setForm({ ...form, password })}
+        >
+          <Label>{t("ume.cli.targetPassword")}</Label>
+          <Input placeholder={form.id ? t("ume.cli.passwordKeep") : ""} />
+        </TextField>
+        <FieldSelect
+          label={t("managedNe.form.deviceType")}
+          value={form.device_type_default}
+          onChange={(e) => setForm({ ...form, device_type_default: e.target.value })}
+        >
+          {deviceTypes.map((dt) => (
+            <option key={dt} value={dt}>
+              {dt}
+            </option>
+          ))}
+        </FieldSelect>
+        <FieldSelect
+          label={t("managedNe.form.vendor")}
+          value={form.vendor_default}
+          onChange={(e) => setForm({ ...form, vendor_default: e.target.value })}
+        >
+          {vendors.map((v) => (
+            <option key={v} value={v}>
+              {v}
+            </option>
+          ))}
+        </FieldSelect>
       </div>
       <div className="form-fieldset" style={{ marginTop: 16 }}>
         <div className="form-fieldset__title">{t("managedNe.hop.sectionTitle")}</div>
-        <label className="form-check">
-          <input
-            type="checkbox"
-            checked={form.hop_enabled}
-            onChange={(e) => {
-              const hop_enabled = e.target.checked;
-              setForm((prev) => ({
-                ...prev,
-                hop_enabled,
-                ...(hop_enabled
-                  ? {
-                      hop: {
-                        ...prev.hop,
-                        ...patchHopVendorChange(prev.hop.hop_vendor, prev.hop),
-                        ...applyHopTemplate(prev.hop, prev.hop.hop_protocol, prev.hop.hop_vrf, true),
-                      },
-                    }
-                  : {}),
-              }));
-            }}
-          />
-          <span className="form-check__text">{t("managedNe.hop.enable")}</span>
-        </label>
+        <Checkbox
+          isSelected={form.hop_enabled}
+          onChange={(hop_enabled) => {
+            setForm((prev) => ({
+              ...prev,
+              hop_enabled,
+              ...(hop_enabled
+                ? {
+                    hop: {
+                      ...prev.hop,
+                      ...patchHopVendorChange(prev.hop.hop_vendor, prev.hop),
+                      ...applyHopTemplate(prev.hop, prev.hop.hop_protocol, prev.hop.hop_vrf, true),
+                    },
+                  }
+                : {}),
+            }));
+          }}
+        >
+          <Checkbox.Control>
+            <Checkbox.Indicator />
+          </Checkbox.Control>
+          <Checkbox.Content>{t("managedNe.hop.enable")}</Checkbox.Content>
+        </Checkbox>
         {form.hop_enabled ? (
           <div className="hop-proxy-fields">
             <HopProxyFields
@@ -297,50 +298,57 @@ export function UmeCliConnectPanel({ enabled = true, embedded = false }: { enabl
         ) : null}
       </div>
       <div className="actions-row actions-row--inline" style={{ marginTop: 16 }}>
-        <button type="button" onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending}>
-          {saveMutation.isPending ? t("managedNe.form.saving") : t("managedNe.form.save")}
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            setForm(emptyForm());
-          }}
+        <Button
+          size="sm"
+          variant="primary"
+          isDisabled={saveMutation.isPending}
+          onPress={() => saveMutation.mutate()}
         >
+          {saveMutation.isPending ? t("managedNe.form.saving") : t("managedNe.form.save")}
+        </Button>
+        <Button size="sm" variant="secondary" onPress={() => setForm(emptyForm())}>
           {t("ume.cli.newProfile")}
-        </button>
+        </Button>
         {form.id ? (
-          <button
-            type="button"
-            className="danger-btn"
-            onClick={async () => {
-              if (!window.confirm(t("ume.cli.deleteConfirm"))) return;
-              try {
-                await apiDelete(`/v1/cli/profiles/${form.id}`);
-                setForm(emptyForm());
-                await queryClient.invalidateQueries({ queryKey: queryKeys.cliProfiles });
-                showOk(t("ume.cli.deleted"));
-              } catch (e) {
-                showError(e instanceof Error ? e.message : String(e));
-              }
+          <Button
+            size="sm"
+            variant="danger"
+            onPress={() => {
+              void (async () => {
+                if (!window.confirm(t("ume.cli.deleteConfirm"))) return;
+                try {
+                  await apiDelete(`/v1/cli/profiles/${form.id}`);
+                  setForm(emptyForm());
+                  await queryClient.invalidateQueries({ queryKey: queryKeys.cliProfiles });
+                  showOk(t("ume.cli.deleted"));
+                } catch (e) {
+                  showError(e instanceof Error ? e.message : String(e));
+                }
+              })();
             }}
           >
             {t("managedNe.delete")}
-          </button>
+          </Button>
         ) : null}
       </div>
       <div className={embedded ? undefined : "panel"} style={{ marginTop: 20 }}>
         <h3 className={embedded ? "card__section-title" : undefined}>{t("ume.cli.connectTestTitle")}</h3>
         <div className="cli-connect-test-row">
-          <input
+          <Input
             value={sampleUmeNeId}
             onChange={(e) => setSampleUmeNeId(e.target.value)}
             placeholder={t("ume.cli.sampleNePh")}
           />
-          <button type="button" onClick={() => connectTestMutation.mutate()} disabled={connectTestMutation.isPending}>
+          <Button
+            size="sm"
+            variant="secondary"
+            isDisabled={connectTestMutation.isPending}
+            onPress={() => connectTestMutation.mutate()}
+          >
             {connectTestMutation.isPending || overrideTesting
               ? t("managedNe.connect.running")
               : t("managedNe.connect.run")}
-          </button>
+          </Button>
         </div>
         {testNeId ? (
           <div style={{ marginTop: 12 }}>
@@ -385,10 +393,10 @@ export function UmeCliConnectPanel({ enabled = true, embedded = false }: { enabl
           <span className="form-label">{t("ume.cli.existingProfiles")}</span>
           <div className="actions-row actions-row--inline">
             {(profilesQuery.data?.items || []).map((p) => (
-              <button key={p.id} type="button" className="link-btn" onClick={() => setForm(profileToForm(p))}>
+              <Button key={p.id} size="sm" variant="ghost" onPress={() => setForm(profileToForm(p))}>
                 {p.name}
                 {p.is_default ? ` (${t("ume.cli.default")})` : ""}
-              </button>
+              </Button>
             ))}
           </div>
         </div>

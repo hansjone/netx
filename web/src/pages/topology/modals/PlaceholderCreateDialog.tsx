@@ -1,3 +1,5 @@
+import { Button, Input, Label, Modal, TextField } from "@heroui/react";
+import { TopoModalShell } from "../../../components/ui/TopoModalShell";
 import { useI18n } from "../../../i18n";
 
 export type PlaceholderCreateDialogState = {
@@ -23,82 +25,56 @@ export function PlaceholderCreateDialog({
   onSubmit,
 }: PlaceholderCreateDialogProps) {
   const { t } = useI18n();
-  if (!dialog) return null;
+  const open = Boolean(dialog);
 
   return (
-    <div
-      className="topo-modal"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="topo-create-ne-title"
+    <TopoModalShell
+      open={open}
+      onClose={onClose}
+      dismissible={!busy}
+      size="sm"
     >
-      <div
-        className="topo-modal__backdrop"
-        onClick={() => {
-          if (busy) return;
-          onClose();
-        }}
-      />
-      <div className="topo-modal__panel" style={{ maxWidth: 420 }}>
-        <div className="topo-modal__head">
-          <strong id="topo-create-ne-title">{t("topology.createNeTitle")}</strong>
-          <button
-            type="button"
-            className="btn btn--sm btn--ghost"
-            disabled={busy}
-            onClick={onClose}
-          >
-            {t("topology.discoverClose")}
-          </button>
-        </div>
-        <p className="panel__hint topo-modal__hint">{t("topology.createNeHint")}</p>
-        <div className="form-grid" style={{ padding: "0 16px 8px" }}>
-          <label>
-            <span className="form-label">
-              {t("topology.createNeName")}
-              <span className="form-label__required" aria-hidden="true">
-                {" "}
-                *
-              </span>
-            </span>
-            <input
-              autoFocus
-              value={dialog.name}
-              placeholder={t("topology.createNeNamePh")}
-              disabled={busy}
-              onChange={(e) => onChange({ name: e.target.value })}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") void onSubmit();
-              }}
-            />
-          </label>
-          <label>
-            <span className="form-label">{t("topology.createNeIp")}</span>
-            <input
-              value={dialog.ip_address}
-              placeholder={t("topology.createNeIpPh")}
-              disabled={busy}
-              onChange={(e) => onChange({ ip_address: e.target.value })}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") void onSubmit();
-              }}
-            />
-          </label>
-        </div>
-        <div className="topo-modal__foot">
-          <button type="button" className="btn btn--ghost" disabled={busy} onClick={onClose}>
-            {t("topology.discoverClose")}
-          </button>
-          <button
-            type="button"
-            className="btn btn--primary"
-            disabled={busy}
-            onClick={() => void onSubmit()}
-          >
-            {busy ? t("topology.createNeBusy") : t("topology.createNePlaceholder")}
-          </button>
-        </div>
-      </div>
-    </div>
+      <Modal.Header>
+        <Modal.Heading>{t("topology.createNeTitle")}</Modal.Heading>
+        <Modal.CloseTrigger isDisabled={busy} />
+      </Modal.Header>
+      <Modal.Body className="flex flex-col gap-3">
+        <p className="text-sm text-muted">{t("topology.createNeHint")}</p>
+        <TextField
+          fullWidth
+          autoFocus
+          isRequired
+          value={dialog?.name ?? ""}
+          onChange={(name) => onChange({ name })}
+          isDisabled={busy}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void onSubmit();
+          }}
+        >
+          <Label>{t("topology.createNeName")}</Label>
+          <Input placeholder={t("topology.createNeNamePh")} />
+        </TextField>
+        <TextField
+          fullWidth
+          value={dialog?.ip_address ?? ""}
+          onChange={(ip_address) => onChange({ ip_address })}
+          isDisabled={busy}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void onSubmit();
+          }}
+        >
+          <Label>{t("topology.createNeIp")}</Label>
+          <Input placeholder={t("topology.createNeIpPh")} />
+        </TextField>
+      </Modal.Body>
+      <Modal.Footer>
+        <Button variant="tertiary" isDisabled={busy} onPress={onClose}>
+          {t("topology.discoverClose")}
+        </Button>
+        <Button variant="primary" isDisabled={busy} onPress={() => void onSubmit()}>
+          {busy ? t("topology.createNeBusy") : t("topology.createNePlaceholder")}
+        </Button>
+      </Modal.Footer>
+    </TopoModalShell>
   );
 }

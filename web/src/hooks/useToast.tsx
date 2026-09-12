@@ -1,4 +1,13 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
+import { createPortal } from "react-dom";
 
 export type ToastState = { type: "ok" | "error"; text: string } | null;
 
@@ -27,12 +36,22 @@ function useToastState(autoHideMs: number): ToastApi {
   return useMemo(() => ({ toast, showOk, showError, clear }), [toast, showOk, showError, clear]);
 }
 
+function ToastViewport({ toast }: { toast: NonNullable<ToastState> }) {
+  if (typeof document === "undefined") return null;
+  return createPortal(
+    <div className={`app-toast app-toast--${toast.type}`} role="status" aria-live="polite">
+      {toast.text}
+    </div>,
+    document.body,
+  );
+}
+
 export function ToastProvider({ children, autoHideMs = 2600 }: { children: ReactNode; autoHideMs?: number }) {
   const api = useToastState(autoHideMs);
   return (
     <ToastContext.Provider value={api}>
       {children}
-      {api.toast ? <div className={`toast toast--${api.toast.type}`}>{api.toast.text}</div> : null}
+      {api.toast ? <ToastViewport toast={api.toast} /> : null}
     </ToastContext.Provider>
   );
 }

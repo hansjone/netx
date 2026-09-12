@@ -1,3 +1,4 @@
+import { Button } from "@heroui/react";
 import { Fragment } from "react";
 import type { TopologyTreeFolderItem, TopologyTreeViewItem } from "../../types";
 import { useI18n } from "../../i18n";
@@ -125,17 +126,17 @@ export function TopologyHexBrowser({
             <p>{t("topology.treeLoadFailed")}</p>
             {treeError ? <span className="muted"> ({String(treeError)})</span> : null}
             <div className="topo-browser__empty-actions">
-              <button type="button" className="btn btn--sm btn--ghost" onClick={onTreeRetry}>
+              <Button size="sm" variant="ghost" onPress={onTreeRetry}>
                 {t("topology.treeRetry")}
-              </button>
-              <button
-                type="button"
-                className="btn btn--sm"
-                onClick={promptNewRegion}
-                disabled={createRegionPending}
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                onPress={promptNewRegion}
+                isDisabled={createRegionPending}
               >
                 {t("topology.newRegion")}
-              </button>
+              </Button>
             </div>
           </div>
         ) : regions.length === 0 ? (
@@ -144,14 +145,14 @@ export function TopologyHexBrowser({
               <RegionGlyph size={36} />
             </span>
             <p>{t("topology.emptyMaps")}</p>
-            <button
-              type="button"
-              className="btn btn--sm"
-              onClick={promptNewRegion}
-              disabled={createRegionPending}
+            <Button
+              size="sm"
+              variant="secondary"
+              onPress={promptNewRegion}
+              isDisabled={createRegionPending}
             >
               {t("topology.newRegion")}
-            </button>
+            </Button>
           </div>
         ) : (
           <div className="topo-browser__grid topo-browser__grid--regions">

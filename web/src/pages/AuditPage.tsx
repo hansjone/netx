@@ -1,3 +1,4 @@
+import { Button, Input } from "@heroui/react";
 import { Fragment, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "../auth/AuthContext";
@@ -132,7 +133,7 @@ export function AuditPage() {
     queryFn: () => {
       const p = new URLSearchParams();
       p.set("page", String(page));
-      p.set("page_size", "50");
+      p.set("page_size", "10");
       p.set("exclude_noise", excludeNoise ? "true" : "false");
       if (username.trim()) p.set("username", username.trim());
       if (effectiveAction) p.set("action", effectiveAction);
@@ -145,7 +146,7 @@ export function AuditPage() {
 
   const items = useMemo(() => query.data?.items || [], [query.data]);
   const total = query.data?.total || 0;
-  const pages = Math.max(1, Math.ceil(total / 50));
+  const pages = Math.max(1, Math.ceil(total / 10));
   const hasFilters = Boolean(username.trim() || action.trim() || quick !== "business");
 
   const setQuickFilter = (next: QuickFilter) => {
@@ -174,20 +175,20 @@ export function AuditPage() {
                 ["all", "audit.filterAll"],
               ] as const
             ).map(([value, labelKey]) => (
-              <button
+              <Button
                 key={value}
-                type="button"
-                className={quick === value && !action.trim() ? "is-active" : undefined}
-                onClick={() => setQuickFilter(value)}
+                size="sm"
+                variant={quick === value && !action.trim() ? "primary" : "secondary"}
+                onPress={() => setQuickFilter(value)}
               >
                 {t(labelKey)}
-              </button>
+              </Button>
             ))}
           </div>
 
           <div className="filter-inline">
             {isAdmin ? (
-              <input
+              <Input
                 placeholder={t("auth.filterUsername")}
                 value={username}
                 onChange={(e) => {
@@ -196,7 +197,7 @@ export function AuditPage() {
                 }}
               />
             ) : null}
-            <input
+            <Input
               placeholder={t("auth.filterAction")}
               value={action}
               onChange={(e) => {
@@ -205,13 +206,14 @@ export function AuditPage() {
                 if (e.target.value.trim()) setQuick("all");
               }}
             />
-            <button type="button" onClick={() => void query.refetch()} disabled={query.isFetching}>
+            <Button size="sm" variant="secondary" onPress={() => void query.refetch()} isDisabled={query.isFetching}>
               {query.isFetching ? t("common.refreshing") : t("common.refresh")}
-            </button>
-            <button
-              type="button"
-              disabled={!hasFilters}
-              onClick={() => {
+            </Button>
+            <Button
+              size="sm"
+              variant="tertiary"
+              isDisabled={!hasFilters}
+              onPress={() => {
                 setUsername("");
                 setAction("");
                 setQuick("business");
@@ -219,7 +221,7 @@ export function AuditPage() {
               }}
             >
               {t("common.clearFilters")}
-            </button>
+            </Button>
           </div>
 
           {query.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
@@ -266,13 +268,14 @@ export function AuditPage() {
                           </td>
                           <td className="pt-list-num">{row.client_ip || t("common.empty")}</td>
                           <td>
-                            <button
-                              type="button"
+                            <Button
+                              size="sm"
+                              variant="ghost"
                               className="linkish"
-                              onClick={() => setExpanded(open ? null : row.id)}
+                              onPress={() => setExpanded(open ? null : row.id)}
                             >
                               {open ? t("audit.hideDetail") : t("audit.showDetail")}
-                            </button>
+                            </Button>
                           </td>
                         </tr>
                         {open ? (
@@ -304,16 +307,22 @@ export function AuditPage() {
               })}
             </span>
             <div className="btn-row">
-              <button type="button" disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>
+              <Button
+                size="sm"
+                variant="secondary"
+                isDisabled={page <= 1}
+                onPress={() => setPage((p) => Math.max(1, p - 1))}
+              >
                 {t("common.prevPage")}
-              </button>
-              <button
-                type="button"
-                disabled={page >= pages}
-                onClick={() => setPage((p) => Math.min(pages, p + 1))}
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                isDisabled={page >= pages}
+                onPress={() => setPage((p) => Math.min(pages, p + 1))}
               >
                 {t("common.nextPage")}
-              </button>
+              </Button>
             </div>
           </div>
         </div>

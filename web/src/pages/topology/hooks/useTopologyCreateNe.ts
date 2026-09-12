@@ -25,7 +25,7 @@ import type { ManagedNeFormState } from "../../managedNe/formState";
 import { isWorldFlatViewName } from "../treeUtils";
 import type { NeNodeData } from "../TopologyReactFlowView";
 
-type FocusNode = (fabricNodeId: string, fit?: boolean) => void;
+type FocusNode = (fabricNodeId: string, fit: boolean) => void;
 
 type Args = {
   mapId: string | null | undefined;

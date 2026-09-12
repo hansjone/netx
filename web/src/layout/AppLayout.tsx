@@ -1,6 +1,7 @@
 import { Link, useLocation } from "react-router-dom";
 import type { ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { Button, Chip } from "@heroui/react";
 import { AppsGridIcon } from "../components/AppsGridIcon";
 import { HeaderMenu } from "../components/HeaderMenu";
 import { getPageTitleKey, isWorkbenchPath } from "../config/modules";
@@ -48,15 +49,16 @@ export function AppLayout({ children }: Props) {
           {!onWorkbench ? (
             <>
               <span className="app-brand__sep" aria-hidden />
-              <button
-                type="button"
+              <Button
+                isIconOnly
+                size="sm"
+                variant="ghost"
                 className="app-brand__apps"
-                onClick={returnToWorkbench}
-                title={t("workbench.backToWorkbench")}
+                onPress={returnToWorkbench}
                 aria-label={t("workbench.backToWorkbench")}
               >
                 <AppsGridIcon />
-              </button>
+              </Button>
               <span className="app-brand__module-title">{pageTitle}</span>
             </>
           ) : null}
@@ -64,24 +66,26 @@ export function AppLayout({ children }: Props) {
         <div className="app-brand__actions">
           {user ? (
             <div className="app-brand__actions-group">
-              <button
-                type="button"
-                className={`conn-pill conn-pill--on-brand conn-pill--tasks conn-pill--${activeTasks > 0 ? "up" : "unknown"}`}
-                title={t("layout.activeTasksHint")}
+              <Chip
+                size="sm"
+                color={activeTasks > 0 ? "success" : "default"}
+                variant="soft"
+                className="conn-pill conn-pill--on-brand conn-pill--tasks cursor-pointer"
                 onClick={() => openOrFocusModule({ moduleId: "audit", path: "/audit/tasks" })}
               >
-                {t("layout.activeTasks", { count: activeTasks })}
-              </button>
-              <span className="conn-pill conn-pill--on-brand conn-pill--user" title={user.role}>
-                {user.username}
-              </span>
-              <button
-                type="button"
+                <Chip.Label>{t("layout.activeTasks", { count: activeTasks })}</Chip.Label>
+              </Chip>
+              <Chip size="sm" variant="soft" className="conn-pill conn-pill--on-brand conn-pill--user" title={user.role}>
+                <Chip.Label>{user.username}</Chip.Label>
+              </Chip>
+              <Button
+                size="sm"
+                variant="ghost"
                 className="header-menu__trigger header-menu__trigger--on-brand"
-                onClick={() => void logout()}
+                onPress={() => void logout()}
               >
                 {t("auth.logout")}
-              </button>
+              </Button>
               <HeaderMenu />
             </div>
           ) : (

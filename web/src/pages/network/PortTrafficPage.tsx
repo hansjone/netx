@@ -1,7 +1,10 @@
+import { Button, Input, Modal } from "@heroui/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { ListPager } from "../../components/ListPager";
+import { AppModalShell } from "../../components/ui/AppModalShell";
+import { FieldSelect } from "../../components/ui/FieldSelect";
 import {
   createPortTrafficDevice,
   deletePortTrafficDevice,
@@ -35,7 +38,7 @@ import { pageCount } from "../../utils/display";
 import { formatSystemTime } from "../../utils/time";
 
 const POLL_MS = 5000;
-const TARGET_PAGE_SIZE = 20;
+const TARGET_PAGE_SIZE = 10;
 
 type ViewMode = "list" | "wizard" | "edit";
 
@@ -128,7 +131,7 @@ export function PortTrafficPage() {
 
   const [view, setView] = useState<ViewMode>("list");
   const [listPage, setListPage] = useState(1);
-  const [listPageSize, setListPageSize] = useState(50);
+  const [listPageSize, setListPageSize] = useState(10);
   const [listKeyword, setListKeyword] = useState("");
   const [listStatus, setListStatus] = useState("");
   const [exportingDevices, setExportingDevices] = useState(false);
@@ -697,30 +700,32 @@ export function PortTrafficPage() {
         <h2>{t("portTraffic.title")}</h2>
         <div className="btn-row">
           {view !== "list" ? (
-            <button
-              type="button"
-              onClick={() => {
+            <Button
+              size="sm"
+              variant="secondary"
+              onPress={() => {
                 resetWizard();
                 setView("list");
               }}
             >
               {t("portTraffic.backList")}
-            </button>
+            </Button>
           ) : (
             <>
-              <button type="button" onClick={() => navigate("/network/tasks/port-traffic/wall")}>
+              <Button size="sm" variant="secondary" onPress={() => navigate("/network/tasks/port-traffic/wall")}>
                 {t("portTraffic.wall")}
-              </button>
-              <button
-                type="button"
-                disabled={exportingDevices || listTotal === 0}
-                onClick={() => void exportDevicesCsv()}
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                isDisabled={exportingDevices || listTotal === 0}
+                onPress={() => void exportDevicesCsv()}
               >
                 {exportingDevices ? t("common.exporting") : t("common.exportCsv")}
-              </button>
-              <button type="button" className="btn-primary" onClick={openWizard}>
+              </Button>
+              <Button size="sm" variant="primary" onPress={openWizard}>
                 {t("portTraffic.create")}
-              </button>
+              </Button>
             </>
           )}
         </div>
@@ -752,7 +757,7 @@ export function PortTrafficPage() {
           </div>
 
           <div className="filter-inline">
-            <input
+            <Input
               value={listKeyword}
               placeholder={t("portTraffic.keywordPh")}
               onChange={(e) => {
@@ -760,7 +765,7 @@ export function PortTrafficPage() {
                 setListPage(1);
               }}
             />
-            <select
+            <FieldSelect
               value={listStatus}
               onChange={(e) => {
                 setListStatus(e.target.value);
@@ -772,18 +777,19 @@ export function PortTrafficPage() {
               <option value="paused">{t("portTraffic.statusPaused")}</option>
               <option value="stopped">{t("portTraffic.statusStopped")}</option>
               <option value="draft">{t("portTraffic.statusDraft")}</option>
-            </select>
-            <button
-              type="button"
-              disabled={!hasListFilters}
-              onClick={() => {
+            </FieldSelect>
+            <Button
+              size="sm"
+              variant="tertiary"
+              isDisabled={!hasListFilters}
+              onPress={() => {
                 setListKeyword("");
                 setListStatus("");
                 setListPage(1);
               }}
             >
               {t("common.clearFilters")}
-            </button>
+            </Button>
           </div>
 
           {devicesQuery.isLoading ? <p className="muted">{t("common.refreshing")}</p> : null}
@@ -793,9 +799,9 @@ export function PortTrafficPage() {
             <div className="pt-list-empty">
               <p>{t("portTraffic.empty")}</p>
               {!hasListFilters ? (
-                <button type="button" className="btn-primary" onClick={openWizard}>
+                <Button variant="primary" onPress={openWizard}>
                   {t("portTraffic.create")}
-                </button>
+                </Button>
               ) : null}
             </div>
           ) : devices.length ? (
@@ -843,74 +849,70 @@ export function PortTrafficPage() {
                         </td>
                         <td>
                           <div className="pt-list-actions">
-                            <button
-                              type="button"
-                              className="btn-primary"
-                              onClick={() => openWallList()}
-                            >
+                            <Button size="sm" variant="primary" onPress={() => openWallList()}>
                               {t("portTraffic.wall")}
-                            </button>
-                            <button type="button" onClick={() => openEdit(row)}>
+                            </Button>
+                            <Button size="sm" variant="secondary" onPress={() => openEdit(row)}>
                               {t("portTraffic.edit")}
-                            </button>
+                            </Button>
                             {needsNeRebind(row) ? (
-                              <button
-                                type="button"
-                                title={t("portTraffic.rebindHint")}
-                                onClick={() => openRebind(row)}
-                              >
+                              <Button size="sm" variant="secondary" onPress={() => openRebind(row)}>
                                 {t("portTraffic.rebind")}
-                              </button>
+                              </Button>
                             ) : null}
                             {row.status !== "running" ? (
-                              <button
-                                type="button"
-                                disabled={startMut.isPending}
-                                onClick={() => startMut.mutate(row.id)}
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                isDisabled={startMut.isPending}
+                                onPress={() => startMut.mutate(row.id)}
                               >
                                 {t("portTraffic.start")}
-                              </button>
+                              </Button>
                             ) : (
-                              <button
-                                type="button"
-                                disabled={pauseMut.isPending}
-                                onClick={() => pauseMut.mutate(row.id)}
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                isDisabled={pauseMut.isPending}
+                                onPress={() => pauseMut.mutate(row.id)}
                               >
                                 {t("portTraffic.pause")}
-                              </button>
+                              </Button>
                             )}
                             {row.status !== "stopped" ? (
-                              <button
-                                type="button"
-                                disabled={stopMut.isPending}
-                                onClick={() => stopMut.mutate(row.id)}
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                isDisabled={stopMut.isPending}
+                                onPress={() => stopMut.mutate(row.id)}
                               >
                                 {t("portTraffic.stop")}
-                              </button>
+                              </Button>
                             ) : null}
-                            <button
-                              type="button"
+                            <Button
+                              size="sm"
+                              variant="secondary"
                               className={row.last_error ? "pt-list-log-btn--error" : undefined}
-                              onClick={() => {
+                              onPress={() => {
                                 setLogDeviceId(row.id);
                                 setLogDeviceLabel(deviceLabel(row));
                                 setLogKeyword("");
                               }}
                             >
                               {t("portTraffic.log")}
-                            </button>
-                            <button
-                              type="button"
-                              className="btn--danger"
-                              disabled={deleteMut.isPending}
-                              onClick={() => {
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="danger"
+                              isDisabled={deleteMut.isPending}
+                              onPress={() => {
                                 if (window.confirm(t("portTraffic.confirmDelete"))) {
                                   deleteMut.mutate(row.id);
                                 }
                               }}
                             >
                               {t("portTraffic.delete")}
-                            </button>
+                            </Button>
                           </div>
                         </td>
                       </tr>
@@ -926,7 +928,7 @@ export function PortTrafficPage() {
             pages={pages}
             total={listTotal}
             pageSize={listPageSize}
-            pageSizeOptions={[20, 50, 100]}
+            pageSizeOptions={[10, 20, 50, 100]}
             onPageChange={setListPage}
             onPageSizeChange={(size) => {
               setListPageSize(size);
@@ -1021,9 +1023,14 @@ export function PortTrafficPage() {
                     <strong>
                       {selectedNe.name} ({selectedNe.ip_address})
                     </strong>
-                    <button type="button" disabled={portsLoading} onClick={() => void discoverSelected()}>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      isDisabled={portsLoading}
+                      onPress={() => void discoverSelected()}
+                    >
                       {portsLoading ? "…" : t("portTraffic.discover")}
-                    </button>
+                    </Button>
                     {portsError ? <span className="muted">{portsError}</span> : null}
                   </div>
                   {discoverMeta ? (
@@ -1165,24 +1172,24 @@ export function PortTrafficPage() {
                 })}
                 {pickedList.length > 40 ? <li>… +{pickedList.length - 40}</li> : null}
               </ul>
-              <button type="button" className="btn-primary" disabled={createMut.isPending} onClick={submitWizard}>
+              <Button variant="primary" isDisabled={createMut.isPending} onPress={submitWizard}>
                 {t("portTraffic.confirmCreate")}
-              </button>
+              </Button>
             </div>
           ) : null}
 
           <div className="btn-row" style={{ marginTop: 12 }}>
-            <button
-              type="button"
-              disabled={wizardStep <= 1}
-              onClick={() => setWizardStep((s) => (s > 1 ? ((s - 1) as 1 | 2 | 3) : s))}
+            <Button
+              variant="secondary"
+              isDisabled={wizardStep <= 1}
+              onPress={() => setWizardStep((s) => (s > 1 ? ((s - 1) as 1 | 2 | 3) : s))}
             >
               {t("portTraffic.prev")}
-            </button>
-            <button
-              type="button"
-              disabled={wizardStep >= 3}
-              onClick={() => {
+            </Button>
+            <Button
+              variant="secondary"
+              isDisabled={wizardStep >= 3}
+              onPress={() => {
                 if (wizardStep === 1 && !selectedNe) {
                   showError(t("portTraffic.pickNeFirst"));
                   return;
@@ -1195,7 +1202,7 @@ export function PortTrafficPage() {
               }}
             >
               {t("portTraffic.next")}
-            </button>
+            </Button>
           </div>
         </div>
       ) : null}
@@ -1228,23 +1235,28 @@ export function PortTrafficPage() {
             </label>
             <label className="config-sync-policy-field">
               {t("portTraffic.concurrency")}
-              <input
+              <Input
                 type="number"
                 min={1}
                 max={5}
-                value={concurrency}
+                value={String(concurrency)}
                 onChange={(e) => setConcurrency(Number(e.target.value) || 1)}
               />
             </label>
             <label className="config-sync-policy-field">
               {t("portTraffic.note")}
-              <input value={note} onChange={(e) => setNote(e.target.value)} />
+              <Input value={note} onChange={(e) => setNote(e.target.value)} />
             </label>
           </div>
           <div className="btn-row" style={{ margin: "12px 0" }}>
-            <button type="button" disabled={portsLoading} onClick={() => void discoverSelected()}>
+            <Button
+              size="sm"
+              variant="secondary"
+              isDisabled={portsLoading}
+              onPress={() => void discoverSelected()}
+            >
               {portsLoading ? "…" : t("portTraffic.discover")}
-            </button>
+            </Button>
             <span className="muted">{t("portTraffic.selectedPorts", { count: String(pickedList.length) })}</span>
           </div>
           {portsError ? <p className="muted">{portsError}</p> : null}
@@ -1315,233 +1327,222 @@ export function PortTrafficPage() {
             </ul>
           )}
           <div className="btn-row" style={{ marginTop: 12 }}>
-            <button
-              type="button"
-              className="btn-primary"
-              disabled={updateMut.isPending || putIfacesMut.isPending}
-              onClick={() => void saveEdit()}
+            <Button
+              variant="primary"
+              isDisabled={updateMut.isPending || putIfacesMut.isPending}
+              onPress={() => void saveEdit()}
             >
               {t("portTraffic.save")}
-            </button>
+            </Button>
           </div>
         </div>
       ) : null}
 
-      {logDeviceId ? (
-        <div className="modal-backdrop" role="presentation" onClick={closeLog}>
-          <div
-            className="modal modal--wide pt-log-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="pt-log-title"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="pt-log-modal__head">
-              <div>
-                <h3 id="pt-log-title">{t("portTraffic.logTitle")}</h3>
-                <p className="muted pt-log-modal__sub">
-                  {t("portTraffic.logDevice")}: {logDeviceLabel || "—"}
-                </p>
-              </div>
-              <div className="btn-row">
-                <button
-                  type="button"
-                  disabled={!filteredLogEvents.length}
-                  onClick={exportEventsCsv}
-                >
-                  {t("common.exportCsv")}
-                </button>
-                <button type="button" onClick={closeLog}>
-                  {t("portTraffic.logClose")}
-                </button>
-              </div>
-            </div>
-            <div className="filter-inline" style={{ marginBottom: 10 }}>
-              <input
-                value={logKeyword}
-                placeholder={t("portTraffic.keywordPh")}
-                onChange={(e) => setLogKeyword(e.target.value)}
-              />
-            </div>
-            {logQuery.isLoading ? (
-              <p className="muted">…</p>
-            ) : !logEvents.length ? (
-              <p className="muted">{t("portTraffic.logEmpty")}</p>
-            ) : !filteredLogEvents.length ? (
-              <p className="muted">{t("portTraffic.logEmpty")}</p>
-            ) : (
-              <div className="pt-log-modal__list">
-                {filteredLogEvents.map((ev) => {
-                  const level = String(ev.level || "error").toLowerCase();
-                  const tone =
-                    level === "warn" || level === "warning"
-                      ? "warn"
-                      : level === "info"
-                        ? "info"
-                        : "error";
-                  return (
-                    <article key={ev.id} className={`pt-log-item pt-log-item--${tone}`}>
-                      <div className="pt-log-item__meta">
-                        <span className="pt-log-item__level">{level}</span>
-                        <span className="pt-log-item__time">
-                          {formatSystemTime(ev.created_at) || "—"}
+      <AppModalShell open={Boolean(logDeviceId)} onClose={closeLog} size="lg">
+        <Modal.Header>
+          <Modal.Heading>{t("portTraffic.logTitle")}</Modal.Heading>
+          <Modal.CloseTrigger />
+        </Modal.Header>
+        <Modal.Body className="flex flex-col gap-3">
+          <p className="muted pt-log-modal__sub">
+            {t("portTraffic.logDevice")}: {logDeviceLabel || "—"}
+          </p>
+          <div className="filter-inline">
+            <Input
+              value={logKeyword}
+              placeholder={t("portTraffic.keywordPh")}
+              onChange={(e) => setLogKeyword(e.target.value)}
+            />
+          </div>
+          {logQuery.isLoading ? (
+            <p className="muted">…</p>
+          ) : !logEvents.length ? (
+            <p className="muted">{t("portTraffic.logEmpty")}</p>
+          ) : !filteredLogEvents.length ? (
+            <p className="muted">{t("portTraffic.logEmpty")}</p>
+          ) : (
+            <div className="pt-log-modal__list">
+              {filteredLogEvents.map((ev) => {
+                const level = String(ev.level || "error").toLowerCase();
+                const tone =
+                  level === "warn" || level === "warning"
+                    ? "warn"
+                    : level === "info"
+                      ? "info"
+                      : "error";
+                return (
+                  <article key={ev.id} className={`pt-log-item pt-log-item--${tone}`}>
+                    <div className="pt-log-item__meta">
+                      <span className="pt-log-item__level">{level}</span>
+                      <span className="pt-log-item__time">
+                        {formatSystemTime(ev.created_at) || "—"}
+                      </span>
+                      {ev.ifname ? (
+                        <span className="pt-log-item__if" title={ev.ifname}>
+                          {ev.ifname}
                         </span>
-                        {ev.ifname ? (
-                          <span className="pt-log-item__if" title={ev.ifname}>
-                            {ev.ifname}
-                          </span>
-                        ) : null}
-                      </div>
-                      <pre className="pt-log-item__msg">{formatPortTrafficLogMessage(ev.message, t)}</pre>
-                    </article>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </div>
-      ) : null}
-
-      {rebindDevice ? (
-        <div className="modal-backdrop" role="presentation" onClick={closeRebind}>
-          <div
-            className="modal modal--wide pt-rebind-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="pt-rebind-title"
-            onClick={(e) => e.stopPropagation()}
+                      ) : null}
+                    </div>
+                    <pre className="pt-log-item__msg">{formatPortTrafficLogMessage(ev.message, t)}</pre>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </Modal.Body>
+        <Modal.Footer>
+          <Button
+            variant="secondary"
+            isDisabled={!filteredLogEvents.length}
+            onPress={exportEventsCsv}
           >
-            <div className="pt-log-modal__head">
-              <div>
-                <h3 id="pt-rebind-title">{t("portTraffic.rebindTitle")}</h3>
-                <p className="muted pt-log-modal__sub">
-                  {t("portTraffic.rebindCurrent")}: {deviceLabel(rebindDevice)}
-                  {rebindDevice.ne_ip ? ` · ${rebindDevice.ne_ip}` : ""}
-                  {` · ${rebindSource}`}
-                  {rebindDevice.ne_id ? ` · ID ${rebindDevice.ne_id.slice(0, 8)}…` : ""}
-                </p>
-                <p className="muted pt-log-modal__sub">{t("portTraffic.rebindHint")}</p>
-              </div>
-              <button type="button" onClick={closeRebind} disabled={rebindMut.isPending}>
-                {t("portTraffic.logClose")}
-              </button>
-            </div>
+            {t("common.exportCsv")}
+          </Button>
+          <Button variant="tertiary" onPress={closeLog}>
+            {t("portTraffic.logClose")}
+          </Button>
+        </Modal.Footer>
+      </AppModalShell>
 
-            <div className="filter-inline" style={{ marginBottom: 10 }}>
-              <input
-                value={rebindKeyword}
-                onChange={(e) => {
-                  setRebindKeyword(e.target.value);
-                  setRebindPage(1);
-                }}
-                placeholder={t("portTraffic.neKeywordPh")}
-              />
-              {rebindSelectedNe ? (
+      <AppModalShell
+        open={Boolean(rebindDevice)}
+        onClose={closeRebind}
+        dismissible={!rebindMut.isPending}
+        size="lg"
+      >
+        <Modal.Header>
+          <Modal.Heading>{t("portTraffic.rebindTitle")}</Modal.Heading>
+          <Modal.CloseTrigger />
+        </Modal.Header>
+        <Modal.Body className="flex flex-col gap-3">
+          {rebindDevice ? (
+            <>
+              <p className="muted pt-log-modal__sub">
+                {t("portTraffic.rebindCurrent")}: {deviceLabel(rebindDevice)}
+                {rebindDevice.ne_ip ? ` · ${rebindDevice.ne_ip}` : ""}
+                {` · ${rebindSource}`}
+                {rebindDevice.ne_id ? ` · ID ${rebindDevice.ne_id.slice(0, 8)}…` : ""}
+              </p>
+              <p className="muted pt-log-modal__sub">{t("portTraffic.rebindHint")}</p>
+
+              <div className="filter-inline">
+                <Input
+                  value={rebindKeyword}
+                  onChange={(e) => {
+                    setRebindKeyword(e.target.value);
+                    setRebindPage(1);
+                  }}
+                  placeholder={t("portTraffic.neKeywordPh")}
+                />
+                {rebindSelectedNe ? (
+                  <span className="muted">
+                    {t("portTraffic.selectedOneNe")}: {rebindSelectedNe.name} (
+                    {rebindSelectedNe.ip_address})
+                  </span>
+                ) : null}
+              </div>
+
+              {rebindNesQuery.isLoading ? (
+                <p className="muted">…</p>
+              ) : !(rebindNesQuery.data?.items || []).length ? (
+                <p className="muted">{t("portTraffic.rebindEmpty")}</p>
+              ) : (
+                <div className="pt-rebind-modal__table-wrap">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th />
+                        <th>{t("portTraffic.col.name")}</th>
+                        <th>IP</th>
+                        <th>{t("portTraffic.col.vendor")}</th>
+                        <th>ID</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(rebindNesQuery.data?.items || []).map((row) => {
+                        const checked = rebindSelectedNe?.id === row.id;
+                        const sameIp =
+                          Boolean(rebindDevice.ne_ip) &&
+                          String(row.ip_address || "").trim() ===
+                            String(rebindDevice.ne_ip || "").trim();
+                        return (
+                          <tr
+                            key={`${row.source}:${row.id}`}
+                            className={sameIp ? "pt-rebind-row--same-ip" : undefined}
+                            title={sameIp ? t("portTraffic.rebindSameIpHint") : undefined}
+                          >
+                            <td>
+                              <input
+                                type="radio"
+                                name="pt-rebind-ne"
+                                checked={checked}
+                                onChange={() => setRebindSelectedNe(row)}
+                              />
+                            </td>
+                            <td>{row.name}</td>
+                            <td>
+                              {row.ip_address}
+                              {sameIp ? (
+                                <span className="pt-rebind-same-ip">{t("portTraffic.rebindSameIp")}</span>
+                              ) : null}
+                            </td>
+                            <td>{row.vendor || "—"}</td>
+                            <td className="muted" style={{ fontSize: 12 }}>
+                              {row.id.slice(0, 8)}…
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              <div className="pager pt-list-pager">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  isIconOnly
+                  className="pager__btn"
+                  isDisabled={rebindPage <= 1}
+                  onPress={() => setRebindPage((p) => p - 1)}
+                >
+                  ‹
+                </Button>
                 <span className="muted">
-                  {t("portTraffic.selectedOneNe")}: {rebindSelectedNe.name} (
-                  {rebindSelectedNe.ip_address})
+                  {rebindPage}/
+                  {Math.max(1, pageCount(rebindNesQuery.data?.total || 0, TARGET_PAGE_SIZE))}
                 </span>
-              ) : null}
-            </div>
-
-            {rebindNesQuery.isLoading ? (
-              <p className="muted">…</p>
-            ) : !(rebindNesQuery.data?.items || []).length ? (
-              <p className="muted">{t("portTraffic.rebindEmpty")}</p>
-            ) : (
-              <div className="pt-rebind-modal__table-wrap">
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      <th />
-                      <th>{t("portTraffic.col.name")}</th>
-                      <th>IP</th>
-                      <th>{t("portTraffic.col.vendor")}</th>
-                      <th>ID</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(rebindNesQuery.data?.items || []).map((row) => {
-                      const checked = rebindSelectedNe?.id === row.id;
-                      const sameIp =
-                        Boolean(rebindDevice.ne_ip) &&
-                        String(row.ip_address || "").trim() ===
-                          String(rebindDevice.ne_ip || "").trim();
-                      return (
-                        <tr
-                          key={`${row.source}:${row.id}`}
-                          className={sameIp ? "pt-rebind-row--same-ip" : undefined}
-                          title={sameIp ? t("portTraffic.rebindSameIpHint") : undefined}
-                        >
-                          <td>
-                            <input
-                              type="radio"
-                              name="pt-rebind-ne"
-                              checked={checked}
-                              onChange={() => setRebindSelectedNe(row)}
-                            />
-                          </td>
-                          <td>{row.name}</td>
-                          <td>
-                            {row.ip_address}
-                            {sameIp ? (
-                              <span className="pt-rebind-same-ip">{t("portTraffic.rebindSameIp")}</span>
-                            ) : null}
-                          </td>
-                          <td>{row.vendor || "—"}</td>
-                          <td className="muted" style={{ fontSize: 12 }}>
-                            {row.id.slice(0, 8)}…
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  isIconOnly
+                  className="pager__btn"
+                  isDisabled={
+                    rebindPage >=
+                    Math.max(1, pageCount(rebindNesQuery.data?.total || 0, TARGET_PAGE_SIZE))
+                  }
+                  onPress={() => setRebindPage((p) => p + 1)}
+                >
+                  ›
+                </Button>
               </div>
-            )}
-
-            <div className="pager pt-list-pager" style={{ marginTop: 8 }}>
-              <button
-                type="button"
-                className="pager__btn"
-                disabled={rebindPage <= 1}
-                onClick={() => setRebindPage((p) => p - 1)}
-              >
-                ‹
-              </button>
-              <span className="muted">
-                {rebindPage}/
-                {Math.max(1, pageCount(rebindNesQuery.data?.total || 0, TARGET_PAGE_SIZE))}
-              </span>
-              <button
-                type="button"
-                className="pager__btn"
-                disabled={
-                  rebindPage >=
-                  Math.max(1, pageCount(rebindNesQuery.data?.total || 0, TARGET_PAGE_SIZE))
-                }
-                onClick={() => setRebindPage((p) => p + 1)}
-              >
-                ›
-              </button>
-            </div>
-
-            <div className="modal__actions" style={{ marginTop: 12 }}>
-              <button type="button" onClick={closeRebind} disabled={rebindMut.isPending}>
-                {t("portTraffic.boardCancel")}
-              </button>
-              <button
-                type="button"
-                className="btn-primary"
-                disabled={!rebindSelectedNe || rebindMut.isPending}
-                onClick={confirmRebind}
-              >
-                {rebindMut.isPending ? "…" : t("portTraffic.rebindSubmit")}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+            </>
+          ) : null}
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="tertiary" isDisabled={rebindMut.isPending} onPress={closeRebind}>
+            {t("portTraffic.boardCancel")}
+          </Button>
+          <Button
+            variant="primary"
+            isDisabled={!rebindSelectedNe || rebindMut.isPending}
+            onPress={confirmRebind}
+          >
+            {rebindMut.isPending ? "…" : t("portTraffic.rebindSubmit")}
+          </Button>
+        </Modal.Footer>
+      </AppModalShell>
     </section>
   );
 }

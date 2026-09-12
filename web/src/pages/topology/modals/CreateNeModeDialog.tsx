@@ -1,3 +1,5 @@
+import { Button, Modal } from "@heroui/react";
+import { TopoModalShell } from "../../../components/ui/TopoModalShell";
 import { useI18n } from "../../../i18n";
 
 export type CreateNeModeDialogProps = {
@@ -15,34 +17,34 @@ export function CreateNeModeDialog({
   onPickPlaceholder,
 }: CreateNeModeDialogProps) {
   const { t } = useI18n();
-  if (!open) return null;
 
   return (
-    <div className="topo-modal" role="dialog" aria-modal="true" aria-labelledby="topo-create-ne-mode-title">
-      <div className="topo-modal__backdrop" onClick={onClose} />
-      <div className="topo-modal__panel" style={{ maxWidth: 440 }}>
-        <div className="topo-modal__head">
-          <strong id="topo-create-ne-mode-title">{t("topology.createNe")}</strong>
-          <button type="button" className="btn btn--sm btn--ghost" onClick={onClose}>
-            {t("topology.discoverClose")}
-          </button>
+    <TopoModalShell open={open} onClose={onClose} size="sm">
+      <Modal.Header>
+        <Modal.Heading>{t("topology.createNe")}</Modal.Heading>
+        <Modal.CloseTrigger />
+      </Modal.Header>
+      <Modal.Body className="flex flex-col gap-3">
+        <p className="text-sm text-muted">{t("topology.createNeModeHint")}</p>
+        <div className="flex flex-col gap-2.5">
+          <Button
+            variant="primary"
+            className="h-auto flex-col items-start gap-1 whitespace-normal px-4 py-3 text-left"
+            onPress={onPickManaged}
+          >
+            <span className="font-semibold">{t("topology.createNeManaged")}</span>
+            <span className="text-sm font-normal opacity-90">{t("topology.createNeManagedHint")}</span>
+          </Button>
+          <Button
+            variant="secondary"
+            className="h-auto flex-col items-start gap-1 whitespace-normal px-4 py-3 text-left"
+            onPress={onPickPlaceholder}
+          >
+            <span className="font-semibold">{t("topology.createNePlaceholder")}</span>
+            <span className="text-sm font-normal text-muted">{t("topology.createNePlaceholderHint")}</span>
+          </Button>
         </div>
-        <p className="panel__hint topo-modal__hint">{t("topology.createNeModeHint")}</p>
-        <div className="topo-create-ne-mode" style={{ padding: "0 16px 16px", display: "grid", gap: 10 }}>
-          <button type="button" className="btn" onClick={onPickManaged}>
-            <span style={{ display: "block", fontWeight: 600 }}>{t("topology.createNeManaged")}</span>
-            <span className="panel__hint" style={{ display: "block", marginTop: 4 }}>
-              {t("topology.createNeManagedHint")}
-            </span>
-          </button>
-          <button type="button" className="btn btn--ghost" onClick={onPickPlaceholder}>
-            <span style={{ display: "block", fontWeight: 600 }}>{t("topology.createNePlaceholder")}</span>
-            <span className="panel__hint" style={{ display: "block", marginTop: 4 }}>
-              {t("topology.createNePlaceholderHint")}
-            </span>
-          </button>
-        </div>
-      </div>
-    </div>
+      </Modal.Body>
+    </TopoModalShell>
   );
 }

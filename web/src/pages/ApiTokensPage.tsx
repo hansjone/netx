@@ -1,6 +1,9 @@
+import { Button, Checkbox, Input, Modal } from "@heroui/react";
 import { useMemo, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../auth/AuthContext";
+import { AppModalShell } from "../components/ui/AppModalShell";
+import { FieldSelect } from "../components/ui/FieldSelect";
 import { useI18n } from "../i18n";
 import { useToast } from "../hooks/useToast";
 import { apiDelete, apiGet, apiPatch, apiPost } from "../services/api";
@@ -86,7 +89,8 @@ export function ApiTokensPage() {
 
   const tokensQuery = useQuery({
     queryKey: ["apiTokens"],
-    queryFn: () => apiGet<{ items: TokenRow[] }>("/v1/api-tokens"),
+    queryFn: () =>
+      apiGet<{ items: TokenRow[]; active_count?: number; max_count?: number }>("/v1/api-tokens"),
     enabled: ready,
   });
 
@@ -98,6 +102,9 @@ export function ApiTokensPage() {
 
   const items = useMemo(() => tokensQuery.data?.items || [], [tokensQuery.data]);
   const users = useMemo(() => usersQuery.data?.items || [], [usersQuery.data]);
+  const tokenMax = Number(tokensQuery.data?.max_count ?? 20);
+  const tokenActive = Number(tokensQuery.data?.active_count ?? items.filter((r) => !r.revoked).length);
+  const atTokenLimit = tokenMax > 0 && tokenActive >= tokenMax;
 
   const availableForCreate = useMemo(() => {
     if (ownerUserId) {
@@ -203,40 +210,51 @@ export function ApiTokensPage() {
         <div className="panel__toolbar">
           <h2 className="token-page__title">
             {t("auth.apiKeysTitle")}
-            <span className="help-q" tabIndex={0} aria-label={t("auth.apiKeysHelp")}>
+            <span className="help-q" tabIndex={0} aria-label={t("auth.apiKeysHelp", { max: tokenMax || 20 })}>
               ?
               <span className="help-q__tip" role="tooltip">
-                {t("auth.apiKeysHelp")}
+                {t("auth.apiKeysHelp", { max: tokenMax || 20 })}
               </span>
             </span>
           </h2>
+          {tokenMax > 0 ? (
+            <span className="muted" style={{ fontSize: 13 }}>
+              {t("auth.tokenQuota", { active: tokenActive, max: tokenMax })}
+            </span>
+          ) : null}
         </div>
 
         <div className="pt-list">
+          {atTokenLimit ? (
+            <p className="panel__hint panel__hint--live">{t("auth.tokenLimitReached", { max: tokenMax })}</p>
+          ) : null}
           <form className="token-create" onSubmit={onCreate}>
             <div className="filter-inline">
-              <input
+              <Input
                 placeholder={t("auth.tokenName")}
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 required
+                isDisabled={atTokenLimit}
               />
-              <select
-                value={expiresInDays}
-                onChange={(e) => setExpiresInDays(Number(e.target.value))}
+              <FieldSelect
                 aria-label={t("auth.expiresIn")}
+                value={String(expiresInDays)}
+                onChange={(e) => setExpiresInDays(Number(e.target.value))}
+                disabled={atTokenLimit}
               >
                 {EXPIRY_OPTIONS.map((opt) => (
                   <option key={opt.value} value={opt.value}>
                     {t(opt.labelKey)}
                   </option>
                 ))}
-              </select>
+              </FieldSelect>
               {isAdmin ? (
-                <select
+                <FieldSelect
+                  aria-label={t("auth.tokenOwner")}
                   value={ownerUserId}
                   onChange={(e) => setOwnerUserId(e.target.value)}
-                  aria-label={t("auth.tokenOwner")}
+                  disabled={atTokenLimit}
                 >
                   <option value="">{t("auth.tokenOwnerSelf", { user: user?.username || "" })}</option>
                   {users
@@ -246,11 +264,16 @@ export function ApiTokensPage() {
                         {u.username} ({u.role})
                       </option>
                     ))}
-                </select>
+                </FieldSelect>
               ) : null}
-              <button type="submit" disabled={createMut.isPending}>
+              <Button
+                type="submit"
+                size="sm"
+                variant="primary"
+                isDisabled={createMut.isPending || atTokenLimit}
+              >
                 {t("auth.createToken")}
-              </button>
+              </Button>
             </div>
           </form>
 
@@ -260,12 +283,12 @@ export function ApiTokensPage() {
                 {t("auth.tokenOnceHint")}
               </div>
               <code>{createdPlain}</code>
-              <button type="button" onClick={() => void copyToken()}>
+              <Button size="sm" variant="primary" onPress={() => void copyToken()}>
                 {t("auth.copyToken")}
-              </button>
-              <button type="button" onClick={dismissCreatedPlain}>
+              </Button>
+              <Button size="sm" variant="tertiary" onPress={dismissCreatedPlain}>
                 {t("common.close")}
-              </button>
+              </Button>
             </div>
           ) : null}
 
@@ -318,24 +341,24 @@ export function ApiTokensPage() {
                       </td>
                       <td>
                         <div className="btn-row pt-list-actions table-actions">
-                          <button
-                            type="button"
-                            className="btn--ghost"
-                            disabled={row.revoked || row.expired}
-                            onClick={() => startEdit(row)}
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            isDisabled={row.revoked || row.expired}
+                            onPress={() => startEdit(row)}
                           >
                             {t("auth.editScopes")}
-                          </button>
-                          <button
-                            type="button"
-                            className="btn--danger"
-                            disabled={row.revoked || revokeMut.isPending}
-                            onClick={() => {
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="danger"
+                            isDisabled={row.revoked || revokeMut.isPending}
+                            onPress={() => {
                               if (window.confirm(t("auth.revokeConfirm"))) revokeMut.mutate(row.id);
                             }}
                           >
                             {t("auth.revokeToken")}
-                          </button>
+                          </Button>
                         </div>
                       </td>
                     </tr>
@@ -347,59 +370,52 @@ export function ApiTokensPage() {
         </div>
       </section>
 
-      {editingRow ? (
-        <div
-          className="token-scopes-modal"
-          role="dialog"
-          aria-modal="true"
-          aria-label={t("auth.editScopes")}
-        >
-          <div className="token-scopes-modal__backdrop" onClick={() => setEditingRow(null)} />
-          <div className="token-scopes-modal__panel">
-            <div className="token-scopes-modal__head">
-              <div>
-                <h3>{t("auth.editScopes")}</h3>
-                <p className="panel__hint" style={{ margin: "4px 0 0" }}>
-                  {editingRow.name}
-                  {editingRow.username ? ` · ${editingRow.username}` : ""}
-                </p>
-              </div>
-              <button type="button" className="btn--ghost" onClick={() => setEditingRow(null)}>
-                {t("common.cancel")}
-              </button>
-            </div>
-            <ul className="token-scopes-modal__list">
-              {ALL_SCOPE_KEYS.filter((s) => editAvailable.includes(s)).map((scope) => (
-                <li key={scope}>
-                  <label className="token-scopes-modal__row">
-                    <input
-                      type="checkbox"
-                      checked={editScopes.includes(scope)}
-                      onChange={() => toggleEditScope(scope)}
-                    />
-                    <span className="token-scopes-modal__label">{t(SCOPE_LABEL_KEYS[scope])}</span>
-                  </label>
-                </li>
-              ))}
-              {!editAvailable.length ? (
-                <li className="muted">{t("auth.scopesNoneAvailable")}</li>
-              ) : null}
-            </ul>
-            <div className="token-scopes-modal__foot">
-              <button
-                type="button"
-                disabled={updateMut.isPending || editScopes.length === 0}
-                onClick={() => updateMut.mutate({ id: editingRow.id, scopes: editScopes })}
-              >
-                {t("auth.saveScopes")}
-              </button>
-              <button type="button" className="btn--ghost" onClick={() => setEditingRow(null)}>
-                {t("common.cancel")}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <AppModalShell open={Boolean(editingRow)} onClose={() => setEditingRow(null)} size="md">
+        <Modal.Header>
+          <Modal.Heading>{t("auth.editScopes")}</Modal.Heading>
+          <Modal.CloseTrigger />
+        </Modal.Header>
+        <Modal.Body className="flex flex-col gap-3">
+          {editingRow ? (
+            <p className="text-sm text-muted">
+              {editingRow.name}
+              {editingRow.username ? ` · ${editingRow.username}` : ""}
+            </p>
+          ) : null}
+          <ul className="token-scopes-modal__list">
+            {ALL_SCOPE_KEYS.filter((s) => editAvailable.includes(s)).map((scope) => (
+              <li key={scope}>
+                <Checkbox
+                  isSelected={editScopes.includes(scope)}
+                  onChange={() => toggleEditScope(scope)}
+                >
+                  <Checkbox.Control>
+                    <Checkbox.Indicator />
+                  </Checkbox.Control>
+                  <Checkbox.Content>{t(SCOPE_LABEL_KEYS[scope])}</Checkbox.Content>
+                </Checkbox>
+              </li>
+            ))}
+            {!editAvailable.length ? (
+              <li className="muted">{t("auth.scopesNoneAvailable")}</li>
+            ) : null}
+          </ul>
+        </Modal.Body>
+        <Modal.Footer>
+          <Button
+            variant="primary"
+            isDisabled={updateMut.isPending || editScopes.length === 0 || !editingRow}
+            onPress={() => {
+              if (editingRow) updateMut.mutate({ id: editingRow.id, scopes: editScopes });
+            }}
+          >
+            {t("auth.saveScopes")}
+          </Button>
+          <Button variant="tertiary" onPress={() => setEditingRow(null)}>
+            {t("common.cancel")}
+          </Button>
+        </Modal.Footer>
+      </AppModalShell>
     </div>
   );
 }

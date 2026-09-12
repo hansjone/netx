@@ -1,3 +1,4 @@
+import { Button, Input } from "@heroui/react";
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -9,13 +10,15 @@ import {
   matchFabricNodes,
   patchFabricNodeTags,
 } from "../../services/api";
+import { ListPager } from "../../components/ListPager";
 import { queryKeys } from "../../constants/queryKeys";
 import { useI18n } from "../../i18n";
 import { useToast } from "../../hooks/useToast";
 import { openOrFocusModule } from "../../utils/moduleWindows";
 import type { FabricNodeSearchHit, TopologyTreeFolderItem } from "../../types";
+import { pageCount } from "../../utils/display";
 
-const PAGE_SIZE = 50;
+const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
 
 function flattenRegions(root: TopologyTreeFolderItem | null | undefined): TopologyTreeFolderItem[] {
   if (!root) return [];
@@ -95,6 +98,7 @@ export function TopologyClassifyPage() {
   const [unmatched, setUnmatched] = useState("");
   const [linkStatus, setLinkStatus] = useState("");
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
 
   const linkLabel = (status: string | undefined) => {
     switch (String(status || "").toLowerCase()) {
@@ -144,6 +148,7 @@ export function TopologyClassifyPage() {
       linkStatus,
       page,
       filterMajor,
+      pageSize,
     ),
     queryFn: () =>
       fetchFabricNodes({
@@ -153,7 +158,7 @@ export function TopologyClassifyPage() {
         unmatched,
         linkStatus,
         page,
-        pageSize: PAGE_SIZE,
+        pageSize,
       }),
   });
 
@@ -246,7 +251,7 @@ export function TopologyClassifyPage() {
     .filter((n) => selected[n.id] && isFabricNodeDeletable(n))
     .map((n) => n.id);
   const total = listQuery.data?.total || 0;
-  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const pages = pageCount(total, pageSize);
   const selectedCount = Object.values(selected).filter(Boolean).length;
   const highlight = useMemo(() => new Set(matchedIds), [matchedIds]);
 
@@ -273,10 +278,9 @@ export function TopologyClassifyPage() {
       <div className="panel__toolbar">
         <h2>{t("topoClassify.title")}</h2>
         <div className="btn-row">
-          <button
-            type="button"
-            className="btn-primary"
-            onClick={() => {
+          <Button
+            variant="primary"
+            onPress={() => {
               const regionId = filterRegion || assignRegion || "";
               const folder = regions.find((r) => r.id === regionId);
               const views = folder?.views || [];
@@ -289,15 +293,14 @@ export function TopologyClassifyPage() {
             }}
           >
             {t("topoClassify.openTopo")}
-          </button>
+          </Button>
         </div>
       </div>
 
       <section className="topo-classify__section topo-classify__section--first">
         <h3>{t("topoClassify.inventory")}</h3>
         <div className="topo-classify__draft">
-          <input
-            className="input"
+          <Input
             placeholder={t("topoClassify.keywordPh")}
             value={keyword}
             onChange={(e) => {
@@ -305,8 +308,7 @@ export function TopologyClassifyPage() {
               setPage(1);
             }}
           />
-          <select
-            className="input"
+          <select className="input"
             value={filterMajor}
             onChange={(e) => {
               setFilterMajor(e.target.value);
@@ -319,8 +321,7 @@ export function TopologyClassifyPage() {
               </option>
             ))}
           </select>
-          <select
-            className="input"
+          <select className="input"
             value={filterRegion}
             onChange={(e) => {
               setFilterRegion(e.target.value);
@@ -334,8 +335,7 @@ export function TopologyClassifyPage() {
               </option>
             ))}
           </select>
-          <select
-            className="input"
+          <select className="input"
             value={unmatched}
             onChange={(e) => {
               setUnmatched(e.target.value);
@@ -347,8 +347,7 @@ export function TopologyClassifyPage() {
             <option value="level">{t("topoClassify.kindLevel")}</option>
             <option value="region">{t("topoClassify.kindRegion")}</option>
           </select>
-          <select
-            className="input"
+          <select className="input"
             value={linkStatus}
             onChange={(e) => {
               setLinkStatus(e.target.value);
@@ -363,14 +362,13 @@ export function TopologyClassifyPage() {
 
         <div className="topo-classify__regex-bar">
           <strong>{t("topoClassify.regexTitle")}</strong>
-          <input
-            className="input topo-classify__regex-input"
+          <Input
+            className="topo-classify__regex-input"
             placeholder={t("topoClassify.patternPh")}
             value={regex}
             onChange={(e) => setRegex(e.target.value)}
           />
-          <select
-            className="input"
+          <select className="input"
             value={matchField}
             onChange={(e) => setMatchField(e.target.value as "name" | "ip" | "name_ip")}
           >
@@ -378,14 +376,14 @@ export function TopologyClassifyPage() {
             <option value="ip">IP</option>
             <option value="name_ip">{t("topoClassify.fieldNameIp")}</option>
           </select>
-          <button
-            type="button"
-            className="btn btn--sm"
-            disabled={!regex.trim() || matchMut.isPending}
-            onClick={() => matchMut.mutate()}
+          <Button
+            size="sm"
+            variant="secondary"
+            isDisabled={!regex.trim() || matchMut.isPending}
+            onPress={() => matchMut.mutate()}
           >
             {t("topoClassify.findMatches")}
-          </button>
+          </Button>
           {matchTotal > 0 ? (
             <span className="panel__hint">
               {t("topoClassify.matchHint").replace("{{count}}", String(matchTotal))}
@@ -394,8 +392,7 @@ export function TopologyClassifyPage() {
         </div>
 
         <div className="topo-classify__assign-bar">
-          <select
-            className="input"
+          <select className="input"
             value={assignWhat}
             onChange={(e) => setAssignWhat(e.target.value as "level" | "region" | "both")}
           >
@@ -404,11 +401,7 @@ export function TopologyClassifyPage() {
             <option value="both">{t("topoClassify.assignBoth")}</option>
           </select>
           {assignWhat !== "region" ? (
-            <select
-              className="input"
-              value={assignLevel}
-              onChange={(e) => setAssignLevel(e.target.value)}
-            >
+            <select className="input" value={assignLevel} onChange={(e) => setAssignLevel(e.target.value)}>
               {LEVEL_PRESETS.map((r) => (
                 <option key={r.value} value={r.value}>
                   {levelPresetLabel(t, r.value)}
@@ -417,11 +410,7 @@ export function TopologyClassifyPage() {
             </select>
           ) : null}
           {assignWhat !== "level" ? (
-            <select
-              className="input"
-              value={assignRegion}
-              onChange={(e) => setAssignRegion(e.target.value)}
-            >
+            <select className="input" value={assignRegion} onChange={(e) => setAssignRegion(e.target.value)}>
               <option value="">{t("topoClassify.clearRegion")}</option>
               {regions.map((r) => (
                 <option key={r.id} value={r.id}>
@@ -430,24 +419,23 @@ export function TopologyClassifyPage() {
               ))}
             </select>
           ) : null}
-          <button
-            type="button"
-            className="btn btn--sm"
-            disabled={bulkMut.isPending || (selectedCount === 0 && matchedIds.length === 0)}
-            onClick={() => {
+          <Button
+            size="sm"
+            variant="secondary"
+            isDisabled={bulkMut.isPending || (selectedCount === 0 && matchedIds.length === 0)}
+            onPress={() => {
               const n = selectedCount || matchedIds.length;
               const msg = t("topoClassify.bulkConfirm").replace("{{count}}", String(n));
               if (window.confirm(msg)) bulkMut.mutate();
             }}
           >
             {t("topoClassify.confirmAssign")}
-          </button>
-          <button
-            type="button"
-            className="btn btn--sm btn--danger"
-            disabled={deleteBulkMut.isPending || deletableSelected.length === 0}
-            title={t("topoClassify.deleteHint")}
-            onClick={() => {
+          </Button>
+          <Button
+            size="sm"
+            variant="danger"
+            isDisabled={deleteBulkMut.isPending || deletableSelected.length === 0}
+            onPress={() => {
               const msg = t("topoClassify.deleteConfirm").replace(
                 "{{count}}",
                 String(deletableSelected.length),
@@ -459,7 +447,7 @@ export function TopologyClassifyPage() {
               "{{count}}",
               String(deletableSelected.length),
             )}
-          </button>
+          </Button>
           <span className="topo-classify__help" tabIndex={0} aria-label={t("topoClassify.deleteHint")}>
             ?
             <span className="topo-classify__help-tip" role="tooltip">
@@ -510,8 +498,7 @@ export function TopologyClassifyPage() {
                   </td>
                   <td>
                     {editing ? (
-                      <input
-                        className="input"
+                      <Input
                         value={editLevel}
                         placeholder="1 / 1.1 / 2.1"
                         onChange={(e) => setEditLevel(e.target.value)}
@@ -522,11 +509,7 @@ export function TopologyClassifyPage() {
                   </td>
                   <td>
                     {editing ? (
-                      <select
-                        className="input"
-                        value={editRegion}
-                        onChange={(e) => setEditRegion(e.target.value)}
-                      >
+                      <select className="input" value={editRegion} onChange={(e) => setEditRegion(e.target.value)}>
                         <option value="">-</option>
                         {regions.map((r) => (
                           <option key={r.id} value={r.id}>
@@ -543,41 +526,28 @@ export function TopologyClassifyPage() {
                   <td>
                     {editing ? (
                       <div className="topo-classify__row-actions">
-                        <button
-                          type="button"
-                          className="btn btn--sm"
-                          disabled={patchMut.isPending}
-                          onClick={() => patchMut.mutate()}
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          isDisabled={patchMut.isPending}
+                          onPress={() => patchMut.mutate()}
                         >
                           {t("topoClassify.save")}
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn--sm btn--ghost"
-                          onClick={() => setEditingId("")}
-                        >
+                        </Button>
+                        <Button size="sm" variant="ghost" onPress={() => setEditingId("")}>
                           {t("topoClassify.cancel")}
-                        </button>
+                        </Button>
                       </div>
                     ) : (
                       <div className="topo-classify__row-actions">
-                        <button
-                          type="button"
-                          className="btn btn--sm btn--ghost"
-                          onClick={() => startEdit(n)}
-                        >
+                        <Button size="sm" variant="ghost" onPress={() => startEdit(n)}>
                           {t("topoClassify.edit")}
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn--sm btn--danger"
-                          disabled={deleteOneMut.isPending || !isFabricNodeDeletable(n)}
-                          title={
-                            isFabricNodeDeletable(n)
-                              ? t("topoClassify.deleteHint")
-                              : t("topoClassify.deleteBlocked")
-                          }
-                          onClick={() => {
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="danger"
+                          isDisabled={deleteOneMut.isPending || !isFabricNodeDeletable(n)}
+                          onPress={() => {
                             if (!isFabricNodeDeletable(n)) return;
                             const msg = t("topoClassify.deleteConfirm").replace(
                               "{{count}}",
@@ -587,7 +557,7 @@ export function TopologyClassifyPage() {
                           }}
                         >
                           {t("topoClassify.delete")}
-                        </button>
+                        </Button>
                       </div>
                     )}
                   </td>
@@ -603,30 +573,19 @@ export function TopologyClassifyPage() {
             ) : null}
           </tbody>
         </table>
-        <div className="topo-classify__pager">
-          <button
-            type="button"
-            className="btn btn--sm btn--ghost"
-            disabled={page <= 1}
-            onClick={() => setPage((p) => Math.max(1, p - 1))}
-          >
-            {t("common.prevPage")}
-          </button>
-          <span>
-            {t("common.pagerMeta")
-              .replace("{{total}}", String(total))
-              .replace("{{page}}", String(page))
-              .replace("{{pages}}", String(pages))}
-          </span>
-          <button
-            type="button"
-            className="btn btn--sm btn--ghost"
-            disabled={page >= pages}
-            onClick={() => setPage((p) => p + 1)}
-          >
-            {t("common.nextPage")}
-          </button>
-        </div>
+        <ListPager
+          page={page}
+          pages={pages}
+          total={total}
+          pageSize={pageSize}
+          pageSizeOptions={PAGE_SIZE_OPTIONS}
+          onPageChange={setPage}
+          onPageSizeChange={(size) => {
+            setPageSize(size);
+            setPage(1);
+          }}
+          disabled={listQuery.isLoading}
+        />
       </section>
     </div>
   );

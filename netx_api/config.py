@@ -163,6 +163,11 @@ class Settings(BaseSettings):
     bootstrap_admin_password: str = "admin123"
     # Written on first boot for MCP; path relative to cwd / absolute
     auth_mcp_token_file: str = "data/auth/mcp_token"
+    # Cap non-revoked API keys (MCP / DSH / scripts). 0 = unlimited.
+    auth_api_token_max_count: int = 20
+    # Comma-separated peers allowed to supply X-Forwarded-For / X-Real-IP
+    # (Vite dev proxy, local nginx). Add your reverse-proxy LAN IP in production.
+    trusted_proxy_ips: str = "127.0.0.1,::1"
     # Expose /docs /redoc /openapi.json without auth when true (lab only).
     docs_enabled: bool = False
     # Refuse start when bind host is non-loopback and insecure defaults remain.
