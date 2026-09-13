@@ -235,7 +235,7 @@ export function ApiTokensPage() {
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 required
-                isDisabled={atTokenLimit}
+                disabled={atTokenLimit}
               />
               <FieldSelect
                 aria-label={t("auth.expiresIn")}
