@@ -8941,16 +8941,18 @@ pre {
 .login-card__password {
   position: relative;
   display: block;
+  width: 100%;
 }
 
 .login-card__password input {
-  padding-right: 44px;
+  padding-right: 44px !important;
 }
 
 .login-card__eye {
   position: absolute;
   top: 50%;
   right: 6px;
+  z-index: 2;
   transform: translateY(-50%);
   width: 34px;
   height: 34px;
@@ -8967,6 +8969,12 @@ pre {
 
 .login-card__eye:hover {
   color: #93c5fd;
+}
+
+.login-card__eye:focus-visible {
+  outline: none;
+  color: #93c5fd;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.35);
 }
 
 .login-card__eye svg {
