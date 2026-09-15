@@ -22,7 +22,7 @@
   - `netx` liveness: `/health/live`
   - `netx` readiness: `/health/ready`
   - `netx` integrations: `/v1/integrations/status`
-- Alert when `oclaw_bridge.status != up` for more than 2 polling cycles.
+- Alert when `dsh_alarm_hub` has no subscribers while key-alert rules are enabled (optional).
 - Alert when `db.status != up` or `latency_ms` exceeds threshold.
 
 ## Operations

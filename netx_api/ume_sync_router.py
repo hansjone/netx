@@ -11,10 +11,8 @@ from sqlalchemy.orm import Session
 
 from .db import get_db
 from .models import UmeSyncJob
-from .oclaw_alarm_forwarder import request_forwarder_reconnect
 from .runtime_task_messages import (
     RT_RESUMED,
-    RT_RESUMED_OCLAW_WSS_RECONNECT,
     RT_RESUMED_SYNC_SOON,
     RT_RESUMED_WSS_RECONNECT,
 )
@@ -236,8 +234,6 @@ def ume_runtime_task_pause(task: str) -> dict[str, Any]:
         _clear_force_resume_hints(tid)
     if tid == "alarms_current_ws_consumer":
         request_ws_reconnect()
-    if tid == "oclaw_alarm_forwarder":
-        request_forwarder_reconnect()
     _set_runtime_task(tid, status="paused", last_error="")
     return {"ok": True, "task": tid, "runtime_tasks": _list_runtime_tasks()}
 
@@ -254,9 +250,6 @@ def ume_runtime_task_resume(task: str) -> dict[str, Any]:
     elif tid == "alarms_current_ws_consumer":
         request_ws_reconnect()
         resume_hint = RT_RESUMED_WSS_RECONNECT
-    elif tid == "oclaw_alarm_forwarder":
-        request_forwarder_reconnect()
-        resume_hint = RT_RESUMED_OCLAW_WSS_RECONNECT
     else:
         resume_hint = RT_RESUMED
     _set_runtime_task(tid, status="running", last_error=resume_hint)

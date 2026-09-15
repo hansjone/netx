@@ -71,7 +71,6 @@ class StabilityHardeningTests(unittest.TestCase):
         self.assertIn("netx_uptime_seconds", body)
         self.assertIn("netx_thread_count", body)
         self.assertIn("netx_cli_budget_limit", body)
-        self.assertIn("netx_oclaw_forwarder_dropped", body)
         self.assertIn("netx_device_schedulers_stale", body)
 
     def test_log_runtime_budget_does_not_raise(self) -> None:

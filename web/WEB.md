@@ -80,8 +80,8 @@ src/
 - API 仅写在 `services/api.ts`
 - Query key 集中在 `constants/queryKeys.ts`
 - 失效缓存用 prefix key（如 `queryKeys.umeSyncStatusAll`）
-- 顶栏连接状态：`App` 轮询 `GET /v1/integrations/status`（5s），展示 **netx api** 与 **oclaw bridge**（含延迟 / 错误类型）
-- 关键告警推送主路径：NetX **DSH alarm hub**（`/v1/integrations/dsh-alarm/ws`）为服务器，Netx Ops 外拨订阅；UME 页展示多订阅连接列表。OClaw 出站 WSS 为遗留旁路（`NETX_OCLAW_ALARM_WS_ENABLED`）
+- 顶栏连接状态：`App` 轮询 `GET /v1/integrations/status`（5s），展示 **netx api** 与 **DSH alarm hub**
+- 关键告警推送：NetX **DSH alarm hub**（`/v1/integrations/dsh-alarm/ws`）为服务器，Netx Ops 外拨订阅；UME 页展示多订阅连接列表
 
 ## 网元管理（独立于 UME）
 

@@ -14,7 +14,6 @@ from .config import settings
 from .db import db_pool_status
 from .db_storage_metrics import collect_db_storage_metrics
 from .host_metrics import collect_host_metrics
-from .oclaw_alarm_forwarder import forwarder_status
 
 router = APIRouter(tags=["metrics"])
 
@@ -30,7 +29,6 @@ def collect_runtime_metrics() -> dict[str, Any]:
         "db_storage": collect_db_storage_metrics(),
         "cli_budget": cli_budget_status(),
         "audit_queue": audit_queue_status(),
-        "oclaw_forwarder": forwarder_status(),
         "schedulers_inline": bool(getattr(settings, "run_inline_schedulers", True)),
         "host": collect_host_metrics(),
     }
@@ -92,17 +90,6 @@ def _prom_lines(metrics: dict[str, Any]) -> str:
     for key in ("depth", "dropped", "maxsize"):
         if key in audit:
             lines.append(f"netx_audit_queue_{key} {audit[key]}")
-    fwd = metrics.get("oclaw_forwarder") or {}
-    for key, prom in (
-        ("queue_size", "netx_oclaw_forwarder_queue_size"),
-        ("published_ok", "netx_oclaw_forwarder_published_ok"),
-        ("published_fail", "netx_oclaw_forwarder_published_fail"),
-        ("dropped", "netx_oclaw_forwarder_dropped"),
-        ("requeued", "netx_oclaw_forwarder_requeued"),
-        ("retry_exhausted", "netx_oclaw_forwarder_retry_exhausted"),
-    ):
-        if key in fwd:
-            lines.append(f"{prom} {int(fwd.get(key) or 0)}")
     sched = metrics.get("device_schedulers") or {}
     if "stale" in sched:
         lines.append(f'netx_device_schedulers_stale {1 if sched.get("stale") else 0}')

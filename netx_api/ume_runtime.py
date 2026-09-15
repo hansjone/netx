@@ -4,7 +4,7 @@ Device collectors (config_sync / LLDP / ne_collect / port_traffic) run via ``sta
 (API inline by default; set ``NETX_RUN_INLINE_SCHEDULERS=false`` and run
 ``python -m netx_api.worker`` for a split process).
 API process also owns UME keepalive, alarm WSS, current-alarm/inventory sync loops,
-and oclaw forwarder via ``start_api_sideband_threads``.
+and DSH alarm hub via ``start_api_sideband_threads``.
 """
 
 from __future__ import annotations
@@ -29,19 +29,12 @@ from .ume_sync_topology import fail_stale_topology_running_jobs
 from .runtime_task_messages import (
     RT_ALARMS_SYNC_IN_PROGRESS_SKIP,
     RT_KEEPALIVE_FAILED,
-    RT_OCLAW_FWD_DISABLED,
     RT_PULLING_ALARMS_CURRENT,
     RT_PULLING_INVENTORY,
     RT_PULLING_TOPOLOGY,
     RT_STARTUP_GATE_WAITING,
     RT_UME_WS_DISABLED_NO_BASE_URL,
     RT_WSS_ACTIVE_SKIP_REST,
-)
-from .oclaw_alarm_forwarder import (
-    configure_oclaw_alarm_forwarder,
-    forwarder_status,
-    is_forwarder_enabled,
-    start_oclaw_alarm_forwarder,
 )
 
 _log = logging.getLogger("netx.ume.runtime")
@@ -416,48 +409,6 @@ def start_api_sideband_threads() -> None:
         _schedule_log.exception("startup: alarms_current_ws_consumer thread init failed: %s", exc)
         ume_support._set_runtime_task(
             "alarms_current_ws_consumer",
-            status="error",
-            last_run_at=datetime.now(timezone.utc),
-            last_error=f"startup_thread_init_failed: {str(exc)[:180]}",
-        )
-    try:
-        def _fwd_on_status(msg: str) -> None:
-            paused = ume_support._runtime_is_paused("oclaw_alarm_forwarder")
-            fwd = forwarder_status()
-            if paused:
-                status = "paused"
-            elif not bool(fwd.get("enabled")):
-                status = "paused"
-            elif bool(fwd.get("connected")):
-                status = "running"
-            else:
-                status = "running"
-            ume_support._set_runtime_task(
-                "oclaw_alarm_forwarder",
-                status=status,
-                last_run_at=datetime.now(timezone.utc),
-                last_error=str(msg or "")[:240],
-            )
-
-        configure_oclaw_alarm_forwarder(
-            is_paused=lambda: ume_support._runtime_is_paused("oclaw_alarm_forwarder"),
-            on_status=_fwd_on_status,
-        )
-        if is_forwarder_enabled():
-            ume_support._set_runtime_task("oclaw_alarm_forwarder", status="running", last_error="")
-        else:
-            ume_support._set_runtime_task(
-                "oclaw_alarm_forwarder",
-                status="paused",
-                last_error=RT_OCLAW_FWD_DISABLED,
-            )
-        t_fwd = start_oclaw_alarm_forwarder()
-        if t_fwd is not None:
-            _schedule_log.info("started thread %s alive=%s", t_fwd.name, t_fwd.is_alive())
-    except Exception as exc:
-        _schedule_log.exception("startup: oclaw_alarm_forwarder thread init failed: %s", exc)
-        ume_support._set_runtime_task(
-            "oclaw_alarm_forwarder",
             status="error",
             last_run_at=datetime.now(timezone.utc),
             last_error=f"startup_thread_init_failed: {str(exc)[:180]}",

@@ -336,13 +336,6 @@ def _ume_runtime_items() -> list[dict[str, Any]]:
         from .ume_support import _list_runtime_tasks
     except Exception:
         return []
-    fwd: dict[str, Any] | None = None
-    try:
-        from .oclaw_alarm_forwarder import forwarder_status
-
-        fwd = forwarder_status()
-    except Exception:
-        fwd = None
     ws_conn: dict[str, Any] | None = None
     try:
         from .ume_alarm_ws import get_ws_connection_status
@@ -356,24 +349,7 @@ def _ume_runtime_items() -> list[dict[str, Any]]:
         status = str(row.get("status") or "unknown")
         progress = str(row.get("interval_label") or "")
         detail = str(row.get("last_error") or "")[:240]
-        if task == "oclaw_alarm_forwarder" and isinstance(fwd, dict):
-            bits: list[str] = []
-            if not bool(fwd.get("enabled")):
-                bits.append("disabled")
-            elif bool(fwd.get("paused")):
-                bits.append("paused")
-            elif bool(fwd.get("connected")):
-                bits.append("connected")
-            else:
-                bits.append("disconnected")
-            q = int(fwd.get("queue_size") or 0)
-            if q > 0:
-                bits.append(f"q={q}")
-            pub_ok = int(fwd.get("published_ok") or 0)
-            if pub_ok > 0:
-                bits.append(f"pub={pub_ok}")
-            progress = " · ".join([p for p in (progress, *bits) if p])
-        elif task == "alarms_current_ws_consumer" and isinstance(ws_conn, dict):
+        if task == "alarms_current_ws_consumer" and isinstance(ws_conn, dict):
             state = str(ws_conn.get("state") or ws_conn.get("status") or "").strip()
             if state:
                 progress = " · ".join([p for p in (progress, state) if p])

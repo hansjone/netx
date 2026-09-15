@@ -68,13 +68,6 @@ def shutdown_runtime(*, reason: str = "lifespan") -> None:
         _log.exception("shutdown_ws_consumer failed")
 
     try:
-        from .oclaw_alarm_forwarder import shutdown_oclaw_alarm_forwarder
-
-        shutdown_oclaw_alarm_forwarder()
-    except Exception:  # noqa: BLE001
-        _log.exception("shutdown_oclaw_alarm_forwarder failed")
-
-    try:
         from .webcrt_session_registry import close_all_sessions
 
         close_all_sessions()

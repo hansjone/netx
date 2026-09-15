@@ -18,11 +18,9 @@ from .timeutil import utcnow_naive
 from .runtime_task_messages import (
     RT_ALARMS_SYNC_IN_PROGRESS_SKIP,
     RT_KEEPALIVE_FAILED,
-    RT_OCLAW_FWD_DISABLED,
     RT_PULLING_ALARMS_CURRENT,
     RT_PULLING_INVENTORY,
     RT_RESUMED,
-    RT_RESUMED_OCLAW_WSS_RECONNECT,
     RT_RESUMED_SYNC_SOON,
     RT_RESUMED_WSS_RECONNECT,
     RT_STARTUP_ALARM_SYNC_BEFORE_WS,
@@ -30,7 +28,6 @@ from .runtime_task_messages import (
     RT_UME_WS_DISABLED_NO_BASE_URL,
     RT_WSS_ACTIVE_SKIP_REST,
 )
-from .oclaw_alarm_forwarder import is_forwarder_enabled
 from .ume_alarm_ws import (
     begin_startup_alarm_sync_gate,
     complete_startup_alarm_sync_gate,
@@ -64,7 +61,6 @@ _UME_RUNTIME_TASKS: dict[str, dict[str, Any]] = {
     "token_keepalive": {"task": "token_keepalive", "status": "init", "last_run_at": None, "last_error": ""},
     "alarms_current_auto_sync": {"task": "alarms_current_auto_sync", "status": "init", "last_run_at": None, "last_error": ""},
     "alarms_current_ws_consumer": {"task": "alarms_current_ws_consumer", "status": "init", "last_run_at": None, "last_error": ""},
-    "oclaw_alarm_forwarder": {"task": "oclaw_alarm_forwarder", "status": "init", "last_run_at": None, "last_error": ""},
     "inventory_auto_sync": {"task": "inventory_auto_sync", "status": "init", "last_run_at": None, "last_error": ""},
     "topology_auto_sync": {"task": "topology_auto_sync", "status": "init", "last_run_at": None, "last_error": ""},
 }
@@ -173,10 +169,6 @@ def _runtime_task_interval_fields(task_id: str) -> tuple[int | None, str]:
         return eff, _format_runtime_interval_label(eff)
     if task_id == "alarms_current_ws_consumer":
         if not bool(getattr(settings, "ume_alarm_ws_enabled", True)):
-            return None, "disabled"
-        return None, "realtime"
-    if task_id == "oclaw_alarm_forwarder":
-        if not is_forwarder_enabled():
             return None, "disabled"
         return None, "realtime"
     if task_id == "inventory_auto_sync":

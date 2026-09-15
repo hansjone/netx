@@ -1,4 +1,4 @@
-/** Map backend runtime status codes (rt:* / ws:* / fwd:*) and legacy Chinese to i18n keys. */
+/** Map backend runtime status codes (rt:* / ws:*) and legacy Chinese to i18n keys. */
 
 type TFunc = (key: string) => string;
 
@@ -11,10 +11,8 @@ const LEGACY_ZH_RUNTIME_ERROR: Record<string, string> = {
   "正在拉取 UME 网元清单…": "ume.tasks.runtimeError.pulling_inventory",
   "正在拉取 UME 拓扑（节点/链路）…": "ume.tasks.runtimeError.pulling_topology",
   "未启用或未配置 UME_BASE_URL": "ume.tasks.runtimeError.ume_ws_disabled_no_base_url",
-  "未启用或未配置 NETX_OCLAW_ALARM_WS / token / url": "ume.tasks.runtimeError.oclaw_fwd_disabled",
   "已恢复：将跳过本轮周期等待并尽快同步": "ume.tasks.runtimeError.resumed_sync_soon",
   "已恢复：将尽快重连 WSS": "ume.tasks.runtimeError.resumed_wss_reconnect",
-  "已恢复：将尽快重连 OClaw WSS": "ume.tasks.runtimeError.resumed_oclaw_wss_reconnect",
   已恢复: "ume.tasks.runtimeError.resumed",
   初始化: "ume.tasks.wsState.init",
   已连接: "ume.tasks.wsState.connected",
@@ -45,8 +43,6 @@ export function runtimeLastError(raw: string | null | undefined, t: TFunc): stri
   if (rt) return rt;
   const ws = translatePrefixed(s, "ws:", "ume.tasks.wsState", t);
   if (ws) return ws;
-  const fwd = translatePrefixed(s, "fwd:", "ume.tasks.fwdState", t);
-  if (fwd) return fwd;
 
   if (s === "keepalive_failed") {
     const tr = t("ume.tasks.runtimeError.keepalive_failed");

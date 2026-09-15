@@ -21,19 +21,6 @@ export type IntegrationStatus = {
   netx_api: { status: "up" | "down" | "unknown"; [k: string]: unknown };
   db: { status: "up" | "down" | "unknown"; latency_ms?: number; error?: string; [k: string]: unknown };
   dsh_alarm_hub?: DshAlarmHubStatus;
-  oclaw_bridge?: {
-    status: "up" | "down" | "unknown";
-    mode?: string;
-    enabled?: boolean;
-    connected?: boolean;
-    queue_size?: number;
-    published_ok?: number;
-    published_fail?: number;
-    latency_ms?: number;
-    error_kind?: string;
-    error?: string;
-    [k: string]: unknown;
-  };
 };
 
 export type UmeKeyAlertRuleItem = {
@@ -57,18 +44,6 @@ export type UmeInventoryNeTypeItem = {
   ne_count: number;
 };
 
-export type UmeKeyAlertForwarderStatus = {
-  enabled: boolean;
-  operational?: boolean;
-  paused?: boolean;
-  connected: boolean;
-  queue_size: number;
-  url: string;
-  published_ok?: number;
-  published_fail?: number;
-  queued_total?: number;
-};
-
 export type UmeKeyAlertMonitorResponse = {
   ok: boolean;
   rules: UmeKeyAlertRuleItem[];
@@ -78,10 +53,8 @@ export type UmeKeyAlertMonitorResponse = {
   config?: {
     forward_on_clear: boolean;
   };
-  /** Primary: NetX hub ← netxops clients (multi-subscriber). */
+  /** NetX hub ← netxops clients (multi-subscriber). */
   dsh_alarm_hub?: DshAlarmHubStatus;
-  /** Legacy: NetX → OClaw outbound bridge (single link). */
-  forwarder: UmeKeyAlertForwarderStatus;
 };
 
 export type UmeSyncJobItem = {

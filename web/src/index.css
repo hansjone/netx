@@ -11312,10 +11312,25 @@ option {
   max-height: min(78vh, 780px);
 }
 
+/*
+ * Modal.Body often uses flex column; default flex-shrink:1 crushes the rules
+ * table to thead-only while the pager still shows total > 0.
+ */
+.app-heroui-modal__dialog [data-slot="modal-body"] > *,
+.app-heroui-modal__dialog .modal__body > * {
+  flex-shrink: 0;
+}
+
+.app-heroui-modal--xl .app-heroui-modal__dialog [data-slot="modal-body"],
+.app-heroui-modal--xl .app-heroui-modal__dialog .modal__body {
+  max-height: min(86vh, 900px);
+}
+
 .app-heroui-modal .pt-list-table-wrap {
   overflow-x: auto;
   max-width: 100%;
   width: 100%;
+  min-height: 10rem;
 }
 
 .app-heroui-modal .pt-list-table {

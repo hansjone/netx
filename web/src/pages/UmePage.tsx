@@ -437,21 +437,11 @@ export function UmePage() {
   const keyAlertHub = keyAlertMonitorQuery.data?.dsh_alarm_hub;
   const keyAlertHubConnections = keyAlertHub?.connections || [];
   const keyAlertHubSubscribers = Number(keyAlertHub?.subscribers || keyAlertHubConnections.length || 0);
-  const keyAlertForwarder = keyAlertMonitorQuery.data?.forwarder;
   const keyAlertRules = keyAlertMonitorQuery.data?.rules || [];
   const keyAlertTotal = Number(keyAlertMonitorQuery.data?.total || keyAlertRules.length);
   const keyAlertPages = pageCount(keyAlertTotal, keyAlertPageSize);
   const keyAlertForwardOnClear = Boolean(keyAlertMonitorQuery.data?.config?.forward_on_clear);
   const hubWsPill = keyAlertHubSubscribers > 0 ? "up" : "down";
-  const oclawWsPill =
-    !keyAlertForwarder?.enabled
-      ? "unknown"
-      : keyAlertForwarder.paused
-        ? "warn"
-        : keyAlertForwarder.connected
-          ? "up"
-          : "down";
-  const showLegacyOclaw = Boolean(keyAlertForwarder?.enabled);
 
   const runtimeTaskLabel = (task: string) => {
     const key = `ume.tasks.runtimeTask.${task}`;
@@ -878,16 +868,6 @@ export function UmePage() {
             <span className="conn-pill">
               {t("ume.keyAlert.hubDeliverOk")}: {Number(keyAlertHub?.deliver_ok || 0)}
             </span>
-            {showLegacyOclaw ? (
-              <span className={`conn-pill conn-pill--${oclawWsPill}`} title={t("ume.keyAlert.legacyOclaw")}>
-                {t("ume.keyAlert.ws")}:{" "}
-                {keyAlertForwarder?.paused
-                  ? t("ume.keyAlert.wsPaused")
-                  : keyAlertForwarder?.connected
-                    ? t("ume.keyAlert.wsConnected")
-                    : t("ume.keyAlert.wsDisconnected")}
-              </span>
-            ) : null}
           </div>
         </article>
 
@@ -984,15 +964,6 @@ export function UmePage() {
             {` · ${t("ume.keyAlert.hubPublished")} ${Number(keyAlertHub?.published || 0)}`}
             {` · ${t("ume.keyAlert.hubDeliverOk")} ${Number(keyAlertHub?.deliver_ok || 0)}`}
             {keyAlertHub?.path ? ` · ${t("ume.keyAlert.hubPath")} ${keyAlertHub.path}` : ""}
-            {showLegacyOclaw
-              ? ` · ${t("ume.keyAlert.legacyOclaw")}: ${
-                  keyAlertForwarder?.paused
-                    ? t("ume.keyAlert.wsPaused")
-                    : keyAlertForwarder?.connected
-                      ? t("ume.keyAlert.wsConnected")
-                      : t("ume.keyAlert.wsDisconnected")
-                }`
-              : ""}
           </p>
               <div className="ume-modal-form">
                 <div className="muted ume-modal-form__label">{t("ume.keyAlert.hubConnections")}</div>
@@ -1036,18 +1007,6 @@ export function UmePage() {
                     </table>
                   </div>
                 )}
-                {showLegacyOclaw ? (
-                  <p className="muted ume-modal-form__hint">
-                    {t("ume.keyAlert.legacyOclaw")}:{" "}
-                    {keyAlertForwarder?.paused
-                      ? t("ume.keyAlert.wsPaused")
-                      : keyAlertForwarder?.connected
-                        ? t("ume.keyAlert.wsConnected")
-                        : t("ume.keyAlert.wsDisconnected")}
-                    {` · ${t("ume.keyAlert.publishedOk")} ${Number(keyAlertForwarder?.published_ok || 0)}`}
-                    {` · ${t("ume.keyAlert.queue")} ${Number(keyAlertForwarder?.queue_size || 0)}`}
-                  </p>
-                ) : null}
               </div>
 
               <div className="ume-modal-form">

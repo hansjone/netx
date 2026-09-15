@@ -7,10 +7,9 @@ from typing import Any
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from .dsh_alarm_hub import publish_alarm
 from .key_alert_matcher import match_key_alert_rule
 from .models import UmeInventoryNE, UmeKeyAlertForwardLog
-from .oclaw_alarm_forwarder import enqueue_alarm_forward, is_forwarder_operational
-from .dsh_alarm_hub import publish_alarm
 from .ume_sync_service import (
     _derive_ne_id_from_alarm,
     _pick,
@@ -82,6 +81,7 @@ def maybe_forward_key_alert(
         )
         .first()
     )
+    # Column name is historical (oclaw_ok); now means DSH hub delivery succeeded.
     if existing is not None and int(existing.oclaw_ok or 0) == 1:
         return False
 
@@ -96,22 +96,10 @@ def maybe_forward_key_alert(
     payload["rule_key"] = str(rule.notification_id or "")
 
     hub_sent = publish_alarm(payload)
-    oclaw_queued = False
-    if is_forwarder_operational():
-        oclaw_queued = bool(enqueue_alarm_forward(payload))
-    if hub_sent <= 0 and not oclaw_queued:
+    if hub_sent <= 0:
         return False
 
-    # Hub-only delivery already reached DSH clients — mark ok for dedup.
-    # Oclaw path stays pending until the bridge records a result.
-    delivered_ok = hub_sent > 0 and not oclaw_queued
-    status = []
-    if hub_sent > 0:
-        status.append(f"dsh_hub:{hub_sent}")
-    if oclaw_queued:
-        status.append("oclaw_queued")
-    status_text = ",".join(status) if status else "queued"
-
+    status_text = f"dsh_hub:{hub_sent}"
     row = existing
     if row is None:
         row = UmeKeyAlertForwardLog(
@@ -120,62 +108,21 @@ def maybe_forward_key_alert(
             rule_key=str(rule.notification_id or ""),
             notification_id=notification_id_from_norm(norm),
             forwarded_at=_utc_now_naive(),
-            oclaw_ok=1 if delivered_ok else 0,
-            error="" if delivered_ok else status_text,
+            oclaw_ok=1,
+            error="",
         )
         db.add(row)
     else:
         row.notification_id = notification_id_from_norm(norm)
         row.rule_key = str(rule.notification_id or "")
         row.forwarded_at = _utc_now_naive()
-        row.oclaw_ok = 1 if delivered_ok else 0
-        row.error = "" if delivered_ok else status_text
+        row.oclaw_ok = 1
+        row.error = ""
     try:
         db.commit()
     except IntegrityError:
         db.rollback()
+        _log.debug("key_alert forward log race alarm_key=%s action=%s", alarm_key, act)
+    else:
+        _log.debug("key_alert forwarded via DSH hub=%s status=%s", hub_sent, status_text)
     return True
-
-
-def record_forward_result(
-    *,
-    alarm_key: str,
-    action: str,
-    ok: bool,
-    error: str = "",
-    rule_key: str = "",
-) -> None:
-    from .db import SessionLocal
-
-    key = str(alarm_key or "").strip()
-    act = str(action or "").strip().lower()
-    if not key or not act:
-        return
-    db = SessionLocal()
-    try:
-        row = (
-            db.query(UmeKeyAlertForwardLog)
-            .filter(UmeKeyAlertForwardLog.alarm_key == key, UmeKeyAlertForwardLog.action == act)
-            .first()
-        )
-        if row is None:
-            row = UmeKeyAlertForwardLog(
-                alarm_key=key,
-                action=act,
-                rule_key=str(rule_key or "").strip(),
-                forwarded_at=_utc_now_naive(),
-                oclaw_ok=1 if ok else 0,
-                error="" if ok else str(error or "forward_failed")[:240],
-            )
-            db.add(row)
-        else:
-            if rule_key and not str(row.rule_key or "").strip():
-                row.rule_key = str(rule_key or "").strip()
-            row.forwarded_at = _utc_now_naive()
-            row.oclaw_ok = 1 if ok else 0
-            row.error = "" if ok else str(error or "forward_failed")[:240]
-        db.commit()
-    except Exception:
-        db.rollback()
-    finally:
-        db.close()
