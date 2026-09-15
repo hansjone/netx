@@ -36,6 +36,7 @@ import type {
 import { downloadCsv, fetchAllPages } from "../../utils/csvExport";
 import { pageCount } from "../../utils/display";
 import { formatSystemTime } from "../../utils/time";
+import { jobChipColor, NmStatusChip } from "./nmChips";
 
 const POLL_MS = 5000;
 const TARGET_PAGE_SIZE = 10;
@@ -695,7 +696,7 @@ export function PortTrafficPage() {
   };
 
   return (
-    <section className="panel">
+    <section className="panel nm-page-panel">
       <div className="panel__toolbar">
         <h2>{t("portTraffic.title")}</h2>
         <div className="btn-row">
@@ -819,7 +820,6 @@ export function PortTrafficPage() {
                 </thead>
                 <tbody>
                   {devices.map((row) => {
-                    const tone = statusTone(row.status);
                     return (
                       <tr key={row.id}>
                         <td>
@@ -831,14 +831,14 @@ export function PortTrafficPage() {
                           </div>
                         </td>
                         <td>
-                          <span className={`pt-list-status pt-list-status--${tone}`}>
-                            {statusText(row.status)}
-                          </span>
-                          {row.collect_running ? (
-                            <span className="pt-list-status pt-list-status--collect">
-                              {t("portTraffic.collecting")}
-                            </span>
-                          ) : null}
+                          <div className="pt-port-updown">
+                            <NmStatusChip color={jobChipColor(row.status)}>
+                              {statusText(row.status)}
+                            </NmStatusChip>
+                            {row.collect_running ? (
+                              <NmStatusChip color="accent">{t("portTraffic.collecting")}</NmStatusChip>
+                            ) : null}
+                          </div>
                         </td>
                         <td className="pt-list-num">
                           {row.active_target_count}/{row.target_count}
@@ -852,18 +852,18 @@ export function PortTrafficPage() {
                             <Button size="sm" variant="primary" onPress={() => openWallList()}>
                               {t("portTraffic.wall")}
                             </Button>
-                            <Button size="sm" variant="secondary" onPress={() => openEdit(row)}>
+                            <Button size="sm" variant="ghost" onPress={() => openEdit(row)}>
                               {t("portTraffic.edit")}
                             </Button>
                             {needsNeRebind(row) ? (
-                              <Button size="sm" variant="secondary" onPress={() => openRebind(row)}>
+                              <Button size="sm" variant="ghost" onPress={() => openRebind(row)}>
                                 {t("portTraffic.rebind")}
                               </Button>
                             ) : null}
                             {row.status !== "running" ? (
                               <Button
                                 size="sm"
-                                variant="secondary"
+                                variant="ghost"
                                 isDisabled={startMut.isPending}
                                 onPress={() => startMut.mutate(row.id)}
                               >
@@ -872,7 +872,7 @@ export function PortTrafficPage() {
                             ) : (
                               <Button
                                 size="sm"
-                                variant="secondary"
+                                variant="ghost"
                                 isDisabled={pauseMut.isPending}
                                 onPress={() => pauseMut.mutate(row.id)}
                               >
@@ -882,7 +882,7 @@ export function PortTrafficPage() {
                             {row.status !== "stopped" ? (
                               <Button
                                 size="sm"
-                                variant="secondary"
+                                variant="ghost"
                                 isDisabled={stopMut.isPending}
                                 onPress={() => stopMut.mutate(row.id)}
                               >
@@ -891,7 +891,7 @@ export function PortTrafficPage() {
                             ) : null}
                             <Button
                               size="sm"
-                              variant="secondary"
+                              variant="ghost"
                               className={row.last_error ? "pt-list-log-btn--error" : undefined}
                               onPress={() => {
                                 setLogDeviceId(row.id);

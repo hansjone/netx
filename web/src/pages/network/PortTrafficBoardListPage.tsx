@@ -49,7 +49,7 @@ export function PortTrafficBoardListPage() {
   const boards = boardsQuery.data?.items || [];
 
   return (
-    <section className="panel">
+    <section className="panel nm-page-panel">
       <div className="panel__toolbar">
         <h2>{t("portTraffic.wallTitle")}</h2>
         <div className="btn-row">
@@ -113,7 +113,7 @@ export function PortTrafficBoardListPage() {
                       <div className="btn-row table-actions">
                         <Button
                           size="sm"
-                          variant="primary"
+                          variant="ghost"
                           onPress={() => openPortTrafficBoardWindow(b.id)}
                         >
                           {t("portTraffic.boardOpen")}

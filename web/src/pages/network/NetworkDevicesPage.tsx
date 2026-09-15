@@ -12,16 +12,7 @@ import type { CliTargetItem } from "../../types";
 import { downloadCsv, fetchAllPages } from "../../utils/csvExport";
 import { pageCount } from "../../utils/display";
 import { openNewModuleWindow } from "../../utils/moduleWindows";
-
-function connectStatusClass(status: string | null | undefined): string {
-  const s = String(status || "").trim().toLowerCase();
-  if (!s || s === "-" || s === "unknown") return "pt-list-status--unknown";
-  if (s.includes("fail") || s.includes("down") || s.includes("error")) return "pt-list-status--down";
-  if (s.includes("ok") || s.includes("up") || s.includes("connected") || s.includes("success")) {
-    return "pt-list-status--ok";
-  }
-  return "pt-list-status--other";
-}
+import { connectChipColor, NmStatusChip, sourceChipColor } from "./nmChips";
 
 function openWebcrt(row: CliTargetItem) {
   const path =
@@ -89,7 +80,7 @@ export function NetworkDevicesPage() {
   };
 
   return (
-    <section className="panel">
+    <section className="panel nm-page-panel">
       <div className="panel__toolbar">
         <h2>{t("networkDevices.title")}</h2>
         <div className="btn-row">
@@ -163,24 +154,26 @@ export function NetworkDevicesPage() {
               <tbody>
                 {items.map((row) => (
                   <tr key={`${row.source}:${row.id}`}>
-                    <td>{row.source}</td>
+                    <td>
+                      <NmStatusChip color={sourceChipColor(row.source)}>{row.source}</NmStatusChip>
+                    </td>
                     <td className="pt-list-task-name">{row.name || row.id}</td>
                     <td className="pt-list-num">{row.ip_address || "—"}</td>
                     <td>{row.vendor || "—"}</td>
                     <td>{row.device_type || row.ne_type || "—"}</td>
                     <td>
-                      <span className={`pt-list-status ${connectStatusClass(row.connect_status)}`}>
+                      <NmStatusChip color={connectChipColor(row.connect_status)}>
                         {row.connect_status || "—"}
-                      </span>
+                      </NmStatusChip>
                     </td>
                     <td>
                       <div className="btn-row pt-list-actions table-actions">
-                        <Button size="sm" variant="secondary" onPress={() => openWebcrt(row)}>
+                        <Button size="sm" variant="ghost" onPress={() => openWebcrt(row)}>
                           WebCRT
                         </Button>
                         <Button
                           size="sm"
-                          variant="secondary"
+                          variant="ghost"
                           onPress={() =>
                             openNewModuleWindow({
                               moduleId: "network",

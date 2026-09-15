@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { Accordion } from "@heroui/react";
+import { useEffect, useMemo, useState, type Key } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { NETWORK_NAV, type NetworkNavGroupId } from "../../config/networkNav";
 import { useI18n } from "../../i18n";
@@ -11,76 +12,89 @@ function groupContainsPath(groupId: NetworkNavGroupId, pathname: string): boolea
   );
 }
 
+function groupsForPath(pathname: string): Set<Key> {
+  const keys = new Set<Key>();
+  for (const g of NETWORK_NAV) {
+    if (groupContainsPath(g.id, pathname)) keys.add(g.id);
+  }
+  return keys;
+}
+
 export function NetworkLayout() {
   const { t } = useI18n();
   const { pathname } = useLocation();
-  const [openGroups, setOpenGroups] = useState<Record<NetworkNavGroupId, boolean>>(() => {
-    const init = {} as Record<NetworkNavGroupId, boolean>;
-    for (const g of NETWORK_NAV) {
-      // Default collapsed; only the group owning the current route starts open.
-      init[g.id] = groupContainsPath(g.id, pathname);
-    }
-    return init;
-  });
+  const [expandedKeys, setExpandedKeys] = useState<Set<Key>>(() => groupsForPath(pathname));
 
   useEffect(() => {
-    for (const g of NETWORK_NAV) {
-      if (groupContainsPath(g.id, pathname)) {
-        setOpenGroups((prev) => (prev[g.id] ? prev : { ...prev, [g.id]: true }));
-      }
-    }
+    setExpandedKeys((prev) => {
+      const routeKeys = groupsForPath(pathname);
+      if ([...routeKeys].every((k) => prev.has(k))) return prev;
+      const next = new Set(prev);
+      for (const k of routeKeys) next.add(k);
+      return next;
+    });
   }, [pathname]);
 
-  const toggleGroup = (id: NetworkNavGroupId) => {
-    setOpenGroups((prev) => ({ ...prev, [id]: !prev[id] }));
-  };
+  const activeGroupIds = useMemo(() => {
+    const ids = new Set<NetworkNavGroupId>();
+    for (const g of NETWORK_NAV) {
+      if (groupContainsPath(g.id, pathname)) ids.add(g.id);
+    }
+    return ids;
+  }, [pathname]);
 
   return (
     <div className="network-shell">
       <aside className="network-nav" aria-label={t("network.title")}>
+        <div className="network-nav__brand">{t("network.title")}</div>
         <nav className="network-nav__scroll">
-          {NETWORK_NAV.map((group) => {
-            const open = Boolean(openGroups[group.id]);
-            const activeGroup = groupContainsPath(group.id, pathname);
-            return (
-              <div
-                key={group.id}
-                className={`network-nav__group${open ? " is-open" : ""}${activeGroup ? " is-active-group" : ""}`}
-              >
-                <button
-                  type="button"
-                  className="network-nav__group-toggle"
-                  aria-expanded={open}
-                  onClick={() => toggleGroup(group.id)}
+          <Accordion
+            className="network-nav__accordion"
+            hideSeparator
+            allowsMultipleExpanded
+            expandedKeys={expandedKeys}
+            onExpandedChange={setExpandedKeys}
+          >
+            {NETWORK_NAV.map((group) => {
+              const activeGroup = activeGroupIds.has(group.id);
+              return (
+                <Accordion.Item
+                  key={group.id}
+                  id={group.id}
+                  className={`network-nav__group${activeGroup ? " is-active-group" : ""}`}
                 >
-                  <span className="network-nav__chevron" aria-hidden>
-                    {open ? "▾" : "▸"}
-                  </span>
-                  <span className="network-nav__group-label">{t(group.labelKey)}</span>
-                </button>
-                {open ? (
-                  <ul className="network-nav__list">
-                    {group.items.map((item) => (
-                      <li key={item.id}>
-                        <NavLink
-                          to={item.path}
-                          className={({ isActive }) =>
-                            `network-nav__link${isActive ? " is-active" : ""}`
-                          }
-                          end={
-                            item.path === "/network/devices" ||
-                            item.path === "/network/tasks/port-traffic"
-                          }
-                        >
-                          {t(item.labelKey)}
-                        </NavLink>
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
-              </div>
-            );
-          })}
+                  <Accordion.Heading>
+                    <Accordion.Trigger className="network-nav__group-toggle">
+                      <span className="network-nav__group-label">{t(group.labelKey)}</span>
+                      <Accordion.Indicator className="network-nav__chevron" />
+                    </Accordion.Trigger>
+                  </Accordion.Heading>
+                  <Accordion.Panel>
+                    <Accordion.Body className="network-nav__panel-body">
+                      <ul className="network-nav__list">
+                        {group.items.map((item) => (
+                          <li key={item.id}>
+                            <NavLink
+                              to={item.path}
+                              className={({ isActive }) =>
+                                `network-nav__link${isActive ? " is-active" : ""}`
+                              }
+                              end={
+                                item.path === "/network/devices" ||
+                                item.path === "/network/tasks/port-traffic"
+                              }
+                            >
+                              {t(item.labelKey)}
+                            </NavLink>
+                          </li>
+                        ))}
+                      </ul>
+                    </Accordion.Body>
+                  </Accordion.Panel>
+                </Accordion.Item>
+              );
+            })}
+          </Accordion>
         </nav>
       </aside>
       <div className="network-main">

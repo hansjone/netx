@@ -13,16 +13,7 @@ import type { UmeAlarmItem } from "../../types";
 import { downloadCsv, fetchAllPages } from "../../utils/csvExport";
 import { pageCount } from "../../utils/display";
 import { formatSystemTime } from "../../utils/time";
-
-function severityClass(sev: string | null | undefined): string {
-  const s = String(sev || "").trim().toLowerCase();
-  if (s.includes("critical")) return "pt-list-status--critical";
-  if (s.includes("major")) return "pt-list-status--major";
-  if (s.includes("minor")) return "pt-list-status--minor";
-  if (s.includes("warning") || s.includes("warn")) return "pt-list-status--warning";
-  if (s.includes("info") || s.includes("indeterminate")) return "pt-list-status--info";
-  return "pt-list-status--unknown";
-}
+import { NmStatusChip, severityChipColor } from "./nmChips";
 
 /** Current UME alarms query view for Network Management. */
 export function NetworkAlarmsPage() {
@@ -133,7 +124,7 @@ export function NetworkAlarmsPage() {
   };
 
   return (
-    <section className="panel">
+    <section className="panel nm-page-panel">
       <div className="panel__toolbar">
         <h2>{t("ume.alarms.title")}</h2>
         <div className="btn-row">
@@ -233,9 +224,9 @@ export function NetworkAlarmsPage() {
                   <tr key={x.alarm_key}>
                     <td className="pt-list-time">{formatSystemTime(x.time_created)}</td>
                     <td>
-                      <span className={`pt-list-status ${severityClass(x.perceived_severity)}`}>
+                      <NmStatusChip color={severityChipColor(x.perceived_severity)}>
                         {x.perceived_severity || "—"}
-                      </span>
+                      </NmStatusChip>
                     </td>
                     <td className="pt-list-num">{x.ne_id}</td>
                     <td>

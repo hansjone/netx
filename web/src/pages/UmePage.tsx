@@ -34,6 +34,24 @@ import { pageCount, runtimeIntervalLabel } from "../utils/display";
 import { runtimeLastError, wsConnectionLabel } from "../utils/runtimeMessages";
 import { formatSystemTime } from "../utils/time";
 import { openOrFocusModule } from "../utils/moduleWindows";
+import { jobChipColor, NmStatusChip, type NmChipColor } from "./network/nmChips";
+
+function tokenChipColor(opts: {
+  hasToken: boolean;
+  needsRenewal: boolean;
+}): NmChipColor {
+  if (!opts.hasToken) return "danger";
+  if (opts.needsRenewal) return "warning";
+  return "success";
+}
+
+function pillLevelToChip(level: string | undefined): NmChipColor {
+  const s = String(level || "").toLowerCase();
+  if (s === "up" || s === "ok" || s === "pass") return "success";
+  if (s === "down" || s === "fail" || s === "error") return "danger";
+  if (s === "warn" || s === "warning" || s === "medium") return "warning";
+  return "default";
+}
 
 export function UmePage() {
   const { t } = useI18n();
@@ -455,100 +473,255 @@ export function UmePage() {
     <>
       <div className="page-stack ume-page">
       <section className="cards ume-cards">
-        <article className="panel">
-          <div className="panel__toolbar">
-            <h2>{t("ume.token.title")}</h2>
-          </div>
-          <div className="actions-row actions-row--inline">
-            <span
-              className={`conn-pill conn-pill--${!hasToken ? "down" : tokenNeedsRenewal ? "warn" : "up"}`}
-              title={tokenNeedsRenewal ? t("ume.token.renewHint") : undefined}
-            >
-              token:{" "}
-              {!hasToken
-                ? t("ume.token.disconnected")
-                : tokenNeedsRenewal
-                  ? t("ume.token.connectedRenew")
-                  : t("ume.token.connected")}
-            </span>
-            <span className={`conn-pill conn-pill--${tokenLevel}`}>
-              {t("ume.token.expiresIn")}:{" "}
-              {typeof tokenStatusQuery.data?.expires_in_s === "number"
-                ? tokenNeedsRenewal
-                  ? t("ume.token.needsRenew")
-                  : `${tokenStatusQuery.data.expires_in_s}s`
-                : t("common.empty")}
-            </span>
-            {tokenStatusQuery.data?.token_preview ? (
-              <span className="conn-pill">
-                {t("ume.token.preview")}: {tokenStatusQuery.data.token_preview}
-              </span>
-            ) : null}
-          </div>
-          <div className="actions-row actions-row--inline">
-            <Button
-              size="sm"
-              variant="secondary"
-              isDisabled={tokenStatusQuery.isFetching}
-              onPress={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeTokenStatus })}
-            >
-              {tokenStatusQuery.isFetching ? (
-                <>
-                  <span className="inline-spinner" aria-hidden />
-                  {t("common.refreshing")}
-                </>
-              ) : (
-                t("ume.token.refreshStatus")
-              )}
-            </Button>
-            <Button
-              size="sm"
-              variant="secondary"
-              isDisabled={tokenRefreshMutation.isPending || tokenDisconnectMutation.isPending}
-              onPress={() => tokenRefreshMutation.mutate()}
-            >
-              {tokenRefreshMutation.isPending ? (
-                <>
-                  <span className="inline-spinner" aria-hidden />
-                  {t("ume.token.renewing")}
-                </>
-              ) : (
-                t("ume.token.renewLogin")
-              )}
-            </Button>
-            <Button
-              size="sm"
-              variant="danger"
-              isDisabled={tokenRefreshMutation.isPending || tokenDisconnectMutation.isPending}
-              onPress={() => tokenDisconnectMutation.mutate()}
-            >
-              {tokenDisconnectMutation.isPending ? (
-                <>
-                  <span className="inline-spinner" aria-hidden />
-                  {t("ume.token.disconnecting")}
-                </>
-              ) : (
-                t("ume.token.disconnect")
-              )}
-            </Button>
-          </div>
-          {(tokenOpError || tokenRefreshMutation.error || tokenDisconnectMutation.error) && (
-            <div className="pill pill--high">
-              {t("common.opFailed")}: {tokenOpError || String(tokenRefreshMutation.error || tokenDisconnectMutation.error)}
+        <article className="panel nm-page-panel ume-conn-panel">
+          <div className="ume-conn-grid">
+            <div className="ume-conn-col">
+            <div className="panel__toolbar">
+              <h2>{t("ume.token.title")}</h2>
             </div>
-          )}
-        </article>
-
-        <article className="panel">
-          <div className="panel__toolbar">
-            <h2>{t("ume.tasks.currentTitle")}</h2>
-            <div className="panel__toolbar-end">
-              <span className={`conn-pill conn-pill--${runningTasks.length > 0 ? "unknown" : "up"}`}>
-                {t("ume.tasks.running")}: {runningTasks.length}
-              </span>
+            <div className="actions-row actions-row--inline ume-status-row">
+              <NmStatusChip color={tokenChipColor({ hasToken, needsRenewal: tokenNeedsRenewal })}>
+                <span title={tokenNeedsRenewal ? t("ume.token.renewHint") : undefined}>
+                  token:{" "}
+                  {!hasToken
+                    ? t("ume.token.disconnected")
+                    : tokenNeedsRenewal
+                      ? t("ume.token.connectedRenew")
+                      : t("ume.token.connected")}
+                </span>
+              </NmStatusChip>
+              <NmStatusChip color={pillLevelToChip(tokenLevel)}>
+                {t("ume.token.expiresIn")}:{" "}
+                {typeof tokenStatusQuery.data?.expires_in_s === "number"
+                  ? tokenNeedsRenewal
+                    ? t("ume.token.needsRenew")
+                    : `${tokenStatusQuery.data.expires_in_s}s`
+                  : t("common.empty")}
+              </NmStatusChip>
+              {tokenStatusQuery.data?.token_preview ? (
+                <NmStatusChip color="default">
+                  {t("ume.token.preview")}: {tokenStatusQuery.data.token_preview}
+                </NmStatusChip>
+              ) : null}
+            </div>
+            <div className="actions-row actions-row--inline">
+              <Button
+                size="sm"
+                variant="ghost"
+                isDisabled={tokenStatusQuery.isFetching}
+                onPress={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeTokenStatus })}
+              >
+                {tokenStatusQuery.isFetching ? (
+                  <>
+                    <span className="inline-spinner" aria-hidden />
+                    {t("common.refreshing")}
+                  </>
+                ) : (
+                  t("ume.token.refreshStatus")
+                )}
+              </Button>
               <Button
                 size="sm"
                 variant="secondary"
+                isDisabled={tokenRefreshMutation.isPending || tokenDisconnectMutation.isPending}
+                onPress={() => tokenRefreshMutation.mutate()}
+              >
+                {tokenRefreshMutation.isPending ? (
+                  <>
+                    <span className="inline-spinner" aria-hidden />
+                    {t("ume.token.renewing")}
+                  </>
+                ) : (
+                  t("ume.token.renewLogin")
+                )}
+              </Button>
+              <Button
+                size="sm"
+                variant="danger"
+                isDisabled={tokenRefreshMutation.isPending || tokenDisconnectMutation.isPending}
+                onPress={() => tokenDisconnectMutation.mutate()}
+              >
+                {tokenDisconnectMutation.isPending ? (
+                  <>
+                    <span className="inline-spinner" aria-hidden />
+                    {t("ume.token.disconnecting")}
+                  </>
+                ) : (
+                  t("ume.token.disconnect")
+                )}
+              </Button>
+            </div>
+            {(tokenOpError || tokenRefreshMutation.error || tokenDisconnectMutation.error) && (
+              <div className="pill pill--high">
+                {t("common.opFailed")}: {tokenOpError || String(tokenRefreshMutation.error || tokenDisconnectMutation.error)}
+              </div>
+            )}
+            </div>
+
+            <div className="ume-conn-col">
+            <div className="panel__toolbar">
+              <h2 className="card-title-with-hint">
+                {t("ume.subscription.title")}
+                <HelpHint text={t("ume.subscription.help")} ariaLabel={t("common.help")} />
+              </h2>
+            </div>
+            <div className="actions-row actions-row--inline ume-status-row">
+              <NmStatusChip color={subscriptionActive ? "success" : "danger"}>
+                {t("ume.subscription.sub")}:{" "}
+                {subscriptionActive ? t("ume.subscription.subActive") : t("ume.subscription.subInactive")}
+              </NmStatusChip>
+              {subscriptionActive && alarmSub.subscription_id ? (
+                <NmStatusChip color="default" className="ume-chip-mono">
+                  <span title={alarmSub.wss_uri || ""}>
+                    id: {String(alarmSub.subscription_id).slice(0, 12)}…
+                  </span>
+                </NmStatusChip>
+              ) : null}
+              {subscriptionActive || wsConsumer ? (
+                <NmStatusChip color={pillLevelToChip(wsPillLevel)}>
+                  <span
+                    title={wsConn?.detail || runtimeLastError(wsConsumer?.last_error, t) || alarmSub.wss_uri || ""}
+                  >
+                    WSS: {wsLabel}
+                  </span>
+                </NmStatusChip>
+              ) : null}
+            </div>
+            {scheduledSyncSkipped && !serverSubLost ? (
+              <div className="pill pill--low">
+                {t("ume.subscription.wssModeBanner", { mode: currentAlarmsMode })}
+              </div>
+            ) : null}
+            {serverSubLost ? (
+              <div className="pill pill--medium">
+                {t("ume.subscription.serverLostBanner")}
+                {serverSubLostReason ? (
+                  <div className="muted" style={{ marginTop: 6, fontSize: 12, wordBreak: "break-word" }}>
+                    {serverSubLostReason.slice(0, 280)}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+            <div className="actions-row actions-row--inline">
+              <Button
+                size="sm"
+                variant="secondary"
+                isDisabled={subPending || (!serverSubLost && subscriptionActive) || !hasToken}
+                onPress={() => {
+                  if (serverSubLost && subscriptionActive) {
+                    if (window.confirm(t("ume.subscription.confirmReestablish"))) {
+                      subscriptionEstablishMutation.mutate({ forceReestablish: true });
+                    }
+                    return;
+                  }
+                  subscriptionEstablishMutation.mutate(undefined);
+                }}
+              >
+                {subscriptionEstablishMutation.isPending ? (
+                  <>
+                    <span className="inline-spinner" aria-hidden />
+                    {serverSubLost ? t("ume.subscription.reestablishing") : t("ume.subscription.establishing")}
+                  </>
+                ) : serverSubLost ? (
+                  t("ume.subscription.reestablish")
+                ) : (
+                  t("ume.subscription.establish")
+                )}
+              </Button>
+              {serverSubLost && subscriptionActive ? (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  isDisabled={subPending}
+                  onPress={() => {
+                    if (confirmClearLocalSubscription()) subscriptionClearLocalMutation.mutate();
+                  }}
+                >
+                  {subscriptionClearLocalMutation.isPending ? (
+                    <>
+                      <span className="inline-spinner" aria-hidden />
+                      {t("ume.subscription.clearing")}
+                    </>
+                  ) : (
+                    t("ume.subscription.clearLocalOnly")
+                  )}
+                </Button>
+              ) : null}
+              <Button
+                size="sm"
+                variant="danger"
+                isDisabled={subPending || !subscriptionActive}
+                onPress={() => subscriptionCancelMutation.mutate(undefined)}
+              >
+                {subscriptionCancelMutation.isPending ? (
+                  <>
+                    <span className="inline-spinner" aria-hidden />
+                    {t("ume.subscription.cancelling")}
+                  </>
+                ) : (
+                  t("ume.subscription.cancel")
+                )}
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                isDisabled={subscriptionStatusQuery.isFetching}
+                onPress={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeAlarmSubscription })}
+              >
+                {t("ume.subscription.refreshStatus")}
+              </Button>
+            </div>
+            {subscriptionOpError ? (
+              <div className="pill pill--high">
+                {t("ume.subscription.opFailed")}: {subscriptionOpError}
+              </div>
+            ) : null}
+            </div>
+          </div>
+
+          <div className="ume-ws-log">
+            <div className="ume-ws-log__head">
+              <strong>{t("ume.subscription.wsLogs")}</strong>
+              <span className="muted">
+                {wsConsumer?.last_run_at
+                  ? t("ume.subscription.wsActivity", { time: formatSystemTime(String(wsConsumer.last_run_at)) })
+                  : t("ume.subscription.wsAutoRefresh")}
+              </span>
+            </div>
+            <div className="ws-log-panel" role="log" aria-live="polite">
+              {wsLogs.length === 0 ? (
+                <div className="ws-log-line ws-log-line--info">{t("ume.subscription.wsLogsEmpty")}</div>
+              ) : (
+                wsLogs.map((line, idx) => {
+                  const lvl = String(line.level || "info").toLowerCase();
+                  const cls =
+                    lvl === "error" ? "ws-log-line--error" : lvl === "warning" ? "ws-log-line--warning" : "ws-log-line--info";
+                  return (
+                    <div key={`${line.ts}-${idx}`} className={`ws-log-line ${cls}`}>
+                      <span className="ws-log-ts">{formatSystemTime(line.ts)}</span>
+                      <span>[{lvl}] </span>
+                      <span>{line.message}</span>
+                      {line.subscription_id ? (
+                        <span className="muted"> · {String(line.subscription_id).slice(0, 8)}…</span>
+                      ) : null}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </article>
+
+        <article className="panel nm-page-panel">
+          <div className="panel__toolbar">
+            <h2>{t("ume.tasks.currentTitle")}</h2>
+            <div className="panel__toolbar-end">
+              <NmStatusChip color={runningTasks.length > 0 ? "accent" : "success"}>
+                {t("ume.tasks.running")}: {runningTasks.length}
+              </NmStatusChip>
+              <Button
+                size="sm"
+                variant="ghost"
                 isDisabled={syncStatusQuery.isFetching}
                 onPress={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeSyncStatusAll })}
               >
@@ -583,245 +756,106 @@ export function UmePage() {
             </div>
           ) : null}
           <div className="pt-list">
-          <div className="pt-list-table-wrap">
-<table className="data-table pt-list-table">
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>domain</th>
-                <th>trigger_mode</th>
-                <th>status</th>
-                <th>started_at</th>
-                <th>error</th>
-              </tr>
-            </thead>
-            <tbody>
-              {runningTasks.map((x) => (
-                <tr key={`running-${x.id}`}>
-                  <td>{x.id}</td>
-                  <td>{x.domain}</td>
-                  <td>{x.trigger_mode}</td>
-                  <td>{x.status}</td>
-                  <td>{formatSystemTime(x.started_at)}</td>
-                  <td>{x.error_message || t("common.empty")}</td>
-                </tr>
-              ))}
-              {!syncStatusQuery.isLoading && runningTasks.length === 0 && (
-                <tr>
-                  <td colSpan={6}>{t("ume.tasks.noRunning")}</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-</div>
+            <div className="pt-list-table-wrap">
+              <table className="data-table pt-list-table">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>domain</th>
+                    <th>trigger_mode</th>
+                    <th>status</th>
+                    <th>started_at</th>
+                    <th>error</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {runningTasks.map((x) => (
+                    <tr key={`running-${x.id}`}>
+                      <td>{x.id}</td>
+                      <td>{x.domain}</td>
+                      <td>{x.trigger_mode}</td>
+                      <td>
+                        <NmStatusChip color={jobChipColor(x.status)}>{x.status}</NmStatusChip>
+                      </td>
+                      <td>{formatSystemTime(x.started_at)}</td>
+                      <td className={x.error_message ? "error-text" : undefined}>
+                        {x.error_message || t("common.empty")}
+                      </td>
+                    </tr>
+                  ))}
+                  {!syncStatusQuery.isLoading && runningTasks.length === 0 && (
+                    <tr>
+                      <td colSpan={6}>{t("ume.tasks.noRunning")}</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
 
-          <h3 className="card__section-title">{t("ume.tasks.runtimeTitle")}</h3>
-          {runtimeTaskError ? (
-            <div className="pill pill--high" style={{ marginBottom: 8 }}>
-              {t("ume.tasks.runtimeOpFailed")}: {runtimeTaskError}
-            </div>
-          ) : null}
-          <div className="pt-list-table-wrap">
-<table className="data-table pt-list-table">
-            <thead>
-              <tr>
-                <th>task</th>
-                <th title={t("ume.tasks.intervalTitle")}>interval</th>
-                <th>status</th>
-                <th title={t("ume.tasks.lastRunTitle")}>last_run_at</th>
-                <th>{t("ume.tasks.lastErrorCol")}</th>
-                <th>actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {runtimeTasks.map((x) => (
-                <tr key={`runtime-${x.task}`}>
-                  <td title={x.task}>{runtimeTaskLabel(x.task)}</td>
-                  <td title={typeof x.interval_s === "number" ? `${x.interval_s}s` : undefined}>
-                    {runtimeIntervalLabel(x.interval_label)}
-                  </td>
-                  <td>{x.status}</td>
-                  <td>{x.last_run_at ? formatSystemTime(x.last_run_at) : t("common.empty")}</td>
-                  <td>{runtimeLastError(x.last_error, t) || t("common.empty")}</td>
-                  <td>
-                    {Boolean(x.paused) ? (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="link-btn"
-                        isDisabled={runtimeTaskMutation.isPending}
-                        onPress={() => runtimeTaskMutation.mutate({ task: x.task, action: "resume" })}
-                      >
-                        resume
-                      </Button>
-                    ) : (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="link-btn"
-                        isDisabled={runtimeTaskMutation.isPending}
-                        onPress={() => runtimeTaskMutation.mutate({ task: x.task, action: "pause" })}
-                      >
-                        pause
-                      </Button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-              {!syncStatusQuery.isLoading && runtimeTasks.length === 0 && (
-                <tr>
-                  <td colSpan={6}>{t("ume.tasks.noRuntime")}</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-</div>
-          </div>
-        </article>
-
-        <article className="panel">
-          <div className="panel__toolbar">
-            <h2 className="card-title-with-hint">
-              {t("ume.subscription.title")}
-              <HelpHint text={t("ume.subscription.help")} ariaLabel={t("common.help")} />
-            </h2>
-          </div>
-          <div className="actions-row actions-row--inline">
-            <span className={`conn-pill conn-pill--${subscriptionActive ? "up" : "down"}`}>
-              {t("ume.subscription.sub")}: {subscriptionActive ? t("ume.subscription.subActive") : t("ume.subscription.subInactive")}
-            </span>
-            {subscriptionActive && alarmSub.subscription_id ? (
-              <span className="conn-pill" title={alarmSub.wss_uri || ""}>
-                id: {String(alarmSub.subscription_id).slice(0, 12)}…
-              </span>
+            <h3 className="card__section-title">{t("ume.tasks.runtimeTitle")}</h3>
+            {runtimeTaskError ? (
+              <div className="pill pill--high" style={{ marginBottom: 8 }}>
+                {t("ume.tasks.runtimeOpFailed")}: {runtimeTaskError}
+              </div>
             ) : null}
-            {subscriptionActive || wsConsumer ? (
-              <span
-                className={`conn-pill conn-pill--${wsPillLevel}`}
-                title={wsConn?.detail || runtimeLastError(wsConsumer?.last_error, t) || alarmSub.wss_uri || ""}
-              >
-                WSS: {wsLabel}
-              </span>
-            ) : null}
-          </div>
-          {scheduledSyncSkipped && !serverSubLost ? (
-            <div className="pill pill--low" style={{ marginTop: 8 }}>
-              {t("ume.subscription.wssModeBanner", { mode: currentAlarmsMode })}
-            </div>
-          ) : null}
-          {serverSubLost ? (
-            <div className="pill pill--medium" style={{ marginTop: 8 }}>
-              {t("ume.subscription.serverLostBanner")}
-              {serverSubLostReason ? (
-                <div className="muted" style={{ marginTop: 6, fontSize: 12, wordBreak: "break-word" }}>
-                  {serverSubLostReason.slice(0, 280)}
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-          <div className="actions-row actions-row--inline">
-            <Button
-              size="sm"
-              variant="secondary"
-              isDisabled={subPending || (!serverSubLost && subscriptionActive) || !hasToken}
-              onPress={() => {
-                if (serverSubLost && subscriptionActive) {
-                  if (window.confirm(t("ume.subscription.confirmReestablish"))) {
-                    subscriptionEstablishMutation.mutate({ forceReestablish: true });
-                  }
-                  return;
-                }
-                subscriptionEstablishMutation.mutate(undefined);
-              }}
-            >
-              {subscriptionEstablishMutation.isPending ? (
-                <>
-                  <span className="inline-spinner" aria-hidden />
-                  {serverSubLost ? t("ume.subscription.reestablishing") : t("ume.subscription.establishing")}
-                </>
-              ) : serverSubLost ? (
-                t("ume.subscription.reestablish")
-              ) : (
-                t("ume.subscription.establish")
-              )}
-            </Button>
-            {serverSubLost && subscriptionActive ? (
-              <Button
-                size="sm"
-                variant="secondary"
-                isDisabled={subPending}
-                onPress={() => {
-                  if (confirmClearLocalSubscription()) subscriptionClearLocalMutation.mutate();
-                }}
-              >
-                {subscriptionClearLocalMutation.isPending ? (
-                  <>
-                    <span className="inline-spinner" aria-hidden />
-                    {t("ume.subscription.clearing")}
-                  </>
-                ) : (
-                  t("ume.subscription.clearLocalOnly")
-                )}
-              </Button>
-            ) : null}
-            <Button
-              size="sm"
-              variant="danger"
-              isDisabled={subPending || !subscriptionActive}
-              onPress={() => subscriptionCancelMutation.mutate(undefined)}
-            >
-              {subscriptionCancelMutation.isPending ? (
-                <>
-                  <span className="inline-spinner" aria-hidden />
-                  {t("ume.subscription.cancelling")}
-                </>
-              ) : (
-                t("ume.subscription.cancel")
-              )}
-            </Button>
-            <Button
-              size="sm"
-              variant="secondary"
-              isDisabled={subscriptionStatusQuery.isFetching}
-              onPress={() => queryClient.invalidateQueries({ queryKey: queryKeys.umeAlarmSubscription })}
-            >
-              {t("ume.subscription.refreshStatus")}
-            </Button>
-          </div>
-          {subscriptionOpError ? (
-            <div className="pill pill--high">
-              {t("ume.subscription.opFailed")}: {subscriptionOpError}
-            </div>
-          ) : null}
-          <div style={{ marginTop: 12 }}>
-            <div className="actions-row actions-row--inline" style={{ marginTop: 0 }}>
-              <strong style={{ fontSize: 13 }}>{t("ume.subscription.wsLogs")}</strong>
-              <span className="muted" style={{ fontSize: 12 }}>
-                {wsConsumer?.last_run_at
-                  ? t("ume.subscription.wsActivity", { time: formatSystemTime(String(wsConsumer.last_run_at)) })
-                  : t("ume.subscription.wsAutoRefresh")}
-              </span>
-            </div>
-            <div className="ws-log-panel" role="log" aria-live="polite">
-              {wsLogs.length === 0 ? (
-                <div className="ws-log-line ws-log-line--info">{t("ume.subscription.wsLogsEmpty")}</div>
-              ) : (
-                wsLogs.map((line, idx) => {
-                  const lvl = String(line.level || "info").toLowerCase();
-                  const cls =
-                    lvl === "error" ? "ws-log-line--error" : lvl === "warning" ? "ws-log-line--warning" : "ws-log-line--info";
-                  return (
-                    <div key={`${line.ts}-${idx}`} className={`ws-log-line ${cls}`}>
-                      <span className="ws-log-ts">{formatSystemTime(line.ts)}</span>
-                      <span>[{lvl}] </span>
-                      <span>{line.message}</span>
-                      {line.subscription_id ? (
-                        <span className="muted"> · {String(line.subscription_id).slice(0, 8)}…</span>
-                      ) : null}
-                    </div>
-                  );
-                })
-              )}
+            <div className="pt-list-table-wrap">
+              <table className="data-table pt-list-table">
+                <thead>
+                  <tr>
+                    <th>task</th>
+                    <th title={t("ume.tasks.intervalTitle")}>interval</th>
+                    <th>status</th>
+                    <th title={t("ume.tasks.lastRunTitle")}>last_run_at</th>
+                    <th>{t("ume.tasks.lastErrorCol")}</th>
+                    <th>actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {runtimeTasks.map((x) => (
+                    <tr key={`runtime-${x.task}`}>
+                      <td className="pt-list-task-name" title={x.task}>
+                        {runtimeTaskLabel(x.task)}
+                      </td>
+                      <td title={typeof x.interval_s === "number" ? `${x.interval_s}s` : undefined}>
+                        {runtimeIntervalLabel(x.interval_label)}
+                      </td>
+                      <td>
+                        <NmStatusChip color={jobChipColor(x.status)}>{x.status}</NmStatusChip>
+                      </td>
+                      <td>{x.last_run_at ? formatSystemTime(x.last_run_at) : t("common.empty")}</td>
+                      <td className={x.last_error ? "error-text" : undefined}>
+                        {runtimeLastError(x.last_error, t) || t("common.empty")}
+                      </td>
+                      <td>
+                        {Boolean(x.paused) ? (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            isDisabled={runtimeTaskMutation.isPending}
+                            onPress={() => runtimeTaskMutation.mutate({ task: x.task, action: "resume" })}
+                          >
+                            resume
+                          </Button>
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            isDisabled={runtimeTaskMutation.isPending}
+                            onPress={() => runtimeTaskMutation.mutate({ task: x.task, action: "pause" })}
+                          >
+                            pause
+                          </Button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                  {!syncStatusQuery.isLoading && runtimeTasks.length === 0 && (
+                    <tr>
+                      <td colSpan={6}>{t("ume.tasks.noRuntime")}</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
             </div>
           </div>
         </article>
@@ -829,52 +863,52 @@ export function UmePage() {
       </section>
 
       <section className="ume-entry-grid">
-        <article className="panel ume-entry">
+        <article className="panel ume-entry nm-page-panel">
           <div className="panel__toolbar">
             <h2 className="card-title-with-hint">
               {t("ume.cli.title")}
               <HelpHint text={t("ume.cli.hint")} ariaLabel={t("common.help")} />
             </h2>
-            <Button size="sm" variant="secondary" onPress={() => setCliPanelOpen(true)}>
+            <Button size="sm" variant="ghost" onPress={() => setCliPanelOpen(true)}>
               {t("ume.cli.showPanel")}
             </Button>
           </div>
           <p className="ume-entry__summary muted">{t("ume.cli.hint")}</p>
         </article>
 
-        <article className="panel ume-entry">
+        <article className="panel ume-entry nm-page-panel">
           <div className="panel__toolbar">
             <h2 className="card-title-with-hint">
               {t("ume.keyAlert.title")}
               <HelpHint text={t("ume.keyAlert.help")} ariaLabel={t("common.help")} />
             </h2>
-            <Button size="sm" variant="secondary" onPress={() => setKeyAlertPanelOpen(true)}>
+            <Button size="sm" variant="ghost" onPress={() => setKeyAlertPanelOpen(true)}>
               {t("ume.keyAlert.showPanel")}
             </Button>
           </div>
           <div className="ume-entry__pills actions-row actions-row--inline">
-            <span className={`conn-pill conn-pill--${hubWsPill}`}>
+            <NmStatusChip color={pillLevelToChip(hubWsPill)}>
               {t("ume.keyAlert.hub")}:{" "}
               {keyAlertHubSubscribers > 0
                 ? t("ume.keyAlert.hubConnected")
                 : t("ume.keyAlert.hubEmpty")}
-            </span>
-            <span className="conn-pill">
+            </NmStatusChip>
+            <NmStatusChip color="default">
               {t("ume.keyAlert.hubSubscribers")}: {keyAlertHubSubscribers}
-            </span>
-            <span className="conn-pill">
+            </NmStatusChip>
+            <NmStatusChip color="default">
               {t("ume.keyAlert.hubPublished")}: {Number(keyAlertHub?.published || 0)}
-            </span>
-            <span className="conn-pill">
+            </NmStatusChip>
+            <NmStatusChip color="default">
               {t("ume.keyAlert.hubDeliverOk")}: {Number(keyAlertHub?.deliver_ok || 0)}
-            </span>
+            </NmStatusChip>
           </div>
         </article>
 
-        <article className="panel ume-entry">
+        <article className="panel ume-entry nm-page-panel">
           <div className="panel__toolbar">
             <h2>{t("ume.syncStatus.title")}</h2>
-            <Button size="sm" variant="secondary" onPress={() => setSyncStatusPanelOpen(true)}>
+            <Button size="sm" variant="ghost" onPress={() => setSyncStatusPanelOpen(true)}>
               {t("ume.syncStatus.showPanel")}
             </Button>
           </div>
@@ -888,10 +922,10 @@ export function UmePage() {
           </p>
         </article>
 
-        <article className="panel ume-entry">
+        <article className="panel ume-entry nm-page-panel">
           <div className="panel__toolbar">
             <h2>{t("ume.ne.title")}</h2>
-            <Button size="sm" variant="secondary" onPress={() => setNePanelOpen(true)}>
+            <Button size="sm" variant="ghost" onPress={() => setNePanelOpen(true)}>
               {t("ume.ne.showPanel")}
             </Button>
           </div>
@@ -900,13 +934,14 @@ export function UmePage() {
           </p>
         </article>
 
-        <article className="panel ume-entry">
+        <article className="panel ume-entry nm-page-panel">
           <div className="panel__toolbar">
             <h2>{t("ume.alarms.title")}</h2>
           </div>
           <p className="ume-entry__summary muted">
             {t("ume.alarms.movedHint")}{" "}
             <a
+              className="ume-entry__link"
               href="/network/alarms"
               onClick={(e) => {
                 e.preventDefault();
@@ -1359,7 +1394,9 @@ export function UmePage() {
                           {String(x.id).slice(0, 8)}
                         </td>
                         <td>{x.domain}</td>
-                        <td>{x.status}</td>
+                        <td>
+                          <NmStatusChip color={jobChipColor(x.status)}>{x.status}</NmStatusChip>
+                        </td>
                         <td>{x.pulled_count}</td>
                         <td>{x.inserted_count}</td>
                         <td>{x.updated_count}</td>

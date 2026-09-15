@@ -28,6 +28,7 @@ import { useToast } from "../hooks/useToast";
 import type { CollectionJobItem, CollectionRunItem, CollectionTargetRef, EligibleNeItem } from "../types";
 import { downloadCsv, fetchAllPages } from "../utils/csvExport";
 import { pageCount } from "../utils/display";
+import { jobChipColor, NmStatusChip, sourceChipColor } from "./network/nmChips";
 import { formatSystemTime } from "../utils/time";
 
 const POLL_MS = 2000;
@@ -458,7 +459,7 @@ export function CollectPage() {
 
   return (
     <div className="page-stack">
-      <section className="panel">
+      <section className="panel nm-page-panel">
         <div className="panel__toolbar">
           <div>
             <h2>{t("collect.jobs.title")}</h2>
@@ -542,7 +543,7 @@ export function CollectPage() {
         </div>
       </section>
 
-      <section className="panel" style={{ marginBottom: 16 }}>
+      <section className="panel nm-page-panel" style={{ marginBottom: 16 }}>
         <h3>{t("collect.policyTitle")}</h3>
         <p className="muted" style={{ marginTop: 0 }}>
           {t("collect.policyHint")}
@@ -703,7 +704,7 @@ export function CollectPage() {
         ) : null}
       </section>
 
-      <section className="panel">
+      <section className="panel nm-page-panel">
         <div className="panel__toolbar">
           <div>
             <h2>{t("collect.jobs.listTitle")}</h2>
@@ -1146,7 +1147,9 @@ function JobRow({
   return (
     <tr>
       <td>{job.title}</td>
-      <td>{job.status}</td>
+      <td>
+        <NmStatusChip color={jobChipColor(job.status)}>{job.status}</NmStatusChip>
+      </td>
       <td>
         {job.success_count}/{job.ne_count} {t("collect.jobs.ok")}, {job.fail_count} {t("collect.jobs.fail")}
       </td>
@@ -1368,11 +1371,15 @@ function JobRunsPanel({
               {runs.map((run) => (
                 <tr key={run.id}>
                   <td>
-                    <span className="table-tag">{run.ne_source || "managed"}</span>
+                    <NmStatusChip color={sourceChipColor(run.ne_source || "managed")}>
+                      {run.ne_source || "managed"}
+                    </NmStatusChip>
                   </td>
                   <td>{run.ne_name}</td>
                   <td>{run.ne_ip}</td>
-                  <td>{run.status}</td>
+                  <td>
+                    <NmStatusChip color={jobChipColor(run.status)}>{run.status}</NmStatusChip>
+                  </td>
                   <td>
                     {run.message ? (
                       <div className="collect-run-message" title={run.message}>

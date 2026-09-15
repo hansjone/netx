@@ -274,7 +274,7 @@ export function TopologyClassifyPage() {
   };
 
   return (
-    <div className="panel topo-classify">
+    <div className="panel topo-classify nm-page-panel">
       <div className="panel__toolbar">
         <h2>{t("topoClassify.title")}</h2>
         <div className="btn-row">

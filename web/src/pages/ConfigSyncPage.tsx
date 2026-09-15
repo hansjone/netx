@@ -25,6 +25,7 @@ import type { CliTargetItem, ConfigSyncCycle, ConfigSyncTargetRef, ConfigSyncTas
 import { downloadCsv, fetchAllPages } from "../utils/csvExport";
 import { pageCount } from "../utils/display";
 import { formatSystemTime } from "../utils/time";
+import { jobChipColor, NmStatusChip, sourceChipColor } from "./network/nmChips";
 
 const POLL_MS = 2500;
 const TARGET_PAGE_SIZE = 10;
@@ -353,7 +354,7 @@ export function ConfigSyncPage() {
   };
 
   return (
-    <section className="panel">
+    <section className="panel nm-page-panel">
       <div className="panel__toolbar">
         <h2>{t("configSync.title")}</h2>
         <div className="btn-row">
@@ -549,7 +550,9 @@ export function ConfigSyncPage() {
                           onChange={() => toggleTarget(row)}
                         />
                       </td>
-                      <td>{source}</td>
+                      <td>
+                        <NmStatusChip color={sourceChipColor(source)}>{source}</NmStatusChip>
+                      </td>
                       <td>{row.name}</td>
                       <td>{row.ip_address}</td>
                       <td>{row.vendor || "-"}</td>
@@ -664,21 +667,7 @@ export function ConfigSyncPage() {
                   <td title={c.id} className="pt-list-num">{c.id.slice(0, 8)}</td>
                   <td>{c.trigger_mode}</td>
                   <td>
-                    <span
-                      className={`pt-list-status ${
-                        c.status === "running" || c.status === "pending"
-                          ? "pt-list-status--running"
-                          : c.status === "paused"
-                            ? "pt-list-status--paused"
-                            : c.status === "failed"
-                              ? "pt-list-status--failed"
-                              : c.status === "success" || c.status === "completed"
-                                ? "pt-list-status--ok"
-                                : "pt-list-status--other"
-                      }`}
-                    >
-                      {c.status}
-                    </span>
+                    <NmStatusChip color={jobChipColor(c.status)}>{c.status}</NmStatusChip>
                   </td>
                   <td>
                     {c.success_count}/{c.planned_count} · fail {c.fail_count}
@@ -690,7 +679,7 @@ export function ConfigSyncPage() {
                       {c.status === "running" || c.status === "pending" ? (
                         <Button
                           size="sm"
-                          variant="secondary"
+                          variant="ghost"
                           isDisabled={pauseMut.isPending}
                           onPress={() => pauseMut.mutate(c.id)}
                         >
@@ -700,7 +689,7 @@ export function ConfigSyncPage() {
                       {c.status === "paused" ? (
                         <Button
                           size="sm"
-                          variant="secondary"
+                          variant="ghost"
                           isDisabled={resumeMut.isPending}
                           onPress={() => resumeMut.mutate(c.id)}
                         >
@@ -823,8 +812,12 @@ export function ConfigSyncPage() {
                     <td>{task.ne_name || task.target_id}</td>
                     <td>{task.ne_ip}</td>
                     <td>{task.vendor || "-"}</td>
-                    <td>{task.source}</td>
-                    <td>{task.status}</td>
+                    <td>
+                      <NmStatusChip color={sourceChipColor(task.source)}>{task.source}</NmStatusChip>
+                    </td>
+                    <td>
+                      <NmStatusChip color={jobChipColor(task.status)}>{task.status}</NmStatusChip>
+                    </td>
                     <td title={task.message}>{task.message || "-"}</td>
                   </tr>
                 ))}

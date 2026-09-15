@@ -20,6 +20,7 @@ import { downloadCsv, fetchAllPages } from "../../utils/csvExport";
 import { pageCount } from "../../utils/display";
 import { openNewModuleWindow } from "../../utils/moduleWindows";
 import { formatSystemTime } from "../../utils/time";
+import { NmStatusChip, sourceChipColor } from "./nmChips";
 
 function fmtBytes(n: number): string {
   if (!n) return "0 B";
@@ -149,7 +150,7 @@ export function NetworkConfigsPage() {
   };
 
   return (
-    <section className="panel">
+    <section className="panel nm-page-panel">
       <div className="panel__toolbar">
         <h2>{t("networkConfigs.title")}</h2>
         <div className="btn-row">
@@ -237,7 +238,9 @@ export function NetworkConfigsPage() {
                       <td className="pt-list-task-name">{row.ne_name || row.target_id}</td>
                       <td className="pt-list-num">{row.ne_ip}</td>
                       <td>{row.vendor || "—"}</td>
-                      <td>{row.source}</td>
+                      <td>
+                        <NmStatusChip color={sourceChipColor(row.source)}>{row.source}</NmStatusChip>
+                      </td>
                       <td className="pt-list-num">{fmtBytes(row.plain_size)}</td>
                       <td className="pt-list-time">
                         {row.collected_at ? formatSystemTime(row.collected_at) : "—"}
@@ -246,7 +249,7 @@ export function NetworkConfigsPage() {
                         <div className="btn-row pt-list-actions table-actions">
                           <Button
                             size="sm"
-                            variant="secondary"
+                            variant="ghost"
                             onPress={() => {
                               setSelected({ source: row.source, id: row.target_id });
                               setTab("primary");
@@ -256,7 +259,7 @@ export function NetworkConfigsPage() {
                           </Button>
                           <Button
                             size="sm"
-                            variant="secondary"
+                            variant="ghost"
                             isDisabled={
                               exporting === exportKey ||
                               exporting.startsWith(`${row.source}:${row.target_id}:`)
@@ -273,7 +276,7 @@ export function NetworkConfigsPage() {
                           </Button>
                           <Button
                             size="sm"
-                            variant="secondary"
+                            variant="ghost"
                             onPress={() => {
                               const path =
                                 row.source === "ume"

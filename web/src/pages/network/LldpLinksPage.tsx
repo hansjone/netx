@@ -33,6 +33,12 @@ import type {
 import { downloadCsv, fetchAllPages } from "../../utils/csvExport";
 import { pageCount } from "../../utils/display";
 import { formatSystemTime } from "../../utils/time";
+import {
+  edgeChipColor,
+  jobChipColor,
+  NmStatusChip,
+  sourceChipColor,
+} from "./nmChips";
 
 const POLL_MS = 2500;
 const TARGET_PAGE_SIZE = 10;
@@ -553,7 +559,7 @@ export function LldpLinksPage() {
   };
 
   return (
-    <section className="panel">
+    <section className="panel nm-page-panel">
       <div className="panel__toolbar">
         <h2>{t("lldpLinks.title")}</h2>
         <div className="btn-row">
@@ -776,7 +782,9 @@ export function LldpLinksPage() {
                           onChange={() => toggleTarget(row)}
                         />
                       </td>
-                      <td>{source}</td>
+                      <td>
+                        <NmStatusChip color={sourceChipColor(source)}>{source}</NmStatusChip>
+                      </td>
                       <td>{row.name}</td>
                       <td>{row.ip_address}</td>
                       <td>{row.vendor || "-"}</td>
@@ -880,7 +888,9 @@ export function LldpLinksPage() {
               const st = e.status === "stale" ? "missing" : e.status;
               return (
                 <tr key={e.id}>
-                  <td>{lldpEdgeStatusLabel(t, st)}</td>
+                  <td>
+                    <NmStatusChip color={edgeChipColor(st)}>{lldpEdgeStatusLabel(t, st)}</NmStatusChip>
+                  </td>
                   <td>
                     <div>{aLabel}</div>
                     {e.a_ip && e.a_name ? <div className="muted">{e.a_ip}</div> : null}
@@ -891,7 +901,11 @@ export function LldpLinksPage() {
                     {e.b_ip && e.b_name ? <div className="muted">{e.b_ip}</div> : null}
                   </td>
                   <td>{e.b_port || "—"}</td>
-                  <td>{lldpEdgeSourceLabel(t, e.source)}</td>
+                  <td>
+                    <NmStatusChip color={sourceChipColor(e.source)}>
+                      {lldpEdgeSourceLabel(t, e.source)}
+                    </NmStatusChip>
+                  </td>
                   <td>
                     {missCount || (st === "missing" ? 1 : 0)}
                     {replaced ? (
@@ -1003,17 +1017,9 @@ export function LldpLinksPage() {
                   <td>{lldpTriggerLabel(t, job.trigger_mode)}</td>
                   <td>{lldpScopeLabel(t, job.scope)}</td>
                   <td>
-                    <span
-                      className={
-                        job.status === "running" || job.status === "pending"
-                          ? "pt-list-status--running"
-                          : job.status === "paused"
-                            ? "pt-list-status--paused"
-                            : undefined
-                      }
-                    >
+                    <NmStatusChip color={jobChipColor(job.status)}>
                       {lldpJobStatusLabel(t, job.status)}
-                    </span>
+                    </NmStatusChip>
                   </td>
                   <td>
                     {job.done}/{job.total}
@@ -1034,7 +1040,7 @@ export function LldpLinksPage() {
                       {job.status === "running" || job.status === "pending" ? (
                         <Button
                           size="sm"
-                          variant="secondary"
+                          variant="ghost"
                           isDisabled={pauseMut.isPending}
                           onPress={() => pauseMut.mutate(job.id)}
                         >
@@ -1044,7 +1050,7 @@ export function LldpLinksPage() {
                       {job.status === "paused" ? (
                         <Button
                           size="sm"
-                          variant="secondary"
+                          variant="ghost"
                           isDisabled={resumeMut.isPending}
                           onPress={() => resumeMut.mutate(job.id)}
                         >
@@ -1170,7 +1176,23 @@ export function LldpLinksPage() {
                       <tr key={it.id}>
                         <td>{it.ne_name || it.ne_id || "—"}</td>
                         <td>{it.ne_ip || "—"}</td>
-                        <td>{lldpItemResultLabel(t, it)}</td>
+                        <td>
+                          <NmStatusChip
+                            color={
+                              !it.ok ||
+                              Boolean(it.parser_stub) ||
+                              ["parser_stub", "empty_cli_output", "vendor_or_device_type_required"].includes(
+                                String(it.error || "").trim(),
+                              )
+                                ? "danger"
+                                : (it.unmatched_count ?? (it.unmatched?.length || 0)) > 0
+                                  ? "warning"
+                                  : "success"
+                            }
+                          >
+                            {lldpItemResultLabel(t, it)}
+                          </NmStatusChip>
+                        </td>
                         <td>{it.neighbors}</td>
                         <td>
                           +{it.edges_added} / ~{it.edges_updated}
