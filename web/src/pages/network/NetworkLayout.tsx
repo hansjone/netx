@@ -1,5 +1,6 @@
 import { Accordion } from "@heroui/react";
-import { useEffect, useMemo, useState, type Key } from "react";
+import type { Key } from "@react-types/shared";
+import { useEffect, useMemo, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { NETWORK_NAV, type NetworkNavGroupId } from "../../config/networkNav";
 import { useI18n } from "../../i18n";
