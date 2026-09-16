@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
@@ -29,6 +30,8 @@ from .port_traffic_schemas import (
     PortTrafficSamplePoint,
     PortTrafficSamplesOut,
 )
+
+_log = logging.getLogger("netx.port_traffic.samples")
 
 def _as_naive_utc(value: datetime | None) -> datetime | None:
     if value is None:
