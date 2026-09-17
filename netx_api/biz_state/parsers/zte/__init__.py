@@ -1,4 +1,8 @@
-"""ZTE ZXROS status parsers — one module per show command."""
+"""ZTE ZXROS status parsers — one module per show command.
+
+LLDP uses ``common.lldp_neighbors`` (``show lldp neighbor brief``).
+Status tables below are ZTE-specific implementations.
+"""
 
 from __future__ import annotations
 
