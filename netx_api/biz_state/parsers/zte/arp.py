@@ -7,6 +7,8 @@ from typing import Any
 
 _ARP_AGE_TIME_RE = re.compile(r"^\d{1,2}:\d{2}:\d{2}$")
 
+RULE_KEYS: tuple[str, ...] = ()
+
 
 def is_valid_arp_age(age: str) -> bool:
     """True when Age looks like a dynamic timer (HH:MM:SS), not static flags like H."""
@@ -16,12 +18,13 @@ def is_valid_arp_age(age: str) -> bool:
 def normalize_arp(
     *,
     raw_text: str,
+    fsm_tables=None,
     vendor: str = "",
     device_type: str = "",
     command: str = "",
     params: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
-    _ = (vendor, device_type, command, params)
+    _ = (vendor, device_type, command, params, fsm_tables)
     out: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
     ip_re = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
@@ -61,3 +64,5 @@ def normalize_arp(
             }
         )
     return out
+
+normalize_arp.RULE_KEYS = RULE_KEYS

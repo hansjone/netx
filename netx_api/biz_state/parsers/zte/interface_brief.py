@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Mapping
 
 from ....lldp_shared import resolve_vendor_key
-from ....ntc_parse import parse_cli, resolve_cli_platform, row_get
+from ....ntc_parse import apply_rules, resolve_cli_platform, row_get
+from ..common.pipeline import prefer_fsm
+
+RULE_KEYS = ("zte_zxros_show_interface_brief",)
 
 _IFACE_RE = re.compile(
     r"^(?P<iface>\S+)\s+(?P<attr>\S+)\s+(?P<mode>\S+)"
@@ -16,22 +19,7 @@ _IFACE_RE = re.compile(
 )
 
 
-def normalize_interface_brief(
-    *,
-    raw_text: str,
-    vendor: str = "",
-    device_type: str = "",
-    command: str = "",
-    params: dict[str, str] | None = None,
-) -> list[dict[str, Any]]:
-    _ = params
-    platform = resolve_cli_platform(
-        vendor=vendor,
-        device_type=device_type,
-        vendor_key=resolve_vendor_key(vendor, device_type),
-    )
-    cmd = str(command or "show interface brief").strip() or "show interface brief"
-    rows = parse_cli(platform=platform, command=cmd, text=raw_text) if platform else []
+def _map_fsm_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
     for r in rows:
@@ -53,8 +41,20 @@ def normalize_interface_brief(
                 "description": row_get(r, "DESCRIPTION", "description")[:256],
             }
         )
-    if out:
-        return out
+    return out
+
+
+def _hand_parse(
+    *,
+    raw_text: str,
+    vendor: str = "",
+    device_type: str = "",
+    command: str = "",
+    **_kw: Any,
+) -> list[dict[str, Any]]:
+    _ = (vendor, device_type, command)
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
     for raw in str(raw_text or "").splitlines():
         line = raw.strip()
         if not line or line.lower().startswith("interface"):
@@ -79,3 +79,40 @@ def normalize_interface_brief(
             }
         )
     return out
+
+
+def normalize_interface_brief(
+    *,
+    raw_text: str,
+    fsm_tables: Mapping[str, list[dict[str, Any]]] | None = None,
+    vendor: str = "",
+    device_type: str = "",
+    command: str = "",
+    params: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    _ = params
+    tables = dict(fsm_tables or {})
+    if not any(tables.get(k) for k in RULE_KEYS):
+        platform = resolve_cli_platform(
+            vendor=vendor,
+            device_type=device_type,
+            vendor_key=resolve_vendor_key(vendor, device_type),
+        )
+        cmd = str(command or "show interface brief").strip() or "show interface brief"
+        if platform:
+            tables = apply_rules(
+                platform=platform, text=raw_text, rule_keys=RULE_KEYS, command=cmd
+            )
+    return prefer_fsm(
+        tables,
+        RULE_KEYS,
+        _map_fsm_rows,
+        _hand_parse,
+        raw_text=raw_text,
+        vendor=vendor,
+        device_type=device_type,
+        command=command,
+    )
+
+
+normalize_interface_brief.RULE_KEYS = RULE_KEYS

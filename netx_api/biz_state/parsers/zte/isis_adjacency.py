@@ -13,16 +13,19 @@ _ISIS_ROW_RE = re.compile(
 )
 _PROCESS_RE = re.compile(r"(?i)^\s*Process\s+ID\s*:\s*(\d+)\s*$")
 
+RULE_KEYS: tuple[str, ...] = ()
+
 
 def normalize_isis_adjacency(
     *,
     raw_text: str,
+    fsm_tables=None,
     vendor: str = "",
     device_type: str = "",
     command: str = "",
     params: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
-    _ = (vendor, device_type, command, params)
+    _ = (vendor, device_type, command, params, fsm_tables)
     out: list[dict[str, Any]] = []
     process_id = ""
     for raw in str(raw_text or "").splitlines():
@@ -54,3 +57,5 @@ def normalize_isis_adjacency(
             }
         )
     return out
+
+normalize_isis_adjacency.RULE_KEYS = RULE_KEYS

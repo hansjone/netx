@@ -29,7 +29,7 @@ from ..models import (
 from ..ne_netmiko import disable_target_paging, send_show_command
 from ..ne_session_factory import close_netmiko_connection, open_netmiko_connection
 from .command_match import expand_from_bindings, match_command, normalize_command
-from .parsers import get_parser
+from .parsers import get_parser, run_parser
 from .profiles import get_profile
 
 _log = logging.getLogger("netx.biz_state.runner")
@@ -470,8 +470,7 @@ def _run_collect_session(
                         merged = {**params, **hit.params}
                         cmd_row.params_json = merged
 
-                        parser = get_parser(hit.profile.parser_id)
-                        if not parser:
+                        if not get_parser(hit.profile.parser_id):
                             any_fail = True
                             cmd_row.parse_status = "failed"
                             cmd_row.message = f"unknown parser {hit.profile.parser_id}"
@@ -480,13 +479,22 @@ def _run_collect_session(
                             continue
 
                         try:
-                            records = parser(
-                                raw_text=cmd_row.raw_text,
+                            records, fsm_tables, rule_keys = run_parser(
+                                hit.profile.parser_id,
+                                raw_text=cmd_row.raw_text or "",
                                 vendor=vendor_eff,
                                 device_type=device_type_eff,
                                 command=hit.profile.textfsm_command or concrete,
                                 params=merged,
+                                textfsm_command=hit.profile.textfsm_command or "",
                             )
+                            # Debug hint only — avoid persisting large FSM JSON.
+                            if rule_keys:
+                                nonempty = [k for k in rule_keys if fsm_tables.get(k)]
+                                cmd_row.message = (
+                                    f"fsm_keys={','.join(rule_keys)}"
+                                    + (f";hit={','.join(nonempty)}" if nonempty else ";hit=")
+                                )[:1020]
                         except Exception as exc:
                             any_fail = True
                             cmd_row.parse_status = "failed"

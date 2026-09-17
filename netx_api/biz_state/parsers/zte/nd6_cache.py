@@ -11,16 +11,19 @@ _ND6_ROW_RE = re.compile(
     re.I,
 )
 
+RULE_KEYS: tuple[str, ...] = ()
+
 
 def normalize_nd6_cache(
     *,
     raw_text: str,
+    fsm_tables=None,
     vendor: str = "",
     device_type: str = "",
     command: str = "",
     params: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
-    _ = (vendor, device_type, command, params)
+    _ = (vendor, device_type, command, params, fsm_tables)
     out: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
     for raw in str(raw_text or "").splitlines():
@@ -52,3 +55,5 @@ def normalize_nd6_cache(
             }
         )
     return out
+
+normalize_nd6_cache.RULE_KEYS = RULE_KEYS

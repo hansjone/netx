@@ -16,16 +16,19 @@ _SOURCE_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("total", re.compile(r"(?i)^\s*(?:total|totals?)\s+(?:routes?\s+)?(\d+)\s*$")),
 ]
 
+RULE_KEYS: tuple[str, ...] = ()
+
 
 def normalize_vrf_route_summary(
     *,
     raw_text: str,
+    fsm_tables=None,
     vendor: str = "",
     device_type: str = "",
     command: str = "",
     params: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
-    _ = (vendor, device_type, command)
+    _ = (vendor, device_type, command, fsm_tables)
     vrf = str((params or {}).get("vrf") or (params or {}).get("vrf_name") or "").strip()
     text = str(raw_text or "")
     found: dict[str, int] = {}
@@ -53,3 +56,5 @@ def normalize_vrf_route_summary(
     if vrf and not rows:
         rows.append({"vrf": vrf[:128], "source": "empty", "networks": 0})
     return rows
+
+normalize_vrf_route_summary.RULE_KEYS = RULE_KEYS

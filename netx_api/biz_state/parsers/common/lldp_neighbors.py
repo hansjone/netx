@@ -6,10 +6,13 @@ from typing import Any
 
 from ....lldp_shared import NeighborHit, parse_neighbor_output
 
+RULE_KEYS: tuple[str, ...] = ()
+
 
 def normalize_lldp_neighbors(
     *,
     raw_text: str,
+    fsm_tables=None,
     vendor: str = "",
     device_type: str = "",
     command: str = "",
@@ -21,7 +24,7 @@ def normalize_lldp_neighbors(
         device_type=device_type,
         command=command,
     )
-    _ = params
+    _ = (params, fsm_tables)
     rows: list[dict[str, Any]] = []
     for h in hits:
         rows.append(
@@ -34,3 +37,5 @@ def normalize_lldp_neighbors(
             }
         )
     return rows
+
+normalize_lldp_neighbors.RULE_KEYS = RULE_KEYS

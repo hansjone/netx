@@ -11,6 +11,8 @@ _BGP_PEER_RE = re.compile(
     re.I,
 )
 
+RULE_KEYS: tuple[str, ...] = ()
+
 
 def _detect_bgp_afi(command: str, params: dict[str, str] | None) -> str:
     if params and params.get("afi"):
@@ -30,12 +32,13 @@ def _detect_bgp_afi(command: str, params: dict[str, str] | None) -> str:
 def normalize_bgp_peer(
     *,
     raw_text: str,
+    fsm_tables=None,
     vendor: str = "",
     device_type: str = "",
     command: str = "",
     params: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
-    _ = (vendor, device_type)
+    _ = (vendor, device_type, fsm_tables)
     afi = _detect_bgp_afi(command, params)
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -77,3 +80,5 @@ def normalize_bgp_peer(
             }
         )
     return out
+
+normalize_bgp_peer.RULE_KEYS = RULE_KEYS

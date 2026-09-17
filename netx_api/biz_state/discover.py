@@ -14,7 +14,7 @@ from ..lldp_shared import resolve_vendor_key
 from ..models import BizStateTask
 from ..ne_netmiko import disable_target_paging, send_show_command
 from ..ne_session_factory import close_netmiko_connection, open_netmiko_connection
-from .parsers import get_parser
+from .parsers import get_parser, run_parser
 from .profiles import get_profile
 
 
@@ -124,16 +124,17 @@ def discover_params(
             "raw_preview": str(raw or "")[:4000],
         }
 
-    parser = get_parser(disc.parser_id)
     records: list[dict[str, Any]] = []
-    if parser:
+    if get_parser(disc.parser_id):
         try:
-            records = parser(
+            records, _fsm_tables, _rule_keys = run_parser(
+                disc.parser_id,
                 raw_text=raw,
                 vendor=vendor,
                 device_type=device_type,
                 command=disc.textfsm_command or command,
                 params={},
+                textfsm_command=disc.textfsm_command or "",
             )
         except Exception as exc:
             return {
