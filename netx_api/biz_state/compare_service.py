@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import io
+import zipfile
 from datetime import datetime
 from typing import Any
 from uuid import uuid4
@@ -763,6 +765,110 @@ def run_compare(db: Session, job_id: str, *, force_after_batch_id: str = "") -> 
     return get_run(db, run.id)
 
 
+def _csv_cell(v: Any) -> str:
+    s = "" if v is None else str(v)
+    if any(ch in s for ch in ",\"\n\r"):
+        return '"' + s.replace('"', '""') + '"'
+    return s
+
+
+def _sheet_csv(sheet: dict[str, Any]) -> str:
+    keys = list(sheet.get("key_fields") or [])
+    compare = list(sheet.get("compare_fields") or [])
+    headers = ["kind", *keys]
+    for f in compare:
+        headers.append(f"{f}__pre")
+        headers.append(f"{f}__post")
+    lines = [",".join(_csv_cell(h) for h in headers)]
+    for d in list(sheet.get("diffs") or []):
+        kind = str(d.get("kind") or "")
+        pre = dict(d.get("mapped_before") or d.get("before") or {})
+        post = dict(d.get("after") or {})
+        key = dict(d.get("key") or {})
+        row = [kind]
+        for k in keys:
+            row.append(key.get(k, pre.get(k, post.get(k, ""))))
+        for f in compare:
+            if kind == "added":
+                row.append("")
+                row.append(post.get(f, ""))
+            elif kind == "removed":
+                row.append(pre.get(f, ""))
+                row.append("")
+            else:
+                row.append(pre.get(f, ""))
+                row.append(post.get(f, ""))
+        lines.append(",".join(_csv_cell(x) for x in row))
+    return "\ufeff" + "\n".join(lines) + "\n"
+
+
+def _enrich_summary(summary: dict[str, Any], sheets: list[dict[str, Any]]) -> dict[str, Any]:
+    added = int(summary.get("added") or 0)
+    removed = int(summary.get("removed") or 0)
+    changed = int(summary.get("changed") or 0)
+    unchanged = int(summary.get("unchanged") or 0)
+    before_count = int(summary.get("before_count") or 0)
+    after_count = int(summary.get("after_count") or 0)
+    total = added + removed + changed + unchanged
+    matched = changed + unchanged
+    diff_count = added + removed + changed
+    pass_rate = round((unchanged / matched) * 100, 1) if matched else (100.0 if total == 0 else 0.0)
+    diff_rate = round((diff_count / total) * 100, 1) if total else 0.0
+
+    field_counts: dict[str, int] = {}
+    sheet_cards: list[dict[str, Any]] = []
+    for sh in sheets:
+        ss = dict(sh.get("summary") or {})
+        sa = int(ss.get("added") or 0)
+        sr = int(ss.get("removed") or 0)
+        sc = int(ss.get("changed") or 0)
+        su = int(ss.get("unchanged") or 0)
+        st = sa + sr + sc + su
+        sm = sc + su
+        sheet_cards.append(
+            {
+                "metric_id": sh.get("metric_id") or "",
+                "mode": sh.get("mode") or ("presence" if not sh.get("compare_fields") else "fields"),
+                "added": sa,
+                "removed": sr,
+                "changed": sc,
+                "unchanged": su,
+                "before_count": int(ss.get("before_count") or 0),
+                "after_count": int(ss.get("after_count") or 0),
+                "diff_count": sa + sr + sc,
+                "pass_rate": round((su / sm) * 100, 1) if sm else (100.0 if st == 0 else 0.0),
+            }
+        )
+        for d in list(sh.get("diffs") or []):
+            if str(d.get("kind") or "") != "changed":
+                continue
+            for fname in (d.get("changes") or {}):
+                field_counts[str(fname)] = field_counts.get(str(fname), 0) + 1
+
+    top_fields = sorted(
+        [{"field": k, "count": v} for k, v in field_counts.items()],
+        key=lambda x: (-int(x["count"]), str(x["field"])),
+    )[:8]
+
+    return {
+        "added": added,
+        "removed": removed,
+        "changed": changed,
+        "unchanged": unchanged,
+        "before_count": before_count,
+        "after_count": after_count,
+        "sheet_count": int(summary.get("sheet_count") or len(sheets) or 0),
+        "total_rows": total,
+        "matched_rows": matched,
+        "diff_count": diff_count,
+        "pass_rate": pass_rate,
+        "diff_rate": diff_rate,
+        "ok": diff_count == 0,
+        "sheet_cards": sheet_cards,
+        "top_changed_fields": top_fields,
+    }
+
+
 def get_run(db: Session, run_id: str) -> dict[str, Any]:
     r = db.get(BizCompareRun, run_id)
     if not r:
@@ -779,10 +885,14 @@ def get_run(db: Session, run_id: str) -> dict[str, Any]:
                 "iface_fields": list((tpl.iface_fields if tpl else None) or []),
                 "compare_fields": list((tpl.compare_fields if tpl else None) or []),
                 "mode": "fields",
-                "summary": {k: summary.get(k, 0) for k in ("added", "removed", "changed", "unchanged", "before_count", "after_count")},
+                "summary": {
+                    k: summary.get(k, 0)
+                    for k in ("added", "removed", "changed", "unchanged", "before_count", "after_count")
+                },
                 "diffs": list(r.diffs_json or []),
             }
         ]
+    enriched = _enrich_summary(summary, sheets)
     return {
         "id": r.id,
         "job_id": r.job_id,
@@ -792,10 +902,7 @@ def get_run(db: Session, run_id: str) -> dict[str, Any]:
         "after_batch_id": r.after_batch_id,
         "metric_id": r.metric_id,
         "status": r.status,
-        "summary": {
-            k: summary.get(k, 0)
-            for k in ("added", "removed", "changed", "unchanged", "before_count", "after_count", "sheet_count")
-        },
+        "summary": enriched,
         "sheets": sheets,
         "diffs": list(r.diffs_json or []),
         "mapping_stats": r.mapping_stats_json or {},
@@ -803,6 +910,60 @@ def get_run(db: Session, run_id: str) -> dict[str, Any]:
         "created_at": r.created_at.isoformat() + "Z" if r.created_at else None,
         "template": _template_out(tpl) if tpl else None,
     }
+
+
+def export_run_zip(db: Session, run_id: str) -> bytes:
+    detail = get_run(db, run_id)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        s = detail.get("summary") or {}
+        manifest = [
+            f"run_id={detail.get('id')}",
+            f"job_id={detail.get('job_id')}",
+            f"before_batch_id={detail.get('before_batch_id')}",
+            f"after_batch_id={detail.get('after_batch_id')}",
+            f"created_at={detail.get('created_at')}",
+            f"pass_rate={s.get('pass_rate')}%",
+            f"diff_count={s.get('diff_count')}",
+            f"added={s.get('added')} removed={s.get('removed')} "
+            f"changed={s.get('changed')} unchanged={s.get('unchanged')}",
+            f"before_count={s.get('before_count')} after_count={s.get('after_count')}",
+            "",
+            "sheets:",
+        ]
+        for card in list(s.get("sheet_cards") or []):
+            manifest.append(
+                f"- {card.get('metric_id')}: diff={card.get('diff_count')} "
+                f"pass={card.get('pass_rate')}% "
+                f"+{card.get('added')}/-{card.get('removed')}/~{card.get('changed')}/= {card.get('unchanged')}"
+            )
+        zf.writestr("manifest.txt", "\n".join(manifest) + "\n")
+        for sheet in list(detail.get("sheets") or []):
+            mid = str(sheet.get("metric_id") or "sheet")
+            safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in mid)[:80] or "sheet"
+            zf.writestr(f"tables/{safe}.csv", _sheet_csv(sheet))
+        # summary table
+        sum_lines = ["metric_id,mode,before,after,added,removed,changed,unchanged,diff_count,pass_rate"]
+        for card in list(s.get("sheet_cards") or []):
+            sum_lines.append(
+                ",".join(
+                    _csv_cell(x)
+                    for x in (
+                        card.get("metric_id"),
+                        card.get("mode"),
+                        card.get("before_count"),
+                        card.get("after_count"),
+                        card.get("added"),
+                        card.get("removed"),
+                        card.get("changed"),
+                        card.get("unchanged"),
+                        card.get("diff_count"),
+                        card.get("pass_rate"),
+                    )
+                )
+            )
+        zf.writestr("tables/_summary.csv", "\ufeff" + "\n".join(sum_lines) + "\n")
+    return buf.getvalue()
 
 
 def list_runs(db: Session, job_id: str, *, limit: int = 20) -> list[dict[str, Any]]:

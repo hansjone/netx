@@ -369,3 +369,13 @@ def api_list_runs(job_id: str, limit: int = 20, db: Session = Depends(get_db)) -
 @router.get("/compare/runs/{run_id}")
 def api_get_run(run_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
     return cmp_svc.get_run(db, run_id)
+
+
+@router.get("/compare/runs/{run_id}/export")
+def api_export_run(run_id: str, db: Session = Depends(get_db)) -> StreamingResponse:
+    data = cmp_svc.export_run_zip(db, run_id)
+    return StreamingResponse(
+        iter([data]),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="biz_compare_{run_id}.zip"'},
+    )

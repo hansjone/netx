@@ -1911,3 +1911,23 @@ export const bizCompareListRuns = (jobId: string, limit = 20) =>
 
 export const bizCompareGetRun = (runId: string) =>
   apiGet<Record<string, unknown>>(`/v1/biz-state/compare/runs/${encodeURIComponent(runId)}`);
+
+export const bizCompareDownloadRun = async (runId: string): Promise<void> => {
+  const path = `/v1/biz-state/compare/runs/${encodeURIComponent(runId)}/export`;
+  const res = await fetch(path, { method: "GET", credentials: fetchCreds, headers: authHeaders() });
+  if (res.status === 401) {
+    handleUnauthorized(path);
+    throw new Error("unauthorized");
+  }
+  if (!res.ok) throw new Error(`${res.status} export`);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `biz_compare_${runId}.zip`;
+    a.click();
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+};

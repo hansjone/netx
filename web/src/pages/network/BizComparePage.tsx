@@ -1,5 +1,5 @@
 import { Button, Input, Modal } from "@heroui/react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppModalShell } from "../../components/ui/AppModalShell";
 import { FieldSelect } from "../../components/ui/FieldSelect";
 import { useDebouncedValue } from "../../hooks/useDebouncedValue";
@@ -11,6 +11,7 @@ import {
   bizCompareCreateTemplate,
   bizCompareDeleteJob,
   bizCompareDeleteTemplate,
+  bizCompareDownloadRun,
   bizCompareGetRun,
   bizCompareListJobs,
   bizCompareListMappings,
@@ -200,6 +201,8 @@ export function BizComparePage() {
   const [kindFilter, setKindFilter] = useState<KindFilter>("diff");
   const [resultKw, setResultKw] = useState("");
   const debouncedResultKw = useDebouncedValue(resultKw, 200);
+  const boardRef = useRef<HTMLDivElement | null>(null);
+  const [boardFs, setBoardFs] = useState(false);
 
   const refresh = useCallback(async () => {
     const [taskRes, tpl, maps, j, met] = await Promise.all([
@@ -355,6 +358,55 @@ export function BizComparePage() {
   };
 
   const summary = runDetail?.summary || {};
+  const sheetCards = (summary.sheet_cards || []) as Array<{
+    metric_id: string;
+    mode?: string;
+    added?: number;
+    removed?: number;
+    changed?: number;
+    unchanged?: number;
+    before_count?: number;
+    after_count?: number;
+    diff_count?: number;
+    pass_rate?: number;
+  }>;
+  const topChangedFields = (summary.top_changed_fields || []) as Array<{
+    field: string;
+    count: number;
+  }>;
+
+  useEffect(() => {
+    const syncFs = () => {
+      const el = boardRef.current;
+      setBoardFs(Boolean(el && document.fullscreenElement === el));
+    };
+    document.addEventListener("fullscreenchange", syncFs);
+    return () => document.removeEventListener("fullscreenchange", syncFs);
+  }, []);
+
+  const toggleBoardFullscreen = async () => {
+    const el = boardRef.current;
+    if (!el) return;
+    try {
+      if (document.fullscreenElement === el) await document.exitFullscreen();
+      else await el.requestFullscreen();
+    } catch (e) {
+      showError(formatErr(e));
+    }
+  };
+
+  const downloadRunTables = async () => {
+    if (!runDetail?.id) return;
+    setBusy(true);
+    try {
+      await bizCompareDownloadRun(String(runDetail.id));
+      showOk(t("bizCompare.exportOk"));
+    } catch (e) {
+      showError(formatErr(e));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const updateActiveSheet = (patch: Partial<MetricSheet>) => {
     setTplSheets((prev) =>
@@ -1180,7 +1232,12 @@ export function BizComparePage() {
       </AppModalShell>
 
       {/* Job detail */}
-      <AppModalShell open={Boolean(jobId)} onClose={closeJob} size="lg" className="app-heroui-modal--xl">
+      <AppModalShell
+        open={Boolean(jobId)}
+        onClose={closeJob}
+        size={jobDetailTab === "result" ? "cover" : "lg"}
+        className={`app-heroui-modal--xl${jobDetailTab === "result" ? " bs-cmp-board-modal" : ""}`}
+      >
         <Modal.Header>
           <Modal.Heading>
             {name || t("bizCompare.detail")} · {jobId.slice(0, 8)}…
@@ -1210,8 +1267,11 @@ export function BizComparePage() {
           {jobDetailTab === "config" ? (
             renderJobForm(false)
           ) : (
-            <div className="bs-workbook-body bs-cmp-result flex flex-col gap-3" style={{ flex: 1, minHeight: 0 }}>
-              <div className="bs-cmp-result__toolbar">
+            <div
+              ref={boardRef}
+              className={`bs-cmp-board${boardFs ? " is-fullscreen" : ""}`}
+            >
+              <div className="bs-cmp-board__toolbar">
                 <FieldSelect
                   label={t("bizCompare.pickBatchRun")}
                   value={runDetail?.id || ""}
@@ -1219,20 +1279,128 @@ export function BizComparePage() {
                     const id = e.target.value;
                     if (id) void loadRun(id);
                   }}
-                  fullWidth
                 >
                   <option value="">{t("bizCompare.pickRun")}</option>
                   {runs.map((r) => (
                     <option key={r.id} value={r.id}>
-                      {fmtTime(r.created_at)} · +{r.summary?.added ?? 0} / −{r.summary?.removed ?? 0} / ~
-                      {r.summary?.changed ?? 0}
+                      {fmtTime(r.created_at)} · Δ{r.summary?.added ?? 0}/
+                      {r.summary?.removed ?? 0}/{r.summary?.changed ?? 0}
                     </option>
                   ))}
                 </FieldSelect>
+                <div className="btn-row">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    isDisabled={busy || !runDetail?.id}
+                    onPress={() => void downloadRunTables()}
+                  >
+                    {t("bizCompare.exportTables")}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    isDisabled={!runDetail}
+                    onPress={() => void toggleBoardFullscreen()}
+                  >
+                    {boardFs ? t("bizCompare.exitFullscreen") : t("bizCompare.fullscreen")}
+                  </Button>
+                </div>
               </div>
 
               {runDetail ? (
                 <>
+                  <div className="bs-cmp-board__hero">
+                    <div
+                      className={`bs-cmp-hero-pass${summary.ok ? " is-ok" : " is-warn"}`}
+                    >
+                      <div className="bs-cmp-hero-pass__label">{t("bizCompare.passRate")}</div>
+                      <div className="bs-cmp-hero-pass__value">
+                        {Number(summary.pass_rate ?? 0).toFixed(1)}
+                        <span className="bs-cmp-hero-pass__unit">%</span>
+                      </div>
+                      <div className="bs-cmp-hero-pass__sub">
+                        {summary.ok ? t("bizCompare.passOk") : t("bizCompare.passWarn")}
+                      </div>
+                    </div>
+                    <div className="bs-cmp-hero-metrics">
+                      <div className="bs-cmp-hero-metric">
+                        <span className="bs-cmp-hero-metric__label">{t("bizCompare.diffCountLabel")}</span>
+                        <span className="bs-cmp-hero-metric__value">{summary.diff_count ?? 0}</span>
+                        <span className="bs-cmp-hero-metric__sub">
+                          {t("bizCompare.diffRate")}: {Number(summary.diff_rate ?? 0).toFixed(1)}%
+                        </span>
+                      </div>
+                      <div className="bs-cmp-hero-metric">
+                        <span className="bs-cmp-hero-metric__label">{t("bizCompare.beforeCount")}</span>
+                        <span className="bs-cmp-hero-metric__value">{summary.before_count ?? 0}</span>
+                        <span className="bs-cmp-hero-metric__sub">
+                          {t("bizCompare.afterCount")}: {summary.after_count ?? 0}
+                        </span>
+                      </div>
+                      <div className="bs-cmp-hero-metric">
+                        <span className="bs-cmp-hero-metric__label">{t("bizCompare.matchedRows")}</span>
+                        <span className="bs-cmp-hero-metric__value">{summary.matched_rows ?? 0}</span>
+                        <span className="bs-cmp-hero-metric__sub">
+                          {t("bizCompare.totalRows")}: {summary.total_rows ?? 0}
+                        </span>
+                      </div>
+                      <div className="bs-cmp-hero-metric">
+                        <span className="bs-cmp-hero-metric__label">{t("bizCompare.sheetCount")}</span>
+                        <span className="bs-cmp-hero-metric__value">
+                          {summary.sheet_count ?? runSheets.length}
+                        </span>
+                        <span className="bs-cmp-hero-metric__sub">
+                          {fmtTime(runDetail.created_at)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {sheetCards.length ? (
+                    <div className="bs-cmp-sheet-cards">
+                      {sheetCards.map((c) => (
+                        <button
+                          key={c.metric_id}
+                          type="button"
+                          className={`bs-cmp-sheet-card${
+                            resultSheetId === c.metric_id ? " is-active" : ""
+                          }${Number(c.diff_count || 0) > 0 ? " has-diff" : " is-clean"}`}
+                          onClick={() => setResultSheetId(c.metric_id)}
+                        >
+                          <div className="bs-cmp-sheet-card__title">{c.metric_id}</div>
+                          <div className="bs-cmp-sheet-card__pass">
+                            {Number(c.pass_rate ?? 0).toFixed(1)}%
+                          </div>
+                          <div className="bs-cmp-sheet-card__stats">
+                            <span>+{c.added ?? 0}</span>
+                            <span>−{c.removed ?? 0}</span>
+                            <span>~{c.changed ?? 0}</span>
+                            <span>={c.unchanged ?? 0}</span>
+                          </div>
+                          <div className="bs-cmp-sheet-card__meta muted">
+                            {c.mode === "presence"
+                              ? t("bizCompare.presenceShort")
+                              : t("bizCompare.modeFieldsShort")}{" "}
+                            · {c.before_count ?? 0}→{c.after_count ?? 0}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  {topChangedFields.length ? (
+                    <div className="bs-cmp-top-fields">
+                      <span className="bs-cmp-top-fields__label">{t("bizCompare.topChangedFields")}</span>
+                      {topChangedFields.map((f) => (
+                        <span key={f.field} className="bs-cmp-top-fields__chip">
+                          {f.field}
+                          <em>{f.count}</em>
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+
                   <div className="bs-cmp-kpis">
                     <button
                       type="button"
@@ -1374,7 +1542,9 @@ export function BizComparePage() {
                           <tr>
                             <td
                               colSpan={
-                                1 + resultColumns.keys.length + Math.max(resultColumns.compare.length, 0)
+                                1 +
+                                resultColumns.keys.length +
+                                Math.max(resultColumns.compare.length, 0)
                               }
                             >
                               <div className="pt-list-empty">{t("bizCompare.resultEmpty")}</div>
@@ -1400,7 +1570,7 @@ export function BizComparePage() {
                           {s.metric_id}
                           <span className="bs-sheet-tab__count">
                             {dirty > 0
-                              ? `${t("bizCompare.diffCount", { n: String(dirty) })}`
+                              ? t("bizCompare.diffCount", { n: String(dirty) })
                               : t("bizCompare.kindUnchangedShort")}
                             {s.mode === "presence" ? ` · ${t("bizCompare.presenceShort")}` : ""}
                           </span>
@@ -1426,9 +1596,19 @@ export function BizComparePage() {
               </Button>
             </>
           ) : (
-            <Button size="sm" variant="primary" isDisabled={busy} onPress={() => void runNow()}>
-              {t("bizCompare.runNow")}
-            </Button>
+            <>
+              <Button
+                size="sm"
+                variant="secondary"
+                isDisabled={busy || !runDetail?.id}
+                onPress={() => void downloadRunTables()}
+              >
+                {t("bizCompare.exportTables")}
+              </Button>
+              <Button size="sm" variant="primary" isDisabled={busy} onPress={() => void runNow()}>
+                {t("bizCompare.runNow")}
+              </Button>
+            </>
           )}
           <Button size="sm" variant="ghost" onPress={closeJob}>
             {t("bizState.cancel")}
