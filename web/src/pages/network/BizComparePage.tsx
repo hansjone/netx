@@ -1,5 +1,6 @@
 import { Button, Input, Modal } from "@heroui/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ListPager } from "../../components/ListPager";
 import { AppModalShell } from "../../components/ui/AppModalShell";
 import { FieldSelect } from "../../components/ui/FieldSelect";
 import { useDebouncedValue } from "../../hooks/useDebouncedValue";
@@ -16,6 +17,7 @@ import {
   bizCompareListJobs,
   bizCompareListMappings,
   bizCompareListMetrics,
+  bizCompareListRunDiffs,
   bizCompareListRuns,
   bizCompareListTemplates,
   bizCompareRunJob,
@@ -197,10 +199,15 @@ export function BizComparePage() {
   const [runDetail, setRunDetail] = useState<any>(null);
   const [resultSheetId, setResultSheetId] = useState("");
 
-  // result filters
+  // result filters (server-paged)
   const [kindFilter, setKindFilter] = useState<KindFilter>("diff");
   const [resultKw, setResultKw] = useState("");
-  const debouncedResultKw = useDebouncedValue(resultKw, 200);
+  const debouncedResultKw = useDebouncedValue(resultKw, 300);
+  const [resultPage, setResultPage] = useState(1);
+  const [resultPageSize, setResultPageSize] = useState(100);
+  const [resultTotal, setResultTotal] = useState(0);
+  const [pagedDiffs, setPagedDiffs] = useState<DiffRow[]>([]);
+  const [diffsLoading, setDiffsLoading] = useState(false);
   const boardRef = useRef<HTMLDivElement | null>(null);
   const [boardFs, setBoardFs] = useState(false);
 
@@ -316,38 +323,71 @@ export function BizComparePage() {
     [runSheets, resultSheetId],
   );
 
+  // Reset page when sheet / filter / page size changes
+  useEffect(() => {
+    setResultPage(1);
+  }, [resultSheetId, kindFilter, debouncedResultKw, resultPageSize, runDetail?.id]);
+
+  useEffect(() => {
+    const runId = String(runDetail?.id || "");
+    const mid = resultSheetId || activeRunSheet?.metric_id || "";
+    if (!runId || !mid || jobDetailTab !== "result") {
+      setPagedDiffs([]);
+      setResultTotal(0);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      setDiffsLoading(true);
+      try {
+        const res = await bizCompareListRunDiffs({
+          runId,
+          metricId: mid,
+          kind: kindFilter,
+          kw: debouncedResultKw.trim(),
+          page: resultPage,
+          pageSize: resultPageSize,
+        });
+        if (cancelled) return;
+        setPagedDiffs((res.items || []) as DiffRow[]);
+        setResultTotal(Number(res.total || 0));
+        const pages = Math.max(
+          1,
+          Math.ceil(Number(res.total || 0) / Number(res.page_size || resultPageSize)),
+        );
+        if (resultPage > pages) setResultPage(pages);
+      } catch (e) {
+        if (!cancelled) {
+          setPagedDiffs([]);
+          setResultTotal(0);
+          showError(formatErr(e));
+        }
+      } finally {
+        if (!cancelled) setDiffsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    runDetail?.id,
+    resultSheetId,
+    activeRunSheet?.metric_id,
+    kindFilter,
+    debouncedResultKw,
+    resultPage,
+    resultPageSize,
+    jobDetailTab,
+    showError,
+  ]);
+
   const resultColumns = useMemo(() => {
-    const keys =
-      activeRunSheet?.key_fields?.length
-        ? activeRunSheet.key_fields
-        : Object.keys((activeRunSheet?.diffs?.[0]?.key as any) || {});
+    const keys = activeRunSheet?.key_fields?.length
+      ? activeRunSheet.key_fields
+      : Object.keys((pagedDiffs[0]?.key as Record<string, unknown>) || {});
     const compare = (activeRunSheet?.compare_fields || []).filter((f) => !keys.includes(f));
     return { keys, compare, presence: !(activeRunSheet?.compare_fields || []).length };
-  }, [activeRunSheet]);
-
-  const filteredDiffs = useMemo(() => {
-    const diffs = (activeRunSheet?.diffs || []) as DiffRow[];
-    const kw = debouncedResultKw.trim().toLowerCase();
-    return diffs.filter((d) => {
-      if (kindFilter === "diff") {
-        if (d.kind === "unchanged") return false;
-      } else if (kindFilter !== "all" && d.kind !== kindFilter) {
-        return false;
-      }
-      if (!kw) return true;
-      const blob = [
-        d.kind,
-        ...Object.values(d.key || {}),
-        ...Object.values(d.before || {}),
-        ...Object.values(d.after || {}),
-        JSON.stringify(d.changes || {}),
-      ]
-        .map(cellText)
-        .join(" ")
-        .toLowerCase();
-      return blob.includes(kw);
-    });
-  }, [activeRunSheet, kindFilter, debouncedResultKw]);
+  }, [activeRunSheet, pagedDiffs]);
 
   const kindLabel = (kind: string) => {
     if (kind === "added") return t("bizCompare.kindAddedShort");
@@ -358,6 +398,7 @@ export function BizComparePage() {
   };
 
   const summary = runDetail?.summary || {};
+  const resultPages = Math.max(1, Math.ceil(resultTotal / Math.max(1, resultPageSize)));
   const sheetCards = useMemo(() => {
     const raw = (summary.sheet_cards || []) as Array<{
       metric_id: string;
@@ -1484,7 +1525,9 @@ export function BizComparePage() {
                         onChange={(e) => setResultKw(e.target.value)}
                       />
                       <span className="muted bs-sheet-count">
-                        {filteredDiffs.length}/{(activeRunSheet?.diffs || []).length}
+                        {diffsLoading
+                          ? "…"
+                          : `${pagedDiffs.length}/${resultTotal}`}
                         {resultColumns.presence ? ` · ${t("bizCompare.presenceShort")}` : ""}
                       </span>
                     </div>
@@ -1503,7 +1546,7 @@ export function BizComparePage() {
                           </tr>
                         </thead>
                         <tbody>
-                          {filteredDiffs.slice(0, 2000).map((d, i) => {
+                          {pagedDiffs.map((d, i) => {
                             const pre = (d.mapped_before || d.before || {}) as Record<
                               string,
                               unknown
@@ -1569,7 +1612,7 @@ export function BizComparePage() {
                               </tr>
                             );
                           })}
-                          {runDetail && !filteredDiffs.length ? (
+                          {runDetail && !diffsLoading && !pagedDiffs.length ? (
                             <tr>
                               <td
                                 colSpan={
@@ -1585,6 +1628,20 @@ export function BizComparePage() {
                         </tbody>
                       </table>
                     </div>
+
+                    <ListPager
+                      page={resultPage}
+                      pages={resultPages}
+                      total={resultTotal}
+                      pageSize={resultPageSize}
+                      pageSizeOptions={[50, 100, 200, 500]}
+                      onPageChange={setResultPage}
+                      onPageSizeChange={(n) => {
+                        setResultPageSize(n);
+                        setResultPage(1);
+                      }}
+                      disabled={diffsLoading || !runDetail}
+                    />
                   </div>
                 </div>
               ) : (

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 import zipfile
 from datetime import datetime
 from typing import Any
@@ -12,6 +13,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from ..models import (
+    BizCompareDiff,
     BizCompareJob,
     BizCompareRun,
     BizCompareTemplate,
@@ -27,6 +29,129 @@ from .profiles import metric_field_map
 
 def _utcnow() -> datetime:
     return utcnow_naive()
+
+
+_DIFF_CHUNK = 2000
+_SEARCH_TEXT_MAX = 4000
+
+
+def _diff_search_text(d: dict[str, Any]) -> str:
+    parts = [str(d.get("kind") or "")]
+    for key in ("key", "before", "after", "mapped_before", "changes"):
+        val = d.get(key)
+        if val:
+            try:
+                parts.append(json.dumps(val, ensure_ascii=False, default=str, separators=(",", ":")))
+            except Exception:
+                parts.append(str(val))
+    return " ".join(parts)[:_SEARCH_TEXT_MAX]
+
+
+def _top_changed_fields(diffs: list[dict[str, Any]], *, limit: int = 8) -> list[dict[str, Any]]:
+    field_counts: dict[str, int] = {}
+    for d in diffs:
+        if str(d.get("kind") or "") != "changed":
+            continue
+        for fname in d.get("changes") or {}:
+            field_counts[str(fname)] = field_counts.get(str(fname), 0) + 1
+    return sorted(
+        [{"field": k, "count": v} for k, v in field_counts.items()],
+        key=lambda x: (-int(x["count"]), str(x["field"])),
+    )[:limit]
+
+
+def _persist_sheet_diffs(
+    db: Session,
+    *,
+    run_id: str,
+    metric_id: str,
+    diffs: list[dict[str, Any]],
+) -> None:
+    """Bulk-insert diff rows; avoids embedding million-row arrays in summary_json."""
+    buf: list[dict[str, Any]] = []
+    for i, d in enumerate(diffs):
+        buf.append(
+            {
+                "id": uuid4().hex,
+                "run_id": run_id,
+                "metric_id": metric_id,
+                "seq": i,
+                "kind": str(d.get("kind") or ""),
+                "key_json": dict(d.get("key") or {}),
+                "before_json": dict(d.get("before") or {}),
+                "after_json": dict(d.get("after") or {}),
+                "mapped_before_json": dict(d.get("mapped_before") or {}),
+                "changes_json": dict(d.get("changes") or {}),
+                "search_text": _diff_search_text(d),
+            }
+        )
+        if len(buf) >= _DIFF_CHUNK:
+            db.bulk_insert_mappings(BizCompareDiff, buf)
+            buf.clear()
+    if buf:
+        db.bulk_insert_mappings(BizCompareDiff, buf)
+
+
+def _diff_row_out(r: BizCompareDiff) -> dict[str, Any]:
+    return {
+        "kind": r.kind,
+        "key": r.key_json or {},
+        "before": r.before_json or {},
+        "after": r.after_json or {},
+        "mapped_before": r.mapped_before_json or {},
+        "changes": r.changes_json or {},
+    }
+
+
+def _run_has_diff_rows(db: Session, run_id: str) -> bool:
+    return (
+        db.query(BizCompareDiff.id).filter(BizCompareDiff.run_id == run_id).limit(1).first()
+        is not None
+    )
+
+
+def _filter_inline_diffs(
+    diffs: list[dict[str, Any]],
+    *,
+    kind: str,
+    kw: str,
+) -> list[dict[str, Any]]:
+    kind_n = (kind or "diff").strip().lower()
+    kw_n = (kw or "").strip().lower()
+    out: list[dict[str, Any]] = []
+    for d in diffs:
+        dk = str(d.get("kind") or "")
+        if kind_n == "diff":
+            if dk == "unchanged":
+                continue
+        elif kind_n != "all" and dk != kind_n:
+            continue
+        if kw_n:
+            blob = _diff_search_text(d).lower()
+            if kw_n not in blob:
+                continue
+        out.append(d)
+    return out
+
+
+def _sheet_meta_from_summary(summary: dict[str, Any], run: BizCompareRun, tpl: Any) -> list[dict[str, Any]]:
+    sheets = list(summary.get("sheets") or [])
+    if sheets:
+        return sheets
+    return [
+        {
+            "metric_id": run.metric_id,
+            "key_fields": list((tpl.key_fields if tpl else None) or []),
+            "iface_fields": list((tpl.iface_fields if tpl else None) or []),
+            "compare_fields": list((tpl.compare_fields if tpl else None) or []),
+            "mode": "fields",
+            "summary": {
+                k: summary.get(k, 0)
+                for k in ("added", "removed", "changed", "unchanged", "before_count", "after_count")
+            },
+            "diffs": list(run.diffs_json or []),
+        }
+    ]
 
 
 def _str_list(raw: Any) -> list[str]:
@@ -624,6 +749,13 @@ def delete_job(db: Session, job_id: str) -> None:
     j = db.get(BizCompareJob, job_id)
     if not j:
         raise HTTPException(status_code=404, detail="job_not_found")
+    run_ids = [
+        rid for (rid,) in db.query(BizCompareRun.id).filter(BizCompareRun.job_id == job_id).all()
+    ]
+    if run_ids:
+        db.query(BizCompareDiff).filter(BizCompareDiff.run_id.in_(run_ids)).delete(
+            synchronize_session=False
+        )
     db.query(BizCompareRun).filter(BizCompareRun.job_id == job_id).delete()
     db.delete(j)
     db.commit()
@@ -725,9 +857,24 @@ def run_compare(db: Session, job_id: str, *, force_after_batch_id: str = "") -> 
         mapping_by_metric[one["metric_id"]] = one["mapping_stats"]
 
     first = sheet_results[0]
+    field_counts: dict[str, int] = {}
+    for s in sheet_results:
+        for d in list(s.get("diffs") or []):
+            if str(d.get("kind") or "") != "changed":
+                continue
+            for fname in d.get("changes") or {}:
+                field_counts[str(fname)] = field_counts.get(str(fname), 0) + 1
+    top_fields = sorted(
+        [{"field": k, "count": v} for k, v in field_counts.items()],
+        key=lambda x: (-int(x["count"]), str(x["field"])),
+    )[:8]
+
+    run_id = uuid4().hex
+    # Persist counts/meta only — diffs go to biz_compare_diff rows
     summary_payload = {
         **agg,
         "sheet_count": len(sheet_results),
+        "top_changed_fields": top_fields,
         "sheets": [
             {
                 "metric_id": s["metric_id"],
@@ -736,14 +883,13 @@ def run_compare(db: Session, job_id: str, *, force_after_batch_id: str = "") -> 
                 "compare_fields": s["compare_fields"],
                 "mode": s["mode"],
                 "summary": s["summary"],
-                "diffs": s["diffs"],
             }
             for s in sheet_results
         ],
     }
 
     run = BizCompareRun(
-        id=uuid4().hex,
+        id=run_id,
         job_id=j.id,
         template_id=tpl.id,
         mapping_id=j.mapping_id,
@@ -752,12 +898,20 @@ def run_compare(db: Session, job_id: str, *, force_after_batch_id: str = "") -> 
         metric_id=first["metric_id"],
         status="success",
         summary_json=summary_payload,
-        diffs_json=first["diffs"],
+        diffs_json=[],
         mapping_stats_json=mapping_by_metric,
         message="",
         created_at=_utcnow(),
     )
     db.add(run)
+    db.flush()
+    for s in sheet_results:
+        _persist_sheet_diffs(
+            db,
+            run_id=run_id,
+            metric_id=str(s["metric_id"]),
+            diffs=list(s.get("diffs") or []),
+        )
     j.updated_at = _utcnow()
     if j.mode == "manual":
         j.after_batch_id = after_batch_id
@@ -815,7 +969,6 @@ def _enrich_summary(summary: dict[str, Any], sheets: list[dict[str, Any]]) -> di
     pass_rate = round((unchanged / matched) * 100, 1) if matched else (100.0 if total == 0 else 0.0)
     diff_rate = round((diff_count / total) * 100, 1) if total else 0.0
 
-    field_counts: dict[str, int] = {}
     sheet_cards: list[dict[str, Any]] = []
     for sh in sheets:
         ss = dict(sh.get("summary") or {})
@@ -839,16 +992,21 @@ def _enrich_summary(summary: dict[str, Any], sheets: list[dict[str, Any]]) -> di
                 "pass_rate": round((su / sm) * 100, 1) if sm else (100.0 if st == 0 else 0.0),
             }
         )
-        for d in list(sh.get("diffs") or []):
-            if str(d.get("kind") or "") != "changed":
-                continue
-            for fname in (d.get("changes") or {}):
-                field_counts[str(fname)] = field_counts.get(str(fname), 0) + 1
 
-    top_fields = sorted(
-        [{"field": k, "count": v} for k, v in field_counts.items()],
-        key=lambda x: (-int(x["count"]), str(x["field"])),
-    )[:8]
+    top_fields = list(summary.get("top_changed_fields") or [])
+    if not top_fields:
+        # Legacy runs that still embed diffs in summary_json
+        field_counts: dict[str, int] = {}
+        for sh in sheets:
+            for d in list(sh.get("diffs") or []):
+                if str(d.get("kind") or "") != "changed":
+                    continue
+                for fname in d.get("changes") or {}:
+                    field_counts[str(fname)] = field_counts.get(str(fname), 0) + 1
+        top_fields = sorted(
+            [{"field": k, "count": v} for k, v in field_counts.items()],
+            key=lambda x: (-int(x["count"]), str(x["field"])),
+        )[:8]
 
     return {
         "added": added,
@@ -875,24 +1033,21 @@ def get_run(db: Session, run_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="run_not_found")
     tpl = db.get(BizCompareTemplate, r.template_id) if r.template_id else None
     summary = dict(r.summary_json or {})
-    sheets = list(summary.get("sheets") or [])
-    if not sheets:
-        # Legacy single-metric run
-        sheets = [
-            {
-                "metric_id": r.metric_id,
-                "key_fields": list((tpl.key_fields if tpl else None) or []),
-                "iface_fields": list((tpl.iface_fields if tpl else None) or []),
-                "compare_fields": list((tpl.compare_fields if tpl else None) or []),
-                "mode": "fields",
-                "summary": {
-                    k: summary.get(k, 0)
-                    for k in ("added", "removed", "changed", "unchanged", "before_count", "after_count")
-                },
-                "diffs": list(r.diffs_json or []),
-            }
-        ]
-    enriched = _enrich_summary(summary, sheets)
+    raw_sheets = _sheet_meta_from_summary(summary, r, tpl)
+    # Never return full diffs in run detail (million-row safe)
+    sheets = [
+        {
+            "metric_id": sh.get("metric_id") or "",
+            "key_fields": list(sh.get("key_fields") or []),
+            "iface_fields": list(sh.get("iface_fields") or []),
+            "compare_fields": list(sh.get("compare_fields") or []),
+            "mode": sh.get("mode") or ("presence" if not sh.get("compare_fields") else "fields"),
+            "summary": dict(sh.get("summary") or {}),
+        }
+        for sh in raw_sheets
+    ]
+    enriched = _enrich_summary(summary, raw_sheets)
+    stored = "rows" if _run_has_diff_rows(db, run_id) else "inline"
     return {
         "id": r.id,
         "job_id": r.job_id,
@@ -904,12 +1059,117 @@ def get_run(db: Session, run_id: str) -> dict[str, Any]:
         "status": r.status,
         "summary": enriched,
         "sheets": sheets,
-        "diffs": list(r.diffs_json or []),
+        "diffs": [],
+        "diffs_stored": stored,
         "mapping_stats": r.mapping_stats_json or {},
         "message": r.message,
         "created_at": r.created_at.isoformat() + "Z" if r.created_at else None,
         "template": _template_out(tpl) if tpl else None,
     }
+
+
+def list_run_diffs(
+    db: Session,
+    run_id: str,
+    *,
+    metric_id: str = "",
+    kind: str = "diff",
+    kw: str = "",
+    page: int = 1,
+    page_size: int = 100,
+) -> dict[str, Any]:
+    r = db.get(BizCompareRun, run_id)
+    if not r:
+        raise HTTPException(status_code=404, detail="run_not_found")
+    page_n = max(1, int(page or 1))
+    size_n = max(1, min(500, int(page_size or 100)))
+    kind_n = (kind or "diff").strip().lower()
+    kw_n = (kw or "").strip()
+
+    summary = dict(r.summary_json or {})
+    tpl = db.get(BizCompareTemplate, r.template_id) if r.template_id else None
+    sheets = _sheet_meta_from_summary(summary, r, tpl)
+    mid = (metric_id or "").strip() or (sheets[0].get("metric_id") if sheets else r.metric_id) or ""
+
+    if _run_has_diff_rows(db, run_id):
+        q = db.query(BizCompareDiff).filter(
+            BizCompareDiff.run_id == run_id,
+            BizCompareDiff.metric_id == mid,
+        )
+        if kind_n == "diff":
+            q = q.filter(BizCompareDiff.kind.in_(("added", "removed", "changed")))
+        elif kind_n != "all":
+            q = q.filter(BizCompareDiff.kind == kind_n)
+        if kw_n:
+            q = q.filter(BizCompareDiff.search_text.ilike(f"%{kw_n}%"))
+        total = q.count()
+        rows = (
+            q.order_by(BizCompareDiff.seq.asc(), BizCompareDiff.id.asc())
+            .offset((page_n - 1) * size_n)
+            .limit(size_n)
+            .all()
+        )
+        return {
+            "total": total,
+            "page": page_n,
+            "page_size": size_n,
+            "metric_id": mid,
+            "items": [_diff_row_out(x) for x in rows],
+        }
+
+    # Legacy: diffs embedded in summary_json / diffs_json
+    sheet = next((s for s in sheets if str(s.get("metric_id") or "") == mid), None)
+    if sheet is None and sheets:
+        sheet = sheets[0]
+        mid = str(sheet.get("metric_id") or mid)
+    inline = list((sheet or {}).get("diffs") or [])
+    if not inline and mid == r.metric_id:
+        inline = list(r.diffs_json or [])
+    filtered = _filter_inline_diffs(inline, kind=kind_n, kw=kw_n)
+    total = len(filtered)
+    start = (page_n - 1) * size_n
+    page_items = filtered[start : start + size_n]
+    return {
+        "total": total,
+        "page": page_n,
+        "page_size": size_n,
+        "metric_id": mid,
+        "items": page_items,
+    }
+
+
+def _iter_sheet_diffs(db: Session, run_id: str, metric_id: str) -> list[dict[str, Any]]:
+    """Load all diffs for one sheet (export). Prefer row table; fall back to inline."""
+    if _run_has_diff_rows(db, run_id):
+        out: list[dict[str, Any]] = []
+        offset = 0
+        while True:
+            rows = (
+                db.query(BizCompareDiff)
+                .filter(BizCompareDiff.run_id == run_id, BizCompareDiff.metric_id == metric_id)
+                .order_by(BizCompareDiff.seq.asc(), BizCompareDiff.id.asc())
+                .offset(offset)
+                .limit(_DIFF_CHUNK)
+                .all()
+            )
+            if not rows:
+                break
+            out.extend(_diff_row_out(x) for x in rows)
+            offset += len(rows)
+            if len(rows) < _DIFF_CHUNK:
+                break
+        return out
+    r = db.get(BizCompareRun, run_id)
+    if not r:
+        return []
+    summary = dict(r.summary_json or {})
+    sheets = list(summary.get("sheets") or [])
+    for sh in sheets:
+        if str(sh.get("metric_id") or "") == metric_id:
+            return list(sh.get("diffs") or [])
+    if metric_id == r.metric_id:
+        return list(r.diffs_json or [])
+    return []
 
 
 def export_run_zip(db: Session, run_id: str) -> bytes:
@@ -941,8 +1201,11 @@ def export_run_zip(db: Session, run_id: str) -> bytes:
         for sheet in list(detail.get("sheets") or []):
             mid = str(sheet.get("metric_id") or "sheet")
             safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in mid)[:80] or "sheet"
-            zf.writestr(f"tables/{safe}.csv", _sheet_csv(sheet))
-        # summary table
+            sheet_full = {
+                **sheet,
+                "diffs": _iter_sheet_diffs(db, run_id, mid),
+            }
+            zf.writestr(f"tables/{safe}.csv", _sheet_csv(sheet_full))
         sum_lines = ["metric_id,mode,before,after,added,removed,changed,unchanged,diff_count,pass_rate"]
         for card in list(s.get("sheet_cards") or []):
             sum_lines.append(

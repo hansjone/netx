@@ -371,6 +371,27 @@ def api_get_run(run_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
     return cmp_svc.get_run(db, run_id)
 
 
+@router.get("/compare/runs/{run_id}/diffs")
+def api_list_run_diffs(
+    run_id: str,
+    metric_id: str = "",
+    kind: str = "diff",
+    kw: str = "",
+    page: int = 1,
+    page_size: int = 100,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    return cmp_svc.list_run_diffs(
+        db,
+        run_id,
+        metric_id=metric_id,
+        kind=kind,
+        kw=kw,
+        page=page,
+        page_size=page_size,
+    )
+
+
 @router.get("/compare/runs/{run_id}/export")
 def api_export_run(run_id: str, db: Session = Depends(get_db)) -> StreamingResponse:
     data = cmp_svc.export_run_zip(db, run_id)

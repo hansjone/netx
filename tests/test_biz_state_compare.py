@@ -125,5 +125,32 @@ class CompareEngineTests(unittest.TestCase):
         self.assertEqual(out["diffs"][0]["kind"], "unchanged")
 
 
+class CompareDiffPagingTests(unittest.TestCase):
+    def test_filter_inline_diffs_kind_and_kw(self) -> None:
+        from netx_api.biz_state.compare_service import _filter_inline_diffs
+
+        diffs = [
+            {"kind": "added", "key": {"p": "1"}, "before": {}, "after": {"p": "1"}, "changes": {}},
+            {"kind": "removed", "key": {"p": "2"}, "before": {"p": "2"}, "after": {}, "changes": {}},
+            {"kind": "unchanged", "key": {"p": "3"}, "before": {"p": "3"}, "after": {"p": "3"}, "changes": {}},
+            {
+                "kind": "changed",
+                "key": {"p": "4"},
+                "before": {"x": "a"},
+                "after": {"x": "b"},
+                "changes": {"x": {"before": "a", "after": "b"}},
+            },
+        ]
+        only_diff = _filter_inline_diffs(diffs, kind="diff", kw="")
+        self.assertEqual({d["kind"] for d in only_diff}, {"added", "removed", "changed"})
+        only_added = _filter_inline_diffs(diffs, kind="added", kw="")
+        self.assertEqual(len(only_added), 1)
+        hit = _filter_inline_diffs(diffs, kind="all", kw='"p":"4"')
+        self.assertEqual(len(hit), 1)
+        self.assertEqual(hit[0]["kind"], "changed")
+        hit2 = _filter_inline_diffs(diffs, kind="all", kw="changed")
+        self.assertTrue(any(d["kind"] == "changed" for d in hit2))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -25,6 +25,7 @@ from .managed_ne import (
     UmeCliOverride,
 )
 from .biz_state import (
+    BizCompareDiff,
     BizCompareJob,
     BizCompareRun,
     BizCompareTemplate,
@@ -142,4 +143,5 @@ __all__ = [
     "BizPortMappingRow",
     "BizCompareJob",
     "BizCompareRun",
+    "BizCompareDiff",
 ]

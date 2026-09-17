@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..db import Base
@@ -256,3 +256,25 @@ class BizCompareRun(Base):
     mapping_stats_json: Mapped[dict] = mapped_column(_JsonType, default=dict)
     message: Mapped[str] = mapped_column(String(1024), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
+
+
+class BizCompareDiff(Base):
+    """Per-row compare result — supports million-scale sheets with paged queries."""
+
+    __tablename__ = "biz_compare_diff"
+    __table_args__ = (
+        Index("ix_biz_compare_diff_run_metric_kind", "run_id", "metric_id", "kind"),
+        Index("ix_biz_compare_diff_run_metric_seq", "run_id", "metric_id", "seq"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
+    run_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    metric_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    seq: Mapped[int] = mapped_column(Integer, default=0)
+    kind: Mapped[str] = mapped_column(String(16), default="", index=True)
+    key_json: Mapped[dict] = mapped_column(_JsonType, default=dict)
+    before_json: Mapped[dict] = mapped_column(_JsonType, default=dict)
+    after_json: Mapped[dict] = mapped_column(_JsonType, default=dict)
+    mapped_before_json: Mapped[dict] = mapped_column(_JsonType, default=dict)
+    changes_json: Mapped[dict] = mapped_column(_JsonType, default=dict)
+    search_text: Mapped[str] = mapped_column(Text, default="")

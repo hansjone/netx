@@ -1912,6 +1912,29 @@ export const bizCompareListRuns = (jobId: string, limit = 20) =>
 export const bizCompareGetRun = (runId: string) =>
   apiGet<Record<string, unknown>>(`/v1/biz-state/compare/runs/${encodeURIComponent(runId)}`);
 
+export const bizCompareListRunDiffs = (params: {
+  runId: string;
+  metricId?: string;
+  kind?: string;
+  kw?: string;
+  page?: number;
+  pageSize?: number;
+}) => {
+  const p = new URLSearchParams();
+  if (params.metricId) p.set("metric_id", params.metricId);
+  if (params.kind) p.set("kind", params.kind);
+  if (params.kw) p.set("kw", params.kw);
+  p.set("page", String(Math.max(1, Number(params.page || 1))));
+  p.set("page_size", String(Math.max(1, Math.min(500, Number(params.pageSize || 100)))));
+  return apiGet<{
+    total: number;
+    page: number;
+    page_size: number;
+    metric_id: string;
+    items: Record<string, unknown>[];
+  }>(`/v1/biz-state/compare/runs/${encodeURIComponent(params.runId)}/diffs?${p.toString()}`);
+};
+
 export const bizCompareDownloadRun = async (runId: string): Promise<void> => {
   const path = `/v1/biz-state/compare/runs/${encodeURIComponent(runId)}/export`;
   const res = await fetch(path, { method: "GET", credentials: fetchCreds, headers: authHeaders() });
