@@ -74,21 +74,47 @@ type NeSourceFilter = "all" | "managed" | "ume";
 
 const NE_PAGE_SIZE = 10;
 
-function fmtIntervalLabel(sec: number, daysLabel: string, hoursLabel: string) {
-  const hours = Math.max(1, Math.round(Number(sec || 0) / 3600) || 1);
-  if (hours % 24 === 0) return `${hours / 24} ${daysLabel}`;
-  return `${hours} ${hoursLabel}`;
+function fmtIntervalLabel(
+  sec: number,
+  daysLabel: string,
+  hoursLabel: string,
+  secondsLabel: string,
+) {
+  const s = Math.max(1, Math.round(Number(sec || 0)) || 1);
+  if (s % 86400 === 0) return `${s / 86400} ${daysLabel}`;
+  if (s % 3600 === 0) return `${s / 3600} ${hoursLabel}`;
+  return `${s} ${secondsLabel}`;
 }
 
-function secToIntervalUi(sec: number): { value: number; unit: "days" | "hours" } {
-  const hours = Math.max(1, Math.round(Number(sec || 3600) / 3600) || 1);
-  if (hours % 24 === 0) return { value: hours / 24, unit: "days" };
-  return { value: hours, unit: "hours" };
+function secToIntervalUi(sec: number): { value: number; unit: "days" | "hours" | "seconds" } {
+  const s = Math.max(1, Math.round(Number(sec || 3600)) || 3600);
+  if (s % 86400 === 0) return { value: s / 86400, unit: "days" };
+  if (s % 3600 === 0) return { value: s / 3600, unit: "hours" };
+  return { value: s, unit: "seconds" };
 }
 
-function intervalUiToSec(value: number, unit: "days" | "hours") {
+function intervalUiToSec(value: number, unit: "days" | "hours" | "seconds") {
   const n = Math.max(1, Number(value) || 1);
-  return unit === "days" ? n * 86400 : n * 3600;
+  if (unit === "days") return n * 86400;
+  if (unit === "hours") return n * 3600;
+  return Math.max(60, n);
+}
+
+function intervalUnitMax(unit: "days" | "hours" | "seconds") {
+  if (unit === "days") return 365;
+  if (unit === "hours") return 8760;
+  return 604800; // up to 7 days in seconds
+}
+
+function convertIntervalValue(
+  value: number,
+  from: "days" | "hours" | "seconds",
+  to: "days" | "hours" | "seconds",
+) {
+  const sec = intervalUiToSec(value, from);
+  if (to === "days") return Math.max(1, Math.min(365, Math.round(sec / 86400) || 1));
+  if (to === "hours") return Math.max(1, Math.min(8760, Math.round(sec / 3600) || 1));
+  return Math.max(60, Math.min(604800, sec));
 }
 
 function fmtTime(v?: string | null) {
@@ -202,7 +228,7 @@ export function BizStatePage() {
   const [batches, setBatches] = useState<BatchRow[]>([]);
   const [taskTab, setTaskTab] = useState<TaskTab>("profiles");
   const [intervalValue, setIntervalValue] = useState(1);
-  const [intervalUnit, setIntervalUnit] = useState<"days" | "hours">("hours");
+  const [intervalUnit, setIntervalUnit] = useState<"days" | "hours" | "seconds">("hours");
   const [retentionBatches, setRetentionBatches] = useState(30);
 
   // VRF bind (inside task modal)
@@ -612,6 +638,7 @@ export function BizStatePage() {
                       Number(row.interval_sec || 3600),
                       t("bizState.intervalUnitDays"),
                       t("bizState.intervalUnitHours"),
+                      t("bizState.intervalUnitSeconds"),
                     )}
                   </td>
                   <td>
@@ -823,29 +850,32 @@ export function BizStatePage() {
                 <span>{t("bizState.interval")}</span>
                 <Input
                   type="number"
-                  min={1}
-                  max={intervalUnit === "days" ? 365 : 8760}
+                  min={intervalUnit === "seconds" ? 60 : 1}
+                  max={intervalUnitMax(intervalUnit)}
                   value={String(intervalValue)}
                   onChange={(e) => {
-                    const max = intervalUnit === "days" ? 365 : 8760;
-                    setIntervalValue(Math.max(1, Math.min(max, Number(e.target.value) || 1)));
+                    const min = intervalUnit === "seconds" ? 60 : 1;
+                    const max = intervalUnitMax(intervalUnit);
+                    setIntervalValue(Math.max(min, Math.min(max, Number(e.target.value) || min)));
                   }}
                 />
                 <select
                   value={intervalUnit}
                   onChange={(e) => {
-                    const next = e.target.value === "hours" ? "hours" : "days";
+                    const next =
+                      e.target.value === "seconds"
+                        ? "seconds"
+                        : e.target.value === "hours"
+                          ? "hours"
+                          : "days";
                     if (next === intervalUnit) return;
-                    if (next === "hours") {
-                      setIntervalValue(Math.max(1, Math.min(8760, intervalValue * 24)));
-                    } else {
-                      setIntervalValue(Math.max(1, Math.min(365, Math.round(intervalValue / 24) || 1)));
-                    }
+                    setIntervalValue(convertIntervalValue(intervalValue, intervalUnit, next));
                     setIntervalUnit(next);
                   }}
                 >
-                  <option value="days">{t("bizState.intervalUnitDays")}</option>
+                  <option value="seconds">{t("bizState.intervalUnitSeconds")}</option>
                   <option value="hours">{t("bizState.intervalUnitHours")}</option>
+                  <option value="days">{t("bizState.intervalUnitDays")}</option>
                 </select>
               </label>
               <label className="config-sync-policy-field">

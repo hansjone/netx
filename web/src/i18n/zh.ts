@@ -194,6 +194,7 @@ const zh = {
     interval: "采集周期",
     intervalUnitDays: "天",
     intervalUnitHours: "小时",
+    intervalUnitSeconds: "秒",
     retention: "保留批次数",
     saveSchedule: "保存周期",
     scheduleSaved: "周期配置已保存",

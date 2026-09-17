@@ -194,6 +194,7 @@ const en = {
     interval: "Interval",
     intervalUnitDays: "days",
     intervalUnitHours: "hours",
+    intervalUnitSeconds: "seconds",
     retention: "Keep batches",
     saveSchedule: "Save schedule",
     scheduleSaved: "Schedule saved",

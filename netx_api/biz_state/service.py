@@ -154,7 +154,7 @@ def create_task(db: Session, body: dict[str, Any]) -> dict[str, Any]:
         device_type=device_type,
         note=str(body.get("note") or "")[:256],
         status="draft",
-        interval_sec=max(3600, int(body.get("interval_sec") or 3600)),
+        interval_sec=max(60, int(body.get("interval_sec") or 3600)),
         retention_batches=max(1, int(body.get("retention_batches") or 30)),
         created_at=_utcnow(),
         updated_at=_utcnow(),
@@ -228,7 +228,7 @@ def update_task(db: Session, task_id: str, body: dict[str, Any]) -> dict[str, An
     if "note" in body:
         task.note = str(body.get("note") or "")[:256]
     if "interval_sec" in body:
-        task.interval_sec = max(3600, int(body.get("interval_sec") or 3600))
+        task.interval_sec = max(60, int(body.get("interval_sec") or 3600))
     if "retention_batches" in body:
         task.retention_batches = max(1, int(body.get("retention_batches") or 30))
     if "items" in body:
