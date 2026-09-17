@@ -397,13 +397,12 @@ export function BizStatePage() {
     }
   };
 
-  const setStatus = async (status: string) => {
-    if (!taskId) return;
+  const setScheduleEnabled = async (id: string, enabled: boolean) => {
     setBusy(true);
     try {
-      await bizStatePatchTask(taskId, { status });
-      showOk(status === "running" ? t("bizState.started") : t("bizState.paused"));
-      await loadTask(taskId);
+      await bizStatePatchTask(id, { status: enabled ? "running" : "paused" });
+      showOk(enabled ? t("bizState.started") : t("bizState.paused"));
+      if (taskId === id) await loadTask(id);
       await refreshTasks();
     } catch (e) {
       showError(formatErr(e));
@@ -593,7 +592,7 @@ export function BizStatePage() {
             <div className="pt-list-kpi__value">{tasks.length}</div>
           </div>
           <div className="pt-list-kpi pt-list-kpi--live">
-            <div className="pt-list-kpi__label">{t("bizState.start")}</div>
+            <div className="pt-list-kpi__label">{t("bizState.scheduleOn")}</div>
             <div className="pt-list-kpi__value">{runningCount}</div>
           </div>
         </div>
@@ -613,6 +612,7 @@ export function BizStatePage() {
                 <th>{t("bizState.colNe")}</th>
                 <th>{t("bizState.colSource")}</th>
                 <th>{t("bizState.colInterval")}</th>
+                <th>{t("bizState.scheduleEnabled")}</th>
                 <th>{t("bizState.colStatus")}</th>
                 <th>{t("bizState.colLast")}</th>
                 <th>{t("bizState.colActions")}</th>
@@ -642,11 +642,27 @@ export function BizStatePage() {
                     )}
                   </td>
                   <td>
+                    <label className="config-sync-policy-check">
+                      <input
+                        type="checkbox"
+                        checked={row.status === "running"}
+                        disabled={busy}
+                        onChange={(e) => void setScheduleEnabled(row.id, e.target.checked)}
+                      />
+                      <span>
+                        {row.status === "running" ? t("bizState.scheduleOn") : t("bizState.scheduleOff")}
+                      </span>
+                    </label>
+                  </td>
+                  <td>
                     <div className="pt-list-actions" style={{ flexWrap: "wrap", gap: 4 }}>
-                      <NmStatusChip color={jobChipColor(row.status)}>{row.status}</NmStatusChip>
                       {row.collect_running ? (
                         <NmStatusChip color="accent">{t("bizState.collecting")}</NmStatusChip>
-                      ) : null}
+                      ) : (
+                        <NmStatusChip color={row.status === "running" ? "success" : "default"}>
+                          {row.status === "running" ? t("bizState.scheduleOn") : t("bizState.scheduleOff")}
+                        </NmStatusChip>
+                      )}
                     </div>
                   </td>
                   <td className="pt-list-time">{fmtTime(row.last_collect_ended_at)}</td>
@@ -658,47 +674,33 @@ export function BizStatePage() {
                       <Button size="sm" variant="ghost" onPress={() => void openTask(row.id, "batches")}>
                         {t("bizState.batches")}
                       </Button>
-                      {row.status !== "running" ? (
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          isDisabled={busy}
-                          onPress={async () => {
-                            setBusy(true);
-                            try {
-                              await bizStatePatchTask(row.id, { status: "running" });
-                              showOk(t("bizState.started"));
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        isDisabled={busy || row.collect_running}
+                        onPress={async () => {
+                          setBusy(true);
+                          try {
+                            await bizStateCollectNow(row.id);
+                            showOk(t("bizState.collecting"));
+                            for (let i = 0; i < 20; i++) {
+                              await new Promise((r) => setTimeout(r, 1500));
                               await refreshTasks();
-                            } catch (e) {
-                              showError(formatErr(e));
-                            } finally {
-                              setBusy(false);
+                              const cur = (await bizStateListTasks()).items?.find(
+                                (x: any) => x.id === row.id,
+                              );
+                              if (!cur?.collect_running) break;
                             }
-                          }}
-                        >
-                          {t("bizState.start")}
-                        </Button>
-                      ) : (
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          isDisabled={busy}
-                          onPress={async () => {
-                            setBusy(true);
-                            try {
-                              await bizStatePatchTask(row.id, { status: "paused" });
-                              showOk(t("bizState.paused"));
-                              await refreshTasks();
-                            } catch (e) {
-                              showError(formatErr(e));
-                            } finally {
-                              setBusy(false);
-                            }
-                          }}
-                        >
-                          {t("bizState.pause")}
-                        </Button>
-                      )}
+                            await refreshTasks();
+                          } catch (e) {
+                            showError(formatErr(e));
+                          } finally {
+                            setBusy(false);
+                          }
+                        }}
+                      >
+                        {t("bizState.collectNow")}
+                      </Button>
                       <Button
                         size="sm"
                         variant="danger"
@@ -713,7 +715,7 @@ export function BizStatePage() {
               ))}
                 {!filteredTasks.length ? (
                   <tr>
-                    <td colSpan={6}>
+                    <td colSpan={7}>
                       <div className="pt-list-empty">{t("bizState.empty")}</div>
                     </td>
                   </tr>
@@ -846,6 +848,15 @@ export function BizStatePage() {
         <Modal.Body className="flex flex-col gap-3">
           {detail ? (
             <div className="config-sync-policy-row bs-schedule-row">
+              <label className="config-sync-policy-check">
+                <input
+                  type="checkbox"
+                  checked={detail.status === "running"}
+                  disabled={busy}
+                  onChange={(e) => void setScheduleEnabled(taskId, e.target.checked)}
+                />
+                <span>{t("bizState.scheduleEnabled")}</span>
+              </label>
               <label className="config-sync-policy-field">
                 <span>{t("bizState.interval")}</span>
                 <Input
@@ -892,7 +903,7 @@ export function BizStatePage() {
                 {t("bizState.saveSchedule")}
               </Button>
               <span className="muted">
-                {detail.vendor || "—"} · {detail.ne_ip || "—"}
+                {detail.vendor || "—"} · {detail.ne_ip || "—"} · {t("bizState.scheduleHint")}
               </span>
             </div>
           ) : null}
@@ -1075,13 +1086,7 @@ export function BizStatePage() {
           )}
         </Modal.Body>
         <Modal.Footer>
-          <Button size="sm" variant="primary" isDisabled={busy} onPress={() => void setStatus("running")}>
-            {t("bizState.start")}
-          </Button>
-          <Button size="sm" variant="secondary" isDisabled={busy} onPress={() => void setStatus("paused")}>
-            {t("bizState.pause")}
-          </Button>
-          <Button size="sm" variant="secondary" isDisabled={busy} onPress={() => void collectNow()}>
+          <Button size="sm" variant="primary" isDisabled={busy} onPress={() => void collectNow()}>
             {t("bizState.collectNow")}
           </Button>
           <Button size="sm" variant="danger" isDisabled={busy} onPress={() => void removeTask(taskId)}>

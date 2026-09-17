@@ -9,6 +9,7 @@ import {
   bizCompareCreateJob,
   bizCompareCreateMapping,
   bizCompareCreateTemplate,
+  bizCompareDeleteJob,
   bizCompareDeleteTemplate,
   bizCompareGetRun,
   bizCompareListJobs,
@@ -463,6 +464,21 @@ export function BizComparePage() {
     try {
       await bizCompareDeleteTemplate(id);
       showOk(t("bizCompare.templateDeleted"));
+      await refresh();
+    } catch (e) {
+      showError(formatErr(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeJob = async (id: string) => {
+    if (!window.confirm(t("bizCompare.confirmDeleteJob"))) return;
+    setBusy(true);
+    try {
+      await bizCompareDeleteJob(id);
+      if (jobId === id) closeJob();
+      showOk(t("bizCompare.jobDeleted"));
       await refresh();
     } catch (e) {
       showError(formatErr(e));
@@ -945,6 +961,14 @@ export function BizComparePage() {
                           <Button size="sm" variant="primary" onPress={() => void openJob(j.id)}>
                             {t("bizCompare.detail")}
                           </Button>
+                          <Button
+                            size="sm"
+                            variant="danger"
+                            isDisabled={busy}
+                            onPress={() => void removeJob(j.id)}
+                          >
+                            {t("bizCompare.delete")}
+                          </Button>
                         </div>
                       </td>
                     </tr>
@@ -1409,6 +1433,11 @@ export function BizComparePage() {
           <Button size="sm" variant="ghost" onPress={closeJob}>
             {t("bizState.cancel")}
           </Button>
+          {jobId ? (
+            <Button size="sm" variant="danger" isDisabled={busy} onPress={() => void removeJob(jobId)}>
+              {t("bizCompare.delete")}
+            </Button>
+          ) : null}
         </Modal.Footer>
       </AppModalShell>
     </section>

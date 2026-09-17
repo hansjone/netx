@@ -1895,6 +1895,9 @@ export const bizCompareUpdateJob = (jobId: string, body: Record<string, unknown>
     body,
   );
 
+export const bizCompareDeleteJob = (jobId: string) =>
+  apiDelete<{ ok: boolean }>(`/v1/biz-state/compare/jobs/${encodeURIComponent(jobId)}`);
+
 export const bizCompareRunJob = (jobId: string) =>
   apiPost<Record<string, unknown>>(
     `/v1/biz-state/compare/jobs/${encodeURIComponent(jobId)}/run`,
