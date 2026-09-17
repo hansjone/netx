@@ -1,4 +1,8 @@
+import { Button, Input } from "@heroui/react";
 import { useCallback, useEffect, useState } from "react";
+import { FieldSelect } from "../../components/ui/FieldSelect";
+import { useToast } from "../../hooks/useToast";
+import { useI18n } from "../../i18n";
 import {
   bizCompareCreateJob,
   bizCompareCreateMapping,
@@ -13,11 +17,14 @@ import {
   bizCompareValidateMapping,
   bizStateListBatches,
   bizStateListTasks,
+  formatErr,
 } from "../../services/api";
+import { formatSystemTime } from "../../utils/time";
+import { jobChipColor, NmStatusChip } from "./nmChips";
 
 type TaskOpt = { id: string; ne_name: string; ne_ip: string; vendor: string };
 type BatchOpt = { id: string; status: string; row_count: number; started_at?: string | null };
-type Template = { id: string; name: string; metric_id: string; key_fields: string[]; iface_fields: string[] };
+type Template = { id: string; name: string; metric_id: string };
 type Mapping = { id: string; name: string; rows: { before_if: string; after_if: string }[] };
 type Job = {
   id: string;
@@ -32,7 +39,14 @@ type Job = {
   status: string;
 };
 
+function fmtTime(v?: string | null) {
+  if (!v) return "—";
+  return formatSystemTime(v) || v;
+}
+
 export function BizComparePage() {
+  const { t } = useI18n();
+  const { showOk, showError } = useToast();
   const [tasks, setTasks] = useState<TaskOpt[]>([]);
   const [templates, setTemplates] = useState<Template[]>([]);
   const [mappings, setMappings] = useState<Mapping[]>([]);
@@ -40,10 +54,8 @@ export function BizComparePage() {
   const [selectedJobId, setSelectedJobId] = useState("");
   const [runs, setRuns] = useState<any[]>([]);
   const [runDetail, setRunDetail] = useState<any>(null);
-  const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
 
-  // create job form
   const [name, setName] = useState("割接比对");
   const [templateId, setTemplateId] = useState("");
   const [mappingId, setMappingId] = useState("");
@@ -55,19 +67,18 @@ export function BizComparePage() {
   const [afterBatchId, setAfterBatchId] = useState("");
   const [mode, setMode] = useState<"manual" | "auto">("manual");
 
-  // mapping editor
   const [mapName, setMapName] = useState("端口映射");
-  const [mapText, setMapText] = useState("old-if,new-if\n");
+  const [mapText, setMapText] = useState("before_if,after_if\n");
   const [validateOut, setValidateOut] = useState<any>(null);
 
   const refresh = useCallback(async () => {
-    const [t, tpl, maps, j] = await Promise.all([
+    const [taskRes, tpl, maps, j] = await Promise.all([
       bizStateListTasks(),
       bizCompareListTemplates(),
       bizCompareListMappings(),
       bizCompareListJobs(),
     ]);
-    setTasks((t.items || []) as TaskOpt[]);
+    setTasks((taskRes.items || []) as TaskOpt[]);
     setTemplates((tpl.items || []) as Template[]);
     setMappings((maps.items || []) as Mapping[]);
     setJobs((j.items || []) as Job[]);
@@ -79,10 +90,11 @@ export function BizComparePage() {
     void (async () => {
       try {
         await refresh();
-      } catch (e: any) {
-        setErr(String(e?.message || e));
+      } catch (e) {
+        showError(formatErr(e));
       }
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount once
   }, [refresh]);
 
   useEffect(() => {
@@ -111,7 +123,9 @@ export function BizComparePage() {
     const rows: { before_if: string; after_if: string }[] = [];
     for (const line of mapText.split(/\r?\n/)) {
       const s = line.trim();
-      if (!s || s.startsWith("#") || s.toLowerCase().startsWith("old")) continue;
+      if (!s || s.startsWith("#") || s.toLowerCase().startsWith("old") || s.toLowerCase().startsWith("before")) {
+        continue;
+      }
       const parts = s.split(/[,|\t]+/).map((x) => x.trim());
       if (parts.length >= 2 && parts[0] && parts[1]) {
         rows.push({ before_if: parts[0], after_if: parts[1] });
@@ -120,16 +134,20 @@ export function BizComparePage() {
     return rows;
   };
 
-  const saveMapping = async () => {
+  const updateExistingMapping = async () => {
     setBusy(true);
-    setErr("");
     try {
       const rows = parseMapRows();
-      const m = await bizCompareCreateMapping({ name: mapName, rows });
-      setMappingId(String(m.id));
+      if (mappingId) {
+        await bizCompareUpdateMapping(mappingId, { name: mapName, rows });
+      } else {
+        const m = await bizCompareCreateMapping({ name: mapName, rows });
+        setMappingId(String(m.id));
+      }
+      showOk(t("bizCompare.mappingSaved"));
       await refresh();
-    } catch (e: any) {
-      setErr(String(e?.message || e));
+    } catch (e) {
+      showError(formatErr(e));
     } finally {
       setBusy(false);
     }
@@ -137,11 +155,10 @@ export function BizComparePage() {
 
   const doValidate = async () => {
     if (!mappingId || !beforeBatchId || !afterBatchId) {
-      setErr("请先选择映射与前后批次");
+      showError(`${t("bizCompare.validateMapping")}: mapping / batches`);
       return;
     }
     setBusy(true);
-    setErr("");
     try {
       const v = await bizCompareValidateMapping({
         mapping_id: mappingId,
@@ -150,8 +167,8 @@ export function BizComparePage() {
         template_id: templateId,
       });
       setValidateOut(v);
-    } catch (e: any) {
-      setErr(String(e?.message || e));
+    } catch (e) {
+      showError(formatErr(e));
     } finally {
       setBusy(false);
     }
@@ -159,7 +176,6 @@ export function BizComparePage() {
 
   const createJob = async () => {
     setBusy(true);
-    setErr("");
     try {
       const j = await bizCompareCreateJob({
         name,
@@ -172,11 +188,12 @@ export function BizComparePage() {
         mode,
       });
       setSelectedJobId(String(j.id));
+      showOk(t("bizCompare.created"));
       await refresh();
       const r = await bizCompareListRuns(String(j.id));
       setRuns(r.items || []);
-    } catch (e: any) {
-      setErr(String(e?.message || e));
+    } catch (e) {
+      showError(formatErr(e));
     } finally {
       setBusy(false);
     }
@@ -197,15 +214,14 @@ export function BizComparePage() {
       setBeforeBatchId(job.before_batch_id);
       setAfterBatchId(job.after_batch_id);
       setMode(job.mode === "auto" ? "auto" : "manual");
+      if (job.mapping_id) loadMappingText(job.mapping_id);
     }
   };
 
   const runNow = async () => {
     if (!selectedJobId) return;
     setBusy(true);
-    setErr("");
     try {
-      // sync latest batch selection onto job before run
       await bizCompareUpdateJob(selectedJobId, {
         before_batch_id: beforeBatchId,
         after_batch_id: mode === "manual" ? afterBatchId : "",
@@ -215,18 +231,23 @@ export function BizComparePage() {
       });
       const run = await bizCompareRunJob(selectedJobId);
       setRunDetail(run);
+      showOk(t("bizCompare.ran"));
       const r = await bizCompareListRuns(selectedJobId);
       setRuns(r.items || []);
-    } catch (e: any) {
-      setErr(String(e?.message || e));
+    } catch (e) {
+      showError(formatErr(e));
     } finally {
       setBusy(false);
     }
   };
 
   const loadRun = async (runId: string) => {
-    const d = await bizCompareGetRun(runId);
-    setRunDetail(d);
+    try {
+      const d = await bizCompareGetRun(runId);
+      setRunDetail(d);
+    } catch (e) {
+      showError(formatErr(e));
+    }
   };
 
   const loadMappingText = (id: string) => {
@@ -237,251 +258,278 @@ export function BizComparePage() {
     setMapText(["before_if,after_if", ...m.rows.map((r) => `${r.before_if},${r.after_if}`)].join("\n"));
   };
 
-  const updateExistingMapping = async () => {
-    if (!mappingId) {
-      await saveMapping();
-      return;
-    }
-    setBusy(true);
-    try {
-      await bizCompareUpdateMapping(mappingId, { name: mapName, rows: parseMapRows() });
-      await refresh();
-    } catch (e: any) {
-      setErr(String(e?.message || e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const taskLabel = (t: TaskOpt) => `${t.ne_name || t.ne_ip || t.id} (${t.vendor || "-"})`;
+  const taskLabel = (row: TaskOpt) => `${row.ne_name || row.ne_ip || row.id} (${row.vendor || "-"})`;
 
   return (
-    <div className="wb-page">
-      <div className="wb-page__header">
-        <h1>业务状态比对</h1>
-        <p className="wb-muted">Phase2：模板 + 端口映射 + 前后批次 diff（支持 auto 追比）</p>
-      </div>
-      {err ? <div className="wb-alert wb-alert--error">{err}</div> : null}
-
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-        <div className="wb-card">
-          <h3>端口映射</h3>
-          <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
-            <select
-              value={mappingId}
-              onChange={(e) => {
-                const id = e.target.value;
-                if (id) loadMappingText(id);
-                else {
-                  setMappingId("");
-                  setMapText("before_if,after_if\n");
-                }
-              }}
-            >
-              <option value="">新建映射…</option>
-              {mappings.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.name}
-                </option>
-              ))}
-            </select>
-            <input value={mapName} onChange={(e) => setMapName(e.target.value)} placeholder="映射名称" />
-            <button type="button" disabled={busy} onClick={() => void updateExistingMapping()}>
-              保存映射
-            </button>
-            <button type="button" disabled={busy} onClick={() => void doValidate()}>
-              校验映射
-            </button>
-          </div>
-          <textarea
-            value={mapText}
-            onChange={(e) => setMapText(e.target.value)}
-            rows={8}
-            style={{ width: "100%", fontFamily: "monospace" }}
-            placeholder="before_if,after_if 每行一对"
-          />
-          {validateOut ? (
-            <pre className="wb-muted" style={{ fontSize: 12, maxHeight: 160, overflow: "auto" }}>
-              {JSON.stringify(validateOut, null, 2)}
-            </pre>
-          ) : null}
+    <section className="panel nm-page-panel">
+      <div className="panel__toolbar">
+        <h2>{t("bizCompare.title")}</h2>
+        <div className="btn-row">
+          <Button size="sm" variant="primary" isDisabled={busy} onPress={() => void createJob()}>
+            {t("bizCompare.createCompare")}
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            isDisabled={busy || !selectedJobId}
+            onPress={() => void runNow()}
+          >
+            {t("bizCompare.runNow")}
+          </Button>
         </div>
+      </div>
 
-        <div className="wb-card">
-          <h3>建立比对任务</h3>
-          <div style={{ display: "grid", gap: 8 }}>
-            <label>
-              名称{" "}
-              <input value={name} onChange={(e) => setName(e.target.value)} style={{ width: "70%" }} />
-            </label>
-            <label>
-              模板{" "}
-              <select value={templateId} onChange={(e) => setTemplateId(e.target.value)}>
-                {templates.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name} ({t.metric_id})
+      <div className="pt-list">
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+          <div>
+            <h3 style={{ marginTop: 0 }}>{t("bizCompare.mapping")}</h3>
+            <div className="filter-inline" style={{ marginBottom: 8 }}>
+              <FieldSelect
+                value={mappingId}
+                onChange={(e) => {
+                  const id = e.target.value;
+                  if (id) loadMappingText(id);
+                  else {
+                    setMappingId("");
+                    setMapText("before_if,after_if\n");
+                  }
+                }}
+              >
+                <option value="">{t("bizCompare.newMapping")}</option>
+                {mappings.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name}
                   </option>
                 ))}
-              </select>
-            </label>
-            <label>
-              模式{" "}
-              <select value={mode} onChange={(e) => setMode(e.target.value as "manual" | "auto")}>
-                <option value="manual">手工选批次</option>
-                <option value="auto">自动（钉死操作前，操作后取最新批次）</option>
-              </select>
-            </label>
-            <label>
-              操作前任务{" "}
-              <select value={beforeTaskId} onChange={(e) => setBeforeTaskId(e.target.value)}>
-                <option value="">选择…</option>
-                {tasks.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {taskLabel(t)}
+              </FieldSelect>
+              <Input value={mapName} placeholder={t("bizCompare.mapName")} onChange={(e) => setMapName(e.target.value)} />
+              <Button size="sm" variant="secondary" isDisabled={busy} onPress={() => void updateExistingMapping()}>
+                {t("bizCompare.saveMapping")}
+              </Button>
+              <Button size="sm" variant="secondary" isDisabled={busy} onPress={() => void doValidate()}>
+                {t("bizCompare.validateMapping")}
+              </Button>
+            </div>
+            <textarea
+              value={mapText}
+              onChange={(e) => setMapText(e.target.value)}
+              placeholder={t("bizCompare.mapHint")}
+              rows={8}
+              style={{ width: "100%", fontFamily: "ui-monospace, monospace" }}
+            />
+            {validateOut ? (
+              <pre className="muted" style={{ fontSize: 12, maxHeight: 160, overflow: "auto" }}>
+                {JSON.stringify(validateOut, null, 2)}
+              </pre>
+            ) : null}
+          </div>
+
+          <div>
+            <h3 style={{ marginTop: 0 }}>{t("bizCompare.createJob")}</h3>
+            <div style={{ display: "grid", gap: 8 }}>
+              <label className="ui-field ui-field--full">
+                <span className="ui-field__label">{t("bizCompare.jobName")}</span>
+                <Input value={name} onChange={(e) => setName(e.target.value)} />
+              </label>
+              <FieldSelect
+                label={t("bizCompare.template")}
+                value={templateId}
+                onChange={(e) => setTemplateId(e.target.value)}
+                fullWidth
+              >
+                {templates.map((tpl) => (
+                  <option key={tpl.id} value={tpl.id}>
+                    {tpl.name} ({tpl.metric_id})
                   </option>
                 ))}
-              </select>
-            </label>
-            <label>
-              操作前批次{" "}
-              <select value={beforeBatchId} onChange={(e) => setBeforeBatchId(e.target.value)}>
-                <option value="">选择…</option>
+              </FieldSelect>
+              <FieldSelect
+                label={t("bizCompare.mode")}
+                value={mode}
+                onChange={(e) => setMode(e.target.value as "manual" | "auto")}
+                fullWidth
+              >
+                <option value="manual">{t("bizCompare.modeManual")}</option>
+                <option value="auto">{t("bizCompare.modeAuto")}</option>
+              </FieldSelect>
+              <FieldSelect
+                label={t("bizCompare.beforeTask")}
+                value={beforeTaskId}
+                onChange={(e) => setBeforeTaskId(e.target.value)}
+                fullWidth
+              >
+                <option value="">{t("bizCompare.pick")}</option>
+                {tasks.map((row) => (
+                  <option key={row.id} value={row.id}>
+                    {taskLabel(row)}
+                  </option>
+                ))}
+              </FieldSelect>
+              <FieldSelect
+                label={t("bizCompare.beforeBatch")}
+                value={beforeBatchId}
+                onChange={(e) => setBeforeBatchId(e.target.value)}
+                fullWidth
+              >
+                <option value="">{t("bizCompare.pick")}</option>
                 {beforeBatches.map((b) => (
                   <option key={b.id} value={b.id}>
-                    {b.started_at} · {b.status} · rows={b.row_count}
+                    {fmtTime(b.started_at)} · {b.status} · rows={b.row_count}
                   </option>
                 ))}
-              </select>
-            </label>
-            <label>
-              操作后任务{" "}
-              <select value={afterTaskId} onChange={(e) => setAfterTaskId(e.target.value)}>
-                <option value="">同操作前 / 选择…</option>
-                {tasks.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {taskLabel(t)}
+              </FieldSelect>
+              <FieldSelect
+                label={t("bizCompare.afterTask")}
+                value={afterTaskId}
+                onChange={(e) => setAfterTaskId(e.target.value)}
+                fullWidth
+              >
+                <option value="">{t("bizCompare.sameAsBefore")}</option>
+                {tasks.map((row) => (
+                  <option key={row.id} value={row.id}>
+                    {taskLabel(row)}
                   </option>
                 ))}
-              </select>
-            </label>
-            {mode === "manual" ? (
-              <label>
-                操作后批次{" "}
-                <select value={afterBatchId} onChange={(e) => setAfterBatchId(e.target.value)}>
-                  <option value="">选择…</option>
+              </FieldSelect>
+              {mode === "manual" ? (
+                <FieldSelect
+                  label={t("bizCompare.afterBatch")}
+                  value={afterBatchId}
+                  onChange={(e) => setAfterBatchId(e.target.value)}
+                  fullWidth
+                >
+                  <option value="">{t("bizCompare.pick")}</option>
                   {afterBatches.map((b) => (
                     <option key={b.id} value={b.id}>
-                      {b.started_at} · {b.status} · rows={b.row_count}
+                      {fmtTime(b.started_at)} · {b.status} · rows={b.row_count}
                     </option>
                   ))}
-                </select>
-              </label>
-            ) : (
-              <p className="wb-muted">auto：每次操作后任务新批次到达会自动跑比对</p>
-            )}
-            <div style={{ display: "flex", gap: 8 }}>
-              <button type="button" disabled={busy} onClick={() => void createJob()}>
-                创建比对任务
-              </button>
-              <button type="button" disabled={busy || !selectedJobId} onClick={() => void runNow()}>
-                立即比对
-              </button>
+                </FieldSelect>
+              ) : (
+                <p className="muted">{t("bizCompare.autoHint")}</p>
+              )}
             </div>
           </div>
         </div>
-      </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1.6fr", gap: 16, marginTop: 16 }}>
-        <div className="wb-card">
-          <h3>比对任务列表</h3>
-          <table className="wb-table">
-            <thead>
-              <tr>
-                <th>名称</th>
-                <th>模式</th>
-                <th>状态</th>
-              </tr>
-            </thead>
-            <tbody>
-              {jobs.map((j) => (
-                <tr
-                  key={j.id}
-                  style={{ cursor: "pointer", background: selectedJobId === j.id ? "var(--wb-row-active, #eef)" : undefined }}
-                  onClick={() => void openJob(j.id)}
-                >
-                  <td>{j.name}</td>
-                  <td>{j.mode}</td>
-                  <td>{j.status}</td>
-                </tr>
-              ))}
-              {!jobs.length ? (
-                <tr>
-                  <td colSpan={3} className="wb-muted">
-                    暂无
-                  </td>
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
-          <h4>历史 Run</h4>
-          <ul>
-            {runs.map((r) => (
-              <li key={r.id}>
-                <button type="button" onClick={() => void loadRun(r.id)}>
-                  {r.created_at} · added={r.summary?.added} removed={r.summary?.removed} changed={r.summary?.changed}
-                </button>
-              </li>
-            ))}
-          </ul>
-        </div>
-
-        <div className="wb-card">
-          <h3>比对结果</h3>
-          {!runDetail ? (
-            <p className="wb-muted">选择 Run 或点「立即比对」</p>
-          ) : (
-            <>
-              <p>
-                before={runDetail.before_batch_id?.slice(0, 8)}… after={runDetail.after_batch_id?.slice(0, 8)}… ·{" "}
-                <strong>
-                  +{runDetail.summary?.added || 0} / -{runDetail.summary?.removed || 0} / ~{runDetail.summary?.changed || 0} / ={runDetail.summary?.unchanged || 0}
-                </strong>
-              </p>
-              {runDetail.mapping_stats ? (
-                <p className="wb-muted" style={{ fontSize: 12 }}>
-                  映射校验 ok={String(runDetail.mapping_stats.ok)} miss_before={(runDetail.mapping_stats.miss_before || []).length}{" "}
-                  miss_after={(runDetail.mapping_stats.miss_after || []).length}
-                </p>
-              ) : null}
-              <table className="wb-table">
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1.6fr", gap: 16, marginTop: 16 }}>
+          <div>
+            <h3>{t("bizCompare.jobList")}</h3>
+            <div className="pt-list-table-wrap">
+              <table className="data-table pt-list-table">
                 <thead>
                   <tr>
-                    <th>类型</th>
-                    <th>Key</th>
-                    <th>变更</th>
+                    <th>{t("bizCompare.colName")}</th>
+                    <th>{t("bizCompare.colMode")}</th>
+                    <th>{t("bizCompare.colStatus")}</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {(runDetail.diffs || [])
-                    .filter((d: any) => d.kind !== "unchanged")
-                    .slice(0, 300)
-                    .map((d: any, i: number) => (
-                      <tr key={i}>
-                        <td>{d.kind}</td>
-                        <td>
-                          <code style={{ fontSize: 11 }}>{JSON.stringify(d.key)}</code>
-                        </td>
-                        <td>
-                          <code style={{ fontSize: 11 }}>{d.kind === "changed" ? JSON.stringify(d.changes) : "-"}</code>
-                        </td>
-                      </tr>
-                    ))}
+                  {jobs.map((j) => (
+                    <tr
+                      key={j.id}
+                      className={selectedJobId === j.id ? "is-selected" : undefined}
+                      style={{ cursor: "pointer" }}
+                      onClick={() => void openJob(j.id)}
+                    >
+                      <td>
+                        <div className="pt-list-task-name">{j.name}</div>
+                      </td>
+                      <td>{j.mode}</td>
+                      <td>
+                        <NmStatusChip color={jobChipColor(j.status)}>{j.status}</NmStatusChip>
+                      </td>
+                    </tr>
+                  ))}
+                  {!jobs.length ? (
+                    <tr>
+                      <td colSpan={3}>
+                        <div className="pt-list-empty">{t("bizCompare.emptyJobs")}</div>
+                      </td>
+                    </tr>
+                  ) : null}
                 </tbody>
               </table>
-            </>
-          )}
+            </div>
+
+            <h4 style={{ marginTop: 16 }}>{t("bizCompare.runs")}</h4>
+            <div className="pt-list-actions" style={{ flexDirection: "column", alignItems: "stretch", gap: 6 }}>
+              {runs.map((r) => (
+                <Button key={r.id} size="sm" variant="secondary" onPress={() => void loadRun(r.id)}>
+                  {fmtTime(r.created_at)} · +{r.summary?.added ?? 0} / -{r.summary?.removed ?? 0} / ~
+                  {r.summary?.changed ?? 0}
+                </Button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <h3>{t("bizCompare.result")}</h3>
+            {!runDetail ? (
+              <div className="pt-list-empty">{t("bizCompare.pickRun")}</div>
+            ) : (
+              <>
+                <p>
+                  before={String(runDetail.before_batch_id || "").slice(0, 8)}… after=
+                  {String(runDetail.after_batch_id || "").slice(0, 8)}… ·{" "}
+                  <strong>
+                    +{runDetail.summary?.added || 0} / -{runDetail.summary?.removed || 0} / ~
+                    {runDetail.summary?.changed || 0} / ={runDetail.summary?.unchanged || 0}
+                  </strong>
+                </p>
+                {runDetail.mapping_stats ? (
+                  <p className="muted" style={{ fontSize: 12 }}>
+                    mapping ok={String(runDetail.mapping_stats.ok)} miss_before=
+                    {(runDetail.mapping_stats.miss_before || []).length} miss_after=
+                    {(runDetail.mapping_stats.miss_after || []).length}
+                  </p>
+                ) : null}
+                <div className="pt-list-table-wrap">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>{t("bizCompare.colKind")}</th>
+                        <th>{t("bizCompare.colKey")}</th>
+                        <th>{t("bizCompare.colChange")}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(runDetail.diffs || [])
+                        .filter((d: any) => d.kind !== "unchanged")
+                        .slice(0, 300)
+                        .map((d: any, i: number) => (
+                          <tr key={i}>
+                            <td>
+                              <NmStatusChip
+                                color={
+                                  d.kind === "added"
+                                    ? "success"
+                                    : d.kind === "removed"
+                                      ? "danger"
+                                      : "warning"
+                                }
+                              >
+                                {d.kind}
+                              </NmStatusChip>
+                            </td>
+                            <td>
+                              <code style={{ fontSize: 11 }}>{JSON.stringify(d.key)}</code>
+                            </td>
+                            <td>
+                              <code style={{ fontSize: 11 }}>
+                                {d.kind === "changed" ? JSON.stringify(d.changes) : "—"}
+                              </code>
+                            </td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </div>
-    </div>
+    </section>
   );
 }
