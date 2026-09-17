@@ -1,5 +1,6 @@
 import { Button, Input, Modal } from "@heroui/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { ListPager } from "../../components/ListPager";
 import { AppModalShell } from "../../components/ui/AppModalShell";
 import { FieldSelect } from "../../components/ui/FieldSelect";
 import { useDebouncedValue } from "../../hooks/useDebouncedValue";
@@ -22,11 +23,13 @@ import {
   formatErr,
 } from "../../services/api";
 import type { CliTargetItem } from "../../types";
+import { pageCount } from "../../utils/display";
 import { formatSystemTime } from "../../utils/time";
-import { jobChipColor, NmStatusChip } from "./nmChips";
+import { jobChipColor, NmStatusChip, sourceChipColor } from "./nmChips";
 
 type TaskRow = {
   id: string;
+  source?: string;
   ne_name: string;
   ne_ip: string;
   vendor: string;
@@ -66,6 +69,9 @@ type SheetDef = {
 };
 
 type TaskTab = "profiles" | "batches";
+type NeSourceFilter = "all" | "managed" | "ume";
+
+const NE_PAGE_SIZE = 10;
 
 function fmtTime(v?: string | null) {
   if (!v) return "—";
@@ -76,6 +82,10 @@ function cellText(v: unknown): string {
   if (v === null || v === undefined) return "";
   if (typeof v === "object") return JSON.stringify(v);
   return String(v);
+}
+
+function neSourceOf(row: CliTargetItem): "managed" | "ume" {
+  return row.source === "ume" ? "ume" : "managed";
 }
 
 function buildBatchSheets(batch: any, t: (k: string) => string): SheetDef[] {
@@ -152,11 +162,20 @@ export function BizStatePage() {
   const { showOk, showError } = useToast();
 
   const [tasks, setTasks] = useState<TaskRow[]>([]);
-  const [nes, setNes] = useState<CliTargetItem[]>([]);
-  const [neId, setNeId] = useState("");
   const [busy, setBusy] = useState(false);
   const [listKeyword, setListKeyword] = useState("");
   const debouncedListKw = useDebouncedValue(listKeyword, 250);
+
+  // create-task modal (all valid CLI targets)
+  const [createOpen, setCreateOpen] = useState(false);
+  const [neKeyword, setNeKeyword] = useState("");
+  const debouncedNeKw = useDebouncedValue(neKeyword, 300);
+  const [neSource, setNeSource] = useState<NeSourceFilter>("all");
+  const [nePage, setNePage] = useState(1);
+  const [neTotal, setNeTotal] = useState(0);
+  const [neItems, setNeItems] = useState<CliTargetItem[]>([]);
+  const [neLoading, setNeLoading] = useState(false);
+  const [selectedNe, setSelectedNe] = useState<CliTargetItem | null>(null);
 
   // task modal
   const [taskId, setTaskId] = useState("");
@@ -187,13 +206,6 @@ export function BizStatePage() {
     void (async () => {
       try {
         await refreshTasks();
-        const neRes = await fetchCliTargets({
-          source: "managed",
-          keyword: "",
-          page: 1,
-          pageSize: 200,
-        });
-        setNes(neRes.items || []);
       } catch (e) {
         showError(formatErr(e));
       }
@@ -201,11 +213,40 @@ export function BizStatePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount once
   }, [refreshTasks]);
 
+  useEffect(() => {
+    if (!createOpen) return;
+    let cancelled = false;
+    setNeLoading(true);
+    void (async () => {
+      try {
+        const res = await fetchCliTargets({
+          source: neSource,
+          keyword: debouncedNeKw,
+          page: nePage,
+          pageSize: NE_PAGE_SIZE,
+        });
+        if (cancelled) return;
+        setNeItems(res.items || []);
+        setNeTotal(Number(res.total || 0));
+      } catch (e) {
+        if (!cancelled) showError(formatErr(e));
+      } finally {
+        if (!cancelled) setNeLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [createOpen, neSource, debouncedNeKw, nePage]);
+
+  const nePages = pageCount(neTotal, NE_PAGE_SIZE);
+
   const filteredTasks = useMemo(() => {
     const kw = debouncedListKw.trim().toLowerCase();
     if (!kw) return tasks;
     return tasks.filter((row) => {
-      const blob = `${row.ne_name} ${row.ne_ip} ${row.vendor} ${row.status} ${row.last_error}`.toLowerCase();
+      const blob =
+        `${row.ne_name} ${row.ne_ip} ${row.vendor} ${row.status} ${row.source || ""} ${row.last_error}`.toLowerCase();
       return blob.includes(kw);
     });
   }, [tasks, debouncedListKw]);
@@ -234,6 +275,19 @@ export function BizStatePage() {
       sheetColumn,
     );
   }, [activeSheet, debouncedSheetKw, sheetColumn]);
+
+  const openCreate = () => {
+    setCreateOpen(true);
+    setSelectedNe(null);
+    setNeKeyword("");
+    setNeSource("all");
+    setNePage(1);
+  };
+
+  const closeCreate = () => {
+    setCreateOpen(false);
+    setSelectedNe(null);
+  };
 
   const loadTask = async (id: string) => {
     const task = await bizStateGetTask(id);
@@ -269,21 +323,20 @@ export function BizStatePage() {
   };
 
   const createTask = async () => {
-    if (!neId) return;
-    const ne = nes.find((n) => n.id === neId);
-    if (!ne) return;
+    if (!selectedNe) return;
+    const source = neSourceOf(selectedNe);
     setBusy(true);
     try {
       const task = await bizStateCreateTask({
-        source: "managed",
-        ne_id: ne.id,
-        ne_name: ne.name,
-        ne_ip: ne.ip_address,
-        vendor: ne.vendor,
-        device_type: ne.device_type,
+        source,
+        ne_id: selectedNe.id,
+        ne_name: selectedNe.name,
+        ne_ip: selectedNe.ip_address,
+        vendor: selectedNe.vendor || "",
+        device_type: selectedNe.device_type || "",
       });
       showOk(t("bizState.created"));
-      setNeId("");
+      closeCreate();
       await refreshTasks();
       await openTask(String(task.id), "profiles");
     } catch (e) {
@@ -458,19 +511,7 @@ export function BizStatePage() {
       <div className="panel__toolbar">
         <h2>{t("bizState.title")}</h2>
         <div className="btn-row">
-          <FieldSelect
-            value={neId}
-            onChange={(e) => setNeId(e.target.value)}
-            aria-label={t("bizState.pickNe")}
-          >
-            <option value="">{t("bizState.pickNe")}</option>
-            {nes.map((n) => (
-              <option key={n.id} value={n.id}>
-                {n.name || n.ip_address} ({n.vendor || "-"})
-              </option>
-            ))}
-          </FieldSelect>
-          <Button size="sm" variant="primary" isDisabled={busy || !neId} onPress={() => void createTask()}>
+          <Button size="sm" variant="primary" onPress={openCreate}>
             {t("bizState.create")}
           </Button>
         </div>
@@ -501,6 +542,7 @@ export function BizStatePage() {
             <thead>
               <tr>
                 <th>{t("bizState.colNe")}</th>
+                <th>{t("bizState.colSource")}</th>
                 <th>{t("bizState.colStatus")}</th>
                 <th>{t("bizState.colLast")}</th>
                 <th>{t("bizState.colActions")}</th>
@@ -515,6 +557,11 @@ export function BizStatePage() {
                       {row.vendor || "—"} · {row.ne_ip || "—"}
                     </div>
                     {row.last_error ? <div className="form-error">{row.last_error}</div> : null}
+                  </td>
+                  <td>
+                    <NmStatusChip color={sourceChipColor(row.source)}>
+                      {row.source || "managed"}
+                    </NmStatusChip>
                   </td>
                   <td>
                     <div className="pt-list-actions" style={{ flexWrap: "wrap", gap: 4 }}>
@@ -588,7 +635,7 @@ export function BizStatePage() {
               ))}
               {!filteredTasks.length ? (
                 <tr>
-                  <td colSpan={4}>
+                  <td colSpan={5}>
                     <div className="pt-list-empty">{t("bizState.empty")}</div>
                   </td>
                 </tr>
@@ -597,6 +644,117 @@ export function BizStatePage() {
           </table>
         </div>
       </div>
+
+      {/* Create task: pick any CLI target with search */}
+      <AppModalShell open={createOpen} onClose={closeCreate} size="lg">
+        <Modal.Header>
+          <Modal.Heading>{t("bizState.create")}</Modal.Heading>
+          <Modal.CloseTrigger />
+        </Modal.Header>
+        <Modal.Body className="flex flex-col gap-3">
+          <p className="muted">{t("bizState.createHint")}</p>
+          <div className="filter-inline">
+            <Input
+              value={neKeyword}
+              placeholder={t("bizState.neKeywordPh")}
+              onChange={(e) => {
+                setNeKeyword(e.target.value);
+                setNePage(1);
+              }}
+            />
+            <FieldSelect
+              value={neSource}
+              onChange={(e) => {
+                setNeSource(e.target.value as NeSourceFilter);
+                setNePage(1);
+              }}
+              aria-label={t("bizState.colSource")}
+            >
+              <option value="all">{t("bizState.allSource")}</option>
+              <option value="managed">managed</option>
+              <option value="ume">ume</option>
+            </FieldSelect>
+            {selectedNe ? (
+              <span className="muted">
+                {t("bizState.selectedNe")}: {selectedNe.name} ({selectedNe.ip_address}) · {neSourceOf(selectedNe)}
+              </span>
+            ) : null}
+          </div>
+          <div className="pt-list-table-wrap">
+            <table className="data-table pt-list-table">
+              <thead>
+                <tr>
+                  <th />
+                  <th>{t("bizState.colSource")}</th>
+                  <th>{t("bizState.colNe")}</th>
+                  <th>IP</th>
+                  <th>{t("bizState.colVendor")}</th>
+                  <th>{t("bizState.colConnect")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {neItems.map((row) => {
+                  const checked =
+                    selectedNe?.id === row.id && neSourceOf(selectedNe) === neSourceOf(row);
+                  return (
+                    <tr key={`${row.source}:${row.id}`}>
+                      <td>
+                        <input
+                          type="radio"
+                          name="bs-ne"
+                          checked={checked}
+                          onChange={() => setSelectedNe(row)}
+                        />
+                      </td>
+                      <td>
+                        <NmStatusChip color={sourceChipColor(row.source)}>{row.source}</NmStatusChip>
+                      </td>
+                      <td>{row.name || "—"}</td>
+                      <td>{row.ip_address || "—"}</td>
+                      <td>{row.vendor || "—"}</td>
+                      <td>
+                        <NmStatusChip color={jobChipColor(row.connect_status)}>
+                          {row.connect_status || "—"}
+                        </NmStatusChip>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {!neItems.length ? (
+                  <tr>
+                    <td colSpan={6}>
+                      <div className="pt-list-empty">
+                        {neLoading ? t("common.refreshing") : t("bizState.neEmpty")}
+                      </div>
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+          <ListPager
+            page={nePage}
+            pages={nePages}
+            total={neTotal}
+            pageSize={NE_PAGE_SIZE}
+            onPageChange={setNePage}
+            disabled={neLoading}
+          />
+        </Modal.Body>
+        <Modal.Footer>
+          <Button
+            size="sm"
+            variant="primary"
+            isDisabled={busy || !selectedNe}
+            onPress={() => void createTask()}
+          >
+            {t("bizState.create")}
+          </Button>
+          <Button size="sm" variant="ghost" onPress={closeCreate}>
+            {t("bizState.cancel")}
+          </Button>
+        </Modal.Footer>
+      </AppModalShell>
 
       {/* Task detail modal */}
       <AppModalShell open={Boolean(taskId)} onClose={closeTask} size="lg" className="app-heroui-modal--xl">

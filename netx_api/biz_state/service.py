@@ -105,25 +105,31 @@ def _ne_meta(db: Session, *, source: str, ne_id: str) -> dict[str, str]:
             "vendor": str(getattr(row, "vendor", "") or ""),
             "device_type": str(getattr(row, "device_type", "") or ""),
         }
-    # ume: best-effort from inventory if present
-    try:
+    if src == "ume":
         from ..models import UmeInventoryNE
 
         row = db.get(UmeInventoryNE, nid)
-        if row:
-            return {
-                "ne_name": str(getattr(row, "name", "") or ""),
-                "ne_ip": str(getattr(row, "ip", "") or ""),
-                "vendor": str(getattr(row, "vendor", "") or ""),
-                "device_type": str(getattr(row, "device_type", "") or ""),
-            }
-    except Exception:
-        pass
-    return {"ne_name": "", "ne_ip": "", "vendor": "", "device_type": ""}
+        if not row:
+            raise HTTPException(status_code=404, detail="ume_ne_not_found")
+        return {
+            "ne_name": str(
+                getattr(row, "user_label", "")
+                or getattr(row, "ne_name", "")
+                or getattr(row, "host_name", "")
+                or getattr(row, "ip_address", "")
+                or nid
+            ),
+            "ne_ip": str(getattr(row, "ip_address", "") or getattr(row, "ip", "") or ""),
+            "vendor": str(getattr(row, "vendor", "") or ""),
+            "device_type": str(getattr(row, "device_type", "") or getattr(row, "ne_type", "") or ""),
+        }
+    raise HTTPException(status_code=400, detail="invalid_source")
 
 
 def create_task(db: Session, body: dict[str, Any]) -> dict[str, Any]:
     source = str(body.get("source") or "managed").strip().lower() or "managed"
+    if source not in ("managed", "ume"):
+        raise HTTPException(status_code=400, detail="invalid_source")
     ne_id = str(body.get("ne_id") or "").strip()
     if not ne_id:
         raise HTTPException(status_code=400, detail="ne_id_required")
