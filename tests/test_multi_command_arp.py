@@ -97,11 +97,18 @@ class ArpMultiCommandTests(unittest.TestCase):
         assert p is not None
         self.assertEqual(len(p.aux_commands), 1)
         self.assertEqual(p.aux_commands[0].key, "if_intf")
-        self.assertEqual(p.aux_commands[0].parser_id, "if_intf")
-        self.assertIsNotNone(get_profile("zte.if_intf"))
+        self.assertEqual(p.aux_commands[0].profile_id, "zte.if_intf")
         self.assertEqual(get_parser_meta("if_intf")["rule_keys"], ("zte_zxros_show_running_config_if_intf",))
 
     def test_arp_enriches_vrf_via_aux_records(self) -> None:
+        from netx_api.biz_state.collect_session import (
+            CachedCommand,
+            build_parse_bundle,
+            resolve_aux_command,
+            run_primary_with_bundle,
+        )
+        from netx_api.biz_state.profiles import AuxCommand
+
         if_recs, if_fsm, _ = run_parser(
             "if_intf",
             raw_text=IF_INTF_SAMPLE,
@@ -109,20 +116,26 @@ class ArpMultiCommandTests(unittest.TestCase):
             device_type="zte_zxros",
             command="show running-config if-intf",
         )
-        records, tables, keys = run_parser(
+        ra = resolve_aux_command(AuxCommand(key="if_intf", profile_id="zte.if_intf"))
+        bundle = build_parse_bundle(
+            primary_raw=ARP_MATCHING,
+            primary_parser_id="arp",
+            aux_results={
+                "if_intf": CachedCommand(
+                    raw=IF_INTF_SAMPLE, fsm_tables=if_fsm, records=if_recs, ok=True
+                )
+            },
+            resolved_aux=[ra],
+        )
+        p = get_profile("zte.arp")
+        assert p is not None
+        records, tables, keys = run_primary_with_bundle(
             "arp",
-            raw_text=ARP_MATCHING,
+            bundle=bundle,
             vendor="zte",
             device_type="zte_zxros",
-            command="show arp | one-line",
-            textfsm_command="show arp",
-            raws={"primary": ARP_MATCHING, "if_intf": IF_INTF_SAMPLE},
-            command_rules={
-                "primary": ["zte_zxros_show_arp"],
-                "if_intf": ["zte_zxros_show_running_config_if_intf"],
-            },
-            aux_records={"if_intf": if_recs},
-            fsm_tables_extra=if_fsm,
+            command="show arp",
+            enrich_joins=list(p.enrich_joins),
         )
         self.assertIn("zte_zxros_show_arp", keys)
         by_ip = {r["ip"]: r for r in records}

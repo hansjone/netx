@@ -8,6 +8,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from .enrich import EnrichJoin
+
 
 @dataclass(frozen=True)
 class FieldDef:
@@ -36,14 +38,10 @@ class PlaceholderDef:
 
 @dataclass(frozen=True)
 class AuxCommand:
-    """Secondary CLI bound to a collect profile (same session, optional cache)."""
+    """Secondary collect: only key + profile_id (rest from that profile)."""
 
     key: str
-    command_template: str
-    textfsm_command: str = ""
-    parser_id: str = ""
-    rule_keys: tuple[str, ...] = ()
-    profile_id: str = ""
+    profile_id: str
 
 
 @dataclass
@@ -65,6 +63,7 @@ class ParseProfile:
     enabled: bool = True
     kind: str = "collect"  # collect | discover
     aux_commands: list[AuxCommand] = field(default_factory=list)
+    enrich_joins: list[EnrichJoin] = field(default_factory=list)
 
 
 _LLDP_FIELDS: list[FieldDef] = [
@@ -358,14 +357,10 @@ def _zte_status_profiles() -> list[ParseProfile]:
             enabled=True,
             kind="collect",
             aux_commands=[
-                AuxCommand(
-                    key="if_intf",
-                    command_template="show running-config if-intf",
-                    textfsm_command="show running-config if-intf",
-                    parser_id="if_intf",
-                    rule_keys=("zte_zxros_show_running_config_if_intf",),
-                    profile_id="zte.if_intf",
-                )
+                AuxCommand(key="if_intf", profile_id="zte.if_intf"),
+            ],
+            enrich_joins=[
+                EnrichJoin(from_aux="if_intf", on="interface", take=("vrf",)),
             ],
         ),
         ParseProfile(
@@ -546,12 +541,19 @@ def profile_to_public_dict(p: ParseProfile, *, overrides: dict[str, Any] | None 
         "aux_commands": [
             {
                 "key": a.key,
-                "command_template": a.command_template,
-                "textfsm_command": a.textfsm_command or a.command_template,
-                "parser_id": a.parser_id,
-                "rule_keys": list(a.rule_keys),
                 "profile_id": a.profile_id,
             }
             for a in (p.aux_commands or [])
+        ],
+        "enrich_joins": [
+            {
+                "from_aux": j.from_aux,
+                "on": j.on,
+                "left_on": j.left_on,
+                "right_on": j.right_on,
+                "take": list(j.take),
+                "fill_missing": j.fill_missing,
+            }
+            for j in (p.enrich_joins or [])
         ],
     }

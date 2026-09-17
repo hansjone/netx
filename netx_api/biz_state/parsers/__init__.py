@@ -3,29 +3,32 @@
 Layout::
 
     parsers/
-      common/          # cross-vendor (lldp, vrf_list, vrf_route_summary, pipeline)
+      common/          # cross-vendor + pipeline.prefer_fsm
       zte/             # implemented status tables
-      cisco/           # skeleton — add command modules here
-      huawei/
-      h3c/
-      juniper/
-      nokia/
-      ericsson/
+      cisco/ huawei/ … # skeletons
 
 Each vendor package exports ``PARSERS: dict[parser_id, normalize_fn]``.
 
 Adding a status metric
 ----------------------
-1. (Recommended) ``cli_templates/<vendor>/<stem>.textfsm`` + ``index`` line
-2. ``parsers/<vendor>/<metric>.py``: ``RULE_KEYS = ("<stem>",)`` +
-   ``normalize(..., fsm_tables=...)`` (use ``common.pipeline.prefer_fsm``)
-3. Register in the vendor ``PARSERS`` dict
-4. ``profiles.py``: add ``ParseProfile`` (command match + ``FieldDef`` schema);
-   optional ``aux_commands`` for multi-command collect items
+1. ``cli_templates/<vendor>/<stem>.textfsm`` + ``index`` (FSM first)
+2. ``parsers/<vendor>/<metric>.py``: ``RULE_KEYS`` + ``normalize`` + ``prefer_fsm``
+3. Register in vendor ``PARSERS``
+4. ``profiles.py``: ``ParseProfile`` (match + ``FieldDef``)
 
-Collect runs TextFSM rules first → ``fsm_tables``, then calls ``normalize`` with
-``raw_text`` / ``raws`` / ``fsm_tables`` / ``aux_records``. Prefer FSM; hand-parse
-only when FSM has no rows.
+Cross-command (multi aux)
+-------------------------
+1. Implement each aux as a normal status profile (steps 1–4)
+2. On the primary profile::
+
+       aux_commands=[AuxCommand(key="if_intf", profile_id="zte.if_intf")]
+       enrich_joins=[EnrichJoin(from_aux="if_intf", on="interface", take=("vrf",))]
+
+3. CollectSession caches identical concrete CLI in one batch; enrich runs after
+   primary normalize (no join logic inside the parser).
+
+Complex joins that cannot be expressed as equal-field copy still go in
+``normalize`` using ``raws`` / ``aux_records`` / ``fsm_tables``.
 """
 
 from __future__ import annotations
