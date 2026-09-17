@@ -62,6 +62,12 @@ def run_api_startup() -> None:
             apply_topology_schema_safety_net(conn)
             apply_collection_schema_safety_net(conn)
             apply_hop_schema_safety_net(conn)
+            try:
+                from .biz_state.schema_ensure import apply_biz_state_schema
+
+                apply_biz_state_schema(conn)
+            except Exception:
+                _log.exception("startup: biz_state schema safety patch failed")
     except Exception:
         _log.exception("startup: auth/topology/collection/hop schema safety patches failed")
     if skip_ddl and alembic_ok:
@@ -133,6 +139,22 @@ def run_api_startup() -> None:
         pt_cleared = recover_port_traffic_on_startup(db)
         if pt_cleared:
             _log.info("startup: cleared %s port_traffic stuck collect_running flag(s)", pt_cleared)
+        try:
+            from .models import BizStateTask
+
+            stuck = (
+                db.query(BizStateTask)
+                .filter(BizStateTask.collect_running.is_(True))
+                .all()
+            )
+            for t in stuck:
+                t.collect_running = False
+                t.last_error = (t.last_error or "")[:900] + " | reset_on_startup"
+            if stuck:
+                db.commit()
+                _log.info("startup: cleared %s biz_state stuck collect_running flag(s)", len(stuck))
+        except Exception:
+            _log.exception("startup: biz_state collect_running recovery failed")
         try:
             from .port_traffic_migrate import backfill_port_traffic_series
 

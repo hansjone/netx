@@ -68,6 +68,12 @@ def local_device_scheduler_status(*, role: str = "unknown") -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         out["port_traffic"] = {"running": False, "error": "unavailable"}
     try:
+        from .biz_state_scheduler import biz_state_scheduler_status
+
+        out["biz_state"] = biz_state_scheduler_status()
+    except Exception:  # noqa: BLE001
+        out["biz_state"] = {"running": False, "error": "unavailable"}
+    try:
         from .fabric_reconcile_scheduler import fabric_reconcile_scheduler_status
 
         out["fabric_reconcile"] = fabric_reconcile_scheduler_status()

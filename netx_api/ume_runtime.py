@@ -48,12 +48,14 @@ def start_device_schedulers() -> None:
     from .lldp_collect_scheduler import start_lldp_collect_scheduler
     from .ne_collect_scheduler import start_ne_collect_scheduler
     from .port_traffic_scheduler import start_port_traffic_scheduler
+    from .biz_state_scheduler import start_biz_state_scheduler
     from .scheduler_heartbeat import start_scheduler_heartbeat_publisher
 
     start_config_sync_scheduler()
     start_lldp_collect_scheduler()
     start_ne_collect_scheduler()
     start_port_traffic_scheduler()
+    start_biz_state_scheduler()
     start_fabric_reconcile_scheduler()
     # Publish status so API /metrics can see collectors when run in a split worker.
     role = "api_inline" if bool(getattr(settings, "run_inline_schedulers", True)) else "worker"

@@ -1753,3 +1753,59 @@ export const deletePortTrafficBoard = (boardId: string) =>
   apiDelete<{ ok: boolean; id: string }>(
     `/v1/port-traffic/boards/${encodeURIComponent(boardId)}`,
   );
+
+/* ---- biz_state (business state monitoring) ---- */
+
+export const bizStateListProfiles = (params?: { vendor?: string; device_type?: string }) => {
+  const p = new URLSearchParams();
+  if (params?.vendor?.trim()) p.set("vendor", params.vendor.trim());
+  if (params?.device_type?.trim()) p.set("device_type", params.device_type.trim());
+  const q = p.toString();
+  return apiGet<{ items: Record<string, unknown>[] }>(`/v1/biz-state/profiles${q ? `?${q}` : ""}`);
+};
+
+export const bizStateListTasks = () =>
+  apiGet<{ items: Record<string, unknown>[] }>("/v1/biz-state/tasks");
+
+export const bizStateCreateTask = (body: Record<string, unknown>) =>
+  apiPost<Record<string, unknown>>("/v1/biz-state/tasks", body);
+
+export const bizStateGetTask = (taskId: string) =>
+  apiGet<Record<string, unknown>>(`/v1/biz-state/tasks/${encodeURIComponent(taskId)}`);
+
+export const bizStatePatchTask = (taskId: string, body: Record<string, unknown>) =>
+  apiPatch<Record<string, unknown>>(`/v1/biz-state/tasks/${encodeURIComponent(taskId)}`, body);
+
+export const bizStateDeleteTask = (taskId: string) =>
+  apiDelete<{ ok: boolean }>(`/v1/biz-state/tasks/${encodeURIComponent(taskId)}`);
+
+export const bizStateCollectNow = (taskId: string) =>
+  apiPost<{ ok: boolean }>(`/v1/biz-state/tasks/${encodeURIComponent(taskId)}/collect`, {});
+
+export const bizStateListBatches = (taskId: string, limit = 50) =>
+  apiGet<{ items: Record<string, unknown>[] }>(
+    `/v1/biz-state/tasks/${encodeURIComponent(taskId)}/batches?limit=${limit}`,
+  );
+
+export const bizStateGetBatch = (batchId: string) =>
+  apiGet<Record<string, unknown>>(`/v1/biz-state/batches/${encodeURIComponent(batchId)}`);
+
+export const bizStateDownloadExport = async (batchId: string): Promise<void> => {
+  const path = `/v1/biz-state/batches/${encodeURIComponent(batchId)}/export`;
+  const res = await fetch(path, { method: "GET", credentials: fetchCreds, headers: authHeaders() });
+  if (res.status === 401) {
+    handleUnauthorized(path);
+    throw new Error("unauthorized");
+  }
+  if (!res.ok) throw new Error(`${res.status} export`);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `biz_state_${batchId}.zip`;
+    a.click();
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+};

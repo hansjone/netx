@@ -44,6 +44,7 @@ src/
 | `/network/tasks/config-sync` | 配置同步 | `network` |
 | `/network/tasks/port-traffic` | 端口流量监控（设备管理） | `network` |
 | `/network/tasks/port-traffic/wall` | 流量大屏列表（打开独立页签） | `network` |
+| `/network/tasks/biz-state` | 业务状态监控（LLDP 快照 Phase1） | `network` |
 | `/port-traffic/wall/:boardId` | 流量大屏专有页签（无网络侧栏） | `port-traffic-wall` |
 | `/topology` | 拓扑管理（模式化编辑器：选择/平移/拖动/连线、框选、自动布局、拖放添加） | `topology` |
 | `/webcrt` | WebCRT 终端 | `webcrt` |
@@ -123,6 +124,16 @@ src/
 - 定制大屏：`/v1/port-traffic/boards*`（Board + Panel）；整板 PUT panels 保存；刷新/换页不丢；图数据仍走 compare
 - 采集日志：`GET /v1/port-traffic/devices/{id}/events`；失败写入 `port_traffic_event`，列表操作可查看
 - 支持拓扑深链：`?ne_id=&source=managed|ume&ifname=` 打开向导并预填网元
+
+## 业务状态监控（biz_state）
+
+- API：`/v1/biz-state/profiles`、`/tasks*`、`/batches*`、`/batches/{id}/export`
+- **ParseProfile**：命令模板 + TextFSM + 回调 + schema；LLDP 与拓扑 **共享解析**（`lldp_shared`），业务流程写批次表，拓扑写 Fabric
+- Phase1 样板：LLDP 邻居快照；建任务默认启用对应厂商 LLDP profile；支持自定义只采不解析行
+- 调度：`NETX_BIZ_STATE_SCHEDULER_ENABLED`（默认开），tick `NETX_BIZ_STATE_SCHEDULER_TICK_SEC`
+- 前端：`/network/tasks/biz-state`（任务列表 / 启用项 / 批次 / 导出 zip）
+- Phase2（未做）：比对模板、端口映射、前后批次 diff、大屏
+- Phase3（未做）：占位符发现→人选关联（如 VRF）
 
 ## 拓扑管理（Fabric + 站点目录，对齐厂商）
 

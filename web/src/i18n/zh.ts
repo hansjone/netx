@@ -156,6 +156,7 @@ const zh = {
       configSync: "配置同步",
       portTraffic: "流量监控",
       portTrafficWall: "流量大屏",
+      bizState: "业务状态监控",
     },
     collapseNav: "折叠侧栏",
     expandNav: "展开侧栏",

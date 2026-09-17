@@ -25,7 +25,7 @@ from .topology_fabric import (
     ensure_fabric_node_for_ume,
     upsert_fabric_edge,
 )
-from .topology_lldp import (
+from .lldp_shared import (
     NeighborHit,
     can_discover_lldp,
     parse_neighbor_output,

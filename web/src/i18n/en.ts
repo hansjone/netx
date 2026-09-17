@@ -156,6 +156,7 @@ const en = {
       configSync: "Config sync",
       portTraffic: "Port traffic",
       portTrafficWall: "Traffic wall",
+      bizState: "Business state",
     },
     collapseNav: "Collapse sidebar",
     expandNav: "Expand sidebar",

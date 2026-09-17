@@ -46,6 +46,13 @@ def shutdown_runtime(*, reason: str = "lifespan") -> None:
         _log.exception("stop_port_traffic_scheduler failed")
 
     try:
+        from .biz_state_scheduler import stop_biz_state_scheduler
+
+        stop_biz_state_scheduler()
+    except Exception:  # noqa: BLE001
+        _log.exception("stop_biz_state_scheduler failed")
+
+    try:
         from .fabric_reconcile_scheduler import stop_fabric_reconcile_scheduler
 
         stop_fabric_reconcile_scheduler()
