@@ -15,9 +15,11 @@ xgei-1/1/0/2            optical    Duplex/full  1G    up    down  down
 """
 
 ZTE_ARP = """\
-IP               Age        Hardware address   Interface            Exter Interface     VPN name
-192.168.1.1      03:22:07   0011.2233.4455     gei-0/1/0/1          N/A                 ---
-192.168.1.2      H          00aa.bbcc.ddee     gei-0/1/0/1          N/A                 ---
+IP                       Hardware                    Exter  Inter  Sub
+Address         Age      Address        Interface    VlanID VlanID Interface
+--------------------------------------------------------------------------------
+192.168.1.1      03:22:07 0011.2233.4455 gei-0/1/0/1  N/A    N/A    gei-0/1/0/1
+192.168.1.2      H        00aa.bbcc.ddee gei-0/1/0/1  N/A    N/A    N/A
 """
 
 
@@ -59,11 +61,12 @@ class ParserMetaTests(unittest.TestCase):
         assert meta is not None
         self.assertIn("zte_zxros_show_interface_brief", meta["rule_keys"])
 
-    def test_arp_empty_rule_keys(self) -> None:
+    def test_arp_rule_keys(self) -> None:
         meta = get_parser_meta("arp")
         self.assertIsNotNone(meta)
         assert meta is not None
-        self.assertEqual(meta["rule_keys"], ())
+        self.assertEqual(meta["rule_keys"], ("zte_zxros_show_arp",))
+        self.assertTrue(meta["rule_keys_declared"])
 
     def test_run_parser_interface_brief(self) -> None:
         records, tables, keys = run_parser(
@@ -78,19 +81,22 @@ class ParserMetaTests(unittest.TestCase):
         self.assertGreaterEqual(len(records), 2)
         self.assertEqual(records[0]["interface"], "xgei-1/1/0/1")
 
-    def test_run_parser_arp_hand_only(self) -> None:
-        # Declared empty RULE_KEYS → no index auto-bind; hand parse only.
+    def test_run_parser_arp_via_fsm(self) -> None:
         records, tables, keys = run_parser(
             "arp",
             raw_text=ZTE_ARP,
             vendor="zte",
             device_type="zte_zxros",
-            command="show arp",
+            command="show arp | one-line",
+            textfsm_command="show arp",
         )
-        self.assertEqual(keys, [])
-        self.assertEqual(tables, {})
-        self.assertGreaterEqual(len(records), 1)
-        self.assertTrue(any(r["ip"] == "192.168.1.1" for r in records))
+        self.assertEqual(keys, ["zte_zxros_show_arp"])
+        self.assertEqual(len(tables.get("zte_zxros_show_arp") or []), 2)
+        self.assertEqual(len(records), 2)
+        by_ip = {r["ip"]: r for r in records}
+        self.assertEqual(by_ip["192.168.1.1"]["entry_type"], "dynamic")
+        self.assertEqual(by_ip["192.168.1.2"]["entry_type"], "static")
+        self.assertEqual(by_ip["192.168.1.1"]["mac"], "0011.2233.4455")
 
 
 if __name__ == "__main__":

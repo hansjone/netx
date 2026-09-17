@@ -86,7 +86,32 @@ class ZteStatusParserTests(unittest.TestCase):
 
     def test_arp(self) -> None:
         text = _section(self.log, "show arp", ("show nd6", "PAG3_", "M6000-4SE-3#show nd6"))
-        rows = normalize_arp(raw_text=text)
+        from netx_api.biz_state.parsers import run_parser
+        from netx_api.ntc_parse import apply_rule
+
+        fsm = apply_rule(
+            platform="zte_zxros",
+            rule_key="zte_zxros_show_arp",
+            text=text,
+            command="show arp",
+        )
+        self.assertEqual(len(fsm), 13)
+
+        records, tables, keys = run_parser(
+            "arp",
+            raw_text=text,
+            vendor="zte",
+            device_type="zte_zxros",
+            command="show arp | one-line",
+            textfsm_command="show arp",
+        )
+        self.assertEqual(keys, ["zte_zxros_show_arp"])
+        self.assertEqual(len(tables["zte_zxros_show_arp"]), 13)
+
+        rows = normalize_arp(
+            raw_text=text, vendor="zte", device_type="zte_zxros", command="show arp"
+        )
+        self.assertEqual(rows, records)
         self.assertGreaterEqual(len(rows), 10)
         ips = {r["ip"] for r in rows}
         self.assertIn("192.166.1.65", ips)
@@ -95,12 +120,13 @@ class ZteStatusParserTests(unittest.TestCase):
         dynamics = [r for r in rows if r["entry_type"] == "dynamic"]
         self.assertGreaterEqual(len(statics), 5)
         self.assertGreaterEqual(len(dynamics), 5)
-        self.assertTrue(all(r["age"] == "H" or not r["age"][0].isdigit() for r in statics) or True)
-        from netx_api.biz_state.parsers.zte.arp import is_valid_arp_age
-
         self.assertTrue(all(is_valid_arp_age(r["age"]) for r in dynamics))
         self.assertFalse(is_valid_arp_age("H"))
         self.assertTrue(is_valid_arp_age("03:22:07"))
+        # VLAN-subif row from TextFSM
+        sub = next(r for r in rows if r["ip"] == "192.166.1.73")
+        self.assertEqual(sub["interface"], "cgei-0/2/0/1.30")
+        self.assertEqual(sub["exter_vlan"], "30")
 
     def test_nd6(self) -> None:
         text = _section(self.log, "show nd6 cache", ("PAG3_", "show bgp"))
