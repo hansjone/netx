@@ -21,6 +21,7 @@ from ..models import (
     BizStateTask,
     BizStateTaskItem,
     BizStateTaskItemBinding,
+    BizStateVrfRouteSummary,
     ManagedNE,
 )
 from ..timeutil import utcnow_naive
@@ -224,13 +225,67 @@ def update_task(db: Session, task_id: str, body: dict[str, Any]) -> dict[str, An
         task.interval_sec = max(60, int(body.get("interval_sec") or 300))
     if "retention_batches" in body:
         task.retention_batches = max(1, int(body.get("retention_batches") or 30))
+    if "items" in body:
+        _replace_items(db, task.id, list(body.get("items") or []))
     if "status" in body:
         st = str(body.get("status") or "").strip()
         if st in ("draft", "running", "paused", "stopped"):
+            if st == "running":
+                _assert_bindings_ready(db, task.id)
             task.status = st
-    if "items" in body:
-        _replace_items(db, task.id, list(body.get("items") or []))
     task.updated_at = _utcnow()
+    db.commit()
+    return get_task(db, task_id)
+
+
+def _assert_bindings_ready(db: Session, task_id: str) -> None:
+    items = (
+        db.query(BizStateTaskItem)
+        .filter(BizStateTaskItem.task_id == task_id, BizStateTaskItem.enabled.is_(True))
+        .all()
+    )
+    for it in items:
+        if it.kind != "catalog":
+            continue
+        profile = get_profile(it.source_profile_id)
+        if not profile or not profile.placeholders:
+            continue
+        binds = (
+            db.query(BizStateTaskItemBinding)
+            .filter(BizStateTaskItemBinding.item_id == it.id)
+            .all()
+        )
+        if not binds:
+            raise HTTPException(
+                status_code=400,
+                detail=f"bindings_required:{profile.profile_id}",
+            )
+
+
+def set_item_bindings(
+    db: Session, task_id: str, item_id: str, bindings: list[dict[str, Any]]
+) -> dict[str, Any]:
+    item = db.get(BizStateTaskItem, item_id)
+    if not item or item.task_id != task_id:
+        raise HTTPException(status_code=404, detail="item_not_found")
+    db.query(BizStateTaskItemBinding).filter(BizStateTaskItemBinding.item_id == item_id).delete()
+    for b in bindings:
+        ph = str(b.get("placeholder") or b.get("name") or "").strip()
+        val = str(b.get("value") or "").strip()
+        if not ph or not val:
+            continue
+        db.add(
+            BizStateTaskItemBinding(
+                id=uuid4().hex,
+                item_id=item_id,
+                placeholder=ph[:64],
+                value=val[:256],
+                created_at=_utcnow(),
+            )
+        )
+    task = db.get(BizStateTask, task_id)
+    if task:
+        task.updated_at = _utcnow()
     db.commit()
     return get_task(db, task_id)
 
@@ -317,6 +372,7 @@ def delete_task(db: Session, task_id: str) -> None:
     batches = db.query(BizStateBatch).filter(BizStateBatch.task_id == task_id).all()
     for b in batches:
         db.query(BizStateLldpNeighbor).filter(BizStateLldpNeighbor.batch_id == b.id).delete()
+        db.query(BizStateVrfRouteSummary).filter(BizStateVrfRouteSummary.batch_id == b.id).delete()
         db.query(BizStateBatchCommand).filter(BizStateBatchCommand.batch_id == b.id).delete()
         db.delete(b)
     items = db.query(BizStateTaskItem).filter(BizStateTaskItem.task_id == task_id).all()
@@ -367,6 +423,13 @@ def get_batch(db: Session, batch_id: str) -> dict[str, Any]:
         .limit(5000)
         .all()
     )
+    vrf_rows = (
+        db.query(BizStateVrfRouteSummary)
+        .filter(BizStateVrfRouteSummary.batch_id == batch_id)
+        .order_by(BizStateVrfRouteSummary.vrf.asc(), BizStateVrfRouteSummary.source.asc())
+        .limit(5000)
+        .all()
+    )
     return {
         "id": b.id,
         "task_id": b.task_id,
@@ -400,6 +463,9 @@ def get_batch(db: Session, batch_id: str) -> dict[str, Any]:
                 "protocol": n.protocol,
             }
             for n in neighbors
+        ],
+        "vrf_route_summary": [
+            {"vrf": r.vrf, "source": r.source, "networks": r.networks} for r in vrf_rows
         ],
     }
 
@@ -448,6 +514,13 @@ def export_batch_zip(db: Session, batch_id: str) -> bytes:
                 )
             )
         zf.writestr("tables/lldp_neighbor.csv", "\n".join(csv_lines) + "\n")
+
+        vrf_csv = ["vrf,source,networks"]
+        for r in detail.get("vrf_route_summary") or []:
+            vrf_csv.append(
+                ",".join([_csv(r["vrf"]), _csv(r["source"]), _csv(str(r["networks"]))])
+            )
+        zf.writestr("tables/vrf_route_summary.csv", "\n".join(vrf_csv) + "\n")
     return buf.getvalue()
 
 

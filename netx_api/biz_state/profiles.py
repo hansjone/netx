@@ -121,13 +121,119 @@ def _lldp_profiles() -> list[ParseProfile]:
     return out
 
 
+_VRF_ROUTE_FIELDS: list[FieldDef] = [
+    FieldDef("vrf", length=128, indexed=True, is_key=True, display_name="VRF", from_command_param=True),
+    FieldDef("source", length=64, indexed=True, is_key=True, display_name="路由来源"),
+    FieldDef("networks", dtype="int", role="state", display_name="路由条数"),
+]
+
+
+def _vrf_profiles() -> list[ParseProfile]:
+    """Discover VRF list + parameterized route-summary collect (Phase3)."""
+    discover_cmds: dict[str, tuple[str, str, str]] = {
+        # vendor_key: (command, match, textfsm_command)
+        "cisco": ("show vrf", r"(?i)^\s*show\s+vrf\s*$", "show vrf"),
+        "huawei": (
+            "display ip vpn-instance",
+            r"(?i)^\s*display\s+ip\s+vpn-instance\s*$",
+            "display ip vpn-instance",
+        ),
+        "h3c": (
+            "display ip vpn-instance",
+            r"(?i)^\s*display\s+ip\s+vpn-instance\s*$",
+            "display ip vpn-instance",
+        ),
+        "zte": ("show ip vrf", r"(?i)^\s*show\s+ip\s+vrf\s*$", "show ip vrf"),
+    }
+    collect_cmds: dict[str, tuple[str, str]] = {
+        "cisco": (
+            "show ip route vrf <vrf> summary",
+            r"(?i)^\s*show\s+ip\s+route\s+vrf\s+(?P<vrf>\S+)\s+summary\s*$",
+        ),
+        "huawei": (
+            "display ip routing-table vpn-instance <vrf> statistics",
+            r"(?i)^\s*display\s+ip\s+routing-table\s+vpn-instance\s+(?P<vrf>\S+)\s+statistics\s*$",
+        ),
+        "h3c": (
+            "display ip routing-table vpn-instance <vrf> statistics",
+            r"(?i)^\s*display\s+ip\s+routing-table\s+vpn-instance\s+(?P<vrf>\S+)\s+statistics\s*$",
+        ),
+        "zte": (
+            "show ip route vrf <vrf> summary",
+            r"(?i)^\s*show\s+ip\s+route\s+vrf\s+(?P<vrf>\S+)\s+summary\s*$",
+        ),
+    }
+    out: list[ParseProfile] = []
+    order = 200
+    for key, (cmd, match, fsm_cmd) in discover_cmds.items():
+        out.append(
+            ParseProfile(
+                profile_id=f"{key}.vrf_list",
+                vendor_key=key,
+                metric_id="vrf_list",
+                parser_id="vrf_list",
+                title="VRF / VPN-Instance List",
+                command_template=cmd,
+                match=match,
+                textfsm_command=fsm_cmd,
+                description="Discover VRF names for parameterized collect bindings.",
+                placeholders=[],
+                fields=[
+                    FieldDef("vrf_name", length=128, indexed=True, is_key=True, display_name="VRF"),
+                    FieldDef("rd", length=64, role="meta", display_name="RD"),
+                    FieldDef("protocols", length=64, role="meta", display_name="协议"),
+                ],
+                tags=["vrf", "discover"],
+                sort_order=order,
+                enabled=True,
+                kind="discover",
+            )
+        )
+        order += 5
+
+    order = 220
+    for key, (tmpl, match) in collect_cmds.items():
+        disc_id = f"{key}.vrf_list"
+        out.append(
+            ParseProfile(
+                profile_id=f"{key}.route_vrf_summary",
+                vendor_key=key,
+                metric_id="vrf_route_summary",
+                parser_id="vrf_route_summary",
+                title="VRF Route Summary",
+                command_template=tmpl,
+                match=match,
+                textfsm_command="",
+                description="Per-VRF route source counts (discover VRF → select bindings → collect).",
+                placeholders=[
+                    PlaceholderDef(
+                        name="vrf",
+                        schema_field="vrf",
+                        required=True,
+                        bind_mode="discover_select",
+                        discover_profile_id=disc_id,
+                        discover_value_field="vrf_name",
+                        discover_label_field="vrf_name",
+                    )
+                ],
+                fields=list(_VRF_ROUTE_FIELDS),
+                tags=["vrf", "route", "l3"],
+                sort_order=order,
+                enabled=True,
+                kind="collect",
+            )
+        )
+        order += 5
+    return out
+
+
 _PROFILES: list[ParseProfile] | None = None
 
 
 def all_profiles() -> list[ParseProfile]:
     global _PROFILES
     if _PROFILES is None:
-        _PROFILES = _lldp_profiles()
+        _PROFILES = _lldp_profiles() + _vrf_profiles()
     return list(_PROFILES)
 
 
@@ -136,13 +242,16 @@ def reload_profiles() -> None:
     _PROFILES = None
 
 
-def profiles_for_vendor(vendor_key: str) -> list[ParseProfile]:
+def profiles_for_vendor(vendor_key: str, *, kind: str | None = None) -> list[ParseProfile]:
     key = str(vendor_key or "").strip().lower()
-    return [
+    out = [
         p
         for p in all_profiles()
         if p.enabled and (p.vendor_key == key or p.vendor_key == "*")
     ]
+    if kind:
+        out = [p for p in out if p.kind == kind]
+    return out
 
 
 def get_profile(profile_id: str) -> ParseProfile | None:

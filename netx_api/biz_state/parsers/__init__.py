@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from ...lldp_shared import NeighborHit, parse_neighbor_output
+from .vrf import normalize_vrf_list, normalize_vrf_route_summary
 
 NormalizeFn = Callable[..., list[dict[str, Any]]]
 
@@ -40,6 +41,8 @@ def normalize_lldp_neighbors(
 
 _REGISTRY: dict[str, NormalizeFn] = {
     "lldp_neighbors": normalize_lldp_neighbors,
+    "vrf_list": normalize_vrf_list,
+    "vrf_route_summary": normalize_vrf_route_summary,
 }
 
 

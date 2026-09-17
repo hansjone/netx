@@ -33,7 +33,11 @@ def match_command(
         return None
     key = str(vendor_key or "").strip().lower()
     cands = profiles if profiles is not None else [
-        p for p in all_profiles() if p.enabled and (p.vendor_key == key or p.vendor_key == "*")
+        p
+        for p in all_profiles()
+        if p.enabled
+        and p.kind == "collect"
+        and (p.vendor_key == key or p.vendor_key == "*")
     ]
     best: MatchResult | None = None
     for p in cands:
@@ -48,6 +52,37 @@ def match_command(
         if best is None or scored.matched_length > best.matched_length:
             best = scored
     return best
+
+
+def normalize_binding_dicts(
+    bindings: list[dict[str, str]] | None,
+    *,
+    placeholders: list | None = None,
+) -> list[dict[str, str]]:
+    """Accept ``{vrf: X}`` or ``{placeholder, value}`` rows; expand multi-value placeholders."""
+    raw = list(bindings or [])
+    converted: list[dict[str, str]] = []
+    for b in raw:
+        d = dict(b or {})
+        if "placeholder" in d or ("name" in d and "value" in d):
+            ph = str(d.get("placeholder") or d.get("name") or "").strip()
+            val = str(d.get("value") or "").strip()
+            if ph and val:
+                converted.append({ph: val})
+            continue
+        converted.append({str(k): str(v).strip() for k, v in d.items() if str(v).strip()})
+
+    phs = list(placeholders or [])
+    if len(phs) == 1:
+        name = str(getattr(phs[0], "name", "") or "")
+        schema = str(getattr(phs[0], "schema_field", "") or name)
+        out: list[dict[str, str]] = []
+        for c in converted:
+            val = c.get(name) or c.get(schema) or ""
+            if val:
+                out.append({name: val})
+        return out
+    return converted
 
 
 def expand_from_bindings(
@@ -70,13 +105,12 @@ def expand_from_bindings(
             raise ValueError(f"template has placeholders but profile defines none: {concrete}")
         return [(concrete, {})]
 
-    binds = list(bindings or [])
+    binds = normalize_binding_dicts(bindings, placeholders=profile.placeholders)
     if not binds:
         raise ValueError(f"profile {profile.profile_id} requires parameter bindings")
 
     out: list[tuple[str, dict[str, str]]] = []
-    for b in binds:
-        params = {str(k): str(v).strip() for k, v in dict(b or {}).items() if str(v).strip()}
+    for params in binds:
         rendered = tmpl
         for ph in profile.placeholders:
             val = params.get(ph.name) or params.get(ph.schema_field) or ""
@@ -86,7 +120,7 @@ def expand_from_bindings(
         concrete = normalize_command(rendered)
         if re.search(r"<[^>]+>", concrete):
             raise ValueError(f"unresolved placeholders in: {concrete}")
-        out.append((concrete, params))
+        out.append((concrete, dict(params)))
     return out
 
 

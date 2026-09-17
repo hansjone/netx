@@ -44,7 +44,7 @@ src/
 | `/network/tasks/config-sync` | 配置同步 | `network` |
 | `/network/tasks/port-traffic` | 端口流量监控（设备管理） | `network` |
 | `/network/tasks/port-traffic/wall` | 流量大屏列表（打开独立页签） | `network` |
-| `/network/tasks/biz-state` | 业务状态监控（LLDP 快照 Phase1） | `network` |
+| `/network/tasks/biz-state` | 业务状态监控（LLDP / VRF 关联采集） | `network` |
 | `/network/tasks/biz-compare` | 业务状态比对（模板/映射/前后 diff） | `network` |
 | `/port-traffic/wall/:boardId` | 流量大屏专有页签（无网络侧栏） | `port-traffic-wall` |
 | `/topology` | 拓扑管理（模式化编辑器：选择/平移/拖动/连线、框选、自动布局、拖放添加） | `topology` |
@@ -128,13 +128,13 @@ src/
 
 ## 业务状态监控（biz_state）
 
-- API：`/v1/biz-state/profiles`、`/tasks*`、`/batches*`、`/batches/{id}/export`
+- API：`/v1/biz-state/profiles`、`/discover`、`/tasks*`、`/batches*`、`/batches/{id}/export`、`/compare/*`
 - **ParseProfile**：命令模板 + TextFSM + 回调 + schema；LLDP 与拓扑 **共享解析**（`lldp_shared`），业务流程写批次表，拓扑写 Fabric
-- Phase1 样板：LLDP 邻居快照；建任务默认启用对应厂商 LLDP profile；支持自定义只采不解析行
-- 调度：`NETX_BIZ_STATE_SCHEDULER_ENABLED`（默认开），tick `NETX_BIZ_STATE_SCHEDULER_TICK_SEC`
-- 前端：`/network/tasks/biz-state`（任务列表 / 启用项 / 批次 / 导出 zip）
+- Phase1：LLDP 邻居快照；建任务默认启用对应厂商 LLDP profile；支持自定义只采不解析行
 - Phase2：比对模板、端口映射、CompareJob（manual/auto）、`/network/tasks/biz-compare`
-- Phase3（未做）：占位符发现→人选关联（如 VRF）
+- Phase3：VRF 发现→人选关联→带参采集（`*.route_vrf_summary`）；`PUT …/items/{id}/bindings`
+- 调度：`NETX_BIZ_STATE_SCHEDULER_ENABLED`（默认开），tick `NETX_BIZ_STATE_SCHEDULER_TICK_SEC`
+- 前端：`/network/tasks/biz-state`（勾选监控项 / 发现 VRF / 批次 / 导出 zip）
 
 ## 拓扑管理（Fabric + 站点目录，对齐厂商）
 

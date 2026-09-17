@@ -63,14 +63,31 @@ class PreviewIn(BaseModel):
     items: list[TaskItemIn] = Field(default_factory=list)
 
 
+class DiscoverIn(BaseModel):
+    source: str = "managed"
+    ne_id: str = ""
+    task_id: str = ""
+    discover_profile_id: str = ""
+    collect_profile_id: str = ""
+    placeholder: str = ""
+
+
+class BindingsIn(BaseModel):
+    bindings: list[dict[str, str]] = Field(default_factory=list)
+
+
 @router.get("/profiles")
 def api_list_profiles(
     vendor: str = "",
     device_type: str = "",
+    kind: str = "",
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     vkey = resolve_vendor_key(vendor, device_type) if (vendor or device_type) else ""
-    return {"items": svc.list_profiles_public(db, vendor_key=vkey)}
+    items = svc.list_profiles_public(db, vendor_key=vkey)
+    if kind:
+        items = [p for p in items if str(p.get("kind") or "") == kind]
+    return {"items": items}
 
 
 @router.patch("/profiles/{profile_id}")
@@ -93,6 +110,31 @@ def api_preview_items(
             db, vendor=body.vendor, device_type=body.device_type, items=items
         )
     }
+
+
+@router.post("/discover")
+def api_discover(body: DiscoverIn, db: Session = Depends(get_db)) -> dict[str, Any]:
+    from .biz_state.discover import discover_params
+
+    return discover_params(
+        db,
+        source=body.source,
+        ne_id=body.ne_id,
+        task_id=body.task_id,
+        discover_profile_id=body.discover_profile_id,
+        collect_profile_id=body.collect_profile_id,
+        placeholder=body.placeholder,
+    )
+
+
+@router.put("/tasks/{task_id}/items/{item_id}/bindings")
+def api_set_bindings(
+    task_id: str,
+    item_id: str,
+    body: BindingsIn,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    return svc.set_item_bindings(db, task_id, item_id, list(body.bindings or []))
 
 
 @router.get("/tasks")

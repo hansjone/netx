@@ -240,23 +240,35 @@ def _port_map_dict(db: Session, mapping_id: str) -> dict[str, str]:
 
 
 def _load_metric_rows(db: Session, *, batch_id: str, metric_id: str) -> list[dict[str, Any]]:
-    if metric_id != "lldp_neighbor":
-        raise HTTPException(status_code=400, detail=f"unsupported_metric:{metric_id}")
-    rows = (
-        db.query(BizStateLldpNeighbor)
-        .filter(BizStateLldpNeighbor.batch_id == batch_id)
-        .all()
-    )
-    return [
-        {
-            "local_if": n.local_if,
-            "remote_sys": n.remote_sys,
-            "remote_if": n.remote_if,
-            "remote_ip": n.remote_ip,
-            "protocol": n.protocol,
-        }
-        for n in rows
-    ]
+    if metric_id == "lldp_neighbor":
+        rows = (
+            db.query(BizStateLldpNeighbor)
+            .filter(BizStateLldpNeighbor.batch_id == batch_id)
+            .all()
+        )
+        return [
+            {
+                "local_if": n.local_if,
+                "remote_sys": n.remote_sys,
+                "remote_if": n.remote_if,
+                "remote_ip": n.remote_ip,
+                "protocol": n.protocol,
+            }
+            for n in rows
+        ]
+    if metric_id == "vrf_route_summary":
+        from ..models import BizStateVrfRouteSummary
+
+        rows = (
+            db.query(BizStateVrfRouteSummary)
+            .filter(BizStateVrfRouteSummary.batch_id == batch_id)
+            .all()
+        )
+        return [
+            {"vrf": r.vrf, "source": r.source, "networks": r.networks}
+            for r in rows
+        ]
+    raise HTTPException(status_code=400, detail=f"unsupported_metric:{metric_id}")
 
 
 def validate_mapping(

@@ -1,0 +1,21 @@
+Value Required NAME (\S+)
+Value RD (\S+)
+Value INTERFACES (.*)
+
+Start
+  ^Name\s+Default\s+RD -> Records
+  ^VRF\s+Name\s+RD -> Records
+  ^-+
+  ^\s*$$
+  ^.* -> Start
+
+Records
+  ^${NAME}\s+${RD}\s+${INTERFACES}\s*$$ -> Record
+  ^${NAME}\s+${RD}\s*$$ -> Record
+  ^${NAME}\s*$$ -> Record
+  ^-+
+  ^Total
+  ^\s*$$
+  ^\S+\s*#\s*$$ -> End
+  ^.*#\s*$$ -> End
+  ^.* -> Records

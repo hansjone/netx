@@ -1756,13 +1756,39 @@ export const deletePortTrafficBoard = (boardId: string) =>
 
 /* ---- biz_state (business state monitoring) ---- */
 
-export const bizStateListProfiles = (params?: { vendor?: string; device_type?: string }) => {
-  const p = new URLSearchParams();
-  if (params?.vendor?.trim()) p.set("vendor", params.vendor.trim());
-  if (params?.device_type?.trim()) p.set("device_type", params.device_type.trim());
-  const q = p.toString();
-  return apiGet<{ items: Record<string, unknown>[] }>(`/v1/biz-state/profiles${q ? `?${q}` : ""}`);
+export const bizStateListProfiles = (params?: {
+  vendor?: string;
+  device_type?: string;
+  kind?: string;
+}) => {
+  const q = new URLSearchParams();
+  if (params?.vendor) q.set("vendor", params.vendor);
+  if (params?.device_type) q.set("device_type", params.device_type);
+  if (params?.kind) q.set("kind", params.kind);
+  const qs = q.toString();
+  return apiGet<{ items: Record<string, unknown>[] }>(
+    `/v1/biz-state/profiles${qs ? `?${qs}` : ""}`,
+  );
 };
+
+export const bizStateDiscover = (body: Record<string, unknown>) =>
+  apiPost<{
+    ok: boolean;
+    error?: string;
+    command?: string;
+    candidates?: Array<{ value: string; label: string; rd?: string; protocols?: string }>;
+    raw_preview?: string;
+  }>("/v1/biz-state/discover", body);
+
+export const bizStateSetBindings = (
+  taskId: string,
+  itemId: string,
+  bindings: Array<{ placeholder: string; value: string }>,
+) =>
+  apiPut<Record<string, unknown>>(
+    `/v1/biz-state/tasks/${encodeURIComponent(taskId)}/items/${encodeURIComponent(itemId)}/bindings`,
+    { bindings },
+  );
 
 export const bizStateListTasks = () =>
   apiGet<{ items: Record<string, unknown>[] }>("/v1/biz-state/tasks");

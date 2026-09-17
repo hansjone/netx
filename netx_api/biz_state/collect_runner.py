@@ -23,6 +23,7 @@ from ..models import (
     BizStateTask,
     BizStateTaskItem,
     BizStateTaskItemBinding,
+    BizStateVrfRouteSummary,
 )
 from ..ne_netmiko import disable_target_paging, send_show_command
 from ..ne_session_factory import close_netmiko_connection, open_netmiko_connection
@@ -62,13 +63,12 @@ def _bindings_for_item(db, item_id: str) -> list[dict[str, str]]:
         .filter(BizStateTaskItemBinding.item_id == item_id)
         .all()
     )
-    params: dict[str, str] = {}
-    for r in rows:
-        ph = str(r.placeholder or "").strip()
-        val = str(r.value or "").strip()
-        if ph and val:
-            params[ph] = val
-    return [params] if params else []
+    # Keep one row per binding value (same placeholder may appear many times).
+    return [
+        {"placeholder": str(r.placeholder or "").strip(), "value": str(r.value or "").strip()}
+        for r in rows
+        if str(r.placeholder or "").strip() and str(r.value or "").strip()
+    ]
 
 
 def _persist_lldp_rows(
@@ -102,6 +102,45 @@ def _persist_lldp_rows(
                 remote_if=remote_if,
                 remote_ip=str(rec.get("remote_ip") or "")[:128],
                 protocol=str(rec.get("protocol") or "lldp")[:32],
+                collected_at=_utcnow(),
+            )
+        )
+        n += 1
+    return n
+
+
+def _persist_vrf_route_summary(
+    db,
+    *,
+    batch: BizStateBatch,
+    cmd_row: BizStateBatchCommand,
+    records: list[dict[str, Any]],
+) -> int:
+    n = 0
+    seen: set[tuple[str, str]] = set()
+    for rec in records:
+        vrf = str(rec.get("vrf") or "").strip()[:128]
+        source = str(rec.get("source") or "").strip()[:64]
+        if not vrf and not source:
+            continue
+        key = (vrf, source)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            networks = int(rec.get("networks") or 0)
+        except (TypeError, ValueError):
+            networks = 0
+        db.add(
+            BizStateVrfRouteSummary(
+                id=uuid4().hex,
+                batch_id=batch.id,
+                batch_command_id=cmd_row.id,
+                task_id=batch.task_id,
+                ne_id=batch.ne_id,
+                vrf=vrf,
+                source=source,
+                networks=networks,
                 collected_at=_utcnow(),
             )
         )
@@ -411,6 +450,10 @@ def _run_collect_session(
                             n = _persist_lldp_rows(
                                 sdb, batch=batch_row, cmd_row=cmd_row, records=records
                             )
+                        elif hit.profile.metric_id == "vrf_route_summary":
+                            n = _persist_vrf_route_summary(
+                                sdb, batch=batch_row, cmd_row=cmd_row, records=records
+                            )
                         cmd_row.row_count = n
                         cmd_row.parse_status = "ok"
                         total_rows += n
@@ -473,6 +516,7 @@ def _purge_old_batches(db, *, task_id: str, keep: int) -> None:
     for b in drop:
         bid = b.id
         db.query(BizStateLldpNeighbor).filter(BizStateLldpNeighbor.batch_id == bid).delete()
+        db.query(BizStateVrfRouteSummary).filter(BizStateVrfRouteSummary.batch_id == bid).delete()
         db.query(BizStateBatchCommand).filter(BizStateBatchCommand.batch_id == bid).delete()
         db.delete(b)
     if drop:

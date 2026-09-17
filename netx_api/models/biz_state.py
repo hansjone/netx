@@ -126,6 +126,25 @@ class BizStateLldpNeighbor(Base):
     collected_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
 
 
+class BizStateVrfRouteSummary(Base):
+    """Per-VRF route source counts for a batch."""
+
+    __tablename__ = "biz_state_vrf_route_summary"
+    __table_args__ = (
+        UniqueConstraint("batch_id", "vrf", "source", name="uq_biz_vrf_route_row"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
+    batch_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    batch_command_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    task_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    ne_id: Mapped[str] = mapped_column(String(128), default="", index=True)
+    vrf: Mapped[str] = mapped_column(String(128), default="", index=True)
+    source: Mapped[str] = mapped_column(String(64), default="", index=True)
+    networks: Mapped[int] = mapped_column(Integer, default=0)
+    collected_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
+
+
 class BizStateEvent(Base):
     __tablename__ = "biz_state_event"
 
