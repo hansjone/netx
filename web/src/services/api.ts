@@ -1841,8 +1841,32 @@ export const bizStateDownloadExport = async (batchId: string): Promise<void> => 
 export const bizCompareListTemplates = () =>
   apiGet<{ items: Record<string, unknown>[] }>("/v1/biz-state/compare/templates");
 
+export const bizCompareListMetrics = () =>
+  apiGet<{
+    items: Array<{
+      metric_id: string;
+      fields: Array<{
+        name: string;
+        display_name: string;
+        dtype: string;
+        is_key: boolean;
+        is_interface: boolean;
+        role: string;
+      }>;
+    }>;
+  }>("/v1/biz-state/compare/metrics");
+
 export const bizCompareCreateTemplate = (body: Record<string, unknown>) =>
   apiPost<Record<string, unknown>>("/v1/biz-state/compare/templates", body);
+
+export const bizCompareUpdateTemplate = (templateId: string, body: Record<string, unknown>) =>
+  apiPatch<Record<string, unknown>>(
+    `/v1/biz-state/compare/templates/${encodeURIComponent(templateId)}`,
+    body,
+  );
+
+export const bizCompareDeleteTemplate = (templateId: string) =>
+  apiDelete<{ ok: boolean }>(`/v1/biz-state/compare/templates/${encodeURIComponent(templateId)}`);
 
 export const bizCompareListMappings = () =>
   apiGet<{ items: Record<string, unknown>[] }>("/v1/biz-state/compare/mappings");

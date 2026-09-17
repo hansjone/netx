@@ -222,6 +222,16 @@ class TemplateIn(BaseModel):
     note: str = ""
 
 
+class TemplatePatchIn(BaseModel):
+    name: str | None = None
+    metric_id: str | None = None
+    key_fields: list[str] | None = None
+    iface_fields: list[str] | None = None
+    compare_fields: list[str] | None = None
+    ignore_fields: list[str] | None = None
+    note: str | None = None
+
+
 class MappingRowIn(BaseModel):
     before_if: str
     after_if: str
@@ -252,6 +262,11 @@ class CompareJobIn(BaseModel):
     note: str = ""
 
 
+@router.get("/compare/metrics")
+def api_list_compare_metrics() -> dict[str, Any]:
+    return {"items": cmp_svc.list_metric_schemas()}
+
+
 @router.get("/compare/templates")
 def api_list_templates(db: Session = Depends(get_db)) -> dict[str, Any]:
     return {"items": cmp_svc.list_templates(db)}
@@ -264,7 +279,7 @@ def api_create_template(body: TemplateIn, db: Session = Depends(get_db)) -> dict
 
 @router.patch("/compare/templates/{template_id}")
 def api_patch_template(
-    template_id: str, body: TemplateIn, db: Session = Depends(get_db)
+    template_id: str, body: TemplatePatchIn, db: Session = Depends(get_db)
 ) -> dict[str, Any]:
     return cmp_svc.update_template(db, template_id, body.model_dump(exclude_unset=True))
 

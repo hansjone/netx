@@ -90,9 +90,78 @@ def _template_out(t: BizCompareTemplate) -> dict[str, Any]:
 
 
 def list_templates(db: Session) -> list[dict[str, Any]]:
-    ensure_default_lldp_template(db)
+    ensure_default_templates(db)
     rows = db.query(BizCompareTemplate).order_by(BizCompareTemplate.name.asc()).all()
     return [_template_out(t) for t in rows]
+
+
+def ensure_default_vrf_template(db: Session) -> BizCompareTemplate:
+    row = (
+        db.query(BizCompareTemplate)
+        .filter(
+            BizCompareTemplate.metric_id == "vrf_route_summary",
+            BizCompareTemplate.name == "VRF route summary default",
+        )
+        .one_or_none()
+    )
+    if row:
+        return row
+    fields = metric_field_map().get("vrf_route_summary") or []
+    keys = [f.name for f in fields if f.is_key] or ["vrf", "source"]
+    ifaces = [f.name for f in fields if f.is_interface]
+    compare = [f.name for f in fields if f.role in ("state", "identity", "meta") or f.is_key]
+    seen: set[str] = set()
+    cmp_out: list[str] = []
+    for n in compare:
+        if n not in seen:
+            seen.add(n)
+            cmp_out.append(n)
+    row = BizCompareTemplate(
+        id=uuid4().hex,
+        name="VRF route summary default",
+        metric_id="vrf_route_summary",
+        key_fields=keys,
+        iface_fields=ifaces,
+        compare_fields=cmp_out or ["networks"],
+        ignore_fields=[],
+        note="Built-in template for per-VRF route summary cutover compare",
+        created_at=_utcnow(),
+        updated_at=_utcnow(),
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def ensure_default_templates(db: Session) -> None:
+    ensure_default_lldp_template(db)
+    ensure_default_vrf_template(db)
+
+
+def list_metric_schemas() -> list[dict[str, Any]]:
+    """Field catalog for template editors (key / iface / compare pickers)."""
+    out: list[dict[str, Any]] = []
+    for metric_id, fields in sorted(metric_field_map().items()):
+        if metric_id in ("vrf_list",):
+            continue
+        out.append(
+            {
+                "metric_id": metric_id,
+                "fields": [
+                    {
+                        "name": f.name,
+                        "display_name": f.display_name or f.name,
+                        "dtype": f.dtype,
+                        "is_key": bool(f.is_key),
+                        "is_interface": bool(f.is_interface),
+                        "role": f.role,
+                    }
+                    for f in fields
+                ],
+            }
+        )
+    return out
 
 
 def create_template(db: Session, body: dict[str, Any]) -> dict[str, Any]:
@@ -125,6 +194,10 @@ def update_template(db: Session, template_id: str, body: dict[str, Any]) -> dict
         raise HTTPException(status_code=404, detail="template_not_found")
     if "name" in body:
         t.name = str(body.get("name") or "")[:256]
+    if "metric_id" in body and body.get("metric_id") is not None:
+        mid = str(body.get("metric_id") or "").strip()
+        if mid:
+            t.metric_id = mid
     if "key_fields" in body:
         keys = [str(x) for x in (body.get("key_fields") or []) if str(x).strip()]
         if not keys:
@@ -279,6 +352,7 @@ def validate_mapping(
     after_batch_id: str,
     template_id: str = "",
 ) -> dict[str, Any]:
+    ensure_default_templates(db)
     tpl = db.get(BizCompareTemplate, template_id) if template_id else ensure_default_lldp_template(db)
     if not tpl:
         raise HTTPException(status_code=404, detail="template_not_found")
@@ -316,7 +390,7 @@ def list_jobs(db: Session) -> list[dict[str, Any]]:
 
 
 def create_job(db: Session, body: dict[str, Any]) -> dict[str, Any]:
-    ensure_default_lldp_template(db)
+    ensure_default_templates(db)
     template_id = str(body.get("template_id") or "").strip()
     if not template_id:
         tpl = ensure_default_lldp_template(db)
@@ -458,6 +532,7 @@ def get_run(db: Session, run_id: str) -> dict[str, Any]:
     r = db.get(BizCompareRun, run_id)
     if not r:
         raise HTTPException(status_code=404, detail="run_not_found")
+    tpl = db.get(BizCompareTemplate, r.template_id) if r.template_id else None
     return {
         "id": r.id,
         "job_id": r.job_id,
@@ -472,6 +547,7 @@ def get_run(db: Session, run_id: str) -> dict[str, Any]:
         "mapping_stats": r.mapping_stats_json or {},
         "message": r.message,
         "created_at": r.created_at.isoformat() + "Z" if r.created_at else None,
+        "template": _template_out(tpl) if tpl else None,
     }
 
 

@@ -45,7 +45,7 @@ src/
 | `/network/tasks/port-traffic` | 端口流量监控（设备管理） | `network` |
 | `/network/tasks/port-traffic/wall` | 流量大屏列表（打开独立页签） | `network` |
 | `/network/tasks/biz-state` | 业务状态监控（LLDP / VRF 关联采集） | `network` |
-| `/network/tasks/biz-compare` | 业务状态比对（模板/映射/前后 diff） | `network` |
+| `/network/tasks/biz-compare` | 业务状态比对（模板 + 任务 + pre/post 结果） | `network` |
 | `/port-traffic/wall/:boardId` | 流量大屏专有页签（无网络侧栏） | `port-traffic-wall` |
 | `/topology` | 拓扑管理（模式化编辑器：选择/平移/拖动/连线、框选、自动布局、拖放添加） | `topology` |
 | `/webcrt` | WebCRT 终端 | `webcrt` |
@@ -131,7 +131,8 @@ src/
 - API：`/v1/biz-state/profiles`、`/discover`、`/tasks*`、`/batches*`、`/batches/{id}/export`、`/compare/*`
 - **ParseProfile**：命令模板 + TextFSM + 回调 + schema；LLDP 与拓扑 **共享解析**（`lldp_shared`），业务流程写批次表，拓扑写 Fabric
 - Phase1：LLDP 邻居快照；建任务默认启用对应厂商 LLDP profile；支持自定义只采不解析行
-- Phase2：比对模板、端口映射、CompareJob（manual/auto）、`/network/tasks/biz-compare`
+- Phase2：比对模板（可选 metric / key / 接口 / 比对字段）、端口映射、CompareJob 列表与详情、`pre/post` 结果表（高亮 + 筛选）、`/network/tasks/biz-compare`
+- API 补充：`GET /v1/biz-state/compare/metrics`（模板字段目录）
 - Phase3：VRF 发现→人选关联→带参采集（`*.route_vrf_summary`）；`PUT …/items/{id}/bindings`
 - 调度：`NETX_BIZ_STATE_SCHEDULER_ENABLED`（默认开），tick `NETX_BIZ_STATE_SCHEDULER_TICK_SEC`
 - 前端：`/network/tasks/biz-state`（勾选监控项 / 发现 VRF / 批次 / 导出 zip）
