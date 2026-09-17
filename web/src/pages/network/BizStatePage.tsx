@@ -132,6 +132,45 @@ function neSourceOf(row: CliTargetItem): "managed" | "ume" {
   return row.source === "ume" ? "ume" : "managed";
 }
 
+function columnsFromRows(rows: Record<string, unknown>[]): SheetCol[] {
+  const keys: string[] = [];
+  for (const row of rows) {
+    for (const k of Object.keys(row || {})) {
+      if (!keys.includes(k)) keys.push(k);
+    }
+  }
+  return keys.map((k) => ({ key: k, header: k }));
+}
+
+function metricSheetTitle(metricId: string, t: (k: string) => string): string {
+  const map: Record<string, string> = {
+    lldp_neighbor: t("bizState.sheetLldp"),
+    vrf_route_summary: t("bizState.sheetVrfRoute"),
+    isis_adjacency: t("bizState.sheetIsis"),
+    interface_brief: t("bizState.sheetIfaceBrief"),
+    arp: t("bizState.sheetArp"),
+    nd6_cache: t("bizState.sheetNd6"),
+    bgp_peer: t("bizState.sheetBgpPeer"),
+  };
+  return map[metricId] || metricId;
+}
+
+function rowsForMetric(batch: any, metricId: string): Record<string, unknown>[] {
+  const mid = String(metricId || "").trim();
+  if (!mid) return [];
+  const fromGeneric = (batch?.metrics || {})[mid];
+  if (Array.isArray(fromGeneric) && fromGeneric.length) {
+    return fromGeneric as Record<string, unknown>[];
+  }
+  if (mid === "lldp_neighbor") {
+    return ((batch?.lldp_neighbors || []) as Record<string, unknown>[]) || [];
+  }
+  if (mid === "vrf_route_summary") {
+    return ((batch?.vrf_route_summary || []) as Record<string, unknown>[]) || [];
+  }
+  return Array.isArray(fromGeneric) ? (fromGeneric as Record<string, unknown>[]) : [];
+}
+
 function buildBatchSheets(batch: any, t: (k: string) => string): SheetDef[] {
   const sheets: SheetDef[] = [];
   const cmds = (batch?.commands || []) as any[];
@@ -156,32 +195,33 @@ function buildBatchSheets(batch: any, t: (k: string) => string): SheetDef[] {
       })),
     });
   }
-  const lldp = (batch?.lldp_neighbors || []) as any[];
-  if (lldp.length) {
+
+  // Collect metric ids: command order first, then legacy / metrics payload
+  const metricOrder: string[] = [];
+  const pushMid = (mid: string) => {
+    const id = String(mid || "").trim();
+    if (!id || id === "vrf_list" || id === "commands") return;
+    if (!metricOrder.includes(id)) metricOrder.push(id);
+  };
+  for (const c of cmds) pushMid(String(c.metric_id || ""));
+  for (const mid of Object.keys(batch?.metrics || {})) pushMid(mid);
+  if ((batch?.lldp_neighbors || []).length) pushMid("lldp_neighbor");
+  if ((batch?.vrf_route_summary || []).length) pushMid("vrf_route_summary");
+
+  for (const mid of metricOrder) {
+    const rows = rowsForMetric(batch, mid);
+    // Still show a sheet when the command ran (even 0 rows) so empty/fail is visible
+    const ran = cmds.some((c) => String(c.metric_id || "") === mid);
+    if (!rows.length && !ran) continue;
+    const columns =
+      rows.length > 0
+        ? columnsFromRows(rows)
+        : [{ key: "_empty", header: "—" }];
     sheets.push({
-      id: "lldp_neighbor",
-      title: t("bizState.sheetLldp"),
-      columns: [
-        { key: "local_if", header: "local_if" },
-        { key: "remote_sys", header: "remote_sys" },
-        { key: "remote_if", header: "remote_if" },
-        { key: "remote_ip", header: "remote_ip" },
-        { key: "protocol", header: "protocol" },
-      ],
-      rows: lldp,
-    });
-  }
-  const vrf = (batch?.vrf_route_summary || []) as any[];
-  if (vrf.length) {
-    sheets.push({
-      id: "vrf_route_summary",
-      title: t("bizState.sheetVrfRoute"),
-      columns: [
-        { key: "vrf", header: "vrf" },
-        { key: "source", header: "source" },
-        { key: "networks", header: "networks" },
-      ],
-      rows: vrf,
+      id: mid,
+      title: metricSheetTitle(mid, t),
+      columns,
+      rows,
     });
   }
   return sheets;
@@ -559,7 +599,12 @@ export function BizStatePage() {
       setSheetKeyword("");
       setSheetColumn("");
       const built = buildBatchSheets(d, t);
-      setSheetId(built[0]?.id || "");
+      // Prefer first metric with rows; fall back to commands / first tab
+      const prefer =
+        built.find((s) => s.id !== "commands" && s.rows.length > 0) ||
+        built.find((s) => s.id !== "commands") ||
+        built[0];
+      setSheetId(prefer?.id || "");
     } catch (e) {
       showError(formatErr(e));
     }
@@ -1119,6 +1164,27 @@ export function BizStatePage() {
             </p>
           ) : null}
 
+          <div className="bs-sheet-tabs bs-sheet-tabs--top" role="tablist" aria-label={t("bizState.batchWorkbook")}>
+            {sheets.map((s) => (
+              <button
+                key={s.id}
+                type="button"
+                role="tab"
+                aria-selected={activeSheet?.id === s.id}
+                className={`bs-sheet-tab${activeSheet?.id === s.id ? " is-active" : ""}`}
+                onClick={() => {
+                  setSheetId(s.id);
+                  setSheetKeyword("");
+                  setSheetColumn("");
+                }}
+              >
+                {s.title}
+                <span className="bs-sheet-tab__count">{s.rows.length}</span>
+              </button>
+            ))}
+            {!sheets.length ? <span className="muted">{t("bizState.sheetEmpty")}</span> : null}
+          </div>
+
           {activeSheet ? (
             <>
               <div className="filter-inline bs-sheet-filter">
@@ -1171,7 +1237,7 @@ export function BizStatePage() {
                     ))}
                     {!filteredSheetRows.length ? (
                       <tr>
-                        <td colSpan={activeSheet.columns.length}>
+                        <td colSpan={Math.max(1, activeSheet.columns.length)}>
                           <div className="pt-list-empty">{t("bizState.sheetEmpty")}</div>
                         </td>
                       </tr>
@@ -1183,27 +1249,6 @@ export function BizStatePage() {
           ) : (
             <div className="pt-list-empty">{t("bizState.sheetEmpty")}</div>
           )}
-
-          <div className="bs-sheet-tabs" role="tablist" aria-label={t("bizState.batchWorkbook")}>
-            {sheets.map((s) => (
-              <button
-                key={s.id}
-                type="button"
-                role="tab"
-                aria-selected={activeSheet?.id === s.id}
-                className={`bs-sheet-tab${activeSheet?.id === s.id ? " is-active" : ""}`}
-                onClick={() => {
-                  setSheetId(s.id);
-                  setSheetKeyword("");
-                  setSheetColumn("");
-                }}
-              >
-                {s.title}
-                <span className="bs-sheet-tab__count">{s.rows.length}</span>
-              </button>
-            ))}
-            {!sheets.length ? <span className="muted">{t("bizState.sheetEmpty")}</span> : null}
-          </div>
         </Modal.Body>
         <Modal.Footer>
           {batchDetail ? (

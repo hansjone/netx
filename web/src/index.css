@@ -9975,6 +9975,29 @@ html.login-page--paused .login-page__flare {
   border-top: 1px solid rgba(148, 163, 184, 0.2);
 }
 
+.bs-sheet-tabs--top {
+  align-items: center;
+  margin-top: 0;
+  margin-bottom: 2px;
+  padding: 0 0 8px;
+  border-top: none;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.22);
+  max-height: 88px;
+  overflow: auto;
+}
+
+.bs-sheet-tabs--top .bs-sheet-tab {
+  border-radius: 6px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.28);
+}
+
+.bs-sheet-tabs--top .bs-sheet-tab.is-active {
+  box-shadow: none;
+  border-color: rgba(59, 130, 246, 0.55);
+  background: rgba(37, 99, 235, 0.2);
+  color: #93c5fd;
+}
+
 .bs-sheet-tab {
   appearance: none;
   border: 1px solid rgba(148, 163, 184, 0.28);
