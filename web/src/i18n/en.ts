@@ -330,6 +330,8 @@ const en = {
     passRate: "Pass rate",
     passOk: "In sync",
     passWarn: "Has diffs",
+    runOverview: "Run overview",
+    sheetCurrent: "Current sheet",
     diffCountLabel: "Diff rows",
     diffRate: "Diff rate",
     beforeCount: "Before rows",

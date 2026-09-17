@@ -329,6 +329,8 @@ const zh = {
     passRate: "通过率",
     passOk: "前后一致",
     passWarn: "存在差异",
+    runOverview: "本次总览",
+    sheetCurrent: "当前表",
     diffCountLabel: "差异条目",
     diffRate: "差异率",
     beforeCount: "操作前行数",

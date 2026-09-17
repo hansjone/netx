@@ -323,7 +323,7 @@ export function BizComparePage() {
     [runSheets, resultSheetId],
   );
 
-  // Reset page when sheet / filter / page size changes
+    // Reset page when sheet / filter / page size changes
   useEffect(() => {
     setResultPage(1);
   }, [resultSheetId, kindFilter, debouncedResultKw, resultPageSize, runDetail?.id]);
@@ -358,8 +358,7 @@ export function BizComparePage() {
         if (resultPage > pages) setResultPage(pages);
       } catch (e) {
         if (!cancelled) {
-          setPagedDiffs([]);
-          setResultTotal(0);
+          // Keep previous rows to avoid strip/table jump; only clear on hard empty run
           showError(formatErr(e));
         }
       } finally {
@@ -421,10 +420,6 @@ export function BizComparePage() {
     });
   }, [summary.sheet_cards]);
   const sheetFailCount = sheetCards.filter((c) => Number(c.diff_count || 0) > 0).length;
-  const topChangedFields = (summary.top_changed_fields || []) as Array<{
-    field: string;
-    count: number;
-  }>;
   const activeSheetCard = sheetCards.find((c) => c.metric_id === resultSheetId) || sheetCards[0];
 
   useEffect(() => {
@@ -1420,38 +1415,70 @@ export function BizComparePage() {
                   </aside>
 
                   <div className="bs-cmp-main">
+                    {/* Stable run overview — does not change when switching sheets */}
                     <div
-                      className={`bs-cmp-strip${summary.ok ? " is-ok" : " is-warn"}`}
+                      className={`bs-cmp-overview${summary.ok ? " is-ok" : " is-warn"}`}
                     >
+                      <span className="bs-cmp-overview__tag">{t("bizCompare.runOverview")}</span>
+                      <span className="bs-cmp-overview__pass">
+                        {t("bizCompare.passRate")}{" "}
+                        <b>{Number(summary.pass_rate ?? 0).toFixed(1)}%</b>
+                      </span>
+                      <span className="bs-cmp-overview__stat">
+                        Δ<b>{summary.diff_count ?? 0}</b>
+                      </span>
+                      <span className="bs-cmp-overview__stat">
+                        +<b>{summary.added ?? 0}</b>
+                      </span>
+                      <span className="bs-cmp-overview__stat">
+                        −<b>{summary.removed ?? 0}</b>
+                      </span>
+                      <span className="bs-cmp-overview__stat">
+                        ~<b>{summary.changed ?? 0}</b>
+                      </span>
+                      <span className="bs-cmp-overview__stat">
+                        =<b>{summary.unchanged ?? 0}</b>
+                      </span>
+                      <span className="bs-cmp-overview__stat muted">
+                        {summary.before_count ?? 0}→{summary.after_count ?? 0}
+                      </span>
+                      <span className="bs-cmp-overview__time muted">
+                        {fmtTime(runDetail.created_at)}
+                      </span>
+                    </div>
+
+                    {/* Sheet strip — fixed slots; only numbers/name swap */}
+                    <div
+                      className={`bs-cmp-strip${
+                        Number(activeSheetCard?.diff_count || 0) > 0 ? " is-warn" : " is-ok"
+                      }`}
+                    >
+                      <div className="bs-cmp-strip__sheet">
+                        <span className="bs-cmp-strip__sheet-tag">
+                          {t("bizCompare.sheetCurrent")}
+                        </span>
+                        <strong className="bs-cmp-strip__sheet-name" title={activeSheetCard?.metric_id || ""}>
+                          {activeSheetCard?.metric_id || "—"}
+                        </strong>
+                        <span className="muted bs-cmp-strip__sheet-mode">
+                          {activeSheetCard?.mode === "presence"
+                            ? t("bizCompare.presenceShort")
+                            : t("bizCompare.modeFieldsShort")}
+                        </span>
+                      </div>
                       <div className="bs-cmp-strip__pass">
                         <span className="bs-cmp-strip__pass-label">{t("bizCompare.passRate")}</span>
                         <span className="bs-cmp-strip__pass-value">
-                          {Number(summary.pass_rate ?? 0).toFixed(1)}%
-                        </span>
-                        <span className="bs-cmp-strip__pass-sub">
-                          {summary.ok ? t("bizCompare.passOk") : t("bizCompare.passWarn")}
+                          {Number(activeSheetCard?.pass_rate ?? 0).toFixed(1)}%
                         </span>
                       </div>
-                      <div className="bs-cmp-strip__stats">
-                        <span>
-                          <b>{summary.diff_count ?? 0}</b> {t("bizCompare.diffCountLabel")}
-                        </span>
-                        <span>
-                          {summary.before_count ?? 0}→{summary.after_count ?? 0}
-                        </span>
-                        <span>
-                          {t("bizCompare.matchedRows")} {summary.matched_rows ?? 0}/
-                          {summary.total_rows ?? 0}
-                        </span>
-                        <span className="muted">{fmtTime(runDetail.created_at)}</span>
-                      </div>
-                      <div className="bs-cmp-strip__kinds">
+                      <div className="bs-cmp-strip__kinds" role="group">
                         {(
                           [
-                            ["added", summary.added ?? 0, "added"],
-                            ["removed", summary.removed ?? 0, "removed"],
-                            ["changed", summary.changed ?? 0, "changed"],
-                            ["unchanged", summary.unchanged ?? 0, "unchanged"],
+                            ["added", activeSheetCard?.added ?? 0, "added"],
+                            ["removed", activeSheetCard?.removed ?? 0, "removed"],
+                            ["changed", activeSheetCard?.changed ?? 0, "changed"],
+                            ["unchanged", activeSheetCard?.unchanged ?? 0, "unchanged"],
                           ] as const
                         ).map(([id, n, cls]) => (
                           <button
@@ -1466,36 +1493,10 @@ export function BizComparePage() {
                           </button>
                         ))}
                       </div>
+                      <span className="bs-cmp-strip__range muted">
+                        {activeSheetCard?.before_count ?? 0}→{activeSheetCard?.after_count ?? 0}
+                      </span>
                     </div>
-
-                    {activeSheetCard ? (
-                      <div className="bs-cmp-sheet-bar">
-                        <div className="bs-cmp-sheet-bar__title">
-                          <strong>{activeSheetCard.metric_id}</strong>
-                          <span className="muted">
-                            {activeSheetCard.mode === "presence"
-                              ? t("bizCompare.presenceShort")
-                              : t("bizCompare.modeFieldsShort")}{" "}
-                            · {activeSheetCard.before_count ?? 0}→
-                            {activeSheetCard.after_count ?? 0} ·{" "}
-                            {Number(activeSheetCard.pass_rate ?? 0).toFixed(1)}%
-                          </span>
-                        </div>
-                        {topChangedFields.length ? (
-                          <div className="bs-cmp-top-fields bs-cmp-top-fields--inline">
-                            <span className="bs-cmp-top-fields__label">
-                              {t("bizCompare.topChangedFields")}
-                            </span>
-                            {topChangedFields.slice(0, 6).map((f) => (
-                              <span key={f.field} className="bs-cmp-top-fields__chip">
-                                {f.field}
-                                <em>{f.count}</em>
-                              </span>
-                            ))}
-                          </div>
-                        ) : null}
-                      </div>
-                    ) : null}
 
                     <div className="bs-cmp-filter-bar">
                       <div className="bs-cmp-kind-pills" role="tablist">
@@ -1525,15 +1526,16 @@ export function BizComparePage() {
                         onChange={(e) => setResultKw(e.target.value)}
                       />
                       <span className="muted bs-sheet-count">
-                        {diffsLoading
-                          ? "…"
-                          : `${pagedDiffs.length}/${resultTotal}`}
+                        {diffsLoading ? "…" : `${pagedDiffs.length}/${resultTotal}`}
                         {resultColumns.presence ? ` · ${t("bizCompare.presenceShort")}` : ""}
                       </span>
                     </div>
 
-                    <div className="pt-list-table-wrap bs-sheet-table bs-cmp-result-table">
-                      <table className="data-table pt-list-table bs-cmp-diff-table">
+                    <div
+                      className={`pt-list-table-wrap bs-sheet-table bs-cmp-result-table${
+                        diffsLoading ? " is-loading" : ""
+                      }`}
+                    >                      <table className="data-table pt-list-table bs-cmp-diff-table">
                         <thead>
                           <tr>
                             <th className="bs-cmp-col-kind">{t("bizCompare.colKind")}</th>
