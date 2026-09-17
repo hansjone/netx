@@ -5,7 +5,8 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from netx_api.biz_state.parsers.zte_status import (
+from netx_api.biz_state.parsers.zte import (
+    is_valid_arp_age,
     normalize_arp,
     normalize_bgp_peer,
     normalize_interface_brief,
@@ -95,7 +96,7 @@ class ZteStatusParserTests(unittest.TestCase):
         self.assertGreaterEqual(len(statics), 5)
         self.assertGreaterEqual(len(dynamics), 5)
         self.assertTrue(all(r["age"] == "H" or not r["age"][0].isdigit() for r in statics) or True)
-        from netx_api.biz_state.parsers.zte_status import is_valid_arp_age
+        from netx_api.biz_state.parsers.zte.arp import is_valid_arp_age
 
         self.assertTrue(all(is_valid_arp_age(r["age"]) for r in dynamics))
         self.assertFalse(is_valid_arp_age("H"))

@@ -706,7 +706,7 @@ def _load_metric_rows(db: Session, *, batch_id: str, metric_id: str) -> list[dic
     if rows:
         out = [dict(r.data_json or {}) for r in rows]
         if metric_id == "arp":
-            from .parsers.zte_status import is_valid_arp_age
+            from .parsers.zte.arp import is_valid_arp_age
 
             # Compare only dynamic ARP (Age is HH:MM:SS); drop static H / incomplete flags
             out = [
