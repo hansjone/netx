@@ -109,6 +109,8 @@ def compare_rows(
                 }
             )
             continue
+        # Empty compare_fields = presence-only: keyed rows that exist on both
+        # sides are unchanged (no value checks).
         field_changes: dict[str, dict[str, Any]] = {}
         for f in compare_fields:
             bv = mapped.get(f, "")

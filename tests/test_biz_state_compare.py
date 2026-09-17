@@ -62,6 +62,30 @@ class CompareEngineTests(unittest.TestCase):
         self.assertIn("missing", stats["miss_before"])
         self.assertFalse(stats["ok"])
 
+    def test_presence_only_empty_compare(self) -> None:
+        """Empty compare_fields → only entry set matters; value diffs ignored."""
+        before = [
+            {"local_if": "gei-0/1", "remote_sys": "A", "remote_if": "x1", "remote_ip": "1.1.1.1"},
+            {"local_if": "gei-0/2", "remote_sys": "B", "remote_if": "y1", "remote_ip": "2.2.2.2"},
+        ]
+        after = [
+            {"local_if": "gei-0/1", "remote_sys": "A", "remote_if": "x1", "remote_ip": "9.9.9.9"},
+            {"local_if": "gei-0/3", "remote_sys": "C", "remote_if": "z1", "remote_ip": ""},
+        ]
+        out = compare_rows(
+            before_rows=before,
+            after_rows=after,
+            key_fields=["local_if", "remote_sys", "remote_if"],
+            iface_fields=["local_if"],
+            compare_fields=[],
+            port_map={},
+        )
+        s = out["summary"]
+        self.assertEqual(s["changed"], 0)
+        self.assertEqual(s["unchanged"], 1)
+        self.assertEqual(s["removed"], 1)
+        self.assertEqual(s["added"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

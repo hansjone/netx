@@ -43,16 +43,26 @@ type MetricField = {
   role: string;
 };
 type MetricSchema = { metric_id: string; fields: MetricField[] };
-type Template = {
-  id: string;
-  name: string;
+
+type MetricSheet = {
   metric_id: string;
   key_fields: string[];
   iface_fields: string[];
   compare_fields: string[];
-  ignore_fields: string[];
+};
+
+type Template = {
+  id: string;
+  name: string;
+  metrics?: MetricSheet[];
+  metric_ids?: string[];
+  metric_id: string;
+  key_fields: string[];
+  iface_fields: string[];
+  compare_fields: string[];
   note: string;
 };
+
 type Mapping = { id: string; name: string; rows: { before_if: string; after_if: string }[] };
 type Job = {
   id: string;
@@ -77,6 +87,16 @@ type DiffRow = {
   changes: Record<string, { before?: unknown; after?: unknown }>;
 };
 
+type RunSheet = {
+  metric_id: string;
+  key_fields: string[];
+  iface_fields: string[];
+  compare_fields: string[];
+  mode?: string;
+  summary?: Record<string, number>;
+  diffs?: DiffRow[];
+};
+
 function fmtTime(v?: string | null) {
   if (!v) return "—";
   return formatSystemTime(v) || v;
@@ -95,6 +115,39 @@ function toggleInList(list: string[], name: string, on: boolean): string[] {
 
 function taskLabel(row: TaskOpt) {
   return `${row.ne_name || row.ne_ip || row.id} (${row.vendor || "-"})`;
+}
+
+function templateSheets(tpl?: Template | null): MetricSheet[] {
+  if (!tpl) return [];
+  if (tpl.metrics?.length) return tpl.metrics;
+  if (tpl.metric_id) {
+    return [
+      {
+        metric_id: tpl.metric_id,
+        key_fields: [...(tpl.key_fields || [])],
+        iface_fields: [...(tpl.iface_fields || [])],
+        compare_fields: [...(tpl.compare_fields || [])],
+      },
+    ];
+  }
+  return [];
+}
+
+function defaultSheetForMetric(schema: MetricSchema | undefined, metricId: string): MetricSheet {
+  const fields = schema?.fields || [];
+  return {
+    metric_id: metricId,
+    key_fields: fields.filter((f) => f.is_key).map((f) => f.name),
+    iface_fields: fields.filter((f) => f.is_interface).map((f) => f.name),
+    // Default: compare non-key state/meta values; empty = presence-only
+    compare_fields: fields
+      .filter((f) => !f.is_key && (f.role === "state" || f.role === "meta"))
+      .map((f) => f.name),
+  };
+}
+
+function metricLabel(id: string) {
+  return id;
 }
 
 export function BizComparePage() {
@@ -116,12 +169,10 @@ export function BizComparePage() {
   const [tplOpen, setTplOpen] = useState(false);
   const [tplEditId, setTplEditId] = useState("");
   const [tplName, setTplName] = useState("");
-  const [tplMetric, setTplMetric] = useState("lldp_neighbor");
-  const [tplKeys, setTplKeys] = useState<string[]>([]);
-  const [tplIfaces, setTplIfaces] = useState<string[]>([]);
-  const [tplCompare, setTplCompare] = useState<string[]>([]);
-  const [tplIgnore, setTplIgnore] = useState<string[]>([]);
   const [tplNote, setTplNote] = useState("");
+  const [tplSheets, setTplSheets] = useState<MetricSheet[]>([]);
+  const [tplSheetIdx, setTplSheetIdx] = useState(0);
+  const [tplAddMetric, setTplAddMetric] = useState("");
 
   // job create / detail
   const [jobCreateOpen, setJobCreateOpen] = useState(false);
@@ -142,6 +193,7 @@ export function BizComparePage() {
   const [validateOut, setValidateOut] = useState<any>(null);
   const [runs, setRuns] = useState<any[]>([]);
   const [runDetail, setRunDetail] = useState<any>(null);
+  const [resultSheetId, setResultSheetId] = useState("");
 
   // result filters
   const [kindFilter, setKindFilter] = useState<KindFilter>("all");
@@ -196,43 +248,81 @@ export function BizComparePage() {
     })();
   }, [afterTaskId]);
 
-  const metricFields = useMemo(() => {
-    return metrics.find((m) => m.metric_id === tplMetric)?.fields || [];
-  }, [metrics, tplMetric]);
-
   const filteredJobs = useMemo(() => {
     const kw = debouncedListKw.trim().toLowerCase();
     if (!kw) return jobs;
     return jobs.filter((j) => {
       const tpl = templates.find((x) => x.id === j.template_id);
-      return `${j.name} ${j.mode} ${j.status} ${tpl?.name || ""} ${tpl?.metric_id || ""}`
-        .toLowerCase()
-        .includes(kw);
+      const mids = (tpl?.metric_ids || templateSheets(tpl).map((s) => s.metric_id)).join(" ");
+      return `${j.name} ${j.mode} ${j.status} ${tpl?.name || ""} ${mids}`.toLowerCase().includes(kw);
     });
   }, [jobs, templates, debouncedListKw]);
 
   const filteredTemplates = useMemo(() => {
     const kw = debouncedListKw.trim().toLowerCase();
     if (!kw) return templates;
-    return templates.filter((x) =>
-      `${x.name} ${x.metric_id} ${x.note}`.toLowerCase().includes(kw),
-    );
+    return templates.filter((x) => {
+      const mids = (x.metric_ids || templateSheets(x).map((s) => s.metric_id)).join(" ");
+      return `${x.name} ${mids} ${x.note}`.toLowerCase().includes(kw);
+    });
   }, [templates, debouncedListKw]);
 
-  const activeTemplate = useMemo(
-    () => templates.find((x) => x.id === (runDetail?.template_id || templateId)),
-    [templates, runDetail, templateId],
+  const activeTplSheet = tplSheets[tplSheetIdx] || null;
+  const activeTplFields = useMemo(() => {
+    if (!activeTplSheet) return [];
+    return metrics.find((m) => m.metric_id === activeTplSheet.metric_id)?.fields || [];
+  }, [metrics, activeTplSheet]);
+
+  const availableToAdd = useMemo(() => {
+    const used = new Set(tplSheets.map((s) => s.metric_id));
+    return metrics.filter((m) => !used.has(m.metric_id));
+  }, [metrics, tplSheets]);
+
+  const runSheets: RunSheet[] = useMemo(() => {
+    const sheets = (runDetail?.sheets || []) as RunSheet[];
+    if (sheets.length) return sheets;
+    if (runDetail?.diffs) {
+      return [
+        {
+          metric_id: String(runDetail.metric_id || "result"),
+          key_fields: [],
+          iface_fields: [],
+          compare_fields: [],
+          mode: "fields",
+          summary: runDetail.summary,
+          diffs: runDetail.diffs,
+        },
+      ];
+    }
+    return [];
+  }, [runDetail]);
+
+  useEffect(() => {
+    if (!runSheets.length) {
+      setResultSheetId("");
+      return;
+    }
+    if (!resultSheetId || !runSheets.some((s) => s.metric_id === resultSheetId)) {
+      setResultSheetId(runSheets[0].metric_id);
+    }
+  }, [runSheets, resultSheetId]);
+
+  const activeRunSheet = useMemo(
+    () => runSheets.find((s) => s.metric_id === resultSheetId) || runSheets[0] || null,
+    [runSheets, resultSheetId],
   );
 
   const resultColumns = useMemo(() => {
-    const tpl = (runDetail?.template as Template | null) || activeTemplate;
-    const keys = tpl?.key_fields?.length ? tpl.key_fields : Object.keys((runDetail?.diffs?.[0]?.key as any) || {});
-    const compare = (tpl?.compare_fields || []).filter((f) => !keys.includes(f));
-    return { keys, compare };
-  }, [runDetail, activeTemplate]);
+    const keys =
+      activeRunSheet?.key_fields?.length
+        ? activeRunSheet.key_fields
+        : Object.keys((activeRunSheet?.diffs?.[0]?.key as any) || {});
+    const compare = (activeRunSheet?.compare_fields || []).filter((f) => !keys.includes(f));
+    return { keys, compare, presence: !(activeRunSheet?.compare_fields || []).length };
+  }, [activeRunSheet]);
 
   const filteredDiffs = useMemo(() => {
-    const diffs = (runDetail?.diffs || []) as DiffRow[];
+    const diffs = (activeRunSheet?.diffs || []) as DiffRow[];
     const kw = debouncedResultKw.trim().toLowerCase();
     return diffs.filter((d) => {
       if (kindFilter !== "all" && d.kind !== kindFilter) return false;
@@ -249,58 +339,100 @@ export function BizComparePage() {
         .toLowerCase();
       return blob.includes(kw);
     });
-  }, [runDetail, kindFilter, debouncedResultKw]);
+  }, [activeRunSheet, kindFilter, debouncedResultKw]);
+
+  const sheetSummary = activeRunSheet?.summary || {};
+  const summary = runDetail?.summary || {};
+
+  const updateActiveSheet = (patch: Partial<MetricSheet>) => {
+    setTplSheets((prev) =>
+      prev.map((s, i) => {
+        if (i !== tplSheetIdx) return s;
+        const next = { ...s, ...patch };
+        // Keys are identity — drop from compare
+        if (patch.key_fields || patch.compare_fields) {
+          const keySet = new Set(next.key_fields);
+          next.compare_fields = next.compare_fields.filter((f) => !keySet.has(f));
+        }
+        return next;
+      }),
+    );
+  };
 
   const openNewTemplate = () => {
-    const first = metrics[0]?.metric_id || "lldp_neighbor";
-    const fields = metrics.find((m) => m.metric_id === first)?.fields || [];
+    const first = metrics[0];
+    const sheet = first
+      ? defaultSheetForMetric(first, first.metric_id)
+      : { metric_id: "lldp_neighbor", key_fields: [], iface_fields: [], compare_fields: [] };
     setTplEditId("");
     setTplName("");
-    setTplMetric(first);
-    setTplKeys(fields.filter((f) => f.is_key).map((f) => f.name));
-    setTplIfaces(fields.filter((f) => f.is_interface).map((f) => f.name));
-    setTplCompare(fields.map((f) => f.name));
-    setTplIgnore([]);
     setTplNote("");
+    setTplSheets([sheet]);
+    setTplSheetIdx(0);
+    setTplAddMetric("");
     setTplOpen(true);
   };
 
   const openEditTemplate = (tpl: Template) => {
+    const sheets = templateSheets(tpl);
     setTplEditId(tpl.id);
     setTplName(tpl.name);
-    setTplMetric(tpl.metric_id);
-    setTplKeys([...(tpl.key_fields || [])]);
-    setTplIfaces([...(tpl.iface_fields || [])]);
-    setTplCompare([...(tpl.compare_fields || [])]);
-    setTplIgnore([...(tpl.ignore_fields || [])]);
     setTplNote(tpl.note || "");
+    setTplSheets(
+      sheets.length
+        ? sheets.map((s) => ({
+            metric_id: s.metric_id,
+            key_fields: [...(s.key_fields || [])],
+            iface_fields: [...(s.iface_fields || [])],
+            compare_fields: [...(s.compare_fields || [])],
+          }))
+        : [],
+    );
+    setTplSheetIdx(0);
+    setTplAddMetric("");
     setTplOpen(true);
   };
 
-  const onMetricChange = (metricId: string) => {
-    setTplMetric(metricId);
-    const fields = metrics.find((m) => m.metric_id === metricId)?.fields || [];
-    setTplKeys(fields.filter((f) => f.is_key).map((f) => f.name));
-    setTplIfaces(fields.filter((f) => f.is_interface).map((f) => f.name));
-    setTplCompare(fields.map((f) => f.name));
-    setTplIgnore([]);
+  const addTplMetric = () => {
+    const mid = tplAddMetric || availableToAdd[0]?.metric_id;
+    if (!mid) return;
+    const schema = metrics.find((m) => m.metric_id === mid);
+    setTplSheets((prev) => [...prev, defaultSheetForMetric(schema, mid)]);
+    setTplSheetIdx(tplSheets.length);
+    setTplAddMetric("");
+  };
+
+  const removeTplMetric = (idx: number) => {
+    setTplSheets((prev) => {
+      if (prev.length <= 1) return prev;
+      const next = prev.filter((_, i) => i !== idx);
+      return next;
+    });
+    setTplSheetIdx((i) => Math.max(0, Math.min(i, tplSheets.length - 2)));
   };
 
   const saveTemplate = async () => {
-    if (!tplKeys.length) {
-      showError(t("bizCompare.keyRequired"));
+    if (!tplSheets.length) {
+      showError(t("bizCompare.metricsRequired"));
       return;
+    }
+    for (const s of tplSheets) {
+      if (!s.key_fields.length) {
+        showError(`${metricLabel(s.metric_id)}: ${t("bizCompare.keyRequired")}`);
+        return;
+      }
     }
     setBusy(true);
     try {
       const body = {
-        name: tplName || tplMetric,
-        metric_id: tplMetric,
-        key_fields: tplKeys,
-        iface_fields: tplIfaces,
-        compare_fields: tplCompare,
-        ignore_fields: tplIgnore,
+        name: tplName || tplSheets.map((s) => s.metric_id).join("+"),
         note: tplNote,
+        metrics: tplSheets.map((s) => ({
+          metric_id: s.metric_id,
+          key_fields: s.key_fields,
+          iface_fields: s.iface_fields,
+          compare_fields: s.compare_fields,
+        })),
       };
       if (tplEditId) await bizCompareUpdateTemplate(tplEditId, body);
       else await bizCompareCreateTemplate(body);
@@ -440,6 +572,7 @@ export function BizComparePage() {
     setJobId(id);
     setJobDetailTab("config");
     setRunDetail(null);
+    setResultSheetId("");
     setKindFilter("all");
     setResultKw("");
     const job = jobs.find((x) => x.id === id);
@@ -461,6 +594,7 @@ export function BizComparePage() {
     setJobId("");
     setRuns([]);
     setRunDetail(null);
+    setResultSheetId("");
   };
 
   const saveJobConfig = async () => {
@@ -515,13 +649,13 @@ export function BizComparePage() {
     try {
       const d = await bizCompareGetRun(runId);
       setRunDetail(d);
+      setKindFilter("all");
+      setResultKw("");
       setJobDetailTab("result");
     } catch (e) {
       showError(formatErr(e));
     }
   };
-
-  const summary = runDetail?.summary || {};
 
   const renderJobForm = (compact = false) => (
     <div className="bs-cmp-form" style={{ display: "grid", gap: 8 }}>
@@ -535,11 +669,14 @@ export function BizComparePage() {
         onChange={(e) => setTemplateId(e.target.value)}
         fullWidth
       >
-        {templates.map((tpl) => (
-          <option key={tpl.id} value={tpl.id}>
-            {tpl.name} ({tpl.metric_id})
-          </option>
-        ))}
+        {templates.map((tpl) => {
+          const mids = tpl.metric_ids || templateSheets(tpl).map((s) => s.metric_id);
+          return (
+            <option key={tpl.id} value={tpl.id}>
+              {tpl.name} ({mids.length} {t("bizCompare.sheetsUnit")})
+            </option>
+          );
+        })}
       </FieldSelect>
       <FieldSelect
         label={t("bizCompare.mode")}
@@ -672,10 +809,11 @@ export function BizComparePage() {
       </div>
 
       <div className="pt-list">
-        <div className="btn-row nm-config-modal__tabs">
+        <div className="btn-row nm-config-modal__tabs" role="tablist">
           <Button
             size="sm"
             variant={pageTab === "jobs" ? "primary" : "secondary"}
+            className={pageTab === "jobs" ? "is-active" : undefined}
             onPress={() => setPageTab("jobs")}
           >
             {t("bizCompare.jobList")}
@@ -683,6 +821,7 @@ export function BizComparePage() {
           <Button
             size="sm"
             variant={pageTab === "templates" ? "primary" : "secondary"}
+            className={pageTab === "templates" ? "is-active" : undefined}
             onPress={() => setPageTab("templates")}
           >
             {t("bizCompare.templates")}
@@ -705,41 +844,54 @@ export function BizComparePage() {
               <thead>
                 <tr>
                   <th>{t("bizCompare.colName")}</th>
-                  <th>metric</th>
-                  <th>{t("bizCompare.keyFields")}</th>
-                  <th>{t("bizCompare.ifaceFields")}</th>
-                  <th>{t("bizCompare.compareFields")}</th>
+                  <th>{t("bizCompare.colSheets")}</th>
+                  <th>{t("bizCompare.note")}</th>
                   <th>{t("bizCompare.colActions")}</th>
                 </tr>
               </thead>
               <tbody>
-                {filteredTemplates.map((tpl) => (
-                  <tr key={tpl.id}>
-                    <td>
-                      <div className="pt-list-task-name">{tpl.name}</div>
-                      {tpl.note ? <div className="muted">{tpl.note}</div> : null}
-                    </td>
-                    <td>
-                      <code>{tpl.metric_id}</code>
-                    </td>
-                    <td className="muted">{(tpl.key_fields || []).join(", ") || "—"}</td>
-                    <td className="muted">{(tpl.iface_fields || []).join(", ") || "—"}</td>
-                    <td className="muted">{(tpl.compare_fields || []).join(", ") || "—"}</td>
-                    <td>
-                      <div className="pt-list-actions">
-                        <Button size="sm" variant="secondary" onPress={() => openEditTemplate(tpl)}>
-                          {t("bizCompare.edit")}
-                        </Button>
-                        <Button size="sm" variant="danger" isDisabled={busy} onPress={() => void removeTemplate(tpl.id)}>
-                          {t("bizCompare.delete")}
-                        </Button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                {filteredTemplates.map((tpl) => {
+                  const sheets = templateSheets(tpl);
+                  return (
+                    <tr key={tpl.id}>
+                      <td>
+                        <div className="pt-list-task-name">{tpl.name}</div>
+                      </td>
+                      <td>
+                        <div className="bs-cmp-metric-chips">
+                          {sheets.map((s) => (
+                            <code key={s.metric_id} className="bs-cmp-metric-chip">
+                              {s.metric_id}
+                              {!s.compare_fields?.length ? (
+                                <span className="muted"> · {t("bizCompare.presenceShort")}</span>
+                              ) : null}
+                            </code>
+                          ))}
+                          {!sheets.length ? "—" : null}
+                        </div>
+                      </td>
+                      <td className="muted">{tpl.note || "—"}</td>
+                      <td>
+                        <div className="pt-list-actions">
+                          <Button size="sm" variant="secondary" onPress={() => openEditTemplate(tpl)}>
+                            {t("bizCompare.edit")}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="danger"
+                            isDisabled={busy}
+                            onPress={() => void removeTemplate(tpl.id)}
+                          >
+                            {t("bizCompare.delete")}
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
                 {!filteredTemplates.length ? (
                   <tr>
-                    <td colSpan={6}>
+                    <td colSpan={4}>
                       <div className="pt-list-empty">{t("bizCompare.emptyTemplates")}</div>
                     </td>
                   </tr>
@@ -762,6 +914,7 @@ export function BizComparePage() {
               <tbody>
                 {filteredJobs.map((j) => {
                   const tpl = templates.find((x) => x.id === j.template_id);
+                  const n = templateSheets(tpl).length;
                   return (
                     <tr key={j.id}>
                       <td>
@@ -769,7 +922,7 @@ export function BizComparePage() {
                       </td>
                       <td className="muted">
                         {tpl?.name || j.template_id.slice(0, 8)}
-                        {tpl ? ` · ${tpl.metric_id}` : ""}
+                        {n ? ` · ${n} ${t("bizCompare.sheetsUnit")}` : ""}
                       </td>
                       <td>{j.mode}</td>
                       <td>
@@ -811,84 +964,157 @@ export function BizComparePage() {
             <span className="ui-field__label">{t("bizCompare.colName")}</span>
             <Input value={tplName} onChange={(e) => setTplName(e.target.value)} />
           </label>
-          <FieldSelect
-            label="metric"
-            value={tplMetric}
-            onChange={(e) => onMetricChange(e.target.value)}
-            fullWidth
-            disabled={Boolean(tplEditId)}
-          >
-            {metrics.map((m) => (
-              <option key={m.metric_id} value={m.metric_id}>
-                {m.metric_id}
-              </option>
-            ))}
-          </FieldSelect>
-          <p className="muted">{t("bizCompare.templateHint")}</p>
-          <div className="pt-list-table-wrap">
-            <table className="data-table pt-list-table">
-              <thead>
-                <tr>
-                  <th>{t("bizCompare.field")}</th>
-                  <th>{t("bizCompare.keyFields")}</th>
-                  <th>{t("bizCompare.ifaceFields")}</th>
-                  <th>{t("bizCompare.compareFields")}</th>
-                  <th>{t("bizCompare.ignoreFields")}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {metricFields.map((f) => (
-                  <tr key={f.name}>
-                    <td>
-                      <div className="pt-list-task-name">{f.display_name || f.name}</div>
-                      <div className="muted">
-                        <code>{f.name}</code> · {f.role}
-                      </div>
-                    </td>
-                    <td>
-                      <input
-                        type="checkbox"
-                        checked={tplKeys.includes(f.name)}
-                        onChange={(e) => setTplKeys((prev) => toggleInList(prev, f.name, e.target.checked))}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        type="checkbox"
-                        checked={tplIfaces.includes(f.name)}
-                        onChange={(e) => setTplIfaces((prev) => toggleInList(prev, f.name, e.target.checked))}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        type="checkbox"
-                        checked={tplCompare.includes(f.name)}
-                        onChange={(e) => setTplCompare((prev) => toggleInList(prev, f.name, e.target.checked))}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        type="checkbox"
-                        checked={tplIgnore.includes(f.name)}
-                        onChange={(e) => setTplIgnore((prev) => toggleInList(prev, f.name, e.target.checked))}
-                      />
-                    </td>
-                  </tr>
-                ))}
-                {!metricFields.length ? (
-                  <tr>
-                    <td colSpan={5}>
-                      <div className="pt-list-empty">{t("bizCompare.noMetricFields")}</div>
-                    </td>
-                  </tr>
-                ) : null}
-              </tbody>
-            </table>
-          </div>
           <label className="ui-field ui-field--full">
             <span className="ui-field__label">{t("bizCompare.note")}</span>
             <Input value={tplNote} onChange={(e) => setTplNote(e.target.value)} />
           </label>
+
+          <p className="muted">{t("bizCompare.templateHint")}</p>
+
+          <div className="filter-inline">
+            <FieldSelect
+              label={t("bizCompare.addMetric")}
+              value={tplAddMetric}
+              onChange={(e) => setTplAddMetric(e.target.value)}
+            >
+              <option value="">{t("bizCompare.pickMetric")}</option>
+              {availableToAdd.map((m) => (
+                <option key={m.metric_id} value={m.metric_id}>
+                  {m.metric_id}
+                </option>
+              ))}
+            </FieldSelect>
+            <Button
+              size="sm"
+              variant="secondary"
+              isDisabled={!availableToAdd.length || (!tplAddMetric && !availableToAdd[0])}
+              onPress={addTplMetric}
+            >
+              {t("bizCompare.addSheet")}
+            </Button>
+          </div>
+
+          <div className="bs-sheet-tabs" role="tablist">
+            {tplSheets.map((s, i) => (
+              <button
+                key={s.metric_id}
+                type="button"
+                className={`bs-sheet-tab${i === tplSheetIdx ? " is-active" : ""}`}
+                onClick={() => setTplSheetIdx(i)}
+              >
+                {s.metric_id}
+                {!s.compare_fields.length ? (
+                  <span className="bs-sheet-tab__count">{t("bizCompare.presenceShort")}</span>
+                ) : (
+                  <span className="bs-sheet-tab__count">{s.compare_fields.length}</span>
+                )}
+              </button>
+            ))}
+          </div>
+
+          {activeTplSheet ? (
+            <>
+              <div className="filter-inline" style={{ justifyContent: "space-between" }}>
+                <span className="muted">
+                  {activeTplSheet.compare_fields.length
+                    ? t("bizCompare.modeFields")
+                    : t("bizCompare.modePresence")}
+                </span>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  isDisabled={tplSheets.length <= 1}
+                  onPress={() => removeTplMetric(tplSheetIdx)}
+                >
+                  {t("bizCompare.removeSheet")}
+                </Button>
+              </div>
+
+              <div className="pt-list-table-wrap">
+                <table className="data-table pt-list-table">
+                  <thead>
+                    <tr>
+                      <th>{t("bizCompare.field")}</th>
+                      <th>{t("bizCompare.keyFields")}</th>
+                      <th>{t("bizCompare.ifaceFields")}</th>
+                      <th>{t("bizCompare.compareFields")}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {activeTplFields.map((f) => {
+                      const isKey = activeTplSheet.key_fields.includes(f.name);
+                      return (
+                        <tr key={f.name}>
+                          <td>
+                            <div className="pt-list-task-name">{f.display_name || f.name}</div>
+                            <div className="muted">
+                              <code>{f.name}</code> · {f.role}
+                            </div>
+                          </td>
+                          <td>
+                            <input
+                              type="checkbox"
+                              checked={isKey}
+                              onChange={(e) =>
+                                updateActiveSheet({
+                                  key_fields: toggleInList(
+                                    activeTplSheet.key_fields,
+                                    f.name,
+                                    e.target.checked,
+                                  ),
+                                })
+                              }
+                            />
+                          </td>
+                          <td>
+                            <input
+                              type="checkbox"
+                              checked={activeTplSheet.iface_fields.includes(f.name)}
+                              onChange={(e) =>
+                                updateActiveSheet({
+                                  iface_fields: toggleInList(
+                                    activeTplSheet.iface_fields,
+                                    f.name,
+                                    e.target.checked,
+                                  ),
+                                })
+                              }
+                            />
+                          </td>
+                          <td>
+                            <input
+                              type="checkbox"
+                              disabled={isKey}
+                              title={isKey ? t("bizCompare.keyIsIdentity") : undefined}
+                              checked={!isKey && activeTplSheet.compare_fields.includes(f.name)}
+                              onChange={(e) =>
+                                updateActiveSheet({
+                                  compare_fields: toggleInList(
+                                    activeTplSheet.compare_fields,
+                                    f.name,
+                                    e.target.checked,
+                                  ),
+                                })
+                              }
+                            />
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {!activeTplFields.length ? (
+                      <tr>
+                        <td colSpan={4}>
+                          <div className="pt-list-empty">{t("bizCompare.noMetricFields")}</div>
+                        </td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          ) : (
+            <div className="pt-list-empty">{t("bizCompare.metricsRequired")}</div>
+          )}
         </Modal.Body>
         <Modal.Footer>
           <Button size="sm" variant="primary" isDisabled={busy} onPress={() => void saveTemplate()}>
@@ -926,10 +1152,11 @@ export function BizComparePage() {
           <Modal.CloseTrigger />
         </Modal.Header>
         <Modal.Body className="flex flex-col gap-3 bs-cmp-job-body">
-          <div className="btn-row nm-config-modal__tabs">
+          <div className="btn-row nm-config-modal__tabs" role="tablist">
             <Button
               size="sm"
               variant={jobDetailTab === "config" ? "primary" : "secondary"}
+              className={jobDetailTab === "config" ? "is-active" : undefined}
               onPress={() => setJobDetailTab("config")}
             >
               {t("bizCompare.tabConfig")}
@@ -937,6 +1164,7 @@ export function BizComparePage() {
             <Button
               size="sm"
               variant={jobDetailTab === "result" ? "primary" : "secondary"}
+              className={jobDetailTab === "result" ? "is-active" : undefined}
               onPress={() => setJobDetailTab("result")}
             >
               {t("bizCompare.tabResult")}
@@ -946,169 +1174,200 @@ export function BizComparePage() {
           {jobDetailTab === "config" ? (
             renderJobForm(false)
           ) : (
-            <>
-              <div className="pt-list-kpis">
-                <div className="pt-list-kpi">
-                  <div className="pt-list-kpi__label">+</div>
-                  <div className="pt-list-kpi__value">{summary.added ?? 0}</div>
-                </div>
-                <div className="pt-list-kpi">
-                  <div className="pt-list-kpi__label">−</div>
-                  <div className="pt-list-kpi__value">{summary.removed ?? 0}</div>
-                </div>
-                <div className="pt-list-kpi pt-list-kpi--live">
-                  <div className="pt-list-kpi__label">~</div>
-                  <div className="pt-list-kpi__value">{summary.changed ?? 0}</div>
-                </div>
-                <div className="pt-list-kpi">
-                  <div className="pt-list-kpi__label">=</div>
-                  <div className="pt-list-kpi__value">{summary.unchanged ?? 0}</div>
-                </div>
-              </div>
-
-              <div className="filter-inline">
-                <FieldSelect
-                  value={kindFilter}
-                  onChange={(e) => setKindFilter(e.target.value as KindFilter)}
-                >
-                  <option value="all">{t("bizCompare.kindAll")}</option>
-                  <option value="added">{t("bizCompare.kindAdded")}</option>
-                  <option value="removed">{t("bizCompare.kindRemoved")}</option>
-                  <option value="changed">{t("bizCompare.kindChanged")}</option>
-                  <option value="unchanged">{t("bizCompare.kindUnchanged")}</option>
-                </FieldSelect>
-                <Input
-                  value={resultKw}
-                  placeholder={t("bizCompare.resultFilterPh")}
-                  onChange={(e) => setResultKw(e.target.value)}
-                />
-                <span className="muted bs-sheet-count">
-                  {filteredDiffs.length}/{(runDetail?.diffs || []).length}
-                </span>
-              </div>
+            <div className="bs-workbook-body flex flex-col gap-2" style={{ flex: 1, minHeight: 0 }}>
+              <FieldSelect
+                label={t("bizCompare.pickBatchRun")}
+                value={runDetail?.id || ""}
+                onChange={(e) => {
+                  const id = e.target.value;
+                  if (id) void loadRun(id);
+                }}
+                fullWidth
+              >
+                <option value="">{t("bizCompare.pickRun")}</option>
+                {runs.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {fmtTime(r.created_at)} · before=
+                    {String(r.before_batch_id || "").slice(0, 8)}… / after=
+                    {String(r.after_batch_id || "").slice(0, 8)}… · +{r.summary?.added ?? 0}/−
+                    {r.summary?.removed ?? 0}/~{r.summary?.changed ?? 0}
+                  </option>
+                ))}
+              </FieldSelect>
 
               {runDetail ? (
-                <p className="muted">
-                  before={String(runDetail.before_batch_id || "").slice(0, 8)}… · after=
-                  {String(runDetail.after_batch_id || "").slice(0, 8)}… · metric=
-                  {runDetail.metric_id || "—"}
-                </p>
-              ) : (
-                <div className="pt-list-empty">{t("bizCompare.pickRun")}</div>
-              )}
+                <>
+                  <div className="pt-list-kpis">
+                    <div className="pt-list-kpi">
+                      <div className="pt-list-kpi__label">+</div>
+                      <div className="pt-list-kpi__value">{summary.added ?? 0}</div>
+                    </div>
+                    <div className="pt-list-kpi">
+                      <div className="pt-list-kpi__label">−</div>
+                      <div className="pt-list-kpi__value">{summary.removed ?? 0}</div>
+                    </div>
+                    <div className="pt-list-kpi pt-list-kpi--live">
+                      <div className="pt-list-kpi__label">~</div>
+                      <div className="pt-list-kpi__value">{summary.changed ?? 0}</div>
+                    </div>
+                    <div className="pt-list-kpi">
+                      <div className="pt-list-kpi__label">=</div>
+                      <div className="pt-list-kpi__value">{summary.unchanged ?? 0}</div>
+                    </div>
+                  </div>
 
-              <div className="pt-list-table-wrap bs-cmp-result-table">
-                <table className="data-table pt-list-table bs-cmp-diff-table">
-                  <thead>
-                    <tr>
-                      <th rowSpan={2}>{t("bizCompare.colKind")}</th>
-                      {resultColumns.keys.map((k) => (
-                        <th key={k} rowSpan={2}>
-                          {k}
-                        </th>
-                      ))}
-                      {resultColumns.compare.map((f) => (
-                        <th key={f} colSpan={2} className="bs-cmp-pair-head">
-                          {f}
-                        </th>
-                      ))}
-                    </tr>
-                    <tr>
-                      {resultColumns.compare.flatMap((f) => [
-                        <th key={`${f}-pre`} className="bs-cmp-pre-head">
-                          pre
-                        </th>,
-                        <th key={`${f}-post`} className="bs-cmp-post-head">
-                          post
-                        </th>,
-                      ])}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredDiffs.slice(0, 2000).map((d, i) => {
-                      const pre = (d.mapped_before || d.before || {}) as Record<string, unknown>;
-                      const post = (d.after || {}) as Record<string, unknown>;
-                      return (
-                        <tr key={i} className={`bs-cmp-row bs-cmp-row--${d.kind}`}>
-                          <td>
-                            <NmStatusChip
-                              color={
-                                d.kind === "added"
-                                  ? "success"
-                                  : d.kind === "removed"
-                                    ? "danger"
-                                    : d.kind === "changed"
-                                      ? "warning"
-                                      : "default"
+                  <div className="filter-inline bs-sheet-filter">
+                    <FieldSelect
+                      value={kindFilter}
+                      onChange={(e) => setKindFilter(e.target.value as KindFilter)}
+                    >
+                      <option value="all">{t("bizCompare.kindAll")}</option>
+                      <option value="added">{t("bizCompare.kindAdded")}</option>
+                      <option value="removed">{t("bizCompare.kindRemoved")}</option>
+                      <option value="changed">{t("bizCompare.kindChanged")}</option>
+                      <option value="unchanged">{t("bizCompare.kindUnchanged")}</option>
+                    </FieldSelect>
+                    <Input
+                      value={resultKw}
+                      placeholder={t("bizCompare.resultFilterPh")}
+                      onChange={(e) => setResultKw(e.target.value)}
+                    />
+                    <span className="muted bs-sheet-count">
+                      {filteredDiffs.length}/{(activeRunSheet?.diffs || []).length}
+                      {resultColumns.presence ? ` · ${t("bizCompare.presenceShort")}` : ""}
+                    </span>
+                  </div>
+
+                  <div className="pt-list-table-wrap bs-sheet-table bs-cmp-result-table">
+                    <table className="data-table pt-list-table bs-cmp-diff-table">
+                      <thead>
+                        <tr>
+                          <th rowSpan={resultColumns.compare.length ? 2 : 1}>
+                            {t("bizCompare.colKind")}
+                          </th>
+                          {resultColumns.keys.map((k) => (
+                            <th key={k} rowSpan={resultColumns.compare.length ? 2 : 1}>
+                              {k}
+                            </th>
+                          ))}
+                          {resultColumns.compare.map((f) => (
+                            <th key={f} colSpan={2} className="bs-cmp-pair-head">
+                              {f}
+                            </th>
+                          ))}
+                        </tr>
+                        {resultColumns.compare.length ? (
+                          <tr>
+                            {resultColumns.compare.flatMap((f) => [
+                              <th key={`${f}-pre`} className="bs-cmp-pre-head">
+                                pre
+                              </th>,
+                              <th key={`${f}-post`} className="bs-cmp-post-head">
+                                post
+                              </th>,
+                            ])}
+                          </tr>
+                        ) : null}
+                      </thead>
+                      <tbody>
+                        {filteredDiffs.slice(0, 2000).map((d, i) => {
+                          const pre = (d.mapped_before || d.before || {}) as Record<string, unknown>;
+                          const post = (d.after || {}) as Record<string, unknown>;
+                          return (
+                            <tr key={i} className={`bs-cmp-row bs-cmp-row--${d.kind}`}>
+                              <td>
+                                <NmStatusChip
+                                  color={
+                                    d.kind === "added"
+                                      ? "success"
+                                      : d.kind === "removed"
+                                        ? "danger"
+                                        : d.kind === "changed"
+                                          ? "warning"
+                                          : "default"
+                                  }
+                                >
+                                  {d.kind}
+                                </NmStatusChip>
+                              </td>
+                              {resultColumns.keys.map((k) => (
+                                <td key={k}>
+                                  <code>{cellText(d.key?.[k] ?? pre[k] ?? post[k]) || "—"}</code>
+                                </td>
+                              ))}
+                              {resultColumns.compare.flatMap((f) => {
+                                const changed =
+                                  Boolean(d.changes?.[f]) ||
+                                  (d.kind === "changed" && cellText(pre[f]) !== cellText(post[f]));
+                                const pv = cellText(pre[f]);
+                                const av = cellText(post[f]);
+                                const mismatch = changed && pv !== av;
+                                return [
+                                  <td
+                                    key={`${f}-pre-${i}`}
+                                    className={
+                                      d.kind === "removed" || mismatch
+                                        ? "bs-cmp-cell bs-cmp-cell--pre"
+                                        : "bs-cmp-cell"
+                                    }
+                                  >
+                                    {d.kind === "added" ? "—" : pv || "—"}
+                                  </td>,
+                                  <td
+                                    key={`${f}-post-${i}`}
+                                    className={
+                                      d.kind === "added" || mismatch
+                                        ? "bs-cmp-cell bs-cmp-cell--post"
+                                        : "bs-cmp-cell"
+                                    }
+                                  >
+                                    {d.kind === "removed" ? "—" : av || "—"}
+                                  </td>,
+                                ];
+                              })}
+                            </tr>
+                          );
+                        })}
+                        {runDetail && !filteredDiffs.length ? (
+                          <tr>
+                            <td
+                              colSpan={
+                                1 + resultColumns.keys.length + resultColumns.compare.length * 2
                               }
                             >
-                              {d.kind}
-                            </NmStatusChip>
-                          </td>
-                          {resultColumns.keys.map((k) => (
-                            <td key={k}>
-                              <code>{cellText(d.key?.[k] ?? pre[k] ?? post[k]) || "—"}</code>
+                              <div className="pt-list-empty">{t("bizCompare.resultEmpty")}</div>
                             </td>
-                          ))}
-                          {resultColumns.compare.flatMap((f) => {
-                            const changed = Boolean(d.changes?.[f]) || (d.kind === "changed" && cellText(pre[f]) !== cellText(post[f]));
-                            const pv = cellText(pre[f]);
-                            const av = cellText(post[f]);
-                            const mismatch = changed && pv !== av;
-                            return [
-                              <td
-                                key={`${f}-pre-${i}`}
-                                className={
-                                  d.kind === "removed" || mismatch
-                                    ? "bs-cmp-cell bs-cmp-cell--pre"
-                                    : "bs-cmp-cell"
-                                }
-                              >
-                                {d.kind === "added" ? "—" : pv || "—"}
-                              </td>,
-                              <td
-                                key={`${f}-post-${i}`}
-                                className={
-                                  d.kind === "added" || mismatch
-                                    ? "bs-cmp-cell bs-cmp-cell--post"
-                                    : "bs-cmp-cell"
-                                }
-                              >
-                                {d.kind === "removed" ? "—" : av || "—"}
-                              </td>,
-                            ];
-                          })}
-                        </tr>
+                          </tr>
+                        ) : null}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div className="bs-sheet-tabs" role="tablist">
+                    {runSheets.map((s) => {
+                      const sc = s.summary || {};
+                      return (
+                        <button
+                          key={s.metric_id}
+                          type="button"
+                          className={`bs-sheet-tab${resultSheetId === s.metric_id ? " is-active" : ""}`}
+                          onClick={() => setResultSheetId(s.metric_id)}
+                        >
+                          {s.metric_id}
+                          <span className="bs-sheet-tab__count">
+                            +{sc.added ?? 0}/−{sc.removed ?? 0}/~{sc.changed ?? 0}
+                            {s.mode === "presence" ? ` · ${t("bizCompare.presenceShort")}` : ""}
+                          </span>
+                        </button>
                       );
                     })}
-                    {runDetail && !filteredDiffs.length ? (
-                      <tr>
-                        <td colSpan={1 + resultColumns.keys.length + resultColumns.compare.length * 2}>
-                          <div className="pt-list-empty">{t("bizCompare.resultEmpty")}</div>
-                        </td>
-                      </tr>
-                    ) : null}
-                  </tbody>
-                </table>
-              </div>
-
-              <div className="bs-sheet-tabs" role="tablist">
-                {runs.map((r) => (
-                  <button
-                    key={r.id}
-                    type="button"
-                    className={`bs-sheet-tab${runDetail?.id === r.id ? " is-active" : ""}`}
-                    onClick={() => void loadRun(r.id)}
-                  >
-                    {fmtTime(r.created_at)}
-                    <span className="bs-sheet-tab__count">
-                      +{r.summary?.added ?? 0}/−{r.summary?.removed ?? 0}/~{r.summary?.changed ?? 0}
-                    </span>
-                  </button>
-                ))}
-                {!runs.length ? <span className="muted">{t("bizCompare.noRuns")}</span> : null}
-              </div>
-            </>
+                  </div>
+                  {sheetSummary && Object.keys(sheetSummary).length ? null : null}
+                </>
+              ) : (
+                <div className="pt-list-empty">{t("bizCompare.noRuns")}</div>
+              )}
+            </div>
           )}
         </Modal.Body>
         <Modal.Footer>

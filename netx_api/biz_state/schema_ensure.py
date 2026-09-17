@@ -16,6 +16,7 @@ def apply_biz_state_schema(conn: Connection) -> None:
     # Tables are defined on ORM Base; create_all covers new installs.
     # Keep lightweight indexes that older DBs might miss.
     for sql in (
+        "ALTER TABLE biz_compare_template ADD COLUMN IF NOT EXISTS metrics_json JSON DEFAULT '[]'",
         "CREATE INDEX IF NOT EXISTS ix_biz_state_task_status ON biz_state_task (status)",
         "CREATE INDEX IF NOT EXISTS ix_biz_state_batch_task_id ON biz_state_batch (task_id)",
         "CREATE INDEX IF NOT EXISTS ix_biz_state_batch_command_batch_id ON biz_state_batch_command (batch_id)",

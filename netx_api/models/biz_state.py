@@ -171,7 +171,12 @@ class BizStateCommandOverride(Base):
 
 
 class BizCompareTemplate(Base):
-    """Global compare template: which fields are keys / interfaces / compared."""
+    """Compare template: one or more metric sheets with key/iface/compare roles.
+
+    ``metrics_json`` is the source of truth (list of sheet defs). Legacy
+    ``metric_id`` / ``key_fields`` / … mirror the first sheet for older rows.
+    Empty ``compare_fields`` on a sheet = presence-only (entry set match).
+    """
 
     __tablename__ = "biz_compare_template"
 
@@ -182,6 +187,7 @@ class BizCompareTemplate(Base):
     iface_fields: Mapped[list] = mapped_column(_JsonType, default=list)
     compare_fields: Mapped[list] = mapped_column(_JsonType, default=list)
     ignore_fields: Mapped[list] = mapped_column(_JsonType, default=list)
+    metrics_json: Mapped[list] = mapped_column(_JsonType, default=list)
     note: Mapped[str] = mapped_column(String(512), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)

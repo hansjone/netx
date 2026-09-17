@@ -27,107 +27,266 @@ def _utcnow() -> datetime:
     return utcnow_naive()
 
 
-def _default_lldp_template_fields() -> dict[str, list[str]]:
-    fields = metric_field_map().get("lldp_neighbor") or []
-    keys = [f.name for f in fields if f.is_key]
-    ifaces = [f.name for f in fields if f.is_interface]
-    compare = [f.name for f in fields if f.name not in keys or f.name in ifaces]
-    # Prefer comparing identity+meta that aren't pure key-only if listed
-    compare = [f.name for f in fields if f.role in ("identity", "state", "meta") or f.is_key]
-    # Deduplicate while keeping order
-    seen: set[str] = set()
-    cmp_out: list[str] = []
-    for n in compare:
-        if n not in seen:
-            seen.add(n)
-            cmp_out.append(n)
+def _str_list(raw: Any) -> list[str]:
+    return [str(x).strip() for x in (raw or []) if str(x).strip()]
+
+
+def _sheet_def(
+    *,
+    metric_id: str,
+    key_fields: list[str],
+    iface_fields: list[str] | None = None,
+    compare_fields: list[str] | None = None,
+) -> dict[str, Any]:
+    mid = str(metric_id or "").strip()
+    keys = _str_list(key_fields)
+    ifaces = _str_list(iface_fields)
+    # compare_fields empty → presence-only mode (intentional)
+    compare = _str_list(compare_fields) if compare_fields is not None else []
+    # Keys are identity only; strip them from compare so UI/engine stay clear
+    key_set = set(keys)
+    compare = [f for f in compare if f not in key_set]
     return {
-        "key_fields": keys or ["local_if", "remote_sys", "remote_if"],
-        "iface_fields": ifaces or ["local_if"],
-        "compare_fields": cmp_out or ["remote_sys", "remote_if", "remote_ip", "protocol"],
+        "metric_id": mid,
+        "key_fields": keys,
+        "iface_fields": ifaces,
+        "compare_fields": compare,
     }
 
 
-def ensure_default_lldp_template(db: Session) -> BizCompareTemplate:
+def _default_lldp_sheet() -> dict[str, Any]:
+    fields = metric_field_map().get("lldp_neighbor") or []
+    keys = [f.name for f in fields if f.is_key] or ["local_if", "remote_sys", "remote_if"]
+    ifaces = [f.name for f in fields if f.is_interface] or ["local_if"]
+    # Value checks: non-key state/meta (e.g. remote_ip / protocol)
+    compare = [f.name for f in fields if not f.is_key and f.role in ("state", "meta", "identity")]
+    if not compare:
+        compare = [n for n in ("remote_ip", "protocol") if n not in keys]
+    return _sheet_def(
+        metric_id="lldp_neighbor",
+        key_fields=keys,
+        iface_fields=ifaces,
+        compare_fields=compare,
+    )
+
+
+def _default_vrf_sheet() -> dict[str, Any]:
+    fields = metric_field_map().get("vrf_route_summary") or []
+    keys = [f.name for f in fields if f.is_key] or ["vrf", "source"]
+    ifaces = [f.name for f in fields if f.is_interface]
+    compare = [f.name for f in fields if not f.is_key and f.role in ("state", "meta", "identity")]
+    if not compare:
+        compare = [n for n in ("networks",) if n not in keys]
+    return _sheet_def(
+        metric_id="vrf_route_summary",
+        key_fields=keys,
+        iface_fields=ifaces,
+        compare_fields=compare,
+    )
+
+
+def _normalize_sheet(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    mid = str(raw.get("metric_id") or "").strip()
+    keys = _str_list(raw.get("key_fields"))
+    if not mid or not keys:
+        return None
+    return _sheet_def(
+        metric_id=mid,
+        key_fields=keys,
+        iface_fields=_str_list(raw.get("iface_fields")),
+        compare_fields=_str_list(raw.get("compare_fields")),
+    )
+
+
+def _legacy_sheets(t: BizCompareTemplate) -> list[dict[str, Any]]:
+    mid = str(t.metric_id or "").strip()
+    keys = _str_list(t.key_fields)
+    if not mid or not keys:
+        return []
+    ignore = set(_str_list(t.ignore_fields))
+    compare = [f for f in _str_list(t.compare_fields) if f not in ignore]
+    return [
+        _sheet_def(
+            metric_id=mid,
+            key_fields=keys,
+            iface_fields=_str_list(t.iface_fields),
+            compare_fields=compare,
+        )
+    ]
+
+
+def template_metrics(t: BizCompareTemplate) -> list[dict[str, Any]]:
+    """Resolved metric sheets for a template (metrics_json or legacy single)."""
+    raw = list(t.metrics_json or [])
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in raw:
+        sheet = _normalize_sheet(item)
+        if not sheet:
+            continue
+        mid = sheet["metric_id"]
+        if mid in seen:
+            continue
+        seen.add(mid)
+        out.append(sheet)
+    if out:
+        return out
+    return _legacy_sheets(t)
+
+
+def _apply_sheets_to_row(t: BizCompareTemplate, sheets: list[dict[str, Any]]) -> None:
+    t.metrics_json = sheets
+    first = sheets[0] if sheets else None
+    if first:
+        t.metric_id = first["metric_id"]
+        t.key_fields = list(first["key_fields"])
+        t.iface_fields = list(first["iface_fields"])
+        t.compare_fields = list(first["compare_fields"])
+        t.ignore_fields = []
+    else:
+        t.metric_id = ""
+        t.key_fields = []
+        t.iface_fields = []
+        t.compare_fields = []
+        t.ignore_fields = []
+
+
+def _parse_metrics_body(body: dict[str, Any]) -> list[dict[str, Any]]:
+    """Accept ``metrics`` list or legacy single-metric fields."""
+    if "metrics" in body and body.get("metrics") is not None:
+        sheets: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for raw in list(body.get("metrics") or []):
+            sheet = _normalize_sheet(raw)
+            if not sheet:
+                continue
+            mid = sheet["metric_id"]
+            if mid in seen:
+                raise HTTPException(status_code=400, detail=f"duplicate_metric:{mid}")
+            seen.add(mid)
+            sheets.append(sheet)
+        if not sheets:
+            raise HTTPException(status_code=400, detail="metrics_required")
+        return sheets
+
+    mid = str(body.get("metric_id") or "").strip()
+    keys = _str_list(body.get("key_fields"))
+    if not mid:
+        raise HTTPException(status_code=400, detail="metric_id_required")
+    if not keys:
+        raise HTTPException(status_code=400, detail="key_fields_required")
+    ignore = set(_str_list(body.get("ignore_fields")))
+    compare = [f for f in _str_list(body.get("compare_fields")) if f not in ignore]
+    return [
+        _sheet_def(
+            metric_id=mid,
+            key_fields=keys,
+            iface_fields=_str_list(body.get("iface_fields")),
+            compare_fields=compare,
+        )
+    ]
+
+
+def _template_out(t: BizCompareTemplate) -> dict[str, Any]:
+    sheets = template_metrics(t)
+    first = sheets[0] if sheets else None
+    return {
+        "id": t.id,
+        "name": t.name,
+        "metrics": sheets,
+        "metric_ids": [s["metric_id"] for s in sheets],
+        # legacy mirrors (first sheet)
+        "metric_id": (first or {}).get("metric_id") or t.metric_id or "",
+        "key_fields": list((first or {}).get("key_fields") or t.key_fields or []),
+        "iface_fields": list((first or {}).get("iface_fields") or t.iface_fields or []),
+        "compare_fields": list((first or {}).get("compare_fields") or t.compare_fields or []),
+        "ignore_fields": [],
+        "note": t.note,
+        "updated_at": t.updated_at.isoformat() + "Z" if t.updated_at else None,
+    }
+
+
+def ensure_default_cutover_template(db: Session) -> BizCompareTemplate:
     row = (
         db.query(BizCompareTemplate)
-        .filter(BizCompareTemplate.metric_id == "lldp_neighbor", BizCompareTemplate.name == "LLDP default")
+        .filter(BizCompareTemplate.name == "Cutover default")
         .one_or_none()
     )
     if row:
+        # Upgrade legacy single-sheet cutover if needed
+        sheets = template_metrics(row)
+        if len(sheets) < 2:
+            _apply_sheets_to_row(row, [_default_lldp_sheet(), _default_vrf_sheet()])
+            row.note = "Built-in multi-metric cutover template (LLDP + VRF)"
+            row.updated_at = _utcnow()
+            db.commit()
+            db.refresh(row)
         return row
-    defs = _default_lldp_template_fields()
+    sheets = [_default_lldp_sheet(), _default_vrf_sheet()]
     row = BizCompareTemplate(
         id=uuid4().hex,
-        name="LLDP default",
-        metric_id="lldp_neighbor",
-        key_fields=defs["key_fields"],
-        iface_fields=defs["iface_fields"],
-        compare_fields=defs["compare_fields"],
-        ignore_fields=[],
-        note="Built-in template for LLDP neighbor cutover compare",
+        name="Cutover default",
+        note="Built-in multi-metric cutover template (LLDP + VRF)",
         created_at=_utcnow(),
         updated_at=_utcnow(),
     )
+    _apply_sheets_to_row(row, sheets)
     db.add(row)
     db.commit()
     db.refresh(row)
     return row
 
 
-def _template_out(t: BizCompareTemplate) -> dict[str, Any]:
-    return {
-        "id": t.id,
-        "name": t.name,
-        "metric_id": t.metric_id,
-        "key_fields": list(t.key_fields or []),
-        "iface_fields": list(t.iface_fields or []),
-        "compare_fields": list(t.compare_fields or []),
-        "ignore_fields": list(t.ignore_fields or []),
-        "note": t.note,
-        "updated_at": t.updated_at.isoformat() + "Z" if t.updated_at else None,
-    }
-
-
-def list_templates(db: Session) -> list[dict[str, Any]]:
-    ensure_default_templates(db)
-    rows = db.query(BizCompareTemplate).order_by(BizCompareTemplate.name.asc()).all()
-    return [_template_out(t) for t in rows]
+def ensure_default_lldp_template(db: Session) -> BizCompareTemplate:
+    row = (
+        db.query(BizCompareTemplate)
+        .filter(BizCompareTemplate.name == "LLDP default")
+        .one_or_none()
+    )
+    if row:
+        if not template_metrics(row):
+            _apply_sheets_to_row(row, [_default_lldp_sheet()])
+            row.updated_at = _utcnow()
+            db.commit()
+            db.refresh(row)
+        return row
+    row = BizCompareTemplate(
+        id=uuid4().hex,
+        name="LLDP default",
+        note="Built-in template for LLDP neighbor cutover compare",
+        created_at=_utcnow(),
+        updated_at=_utcnow(),
+    )
+    _apply_sheets_to_row(row, [_default_lldp_sheet()])
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
 
 
 def ensure_default_vrf_template(db: Session) -> BizCompareTemplate:
     row = (
         db.query(BizCompareTemplate)
-        .filter(
-            BizCompareTemplate.metric_id == "vrf_route_summary",
-            BizCompareTemplate.name == "VRF route summary default",
-        )
+        .filter(BizCompareTemplate.name == "VRF route summary default")
         .one_or_none()
     )
     if row:
+        if not template_metrics(row):
+            _apply_sheets_to_row(row, [_default_vrf_sheet()])
+            row.updated_at = _utcnow()
+            db.commit()
+            db.refresh(row)
         return row
-    fields = metric_field_map().get("vrf_route_summary") or []
-    keys = [f.name for f in fields if f.is_key] or ["vrf", "source"]
-    ifaces = [f.name for f in fields if f.is_interface]
-    compare = [f.name for f in fields if f.role in ("state", "identity", "meta") or f.is_key]
-    seen: set[str] = set()
-    cmp_out: list[str] = []
-    for n in compare:
-        if n not in seen:
-            seen.add(n)
-            cmp_out.append(n)
     row = BizCompareTemplate(
         id=uuid4().hex,
         name="VRF route summary default",
-        metric_id="vrf_route_summary",
-        key_fields=keys,
-        iface_fields=ifaces,
-        compare_fields=cmp_out or ["networks"],
-        ignore_fields=[],
         note="Built-in template for per-VRF route summary cutover compare",
         created_at=_utcnow(),
         updated_at=_utcnow(),
     )
+    _apply_sheets_to_row(row, [_default_vrf_sheet()])
     db.add(row)
     db.commit()
     db.refresh(row)
@@ -135,8 +294,15 @@ def ensure_default_vrf_template(db: Session) -> BizCompareTemplate:
 
 
 def ensure_default_templates(db: Session) -> None:
+    ensure_default_cutover_template(db)
     ensure_default_lldp_template(db)
     ensure_default_vrf_template(db)
+
+
+def list_templates(db: Session) -> list[dict[str, Any]]:
+    ensure_default_templates(db)
+    rows = db.query(BizCompareTemplate).order_by(BizCompareTemplate.name.asc()).all()
+    return [_template_out(t) for t in rows]
 
 
 def list_metric_schemas() -> list[dict[str, Any]]:
@@ -165,24 +331,15 @@ def list_metric_schemas() -> list[dict[str, Any]]:
 
 
 def create_template(db: Session, body: dict[str, Any]) -> dict[str, Any]:
-    metric_id = str(body.get("metric_id") or "").strip()
-    if not metric_id:
-        raise HTTPException(status_code=400, detail="metric_id_required")
-    key_fields = [str(x) for x in (body.get("key_fields") or []) if str(x).strip()]
-    if not key_fields:
-        raise HTTPException(status_code=400, detail="key_fields_required")
+    sheets = _parse_metrics_body(body)
     t = BizCompareTemplate(
         id=uuid4().hex,
-        name=str(body.get("name") or metric_id)[:256],
-        metric_id=metric_id,
-        key_fields=key_fields,
-        iface_fields=[str(x) for x in (body.get("iface_fields") or []) if str(x).strip()],
-        compare_fields=[str(x) for x in (body.get("compare_fields") or []) if str(x).strip()],
-        ignore_fields=[str(x) for x in (body.get("ignore_fields") or []) if str(x).strip()],
+        name=str(body.get("name") or sheets[0]["metric_id"])[:256],
         note=str(body.get("note") or "")[:512],
         created_at=_utcnow(),
         updated_at=_utcnow(),
     )
+    _apply_sheets_to_row(t, sheets)
     db.add(t)
     db.commit()
     return _template_out(t)
@@ -194,23 +351,36 @@ def update_template(db: Session, template_id: str, body: dict[str, Any]) -> dict
         raise HTTPException(status_code=404, detail="template_not_found")
     if "name" in body:
         t.name = str(body.get("name") or "")[:256]
-    if "metric_id" in body and body.get("metric_id") is not None:
-        mid = str(body.get("metric_id") or "").strip()
-        if mid:
-            t.metric_id = mid
-    if "key_fields" in body:
-        keys = [str(x) for x in (body.get("key_fields") or []) if str(x).strip()]
-        if not keys:
-            raise HTTPException(status_code=400, detail="key_fields_required")
-        t.key_fields = keys
-    if "iface_fields" in body:
-        t.iface_fields = [str(x) for x in (body.get("iface_fields") or []) if str(x).strip()]
-    if "compare_fields" in body:
-        t.compare_fields = [str(x) for x in (body.get("compare_fields") or []) if str(x).strip()]
-    if "ignore_fields" in body:
-        t.ignore_fields = [str(x) for x in (body.get("ignore_fields") or []) if str(x).strip()]
     if "note" in body:
         t.note = str(body.get("note") or "")[:512]
+    if any(k in body for k in ("metrics", "metric_id", "key_fields", "iface_fields", "compare_fields", "ignore_fields")):
+        # Prefer explicit metrics; otherwise merge into current sheets from legacy keys
+        if "metrics" in body and body.get("metrics") is not None:
+            sheets = _parse_metrics_body(body)
+        else:
+            # Patch first sheet (or create) from legacy fields
+            sheets = list(template_metrics(t))
+            if not sheets:
+                sheets = _parse_metrics_body(body)
+            else:
+                first = dict(sheets[0])
+                if "metric_id" in body and body.get("metric_id") is not None:
+                    mid = str(body.get("metric_id") or "").strip()
+                    if mid:
+                        first["metric_id"] = mid
+                if "key_fields" in body:
+                    keys = _str_list(body.get("key_fields"))
+                    if not keys:
+                        raise HTTPException(status_code=400, detail="key_fields_required")
+                    first["key_fields"] = keys
+                if "iface_fields" in body:
+                    first["iface_fields"] = _str_list(body.get("iface_fields"))
+                if "compare_fields" in body or "ignore_fields" in body:
+                    ignore = set(_str_list(body.get("ignore_fields"))) if "ignore_fields" in body else set()
+                    compare = _str_list(body.get("compare_fields")) if "compare_fields" in body else list(first.get("compare_fields") or [])
+                    first["compare_fields"] = [f for f in compare if f not in ignore]
+                sheets[0] = _normalize_sheet(first) or first
+        _apply_sheets_to_row(t, sheets)
     t.updated_at = _utcnow()
     db.commit()
     return _template_out(t)
@@ -353,16 +523,21 @@ def validate_mapping(
     template_id: str = "",
 ) -> dict[str, Any]:
     ensure_default_templates(db)
-    tpl = db.get(BizCompareTemplate, template_id) if template_id else ensure_default_lldp_template(db)
+    tpl = db.get(BizCompareTemplate, template_id) if template_id else ensure_default_cutover_template(db)
     if not tpl:
         raise HTTPException(status_code=404, detail="template_not_found")
-    before = _load_metric_rows(db, batch_id=before_batch_id, metric_id=tpl.metric_id)
-    after = _load_metric_rows(db, batch_id=after_batch_id, metric_id=tpl.metric_id)
+    sheets = template_metrics(tpl)
+    if not sheets:
+        raise HTTPException(status_code=400, detail="template_has_no_metrics")
     pmap = _port_map_dict(db, mapping_id)
+    # Validate against first sheet that has iface fields (or first sheet)
+    target = next((s for s in sheets if s.get("iface_fields")), sheets[0])
+    before = _load_metric_rows(db, batch_id=before_batch_id, metric_id=target["metric_id"])
+    after = _load_metric_rows(db, batch_id=after_batch_id, metric_id=target["metric_id"])
     return mapping_stats(
         before_rows=before,
         after_rows=after,
-        iface_fields=list(tpl.iface_fields or []),
+        iface_fields=list(target.get("iface_fields") or []),
         port_map=pmap,
     )
 
@@ -393,7 +568,7 @@ def create_job(db: Session, body: dict[str, Any]) -> dict[str, Any]:
     ensure_default_templates(db)
     template_id = str(body.get("template_id") or "").strip()
     if not template_id:
-        tpl = ensure_default_lldp_template(db)
+        tpl = ensure_default_cutover_template(db)
         template_id = tpl.id
     else:
         if not db.get(BizCompareTemplate, template_id):
@@ -470,6 +645,40 @@ def _resolve_after_batch(db: Session, job: BizCompareJob) -> str:
     return str(latest.id) if latest else ""
 
 
+def _run_sheet(
+    db: Session,
+    *,
+    sheet: dict[str, Any],
+    before_batch_id: str,
+    after_batch_id: str,
+    port_map: dict[str, str],
+) -> dict[str, Any]:
+    key_fields = list(sheet.get("key_fields") or [])
+    iface_fields = list(sheet.get("iface_fields") or [])
+    compare_fields = list(sheet.get("compare_fields") or [])
+    mode = "presence" if not compare_fields else "fields"
+    before_rows = _load_metric_rows(db, batch_id=before_batch_id, metric_id=sheet["metric_id"])
+    after_rows = _load_metric_rows(db, batch_id=after_batch_id, metric_id=sheet["metric_id"])
+    result = compare_rows(
+        before_rows=before_rows,
+        after_rows=after_rows,
+        key_fields=key_fields,
+        iface_fields=iface_fields,
+        compare_fields=compare_fields,
+        port_map=port_map,
+    )
+    return {
+        "metric_id": sheet["metric_id"],
+        "key_fields": key_fields,
+        "iface_fields": iface_fields,
+        "compare_fields": compare_fields,
+        "mode": mode,
+        "summary": result["summary"],
+        "diffs": result["diffs"],
+        "mapping_stats": result["mapping_stats"],
+    }
+
+
 def run_compare(db: Session, job_id: str, *, force_after_batch_id: str = "") -> dict[str, Any]:
     j = db.get(BizCompareJob, job_id)
     if not j:
@@ -484,26 +693,52 @@ def run_compare(db: Session, job_id: str, *, force_after_batch_id: str = "") -> 
     if not db.get(BizStateBatch, before_batch_id) or not db.get(BizStateBatch, after_batch_id):
         raise HTTPException(status_code=404, detail="batch_not_found")
 
-    key_fields = list(tpl.key_fields or [])
-    iface_fields = list(tpl.iface_fields or [])
-    compare_fields = list(tpl.compare_fields or [])
-    ignore = set(str(x) for x in (tpl.ignore_fields or []))
-    compare_fields = [f for f in compare_fields if f not in ignore]
-    if not compare_fields:
-        compare_fields = [f for f in key_fields if f not in ignore]
+    sheets_cfg = template_metrics(tpl)
+    if not sheets_cfg:
+        raise HTTPException(status_code=400, detail="template_has_no_metrics")
 
-    before_rows = _load_metric_rows(db, batch_id=before_batch_id, metric_id=tpl.metric_id)
-    after_rows = _load_metric_rows(db, batch_id=after_batch_id, metric_id=tpl.metric_id)
     pmap = _port_map_dict(db, j.mapping_id)
+    sheet_results: list[dict[str, Any]] = []
+    agg = {
+        "before_count": 0,
+        "after_count": 0,
+        "added": 0,
+        "removed": 0,
+        "changed": 0,
+        "unchanged": 0,
+    }
+    mapping_by_metric: dict[str, Any] = {}
+    for sheet in sheets_cfg:
+        one = _run_sheet(
+            db,
+            sheet=sheet,
+            before_batch_id=before_batch_id,
+            after_batch_id=after_batch_id,
+            port_map=pmap,
+        )
+        sheet_results.append(one)
+        s = one["summary"]
+        for k in agg:
+            agg[k] += int(s.get(k) or 0)
+        mapping_by_metric[one["metric_id"]] = one["mapping_stats"]
 
-    result = compare_rows(
-        before_rows=before_rows,
-        after_rows=after_rows,
-        key_fields=key_fields,
-        iface_fields=iface_fields,
-        compare_fields=compare_fields,
-        port_map=pmap,
-    )
+    first = sheet_results[0]
+    summary_payload = {
+        **agg,
+        "sheet_count": len(sheet_results),
+        "sheets": [
+            {
+                "metric_id": s["metric_id"],
+                "key_fields": s["key_fields"],
+                "iface_fields": s["iface_fields"],
+                "compare_fields": s["compare_fields"],
+                "mode": s["mode"],
+                "summary": s["summary"],
+                "diffs": s["diffs"],
+            }
+            for s in sheet_results
+        ],
+    }
 
     run = BizCompareRun(
         id=uuid4().hex,
@@ -512,11 +747,11 @@ def run_compare(db: Session, job_id: str, *, force_after_batch_id: str = "") -> 
         mapping_id=j.mapping_id,
         before_batch_id=before_batch_id,
         after_batch_id=after_batch_id,
-        metric_id=tpl.metric_id,
+        metric_id=first["metric_id"],
         status="success",
-        summary_json=result["summary"],
-        diffs_json=result["diffs"],
-        mapping_stats_json=result["mapping_stats"],
+        summary_json=summary_payload,
+        diffs_json=first["diffs"],
+        mapping_stats_json=mapping_by_metric,
         message="",
         created_at=_utcnow(),
     )
@@ -533,6 +768,21 @@ def get_run(db: Session, run_id: str) -> dict[str, Any]:
     if not r:
         raise HTTPException(status_code=404, detail="run_not_found")
     tpl = db.get(BizCompareTemplate, r.template_id) if r.template_id else None
+    summary = dict(r.summary_json or {})
+    sheets = list(summary.get("sheets") or [])
+    if not sheets:
+        # Legacy single-metric run
+        sheets = [
+            {
+                "metric_id": r.metric_id,
+                "key_fields": list((tpl.key_fields if tpl else None) or []),
+                "iface_fields": list((tpl.iface_fields if tpl else None) or []),
+                "compare_fields": list((tpl.compare_fields if tpl else None) or []),
+                "mode": "fields",
+                "summary": {k: summary.get(k, 0) for k in ("added", "removed", "changed", "unchanged", "before_count", "after_count")},
+                "diffs": list(r.diffs_json or []),
+            }
+        ]
     return {
         "id": r.id,
         "job_id": r.job_id,
@@ -542,8 +792,12 @@ def get_run(db: Session, run_id: str) -> dict[str, Any]:
         "after_batch_id": r.after_batch_id,
         "metric_id": r.metric_id,
         "status": r.status,
-        "summary": r.summary_json or {},
-        "diffs": r.diffs_json or [],
+        "summary": {
+            k: summary.get(k, 0)
+            for k in ("added", "removed", "changed", "unchanged", "before_count", "after_count", "sheet_count")
+        },
+        "sheets": sheets,
+        "diffs": list(r.diffs_json or []),
         "mapping_stats": r.mapping_stats_json or {},
         "message": r.message,
         "created_at": r.created_at.isoformat() + "Z" if r.created_at else None,
@@ -565,7 +819,10 @@ def list_runs(db: Session, job_id: str, *, limit: int = 20) -> list[dict[str, An
             "before_batch_id": r.before_batch_id,
             "after_batch_id": r.after_batch_id,
             "status": r.status,
-            "summary": r.summary_json or {},
+            "summary": {
+                k: (r.summary_json or {}).get(k, 0)
+                for k in ("added", "removed", "changed", "unchanged", "sheet_count")
+            },
             "created_at": r.created_at.isoformat() + "Z" if r.created_at else None,
         }
         for r in rows

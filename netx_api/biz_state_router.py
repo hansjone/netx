@@ -212,24 +212,35 @@ def api_export_batch(batch_id: str, db: Session = Depends(get_db)) -> StreamingR
 from .biz_state import compare_service as cmp_svc  # noqa: E402
 
 
+class TemplateMetricIn(BaseModel):
+    metric_id: str
+    key_fields: list[str] = Field(default_factory=list)
+    iface_fields: list[str] = Field(default_factory=list)
+    compare_fields: list[str] = Field(default_factory=list)
+
+
 class TemplateIn(BaseModel):
     name: str = ""
+    note: str = ""
+    # Preferred: multi-metric sheets
+    metrics: list[TemplateMetricIn] | None = None
+    # Legacy single-metric fields (still accepted)
     metric_id: str = "lldp_neighbor"
     key_fields: list[str] = Field(default_factory=list)
     iface_fields: list[str] = Field(default_factory=list)
     compare_fields: list[str] = Field(default_factory=list)
     ignore_fields: list[str] = Field(default_factory=list)
-    note: str = ""
 
 
 class TemplatePatchIn(BaseModel):
     name: str | None = None
+    note: str | None = None
+    metrics: list[TemplateMetricIn] | None = None
     metric_id: str | None = None
     key_fields: list[str] | None = None
     iface_fields: list[str] | None = None
     compare_fields: list[str] | None = None
     ignore_fields: list[str] | None = None
-    note: str | None = None
 
 
 class MappingRowIn(BaseModel):
