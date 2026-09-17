@@ -1854,6 +1854,11 @@ export const bizCompareListMetrics = () =>
         role: string;
       }>;
     }>;
+    row_filter_presets?: Array<{
+      id: string;
+      label: string;
+      row_filters: Array<Record<string, unknown>>;
+    }>;
   }>("/v1/biz-state/compare/metrics");
 
 export const bizCompareCreateTemplate = (body: Record<string, unknown>) =>

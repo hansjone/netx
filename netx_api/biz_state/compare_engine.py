@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping, Sequence
+
+from .compare_rules import field_rule_map, values_equal, explain_diff
 
 
 def apply_port_map(
@@ -71,6 +73,7 @@ def compare_rows(
     iface_fields: list[str],
     compare_fields: list[str],
     port_map: dict[str, str] | None = None,
+    field_rules: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Return summary + diffs list.
 
@@ -78,10 +81,14 @@ def compare_rows(
 
     Empty ``port_map`` means ignore port/iface changes: matching keys exclude
     ``iface_fields`` (same-device batches compare without a rename map).
+
+    ``field_rules`` drives normalize / numeric tolerance / per-field compare mode
+    (template-driven; no metric-specific branches here).
     """
     if not key_fields:
         raise ValueError("key_fields required")
     pmap = dict(port_map or {})
+    rules = field_rule_map(field_rules)
     iface_set = {str(f) for f in (iface_fields or []) if str(f).strip()}
     # No map → ignore port renames: drop iface columns from the match key.
     if not pmap and iface_set:
@@ -129,9 +136,13 @@ def compare_rows(
         for f in compare_fields:
             bv = mapped.get(f, "")
             av = after.get(f, "")
-            # Compare using mapped before for iface fields already rewritten
-            if str(bv) != str(av):
-                field_changes[f] = {"before": bv, "after": av}
+            rule = rules.get(f)
+            if not values_equal(bv, av, rule=rule):
+                entry: dict[str, Any] = {"before": bv, "after": av}
+                reason = explain_diff(bv, av, rule=rule)
+                if reason:
+                    entry["reason"] = reason
+                field_changes[f] = entry
         if field_changes:
             changed += 1
             diffs.append(

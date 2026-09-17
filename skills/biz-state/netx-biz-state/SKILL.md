@@ -122,22 +122,42 @@ enrich_joins=[
 - 辅命令不要再抄一份 `command_template`/`rule_keys` 到 `AuxCommand`  
 - `parser_id` 全局扁平：新指标命名避免跨厂家撞名；注册顺序后写覆盖先写  
 - TextFSM 字面量 `$`：不要用 `^\$`（模板替换冲突）；能靠下一 `interface` 切块则不匹配 `$`
+- **比对不要写 metric 硬编码过滤**（如 ARP dynamic）：一律进 sheet 的 `row_filters` / `field_rules`，见 `compare_rules.py` + 模板 UI
 
 ---
 
-## 5. 自检清单
+## 5. 比对模板（可视化，禁代码定制）
+
+Sheet（`metrics_json[]`）能力：
+
+| 字段 | 作用 |
+|------|------|
+| `key_fields` / `iface_fields` / `compare_fields` | 对齐 / 端口映射 / 值比对（空=仅存在性） |
+| `display_fields` | 结果列（可含不比对的上下文；缺省=key+compare） |
+| `row_filters` | 比对前行过滤（AND；支持 `any`/`all`；op: eq/ne/in/empty/regex/age_timer…） |
+| `field_rules` | 每字段 `normalize` / `compare`(eq/numeric/percent/ignore) / `tolerance` |
+
+- ARP 动态过滤预设：`arp_dynamic_row_filters()` → ZTE status 默认 sheet 已带  
+- 引擎：`compare_engine.compare_rows(..., field_rules=)`；服务：`_run_sheet` 先 `apply_row_filters`  
+- UI：BizCompare 模板编辑 → 先勾选监控项，再按表编辑行过滤规则（组内且 / 组间或）与字段归一化；无「应用预设」按钮，默认规则随监控项带入后可改  
+- 单测：`tests.test_biz_state_compare`
+
+---
+
+## 6. 自检清单
 
 - [ ] index + apply_rule 对样本有行  
 - [ ] prefer_fsm：有 FSM 不走手写；无 FSM 手写仍通  
 - [ ] Profile match 能命中任务里的 concrete 命令  
 - [ ] 跨表：辅 profile 可单独 `run_parser`；主 profile enrich 后字段正确  
-- [ ] `python -m unittest tests.test_fsm_parser_pipeline tests.test_enrich_framework tests.test_multi_command_arp`（及本指标单测）
+- [ ] `python -m unittest tests.test_fsm_parser_pipeline tests.test_enrich_framework tests.test_multi_command_arp tests.test_biz_state_compare`（及本指标单测）
 
 ---
 
-## 6. 参考文件
+## 7. 参考文件
 
 - Enrich：`biz_state/enrich.py`  
 - Session：`biz_state/collect_session.py`  
+- Compare：`biz_state/compare_rules.py`、`compare_engine.py`、`compare_service.py`  
 - ARP+VRF：`profiles.py` → `zte.arp`；`parsers/zte/arp.py`；`parsers/zte/if_intf.py`  
 - 模板：`cli_templates/zte/zte_zxros_show_arp.textfsm`、`..._if_intf.textfsm`

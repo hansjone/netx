@@ -24,6 +24,13 @@ from ..models import (
 )
 from ..timeutil import utcnow_naive
 from .compare_engine import compare_rows, mapping_stats
+from .compare_rules import (
+    ROW_FILTER_PRESETS,
+    apply_row_filters,
+    arp_dynamic_row_filters,
+    effective_compare_fields,
+    effective_display_fields,
+)
 from .profiles import metric_field_map
 
 
@@ -158,12 +165,58 @@ def _str_list(raw: Any) -> list[str]:
     return [str(x).strip() for x in (raw or []) if str(x).strip()]
 
 
+def _normalize_row_filters(raw: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in raw:
+        if isinstance(item, dict) and item:
+            out.append(dict(item))
+    return out
+
+
+def _normalize_field_rules(raw: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("field") or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        rule: dict[str, Any] = {"field": name}
+        compare = str(item.get("compare") or "").strip().lower()
+        if compare:
+            rule["compare"] = compare
+        if item.get("ignore") is True:
+            rule["ignore"] = True
+            rule.setdefault("compare", "ignore")
+        norm = str(item.get("normalize") or "").strip().lower()
+        if norm and norm not in ("none", "strip"):
+            rule["normalize"] = norm
+        if item.get("tolerance") is not None and str(item.get("tolerance")).strip() != "":
+            try:
+                rule["tolerance"] = float(item.get("tolerance"))
+            except (TypeError, ValueError):
+                pass
+        # Drop empty rules (only field name)
+        if len(rule) > 1:
+            out.append(rule)
+    return out
+
+
 def _sheet_def(
     *,
     metric_id: str,
     key_fields: list[str],
     iface_fields: list[str] | None = None,
     compare_fields: list[str] | None = None,
+    display_fields: list[str] | None = None,
+    row_filters: list[dict[str, Any]] | None = None,
+    field_rules: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     mid = str(metric_id or "").strip()
     keys = _str_list(key_fields)
@@ -173,12 +226,32 @@ def _sheet_def(
     # Keys are identity only; strip them from compare so UI/engine stay clear
     key_set = set(keys)
     compare = [f for f in compare if f not in key_set]
-    return {
+    rules = _normalize_field_rules(field_rules)
+    # Drop ignored fields from compare list (single source of truth for UI)
+    compare = effective_compare_fields(compare, rules)
+    # None = legacy (derive key+compare); explicit list (even empty extras) preserved
+    if display_fields is None:
+        display = effective_display_fields(
+            key_fields=keys,
+            compare_fields=compare,
+            display_fields=None,
+        )
+    else:
+        display = effective_display_fields(
+            key_fields=keys,
+            compare_fields=compare,
+            display_fields=_str_list(display_fields),
+        )
+    sheet: dict[str, Any] = {
         "metric_id": mid,
         "key_fields": keys,
         "iface_fields": ifaces,
         "compare_fields": compare,
+        "display_fields": display,
+        "row_filters": _normalize_row_filters(row_filters),
+        "field_rules": rules,
     }
+    return sheet
 
 
 def _default_lldp_sheet() -> dict[str, Any]:
@@ -217,11 +290,25 @@ def _default_sheet_for_metric(metric_id: str, *, compare_roles: tuple[str, ...] 
     keys = [f.name for f in fields if f.is_key]
     ifaces = [f.name for f in fields if f.is_interface]
     compare = [f.name for f in fields if (not f.is_key) and f.role in compare_roles]
+    extra: dict[str, Any] = {}
+    if metric_id == "arp":
+        # Template-owned ARP filter (was hardcoded in _load_metric_rows)
+        extra["row_filters"] = arp_dynamic_row_filters()
+        # MAC often differs in format across vendors / reloads
+        extra["field_rules"] = [{"field": "mac", "normalize": "mac"}] if "mac" in {
+            f.name for f in fields
+        } else []
+        # Context columns: show but not necessarily compare
+        ctx = [n for n in ("vrf", "entry_type", "age") if n not in keys and n not in compare]
+        extra["display_fields"] = list(keys) + list(compare) + ctx
     return _sheet_def(
         metric_id=metric_id,
         key_fields=keys,
         iface_fields=ifaces,
         compare_fields=compare,
+        display_fields=extra.get("display_fields"),
+        row_filters=extra.get("row_filters"),
+        field_rules=extra.get("field_rules"),
     )
 
 
@@ -242,11 +329,27 @@ def _normalize_sheet(raw: Any) -> dict[str, Any] | None:
     keys = _str_list(raw.get("key_fields"))
     if not mid or not keys:
         return None
+    # Legacy ignore_fields → field_rules compare=ignore
+    rules = list(_normalize_field_rules(raw.get("field_rules")))
+    ignore = set(_str_list(raw.get("ignore_fields")))
+    by_field = {str(r.get("field")): r for r in rules}
+    for name in ignore:
+        if name not in by_field:
+            rules.append({"field": name, "compare": "ignore", "ignore": True})
+    # display_fields: missing key → legacy derive; present → explicit
+    disp_arg: list[str] | None
+    if "display_fields" in raw:
+        disp_arg = _str_list(raw.get("display_fields"))
+    else:
+        disp_arg = None
     return _sheet_def(
         metric_id=mid,
         key_fields=keys,
         iface_fields=_str_list(raw.get("iface_fields")),
         compare_fields=_str_list(raw.get("compare_fields")),
+        display_fields=disp_arg,
+        row_filters=_normalize_row_filters(raw.get("row_filters")),
+        field_rules=rules,
     )
 
 
@@ -257,12 +360,14 @@ def _legacy_sheets(t: BizCompareTemplate) -> list[dict[str, Any]]:
         return []
     ignore = set(_str_list(t.ignore_fields))
     compare = [f for f in _str_list(t.compare_fields) if f not in ignore]
+    rules = [{"field": f, "compare": "ignore", "ignore": True} for f in sorted(ignore)]
     return [
         _sheet_def(
             metric_id=mid,
             key_fields=keys,
             iface_fields=_str_list(t.iface_fields),
             compare_fields=compare,
+            field_rules=rules,
         )
     ]
 
@@ -329,12 +434,25 @@ def _parse_metrics_body(body: dict[str, Any]) -> list[dict[str, Any]]:
         raise HTTPException(status_code=400, detail="key_fields_required")
     ignore = set(_str_list(body.get("ignore_fields")))
     compare = [f for f in _str_list(body.get("compare_fields")) if f not in ignore]
+    rules = _normalize_field_rules(body.get("field_rules"))
+    by_field = {str(r.get("field")): r for r in rules}
+    for name in ignore:
+        if name not in by_field:
+            rules.append({"field": name, "compare": "ignore", "ignore": True})
+    disp_arg: list[str] | None
+    if "display_fields" in body:
+        disp_arg = _str_list(body.get("display_fields"))
+    else:
+        disp_arg = None
     return [
         _sheet_def(
             metric_id=mid,
             key_fields=keys,
             iface_fields=_str_list(body.get("iface_fields")),
             compare_fields=compare,
+            display_fields=disp_arg,
+            row_filters=_normalize_row_filters(body.get("row_filters")),
+            field_rules=rules,
         )
     ]
 
@@ -451,8 +569,25 @@ def ensure_default_zte_status_template(db: Session) -> BizCompareTemplate:
         existing = template_metrics(row)
         want = {s["metric_id"] for s in sheets}
         have = {s["metric_id"] for s in existing}
+        changed = bool(want - have)
+        # Migrate ARP sheet: inject template row_filters if missing (replaces code filter)
+        upgraded: list[dict[str, Any]] = []
+        by_want = {s["metric_id"]: s for s in sheets}
+        for s in existing:
+            cur = dict(s)
+            if cur.get("metric_id") == "arp" and not cur.get("row_filters"):
+                cur["row_filters"] = list(by_want.get("arp", {}).get("row_filters") or arp_dynamic_row_filters())
+                if not cur.get("field_rules") and by_want.get("arp", {}).get("field_rules"):
+                    cur["field_rules"] = list(by_want["arp"]["field_rules"])
+                changed = True
+            upgraded.append(_normalize_sheet(cur) or cur)
         if want - have:
-            _apply_sheets_to_row(row, sheets)
+            for s in sheets:
+                if s["metric_id"] not in have:
+                    upgraded.append(s)
+            changed = True
+        if changed:
+            _apply_sheets_to_row(row, upgraded if upgraded else sheets)
             row.note = "Built-in ZTE status cutover (ISIS/IF/ARP/ND6/BGP)"
             row.updated_at = _utcnow()
             db.commit()
@@ -473,6 +608,13 @@ def ensure_default_zte_status_template(db: Session) -> BizCompareTemplate:
 
 
 def ensure_default_templates(db: Session) -> None:
+    """Seed built-ins only on first install (empty table).
+
+    Operators own templates after that — do not recreate deleted built-ins
+    or overwrite customized sheets on every list call.
+    """
+    if db.query(BizCompareTemplate.id).limit(1).first():
+        return
     ensure_default_cutover_template(db)
     ensure_default_lldp_template(db)
     ensure_default_vrf_template(db)
@@ -510,6 +652,14 @@ def list_metric_schemas() -> list[dict[str, Any]]:
     return out
 
 
+def list_row_filter_presets() -> list[dict[str, Any]]:
+    """Named row_filter bundles for the template UI (ARP dynamic, BGP Established, …)."""
+    return [
+        {"id": pid, "label": pid, "row_filters": filters}
+        for pid, filters in ROW_FILTER_PRESETS.items()
+    ]
+
+
 def create_template(db: Session, body: dict[str, Any]) -> dict[str, Any]:
     sheets = _parse_metrics_body(body)
     t = BizCompareTemplate(
@@ -533,7 +683,20 @@ def update_template(db: Session, template_id: str, body: dict[str, Any]) -> dict
         t.name = str(body.get("name") or "")[:256]
     if "note" in body:
         t.note = str(body.get("note") or "")[:512]
-    if any(k in body for k in ("metrics", "metric_id", "key_fields", "iface_fields", "compare_fields", "ignore_fields")):
+    if any(
+        k in body
+        for k in (
+            "metrics",
+            "metric_id",
+            "key_fields",
+            "iface_fields",
+            "compare_fields",
+            "ignore_fields",
+            "display_fields",
+            "row_filters",
+            "field_rules",
+        )
+    ):
         # Prefer explicit metrics; otherwise merge into current sheets from legacy keys
         if "metrics" in body and body.get("metrics") is not None:
             sheets = _parse_metrics_body(body)
@@ -557,8 +720,18 @@ def update_template(db: Session, template_id: str, body: dict[str, Any]) -> dict
                     first["iface_fields"] = _str_list(body.get("iface_fields"))
                 if "compare_fields" in body or "ignore_fields" in body:
                     ignore = set(_str_list(body.get("ignore_fields"))) if "ignore_fields" in body else set()
-                    compare = _str_list(body.get("compare_fields")) if "compare_fields" in body else list(first.get("compare_fields") or [])
+                    compare = (
+                        _str_list(body.get("compare_fields"))
+                        if "compare_fields" in body
+                        else list(first.get("compare_fields") or [])
+                    )
                     first["compare_fields"] = [f for f in compare if f not in ignore]
+                if "display_fields" in body:
+                    first["display_fields"] = _str_list(body.get("display_fields"))
+                if "row_filters" in body:
+                    first["row_filters"] = _normalize_row_filters(body.get("row_filters"))
+                if "field_rules" in body:
+                    first["field_rules"] = _normalize_field_rules(body.get("field_rules"))
                 sheets[0] = _normalize_sheet(first) or first
         _apply_sheets_to_row(t, sheets)
     t.updated_at = _utcnow()
@@ -704,21 +877,9 @@ def _load_metric_rows(db: Session, *, batch_id: str, metric_id: str) -> list[dic
         .all()
     )
     if rows:
-        out = [dict(r.data_json or {}) for r in rows]
-        if metric_id == "arp":
-            from .parsers.zte.arp import is_valid_arp_age
-
-            # Compare only dynamic ARP (Age is HH:MM:SS); drop static H / incomplete flags
-            out = [
-                r
-                for r in out
-                if str(r.get("entry_type") or "").lower() == "dynamic"
-                or (
-                    not r.get("entry_type")
-                    and is_valid_arp_age(str(r.get("age") or ""))
-                )
-            ]
-        return out
+        # Raw rows only — filtering belongs to the compare sheet template
+        # (``row_filters``), not metric-specific branches here.
+        return [dict(r.data_json or {}) for r in rows]
     # Known metric with zero rows is OK; unknown metric still errors
     if metric_id in metric_field_map():
         return []
@@ -873,10 +1034,24 @@ def _run_sheet(
 ) -> dict[str, Any]:
     key_fields = list(sheet.get("key_fields") or [])
     iface_fields = list(sheet.get("iface_fields") or [])
-    compare_fields = list(sheet.get("compare_fields") or [])
+    field_rules = list(sheet.get("field_rules") or [])
+    compare_fields = effective_compare_fields(
+        list(sheet.get("compare_fields") or []),
+        field_rules,
+    )
+    display_fields = effective_display_fields(
+        key_fields=key_fields,
+        compare_fields=compare_fields,
+        display_fields=list(sheet.get("display_fields"))
+        if "display_fields" in sheet
+        else None,
+    )
+    row_filters = list(sheet.get("row_filters") or [])
     mode = "presence" if not compare_fields else "fields"
-    before_rows = _load_metric_rows(db, batch_id=before_batch_id, metric_id=sheet["metric_id"])
-    after_rows = _load_metric_rows(db, batch_id=after_batch_id, metric_id=sheet["metric_id"])
+    before_raw = _load_metric_rows(db, batch_id=before_batch_id, metric_id=sheet["metric_id"])
+    after_raw = _load_metric_rows(db, batch_id=after_batch_id, metric_id=sheet["metric_id"])
+    before_rows = apply_row_filters(before_raw, row_filters)
+    after_rows = apply_row_filters(after_raw, row_filters)
     result = compare_rows(
         before_rows=before_rows,
         after_rows=after_rows,
@@ -884,14 +1059,22 @@ def _run_sheet(
         iface_fields=iface_fields,
         compare_fields=compare_fields,
         port_map=port_map,
+        field_rules=field_rules,
     )
+    summary = dict(result["summary"])
+    summary["before_raw_count"] = len(before_raw)
+    summary["after_raw_count"] = len(after_raw)
+    summary["row_filters"] = len(row_filters)
     return {
         "metric_id": sheet["metric_id"],
         "key_fields": key_fields,
         "iface_fields": iface_fields,
         "compare_fields": compare_fields,
+        "display_fields": display_fields,
+        "row_filters": row_filters,
+        "field_rules": field_rules,
         "mode": mode,
-        "summary": result["summary"],
+        "summary": summary,
         "diffs": result["diffs"],
         "mapping_stats": result["mapping_stats"],
     }
@@ -965,6 +1148,8 @@ def run_compare(db: Session, job_id: str, *, force_after_batch_id: str = "") -> 
                 "key_fields": s["key_fields"],
                 "iface_fields": s["iface_fields"],
                 "compare_fields": s["compare_fields"],
+                "display_fields": s.get("display_fields") or [],
+                "field_rules": s.get("field_rules") or [],
                 "mode": s["mode"],
                 "summary": s["summary"],
             }
@@ -1012,11 +1197,23 @@ def _csv_cell(v: Any) -> str:
 
 def _sheet_csv(sheet: dict[str, Any]) -> str:
     keys = list(sheet.get("key_fields") or [])
+    key_set = set(keys)
     compare = list(sheet.get("compare_fields") or [])
+    compare_set = set(compare)
+    display = effective_display_fields(
+        key_fields=keys,
+        compare_fields=compare,
+        display_fields=list(sheet.get("display_fields") or []) or None,
+    )
+    # Non-key display columns: compare fields get pre/post; display-only get single value col
+    extra = [f for f in display if f not in key_set]
     headers = ["kind", *keys]
-    for f in compare:
-        headers.append(f"{f}__pre")
-        headers.append(f"{f}__post")
+    for f in extra:
+        if f in compare_set:
+            headers.append(f"{f}__pre")
+            headers.append(f"{f}__post")
+        else:
+            headers.append(f)
     lines = [",".join(_csv_cell(h) for h in headers)]
     for d in list(sheet.get("diffs") or []):
         kind = str(d.get("kind") or "")
@@ -1026,16 +1223,23 @@ def _sheet_csv(sheet: dict[str, Any]) -> str:
         row = [kind]
         for k in keys:
             row.append(key.get(k, pre.get(k, post.get(k, ""))))
-        for f in compare:
-            if kind == "added":
-                row.append("")
-                row.append(post.get(f, ""))
-            elif kind == "removed":
-                row.append(pre.get(f, ""))
-                row.append("")
+        for f in extra:
+            if f in compare_set:
+                if kind == "added":
+                    row.append("")
+                    row.append(post.get(f, ""))
+                elif kind == "removed":
+                    row.append(pre.get(f, ""))
+                    row.append("")
+                else:
+                    row.append(pre.get(f, ""))
+                    row.append(post.get(f, ""))
             else:
-                row.append(pre.get(f, ""))
-                row.append(post.get(f, ""))
+                # Display-only: prefer after, then before
+                if kind == "removed":
+                    row.append(pre.get(f, ""))
+                else:
+                    row.append(post.get(f, pre.get(f, "")))
         lines.append(",".join(_csv_cell(x) for x in row))
     return "\ufeff" + "\n".join(lines) + "\n"
 
@@ -1125,6 +1329,8 @@ def get_run(db: Session, run_id: str) -> dict[str, Any]:
             "key_fields": list(sh.get("key_fields") or []),
             "iface_fields": list(sh.get("iface_fields") or []),
             "compare_fields": list(sh.get("compare_fields") or []),
+            "display_fields": list(sh.get("display_fields") or []),
+            "field_rules": list(sh.get("field_rules") or []),
             "mode": sh.get("mode") or ("presence" if not sh.get("compare_fields") else "fields"),
             "summary": dict(sh.get("summary") or {}),
         }

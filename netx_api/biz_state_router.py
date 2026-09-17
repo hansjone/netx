@@ -212,11 +212,34 @@ def api_export_batch(batch_id: str, db: Session = Depends(get_db)) -> StreamingR
 from .biz_state import compare_service as cmp_svc  # noqa: E402
 
 
+class FieldRuleIn(BaseModel):
+    field: str
+    compare: str = ""
+    normalize: str = ""
+    ignore: bool = False
+    tolerance: float | None = None
+
+
+class RowFilterIn(BaseModel):
+    """Leaf or nested (any/all) row filter — kept open for nested dicts."""
+
+    model_config = {"extra": "allow"}
+
+    field: str | None = None
+    op: str | None = None
+    value: Any = None
+    any: list[dict[str, Any]] | None = None
+    all: list[dict[str, Any]] | None = None
+
+
 class TemplateMetricIn(BaseModel):
     metric_id: str
     key_fields: list[str] = Field(default_factory=list)
     iface_fields: list[str] = Field(default_factory=list)
     compare_fields: list[str] = Field(default_factory=list)
+    display_fields: list[str] = Field(default_factory=list)
+    row_filters: list[dict[str, Any]] = Field(default_factory=list)
+    field_rules: list[FieldRuleIn] = Field(default_factory=list)
 
 
 class TemplateIn(BaseModel):
@@ -230,6 +253,9 @@ class TemplateIn(BaseModel):
     iface_fields: list[str] = Field(default_factory=list)
     compare_fields: list[str] = Field(default_factory=list)
     ignore_fields: list[str] = Field(default_factory=list)
+    display_fields: list[str] = Field(default_factory=list)
+    row_filters: list[dict[str, Any]] = Field(default_factory=list)
+    field_rules: list[FieldRuleIn] = Field(default_factory=list)
 
 
 class TemplatePatchIn(BaseModel):
@@ -241,6 +267,9 @@ class TemplatePatchIn(BaseModel):
     iface_fields: list[str] | None = None
     compare_fields: list[str] | None = None
     ignore_fields: list[str] | None = None
+    display_fields: list[str] | None = None
+    row_filters: list[dict[str, Any]] | None = None
+    field_rules: list[FieldRuleIn] | None = None
 
 
 class MappingRowIn(BaseModel):
@@ -275,7 +304,10 @@ class CompareJobIn(BaseModel):
 
 @router.get("/compare/metrics")
 def api_list_compare_metrics() -> dict[str, Any]:
-    return {"items": cmp_svc.list_metric_schemas()}
+    return {
+        "items": cmp_svc.list_metric_schemas(),
+        "row_filter_presets": cmp_svc.list_row_filter_presets(),
+    }
 
 
 @router.get("/compare/templates")

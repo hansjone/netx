@@ -10206,12 +10206,12 @@ html.login-page--paused .login-page__flare {
 .bs-cmp-nav__meta {
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
-  gap: 1px;
+  align-items: flex-start;
+  gap: 2px;
   font-size: 10px;
   font-variant-numeric: tabular-nums;
   color: var(--bs-cmp-muted);
-  line-height: 1.15;
+  line-height: 1.25;
 }
 
 .bs-cmp-nav__meta em {
@@ -10615,9 +10615,53 @@ html.login-page--paused .login-page__flare {
   white-space: nowrap;
 }
 
+.bs-cmp-overview__verdict {
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.bs-cmp-overview.is-ok .bs-cmp-overview__verdict {
+  color: #4ade80;
+}
+.bs-cmp-overview.is-warn .bs-cmp-overview__verdict {
+  color: #f87171;
+}
+.bs-cmp-nav__fail {
+  color: #f87171 !important;
+  font-style: normal;
+}
+.bs-cmp-nav__pass {
+  color: #4ade80 !important;
+  font-style: normal;
+}
+.bs-cmp-badge--fail {
+  background: rgba(248, 113, 113, 0.2);
+  color: #fecaca;
+}
+.bs-cmp-badge--pass {
+  background: rgba(74, 222, 128, 0.15);
+  color: #bbf7d0;
+}
 .bs-cmp-col-kind {
-  width: 72px;
-  white-space: nowrap;
+  width: 7.5rem;
+  white-space: normal;
+}
+.bs-cmp-col-kind .bs-cmp-badge {
+  display: inline-block;
+  margin: 0 4px 4px 0;
+}
+.bs-cmp-col-fail,
+.bs-cmp-fail-cell {
+  max-width: 11rem;
+  font-size: 0.85em;
+  color: var(--bs-cmp-muted, #94a3b8);
+}
+.bs-cmp-val-reason {
+  font-size: 0.75em;
+  margin-top: 2px;
+}
+.bs-cmp-strip__kind--diff b {
+  color: #f87171;
 }
 
 .bs-cmp-badge {

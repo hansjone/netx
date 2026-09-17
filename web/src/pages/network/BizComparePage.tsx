@@ -53,6 +53,25 @@ type MetricSheet = {
   key_fields: string[];
   iface_fields: string[];
   compare_fields: string[];
+  display_fields?: string[];
+  row_filters?: RowFilter[];
+  field_rules?: FieldRule[];
+};
+
+type FieldRule = {
+  field: string;
+  compare?: string;
+  normalize?: string;
+  ignore?: boolean;
+  tolerance?: number;
+};
+
+type RowFilter = {
+  field?: string;
+  op?: string;
+  value?: string | string[];
+  any?: RowFilter[];
+  all?: RowFilter[];
 };
 
 type Template = {
@@ -88,7 +107,7 @@ type DiffRow = {
   before: Record<string, unknown> | null;
   after: Record<string, unknown> | null;
   mapped_before?: Record<string, unknown> | null;
-  changes: Record<string, { before?: unknown; after?: unknown }>;
+  changes: Record<string, { before?: unknown; after?: unknown; reason?: string }>;
 };
 
 type RunSheet = {
@@ -96,6 +115,8 @@ type RunSheet = {
   key_fields: string[];
   iface_fields: string[];
   compare_fields: string[];
+  display_fields?: string[];
+  field_rules?: FieldRule[];
   mode?: string;
   summary?: Record<string, number>;
   diffs?: DiffRow[];
@@ -110,6 +131,11 @@ function cellText(v: unknown): string {
   if (v === null || v === undefined) return "";
   if (typeof v === "object") return JSON.stringify(v);
   return String(v);
+}
+
+function failFieldNames(d: DiffRow): string[] {
+  if (d.kind === "added" || d.kind === "removed") return [];
+  return Object.keys(d.changes || {});
 }
 
 function toggleInList(list: string[], name: string, on: boolean): string[] {
@@ -131,6 +157,9 @@ function templateSheets(tpl?: Template | null): MetricSheet[] {
         key_fields: [...(tpl.key_fields || [])],
         iface_fields: [...(tpl.iface_fields || [])],
         compare_fields: [...(tpl.compare_fields || [])],
+        display_fields: [...(tpl.key_fields || []), ...(tpl.compare_fields || [])],
+        row_filters: [],
+        field_rules: [],
       },
     ];
   }
@@ -139,15 +168,223 @@ function templateSheets(tpl?: Template | null): MetricSheet[] {
 
 function defaultSheetForMetric(schema: MetricSchema | undefined, metricId: string): MetricSheet {
   const fields = schema?.fields || [];
-  return {
+  const key_fields = fields.filter((f) => f.is_key).map((f) => f.name);
+  const compare_fields = fields
+    .filter((f) => !f.is_key && (f.role === "state" || f.role === "meta"))
+    .map((f) => f.name);
+  const sheet: MetricSheet = {
     metric_id: metricId,
-    key_fields: fields.filter((f) => f.is_key).map((f) => f.name),
+    key_fields,
     iface_fields: fields.filter((f) => f.is_interface).map((f) => f.name),
-    // Default: compare non-key state/meta values; empty = presence-only
-    compare_fields: fields
-      .filter((f) => !f.is_key && (f.role === "state" || f.role === "meta"))
-      .map((f) => f.name),
+    compare_fields,
+    display_fields: [...key_fields, ...compare_fields],
+    row_filters: [],
+    field_rules: [],
   };
+  // Match backend ARP defaults when adding from UI
+  if (metricId === "arp") {
+    sheet.row_filters = [
+      {
+        any: [
+          { field: "entry_type", op: "eq", value: "dynamic" },
+          {
+            all: [
+              { field: "entry_type", op: "empty" },
+              { field: "age", op: "age_timer" },
+            ],
+          },
+        ],
+      },
+    ];
+    if (fields.some((f) => f.name === "mac")) {
+      sheet.field_rules = [{ field: "mac", normalize: "mac" }];
+    }
+    const ctx = ["vrf", "entry_type", "age"].filter(
+      (n) => !key_fields.includes(n) && !compare_fields.includes(n) && fields.some((f) => f.name === n),
+    );
+    sheet.display_fields = [...key_fields, ...compare_fields, ...ctx];
+  }
+  return sheet;
+}
+
+function cloneSheet(s: MetricSheet): MetricSheet {
+  const keys = [...(s.key_fields || [])];
+  const compare = [...(s.compare_fields || [])];
+  const display =
+    s.display_fields && s.display_fields.length
+      ? [...s.display_fields]
+      : [...keys, ...compare];
+  return {
+    metric_id: s.metric_id,
+    key_fields: keys,
+    iface_fields: [...(s.iface_fields || [])],
+    compare_fields: compare,
+    display_fields: display,
+    row_filters: JSON.parse(JSON.stringify(s.row_filters || [])),
+    field_rules: JSON.parse(JSON.stringify(s.field_rules || [])),
+  };
+}
+
+const TEMPLATE_EXPORT_FORMAT = "netx.biz_compare_template";
+const TEMPLATE_EXPORT_VERSION = 1;
+
+function templateExportPayload(tpl: Template) {
+  const metrics = templateSheets(tpl).map((s) => ({
+    metric_id: s.metric_id,
+    key_fields: [...(s.key_fields || [])],
+    iface_fields: [...(s.iface_fields || [])],
+    compare_fields: [...(s.compare_fields || [])],
+    display_fields:
+      s.display_fields && s.display_fields.length
+        ? [...s.display_fields]
+        : [...(s.key_fields || []), ...(s.compare_fields || [])],
+    row_filters: JSON.parse(JSON.stringify(s.row_filters || [])),
+    field_rules: JSON.parse(JSON.stringify(s.field_rules || [])),
+  }));
+  return {
+    format: TEMPLATE_EXPORT_FORMAT,
+    version: TEMPLATE_EXPORT_VERSION,
+    exported_at: new Date().toISOString(),
+    name: tpl.name,
+    note: tpl.note || "",
+    metrics,
+  };
+}
+
+function parseTemplateImport(raw: unknown): {
+  name: string;
+  note: string;
+  metrics: MetricSheet[];
+} | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  // Accept our export shape or a bare {name, metrics} / TemplateIn body
+  const name = String(o.name || "").trim();
+  const note = String(o.note || "");
+  let metricsRaw = o.metrics;
+  if (!Array.isArray(metricsRaw) && o.metric_id) {
+    metricsRaw = [
+      {
+        metric_id: o.metric_id,
+        key_fields: o.key_fields || [],
+        iface_fields: o.iface_fields || [],
+        compare_fields: o.compare_fields || [],
+        display_fields: o.display_fields || [],
+        row_filters: o.row_filters || [],
+        field_rules: o.field_rules || [],
+      },
+    ];
+  }
+  if (!name || !Array.isArray(metricsRaw) || !metricsRaw.length) return null;
+  const metrics: MetricSheet[] = [];
+  for (const item of metricsRaw) {
+    if (!item || typeof item !== "object") continue;
+    const m = item as Record<string, unknown>;
+    const mid = String(m.metric_id || "").trim();
+    const keys = Array.isArray(m.key_fields)
+      ? (m.key_fields as unknown[]).map((x) => String(x).trim()).filter(Boolean)
+      : [];
+    if (!mid || !keys.length) continue;
+    metrics.push({
+      metric_id: mid,
+      key_fields: keys,
+      iface_fields: Array.isArray(m.iface_fields)
+        ? (m.iface_fields as unknown[]).map((x) => String(x).trim()).filter(Boolean)
+        : [],
+      compare_fields: Array.isArray(m.compare_fields)
+        ? (m.compare_fields as unknown[]).map((x) => String(x).trim()).filter(Boolean)
+        : [],
+      display_fields: Array.isArray(m.display_fields)
+        ? (m.display_fields as unknown[]).map((x) => String(x).trim()).filter(Boolean)
+        : undefined,
+      row_filters: Array.isArray(m.row_filters) ? (m.row_filters as RowFilter[]) : [],
+      field_rules: Array.isArray(m.field_rules) ? (m.field_rules as FieldRule[]) : [],
+    });
+  }
+  if (!metrics.length) return null;
+  return { name, note, metrics };
+}
+
+function downloadJsonFile(filename: string, data: unknown) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function ruleForField(sheet: MetricSheet, field: string): FieldRule {
+  return (sheet.field_rules || []).find((r) => r.field === field) || { field };
+}
+
+function upsertFieldRule(sheet: MetricSheet, field: string, patch: Partial<FieldRule>): FieldRule[] {
+  const rules = [...(sheet.field_rules || [])];
+  const idx = rules.findIndex((r) => r.field === field);
+  const next: FieldRule = { ...(idx >= 0 ? rules[idx] : { field }), ...patch, field };
+  const norm = (next.normalize || "").toLowerCase();
+  const cmp = (next.compare || "").toLowerCase();
+  const empty =
+    !next.ignore &&
+    (!cmp || cmp === "eq") &&
+    (!norm || norm === "none" || norm === "strip") &&
+    (next.tolerance === undefined || next.tolerance === null);
+  if (empty) {
+    return rules.filter((r) => r.field !== field);
+  }
+  if (idx >= 0) rules[idx] = next;
+  else rules.push(next);
+  return rules;
+}
+
+function isLeafFilter(f: RowFilter): boolean {
+  return !f.any && !f.all && Boolean(f.field || f.op);
+}
+
+/** Expand sheet row_filters into OR-groups of AND leaf conditions for editing. */
+function toOrGroups(filters: RowFilter[]): RowFilter[][] {
+  const list = filters || [];
+  if (!list.length) return [];
+  if (list.length === 1 && list[0]?.any && Array.isArray(list[0].any)) {
+    return list[0].any
+      .map((g) => {
+        if (g?.all && Array.isArray(g.all)) return g.all.filter(isLeafFilter);
+        if (isLeafFilter(g)) return [g];
+        return [] as RowFilter[];
+      })
+      .filter((g) => g.length);
+  }
+  if (list.every(isLeafFilter)) return [list.map((f) => ({ ...f }))];
+  // Mixed / opaque: keep editable leaves only
+  const leaves = list.filter(isLeafFilter);
+  return leaves.length ? [leaves] : [];
+}
+
+/** Serialize OR-groups back to engine row_filters (AND of leaves, or single any-of). */
+function fromOrGroups(groups: RowFilter[][]): RowFilter[] {
+  const clean = groups
+    .map((g) =>
+      g
+        .map((f) => ({
+          field: f.field || "",
+          op: f.op || "eq",
+          value: f.value ?? "",
+        }))
+        .filter((f) => f.field),
+    )
+    .filter((g) => g.length);
+  if (!clean.length) return [];
+  if (clean.length === 1) return clean[0];
+  return [
+    {
+      any: clean.map((g) => (g.length === 1 ? g[0] : { all: g })),
+    },
+  ];
+}
+
+function emptyLeaf(field = ""): RowFilter {
+  return { field, op: "eq", value: "" };
 }
 
 function metricLabel(id: string) {
@@ -176,7 +413,6 @@ export function BizComparePage() {
   const [tplNote, setTplNote] = useState("");
   const [tplSheets, setTplSheets] = useState<MetricSheet[]>([]);
   const [tplSheetIdx, setTplSheetIdx] = useState(0);
-  const [tplAddMetric, setTplAddMetric] = useState("");
 
   // job create / detail
   const [jobCreateOpen, setJobCreateOpen] = useState(false);
@@ -210,6 +446,7 @@ export function BizComparePage() {
   const [diffsLoading, setDiffsLoading] = useState(false);
   const boardRef = useRef<HTMLDivElement | null>(null);
   const [boardFs, setBoardFs] = useState(false);
+  const tplImportRef = useRef<HTMLInputElement | null>(null);
 
   const refresh = useCallback(async () => {
     const [taskRes, tpl, maps, j, met] = await Promise.all([
@@ -283,11 +520,6 @@ export function BizComparePage() {
     if (!activeTplSheet) return [];
     return metrics.find((m) => m.metric_id === activeTplSheet.metric_id)?.fields || [];
   }, [metrics, activeTplSheet]);
-
-  const availableToAdd = useMemo(() => {
-    const used = new Set(tplSheets.map((s) => s.metric_id));
-    return metrics.filter((m) => !used.has(m.metric_id));
-  }, [metrics, tplSheets]);
 
   const runSheets: RunSheet[] = useMemo(() => {
     const sheets = (runDetail?.sheets || []) as RunSheet[];
@@ -385,7 +617,24 @@ export function BizComparePage() {
       ? activeRunSheet.key_fields
       : Object.keys((pagedDiffs[0]?.key as Record<string, unknown>) || {});
     const compare = (activeRunSheet?.compare_fields || []).filter((f) => !keys.includes(f));
-    return { keys, compare, presence: !(activeRunSheet?.compare_fields || []).length };
+    const compareSet = new Set(compare);
+    const keySet = new Set(keys);
+    let display = (activeRunSheet?.display_fields || []).filter(Boolean);
+    if (!display.length) {
+      display = [...keys, ...compare];
+    } else {
+      // keys first, then rest of display order
+      const rest = display.filter((f) => !keySet.has(f));
+      display = [...keys, ...rest];
+    }
+    const extras = display.filter((f) => !keySet.has(f));
+    return {
+      keys,
+      compare,
+      extras,
+      compareSet,
+      presence: !(activeRunSheet?.compare_fields || []).length,
+    };
   }, [activeRunSheet, pagedDiffs]);
 
   const kindLabel = (kind: string) => {
@@ -394,6 +643,17 @@ export function BizComparePage() {
     if (kind === "changed") return t("bizCompare.kindChangedShort");
     if (kind === "unchanged") return t("bizCompare.kindUnchangedShort");
     return kind;
+  };
+
+  const verdictLabel = (kind: string) => {
+    if (kind === "unchanged") return t("bizCompare.kindPass");
+    return t("bizCompare.kindFail");
+  };
+
+  const failFieldsLabel = (d: DiffRow) => {
+    if (d.kind === "added" || d.kind === "removed") return t("bizCompare.failWholeRow");
+    const names = failFieldNames(d);
+    return names.length ? names.join(" · ") : t("bizCompare.failFieldsEmpty");
   };
 
   const summary = runDetail?.summary || {};
@@ -465,22 +725,39 @@ export function BizComparePage() {
           const keySet = new Set(next.key_fields);
           next.compare_fields = next.compare_fields.filter((f) => !keySet.has(f));
         }
+        if (patch.display_fields && !patch.key_fields && !patch.compare_fields) {
+          // Explicit display toggle: keys always forced on
+          const disp = new Set(patch.display_fields);
+          for (const k of next.key_fields) disp.add(k);
+          next.display_fields = [
+            ...next.key_fields,
+            ...[...disp].filter((f) => !next.key_fields.includes(f)),
+          ];
+        } else if (patch.key_fields || patch.compare_fields) {
+          const disp = new Set(next.display_fields || []);
+          for (const k of next.key_fields) disp.add(k);
+          if (patch.compare_fields) {
+            const prevCompare = new Set(s.compare_fields || []);
+            for (const f of next.compare_fields) {
+              if (!prevCompare.has(f)) disp.add(f);
+            }
+          }
+          next.display_fields = [
+            ...next.key_fields,
+            ...[...disp].filter((f) => !next.key_fields.includes(f)),
+          ];
+        }
         return next;
       }),
     );
   };
 
   const openNewTemplate = () => {
-    const first = metrics[0];
-    const sheet = first
-      ? defaultSheetForMetric(first, first.metric_id)
-      : { metric_id: "lldp_neighbor", key_fields: [], iface_fields: [], compare_fields: [] };
     setTplEditId("");
     setTplName("");
     setTplNote("");
-    setTplSheets([sheet]);
+    setTplSheets([]);
     setTplSheetIdx(0);
-    setTplAddMetric("");
     setTplOpen(true);
   };
 
@@ -489,37 +766,47 @@ export function BizComparePage() {
     setTplEditId(tpl.id);
     setTplName(tpl.name);
     setTplNote(tpl.note || "");
-    setTplSheets(
-      sheets.length
-        ? sheets.map((s) => ({
-            metric_id: s.metric_id,
-            key_fields: [...(s.key_fields || [])],
-            iface_fields: [...(s.iface_fields || [])],
-            compare_fields: [...(s.compare_fields || [])],
-          }))
-        : [],
-    );
+    setTplSheets(sheets.length ? sheets.map(cloneSheet) : []);
     setTplSheetIdx(0);
-    setTplAddMetric("");
     setTplOpen(true);
   };
 
-  const addTplMetric = () => {
-    const mid = tplAddMetric || availableToAdd[0]?.metric_id;
-    if (!mid) return;
-    const schema = metrics.find((m) => m.metric_id === mid);
-    setTplSheets((prev) => [...prev, defaultSheetForMetric(schema, mid)]);
-    setTplSheetIdx(tplSheets.length);
-    setTplAddMetric("");
+  const toggleTplMetric = (metricId: string, on: boolean) => {
+    if (on) {
+      const schema = metrics.find((m) => m.metric_id === metricId);
+      setTplSheets((prev) => {
+        if (prev.some((s) => s.metric_id === metricId)) return prev;
+        const next = [...prev, defaultSheetForMetric(schema, metricId)];
+        setTplSheetIdx(next.length - 1);
+        return next;
+      });
+      return;
+    }
+    setTplSheets((prev) => {
+      const idx = prev.findIndex((s) => s.metric_id === metricId);
+      if (idx < 0) return prev;
+      const next = prev.filter((_, i) => i !== idx);
+      setTplSheetIdx((cur) => {
+        if (!next.length) return 0;
+        if (cur > idx) return cur - 1;
+        if (cur >= next.length) return next.length - 1;
+        return cur;
+      });
+      return next;
+    });
   };
 
   const removeTplMetric = (idx: number) => {
     setTplSheets((prev) => {
-      if (prev.length <= 1) return prev;
       const next = prev.filter((_, i) => i !== idx);
+      setTplSheetIdx((cur) => {
+        if (!next.length) return 0;
+        if (cur > idx) return cur - 1;
+        if (cur >= next.length) return next.length - 1;
+        return cur;
+      });
       return next;
     });
-    setTplSheetIdx((i) => Math.max(0, Math.min(i, tplSheets.length - 2)));
   };
 
   const saveTemplate = async () => {
@@ -543,6 +830,9 @@ export function BizComparePage() {
           key_fields: s.key_fields,
           iface_fields: s.iface_fields,
           compare_fields: s.compare_fields,
+          display_fields: s.display_fields || [...s.key_fields, ...s.compare_fields],
+          row_filters: s.row_filters || [],
+          field_rules: s.field_rules || [],
         })),
       };
       if (tplEditId) await bizCompareUpdateTemplate(tplEditId, body);
@@ -568,6 +858,53 @@ export function BizComparePage() {
       showError(formatErr(e));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const exportTemplate = (tpl: Template) => {
+    const payload = templateExportPayload(tpl);
+    const safe = (tpl.name || "template").replace(/[^\w\u4e00-\u9fff.-]+/g, "_").slice(0, 64);
+    downloadJsonFile(`netx-compare-template-${safe}.json`, payload);
+    showOk(t("bizCompare.templateExported"));
+  };
+
+  const importTemplateFile = async (file: File) => {
+    setBusy(true);
+    try {
+      const text = await file.text();
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        showError(t("bizCompare.templateImportInvalid"));
+        return;
+      }
+      const body = parseTemplateImport(parsed);
+      if (!body) {
+        showError(t("bizCompare.templateImportInvalid"));
+        return;
+      }
+      await bizCompareCreateTemplate({
+        name: body.name,
+        note: body.note,
+        metrics: body.metrics.map((s) => ({
+          metric_id: s.metric_id,
+          key_fields: s.key_fields,
+          iface_fields: s.iface_fields,
+          compare_fields: s.compare_fields,
+          display_fields: s.display_fields || [...s.key_fields, ...s.compare_fields],
+          row_filters: s.row_filters || [],
+          field_rules: s.field_rules || [],
+        })),
+      });
+      showOk(t("bizCompare.templateImported"));
+      await refresh();
+      setPageTab("templates");
+    } catch (e) {
+      showError(formatErr(e));
+    } finally {
+      setBusy(false);
+      if (tplImportRef.current) tplImportRef.current.value = "";
     }
   };
 
@@ -924,9 +1261,29 @@ export function BizComparePage() {
         <h2>{t("bizCompare.title")}</h2>
         <div className="btn-row">
           {pageTab === "templates" ? (
-            <Button size="sm" variant="primary" onPress={openNewTemplate}>
-              {t("bizCompare.newTemplate")}
-            </Button>
+            <>
+              <input
+                ref={tplImportRef}
+                type="file"
+                accept="application/json,.json"
+                style={{ display: "none" }}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) void importTemplateFile(f);
+                }}
+              />
+              <Button
+                size="sm"
+                variant="secondary"
+                isDisabled={busy}
+                onPress={() => tplImportRef.current?.click()}
+              >
+                {t("bizCompare.importTemplate")}
+              </Button>
+              <Button size="sm" variant="primary" onPress={openNewTemplate}>
+                {t("bizCompare.newTemplate")}
+              </Button>
+            </>
           ) : (
             <Button size="sm" variant="primary" onPress={openCreateJob}>
               {t("bizCompare.createCompare")}
@@ -967,6 +1324,9 @@ export function BizComparePage() {
 
         {pageTab === "templates" ? (
           <div className="pt-list-table-wrap">
+            <p className="muted" style={{ margin: "0 0 8px" }}>
+              {t("bizCompare.templateImportHint")}
+            </p>
             <table className="data-table pt-list-table">
               <thead>
                 <tr>
@@ -1002,6 +1362,14 @@ export function BizComparePage() {
                         <div className="pt-list-actions">
                           <Button size="sm" variant="secondary" onPress={() => openEditTemplate(tpl)}>
                             {t("bizCompare.edit")}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            isDisabled={busy}
+                            onPress={() => exportTemplate(tpl)}
+                          >
+                            {t("bizCompare.exportTemplate")}
                           </Button>
                           <Button
                             size="sm"
@@ -1104,151 +1472,447 @@ export function BizComparePage() {
             <Input value={tplNote} onChange={(e) => setTplNote(e.target.value)} />
           </label>
 
-          <p className="muted">{t("bizCompare.templateHint")}</p>
-
-          <div className="filter-inline">
-            <FieldSelect
-              label={t("bizCompare.addMetric")}
-              value={tplAddMetric}
-              onChange={(e) => setTplAddMetric(e.target.value)}
+          <div className="ui-field ui-field--full">
+            <span className="ui-field__label">{t("bizCompare.stepPickMetrics")}</span>
+            <p className="muted" style={{ marginTop: 0 }}>
+              {t("bizCompare.pickMetricsHint")}
+            </p>
+            <div
+              className="pt-list-table-wrap"
+              style={{ maxHeight: 220, overflow: "auto", border: "1px solid var(--border, #ddd)", borderRadius: 6 }}
             >
-              <option value="">{t("bizCompare.pickMetric")}</option>
-              {availableToAdd.map((m) => (
-                <option key={m.metric_id} value={m.metric_id}>
-                  {m.metric_id}
-                </option>
-              ))}
-            </FieldSelect>
-            <Button
-              size="sm"
-              variant="secondary"
-              isDisabled={!availableToAdd.length || (!tplAddMetric && !availableToAdd[0])}
-              onPress={addTplMetric}
-            >
-              {t("bizCompare.addSheet")}
-            </Button>
-          </div>
-
-          <div className="bs-sheet-tabs" role="tablist">
-            {tplSheets.map((s, i) => (
-              <button
-                key={s.metric_id}
-                type="button"
-                className={`bs-sheet-tab${i === tplSheetIdx ? " is-active" : ""}`}
-                onClick={() => setTplSheetIdx(i)}
-              >
-                {s.metric_id}
-                {!s.compare_fields.length ? (
-                  <span className="bs-sheet-tab__count">{t("bizCompare.presenceShort")}</span>
-                ) : (
-                  <span className="bs-sheet-tab__count">{s.compare_fields.length}</span>
-                )}
-              </button>
-            ))}
-          </div>
-
-          {activeTplSheet ? (
-            <>
-              <div className="filter-inline" style={{ justifyContent: "space-between" }}>
-                <span className="muted">
-                  {activeTplSheet.compare_fields.length
-                    ? t("bizCompare.modeFields")
-                    : t("bizCompare.modePresence")}
-                </span>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  isDisabled={tplSheets.length <= 1}
-                  onPress={() => removeTplMetric(tplSheetIdx)}
-                >
-                  {t("bizCompare.removeSheet")}
-                </Button>
-              </div>
-
-              <div className="pt-list-table-wrap">
-                <table className="data-table pt-list-table">
-                  <thead>
-                    <tr>
-                      <th>{t("bizCompare.field")}</th>
-                      <th>{t("bizCompare.keyFields")}</th>
-                      <th>{t("bizCompare.ifaceFields")}</th>
-                      <th>{t("bizCompare.compareFields")}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {activeTplFields.map((f) => {
-                      const isKey = activeTplSheet.key_fields.includes(f.name);
-                      return (
-                        <tr key={f.name}>
-                          <td>
-                            <div className="pt-list-task-name">{f.display_name || f.name}</div>
-                            <div className="muted">
-                              <code>{f.name}</code> · {f.role}
-                            </div>
-                          </td>
-                          <td>
-                            <input
-                              type="checkbox"
-                              checked={isKey}
-                              onChange={(e) =>
-                                updateActiveSheet({
-                                  key_fields: toggleInList(
-                                    activeTplSheet.key_fields,
-                                    f.name,
-                                    e.target.checked,
-                                  ),
-                                })
-                              }
-                            />
-                          </td>
-                          <td>
-                            <input
-                              type="checkbox"
-                              checked={activeTplSheet.iface_fields.includes(f.name)}
-                              onChange={(e) =>
-                                updateActiveSheet({
-                                  iface_fields: toggleInList(
-                                    activeTplSheet.iface_fields,
-                                    f.name,
-                                    e.target.checked,
-                                  ),
-                                })
-                              }
-                            />
-                          </td>
-                          <td>
-                            <input
-                              type="checkbox"
-                              disabled={isKey}
-                              title={isKey ? t("bizCompare.keyIsIdentity") : undefined}
-                              checked={!isKey && activeTplSheet.compare_fields.includes(f.name)}
-                              onChange={(e) =>
-                                updateActiveSheet({
-                                  compare_fields: toggleInList(
-                                    activeTplSheet.compare_fields,
-                                    f.name,
-                                    e.target.checked,
-                                  ),
-                                })
-                              }
-                            />
-                          </td>
-                        </tr>
-                      );
-                    })}
-                    {!activeTplFields.length ? (
-                      <tr>
-                        <td colSpan={4}>
-                          <div className="pt-list-empty">{t("bizCompare.noMetricFields")}</div>
+              <table className="data-table pt-list-table">
+                <thead>
+                  <tr>
+                    <th style={{ width: 48 }} />
+                    <th>{t("bizCompare.addMetric")}</th>
+                    <th>{t("bizCompare.colFields")}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {metrics.map((m) => {
+                    const checked = tplSheets.some((s) => s.metric_id === m.metric_id);
+                    return (
+                      <tr key={m.metric_id}>
+                        <td>
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(e) => toggleTplMetric(m.metric_id, e.target.checked)}
+                          />
                         </td>
+                        <td>
+                          <code>{m.metric_id}</code>
+                        </td>
+                        <td className="muted">{m.fields?.length || 0}</td>
                       </tr>
-                    ) : null}
-                  </tbody>
-                </table>
-              </div>
-            </>
+                    );
+                  })}
+                  {!metrics.length ? (
+                    <tr>
+                      <td colSpan={3}>
+                        <div className="pt-list-empty">{t("bizCompare.noMetricFields")}</div>
+                      </td>
+                    </tr>
+                  ) : null}
+                </tbody>
+              </table>
+            </div>
+            <p className="muted">
+              {t("bizCompare.selectedCount", { n: String(tplSheets.length) })}
+            </p>
+          </div>
+
+          <div className="ui-field ui-field--full">
+            <span className="ui-field__label">{t("bizCompare.stepConfigRules")}</span>
+            <p className="muted" style={{ marginTop: 0 }}>
+              {t("bizCompare.templateHint")}
+            </p>
+          </div>
+
+          {!tplSheets.length ? (
+            <div className="pt-list-empty">{t("bizCompare.noMetricsYet")}</div>
           ) : (
-            <div className="pt-list-empty">{t("bizCompare.metricsRequired")}</div>
+            <>
+              <div className="bs-sheet-tabs" role="tablist">
+                {tplSheets.map((s, i) => (
+                  <button
+                    key={s.metric_id}
+                    type="button"
+                    className={`bs-sheet-tab${i === tplSheetIdx ? " is-active" : ""}`}
+                    onClick={() => setTplSheetIdx(i)}
+                  >
+                    {s.metric_id}
+                    {!s.compare_fields.length ? (
+                      <span className="bs-sheet-tab__count">{t("bizCompare.presenceShort")}</span>
+                    ) : (
+                      <span className="bs-sheet-tab__count">{s.compare_fields.length}</span>
+                    )}
+                    {(s.row_filters || []).length ? (
+                      <span className="bs-sheet-tab__count">F{(s.row_filters || []).length}</span>
+                    ) : null}
+                  </button>
+                ))}
+              </div>
+
+              {activeTplSheet ? (
+                <>
+                  <div className="filter-inline" style={{ justifyContent: "space-between" }}>
+                    <span className="muted">
+                      {activeTplSheet.compare_fields.length
+                        ? t("bizCompare.modeFields")
+                        : t("bizCompare.modePresence")}
+                      {(activeTplSheet.row_filters || []).length
+                        ? ` · ${(activeTplSheet.row_filters || []).length} filter(s)`
+                        : ""}
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onPress={() => removeTplMetric(tplSheetIdx)}
+                    >
+                      {t("bizCompare.removeSheet")}
+                    </Button>
+                  </div>
+
+                  <div className="ui-field ui-field--full">
+                    <span className="ui-field__label">{t("bizCompare.rowFilters")}</span>
+                    <p className="muted" style={{ marginTop: 0 }}>
+                      {t("bizCompare.rowFiltersHint")}
+                    </p>
+                    {(() => {
+                      const groups = toOrGroups(activeTplSheet.row_filters || []);
+                      const setGroups = (next: RowFilter[][]) =>
+                        updateActiveSheet({ row_filters: fromOrGroups(next) });
+                      const fieldOpts = activeTplFields.map((f) => f.name);
+                      const opOpts = [
+                        "eq",
+                        "ne",
+                        "in",
+                        "not_in",
+                        "empty",
+                        "not_empty",
+                        "regex",
+                        "age_timer",
+                      ];
+                      return (
+                        <>
+                          <div className="filter-inline" style={{ flexWrap: "wrap", gap: 8 }}>
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              onPress={() => {
+                                const g = groups.length ? groups : [];
+                                setGroups([
+                                  ...g,
+                                  [emptyLeaf(fieldOpts[0] || "")],
+                                ]);
+                              }}
+                            >
+                              {t("bizCompare.filterAddOr")}
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onPress={() => setGroups([])}
+                            >
+                              {t("bizCompare.filterClear")}
+                            </Button>
+                          </div>
+                          {!groups.length ? (
+                            <p className="muted">{t("bizCompare.rowFiltersEmpty")}</p>
+                          ) : null}
+                          {groups.map((group, gi) => (
+                            <div
+                              key={gi}
+                              style={{
+                                marginTop: 10,
+                                padding: "8px 10px",
+                                border: "1px solid var(--border, #ddd)",
+                                borderRadius: 6,
+                              }}
+                            >
+                              {gi > 0 ? (
+                                <div className="muted" style={{ marginBottom: 6 }}>
+                                  {t("bizCompare.filterOr")}
+                                </div>
+                              ) : null}
+                              {group.map((filt, fi) => (
+                                <div key={fi} className="filter-inline" style={{ marginTop: fi ? 6 : 0 }}>
+                                  <select
+                                    value={filt.field || ""}
+                                    onChange={(e) => {
+                                      const next = groups.map((g) => g.map((x) => ({ ...x })));
+                                      next[gi][fi] = { ...next[gi][fi], field: e.target.value };
+                                      setGroups(next);
+                                    }}
+                                  >
+                                    <option value="">{t("bizCompare.filterField")}</option>
+                                    {fieldOpts.map((name) => (
+                                      <option key={name} value={name}>
+                                        {name}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  <select
+                                    value={filt.op || "eq"}
+                                    onChange={(e) => {
+                                      const next = groups.map((g) => g.map((x) => ({ ...x })));
+                                      next[gi][fi] = { ...next[gi][fi], op: e.target.value };
+                                      setGroups(next);
+                                    }}
+                                  >
+                                    {opOpts.map((op) => (
+                                      <option key={op} value={op}>
+                                        {op}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  <Input
+                                    value={
+                                      Array.isArray(filt.value)
+                                        ? filt.value.join(",")
+                                        : String(filt.value ?? "")
+                                    }
+                                    placeholder={t("bizCompare.filterValue")}
+                                    isDisabled={["empty", "not_empty", "age_timer"].includes(
+                                      filt.op || "",
+                                    )}
+                                    onChange={(e) => {
+                                      const next = groups.map((g) => g.map((x) => ({ ...x })));
+                                      const op = next[gi][fi]?.op || "eq";
+                                      let value: string | string[] = e.target.value;
+                                      if (op === "in" || op === "not_in") {
+                                        value = e.target.value
+                                          .split(",")
+                                          .map((x) => x.trim())
+                                          .filter(Boolean);
+                                      }
+                                      next[gi][fi] = { ...next[gi][fi], value };
+                                      setGroups(next);
+                                    }}
+                                  />
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    onPress={() => {
+                                      const next = groups.map((g) => g.map((x) => ({ ...x })));
+                                      next[gi].splice(fi, 1);
+                                      setGroups(next.filter((g) => g.length));
+                                    }}
+                                  >
+                                    ×
+                                  </Button>
+                                </div>
+                              ))}
+                              <div className="filter-inline" style={{ marginTop: 8, gap: 8 }}>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onPress={() => {
+                                    const next = groups.map((g) => g.map((x) => ({ ...x })));
+                                    next[gi].push(emptyLeaf(fieldOpts[0] || ""));
+                                    setGroups(next);
+                                  }}
+                                >
+                                  {t("bizCompare.filterAddAnd")}
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onPress={() => {
+                                    const next = groups.filter((_, i) => i !== gi);
+                                    setGroups(next);
+                                  }}
+                                >
+                                  {t("bizCompare.filterRemoveGroup")}
+                                </Button>
+                              </div>
+                            </div>
+                          ))}
+                        </>
+                      );
+                    })()}
+                  </div>
+
+                  <div className="pt-list-table-wrap">
+                    <table className="data-table pt-list-table">
+                      <thead>
+                        <tr>
+                          <th>{t("bizCompare.field")}</th>
+                          <th>{t("bizCompare.keyFields")}</th>
+                          <th>{t("bizCompare.ifaceFields")}</th>
+                          <th>{t("bizCompare.compareFields")}</th>
+                          <th>{t("bizCompare.compareMode")}</th>
+                          <th>{t("bizCompare.tolerance")}</th>
+                          <th>{t("bizCompare.displayField")}</th>
+                          <th>{t("bizCompare.normalizeField")}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {activeTplFields.map((f) => {
+                          const isKey = activeTplSheet.key_fields.includes(f.name);
+                          const isCompare =
+                            !isKey && activeTplSheet.compare_fields.includes(f.name);
+                          const isDisplay = (activeTplSheet.display_fields || []).includes(f.name);
+                          const rule = ruleForField(activeTplSheet, f.name);
+                          const cmpMode = (rule.compare || "eq").toLowerCase() || "eq";
+                          const norm = rule.normalize || "none";
+                          const needsTol = cmpMode === "numeric" || cmpMode === "percent";
+                          return (
+                            <tr key={f.name}>
+                              <td>
+                                <div className="pt-list-task-name">{f.display_name || f.name}</div>
+                                <div className="muted">
+                                  <code>{f.name}</code> · {f.role}
+                                </div>
+                              </td>
+                              <td>
+                                <input
+                                  type="checkbox"
+                                  checked={isKey}
+                                  onChange={(e) =>
+                                    updateActiveSheet({
+                                      key_fields: toggleInList(
+                                        activeTplSheet.key_fields,
+                                        f.name,
+                                        e.target.checked,
+                                      ),
+                                    })
+                                  }
+                                />
+                              </td>
+                              <td>
+                                <input
+                                  type="checkbox"
+                                  checked={activeTplSheet.iface_fields.includes(f.name)}
+                                  onChange={(e) =>
+                                    updateActiveSheet({
+                                      iface_fields: toggleInList(
+                                        activeTplSheet.iface_fields,
+                                        f.name,
+                                        e.target.checked,
+                                      ),
+                                    })
+                                  }
+                                />
+                              </td>
+                              <td>
+                                <input
+                                  type="checkbox"
+                                  disabled={isKey}
+                                  title={isKey ? t("bizCompare.keyIsIdentity") : undefined}
+                                  checked={isCompare}
+                                  onChange={(e) =>
+                                    updateActiveSheet({
+                                      compare_fields: toggleInList(
+                                        activeTplSheet.compare_fields,
+                                        f.name,
+                                        e.target.checked,
+                                      ),
+                                    })
+                                  }
+                                />
+                              </td>
+                              <td>
+                                <select
+                                  value={cmpMode === "ignore" ? "eq" : cmpMode}
+                                  disabled={!isCompare}
+                                  onChange={(e) =>
+                                    updateActiveSheet({
+                                      field_rules: upsertFieldRule(activeTplSheet, f.name, {
+                                        compare: e.target.value,
+                                        tolerance:
+                                          e.target.value === "eq"
+                                            ? undefined
+                                            : rule.tolerance ?? 0,
+                                      }),
+                                    })
+                                  }
+                                >
+                                  <option value="eq">{t("bizCompare.modeEq")}</option>
+                                  <option value="numeric">{t("bizCompare.modeNumeric")}</option>
+                                  <option value="percent">{t("bizCompare.modePercent")}</option>
+                                </select>
+                              </td>
+                              <td>
+                                <Input
+                                  type="number"
+                                  value={
+                                    needsTol && rule.tolerance !== undefined && rule.tolerance !== null
+                                      ? String(rule.tolerance)
+                                      : ""
+                                  }
+                                  placeholder={cmpMode === "percent" ? "%" : ""}
+                                  isDisabled={!isCompare || !needsTol}
+                                  onChange={(e) => {
+                                    const raw = e.target.value.trim();
+                                    const tol = raw === "" ? undefined : Number(raw);
+                                    updateActiveSheet({
+                                      field_rules: upsertFieldRule(activeTplSheet, f.name, {
+                                        compare: cmpMode,
+                                        tolerance: Number.isFinite(tol as number)
+                                          ? (tol as number)
+                                          : undefined,
+                                      }),
+                                    });
+                                  }}
+                                />
+                              </td>
+                              <td>
+                                <input
+                                  type="checkbox"
+                                  disabled={isKey}
+                                  title={isKey ? t("bizCompare.keyAlwaysDisplay") : undefined}
+                                  checked={isKey || isDisplay}
+                                  onChange={(e) =>
+                                    updateActiveSheet({
+                                      display_fields: toggleInList(
+                                        activeTplSheet.display_fields || [],
+                                        f.name,
+                                        e.target.checked,
+                                      ),
+                                    })
+                                  }
+                                />
+                              </td>
+                              <td>
+                                <select
+                                  value={norm}
+                                  disabled={!isCompare}
+                                  onChange={(e) =>
+                                    updateActiveSheet({
+                                      field_rules: upsertFieldRule(activeTplSheet, f.name, {
+                                        normalize: e.target.value,
+                                      }),
+                                    })
+                                  }
+                                >
+                                  <option value="none">{t("bizCompare.normalizeNone")}</option>
+                                  <option value="lower">{t("bizCompare.normalizeLower")}</option>
+                                  <option value="upper">{t("bizCompare.normalizeUpper")}</option>
+                                  <option value="mac">{t("bizCompare.normalizeMac")}</option>
+                                  <option value="empty_as_blank">
+                                    {t("bizCompare.normalizeEmpty")}
+                                  </option>
+                                </select>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                        {!activeTplFields.length ? (
+                          <tr>
+                            <td colSpan={8}>
+                              <div className="pt-list-empty">{t("bizCompare.noMetricFields")}</div>
+                            </td>
+                          </tr>
+                        ) : null}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              ) : null}
+            </>
           )}
         </Modal.Body>
         <Modal.Footer>
@@ -1330,8 +1994,10 @@ export function BizComparePage() {
                   <option value="">{t("bizCompare.pickRun")}</option>
                   {runs.map((r) => (
                     <option key={r.id} value={r.id}>
-                      {fmtTime(r.created_at)} · Δ{r.summary?.added ?? 0}/
-                      {r.summary?.removed ?? 0}/{r.summary?.changed ?? 0}
+                      {fmtTime(r.created_at)} · {t("bizCompare.failCount")}{" "}
+                      {(r.summary?.added ?? 0) +
+                        (r.summary?.removed ?? 0) +
+                        (r.summary?.changed ?? 0)}
                     </option>
                   ))}
                 </FieldSelect>
@@ -1405,8 +2071,18 @@ export function BizComparePage() {
                             <span className="bs-cmp-nav__dot" aria-hidden />
                             <span className="bs-cmp-nav__name">{c.metric_id}</span>
                             <span className="bs-cmp-nav__meta">
-                              <em>{Number(c.pass_rate ?? 0).toFixed(0)}%</em>
-                              <span>{dirty > 0 ? `Δ${dirty}` : "="}</span>
+                              {dirty > 0 ? (
+                                <>
+                                  <em className="bs-cmp-nav__fail">{t("bizCompare.kindFail")}</em>
+                                  <span>
+                                    {t("bizCompare.missCount")} {Number(c.removed || 0)} ·{" "}
+                                    {t("bizCompare.extraCount")} {Number(c.added || 0)} ·{" "}
+                                    {t("bizCompare.mismatchCount")} {Number(c.changed || 0)}
+                                  </span>
+                                </>
+                              ) : (
+                                <em className="bs-cmp-nav__pass">{t("bizCompare.sheetAllPass")}</em>
+                              )}
                             </span>
                           </button>
                         );
@@ -1415,39 +2091,34 @@ export function BizComparePage() {
                   </aside>
 
                   <div className="bs-cmp-main">
-                    {/* Stable run overview — does not change when switching sheets */}
                     <div
                       className={`bs-cmp-overview${summary.ok ? " is-ok" : " is-warn"}`}
                     >
                       <span className="bs-cmp-overview__tag">{t("bizCompare.runOverview")}</span>
-                      <span className="bs-cmp-overview__pass">
-                        {t("bizCompare.passRate")}{" "}
-                        <b>{Number(summary.pass_rate ?? 0).toFixed(1)}%</b>
+                      <span className="bs-cmp-overview__verdict">
+                        {summary.ok ? t("bizCompare.verdictPass") : t("bizCompare.verdictFail")}
                       </span>
                       <span className="bs-cmp-overview__stat">
-                        Δ<b>{summary.diff_count ?? 0}</b>
+                        {t("bizCompare.failCount")}{" "}
+                        <b>{summary.diff_count ?? 0}</b>
                       </span>
                       <span className="bs-cmp-overview__stat">
-                        +<b>{summary.added ?? 0}</b>
+                        {t("bizCompare.missCount")} <b>{summary.removed ?? 0}</b>
                       </span>
                       <span className="bs-cmp-overview__stat">
-                        −<b>{summary.removed ?? 0}</b>
+                        {t("bizCompare.extraCount")} <b>{summary.added ?? 0}</b>
                       </span>
                       <span className="bs-cmp-overview__stat">
-                        ~<b>{summary.changed ?? 0}</b>
+                        {t("bizCompare.mismatchCount")} <b>{summary.changed ?? 0}</b>
                       </span>
                       <span className="bs-cmp-overview__stat">
-                        =<b>{summary.unchanged ?? 0}</b>
-                      </span>
-                      <span className="bs-cmp-overview__stat muted">
-                        {summary.before_count ?? 0}→{summary.after_count ?? 0}
+                        {t("bizCompare.matchCount")} <b>{summary.unchanged ?? 0}</b>
                       </span>
                       <span className="bs-cmp-overview__time muted">
                         {fmtTime(runDetail.created_at)}
                       </span>
                     </div>
 
-                    {/* Sheet strip — fixed slots; only numbers/name swap */}
                     <div
                       className={`bs-cmp-strip${
                         Number(activeSheetCard?.diff_count || 0) > 0 ? " is-warn" : " is-ok"
@@ -1457,28 +2128,30 @@ export function BizComparePage() {
                         <span className="bs-cmp-strip__sheet-tag">
                           {t("bizCompare.sheetCurrent")}
                         </span>
-                        <strong className="bs-cmp-strip__sheet-name" title={activeSheetCard?.metric_id || ""}>
+                        <strong
+                          className="bs-cmp-strip__sheet-name"
+                          title={activeSheetCard?.metric_id || ""}
+                        >
                           {activeSheetCard?.metric_id || "—"}
                         </strong>
                         <span className="muted bs-cmp-strip__sheet-mode">
+                          {Number(activeSheetCard?.diff_count || 0) > 0
+                            ? t("bizCompare.kindFail")
+                            : t("bizCompare.kindPass")}
                           {activeSheetCard?.mode === "presence"
-                            ? t("bizCompare.presenceShort")
-                            : t("bizCompare.modeFieldsShort")}
-                        </span>
-                      </div>
-                      <div className="bs-cmp-strip__pass">
-                        <span className="bs-cmp-strip__pass-label">{t("bizCompare.passRate")}</span>
-                        <span className="bs-cmp-strip__pass-value">
-                          {Number(activeSheetCard?.pass_rate ?? 0).toFixed(1)}%
+                            ? ` · ${t("bizCompare.presenceShort")}`
+                            : ""}
                         </span>
                       </div>
                       <div className="bs-cmp-strip__kinds" role="group">
                         {(
                           [
-                            ["added", activeSheetCard?.added ?? 0, "added"],
+                            ["diff", Number(activeSheetCard?.diff_count || 0), "diff"],
                             ["removed", activeSheetCard?.removed ?? 0, "removed"],
+                            ["added", activeSheetCard?.added ?? 0, "added"],
                             ["changed", activeSheetCard?.changed ?? 0, "changed"],
                             ["unchanged", activeSheetCard?.unchanged ?? 0, "unchanged"],
+                            ["all", null, "all"],
                           ] as const
                         ).map(([id, n, cls]) => (
                           <button
@@ -1487,9 +2160,19 @@ export function BizComparePage() {
                             className={`bs-cmp-strip__kind bs-cmp-strip__kind--${cls}${
                               kindFilter === id ? " is-active" : ""
                             }`}
-                            onClick={() => setKindFilter(id)}
+                            onClick={() => setKindFilter(id as KindFilter)}
                           >
-                            {kindLabel(id)} <b>{n}</b>
+                            {id === "diff"
+                              ? t("bizCompare.kindDiff")
+                              : id === "all"
+                                ? t("bizCompare.kindAll")
+                                : kindLabel(id)}
+                            {n !== null ? (
+                              <>
+                                {" "}
+                                <b>{n}</b>
+                              </>
+                            ) : null}
                           </button>
                         ))}
                       </div>
@@ -1499,27 +2182,6 @@ export function BizComparePage() {
                     </div>
 
                     <div className="bs-cmp-filter-bar">
-                      <div className="bs-cmp-kind-pills" role="tablist">
-                        {(
-                          [
-                            ["diff", t("bizCompare.kindDiff")],
-                            ["all", t("bizCompare.kindAll")],
-                            ["added", t("bizCompare.kindAddedShort")],
-                            ["removed", t("bizCompare.kindRemovedShort")],
-                            ["changed", t("bizCompare.kindChangedShort")],
-                            ["unchanged", t("bizCompare.kindUnchangedShort")],
-                          ] as const
-                        ).map(([id, label]) => (
-                          <button
-                            key={id}
-                            type="button"
-                            className={`bs-cmp-kind-pill${kindFilter === id ? " is-active" : ""}`}
-                            onClick={() => setKindFilter(id)}
-                          >
-                            {label}
-                          </button>
-                        ))}
-                      </div>
                       <Input
                         value={resultKw}
                         placeholder={t("bizCompare.resultFilterPh")}
@@ -1527,7 +2189,6 @@ export function BizComparePage() {
                       />
                       <span className="muted bs-sheet-count">
                         {diffsLoading ? "…" : `${pagedDiffs.length}/${resultTotal}`}
-                        {resultColumns.presence ? ` · ${t("bizCompare.presenceShort")}` : ""}
                       </span>
                     </div>
 
@@ -1535,15 +2196,31 @@ export function BizComparePage() {
                       className={`pt-list-table-wrap bs-sheet-table bs-cmp-result-table${
                         diffsLoading ? " is-loading" : ""
                       }`}
-                    >                      <table className="data-table pt-list-table bs-cmp-diff-table">
+                    >
+                      <table className="data-table pt-list-table bs-cmp-diff-table">
                         <thead>
                           <tr>
                             <th className="bs-cmp-col-kind">{t("bizCompare.colKind")}</th>
+                            <th className="bs-cmp-col-fail">{t("bizCompare.colFailFields")}</th>
                             {resultColumns.keys.map((k) => (
                               <th key={k}>{k}</th>
                             ))}
-                            {resultColumns.compare.map((f) => (
-                              <th key={f}>{f}</th>
+                            {resultColumns.extras.map((f) => (
+                              <th
+                                key={f}
+                                className={
+                                  resultColumns.compareSet.has(f)
+                                    ? "bs-cmp-col-compare"
+                                    : "bs-cmp-col-display"
+                                }
+                                title={
+                                  resultColumns.compareSet.has(f)
+                                    ? t("bizCompare.compareFields")
+                                    : t("bizCompare.displayField")
+                                }
+                              >
+                                {f}
+                              </th>
                             ))}
                           </tr>
                         </thead>
@@ -1554,21 +2231,43 @@ export function BizComparePage() {
                               unknown
                             >;
                             const post = (d.after || {}) as Record<string, unknown>;
+                            const isFail = d.kind !== "unchanged";
                             return (
                               <tr key={i} className={`bs-cmp-row bs-cmp-row--${d.kind}`}>
                                 <td className="bs-cmp-col-kind">
+                                  <span
+                                    className={`bs-cmp-badge bs-cmp-badge--${
+                                      isFail ? "fail" : "pass"
+                                    }`}
+                                  >
+                                    {verdictLabel(d.kind)}
+                                  </span>
                                   <span className={`bs-cmp-badge bs-cmp-badge--${d.kind}`}>
                                     {kindLabel(d.kind)}
                                   </span>
+                                </td>
+                                <td className="bs-cmp-fail-cell">
+                                  {isFail ? failFieldsLabel(d) : t("bizCompare.failFieldsEmpty")}
                                 </td>
                                 {resultColumns.keys.map((k) => (
                                   <td key={k} className="bs-cmp-key-cell">
                                     {cellText(d.key?.[k] ?? pre[k] ?? post[k]) || "—"}
                                   </td>
                                 ))}
-                                {resultColumns.compare.map((f) => {
+                                {resultColumns.extras.map((f) => {
                                   const pv = cellText(pre[f]);
                                   const av = cellText(post[f]);
+                                  const isCmp = resultColumns.compareSet.has(f);
+                                  const ch = d.changes?.[f];
+                                  if (!isCmp) {
+                                    const show =
+                                      d.kind === "removed" ? pv || "—" : av || pv || "—";
+                                    return (
+                                      <td key={f} className="bs-cmp-val-cell bs-cmp-val-cell--ctx">
+                                        <span className="bs-cmp-val">{show}</span>
+                                      </td>
+                                    );
+                                  }
                                   if (d.kind === "added") {
                                     return (
                                       <td key={f} className="bs-cmp-val-cell">
@@ -1587,9 +2286,7 @@ export function BizComparePage() {
                                       </td>
                                     );
                                   }
-                                  const mismatch =
-                                    Boolean(d.changes?.[f]) ||
-                                    (d.kind === "changed" && pv !== av);
+                                  const mismatch = Boolean(ch);
                                   if (!mismatch) {
                                     return (
                                       <td key={f} className="bs-cmp-val-cell">
@@ -1608,6 +2305,9 @@ export function BizComparePage() {
                                       <span className="bs-cmp-val bs-cmp-val--post">
                                         {av || "—"}
                                       </span>
+                                      {ch?.reason ? (
+                                        <div className="bs-cmp-val-reason muted">{ch.reason}</div>
+                                      ) : null}
                                     </td>
                                   );
                                 })}
@@ -1618,9 +2318,9 @@ export function BizComparePage() {
                             <tr>
                               <td
                                 colSpan={
-                                  1 +
+                                  2 +
                                   resultColumns.keys.length +
-                                  Math.max(resultColumns.compare.length, 0)
+                                  Math.max(resultColumns.extras.length, 0)
                                 }
                               >
                                 <div className="pt-list-empty">{t("bizCompare.resultEmpty")}</div>
