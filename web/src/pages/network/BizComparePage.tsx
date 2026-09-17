@@ -2074,10 +2074,16 @@ export function BizComparePage() {
                               {dirty > 0 ? (
                                 <>
                                   <em className="bs-cmp-nav__fail">{t("bizCompare.kindFail")}</em>
-                                  <span>
-                                    {t("bizCompare.missCount")} {Number(c.removed || 0)} ·{" "}
-                                    {t("bizCompare.extraCount")} {Number(c.added || 0)} ·{" "}
-                                    {t("bizCompare.mismatchCount")} {Number(c.changed || 0)}
+                                  <span className="bs-cmp-nav__counts">
+                                    <span>
+                                      {t("bizCompare.missCount")} {Number(c.removed || 0)}
+                                    </span>
+                                    <span>
+                                      {t("bizCompare.extraCount")} {Number(c.added || 0)}
+                                    </span>
+                                    <span>
+                                      {t("bizCompare.mismatchCount")} {Number(c.changed || 0)}
+                                    </span>
                                   </span>
                                 </>
                               ) : (
