@@ -18,6 +18,7 @@ from ..models import (
     BizStateCommandOverride,
     BizStateEvent,
     BizStateLldpNeighbor,
+    BizStateMetricRow,
     BizStateTask,
     BizStateTaskItem,
     BizStateTaskItemBinding,
@@ -436,6 +437,21 @@ def get_batch(db: Session, batch_id: str) -> dict[str, Any]:
         .limit(5000)
         .all()
     )
+    metric_rows = (
+        db.query(BizStateMetricRow)
+        .filter(BizStateMetricRow.batch_id == batch_id)
+        .order_by(
+            BizStateMetricRow.metric_id.asc(),
+            BizStateMetricRow.seq.asc(),
+            BizStateMetricRow.id.asc(),
+        )
+        .limit(20000)
+        .all()
+    )
+    metrics_by_id: dict[str, list[dict[str, Any]]] = {}
+    for r in metric_rows:
+        mid = str(r.metric_id or "")
+        metrics_by_id.setdefault(mid, []).append(dict(r.data_json or {}))
     return {
         "id": b.id,
         "task_id": b.task_id,
@@ -473,6 +489,7 @@ def get_batch(db: Session, batch_id: str) -> dict[str, Any]:
         "vrf_route_summary": [
             {"vrf": r.vrf, "source": r.source, "networks": r.networks} for r in vrf_rows
         ],
+        "metrics": metrics_by_id,
     }
 
 
@@ -527,6 +544,20 @@ def export_batch_zip(db: Session, batch_id: str) -> bytes:
                 ",".join([_csv(r["vrf"]), _csv(r["source"]), _csv(str(r["networks"]))])
             )
         zf.writestr("tables/vrf_route_summary.csv", "\n".join(vrf_csv) + "\n")
+
+        for mid, rows in sorted((detail.get("metrics") or {}).items()):
+            if not rows:
+                continue
+            cols: list[str] = []
+            for rec in rows:
+                for k in rec.keys():
+                    if k not in cols:
+                        cols.append(str(k))
+            lines = [",".join(_csv(c) for c in cols)]
+            for rec in rows:
+                lines.append(",".join(_csv(str(rec.get(c, "") or "")) for c in cols))
+            safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in mid)[:80] or "metric"
+            zf.writestr(f"tables/{safe}.csv", "\n".join(lines) + "\n")
     return buf.getvalue()
 
 

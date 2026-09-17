@@ -145,6 +145,26 @@ class BizStateVrfRouteSummary(Base):
     collected_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
 
 
+class BizStateMetricRow(Base):
+    """Generic structured rows for tabular status metrics (ISIS/ARP/BGP/…)."""
+
+    __tablename__ = "biz_state_metric_row"
+    __table_args__ = (
+        Index("ix_biz_state_metric_row_batch_metric", "batch_id", "metric_id"),
+        Index("ix_biz_state_metric_row_batch_metric_seq", "batch_id", "metric_id", "seq"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
+    batch_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    batch_command_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    task_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    ne_id: Mapped[str] = mapped_column(String(128), default="", index=True)
+    metric_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    seq: Mapped[int] = mapped_column(Integer, default=0)
+    data_json: Mapped[dict] = mapped_column(_JsonType, default=dict)
+    collected_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
+
+
 class BizStateEvent(Base):
     __tablename__ = "biz_state_event"
 

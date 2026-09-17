@@ -212,6 +212,29 @@ def _default_vrf_sheet() -> dict[str, Any]:
     )
 
 
+def _default_sheet_for_metric(metric_id: str, *, compare_roles: tuple[str, ...] = ("state",)) -> dict[str, Any]:
+    fields = metric_field_map().get(metric_id) or []
+    keys = [f.name for f in fields if f.is_key]
+    ifaces = [f.name for f in fields if f.is_interface]
+    compare = [f.name for f in fields if (not f.is_key) and f.role in compare_roles]
+    return _sheet_def(
+        metric_id=metric_id,
+        key_fields=keys,
+        iface_fields=ifaces,
+        compare_fields=compare,
+    )
+
+
+def _default_zte_status_sheets() -> list[dict[str, Any]]:
+    return [
+        _default_sheet_for_metric("isis_adjacency", compare_roles=("state",)),
+        _default_sheet_for_metric("interface_brief", compare_roles=("state",)),
+        _default_sheet_for_metric("arp", compare_roles=("state",)),
+        _default_sheet_for_metric("nd6_cache", compare_roles=("state",)),
+        _default_sheet_for_metric("bgp_peer", compare_roles=("state",)),
+    ]
+
+
 def _normalize_sheet(raw: Any) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
@@ -420,10 +443,40 @@ def ensure_default_vrf_template(db: Session) -> BizCompareTemplate:
     return row
 
 
+def ensure_default_zte_status_template(db: Session) -> BizCompareTemplate:
+    name = "ZTE status default"
+    row = db.query(BizCompareTemplate).filter(BizCompareTemplate.name == name).one_or_none()
+    sheets = _default_zte_status_sheets()
+    if row:
+        existing = template_metrics(row)
+        want = {s["metric_id"] for s in sheets}
+        have = {s["metric_id"] for s in existing}
+        if want - have:
+            _apply_sheets_to_row(row, sheets)
+            row.note = "Built-in ZTE status cutover (ISIS/IF/ARP/ND6/BGP)"
+            row.updated_at = _utcnow()
+            db.commit()
+            db.refresh(row)
+        return row
+    row = BizCompareTemplate(
+        id=uuid4().hex,
+        name=name,
+        note="Built-in ZTE status cutover (ISIS/IF/ARP/ND6/BGP)",
+        created_at=_utcnow(),
+        updated_at=_utcnow(),
+    )
+    _apply_sheets_to_row(row, sheets)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
 def ensure_default_templates(db: Session) -> None:
     ensure_default_cutover_template(db)
     ensure_default_lldp_template(db)
     ensure_default_vrf_template(db)
+    ensure_default_zte_status_template(db)
 
 
 def list_templates(db: Session) -> list[dict[str, Any]]:
@@ -638,6 +691,23 @@ def _load_metric_rows(db: Session, *, batch_id: str, metric_id: str) -> list[dic
             {"vrf": r.vrf, "source": r.source, "networks": r.networks}
             for r in rows
         ]
+    # Generic tabular metrics (ISIS / interface / ARP / ND6 / BGP …)
+    from ..models import BizStateMetricRow
+
+    rows = (
+        db.query(BizStateMetricRow)
+        .filter(
+            BizStateMetricRow.batch_id == batch_id,
+            BizStateMetricRow.metric_id == metric_id,
+        )
+        .order_by(BizStateMetricRow.seq.asc(), BizStateMetricRow.id.asc())
+        .all()
+    )
+    if rows:
+        return [dict(r.data_json or {}) for r in rows]
+    # Known metric with zero rows is OK; unknown metric still errors
+    if metric_id in metric_field_map():
+        return []
     raise HTTPException(status_code=400, detail=f"unsupported_metric:{metric_id}")
 
 

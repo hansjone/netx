@@ -6,6 +6,13 @@ from typing import Any, Callable
 
 from ...lldp_shared import NeighborHit, parse_neighbor_output
 from .vrf import normalize_vrf_list, normalize_vrf_route_summary
+from .zte_status import (
+    normalize_arp,
+    normalize_bgp_peer,
+    normalize_interface_brief,
+    normalize_isis_adjacency,
+    normalize_nd6_cache,
+)
 
 NormalizeFn = Callable[..., list[dict[str, Any]]]
 
@@ -43,6 +50,11 @@ _REGISTRY: dict[str, NormalizeFn] = {
     "lldp_neighbors": normalize_lldp_neighbors,
     "vrf_list": normalize_vrf_list,
     "vrf_route_summary": normalize_vrf_route_summary,
+    "isis_adjacency": normalize_isis_adjacency,
+    "interface_brief": normalize_interface_brief,
+    "arp": normalize_arp,
+    "nd6_cache": normalize_nd6_cache,
+    "bgp_peer": normalize_bgp_peer,
 }
 
 

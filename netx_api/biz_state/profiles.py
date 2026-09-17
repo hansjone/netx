@@ -227,13 +227,191 @@ def _vrf_profiles() -> list[ParseProfile]:
     return out
 
 
+# --- ZTE ZXROS status tables (cutover monitoring + compare) ---
+
+_ISIS_FIELDS: list[FieldDef] = [
+    FieldDef("process_id", length=32, indexed=True, is_key=True, display_name="Process ID"),
+    FieldDef("interface", length=128, indexed=True, is_key=True, is_interface=True, display_name="接口"),
+    FieldDef("system_id", length=128, indexed=True, is_key=True, display_name="System ID"),
+    FieldDef("state", length=32, role="state", display_name="状态"),
+    FieldDef("lev", length=16, role="state", display_name="Level"),
+    FieldDef("holds", length=32, role="meta", display_name="Holds"),
+    FieldDef("snpa", length=64, role="meta", display_name="SNPA"),
+    FieldDef("pri", length=16, role="meta", display_name="Pri"),
+    FieldDef("mt", length=16, role="meta", display_name="MT"),
+    FieldDef("nsf", length=32, role="meta", display_name="NSF"),
+    FieldDef("af", length=64, role="state", display_name="AF"),
+]
+
+_IFACE_BRIEF_FIELDS: list[FieldDef] = [
+    FieldDef("interface", length=128, indexed=True, is_key=True, is_interface=True, display_name="接口"),
+    FieldDef("attribute", length=64, role="meta", display_name="属性"),
+    FieldDef("mode", length=64, role="meta", display_name="模式"),
+    FieldDef("bw", length=32, role="meta", display_name="带宽"),
+    FieldDef("admin", length=16, role="state", display_name="Admin"),
+    FieldDef("phy", length=16, role="state", display_name="Phy"),
+    FieldDef("prot", length=16, role="state", display_name="Prot"),
+    FieldDef("description", length=256, role="meta", display_name="描述"),
+]
+
+_ARP_FIELDS: list[FieldDef] = [
+    FieldDef("ip", length=64, indexed=True, is_key=True, display_name="IP"),
+    FieldDef("interface", length=128, indexed=True, is_key=True, is_interface=True, display_name="接口"),
+    FieldDef("mac", length=64, role="state", display_name="MAC"),
+    FieldDef("age", length=32, role="meta", display_name="Age"),
+    FieldDef("exter_vlan", length=32, role="meta", display_name="Exter VLAN"),
+    FieldDef("inter_vlan", length=32, role="meta", display_name="Inter VLAN"),
+    FieldDef("sub_interface", length=128, role="meta", display_name="Sub-IF"),
+]
+
+_ND6_FIELDS: list[FieldDef] = [
+    FieldDef("address", length=128, indexed=True, is_key=True, display_name="IPv6"),
+    FieldDef("interface", length=128, indexed=True, is_key=True, is_interface=True, display_name="接口"),
+    FieldDef("link_address", length=64, role="state", display_name="Link-Address"),
+    FieldDef("status", length=32, role="state", display_name="Status"),
+    FieldDef("type", length=32, role="meta", display_name="Type"),
+    FieldDef("age", length=64, role="meta", display_name="Age"),
+]
+
+_BGP_PEER_FIELDS: list[FieldDef] = [
+    FieldDef("afi", length=32, indexed=True, is_key=True, display_name="AFI", from_command_param=True),
+    FieldDef("neighbor", length=64, indexed=True, is_key=True, display_name="Neighbor"),
+    FieldDef("as_num", length=16, role="state", display_name="AS"),
+    FieldDef("state", length=64, role="state", display_name="State"),
+    FieldDef("pfx_rcd", length=32, role="state", display_name="PfxRcd"),
+    FieldDef("state_or_pfx", length=64, role="meta", display_name="State/PfxRcd"),
+    FieldDef("ver", length=8, role="meta", display_name="Ver"),
+    FieldDef("msg_rcvd", length=32, role="meta", display_name="MsgRcvd"),
+    FieldDef("msg_send", length=32, role="meta", display_name="MsgSend"),
+    FieldDef("up_down", length=32, role="meta", display_name="Up/Down"),
+]
+
+
+def _zte_status_profiles() -> list[ParseProfile]:
+    """ZTE ZXROS status snapshots from lab show commands."""
+    return [
+        ParseProfile(
+            profile_id="zte.isis_adjacency",
+            vendor_key="zte",
+            metric_id="isis_adjacency",
+            parser_id="isis_adjacency",
+            title="ISIS Adjacency",
+            command_template="show isis adjacency | one-line",
+            match=r"(?i)^\s*show\s+isis\s+adjacency(?:\s*\|\s*one-line)?\s*$",
+            textfsm_command="show isis adjacency",
+            description="ISIS adjacency table (Process ID blocks).",
+            fields=list(_ISIS_FIELDS),
+            tags=["isis", "l3", "status"],
+            sort_order=300,
+            enabled=True,
+            kind="collect",
+        ),
+        ParseProfile(
+            profile_id="zte.interface_brief",
+            vendor_key="zte",
+            metric_id="interface_brief",
+            parser_id="interface_brief",
+            title="Interface Brief",
+            command_template="show interface brief",
+            match=r"(?i)^\s*show\s+interface\s+brief\s*$",
+            textfsm_command="show interface brief",
+            description="Interface admin/phy/prot status brief.",
+            fields=list(_IFACE_BRIEF_FIELDS),
+            tags=["interface", "l2", "status"],
+            sort_order=310,
+            enabled=True,
+            kind="collect",
+        ),
+        ParseProfile(
+            profile_id="zte.arp",
+            vendor_key="zte",
+            metric_id="arp",
+            parser_id="arp",
+            title="ARP Table",
+            command_template="show arp | one-line",
+            match=r"(?i)^\s*show\s+arp(?:\s*\|\s*one-line)?\s*$",
+            textfsm_command="show arp",
+            description="ARP entries (IP/MAC/interface).",
+            fields=list(_ARP_FIELDS),
+            tags=["arp", "l3", "status"],
+            sort_order=320,
+            enabled=True,
+            kind="collect",
+        ),
+        ParseProfile(
+            profile_id="zte.nd6_cache",
+            vendor_key="zte",
+            metric_id="nd6_cache",
+            parser_id="nd6_cache",
+            title="ND6 Cache",
+            command_template="show nd6 cache | one-line",
+            match=r"(?i)^\s*show\s+nd6\s+cache(?:\s*\|\s*one-line)?\s*$",
+            textfsm_command="show nd6 cache",
+            description="IPv6 neighbor discovery cache.",
+            fields=list(_ND6_FIELDS),
+            tags=["nd6", "ipv6", "status"],
+            sort_order=330,
+            enabled=True,
+            kind="collect",
+        ),
+        ParseProfile(
+            profile_id="zte.bgp_vpnv4_summary",
+            vendor_key="zte",
+            metric_id="bgp_peer",
+            parser_id="bgp_peer",
+            title="BGP VPNv4 Summary",
+            command_template="show bgp vpnv4 unicast summary",
+            match=r"(?i)^\s*show\s+bgp\s+vpnv4\s+unicast\s+summary\s*$",
+            textfsm_command="show bgp vpnv4 unicast summary",
+            description="BGP VPNv4 peer summary (afi=vpnv4).",
+            fields=list(_BGP_PEER_FIELDS),
+            tags=["bgp", "vpnv4", "status"],
+            sort_order=340,
+            enabled=True,
+            kind="collect",
+        ),
+        ParseProfile(
+            profile_id="zte.bgp_ipv4_summary",
+            vendor_key="zte",
+            metric_id="bgp_peer",
+            parser_id="bgp_peer",
+            title="BGP IPv4 Summary",
+            command_template="show bgp ipv4 unicast summary",
+            match=r"(?i)^\s*show\s+bgp\s+ipv4\s+unicast\s+summary\s*$",
+            textfsm_command="show bgp ipv4 unicast summary",
+            description="BGP IPv4 unicast peer summary (afi=ipv4).",
+            fields=list(_BGP_PEER_FIELDS),
+            tags=["bgp", "ipv4", "status"],
+            sort_order=350,
+            enabled=True,
+            kind="collect",
+        ),
+        ParseProfile(
+            profile_id="zte.bgp_vpnv6_summary",
+            vendor_key="zte",
+            metric_id="bgp_peer",
+            parser_id="bgp_peer",
+            title="BGP VPNv6 Summary",
+            command_template="show bgp vpnv6 unicast summary",
+            match=r"(?i)^\s*show\s+bgp\s+vpnv6\s+unicast\s+summary\s*$",
+            textfsm_command="show bgp vpnv6 unicast summary",
+            description="BGP VPNv6 peer summary (afi=vpnv6).",
+            fields=list(_BGP_PEER_FIELDS),
+            tags=["bgp", "vpnv6", "status"],
+            sort_order=360,
+            enabled=True,
+            kind="collect",
+        ),
+    ]
+
+
 _PROFILES: list[ParseProfile] | None = None
 
 
 def all_profiles() -> list[ParseProfile]:
     global _PROFILES
     if _PROFILES is None:
-        _PROFILES = _lldp_profiles() + _vrf_profiles()
+        _PROFILES = _lldp_profiles() + _vrf_profiles() + _zte_status_profiles()
     return list(_PROFILES)
 
 

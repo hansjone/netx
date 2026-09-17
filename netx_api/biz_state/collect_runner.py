@@ -20,6 +20,7 @@ from ..models import (
     BizStateBatchCommand,
     BizStateEvent,
     BizStateLldpNeighbor,
+    BizStateMetricRow,
     BizStateTask,
     BizStateTaskItem,
     BizStateTaskItemBinding,
@@ -145,6 +146,55 @@ def _persist_vrf_route_summary(
             )
         )
         n += 1
+    return n
+
+
+_GENERIC_METRICS = {
+    "isis_adjacency",
+    "interface_brief",
+    "arp",
+    "nd6_cache",
+    "bgp_peer",
+}
+_METRIC_CHUNK = 2000
+
+
+def _persist_metric_rows(
+    db,
+    *,
+    batch: BizStateBatch,
+    cmd_row: BizStateBatchCommand,
+    metric_id: str,
+    records: list[dict[str, Any]],
+) -> int:
+    """Bulk-insert generic metric rows (JSON payload per row)."""
+    mid = str(metric_id or "").strip()
+    if not mid or not records:
+        return 0
+    buf: list[dict[str, Any]] = []
+    n = 0
+    for i, rec in enumerate(records):
+        if not isinstance(rec, dict) or not rec:
+            continue
+        buf.append(
+            {
+                "id": uuid4().hex,
+                "batch_id": batch.id,
+                "batch_command_id": cmd_row.id,
+                "task_id": batch.task_id,
+                "ne_id": batch.ne_id,
+                "metric_id": mid,
+                "seq": i,
+                "data_json": dict(rec),
+                "collected_at": _utcnow(),
+            }
+        )
+        n += 1
+        if len(buf) >= _METRIC_CHUNK:
+            db.bulk_insert_mappings(BizStateMetricRow, buf)
+            buf.clear()
+    if buf:
+        db.bulk_insert_mappings(BizStateMetricRow, buf)
     return n
 
 
@@ -454,6 +504,14 @@ def _run_collect_session(
                             n = _persist_vrf_route_summary(
                                 sdb, batch=batch_row, cmd_row=cmd_row, records=records
                             )
+                        elif hit.profile.metric_id in _GENERIC_METRICS:
+                            n = _persist_metric_rows(
+                                sdb,
+                                batch=batch_row,
+                                cmd_row=cmd_row,
+                                metric_id=hit.profile.metric_id,
+                                records=records,
+                            )
                         cmd_row.row_count = n
                         cmd_row.parse_status = "ok"
                         total_rows += n
@@ -517,6 +575,7 @@ def _purge_old_batches(db, *, task_id: str, keep: int) -> None:
         bid = b.id
         db.query(BizStateLldpNeighbor).filter(BizStateLldpNeighbor.batch_id == bid).delete()
         db.query(BizStateVrfRouteSummary).filter(BizStateVrfRouteSummary.batch_id == bid).delete()
+        db.query(BizStateMetricRow).filter(BizStateMetricRow.batch_id == bid).delete()
         db.query(BizStateBatchCommand).filter(BizStateBatchCommand.batch_id == bid).delete()
         db.delete(b)
     if drop:
