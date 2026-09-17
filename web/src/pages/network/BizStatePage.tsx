@@ -1,6 +1,8 @@
-import { Button, Input } from "@heroui/react";
+import { Button, Input, Modal } from "@heroui/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { AppModalShell } from "../../components/ui/AppModalShell";
 import { FieldSelect } from "../../components/ui/FieldSelect";
+import { useDebouncedValue } from "../../hooks/useDebouncedValue";
 import { useToast } from "../../hooks/useToast";
 import { useI18n } from "../../i18n";
 import {
@@ -34,12 +36,7 @@ type TaskRow = {
   last_collect_ended_at?: string | null;
 };
 
-type Placeholder = {
-  name: string;
-  bind_mode?: string;
-  discover_profile_id?: string;
-};
-
+type Placeholder = { name: string };
 type Profile = {
   profile_id: string;
   title: string;
@@ -60,27 +57,126 @@ type BatchRow = {
 
 type Candidate = { value: string; label: string; rd?: string };
 
+type SheetCol = { key: string; header: string };
+type SheetDef = {
+  id: string;
+  title: string;
+  columns: SheetCol[];
+  rows: Record<string, unknown>[];
+};
+
+type TaskTab = "profiles" | "batches";
+
 function fmtTime(v?: string | null) {
   if (!v) return "—";
   return formatSystemTime(v) || v;
 }
 
+function cellText(v: unknown): string {
+  if (v === null || v === undefined) return "";
+  if (typeof v === "object") return JSON.stringify(v);
+  return String(v);
+}
+
+function buildBatchSheets(batch: any, t: (k: string) => string): SheetDef[] {
+  const sheets: SheetDef[] = [];
+  const cmds = (batch?.commands || []) as any[];
+  if (cmds.length) {
+    sheets.push({
+      id: "commands",
+      title: t("bizState.sheetCommands"),
+      columns: [
+        { key: "raw_command", header: t("bizState.colCommand") },
+        { key: "metric_id", header: "metric" },
+        { key: "parse_status", header: t("bizState.colStatus") },
+        { key: "row_count", header: t("bizState.colRows") },
+        { key: "message", header: t("bizState.colMessage") },
+      ],
+      rows: cmds.map((c) => ({
+        raw_command: c.raw_command,
+        metric_id: c.metric_id,
+        parse_status: c.parse_status,
+        row_count: c.row_count,
+        message: c.message,
+        profile_id: c.profile_id,
+      })),
+    });
+  }
+  const lldp = (batch?.lldp_neighbors || []) as any[];
+  if (lldp.length) {
+    sheets.push({
+      id: "lldp_neighbor",
+      title: t("bizState.sheetLldp"),
+      columns: [
+        { key: "local_if", header: "local_if" },
+        { key: "remote_sys", header: "remote_sys" },
+        { key: "remote_if", header: "remote_if" },
+        { key: "remote_ip", header: "remote_ip" },
+        { key: "protocol", header: "protocol" },
+      ],
+      rows: lldp,
+    });
+  }
+  const vrf = (batch?.vrf_route_summary || []) as any[];
+  if (vrf.length) {
+    sheets.push({
+      id: "vrf_route_summary",
+      title: t("bizState.sheetVrfRoute"),
+      columns: [
+        { key: "vrf", header: "vrf" },
+        { key: "source", header: "source" },
+        { key: "networks", header: "networks" },
+      ],
+      rows: vrf,
+    });
+  }
+  return sheets;
+}
+
+function filterSheetRows(
+  rows: Record<string, unknown>[],
+  columns: SheetCol[],
+  keyword: string,
+  columnKey: string,
+): Record<string, unknown>[] {
+  const kw = keyword.trim().toLowerCase();
+  if (!kw) return rows;
+  return rows.filter((row) => {
+    const keys = columnKey ? [columnKey] : columns.map((c) => c.key);
+    return keys.some((k) => cellText(row[k]).toLowerCase().includes(kw));
+  });
+}
+
 export function BizStatePage() {
   const { t } = useI18n();
   const { showOk, showError } = useToast();
+
   const [tasks, setTasks] = useState<TaskRow[]>([]);
-  const [selectedId, setSelectedId] = useState("");
-  const [detail, setDetail] = useState<any>(null);
-  const [batches, setBatches] = useState<BatchRow[]>([]);
-  const [batchDetail, setBatchDetail] = useState<any>(null);
-  const [profiles, setProfiles] = useState<Profile[]>([]);
   const [nes, setNes] = useState<CliTargetItem[]>([]);
   const [neId, setNeId] = useState("");
   const [busy, setBusy] = useState(false);
+  const [listKeyword, setListKeyword] = useState("");
+  const debouncedListKw = useDebouncedValue(listKeyword, 250);
+
+  // task modal
+  const [taskId, setTaskId] = useState("");
+  const [detail, setDetail] = useState<any>(null);
+  const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [batches, setBatches] = useState<BatchRow[]>([]);
+  const [taskTab, setTaskTab] = useState<TaskTab>("profiles");
+
+  // VRF bind (inside task modal)
   const [bindItemId, setBindItemId] = useState("");
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [selectedVrfs, setSelectedVrfs] = useState<string[]>([]);
   const [discoverCmd, setDiscoverCmd] = useState("");
+
+  // batch workbook modal
+  const [batchDetail, setBatchDetail] = useState<any>(null);
+  const [sheetId, setSheetId] = useState("");
+  const [sheetKeyword, setSheetKeyword] = useState("");
+  const [sheetColumn, setSheetColumn] = useState("");
+  const debouncedSheetKw = useDebouncedValue(sheetKeyword, 200);
 
   const refreshTasks = useCallback(async () => {
     const res = await bizStateListTasks();
@@ -105,30 +201,71 @@ export function BizStatePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount once
   }, [refreshTasks]);
 
+  const filteredTasks = useMemo(() => {
+    const kw = debouncedListKw.trim().toLowerCase();
+    if (!kw) return tasks;
+    return tasks.filter((row) => {
+      const blob = `${row.ne_name} ${row.ne_ip} ${row.vendor} ${row.status} ${row.last_error}`.toLowerCase();
+      return blob.includes(kw);
+    });
+  }, [tasks, debouncedListKw]);
+
   const collectProfiles = useMemo(
     () => profiles.filter((p) => (p.kind || "collect") === "collect"),
     [profiles],
   );
 
-  const openTask = async (id: string) => {
-    setSelectedId(id);
-    setBatchDetail(null);
+  const sheets = useMemo(
+    () => (batchDetail ? buildBatchSheets(batchDetail, t) : []),
+    [batchDetail, t],
+  );
+
+  const activeSheet = useMemo(() => {
+    if (!sheets.length) return null;
+    return sheets.find((s) => s.id === sheetId) || sheets[0];
+  }, [sheets, sheetId]);
+
+  const filteredSheetRows = useMemo(() => {
+    if (!activeSheet) return [];
+    return filterSheetRows(
+      activeSheet.rows,
+      activeSheet.columns,
+      debouncedSheetKw,
+      sheetColumn,
+    );
+  }, [activeSheet, debouncedSheetKw, sheetColumn]);
+
+  const loadTask = async (id: string) => {
+    const task = await bizStateGetTask(id);
+    setDetail(task);
+    const b = await bizStateListBatches(id);
+    setBatches((b.items || []) as BatchRow[]);
+    const p = await bizStateListProfiles({
+      vendor: task.vendor || "",
+      device_type: task.device_type || "",
+    });
+    setProfiles((p.items || []) as Profile[]);
+  };
+
+  const openTask = async (id: string, tab: TaskTab = "profiles") => {
+    setTaskId(id);
+    setTaskTab(tab);
     setBindItemId("");
     setCandidates([]);
-    setSelectedVrfs([]);
+    setBatchDetail(null);
     try {
-      const task = await bizStateGetTask(id);
-      setDetail(task);
-      const b = await bizStateListBatches(id);
-      setBatches((b.items || []) as BatchRow[]);
-      const p = await bizStateListProfiles({
-        vendor: task.vendor || "",
-        device_type: task.device_type || "",
-      });
-      setProfiles((p.items || []) as Profile[]);
+      await loadTask(id);
     } catch (e) {
       showError(formatErr(e));
+      setTaskId("");
     }
+  };
+
+  const closeTask = () => {
+    setTaskId("");
+    setDetail(null);
+    setBindItemId("");
+    setCandidates([]);
   };
 
   const createTask = async () => {
@@ -146,9 +283,9 @@ export function BizStatePage() {
         device_type: ne.device_type,
       });
       showOk(t("bizState.created"));
-      await refreshTasks();
-      await openTask(String(task.id));
       setNeId("");
+      await refreshTasks();
+      await openTask(String(task.id), "profiles");
     } catch (e) {
       showError(t("bizState.createFailed") + ": " + formatErr(e));
     } finally {
@@ -157,12 +294,12 @@ export function BizStatePage() {
   };
 
   const setStatus = async (status: string) => {
-    if (!selectedId) return;
+    if (!taskId) return;
     setBusy(true);
     try {
-      await bizStatePatchTask(selectedId, { status });
+      await bizStatePatchTask(taskId, { status });
       showOk(status === "running" ? t("bizState.started") : t("bizState.paused"));
-      await openTask(selectedId);
+      await loadTask(taskId);
       await refreshTasks();
     } catch (e) {
       showError(formatErr(e));
@@ -172,23 +309,19 @@ export function BizStatePage() {
   };
 
   const collectNow = async () => {
-    if (!selectedId) return;
+    if (!taskId) return;
     setBusy(true);
     try {
-      await bizStateCollectNow(selectedId);
-      await openTask(selectedId);
-      await refreshTasks();
+      await bizStateCollectNow(taskId);
       for (let i = 0; i < 20; i++) {
         await new Promise((r) => setTimeout(r, 1500));
-        const task = await bizStateGetTask(selectedId);
+        const task = await bizStateGetTask(taskId);
         setDetail(task);
-        if (!task.collect_running) {
-          const b = await bizStateListBatches(selectedId);
-          setBatches((b.items || []) as BatchRow[]);
-          break;
-        }
+        if (!task.collect_running) break;
       }
+      await loadTask(taskId);
       await refreshTasks();
+      setTaskTab("batches");
     } catch (e) {
       showError(formatErr(e));
     } finally {
@@ -196,26 +329,13 @@ export function BizStatePage() {
     }
   };
 
-  const openBatch = async (batchId: string) => {
-    try {
-      const d = await bizStateGetBatch(batchId);
-      setBatchDetail(d);
-    } catch (e) {
-      showError(formatErr(e));
-    }
-  };
-
-  const removeTask = async () => {
-    if (!selectedId) return;
+  const removeTask = async (id: string) => {
     if (!window.confirm(t("bizState.confirmDelete"))) return;
     setBusy(true);
     try {
-      await bizStateDeleteTask(selectedId);
+      await bizStateDeleteTask(id);
       showOk(t("bizState.deleted"));
-      setSelectedId("");
-      setDetail(null);
-      setBatches([]);
-      setBatchDetail(null);
+      if (taskId === id) closeTask();
       await refreshTasks();
     } catch (e) {
       showError(formatErr(e));
@@ -225,7 +345,7 @@ export function BizStatePage() {
   };
 
   const toggleProfileItem = async (profile: Profile, enable: boolean) => {
-    if (!selectedId || !detail) return;
+    if (!taskId || !detail) return;
     const items = [...(detail.items || [])];
     const idx = items.findIndex((it: any) => it.source_profile_id === profile.profile_id);
     if (enable) {
@@ -244,8 +364,8 @@ export function BizStatePage() {
     }
     setBusy(true);
     try {
-      await bizStatePatchTask(selectedId, { items });
-      await openTask(selectedId);
+      await bizStatePatchTask(taskId, { items });
+      await loadTask(taskId);
     } catch (e) {
       showError(formatErr(e));
     } finally {
@@ -254,7 +374,7 @@ export function BizStatePage() {
   };
 
   const startDiscover = async (item: any) => {
-    if (!selectedId || !detail) return;
+    if (!taskId) return;
     const prof = profiles.find((p) => p.profile_id === item.source_profile_id);
     const ph = (prof?.placeholders || [])[0];
     if (!ph) {
@@ -265,7 +385,7 @@ export function BizStatePage() {
     setBindItemId(item.id);
     try {
       const res = await bizStateDiscover({
-        task_id: selectedId,
+        task_id: taskId,
         collect_profile_id: item.source_profile_id,
         placeholder: ph.name,
       });
@@ -289,19 +409,19 @@ export function BizStatePage() {
   };
 
   const saveBindings = async () => {
-    if (!selectedId || !bindItemId) return;
+    if (!taskId || !bindItemId) return;
     const item = (detail?.items || []).find((it: any) => it.id === bindItemId);
     const prof = profiles.find((p) => p.profile_id === item?.source_profile_id);
     const phName = (prof?.placeholders || [])[0]?.name || "vrf";
     setBusy(true);
     try {
       await bizStateSetBindings(
-        selectedId,
+        taskId,
         bindItemId,
         selectedVrfs.map((v) => ({ placeholder: phName, value: v })),
       );
       showOk(t("bizState.bindingsSaved"));
-      await openTask(selectedId);
+      await loadTask(taskId);
       setBindItemId("");
       setCandidates([]);
     } catch (e) {
@@ -309,6 +429,26 @@ export function BizStatePage() {
     } finally {
       setBusy(false);
     }
+  };
+
+  const openBatch = async (batchId: string) => {
+    try {
+      const d = await bizStateGetBatch(batchId);
+      setBatchDetail(d);
+      setSheetKeyword("");
+      setSheetColumn("");
+      const built = buildBatchSheets(d, t);
+      setSheetId(built[0]?.id || "");
+    } catch (e) {
+      showError(formatErr(e));
+    }
+  };
+
+  const closeBatch = () => {
+    setBatchDetail(null);
+    setSheetId("");
+    setSheetKeyword("");
+    setSheetColumn("");
   };
 
   const runningCount = tasks.filter((x) => x.status === "running").length;
@@ -348,295 +488,446 @@ export function BizStatePage() {
           </div>
         </div>
 
-        <div className="nm-split" style={{ display: "grid", gridTemplateColumns: "1fr 1.45fr", gap: 16 }}>
-          <div className="pt-list-table-wrap">
-            <table className="data-table pt-list-table">
-              <thead>
-                <tr>
-                  <th>{t("bizState.colNe")}</th>
-                  <th>{t("bizState.colStatus")}</th>
-                  <th>{t("bizState.colLast")}</th>
+        <div className="filter-inline">
+          <Input
+            value={listKeyword}
+            placeholder={t("bizState.listFilterPh")}
+            onChange={(e) => setListKeyword(e.target.value)}
+          />
+        </div>
+
+        <div className="pt-list-table-wrap">
+          <table className="data-table pt-list-table">
+            <thead>
+              <tr>
+                <th>{t("bizState.colNe")}</th>
+                <th>{t("bizState.colStatus")}</th>
+                <th>{t("bizState.colLast")}</th>
+                <th>{t("bizState.colActions")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredTasks.map((row) => (
+                <tr key={row.id}>
+                  <td>
+                    <div className="pt-list-task-name">{row.ne_name || row.ne_ip || "—"}</div>
+                    <div className="muted">
+                      {row.vendor || "—"} · {row.ne_ip || "—"}
+                    </div>
+                    {row.last_error ? <div className="form-error">{row.last_error}</div> : null}
+                  </td>
+                  <td>
+                    <div className="pt-list-actions" style={{ flexWrap: "wrap", gap: 4 }}>
+                      <NmStatusChip color={jobChipColor(row.status)}>{row.status}</NmStatusChip>
+                      {row.collect_running ? (
+                        <NmStatusChip color="accent">{t("bizState.collecting")}</NmStatusChip>
+                      ) : null}
+                    </div>
+                  </td>
+                  <td className="pt-list-time">{fmtTime(row.last_collect_ended_at)}</td>
+                  <td>
+                    <div className="pt-list-actions">
+                      <Button size="sm" variant="primary" onPress={() => void openTask(row.id, "profiles")}>
+                        {t("bizState.detail")}
+                      </Button>
+                      <Button size="sm" variant="ghost" onPress={() => void openTask(row.id, "batches")}>
+                        {t("bizState.batches")}
+                      </Button>
+                      {row.status !== "running" ? (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          isDisabled={busy}
+                          onPress={async () => {
+                            setBusy(true);
+                            try {
+                              await bizStatePatchTask(row.id, { status: "running" });
+                              showOk(t("bizState.started"));
+                              await refreshTasks();
+                            } catch (e) {
+                              showError(formatErr(e));
+                            } finally {
+                              setBusy(false);
+                            }
+                          }}
+                        >
+                          {t("bizState.start")}
+                        </Button>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          isDisabled={busy}
+                          onPress={async () => {
+                            setBusy(true);
+                            try {
+                              await bizStatePatchTask(row.id, { status: "paused" });
+                              showOk(t("bizState.paused"));
+                              await refreshTasks();
+                            } catch (e) {
+                              showError(formatErr(e));
+                            } finally {
+                              setBusy(false);
+                            }
+                          }}
+                        >
+                          {t("bizState.pause")}
+                        </Button>
+                      )}
+                      <Button
+                        size="sm"
+                        variant="danger"
+                        isDisabled={busy}
+                        onPress={() => void removeTask(row.id)}
+                      >
+                        {t("bizState.delete")}
+                      </Button>
+                    </div>
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {tasks.map((row) => (
-                  <tr
-                    key={row.id}
-                    className={selectedId === row.id ? "is-selected" : undefined}
-                    style={{ cursor: "pointer" }}
-                    onClick={() => void openTask(row.id)}
-                  >
-                    <td>
-                      <div className="pt-list-task-name">{row.ne_name || row.ne_ip || "—"}</div>
-                      <div className="muted">{row.vendor || "—"}</div>
-                    </td>
-                    <td>
-                      <div className="pt-list-actions" style={{ flexWrap: "wrap", gap: 4 }}>
-                        <NmStatusChip color={jobChipColor(row.status)}>{row.status}</NmStatusChip>
-                        {row.collect_running ? (
-                          <NmStatusChip color="accent">{t("bizState.collecting")}</NmStatusChip>
-                        ) : null}
-                      </div>
-                    </td>
-                    <td className="pt-list-time">{fmtTime(row.last_collect_ended_at)}</td>
-                  </tr>
-                ))}
-                {!tasks.length ? (
-                  <tr>
-                    <td colSpan={3}>
-                      <div className="pt-list-empty">{t("bizState.empty")}</div>
-                    </td>
-                  </tr>
-                ) : null}
-              </tbody>
-            </table>
+              ))}
+              {!filteredTasks.length ? (
+                <tr>
+                  <td colSpan={4}>
+                    <div className="pt-list-empty">{t("bizState.empty")}</div>
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Task detail modal */}
+      <AppModalShell open={Boolean(taskId)} onClose={closeTask} size="lg" className="app-heroui-modal--xl">
+        <Modal.Header>
+          <Modal.Heading>
+            {detail?.ne_name || detail?.ne_ip || t("bizState.detail")}
+            {detail ? ` · ${detail.status}` : ""}
+          </Modal.Heading>
+          <Modal.CloseTrigger />
+        </Modal.Header>
+        <Modal.Body className="flex flex-col gap-3">
+          {detail ? (
+            <p className="muted">
+              {detail.vendor || "—"} · {detail.ne_ip || "—"} · interval {detail.interval_sec}s
+            </p>
+          ) : null}
+          {detail?.last_error ? <p className="form-error">{detail.last_error}</p> : null}
+
+          <div className="btn-row nm-config-modal__tabs">
+            <Button
+              size="sm"
+              variant={taskTab === "profiles" ? "primary" : "secondary"}
+              onPress={() => setTaskTab("profiles")}
+            >
+              {t("bizState.profiles")}
+            </Button>
+            <Button
+              size="sm"
+              variant={taskTab === "batches" ? "primary" : "secondary"}
+              onPress={() => setTaskTab("batches")}
+            >
+              {t("bizState.batches")}
+            </Button>
           </div>
 
-          <div>
-            {!detail ? (
-              <div className="pt-list-empty">{t("bizState.pickTask")}</div>
-            ) : (
-              <>
-                <div className="panel__toolbar" style={{ padding: 0, marginBottom: 8 }}>
-                  <h3 style={{ margin: 0 }}>
-                    {detail.ne_name || detail.ne_ip} · {detail.status}
-                  </h3>
-                  <div className="btn-row">
-                    <Button size="sm" variant="primary" isDisabled={busy} onPress={() => void setStatus("running")}>
-                      {t("bizState.start")}
-                    </Button>
-                    <Button size="sm" variant="secondary" isDisabled={busy} onPress={() => void setStatus("paused")}>
-                      {t("bizState.pause")}
-                    </Button>
-                    <Button size="sm" variant="secondary" isDisabled={busy} onPress={() => void collectNow()}>
-                      {t("bizState.collectNow")}
-                    </Button>
-                    <Button size="sm" variant="danger" isDisabled={busy} onPress={() => void removeTask()}>
-                      {t("bizState.delete")}
-                    </Button>
-                  </div>
-                </div>
-                {detail.last_error ? <p className="form-error">{detail.last_error}</p> : null}
-
-                <h4 style={{ margin: "12px 0 8px" }}>{t("bizState.profiles")}</h4>
-                <div className="pt-list-table-wrap">
-                  <table className="data-table">
-                    <thead>
-                      <tr>
-                        <th>{t("bizState.enable")}</th>
-                        <th>{t("bizState.profiles")}</th>
-                        <th>{t("bizState.command")}</th>
-                        <th>{t("bizState.params")}</th>
-                        <th />
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {collectProfiles.map((prof) => {
-                        const it = (detail.items || []).find(
-                          (x: any) => x.source_profile_id === prof.profile_id,
-                        );
-                        const enabled = Boolean(it?.enabled);
-                        const binds = it?.bindings || [];
-                        const needsBind = (prof.placeholders || []).length > 0;
-                        return (
-                          <tr key={prof.profile_id}>
-                            <td>
-                              <input
-                                type="checkbox"
-                                checked={enabled}
-                                disabled={busy}
-                                onChange={(e) => void toggleProfileItem(prof, e.target.checked)}
-                              />
-                            </td>
-                            <td>
-                              <div className="pt-list-task-name">{prof.title}</div>
-                              {prof.description ? <div className="muted">{prof.description}</div> : null}
-                            </td>
-                            <td>
-                              <code>{prof.command_template}</code>
-                            </td>
-                            <td>
-                              {needsBind
-                                ? binds.length
-                                  ? binds.map((b: any) => b.value).join(", ")
-                                  : t("bizState.unbound")
-                                : "—"}
-                            </td>
-                            <td>
-                              {needsBind && enabled && it ? (
-                                <Button
-                                  size="sm"
-                                  variant="secondary"
-                                  isDisabled={busy}
-                                  onPress={() => void startDiscover(it)}
-                                >
-                                  {t("bizState.discoverVrf")}
-                                </Button>
-                              ) : null}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-
-                {bindItemId && candidates.length ? (
-                  <div className="panel" style={{ marginTop: 12, padding: 12 }}>
-                    <h4 style={{ marginTop: 0 }}>{t("bizState.bindTitle")}</h4>
-                    <p className="muted">
-                      <code>{discoverCmd}</code> · {selectedVrfs.length}
-                    </p>
-                    <div style={{ maxHeight: 220, overflow: "auto", marginBottom: 8 }}>
-                      {candidates.map((c) => (
-                        <label key={c.value} style={{ display: "block", marginBottom: 4 }}>
-                          <input
-                            type="checkbox"
-                            checked={selectedVrfs.includes(c.value)}
-                            onChange={(e) => {
-                              setSelectedVrfs((prev) =>
-                                e.target.checked
-                                  ? [...prev, c.value]
-                                  : prev.filter((x) => x !== c.value),
-                              );
-                            }}
-                          />{" "}
-                          {c.label}
-                          {c.rd ? <span className="muted"> · RD {c.rd}</span> : null}
-                        </label>
-                      ))}
-                    </div>
-                    <div className="btn-row">
-                      <Button
-                        size="sm"
-                        variant="primary"
-                        isDisabled={busy || !selectedVrfs.length}
-                        onPress={() => void saveBindings()}
-                      >
-                        {t("bizState.saveBindings")}
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        isDisabled={busy}
-                        onPress={() => {
-                          setBindItemId("");
-                          setCandidates([]);
-                        }}
-                      >
-                        {t("bizState.cancel")}
-                      </Button>
-                    </div>
-                  </div>
-                ) : null}
-
-                <h4 style={{ margin: "16px 0 8px" }}>{t("bizState.batches")}</h4>
-                <div className="pt-list-table-wrap">
-                  <table className="data-table">
-                    <thead>
-                      <tr>
-                        <th>{t("bizState.colTime")}</th>
-                        <th>{t("bizState.colStatus")}</th>
-                        <th>{t("bizState.colRows")}</th>
-                        <th>{t("bizState.colActions")}</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {batches.map((b) => (
-                        <tr key={b.id}>
-                          <td className="pt-list-time">{fmtTime(b.started_at)}</td>
+          {taskTab === "profiles" ? (
+            <>
+              <div className="pt-list-table-wrap">
+                <table className="data-table pt-list-table">
+                  <thead>
+                    <tr>
+                      <th>{t("bizState.enable")}</th>
+                      <th>{t("bizState.profiles")}</th>
+                      <th>{t("bizState.command")}</th>
+                      <th>{t("bizState.params")}</th>
+                      <th />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {collectProfiles.map((prof) => {
+                      const it = (detail?.items || []).find(
+                        (x: any) => x.source_profile_id === prof.profile_id,
+                      );
+                      const enabled = Boolean(it?.enabled);
+                      const binds = it?.bindings || [];
+                      const needsBind = (prof.placeholders || []).length > 0;
+                      return (
+                        <tr key={prof.profile_id}>
                           <td>
-                            <NmStatusChip color={jobChipColor(b.status)}>{b.status}</NmStatusChip>
+                            <input
+                              type="checkbox"
+                              checked={enabled}
+                              disabled={busy}
+                              onChange={(e) => void toggleProfileItem(prof, e.target.checked)}
+                            />
                           </td>
-                          <td className="pt-list-num">{b.row_count}</td>
                           <td>
-                            <div className="pt-list-actions">
-                              <Button size="sm" variant="secondary" onPress={() => void openBatch(b.id)}>
-                                {t("bizState.viewBatch")}
-                              </Button>
+                            <div className="pt-list-task-name">{prof.title}</div>
+                            {prof.description ? <div className="muted">{prof.description}</div> : null}
+                          </td>
+                          <td>
+                            <code>{prof.command_template}</code>
+                          </td>
+                          <td>
+                            {needsBind
+                              ? binds.length
+                                ? binds.map((b: any) => b.value).join(", ")
+                                : t("bizState.unbound")
+                              : "—"}
+                          </td>
+                          <td>
+                            {needsBind && enabled && it ? (
                               <Button
                                 size="sm"
                                 variant="secondary"
-                                onPress={() => void bizStateDownloadExport(b.id)}
+                                isDisabled={busy}
+                                onPress={() => void startDiscover(it)}
                               >
-                                {t("bizState.export")}
+                                {t("bizState.discoverVrf")}
                               </Button>
-                            </div>
+                            ) : null}
                           </td>
                         </tr>
-                      ))}
-                      {!batches.length ? (
-                        <tr>
-                          <td colSpan={4}>
-                            <div className="pt-list-empty">{t("bizState.noBatches")}</div>
-                          </td>
-                        </tr>
-                      ) : null}
-                    </tbody>
-                  </table>
-                </div>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
 
-                {batchDetail ? (
-                  <div style={{ marginTop: 16 }}>
-                    <h4 style={{ marginBottom: 4 }}>
-                      {t("bizState.batchDetail")} {batchDetail.id}
-                    </h4>
-                    <p className="muted">
-                      {batchDetail.command_count} · {batchDetail.row_count} · {batchDetail.status}
-                    </p>
-                    {(batchDetail.lldp_neighbors || []).length ? (
-                      <div className="pt-list-table-wrap" style={{ marginTop: 8 }}>
-                        <table className="data-table">
-                          <thead>
-                            <tr>
-                              <th>local_if</th>
-                              <th>remote_sys</th>
-                              <th>remote_if</th>
-                              <th>remote_ip</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {(batchDetail.lldp_neighbors || []).slice(0, 200).map((n: any, i: number) => (
-                              <tr key={i}>
-                                <td>{n.local_if}</td>
-                                <td>{n.remote_sys}</td>
-                                <td>{n.remote_if}</td>
-                                <td>{n.remote_ip}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    ) : null}
-                    {(batchDetail.vrf_route_summary || []).length ? (
-                      <div className="pt-list-table-wrap" style={{ marginTop: 8 }}>
-                        <table className="data-table">
-                          <thead>
-                            <tr>
-                              <th>vrf</th>
-                              <th>source</th>
-                              <th>networks</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {(batchDetail.vrf_route_summary || []).map((r: any, i: number) => (
-                              <tr key={i}>
-                                <td>{r.vrf}</td>
-                                <td>{r.source}</td>
-                                <td className="pt-list-num">{r.networks}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    ) : null}
+              {bindItemId && candidates.length ? (
+                <div className="bs-bind-panel">
+                  <h4 style={{ margin: "0 0 8px" }}>{t("bizState.bindTitle")}</h4>
+                  <p className="muted">
+                    <code>{discoverCmd}</code> · {selectedVrfs.length}
+                  </p>
+                  <div className="bs-bind-list">
+                    {candidates.map((c) => (
+                      <label key={c.value} className="bs-bind-item">
+                        <input
+                          type="checkbox"
+                          checked={selectedVrfs.includes(c.value)}
+                          onChange={(e) => {
+                            setSelectedVrfs((prev) =>
+                              e.target.checked
+                                ? [...prev, c.value]
+                                : prev.filter((x) => x !== c.value),
+                            );
+                          }}
+                        />{" "}
+                        {c.label}
+                        {c.rd ? <span className="muted"> · RD {c.rd}</span> : null}
+                      </label>
+                    ))}
                   </div>
-                ) : null}
-              </>
-            )}
+                  <div className="btn-row" style={{ marginTop: 8 }}>
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      isDisabled={busy || !selectedVrfs.length}
+                      onPress={() => void saveBindings()}
+                    >
+                      {t("bizState.saveBindings")}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      isDisabled={busy}
+                      onPress={() => {
+                        setBindItemId("");
+                        setCandidates([]);
+                      }}
+                    >
+                      {t("bizState.cancel")}
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <div className="pt-list-table-wrap">
+              <table className="data-table pt-list-table">
+                <thead>
+                  <tr>
+                    <th>{t("bizState.colTime")}</th>
+                    <th>{t("bizState.colStatus")}</th>
+                    <th>{t("bizState.colRows")}</th>
+                    <th>{t("bizState.colActions")}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {batches.map((b) => (
+                    <tr key={b.id}>
+                      <td className="pt-list-time">{fmtTime(b.started_at)}</td>
+                      <td>
+                        <NmStatusChip color={jobChipColor(b.status)}>{b.status}</NmStatusChip>
+                      </td>
+                      <td className="pt-list-num">
+                        {b.row_count}
+                        <span className="muted"> / {b.command_count} cmd</span>
+                      </td>
+                      <td>
+                        <div className="pt-list-actions">
+                          <Button size="sm" variant="primary" onPress={() => void openBatch(b.id)}>
+                            {t("bizState.viewBatch")}
+                          </Button>
+                          <Button size="sm" variant="ghost" onPress={() => void bizStateDownloadExport(b.id)}>
+                            {t("bizState.export")}
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                  {!batches.length ? (
+                    <tr>
+                      <td colSpan={4}>
+                        <div className="pt-list-empty">{t("bizState.noBatches")}</div>
+                      </td>
+                    </tr>
+                  ) : null}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Modal.Body>
+        <Modal.Footer>
+          <Button size="sm" variant="primary" isDisabled={busy} onPress={() => void setStatus("running")}>
+            {t("bizState.start")}
+          </Button>
+          <Button size="sm" variant="secondary" isDisabled={busy} onPress={() => void setStatus("paused")}>
+            {t("bizState.pause")}
+          </Button>
+          <Button size="sm" variant="secondary" isDisabled={busy} onPress={() => void collectNow()}>
+            {t("bizState.collectNow")}
+          </Button>
+          <Button size="sm" variant="danger" isDisabled={busy} onPress={() => void removeTask(taskId)}>
+            {t("bizState.delete")}
+          </Button>
+          <Button size="sm" variant="ghost" onPress={closeTask}>
+            {t("bizState.cancel")}
+          </Button>
+        </Modal.Footer>
+      </AppModalShell>
+
+      {/* Batch workbook: one sheet per monitor metric */}
+      <AppModalShell
+        open={Boolean(batchDetail)}
+        onClose={closeBatch}
+        size="lg"
+        className="app-heroui-modal--xl bs-workbook-modal"
+      >
+        <Modal.Header>
+          <Modal.Heading>
+            {t("bizState.batchWorkbook")} · {batchDetail?.id?.slice(0, 8)}…
+          </Modal.Heading>
+          <Modal.CloseTrigger />
+        </Modal.Header>
+        <Modal.Body className="flex flex-col gap-2 bs-workbook-body">
+          {batchDetail ? (
+            <p className="muted">
+              {batchDetail.status} · {batchDetail.command_count} cmd · {batchDetail.row_count} rows ·{" "}
+              {fmtTime(batchDetail.started_at)}
+            </p>
+          ) : null}
+
+          {activeSheet ? (
+            <>
+              <div className="filter-inline bs-sheet-filter">
+                <FieldSelect
+                  value={sheetColumn}
+                  onChange={(e) => setSheetColumn(e.target.value)}
+                  aria-label={t("bizState.filterColumn")}
+                >
+                  <option value="">{t("bizState.filterAllCols")}</option>
+                  {activeSheet.columns.map((c) => (
+                    <option key={c.key} value={c.key}>
+                      {c.header}
+                    </option>
+                  ))}
+                </FieldSelect>
+                <Input
+                  value={sheetKeyword}
+                  placeholder={t("bizState.sheetFilterPh")}
+                  onChange={(e) => setSheetKeyword(e.target.value)}
+                />
+                <span className="muted bs-sheet-count">
+                  {filteredSheetRows.length}/{activeSheet.rows.length}
+                </span>
+              </div>
+
+              <div className="pt-list-table-wrap bs-sheet-table">
+                <table className="data-table pt-list-table">
+                  <thead>
+                    <tr>
+                      {activeSheet.columns.map((c) => (
+                        <th key={c.key}>{c.header}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredSheetRows.slice(0, 2000).map((row, i) => (
+                      <tr key={i}>
+                        {activeSheet.columns.map((c) => (
+                          <td key={c.key}>
+                            {c.key === "parse_status" ? (
+                              <NmStatusChip color={jobChipColor(cellText(row[c.key]))}>
+                                {cellText(row[c.key]) || "—"}
+                              </NmStatusChip>
+                            ) : (
+                              cellText(row[c.key]) || "—"
+                            )}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                    {!filteredSheetRows.length ? (
+                      <tr>
+                        <td colSpan={activeSheet.columns.length}>
+                          <div className="pt-list-empty">{t("bizState.sheetEmpty")}</div>
+                        </td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          ) : (
+            <div className="pt-list-empty">{t("bizState.sheetEmpty")}</div>
+          )}
+
+          <div className="bs-sheet-tabs" role="tablist" aria-label={t("bizState.batchWorkbook")}>
+            {sheets.map((s) => (
+              <button
+                key={s.id}
+                type="button"
+                role="tab"
+                aria-selected={activeSheet?.id === s.id}
+                className={`bs-sheet-tab${activeSheet?.id === s.id ? " is-active" : ""}`}
+                onClick={() => {
+                  setSheetId(s.id);
+                  setSheetKeyword("");
+                  setSheetColumn("");
+                }}
+              >
+                {s.title}
+                <span className="bs-sheet-tab__count">{s.rows.length}</span>
+              </button>
+            ))}
+            {!sheets.length ? <span className="muted">{t("bizState.sheetEmpty")}</span> : null}
           </div>
-        </div>
-      </div>
+        </Modal.Body>
+        <Modal.Footer>
+          {batchDetail ? (
+            <Button size="sm" variant="secondary" onPress={() => void bizStateDownloadExport(batchDetail.id)}>
+              {t("bizState.export")}
+            </Button>
+          ) : null}
+          <Button size="sm" variant="ghost" onPress={closeBatch}>
+            {t("bizState.cancel")}
+          </Button>
+        </Modal.Footer>
+      </AppModalShell>
     </section>
   );
 }
