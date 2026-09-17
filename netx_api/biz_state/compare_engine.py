@@ -75,10 +75,21 @@ def compare_rows(
     """Return summary + diffs list.
 
     Diff kinds: added | removed | changed | unchanged
+
+    Empty ``port_map`` means ignore port/iface changes: matching keys exclude
+    ``iface_fields`` (same-device batches compare without a rename map).
     """
     if not key_fields:
         raise ValueError("key_fields required")
     pmap = dict(port_map or {})
+    iface_set = {str(f) for f in (iface_fields or []) if str(f).strip()}
+    # No map → ignore port renames: drop iface columns from the match key.
+    if not pmap and iface_set:
+        match_keys = [k for k in key_fields if k not in iface_set]
+        if not match_keys:
+            match_keys = list(key_fields)
+    else:
+        match_keys = list(key_fields)
 
     before_mapped: list[dict[str, Any]] = [
         apply_port_map(r, iface_fields=iface_fields, port_map=pmap) for r in before_rows
@@ -86,14 +97,17 @@ def compare_rows(
 
     after_index: dict[tuple[str, ...], dict[str, Any]] = {}
     for r in after_rows:
-        after_index[row_key(r, key_fields)] = r
+        after_index[row_key(r, match_keys)] = r
 
     before_keys: set[tuple[str, ...]] = set()
     diffs: list[dict[str, Any]] = []
     added = removed = changed = unchanged = 0
 
+    def _key_obj(row: dict[str, Any]) -> dict[str, Any]:
+        return {f: row.get(f, "") for f in key_fields}
+
     for orig, mapped in zip(before_rows, before_mapped):
-        k = row_key(mapped, key_fields)
+        k = row_key(mapped, match_keys)
         before_keys.add(k)
         after = after_index.get(k)
         if after is None:
@@ -101,7 +115,7 @@ def compare_rows(
             diffs.append(
                 {
                     "kind": "removed",
-                    "key": {f: mapped.get(f, "") for f in key_fields},
+                    "key": _key_obj(mapped),
                     "before": orig,
                     "after": None,
                     "mapped_before": mapped,
@@ -123,7 +137,7 @@ def compare_rows(
             diffs.append(
                 {
                     "kind": "changed",
-                    "key": {f: mapped.get(f, "") for f in key_fields},
+                    "key": _key_obj(mapped),
                     "before": orig,
                     "after": after,
                     "mapped_before": mapped,
@@ -132,6 +146,16 @@ def compare_rows(
             )
         else:
             unchanged += 1
+            diffs.append(
+                {
+                    "kind": "unchanged",
+                    "key": _key_obj(mapped),
+                    "before": orig,
+                    "after": after,
+                    "mapped_before": mapped,
+                    "changes": {},
+                }
+            )
 
     for k, after in after_index.items():
         if k in before_keys:
@@ -140,7 +164,7 @@ def compare_rows(
         diffs.append(
             {
                 "kind": "added",
-                "key": {f: after.get(f, "") for f in key_fields},
+                "key": _key_obj(after),
                 "before": None,
                 "after": after,
                 "mapped_before": None,
@@ -154,6 +178,8 @@ def compare_rows(
         iface_fields=iface_fields,
         port_map=pmap,
     )
+    if not pmap:
+        stats = {**stats, "ok": True, "ignore_port_changes": True}
     return {
         "summary": {
             "before_count": len(before_rows),
@@ -162,6 +188,7 @@ def compare_rows(
             "removed": removed,
             "changed": changed,
             "unchanged": unchanged,
+            "match_key_fields": match_keys,
         },
         "diffs": diffs,
         "mapping_stats": stats,

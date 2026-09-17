@@ -85,6 +85,44 @@ class CompareEngineTests(unittest.TestCase):
         self.assertEqual(s["unchanged"], 1)
         self.assertEqual(s["removed"], 1)
         self.assertEqual(s["added"], 1)
+        kinds = {d["kind"] for d in out["diffs"]}
+        self.assertIn("unchanged", kinds)
+
+    def test_empty_port_map_ignores_iface_in_key(self) -> None:
+        """No port map → ignore local_if when matching (same neighbor, renamed port)."""
+        before = [
+            {"local_if": "old-1", "remote_sys": "Peer", "remote_if": "p1", "remote_ip": "1.1.1.1"},
+        ]
+        after = [
+            {"local_if": "new-1", "remote_sys": "Peer", "remote_if": "p1", "remote_ip": "1.1.1.1"},
+        ]
+        out = compare_rows(
+            before_rows=before,
+            after_rows=after,
+            key_fields=["local_if", "remote_sys", "remote_if"],
+            iface_fields=["local_if"],
+            compare_fields=["remote_ip"],
+            port_map={},
+        )
+        self.assertEqual(out["summary"]["unchanged"], 1)
+        self.assertEqual(out["summary"]["added"], 0)
+        self.assertEqual(out["summary"]["removed"], 0)
+        self.assertTrue(out["mapping_stats"].get("ignore_port_changes"))
+
+    def test_unchanged_rows_are_listed(self) -> None:
+        before = [{"local_if": "a", "remote_sys": "X", "remote_if": "1", "remote_ip": "1"}]
+        after = [{"local_if": "a", "remote_sys": "X", "remote_if": "1", "remote_ip": "1"}]
+        out = compare_rows(
+            before_rows=before,
+            after_rows=after,
+            key_fields=["local_if", "remote_sys", "remote_if"],
+            iface_fields=["local_if"],
+            compare_fields=["remote_ip"],
+            port_map={},
+        )
+        self.assertEqual(out["summary"]["unchanged"], 1)
+        self.assertEqual(len(out["diffs"]), 1)
+        self.assertEqual(out["diffs"][0]["kind"], "unchanged")
 
 
 if __name__ == "__main__":

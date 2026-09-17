@@ -747,6 +747,7 @@ export function BizComparePage() {
       {!compact ? (
         <div className="bs-cmp-mapping">
           <h4 style={{ margin: "8px 0" }}>{t("bizCompare.mapping")}</h4>
+          <p className="muted">{t("bizCompare.mappingOptionalHint")}</p>
           <div className="filter-inline" style={{ marginBottom: 8 }}>
             <FieldSelect
               value={mappingId}

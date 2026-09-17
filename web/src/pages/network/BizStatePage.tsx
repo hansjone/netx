@@ -37,6 +37,7 @@ type TaskRow = {
   collect_running: boolean;
   last_error: string;
   last_collect_ended_at?: string | null;
+  interval_sec?: number;
 };
 
 type Placeholder = { name: string };
@@ -183,6 +184,8 @@ export function BizStatePage() {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [batches, setBatches] = useState<BatchRow[]>([]);
   const [taskTab, setTaskTab] = useState<TaskTab>("profiles");
+  const [intervalSec, setIntervalSec] = useState(300);
+  const [retentionBatches, setRetentionBatches] = useState(30);
 
   // VRF bind (inside task modal)
   const [bindItemId, setBindItemId] = useState("");
@@ -292,6 +295,8 @@ export function BizStatePage() {
   const loadTask = async (id: string) => {
     const task = await bizStateGetTask(id);
     setDetail(task);
+    setIntervalSec(Math.max(60, Number(task.interval_sec || 300)));
+    setRetentionBatches(Math.max(1, Number(task.retention_batches || 30)));
     const b = await bizStateListBatches(id);
     setBatches((b.items || []) as BatchRow[]);
     const p = await bizStateListProfiles({
@@ -352,6 +357,24 @@ export function BizStatePage() {
     try {
       await bizStatePatchTask(taskId, { status });
       showOk(status === "running" ? t("bizState.started") : t("bizState.paused"));
+      await loadTask(taskId);
+      await refreshTasks();
+    } catch (e) {
+      showError(formatErr(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveSchedule = async () => {
+    if (!taskId) return;
+    setBusy(true);
+    try {
+      await bizStatePatchTask(taskId, {
+        interval_sec: Math.max(60, Number(intervalSec) || 300),
+        retention_batches: Math.max(1, Number(retentionBatches) || 30),
+      });
+      showOk(t("bizState.scheduleSaved"));
       await loadTask(taskId);
       await refreshTasks();
     } catch (e) {
@@ -543,6 +566,7 @@ export function BizStatePage() {
               <tr>
                 <th>{t("bizState.colNe")}</th>
                 <th>{t("bizState.colSource")}</th>
+                <th>{t("bizState.colInterval")}</th>
                 <th>{t("bizState.colStatus")}</th>
                 <th>{t("bizState.colLast")}</th>
                 <th>{t("bizState.colActions")}</th>
@@ -563,6 +587,7 @@ export function BizStatePage() {
                       {row.source || "managed"}
                     </NmStatusChip>
                   </td>
+                  <td className="pt-list-num">{row.interval_sec ?? 300}s</td>
                   <td>
                     <div className="pt-list-actions" style={{ flexWrap: "wrap", gap: 4 }}>
                       <NmStatusChip color={jobChipColor(row.status)}>{row.status}</NmStatusChip>
@@ -633,13 +658,13 @@ export function BizStatePage() {
                   </td>
                 </tr>
               ))}
-              {!filteredTasks.length ? (
-                <tr>
-                  <td colSpan={5}>
-                    <div className="pt-list-empty">{t("bizState.empty")}</div>
-                  </td>
-                </tr>
-              ) : null}
+                {!filteredTasks.length ? (
+                  <tr>
+                    <td colSpan={6}>
+                      <div className="pt-list-empty">{t("bizState.empty")}</div>
+                    </td>
+                  </tr>
+                ) : null}
             </tbody>
           </table>
         </div>
@@ -767,9 +792,34 @@ export function BizStatePage() {
         </Modal.Header>
         <Modal.Body className="flex flex-col gap-3">
           {detail ? (
-            <p className="muted">
-              {detail.vendor || "—"} · {detail.ne_ip || "—"} · interval {detail.interval_sec}s
-            </p>
+            <div className="config-sync-policy-row bs-schedule-row">
+              <label className="config-sync-policy-field">
+                <span>{t("bizState.interval")}</span>
+                <Input
+                  type="number"
+                  min={60}
+                  max={86400}
+                  value={String(intervalSec)}
+                  onChange={(e) => setIntervalSec(Math.max(60, Number(e.target.value) || 60))}
+                />
+              </label>
+              <label className="config-sync-policy-field">
+                <span>{t("bizState.retention")}</span>
+                <Input
+                  type="number"
+                  min={1}
+                  max={200}
+                  value={String(retentionBatches)}
+                  onChange={(e) => setRetentionBatches(Math.max(1, Number(e.target.value) || 1))}
+                />
+              </label>
+              <Button size="sm" variant="secondary" isDisabled={busy} onPress={() => void saveSchedule()}>
+                {t("bizState.saveSchedule")}
+              </Button>
+              <span className="muted">
+                {detail.vendor || "—"} · {detail.ne_ip || "—"}
+              </span>
+            </div>
           ) : null}
           {detail?.last_error ? <p className="form-error">{detail.last_error}</p> : null}
 
