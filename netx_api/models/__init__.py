@@ -25,6 +25,11 @@ from .managed_ne import (
     UmeCliOverride,
 )
 from .biz_state import (
+    BizCompareJob,
+    BizCompareRun,
+    BizCompareTemplate,
+    BizPortMapping,
+    BizPortMappingRow,
     BizStateBatch,
     BizStateBatchCommand,
     BizStateCommandOverride,
@@ -130,4 +135,9 @@ __all__ = [
     "BizStateLldpNeighbor",
     "BizStateEvent",
     "BizStateCommandOverride",
+    "BizCompareTemplate",
+    "BizPortMapping",
+    "BizPortMappingRow",
+    "BizCompareJob",
+    "BizCompareRun",
 ]

@@ -448,6 +448,13 @@ def _run_collect_session(
             else:
                 batch.status = "success"
             db.commit()
+            if batch.status in ("success", "partial"):
+                try:
+                    from .compare_service import try_auto_compare_for_task
+
+                    try_auto_compare_for_task(db, task_id, batch_id)
+                except Exception:
+                    _log.exception("biz_state auto compare hook failed task=%s", task_id)
 
         _purge_old_batches(db, task_id=task_id, keep=retention)
     finally:

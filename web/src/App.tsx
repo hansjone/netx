@@ -46,6 +46,9 @@ const PortTrafficWallPage = lazy(() =>
 const BizStatePage = lazy(() =>
   import("./pages/network/BizStatePage").then((m) => ({ default: m.BizStatePage })),
 );
+const BizComparePage = lazy(() =>
+  import("./pages/network/BizComparePage").then((m) => ({ default: m.BizComparePage })),
+);
 const UsersPage = lazy(() => import("./pages/UsersPage").then((m) => ({ default: m.UsersPage })));
 const AuditLayout = lazy(() =>
   import("./pages/audit/AuditLayout").then((m) => ({ default: m.AuditLayout })),
@@ -124,6 +127,7 @@ function ProtectedApp() {
             <Route path="tasks/port-traffic/wall" element={<LegacyPortTrafficWallRedirect />} />
             <Route path="tasks/port-traffic" element={<PortTrafficPage />} />
             <Route path="tasks/biz-state" element={<BizStatePage />} />
+            <Route path="tasks/biz-compare" element={<BizComparePage />} />
           </Route>
           <Route path="/collect" element={<Navigate to="/network/tasks/collect" replace />} />
           <Route path="/users" element={<UsersPage />} />

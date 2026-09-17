@@ -157,6 +157,7 @@ const en = {
       portTraffic: "Port traffic",
       portTrafficWall: "Traffic wall",
       bizState: "Business state",
+      bizCompare: "Business compare",
     },
     collapseNav: "Collapse sidebar",
     expandNav: "Expand sidebar",

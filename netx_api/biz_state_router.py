@@ -163,3 +163,141 @@ def api_export_batch(batch_id: str, db: Session = Depends(get_db)) -> StreamingR
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="biz_state_{batch_id}.zip"'},
     )
+
+
+# ---- Phase2: templates / port maps / compare jobs ----
+
+from .biz_state import compare_service as cmp_svc  # noqa: E402
+
+
+class TemplateIn(BaseModel):
+    name: str = ""
+    metric_id: str = "lldp_neighbor"
+    key_fields: list[str] = Field(default_factory=list)
+    iface_fields: list[str] = Field(default_factory=list)
+    compare_fields: list[str] = Field(default_factory=list)
+    ignore_fields: list[str] = Field(default_factory=list)
+    note: str = ""
+
+
+class MappingRowIn(BaseModel):
+    before_if: str
+    after_if: str
+
+
+class MappingIn(BaseModel):
+    name: str = ""
+    note: str = ""
+    rows: list[MappingRowIn] = Field(default_factory=list)
+
+
+class ValidateMappingIn(BaseModel):
+    mapping_id: str
+    before_batch_id: str
+    after_batch_id: str
+    template_id: str = ""
+
+
+class CompareJobIn(BaseModel):
+    name: str = ""
+    template_id: str = ""
+    mapping_id: str = ""
+    before_task_id: str = ""
+    after_task_id: str = ""
+    before_batch_id: str = ""
+    after_batch_id: str = ""
+    mode: str = "manual"
+    note: str = ""
+
+
+@router.get("/compare/templates")
+def api_list_templates(db: Session = Depends(get_db)) -> dict[str, Any]:
+    return {"items": cmp_svc.list_templates(db)}
+
+
+@router.post("/compare/templates")
+def api_create_template(body: TemplateIn, db: Session = Depends(get_db)) -> dict[str, Any]:
+    return cmp_svc.create_template(db, body.model_dump())
+
+
+@router.patch("/compare/templates/{template_id}")
+def api_patch_template(
+    template_id: str, body: TemplateIn, db: Session = Depends(get_db)
+) -> dict[str, Any]:
+    return cmp_svc.update_template(db, template_id, body.model_dump(exclude_unset=True))
+
+
+@router.delete("/compare/templates/{template_id}")
+def api_delete_template(template_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    cmp_svc.delete_template(db, template_id)
+    return {"ok": True}
+
+
+@router.get("/compare/mappings")
+def api_list_mappings(db: Session = Depends(get_db)) -> dict[str, Any]:
+    return {"items": cmp_svc.list_mappings(db)}
+
+
+@router.post("/compare/mappings")
+def api_create_mapping(body: MappingIn, db: Session = Depends(get_db)) -> dict[str, Any]:
+    return cmp_svc.create_mapping(db, body.model_dump())
+
+
+@router.patch("/compare/mappings/{mapping_id}")
+def api_patch_mapping(
+    mapping_id: str, body: MappingIn, db: Session = Depends(get_db)
+) -> dict[str, Any]:
+    return cmp_svc.update_mapping(db, mapping_id, body.model_dump(exclude_unset=True))
+
+
+@router.delete("/compare/mappings/{mapping_id}")
+def api_delete_mapping(mapping_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    cmp_svc.delete_mapping(db, mapping_id)
+    return {"ok": True}
+
+
+@router.post("/compare/mappings/validate")
+def api_validate_mapping(body: ValidateMappingIn, db: Session = Depends(get_db)) -> dict[str, Any]:
+    return cmp_svc.validate_mapping(
+        db,
+        mapping_id=body.mapping_id,
+        before_batch_id=body.before_batch_id,
+        after_batch_id=body.after_batch_id,
+        template_id=body.template_id,
+    )
+
+
+@router.get("/compare/jobs")
+def api_list_jobs(db: Session = Depends(get_db)) -> dict[str, Any]:
+    return {"items": cmp_svc.list_jobs(db)}
+
+
+@router.post("/compare/jobs")
+def api_create_job(body: CompareJobIn, db: Session = Depends(get_db)) -> dict[str, Any]:
+    return cmp_svc.create_job(db, body.model_dump())
+
+
+@router.patch("/compare/jobs/{job_id}")
+def api_patch_job(job_id: str, body: CompareJobIn, db: Session = Depends(get_db)) -> dict[str, Any]:
+    return cmp_svc.update_job(db, job_id, body.model_dump(exclude_unset=True))
+
+
+@router.delete("/compare/jobs/{job_id}")
+def api_delete_job(job_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    cmp_svc.delete_job(db, job_id)
+    return {"ok": True}
+
+
+@router.post("/compare/jobs/{job_id}/run")
+def api_run_job(job_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    return cmp_svc.run_compare(db, job_id)
+
+
+@router.get("/compare/jobs/{job_id}/runs")
+def api_list_runs(job_id: str, limit: int = 20, db: Session = Depends(get_db)) -> dict[str, Any]:
+    return {"items": cmp_svc.list_runs(db, job_id, limit=limit)}
+
+
+@router.get("/compare/runs/{run_id}")
+def api_get_run(run_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    return cmp_svc.get_run(db, run_id)

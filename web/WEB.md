@@ -45,6 +45,7 @@ src/
 | `/network/tasks/port-traffic` | 端口流量监控（设备管理） | `network` |
 | `/network/tasks/port-traffic/wall` | 流量大屏列表（打开独立页签） | `network` |
 | `/network/tasks/biz-state` | 业务状态监控（LLDP 快照 Phase1） | `network` |
+| `/network/tasks/biz-compare` | 业务状态比对（模板/映射/前后 diff） | `network` |
 | `/port-traffic/wall/:boardId` | 流量大屏专有页签（无网络侧栏） | `port-traffic-wall` |
 | `/topology` | 拓扑管理（模式化编辑器：选择/平移/拖动/连线、框选、自动布局、拖放添加） | `topology` |
 | `/webcrt` | WebCRT 终端 | `webcrt` |
@@ -132,7 +133,7 @@ src/
 - Phase1 样板：LLDP 邻居快照；建任务默认启用对应厂商 LLDP profile；支持自定义只采不解析行
 - 调度：`NETX_BIZ_STATE_SCHEDULER_ENABLED`（默认开），tick `NETX_BIZ_STATE_SCHEDULER_TICK_SEC`
 - 前端：`/network/tasks/biz-state`（任务列表 / 启用项 / 批次 / 导出 zip）
-- Phase2（未做）：比对模板、端口映射、前后批次 diff、大屏
+- Phase2：比对模板、端口映射、CompareJob（manual/auto）、`/network/tasks/biz-compare`
 - Phase3（未做）：占位符发现→人选关联（如 VRF）
 
 ## 拓扑管理（Fabric + 站点目录，对齐厂商）

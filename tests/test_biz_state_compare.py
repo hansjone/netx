@@ -1,0 +1,67 @@
+"""Unit tests for biz_state compare engine."""
+
+from __future__ import annotations
+
+import unittest
+
+from netx_api.biz_state.compare_engine import compare_rows, mapping_stats
+
+
+class CompareEngineTests(unittest.TestCase):
+    def test_basic_added_removed_changed(self) -> None:
+        before = [
+            {"local_if": "gei-0/1", "remote_sys": "A", "remote_if": "x1", "remote_ip": "1.1.1.1"},
+            {"local_if": "gei-0/2", "remote_sys": "B", "remote_if": "y1", "remote_ip": "2.2.2.2"},
+        ]
+        after = [
+            {"local_if": "gei-0/1", "remote_sys": "A", "remote_if": "x1", "remote_ip": "1.1.1.9"},
+            {"local_if": "gei-0/3", "remote_sys": "C", "remote_if": "z1", "remote_ip": ""},
+        ]
+        out = compare_rows(
+            before_rows=before,
+            after_rows=after,
+            key_fields=["local_if", "remote_sys", "remote_if"],
+            iface_fields=["local_if"],
+            compare_fields=["remote_sys", "remote_if", "remote_ip"],
+            port_map={},
+        )
+        s = out["summary"]
+        self.assertEqual(s["changed"], 1)
+        self.assertEqual(s["removed"], 1)
+        self.assertEqual(s["added"], 1)
+        kinds = {d["kind"] for d in out["diffs"]}
+        self.assertEqual(kinds, {"changed", "removed", "added"})
+
+    def test_port_map_rewrites_before_key(self) -> None:
+        before = [
+            {"local_if": "old-1", "remote_sys": "Peer", "remote_if": "p1", "remote_ip": ""},
+        ]
+        after = [
+            {"local_if": "new-1", "remote_sys": "Peer", "remote_if": "p1", "remote_ip": ""},
+        ]
+        out = compare_rows(
+            before_rows=before,
+            after_rows=after,
+            key_fields=["local_if", "remote_sys", "remote_if"],
+            iface_fields=["local_if"],
+            compare_fields=["remote_sys", "remote_if", "remote_ip"],
+            port_map={"old-1": "new-1"},
+        )
+        self.assertEqual(out["summary"]["unchanged"], 1)
+        self.assertEqual(out["summary"]["added"], 0)
+        self.assertEqual(out["summary"]["removed"], 0)
+
+    def test_mapping_stats(self) -> None:
+        stats = mapping_stats(
+            before_rows=[{"local_if": "a"}, {"local_if": "b"}],
+            after_rows=[{"local_if": "x"}, {"local_if": "y"}],
+            iface_fields=["local_if"],
+            port_map={"a": "x", "missing": "y"},
+        )
+        self.assertIn("a", stats["hit_before"])
+        self.assertIn("missing", stats["miss_before"])
+        self.assertFalse(stats["ok"])
+
+
+if __name__ == "__main__":
+    unittest.main()

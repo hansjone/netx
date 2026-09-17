@@ -1809,3 +1809,52 @@ export const bizStateDownloadExport = async (batchId: string): Promise<void> => 
     URL.revokeObjectURL(url);
   }
 };
+
+/* ---- biz_state compare (Phase2) ---- */
+
+export const bizCompareListTemplates = () =>
+  apiGet<{ items: Record<string, unknown>[] }>("/v1/biz-state/compare/templates");
+
+export const bizCompareCreateTemplate = (body: Record<string, unknown>) =>
+  apiPost<Record<string, unknown>>("/v1/biz-state/compare/templates", body);
+
+export const bizCompareListMappings = () =>
+  apiGet<{ items: Record<string, unknown>[] }>("/v1/biz-state/compare/mappings");
+
+export const bizCompareCreateMapping = (body: Record<string, unknown>) =>
+  apiPost<Record<string, unknown>>("/v1/biz-state/compare/mappings", body);
+
+export const bizCompareUpdateMapping = (mappingId: string, body: Record<string, unknown>) =>
+  apiPatch<Record<string, unknown>>(
+    `/v1/biz-state/compare/mappings/${encodeURIComponent(mappingId)}`,
+    body,
+  );
+
+export const bizCompareValidateMapping = (body: Record<string, unknown>) =>
+  apiPost<Record<string, unknown>>("/v1/biz-state/compare/mappings/validate", body);
+
+export const bizCompareListJobs = () =>
+  apiGet<{ items: Record<string, unknown>[] }>("/v1/biz-state/compare/jobs");
+
+export const bizCompareCreateJob = (body: Record<string, unknown>) =>
+  apiPost<Record<string, unknown>>("/v1/biz-state/compare/jobs", body);
+
+export const bizCompareUpdateJob = (jobId: string, body: Record<string, unknown>) =>
+  apiPatch<Record<string, unknown>>(
+    `/v1/biz-state/compare/jobs/${encodeURIComponent(jobId)}`,
+    body,
+  );
+
+export const bizCompareRunJob = (jobId: string) =>
+  apiPost<Record<string, unknown>>(
+    `/v1/biz-state/compare/jobs/${encodeURIComponent(jobId)}/run`,
+    {},
+  );
+
+export const bizCompareListRuns = (jobId: string, limit = 20) =>
+  apiGet<{ items: Record<string, unknown>[] }>(
+    `/v1/biz-state/compare/jobs/${encodeURIComponent(jobId)}/runs?limit=${limit}`,
+  );
+
+export const bizCompareGetRun = (runId: string) =>
+  apiGet<Record<string, unknown>>(`/v1/biz-state/compare/runs/${encodeURIComponent(runId)}`);

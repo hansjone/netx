@@ -149,3 +149,85 @@ class BizStateCommandOverride(Base):
     sample_output: Mapped[str] = mapped_column(Text, default="")
     enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+
+
+class BizCompareTemplate(Base):
+    """Global compare template: which fields are keys / interfaces / compared."""
+
+    __tablename__ = "biz_compare_template"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
+    name: Mapped[str] = mapped_column(String(256), default="", index=True)
+    metric_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    key_fields: Mapped[list] = mapped_column(_JsonType, default=list)
+    iface_fields: Mapped[list] = mapped_column(_JsonType, default=list)
+    compare_fields: Mapped[list] = mapped_column(_JsonType, default=list)
+    ignore_fields: Mapped[list] = mapped_column(_JsonType, default=list)
+    note: Mapped[str] = mapped_column(String(512), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+
+
+class BizPortMapping(Base):
+    """Named port mapping set for cutover (before_if → after_if)."""
+
+    __tablename__ = "biz_port_mapping"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
+    name: Mapped[str] = mapped_column(String(256), default="", index=True)
+    note: Mapped[str] = mapped_column(String(512), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+
+
+class BizPortMappingRow(Base):
+    __tablename__ = "biz_port_mapping_row"
+    __table_args__ = (
+        UniqueConstraint("mapping_id", "before_if", name="uq_biz_port_map_before"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
+    mapping_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    before_if: Mapped[str] = mapped_column(String(128), default="")
+    after_if: Mapped[str] = mapped_column(String(128), default="")
+
+
+class BizCompareJob(Base):
+    """Cutover compare job linking template, port map, and before/after batches."""
+
+    __tablename__ = "biz_compare_job"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
+    name: Mapped[str] = mapped_column(String(256), default="", index=True)
+    template_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    mapping_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    before_task_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    after_task_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    before_batch_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    after_batch_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    # manual: fixed after_batch; auto: after_batch_id empty → use latest after task batch
+    mode: Mapped[str] = mapped_column(String(16), default="manual", index=True)
+    status: Mapped[str] = mapped_column(String(32), default="draft", index=True)  # draft|ready|auto
+    note: Mapped[str] = mapped_column(String(512), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+
+
+class BizCompareRun(Base):
+    """One execution of a compare job."""
+
+    __tablename__ = "biz_compare_run"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
+    job_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    template_id: Mapped[str] = mapped_column(String(64), default="")
+    mapping_id: Mapped[str] = mapped_column(String(64), default="")
+    before_batch_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    after_batch_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    metric_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    status: Mapped[str] = mapped_column(String(32), default="success", index=True)
+    summary_json: Mapped[dict] = mapped_column(_JsonType, default=dict)
+    diffs_json: Mapped[list] = mapped_column(_JsonType, default=list)
+    mapping_stats_json: Mapped[dict] = mapped_column(_JsonType, default=dict)
+    message: Mapped[str] = mapped_column(String(1024), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
