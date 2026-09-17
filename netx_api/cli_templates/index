@@ -8,6 +8,7 @@ zte/zte_zxros_show_interface_brief.textfsm, .*, zte_zxros, sh[[ow]] int[[erface]
 zte/zte_zxros_show_interface.textfsm, .*, zte_zxros, sh[[ow]] int[[erface]] .+
 zte/zte_zxros_show_ip_vrf.textfsm, .*, zte_zxros, sh[[ow]] ip vrf$
 zte/zte_zxros_show_arp.textfsm, .*, zte_zxros, sh[[ow]] arp
+zte/zte_zxros_show_running_config_if_intf.textfsm, .*, zte_zxros, sh[[ow]] run[[ning-config]] if-intf
 
 # --- cisco ---
 cisco/cisco_ios_show_interfaces.textfsm, .*, cisco_ios, sh[[ow]] int[[erfaces]] .+

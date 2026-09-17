@@ -20,17 +20,18 @@ Adding a status metric
 2. ``parsers/<vendor>/<metric>.py``: ``RULE_KEYS = ("<stem>",)`` +
    ``normalize(..., fsm_tables=...)`` (use ``common.pipeline.prefer_fsm``)
 3. Register in the vendor ``PARSERS`` dict
-4. ``profiles.py``: add ``ParseProfile`` (command match + ``FieldDef`` schema)
+4. ``profiles.py``: add ``ParseProfile`` (command match + ``FieldDef`` schema);
+   optional ``aux_commands`` for multi-command collect items
 
 Collect runs TextFSM rules first → ``fsm_tables``, then calls ``normalize`` with
-both ``raw_text`` and ``fsm_tables``. The parser decides: return mapped FSM rows,
-post-process them, or ignore FSM and hand-parse ``raw_text``.
+``raw_text`` / ``raws`` / ``fsm_tables`` / ``aux_records``. Prefer FSM; hand-parse
+only when FSM has no rows.
 """
 
 from __future__ import annotations
 
 import inspect
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from ...lldp_shared import resolve_vendor_key
 from ...ntc_parse import apply_rules, resolve_cli_platform, rules_for_command
@@ -47,8 +48,6 @@ from .zte import PARSERS as _ZTE_PARSERS
 
 NormalizeFn = Callable[..., list[dict[str, Any]]]
 
-# Later vendor packages may override earlier ones for the same parser_id.
-# Prefer moving shared logic to common/ when two vendors implement the same metric.
 _VENDOR_PARSERS: list[dict[str, NormalizeFn]] = [
     _CISCO_PARSERS,
     _HUAWEI_PARSERS,
@@ -56,7 +55,7 @@ _VENDOR_PARSERS: list[dict[str, NormalizeFn]] = [
     _JUNIPER_PARSERS,
     _NOKIA_PARSERS,
     _ERICSSON_PARSERS,
-    _ZTE_PARSERS,  # last so current ZTE status parsers win on overlaps
+    _ZTE_PARSERS,
 ]
 
 _REGISTRY: dict[str, NormalizeFn] = {
@@ -77,7 +76,6 @@ def registered_parser_ids() -> list[str]:
 
 
 def _rule_keys_for_fn(fn: NormalizeFn) -> tuple[tuple[str, ...], bool]:
-    """Return ``(keys, declared)``. ``declared`` is True when RULE_KEYS is set on fn/module."""
     keys_raw = None
     declared = False
     if hasattr(fn, "RULE_KEYS"):
@@ -101,7 +99,6 @@ def _rule_keys_for_fn(fn: NormalizeFn) -> tuple[tuple[str, ...], bool]:
 
 
 def get_parser_meta(parser_id: str) -> dict[str, Any] | None:
-    """Return ``{fn, rule_keys, rule_keys_declared}`` for a registered parser, or None."""
     fn = get_parser(parser_id)
     if not fn:
         return None
@@ -116,7 +113,6 @@ def resolve_rule_keys(
     command: str = "",
     textfsm_command: str = "",
 ) -> list[str]:
-    """RULE_KEYS from parser when declared; else index stems for textfsm_command/command."""
     meta = get_parser_meta(parser_id)
     if not meta:
         return []
@@ -138,8 +134,12 @@ def run_parser(
     command: str = "",
     params: dict[str, str] | None = None,
     textfsm_command: str = "",
+    raws: Mapping[str, str] | None = None,
+    command_rules: Mapping[str, Sequence[str]] | None = None,
+    aux_records: Mapping[str, list[dict[str, Any]]] | None = None,
+    fsm_tables_extra: Mapping[str, list[dict[str, Any]]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]], list[str]]:
-    """Apply TextFSM rules then normalize.
+    """Apply TextFSM per-command then normalize.
 
     Returns ``(records, fsm_tables, rule_keys_used)``.
     """
@@ -153,28 +153,83 @@ def run_parser(
         vendor_key=resolve_vendor_key(vendor, device_type),
     )
     cmd_hint = str(textfsm_command or command or "").strip()
-    rule_keys = resolve_rule_keys(
-        parser_id=parser_id,
-        platform=platform,
-        command=command,
-        textfsm_command=textfsm_command,
-    )
-    fsm_tables: dict[str, list[dict[str, Any]]] = {}
-    if rule_keys and str(raw_text or "").strip():
-        fsm_tables = apply_rules(
+    raw_map: dict[str, str] = {"primary": str(raw_text or "")}
+    if raws:
+        for k, v in raws.items():
+            key = str(k or "").strip() or "primary"
+            raw_map[key] = str(v or "")
+
+    rules_map: dict[str, list[str]] = {}
+    if command_rules:
+        for k, seq in command_rules.items():
+            rules_map[str(k)] = [str(x).strip() for x in (seq or ()) if str(x).strip()]
+    if "primary" not in rules_map:
+        rules_map["primary"] = resolve_rule_keys(
+            parser_id=parser_id,
             platform=platform,
-            text=raw_text,
-            rule_keys=rule_keys,
-            command=cmd_hint,
+            command=command,
+            textfsm_command=textfsm_command,
         )
-    records = fn(
-        raw_text=raw_text,
-        fsm_tables=fsm_tables,
-        vendor=vendor,
-        device_type=device_type,
-        command=cmd_hint or command,
-        params=params or {},
-    )
+
+    fsm_tables: dict[str, list[dict[str, Any]]] = {}
+    used_keys: list[str] = []
+    for key, rules in rules_map.items():
+        if not rules:
+            continue
+        text = raw_map.get(key) or (raw_map.get("primary") if key == "primary" else "")
+        if not str(text or "").strip():
+            for rk in rules:
+                fsm_tables.setdefault(rk, [])
+                if rk not in used_keys:
+                    used_keys.append(rk)
+            continue
+        wrap_cmd = cmd_hint if key == "primary" else key.replace("_", " ")
+        part = apply_rules(
+            platform=platform,
+            text=text,
+            rule_keys=rules,
+            command=wrap_cmd,
+        )
+        fsm_tables.update(part)
+        for rk in rules:
+            if rk not in used_keys:
+                used_keys.append(rk)
+
+    if fsm_tables_extra:
+        for k, rows in fsm_tables_extra.items():
+            stem = str(k or "").strip()
+            if not stem:
+                continue
+            fsm_tables[stem] = list(rows or [])
+            if stem not in used_keys:
+                used_keys.append(stem)
+
+    call_kw: dict[str, Any] = {
+        "raw_text": raw_map.get("primary") or "",
+        "fsm_tables": fsm_tables,
+        "raws": raw_map,
+        "aux_records": dict(aux_records or {}),
+        "vendor": vendor,
+        "device_type": device_type,
+        "command": cmd_hint or command,
+        "params": params or {},
+    }
+    try:
+        sig = inspect.signature(fn)
+        if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
+            filtered = call_kw
+        else:
+            filtered = {k: v for k, v in call_kw.items() if k in sig.parameters}
+    except (TypeError, ValueError):
+        filtered = {
+            "raw_text": call_kw["raw_text"],
+            "fsm_tables": fsm_tables,
+            "vendor": vendor,
+            "device_type": device_type,
+            "command": cmd_hint or command,
+            "params": params or {},
+        }
+    records = fn(**filtered)
     if not isinstance(records, list):
         records = []
-    return records, fsm_tables, rule_keys
+    return records, fsm_tables, used_keys

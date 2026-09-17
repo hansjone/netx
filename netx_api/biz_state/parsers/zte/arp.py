@@ -1,6 +1,7 @@
 """ZTE: show arp [| one-line].
 
 Pipeline: TextFSM rule ``zte_zxros_show_arp`` → map rows → hand fallback.
+VRF filled from aux ``if_intf`` (show running-config if-intf), FSM-first.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from typing import Any, Mapping
 from ....lldp_shared import resolve_vendor_key
 from ....ntc_parse import apply_rules, resolve_cli_platform, row_get
 from ..common.pipeline import prefer_fsm
+from .if_intf import parse_if_intf_vrf_map
 
 RULE_KEYS = ("zte_zxros_show_arp",)
 
@@ -32,6 +34,7 @@ def _row_from_fields(
     exter: str = "",
     inter: str = "",
     sub: str = "",
+    vrf: str = "",
 ) -> dict[str, Any] | None:
     ip = str(ip or "").strip()
     iface = str(iface or "").strip()
@@ -48,6 +51,7 @@ def _row_from_fields(
         "inter_vlan": str(inter or "").strip()[:32],
         "sub_interface": str(sub or "").strip()[:128],
         "entry_type": "dynamic" if dynamic else "static",
+        "vrf": str(vrf or "").strip()[:128],
     }
 
 
@@ -110,6 +114,40 @@ def _hand_parse(*, raw_text: str, **_kw: Any) -> list[dict[str, Any]]:
     return out
 
 
+def _vrf_map_from_aux(
+    *,
+    raws: Mapping[str, str] | None,
+    aux_records: Mapping[str, list[dict[str, Any]]] | None,
+    fsm_tables: Mapping[str, list[dict[str, Any]]] | None,
+) -> dict[str, str]:
+    recs = list((aux_records or {}).get("if_intf") or [])
+    if recs:
+        return parse_if_intf_vrf_map(rows=recs)
+    fsm_rows = (fsm_tables or {}).get("zte_zxros_show_running_config_if_intf") or []
+    if fsm_rows:
+        mapped = [
+            {
+                "interface": row_get(r, "INTERFACE", "interface"),
+                "vrf": row_get(r, "VRF", "vrf"),
+            }
+            for r in fsm_rows
+        ]
+        return parse_if_intf_vrf_map(rows=mapped)
+    raw = str((raws or {}).get("if_intf") or "")
+    if raw.strip():
+        return parse_if_intf_vrf_map(raw_text=raw)
+    return {}
+
+
+def _enrich_vrf(rows: list[dict[str, Any]], vrf_map: dict[str, str]) -> list[dict[str, Any]]:
+    if not rows:
+        return rows
+    for r in rows:
+        iface = str(r.get("interface") or "").strip()
+        r["vrf"] = (vrf_map.get(iface) or "")[:128]
+    return rows
+
+
 def normalize_arp(
     *,
     raw_text: str,
@@ -118,6 +156,8 @@ def normalize_arp(
     device_type: str = "",
     command: str = "",
     params: dict[str, str] | None = None,
+    raws: Mapping[str, str] | None = None,
+    aux_records: Mapping[str, list[dict[str, Any]]] | None = None,
 ) -> list[dict[str, Any]]:
     _ = params
     tables = dict(fsm_tables or {})
@@ -132,7 +172,7 @@ def normalize_arp(
             tables = apply_rules(
                 platform=platform, text=raw_text, rule_keys=RULE_KEYS, command=cmd
             )
-    return prefer_fsm(
+    rows = prefer_fsm(
         tables,
         RULE_KEYS,
         _map_fsm_rows,
@@ -142,6 +182,8 @@ def normalize_arp(
         device_type=device_type,
         command=command,
     )
+    vrf_map = _vrf_map_from_aux(raws=raws, aux_records=aux_records, fsm_tables=tables)
+    return _enrich_vrf(rows, vrf_map)
 
 
 normalize_arp.RULE_KEYS = RULE_KEYS

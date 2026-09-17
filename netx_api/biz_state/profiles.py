@@ -34,6 +34,18 @@ class PlaceholderDef:
     discover_label_field: str = ""
 
 
+@dataclass(frozen=True)
+class AuxCommand:
+    """Secondary CLI bound to a collect profile (same session, optional cache)."""
+
+    key: str
+    command_template: str
+    textfsm_command: str = ""
+    parser_id: str = ""
+    rule_keys: tuple[str, ...] = ()
+    profile_id: str = ""
+
+
 @dataclass
 class ParseProfile:
     profile_id: str
@@ -52,6 +64,7 @@ class ParseProfile:
     sort_order: int = 100
     enabled: bool = True
     kind: str = "collect"  # collect | discover
+    aux_commands: list[AuxCommand] = field(default_factory=list)
 
 
 _LLDP_FIELDS: list[FieldDef] = [
@@ -260,9 +273,15 @@ _ARP_FIELDS: list[FieldDef] = [
     FieldDef("mac", length=64, role="state", display_name="MAC"),
     FieldDef("age", length=32, role="meta", display_name="Age"),
     FieldDef("entry_type", length=16, role="meta", display_name="类型"),
+    FieldDef("vrf", length=128, role="meta", display_name="VRF"),
     FieldDef("exter_vlan", length=32, role="meta", display_name="Exter VLAN"),
     FieldDef("inter_vlan", length=32, role="meta", display_name="Inter VLAN"),
     FieldDef("sub_interface", length=128, role="meta", display_name="Sub-IF"),
+]
+
+_IF_INTF_FIELDS: list[FieldDef] = [
+    FieldDef("interface", length=128, indexed=True, is_key=True, is_interface=True, display_name="接口"),
+    FieldDef("vrf", length=128, indexed=True, is_key=True, display_name="VRF"),
 ]
 
 _ND6_FIELDS: list[FieldDef] = [
@@ -332,10 +351,36 @@ def _zte_status_profiles() -> list[ParseProfile]:
             command_template="show arp | one-line",
             match=r"(?i)^\s*show\s+arp(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show arp",
-            description="ARP entries (IP/MAC/interface).",
+            description="ARP entries (IP/MAC/interface); VRF from if-intf aux.",
             fields=list(_ARP_FIELDS),
             tags=["arp", "l3", "status"],
             sort_order=320,
+            enabled=True,
+            kind="collect",
+            aux_commands=[
+                AuxCommand(
+                    key="if_intf",
+                    command_template="show running-config if-intf",
+                    textfsm_command="show running-config if-intf",
+                    parser_id="if_intf",
+                    rule_keys=("zte_zxros_show_running_config_if_intf",),
+                    profile_id="zte.if_intf",
+                )
+            ],
+        ),
+        ParseProfile(
+            profile_id="zte.if_intf",
+            vendor_key="zte",
+            metric_id="if_intf",
+            parser_id="if_intf",
+            title="IF VRF (if-intf)",
+            command_template="show running-config if-intf",
+            match=r"(?i)^\s*show\s+running-config\s+if-intf\s*$",
+            textfsm_command="show running-config if-intf",
+            description="Interface VRF from running-config if-intf (ip vrf forwarding).",
+            fields=list(_IF_INTF_FIELDS),
+            tags=["interface", "vrf", "config", "status"],
+            sort_order=325,
             enabled=True,
             kind="collect",
         ),
@@ -498,4 +543,15 @@ def profile_to_public_dict(p: ParseProfile, *, overrides: dict[str, Any] | None 
         "kind": p.kind,
         "match": p.match,
         "textfsm_command": p.textfsm_command or p.command_template,
+        "aux_commands": [
+            {
+                "key": a.key,
+                "command_template": a.command_template,
+                "textfsm_command": a.textfsm_command or a.command_template,
+                "parser_id": a.parser_id,
+                "rule_keys": list(a.rule_keys),
+                "profile_id": a.profile_id,
+            }
+            for a in (p.aux_commands or [])
+        ],
     }

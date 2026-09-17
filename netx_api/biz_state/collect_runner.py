@@ -29,7 +29,7 @@ from ..models import (
 from ..ne_netmiko import disable_target_paging, send_show_command
 from ..ne_session_factory import close_netmiko_connection, open_netmiko_connection
 from .command_match import expand_from_bindings, match_command, normalize_command
-from .parsers import get_parser, run_parser
+from .parsers import get_parser, get_parser_meta, run_parser
 from .profiles import get_profile
 
 _log = logging.getLogger("netx.biz_state.runner")
@@ -153,6 +153,7 @@ _GENERIC_METRICS = {
     "isis_adjacency",
     "interface_brief",
     "arp",
+    "if_intf",
     "nd6_cache",
     "bgp_peer",
 }
@@ -419,10 +420,12 @@ def _run_collect_session(
                     pass
 
                 sdb = SessionLocal()
+                # Same-batch cache: concrete CLI -> raw + parse artifacts (aux reuse).
+                cmd_cache: dict[str, dict[str, Any]] = {}
                 try:
                     batch_row = sdb.get(BizStateBatch, batch_id)
                     if not batch_row:
-                        return 0, 0, True, True
+                        return 0, 0, True, False
                     for concrete, params, profile_id, item_id, mode in work:
                         if holder.get("timed_out"):
                             raise TimeoutError("biz_state_aborted")
@@ -478,6 +481,151 @@ def _run_collect_session(
                             sdb.commit()
                             continue
 
+                        primary_ck = normalize_command(concrete)
+                        cmd_cache[primary_ck] = {
+                            "raw": cmd_row.raw_text or "",
+                            "fsm_tables": {},
+                            "records": None,
+                            "ok": True,
+                            "error": "",
+                            "cmd_row_id": cmd_row.id,
+                        }
+
+                        raws: dict[str, str] = {"primary": cmd_row.raw_text or ""}
+                        aux_records: dict[str, list[dict[str, Any]]] = {}
+                        fsm_extra: dict[str, list[dict[str, Any]]] = {}
+                        command_rules: dict[str, list[str]] = {
+                            "primary": list(
+                                (get_parser_meta(hit.profile.parser_id) or {}).get("rule_keys")
+                                or ()
+                            )
+                        }
+
+                        for aux in list(hit.profile.aux_commands or []):
+                            aux_concrete = normalize_command(aux.command_template)
+                            if not aux_concrete:
+                                continue
+                            aux_rules = list(aux.rule_keys or ())
+                            if not aux_rules and aux.parser_id:
+                                aux_rules = list(
+                                    (get_parser_meta(aux.parser_id) or {}).get("rule_keys") or ()
+                                )
+                            command_rules[aux.key] = aux_rules
+
+                            cached = cmd_cache.get(aux_concrete)
+                            aux_row = BizStateBatchCommand(
+                                id=uuid4().hex,
+                                batch_id=batch_id,
+                                task_item_id=item_id,
+                                profile_id=aux.profile_id or hit.profile.profile_id,
+                                parser_id=aux.parser_id or "",
+                                metric_id="",
+                                raw_command=aux_concrete[:512],
+                                params_json={},
+                                created_at=_utcnow(),
+                            )
+                            cmd_count += 1
+                            if cached and cached.get("ok"):
+                                raws[aux.key] = str(cached.get("raw") or "")
+                                if cached.get("records") is not None:
+                                    aux_records[aux.key] = list(cached.get("records") or [])
+                                fsm_extra.update(cached.get("fsm_tables") or {})
+                                aux_row.parse_status = "aux_cached"
+                                aux_row.message = (
+                                    f"aux_for={cmd_row.id};cache_hit;src={cached.get('cmd_row_id') or ''}"
+                                )[:1020]
+                                aux_row.raw_text = ""
+                                aux_row.row_count = len(cached.get("records") or [])
+                                sdb.add(aux_row)
+                                sdb.commit()
+                                continue
+
+                            try:
+                                aux_raw = send_show_command(
+                                    conn, aux_concrete, read_timeout=per_cmd
+                                )
+                                aux_row.raw_text = str(aux_raw or "")
+                            except Exception as exc:
+                                aux_row.parse_status = "aux_failed"
+                                aux_row.message = (
+                                    f"aux_for={cmd_row.id};{_format_error(exc)}"
+                                )[:1020]
+                                sdb.add(aux_row)
+                                sdb.commit()
+                                cmd_cache[aux_concrete] = {
+                                    "raw": "",
+                                    "fsm_tables": {},
+                                    "records": [],
+                                    "ok": False,
+                                    "error": str(exc),
+                                    "cmd_row_id": aux_row.id,
+                                }
+                                raws[aux.key] = ""
+                                continue
+
+                            aux_recs: list[dict[str, Any]] = []
+                            aux_fsm: dict[str, list[dict[str, Any]]] = {}
+                            if aux.parser_id and get_parser(aux.parser_id):
+                                try:
+                                    aux_recs, aux_fsm, _aux_keys = run_parser(
+                                        aux.parser_id,
+                                        raw_text=aux_row.raw_text or "",
+                                        vendor=vendor_eff,
+                                        device_type=device_type_eff,
+                                        command=aux.textfsm_command or aux_concrete,
+                                        textfsm_command=aux.textfsm_command or "",
+                                        params={},
+                                    )
+                                except Exception as exc:
+                                    aux_row.parse_status = "aux_failed"
+                                    aux_row.message = (
+                                        f"aux_for={cmd_row.id};parse:{_format_error(exc)}"
+                                    )[:1020]
+                                    sdb.add(aux_row)
+                                    sdb.commit()
+                                    cmd_cache[aux_concrete] = {
+                                        "raw": aux_row.raw_text or "",
+                                        "fsm_tables": {},
+                                        "records": [],
+                                        "ok": False,
+                                        "error": str(exc),
+                                        "cmd_row_id": aux_row.id,
+                                    }
+                                    raws[aux.key] = aux_row.raw_text or ""
+                                    continue
+                            elif aux_rules:
+                                from ..ntc_parse import apply_rules, resolve_cli_platform
+
+                                plat = resolve_cli_platform(
+                                    vendor=vendor_eff,
+                                    device_type=device_type_eff,
+                                    vendor_key=vendor_key,
+                                )
+                                aux_fsm = apply_rules(
+                                    platform=plat,
+                                    text=aux_row.raw_text or "",
+                                    rule_keys=aux_rules,
+                                    command=aux.textfsm_command or aux_concrete,
+                                )
+
+                            raws[aux.key] = aux_row.raw_text or ""
+                            if aux_recs:
+                                aux_records[aux.key] = aux_recs
+                            fsm_extra.update(aux_fsm)
+                            aux_row.parse_status = "aux"
+                            aux_row.message = f"aux_for={cmd_row.id}"[:1020]
+                            aux_row.row_count = len(aux_recs)
+                            sdb.add(aux_row)
+                            sdb.commit()
+                            cmd_cache[aux_concrete] = {
+                                "raw": aux_row.raw_text or "",
+                                "fsm_tables": dict(aux_fsm),
+                                "records": list(aux_recs),
+                                "ok": True,
+                                "error": "",
+                                "cmd_row_id": aux_row.id,
+                            }
+
                         try:
                             records, fsm_tables, rule_keys = run_parser(
                                 hit.profile.parser_id,
@@ -487,14 +635,26 @@ def _run_collect_session(
                                 command=hit.profile.textfsm_command or concrete,
                                 params=merged,
                                 textfsm_command=hit.profile.textfsm_command or "",
+                                raws=raws,
+                                command_rules=command_rules,
+                                aux_records=aux_records,
+                                fsm_tables_extra=fsm_extra,
                             )
-                            # Debug hint only — avoid persisting large FSM JSON.
+                            cmd_cache[primary_ck]["fsm_tables"] = dict(fsm_tables)
+                            cmd_cache[primary_ck]["records"] = list(records)
+                            hints = []
                             if rule_keys:
                                 nonempty = [k for k in rule_keys if fsm_tables.get(k)]
-                                cmd_row.message = (
-                                    f"fsm_keys={','.join(rule_keys)}"
-                                    + (f";hit={','.join(nonempty)}" if nonempty else ";hit=")
-                                )[:1020]
+                                hints.append(
+                                    f"fsm_keys={','.join(rule_keys)};hit={','.join(nonempty)}"
+                                )
+                            if aux_records:
+                                hints.append(
+                                    "aux="
+                                    + ",".join(f"{k}:{len(v)}" for k, v in aux_records.items())
+                                )
+                            if hints:
+                                cmd_row.message = ";".join(hints)[:1020]
                         except Exception as exc:
                             any_fail = True
                             cmd_row.parse_status = "failed"

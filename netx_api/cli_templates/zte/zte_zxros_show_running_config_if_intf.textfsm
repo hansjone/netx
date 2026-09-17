@@ -1,0 +1,13 @@
+Value Filldown INTERFACE (\S+)
+Value Required VRF (\S+)
+
+Start
+  ^interface\s+${INTERFACE} -> If
+  ^\s*$$
+  ^.* -> Start
+
+If
+  ^\s*ip\s+vrf\s+forwarding\s+${VRF} -> Record
+  ^interface\s+${INTERFACE} -> If
+  ^\s*$$
+  ^.* -> If
