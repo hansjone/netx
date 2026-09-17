@@ -704,7 +704,21 @@ def _load_metric_rows(db: Session, *, batch_id: str, metric_id: str) -> list[dic
         .all()
     )
     if rows:
-        return [dict(r.data_json or {}) for r in rows]
+        out = [dict(r.data_json or {}) for r in rows]
+        if metric_id == "arp":
+            from .parsers.zte_status import is_valid_arp_age
+
+            # Compare only dynamic ARP (Age is HH:MM:SS); drop static H / incomplete flags
+            out = [
+                r
+                for r in out
+                if str(r.get("entry_type") or "").lower() == "dynamic"
+                or (
+                    not r.get("entry_type")
+                    and is_valid_arp_age(str(r.get("age") or ""))
+                )
+            ]
+        return out
     # Known metric with zero rows is OK; unknown metric still errors
     if metric_id in metric_field_map():
         return []

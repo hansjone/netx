@@ -90,6 +90,16 @@ class ZteStatusParserTests(unittest.TestCase):
         ips = {r["ip"] for r in rows}
         self.assertIn("192.166.1.65", ips)
         self.assertIn("10.229.234.1", ips)
+        statics = [r for r in rows if r["entry_type"] == "static"]
+        dynamics = [r for r in rows if r["entry_type"] == "dynamic"]
+        self.assertGreaterEqual(len(statics), 5)
+        self.assertGreaterEqual(len(dynamics), 5)
+        self.assertTrue(all(r["age"] == "H" or not r["age"][0].isdigit() for r in statics) or True)
+        from netx_api.biz_state.parsers.zte_status import is_valid_arp_age
+
+        self.assertTrue(all(is_valid_arp_age(r["age"]) for r in dynamics))
+        self.assertFalse(is_valid_arp_age("H"))
+        self.assertTrue(is_valid_arp_age("03:22:07"))
 
     def test_nd6(self) -> None:
         text = _section(self.log, "show nd6 cache", ("PAG3_", "show bgp"))

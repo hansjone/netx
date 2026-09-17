@@ -164,6 +164,14 @@ def normalize_interface_brief(
     return out
 
 
+_ARP_AGE_TIME_RE = re.compile(r"^\d{1,2}:\d{2}:\d{2}$")
+
+
+def is_valid_arp_age(age: str) -> bool:
+    """True when Age looks like a dynamic timer (HH:MM:SS), not static flags like H."""
+    return bool(_ARP_AGE_TIME_RE.match(str(age or "").strip()))
+
+
 def normalize_arp(
     *,
     raw_text: str,
@@ -198,6 +206,7 @@ def normalize_arp(
         if key in seen:
             continue
         seen.add(key)
+        dynamic = is_valid_arp_age(age)
         out.append(
             {
                 "ip": ip[:64],
@@ -207,6 +216,7 @@ def normalize_arp(
                 "exter_vlan": exter[:32],
                 "inter_vlan": inter[:32],
                 "sub_interface": sub[:128],
+                "entry_type": "dynamic" if dynamic else "static",
             }
         )
     return out

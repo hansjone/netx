@@ -259,6 +259,7 @@ _ARP_FIELDS: list[FieldDef] = [
     FieldDef("interface", length=128, indexed=True, is_key=True, is_interface=True, display_name="接口"),
     FieldDef("mac", length=64, role="state", display_name="MAC"),
     FieldDef("age", length=32, role="meta", display_name="Age"),
+    FieldDef("entry_type", length=16, role="meta", display_name="类型"),
     FieldDef("exter_vlan", length=32, role="meta", display_name="Exter VLAN"),
     FieldDef("inter_vlan", length=32, role="meta", display_name="Inter VLAN"),
     FieldDef("sub_interface", length=128, role="meta", display_name="Sub-IF"),
