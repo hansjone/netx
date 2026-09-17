@@ -30,7 +30,7 @@ import { jobChipColor, NmStatusChip } from "./nmChips";
 
 type PageTab = "templates" | "jobs";
 type JobDetailTab = "config" | "result";
-type KindFilter = "all" | "added" | "removed" | "changed" | "unchanged";
+type KindFilter = "diff" | "all" | "added" | "removed" | "changed" | "unchanged";
 
 type TaskOpt = { id: string; ne_name: string; ne_ip: string; vendor: string };
 type BatchOpt = { id: string; status: string; row_count: number; started_at?: string | null };
@@ -196,7 +196,7 @@ export function BizComparePage() {
   const [resultSheetId, setResultSheetId] = useState("");
 
   // result filters
-  const [kindFilter, setKindFilter] = useState<KindFilter>("all");
+  const [kindFilter, setKindFilter] = useState<KindFilter>("diff");
   const [resultKw, setResultKw] = useState("");
   const debouncedResultKw = useDebouncedValue(resultKw, 200);
 
@@ -325,7 +325,11 @@ export function BizComparePage() {
     const diffs = (activeRunSheet?.diffs || []) as DiffRow[];
     const kw = debouncedResultKw.trim().toLowerCase();
     return diffs.filter((d) => {
-      if (kindFilter !== "all" && d.kind !== kindFilter) return false;
+      if (kindFilter === "diff") {
+        if (d.kind === "unchanged") return false;
+      } else if (kindFilter !== "all" && d.kind !== kindFilter) {
+        return false;
+      }
       if (!kw) return true;
       const blob = [
         d.kind,
@@ -341,7 +345,14 @@ export function BizComparePage() {
     });
   }, [activeRunSheet, kindFilter, debouncedResultKw]);
 
-  const sheetSummary = activeRunSheet?.summary || {};
+  const kindLabel = (kind: string) => {
+    if (kind === "added") return t("bizCompare.kindAddedShort");
+    if (kind === "removed") return t("bizCompare.kindRemovedShort");
+    if (kind === "changed") return t("bizCompare.kindChangedShort");
+    if (kind === "unchanged") return t("bizCompare.kindUnchangedShort");
+    return kind;
+  };
+
   const summary = runDetail?.summary || {};
 
   const updateActiveSheet = (patch: Partial<MetricSheet>) => {
@@ -573,7 +584,7 @@ export function BizComparePage() {
     setJobDetailTab("config");
     setRunDetail(null);
     setResultSheetId("");
-    setKindFilter("all");
+    setKindFilter("diff");
     setResultKw("");
     const job = jobs.find((x) => x.id === id);
     if (job) resetJobForm(job);
@@ -649,7 +660,7 @@ export function BizComparePage() {
     try {
       const d = await bizCompareGetRun(runId);
       setRunDetail(d);
-      setKindFilter("all");
+      setKindFilter("diff");
       setResultKw("");
       setJobDetailTab("result");
     } catch (e) {
@@ -1175,59 +1186,86 @@ export function BizComparePage() {
           {jobDetailTab === "config" ? (
             renderJobForm(false)
           ) : (
-            <div className="bs-workbook-body flex flex-col gap-2" style={{ flex: 1, minHeight: 0 }}>
-              <FieldSelect
-                label={t("bizCompare.pickBatchRun")}
-                value={runDetail?.id || ""}
-                onChange={(e) => {
-                  const id = e.target.value;
-                  if (id) void loadRun(id);
-                }}
-                fullWidth
-              >
-                <option value="">{t("bizCompare.pickRun")}</option>
-                {runs.map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {fmtTime(r.created_at)} · before=
-                    {String(r.before_batch_id || "").slice(0, 8)}… / after=
-                    {String(r.after_batch_id || "").slice(0, 8)}… · +{r.summary?.added ?? 0}/−
-                    {r.summary?.removed ?? 0}/~{r.summary?.changed ?? 0}
-                  </option>
-                ))}
-              </FieldSelect>
+            <div className="bs-workbook-body bs-cmp-result flex flex-col gap-3" style={{ flex: 1, minHeight: 0 }}>
+              <div className="bs-cmp-result__toolbar">
+                <FieldSelect
+                  label={t("bizCompare.pickBatchRun")}
+                  value={runDetail?.id || ""}
+                  onChange={(e) => {
+                    const id = e.target.value;
+                    if (id) void loadRun(id);
+                  }}
+                  fullWidth
+                >
+                  <option value="">{t("bizCompare.pickRun")}</option>
+                  {runs.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {fmtTime(r.created_at)} · +{r.summary?.added ?? 0} / −{r.summary?.removed ?? 0} / ~
+                      {r.summary?.changed ?? 0}
+                    </option>
+                  ))}
+                </FieldSelect>
+              </div>
 
               {runDetail ? (
                 <>
-                  <div className="pt-list-kpis">
-                    <div className="pt-list-kpi">
-                      <div className="pt-list-kpi__label">+</div>
-                      <div className="pt-list-kpi__value">{summary.added ?? 0}</div>
-                    </div>
-                    <div className="pt-list-kpi">
-                      <div className="pt-list-kpi__label">−</div>
-                      <div className="pt-list-kpi__value">{summary.removed ?? 0}</div>
-                    </div>
-                    <div className="pt-list-kpi pt-list-kpi--live">
-                      <div className="pt-list-kpi__label">~</div>
-                      <div className="pt-list-kpi__value">{summary.changed ?? 0}</div>
-                    </div>
-                    <div className="pt-list-kpi">
-                      <div className="pt-list-kpi__label">=</div>
-                      <div className="pt-list-kpi__value">{summary.unchanged ?? 0}</div>
-                    </div>
+                  <div className="bs-cmp-kpis">
+                    <button
+                      type="button"
+                      className={`bs-cmp-kpi bs-cmp-kpi--added${kindFilter === "added" ? " is-active" : ""}`}
+                      onClick={() => setKindFilter("added")}
+                    >
+                      <span className="bs-cmp-kpi__label">{t("bizCompare.kindAddedShort")}</span>
+                      <span className="bs-cmp-kpi__value">{summary.added ?? 0}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`bs-cmp-kpi bs-cmp-kpi--removed${kindFilter === "removed" ? " is-active" : ""}`}
+                      onClick={() => setKindFilter("removed")}
+                    >
+                      <span className="bs-cmp-kpi__label">{t("bizCompare.kindRemovedShort")}</span>
+                      <span className="bs-cmp-kpi__value">{summary.removed ?? 0}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`bs-cmp-kpi bs-cmp-kpi--changed${kindFilter === "changed" ? " is-active" : ""}`}
+                      onClick={() => setKindFilter("changed")}
+                    >
+                      <span className="bs-cmp-kpi__label">{t("bizCompare.kindChangedShort")}</span>
+                      <span className="bs-cmp-kpi__value">{summary.changed ?? 0}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`bs-cmp-kpi bs-cmp-kpi--unchanged${kindFilter === "unchanged" ? " is-active" : ""}`}
+                      onClick={() => setKindFilter("unchanged")}
+                    >
+                      <span className="bs-cmp-kpi__label">{t("bizCompare.kindUnchangedShort")}</span>
+                      <span className="bs-cmp-kpi__value">{summary.unchanged ?? 0}</span>
+                    </button>
                   </div>
 
-                  <div className="filter-inline bs-sheet-filter">
-                    <FieldSelect
-                      value={kindFilter}
-                      onChange={(e) => setKindFilter(e.target.value as KindFilter)}
-                    >
-                      <option value="all">{t("bizCompare.kindAll")}</option>
-                      <option value="added">{t("bizCompare.kindAdded")}</option>
-                      <option value="removed">{t("bizCompare.kindRemoved")}</option>
-                      <option value="changed">{t("bizCompare.kindChanged")}</option>
-                      <option value="unchanged">{t("bizCompare.kindUnchanged")}</option>
-                    </FieldSelect>
+                  <div className="bs-cmp-filter-bar">
+                    <div className="bs-cmp-kind-pills" role="tablist">
+                      {(
+                        [
+                          ["diff", t("bizCompare.kindDiff")],
+                          ["all", t("bizCompare.kindAll")],
+                          ["added", t("bizCompare.kindAddedShort")],
+                          ["removed", t("bizCompare.kindRemovedShort")],
+                          ["changed", t("bizCompare.kindChangedShort")],
+                          ["unchanged", t("bizCompare.kindUnchangedShort")],
+                        ] as const
+                      ).map(([id, label]) => (
+                        <button
+                          key={id}
+                          type="button"
+                          className={`bs-cmp-kind-pill${kindFilter === id ? " is-active" : ""}`}
+                          onClick={() => setKindFilter(id)}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
                     <Input
                       value={resultKw}
                       placeholder={t("bizCompare.resultFilterPh")}
@@ -1243,32 +1281,14 @@ export function BizComparePage() {
                     <table className="data-table pt-list-table bs-cmp-diff-table">
                       <thead>
                         <tr>
-                          <th rowSpan={resultColumns.compare.length ? 2 : 1}>
-                            {t("bizCompare.colKind")}
-                          </th>
+                          <th className="bs-cmp-col-kind">{t("bizCompare.colKind")}</th>
                           {resultColumns.keys.map((k) => (
-                            <th key={k} rowSpan={resultColumns.compare.length ? 2 : 1}>
-                              {k}
-                            </th>
+                            <th key={k}>{k}</th>
                           ))}
                           {resultColumns.compare.map((f) => (
-                            <th key={f} colSpan={2} className="bs-cmp-pair-head">
-                              {f}
-                            </th>
+                            <th key={f}>{f}</th>
                           ))}
                         </tr>
-                        {resultColumns.compare.length ? (
-                          <tr>
-                            {resultColumns.compare.flatMap((f) => [
-                              <th key={`${f}-pre`} className="bs-cmp-pre-head">
-                                pre
-                              </th>,
-                              <th key={`${f}-post`} className="bs-cmp-post-head">
-                                post
-                              </th>,
-                            ])}
-                          </tr>
-                        ) : null}
                       </thead>
                       <tbody>
                         {filteredDiffs.slice(0, 2000).map((d, i) => {
@@ -1276,55 +1296,52 @@ export function BizComparePage() {
                           const post = (d.after || {}) as Record<string, unknown>;
                           return (
                             <tr key={i} className={`bs-cmp-row bs-cmp-row--${d.kind}`}>
-                              <td>
-                                <NmStatusChip
-                                  color={
-                                    d.kind === "added"
-                                      ? "success"
-                                      : d.kind === "removed"
-                                        ? "danger"
-                                        : d.kind === "changed"
-                                          ? "warning"
-                                          : "default"
-                                  }
-                                >
-                                  {d.kind}
-                                </NmStatusChip>
+                              <td className="bs-cmp-col-kind">
+                                <span className={`bs-cmp-badge bs-cmp-badge--${d.kind}`}>
+                                  {kindLabel(d.kind)}
+                                </span>
                               </td>
                               {resultColumns.keys.map((k) => (
-                                <td key={k}>
-                                  <code>{cellText(d.key?.[k] ?? pre[k] ?? post[k]) || "—"}</code>
+                                <td key={k} className="bs-cmp-key-cell">
+                                  {cellText(d.key?.[k] ?? pre[k] ?? post[k]) || "—"}
                                 </td>
                               ))}
-                              {resultColumns.compare.flatMap((f) => {
-                                const changed =
-                                  Boolean(d.changes?.[f]) ||
-                                  (d.kind === "changed" && cellText(pre[f]) !== cellText(post[f]));
+                              {resultColumns.compare.map((f) => {
                                 const pv = cellText(pre[f]);
                                 const av = cellText(post[f]);
-                                const mismatch = changed && pv !== av;
-                                return [
-                                  <td
-                                    key={`${f}-pre-${i}`}
-                                    className={
-                                      d.kind === "removed" || mismatch
-                                        ? "bs-cmp-cell bs-cmp-cell--pre"
-                                        : "bs-cmp-cell"
-                                    }
-                                  >
-                                    {d.kind === "added" ? "—" : pv || "—"}
-                                  </td>,
-                                  <td
-                                    key={`${f}-post-${i}`}
-                                    className={
-                                      d.kind === "added" || mismatch
-                                        ? "bs-cmp-cell bs-cmp-cell--post"
-                                        : "bs-cmp-cell"
-                                    }
-                                  >
-                                    {d.kind === "removed" ? "—" : av || "—"}
-                                  </td>,
-                                ];
+                                if (d.kind === "added") {
+                                  return (
+                                    <td key={f} className="bs-cmp-val-cell">
+                                      <span className="bs-cmp-val bs-cmp-val--post">{av || "—"}</span>
+                                    </td>
+                                  );
+                                }
+                                if (d.kind === "removed") {
+                                  return (
+                                    <td key={f} className="bs-cmp-val-cell">
+                                      <span className="bs-cmp-val bs-cmp-val--pre">{pv || "—"}</span>
+                                    </td>
+                                  );
+                                }
+                                const mismatch =
+                                  Boolean(d.changes?.[f]) ||
+                                  (d.kind === "changed" && pv !== av);
+                                if (!mismatch) {
+                                  return (
+                                    <td key={f} className="bs-cmp-val-cell">
+                                      <span className="bs-cmp-val">{pv || av || "—"}</span>
+                                    </td>
+                                  );
+                                }
+                                return (
+                                  <td key={f} className="bs-cmp-val-cell bs-cmp-val-cell--diff">
+                                    <span className="bs-cmp-val bs-cmp-val--pre">{pv || "—"}</span>
+                                    <span className="bs-cmp-val-arrow" aria-hidden>
+                                      →
+                                    </span>
+                                    <span className="bs-cmp-val bs-cmp-val--post">{av || "—"}</span>
+                                  </td>
+                                );
                               })}
                             </tr>
                           );
@@ -1333,7 +1350,7 @@ export function BizComparePage() {
                           <tr>
                             <td
                               colSpan={
-                                1 + resultColumns.keys.length + resultColumns.compare.length * 2
+                                1 + resultColumns.keys.length + Math.max(resultColumns.compare.length, 0)
                               }
                             >
                               <div className="pt-list-empty">{t("bizCompare.resultEmpty")}</div>
@@ -1347,6 +1364,8 @@ export function BizComparePage() {
                   <div className="bs-sheet-tabs" role="tablist">
                     {runSheets.map((s) => {
                       const sc = s.summary || {};
+                      const dirty =
+                        Number(sc.added || 0) + Number(sc.removed || 0) + Number(sc.changed || 0);
                       return (
                         <button
                           key={s.metric_id}
@@ -1356,14 +1375,15 @@ export function BizComparePage() {
                         >
                           {s.metric_id}
                           <span className="bs-sheet-tab__count">
-                            +{sc.added ?? 0}/−{sc.removed ?? 0}/~{sc.changed ?? 0}
+                            {dirty > 0
+                              ? `${t("bizCompare.diffCount", { n: String(dirty) })}`
+                              : t("bizCompare.kindUnchangedShort")}
                             {s.mode === "presence" ? ` · ${t("bizCompare.presenceShort")}` : ""}
                           </span>
                         </button>
                       );
                     })}
                   </div>
-                  {sheetSummary && Object.keys(sheetSummary).length ? null : null}
                 </>
               ) : (
                 <div className="pt-list-empty">{t("bizCompare.noRuns")}</div>

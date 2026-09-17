@@ -74,6 +74,23 @@ type NeSourceFilter = "all" | "managed" | "ume";
 
 const NE_PAGE_SIZE = 10;
 
+function fmtIntervalLabel(sec: number, daysLabel: string, hoursLabel: string) {
+  const hours = Math.max(1, Math.round(Number(sec || 0) / 3600) || 1);
+  if (hours % 24 === 0) return `${hours / 24} ${daysLabel}`;
+  return `${hours} ${hoursLabel}`;
+}
+
+function secToIntervalUi(sec: number): { value: number; unit: "days" | "hours" } {
+  const hours = Math.max(1, Math.round(Number(sec || 3600) / 3600) || 1);
+  if (hours % 24 === 0) return { value: hours / 24, unit: "days" };
+  return { value: hours, unit: "hours" };
+}
+
+function intervalUiToSec(value: number, unit: "days" | "hours") {
+  const n = Math.max(1, Number(value) || 1);
+  return unit === "days" ? n * 86400 : n * 3600;
+}
+
 function fmtTime(v?: string | null) {
   if (!v) return "—";
   return formatSystemTime(v) || v;
@@ -184,7 +201,8 @@ export function BizStatePage() {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [batches, setBatches] = useState<BatchRow[]>([]);
   const [taskTab, setTaskTab] = useState<TaskTab>("profiles");
-  const [intervalSec, setIntervalSec] = useState(300);
+  const [intervalValue, setIntervalValue] = useState(1);
+  const [intervalUnit, setIntervalUnit] = useState<"days" | "hours">("hours");
   const [retentionBatches, setRetentionBatches] = useState(30);
 
   // VRF bind (inside task modal)
@@ -295,7 +313,9 @@ export function BizStatePage() {
   const loadTask = async (id: string) => {
     const task = await bizStateGetTask(id);
     setDetail(task);
-    setIntervalSec(Math.max(60, Number(task.interval_sec || 300)));
+    const ui = secToIntervalUi(Number(task.interval_sec || 3600));
+    setIntervalValue(ui.value);
+    setIntervalUnit(ui.unit);
     setRetentionBatches(Math.max(1, Number(task.retention_batches || 30)));
     const b = await bizStateListBatches(id);
     setBatches((b.items || []) as BatchRow[]);
@@ -371,7 +391,7 @@ export function BizStatePage() {
     setBusy(true);
     try {
       await bizStatePatchTask(taskId, {
-        interval_sec: Math.max(60, Number(intervalSec) || 300),
+        interval_sec: intervalUiToSec(intervalValue, intervalUnit),
         retention_batches: Math.max(1, Number(retentionBatches) || 30),
       });
       showOk(t("bizState.scheduleSaved"));
@@ -587,7 +607,13 @@ export function BizStatePage() {
                       {row.source || "managed"}
                     </NmStatusChip>
                   </td>
-                  <td className="pt-list-num">{row.interval_sec ?? 300}s</td>
+                  <td className="pt-list-num">
+                    {fmtIntervalLabel(
+                      Number(row.interval_sec || 3600),
+                      t("bizState.intervalUnitDays"),
+                      t("bizState.intervalUnitHours"),
+                    )}
+                  </td>
                   <td>
                     <div className="pt-list-actions" style={{ flexWrap: "wrap", gap: 4 }}>
                       <NmStatusChip color={jobChipColor(row.status)}>{row.status}</NmStatusChip>
@@ -797,11 +823,30 @@ export function BizStatePage() {
                 <span>{t("bizState.interval")}</span>
                 <Input
                   type="number"
-                  min={60}
-                  max={86400}
-                  value={String(intervalSec)}
-                  onChange={(e) => setIntervalSec(Math.max(60, Number(e.target.value) || 60))}
+                  min={1}
+                  max={intervalUnit === "days" ? 365 : 8760}
+                  value={String(intervalValue)}
+                  onChange={(e) => {
+                    const max = intervalUnit === "days" ? 365 : 8760;
+                    setIntervalValue(Math.max(1, Math.min(max, Number(e.target.value) || 1)));
+                  }}
                 />
+                <select
+                  value={intervalUnit}
+                  onChange={(e) => {
+                    const next = e.target.value === "hours" ? "hours" : "days";
+                    if (next === intervalUnit) return;
+                    if (next === "hours") {
+                      setIntervalValue(Math.max(1, Math.min(8760, intervalValue * 24)));
+                    } else {
+                      setIntervalValue(Math.max(1, Math.min(365, Math.round(intervalValue / 24) || 1)));
+                    }
+                    setIntervalUnit(next);
+                  }}
+                >
+                  <option value="days">{t("bizState.intervalUnitDays")}</option>
+                  <option value="hours">{t("bizState.intervalUnitHours")}</option>
+                </select>
               </label>
               <label className="config-sync-policy-field">
                 <span>{t("bizState.retention")}</span>

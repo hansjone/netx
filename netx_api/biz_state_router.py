@@ -44,7 +44,7 @@ class TaskCreateIn(BaseModel):
     vendor: str = ""
     device_type: str = ""
     note: str = ""
-    interval_sec: int = 300
+    interval_sec: int = 3600
     retention_batches: int = 30
     items: list[TaskItemIn] = Field(default_factory=list)
 
