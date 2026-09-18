@@ -784,80 +784,124 @@ export function BizMigrationPage() {
           <Modal.Heading>{t("bizMigration.create")}</Modal.Heading>
           <Modal.CloseTrigger />
         </Modal.Header>
-        <Modal.Body className="flex flex-col gap-3">
-          <p className="muted">{t("bizMigration.createHint")}</p>
-          <div className="form-grid">
-            <label className="form-grid__full">
-              <span>{t("bizMigration.projectName")}</span>
-              <Input value={createName} onValueChange={setCreateName} size="sm" />
-            </label>
-            <label>
-              <span>{t("bizMigration.oldTask")}</span>
+        <Modal.Body className="flex flex-col gap-4">
+          <p className="muted" style={{ margin: 0 }}>
+            {t("bizMigration.createHint")}
+          </p>
+
+          <div className="flex flex-col gap-2">
+            <strong style={{ fontSize: 13 }}>{t("bizMigration.sectionName")}</strong>
+            <Input
+              value={createName}
+              onChange={(e) => setCreateName(e.target.value)}
+              placeholder={t("bizMigration.projectNamePh")}
+              aria-label={t("bizMigration.projectName")}
+            />
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <strong style={{ fontSize: 13 }}>{t("bizMigration.sectionTasks")}</strong>
+            <p className="muted" style={{ margin: 0, fontSize: 12 }}>
+              {t("bizMigration.sectionTasksHint")}
+            </p>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 12,
+                alignItems: "start",
+              }}
+            >
               <FieldSelect
+                label={t("bizMigration.oldTask")}
                 value={createOldTaskId}
-                onChange={(e) => setCreateOldTaskId(e.target.value)}
+                onChange={(e) => {
+                  setCreateOldTaskId(e.target.value);
+                  setCreateOldBaselineId("");
+                }}
                 fullWidth
-                aria-label={t("bizMigration.oldTask")}
               >
                 {taskOptions}
               </FieldSelect>
-            </label>
-            <label>
-              <span>{t("bizMigration.newTask")}</span>
               <FieldSelect
+                label={t("bizMigration.newTask")}
                 value={createNewTaskId}
-                onChange={(e) => setCreateNewTaskId(e.target.value)}
+                onChange={(e) => {
+                  setCreateNewTaskId(e.target.value);
+                  setCreateNewBaselineId("");
+                }}
                 fullWidth
-                aria-label={t("bizMigration.newTask")}
               >
                 {taskOptions}
               </FieldSelect>
-            </label>
-            <label>
-              <span>{t("bizMigration.portMapping")}</span>
+            </div>
+            {!tasks.length ? (
+              <p className="muted" style={{ margin: 0, fontSize: 12 }}>
+                {t("bizMigration.needBizStateTasks")}{" "}
+                <Link to="/network/tasks/biz-state" onClick={closeCreate}>
+                  {t("bizMigration.openBizState")}
+                </Link>
+              </p>
+            ) : null}
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <strong style={{ fontSize: 13 }}>{t("bizMigration.sectionOptional")}</strong>
+            <p className="muted" style={{ margin: 0, fontSize: 12 }}>
+              {t("bizMigration.sectionOptionalHint")}
+            </p>
+            <FieldSelect
+              label={t("bizMigration.portMapping")}
+              value={createMappingId}
+              onChange={(e) => setCreateMappingId(e.target.value)}
+              fullWidth
+              hint={t("bizMigration.portMappingHint")}
+            >
+              <option value="">{t("bizMigration.optionalNone")}</option>
+              {mappings.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name}
+                </option>
+              ))}
+            </FieldSelect>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 12,
+                alignItems: "start",
+              }}
+            >
               <FieldSelect
-                value={createMappingId}
-                onChange={(e) => setCreateMappingId(e.target.value)}
-                fullWidth
-                aria-label={t("bizMigration.portMapping")}
-              >
-                <option value="">—</option>
-                {mappings.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.name}
-                  </option>
-                ))}
-              </FieldSelect>
-            </label>
-            <label>
-              <span>{t("bizMigration.oldBaseline")}</span>
-              <FieldSelect
+                label={t("bizMigration.oldBaseline")}
                 value={createOldBaselineId}
                 onChange={(e) => setCreateOldBaselineId(e.target.value)}
                 fullWidth
-                aria-label={t("bizMigration.oldBaseline")}
+                disabled={!createOldTaskId}
+                hint={
+                  createOldTaskId
+                    ? t("bizMigration.baselinePickHint")
+                    : t("bizMigration.baselineNeedTask")
+                }
               >
                 {batchOptions(createOldBatches)}
               </FieldSelect>
-            </label>
-            <label>
-              <span>{t("bizMigration.newBaseline")}</span>
               <FieldSelect
+                label={t("bizMigration.newBaseline")}
                 value={createNewBaselineId}
                 onChange={(e) => setCreateNewBaselineId(e.target.value)}
                 fullWidth
-                aria-label={t("bizMigration.newBaseline")}
+                disabled={!createNewTaskId}
+                hint={
+                  createNewTaskId
+                    ? t("bizMigration.baselinePickHint")
+                    : t("bizMigration.baselineNeedTask")
+                }
               >
                 {batchOptions(createNewBatches)}
               </FieldSelect>
-            </label>
+            </div>
           </div>
-          {!tasks.length ? (
-            <p className="muted">
-              {t("bizMigration.needBizStateTasks")}{" "}
-              <Link to="/network/tasks/biz-state">{t("bizMigration.openBizState")}</Link>
-            </p>
-          ) : null}
         </Modal.Body>
         <Modal.Footer>
           <Button size="sm" variant="secondary" onPress={closeCreate}>
@@ -943,47 +987,97 @@ export function BizMigrationPage() {
               </div>
 
               {detailTab === "setup" ? (
-                <div className="flex flex-col gap-3">
-                  <div className="form-grid">
-                    <label>
-                      <span>{t("bizMigration.portMapping")}</span>
+                <div className="flex flex-col gap-4">
+                  <div className="flex flex-col gap-2">
+                    <strong style={{ fontSize: 13 }}>{t("bizMigration.sectionPair")}</strong>
+                    <p className="muted" style={{ margin: 0, fontSize: 12 }}>
+                      {t("bizMigration.sectionPairHint")}
+                    </p>
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "1fr 1fr",
+                        gap: 12,
+                      }}
+                    >
+                      <div>
+                        <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>
+                          {t("bizMigration.oldTask")}
+                        </div>
+                        <div className="pt-list-task-name">
+                          {project.old_task?.ne_name || project.old_task_id.slice(0, 8)}
+                        </div>
+                        <div className="muted" style={{ fontSize: 12 }}>
+                          {project.old_task?.ne_ip || "—"}
+                          {project.old_task?.note ? ` · ${project.old_task.note}` : ""}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>
+                          {t("bizMigration.newTask")}
+                        </div>
+                        <div className="pt-list-task-name">
+                          {project.new_task?.ne_name || project.new_task_id.slice(0, 8)}
+                        </div>
+                        <div className="muted" style={{ fontSize: 12 }}>
+                          {project.new_task?.ne_ip || "—"}
+                          {project.new_task?.note ? ` · ${project.new_task.note}` : ""}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-2">
+                    <strong style={{ fontSize: 13 }}>{t("bizMigration.portMapping")}</strong>
+                    <FieldSelect
+                      value={mappingId}
+                      onChange={(e) => setMappingId(e.target.value)}
+                      fullWidth
+                      hint={t("bizMigration.portMappingHint")}
+                    >
+                      <option value="">{t("bizMigration.optionalNone")}</option>
+                      {mappings.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.name}
+                        </option>
+                      ))}
+                    </FieldSelect>
+                  </div>
+
+                  <div className="flex flex-col gap-2">
+                    <strong style={{ fontSize: 13 }}>{t("bizMigration.sectionBaseline")}</strong>
+                    <p className="muted" style={{ margin: 0, fontSize: 12 }}>
+                      {t("bizMigration.sectionBaselineHint")}
+                    </p>
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "1fr 1fr",
+                        gap: 12,
+                        alignItems: "start",
+                      }}
+                    >
                       <FieldSelect
-                        value={mappingId}
-                        onChange={(e) => setMappingId(e.target.value)}
-                        fullWidth
-                        aria-label={t("bizMigration.portMapping")}
-                      >
-                        <option value="">—</option>
-                        {mappings.map((m) => (
-                          <option key={m.id} value={m.id}>
-                            {m.name}
-                          </option>
-                        ))}
-                      </FieldSelect>
-                    </label>
-                    <label>
-                      <span>{t("bizMigration.oldBaseline")}</span>
-                      <FieldSelect
+                        label={t("bizMigration.oldBaseline")}
                         value={oldBaselineId}
                         onChange={(e) => setOldBaselineId(e.target.value)}
                         fullWidth
-                        aria-label={t("bizMigration.oldBaseline")}
+                        hint={t("bizMigration.baselinePickHint")}
                       >
                         {batchOptions(oldBatches)}
                       </FieldSelect>
-                    </label>
-                    <label>
-                      <span>{t("bizMigration.newBaseline")}</span>
                       <FieldSelect
+                        label={t("bizMigration.newBaseline")}
                         value={newBaselineId}
                         onChange={(e) => setNewBaselineId(e.target.value)}
                         fullWidth
-                        aria-label={t("bizMigration.newBaseline")}
+                        hint={t("bizMigration.baselinePickHint")}
                       >
                         {batchOptions(newBatches)}
                       </FieldSelect>
-                    </label>
+                    </div>
                   </div>
+
                   <div className="btn-row">
                     <Button size="sm" variant="primary" isDisabled={busy} onPress={() => void onSaveBaseline()}>
                       {t("bizMigration.saveBaseline")}
@@ -1002,7 +1096,7 @@ export function BizMigrationPage() {
                       <Input
                         size="sm"
                         value={portFilter}
-                        onValueChange={setPortFilter}
+                        onChange={(e) => setPortFilter(e.target.value)}
                         placeholder={t("bizMigration.portFilterPh")}
                       />
                     </div>
@@ -1060,11 +1154,11 @@ export function BizMigrationPage() {
 
                   <div className="btn-row" style={{ flexWrap: "wrap", gap: 8, alignItems: "end" }}>
                     <Input
-                      label={t("bizMigration.batchLabel")}
                       value={batchLabel}
-                      onValueChange={setBatchLabel}
+                      onChange={(e) => setBatchLabel(e.target.value)}
                       size="sm"
                       placeholder={t("bizMigration.defaultBatchLabel")}
+                      aria-label={t("bizMigration.batchLabel")}
                       style={{ minWidth: 160 }}
                     />
                     <Button size="sm" variant="primary" isDisabled={busy} onPress={() => void onCreateBatch()}>
