@@ -1,6 +1,9 @@
-import { Button, Input } from "@heroui/react";
+import { Button, Input, Modal } from "@heroui/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
+import { AppModalShell } from "../../components/ui/AppModalShell";
 import { FieldSelect } from "../../components/ui/FieldSelect";
+import { useDebouncedValue } from "../../hooks/useDebouncedValue";
 import { useToast } from "../../hooks/useToast";
 import { useI18n } from "../../i18n";
 import {
@@ -24,7 +27,8 @@ import {
   bizStateListTasks,
   formatErr,
 } from "../../services/api";
-import { Link } from "react-router-dom";
+import { formatSystemTime } from "../../utils/time";
+import { jobChipColor, NmStatusChip } from "./nmChips";
 
 type TaskOpt = { id: string; ne_name: string; ne_ip: string; note?: string; interval_sec?: number };
 type Project = {
@@ -36,6 +40,8 @@ type Project = {
   new_baseline_batch_id: string;
   mapping_id: string;
   status: string;
+  note?: string;
+  created_at?: string | null;
   old_task?: TaskOpt;
   new_task?: TaskOpt;
 };
@@ -93,6 +99,8 @@ type BaselinePort = {
   mapped_to?: string;
 };
 
+type DetailTab = "setup" | "batches" | "board";
+
 const COLOR: Record<string, string> = {
   green: "#16a34a",
   yellow: "#ca8a04",
@@ -100,7 +108,7 @@ const COLOR: Record<string, string> = {
   gray: "#6b7280",
 };
 
-  const VERDICT_I18N: Record<string, string> = {
+const VERDICT_I18N: Record<string, string> = {
   migrated: "bizMigration.verdictMigrated",
   migrating: "bizMigration.verdictMigrating",
   lost: "bizMigration.verdictLost",
@@ -111,6 +119,18 @@ const COLOR: Record<string, string> = {
   ok: "bizMigration.verdictOk",
 };
 
+function fmtTime(v?: string | null) {
+  if (!v) return "—";
+  return formatSystemTime(v) || v;
+}
+
+function taskLabel(x: TaskOpt) {
+  const base = `${x.ne_name || x.id} (${x.ne_ip || "-"})`;
+  const note = x.note ? ` · ${x.note}` : "";
+  const iv = x.interval_sec ? ` · ${x.interval_sec}s` : "";
+  return `${base}${note}${iv}`;
+}
+
 export function BizMigrationPage() {
   const { t } = useI18n();
   const { showOk, showError } = useToast();
@@ -118,7 +138,27 @@ export function BizMigrationPage() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [tasks, setTasks] = useState<TaskOpt[]>([]);
   const [mappings, setMappings] = useState<{ id: string; name: string }[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [listKeyword, setListKeyword] = useState("");
+  const debouncedListKw = useDebouncedValue(listKeyword, 250);
+
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createName, setCreateName] = useState("");
+  const [createOldTaskId, setCreateOldTaskId] = useState("");
+  const [createNewTaskId, setCreateNewTaskId] = useState("");
+  const [createMappingId, setCreateMappingId] = useState("");
+  const [createOldBaselineId, setCreateOldBaselineId] = useState("");
+  const [createNewBaselineId, setCreateNewBaselineId] = useState("");
+  const [createOldBatches, setCreateOldBatches] = useState<{ id: string; started_at?: string | null }[]>([]);
+  const [createNewBatches, setCreateNewBatches] = useState<{ id: string; started_at?: string | null }[]>([]);
+
   const [projectId, setProjectId] = useState("");
+  const [detailTab, setDetailTab] = useState<DetailTab>("setup");
+  const [mappingId, setMappingId] = useState("");
+  const [oldBaselineId, setOldBaselineId] = useState("");
+  const [newBaselineId, setNewBaselineId] = useState("");
+  const [oldBatches, setOldBatches] = useState<{ id: string; started_at?: string | null }[]>([]);
+  const [newBatches, setNewBatches] = useState<{ id: string; started_at?: string | null }[]>([]);
   const [batches, setBatches] = useState<MigBatch[]>([]);
   const [batchId, setBatchId] = useState("");
   const [board, setBoard] = useState<{
@@ -133,17 +173,7 @@ export function BizMigrationPage() {
     } | null;
   } | null>(null);
   const [diffs, setDiffs] = useState<DiffRow[]>([]);
-  const [busy, setBusy] = useState(false);
   const [onlyExpect, setOnlyExpect] = useState(true);
-
-  const [newName, setNewName] = useState("");
-  const [oldTaskId, setOldTaskId] = useState("");
-  const [newTaskId, setNewTaskId] = useState("");
-  const [mappingId, setMappingId] = useState("");
-  const [oldBaselineId, setOldBaselineId] = useState("");
-  const [newBaselineId, setNewBaselineId] = useState("");
-  const [oldBatches, setOldBatches] = useState<{ id: string; started_at?: string | null }[]>([]);
-  const [newBatches, setNewBatches] = useState<{ id: string; started_at?: string | null }[]>([]);
   const [batchLabel, setBatchLabel] = useState("");
   const [baselinePorts, setBaselinePorts] = useState<BaselinePort[]>([]);
   const [selectedPorts, setSelectedPorts] = useState<Set<string>>(new Set());
@@ -161,6 +191,32 @@ export function BizMigrationPage() {
   const visibleDiffs = useMemo(
     () => (onlyExpect ? diffs.filter((d) => d.in_expect) : diffs),
     [diffs, onlyExpect],
+  );
+
+  const filteredProjects = useMemo(() => {
+    const kw = debouncedListKw.trim().toLowerCase();
+    if (!kw) return projects;
+    return projects.filter((p) => {
+      const blob = [
+        p.name,
+        p.status,
+        p.note || "",
+        p.old_task?.ne_name || "",
+        p.old_task?.ne_ip || "",
+        p.new_task?.ne_name || "",
+        p.new_task?.ne_ip || "",
+        p.old_task_id,
+        p.new_task_id,
+      ]
+        .join(" ")
+        .toLowerCase();
+      return blob.includes(kw);
+    });
+  }, [projects, debouncedListKw]);
+
+  const activeCount = useMemo(
+    () => projects.filter((p) => String(p.status || "").toLowerCase() === "active").length,
+    [projects],
   );
 
   useEffect(() => {
@@ -252,6 +308,11 @@ export function BizMigrationPage() {
       setBatches([]);
       setBatchId("");
       setBaselinePorts([]);
+      setRedTickets([]);
+      setOpenRedCount(0);
+      setBoard(null);
+      setDiffs([]);
+      setAcceptInfo(null);
       return;
     }
     void (async () => {
@@ -259,16 +320,13 @@ export function BizMigrationPage() {
         const res = await bizMigrationListBatches(projectId);
         const items = (res.items || []) as MigBatch[];
         setBatches(items);
-        if (!items.find((b) => b.id === batchId)) {
-          setBatchId(items[0]?.id || "");
-        }
+        setBatchId((prev) => (items.find((b) => b.id === prev) ? prev : items[0]?.id || ""));
         await loadBaselinePorts(projectId);
         await loadRedTickets(projectId);
       } catch (e) {
         showError(formatErr(e));
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, showError, loadBaselinePorts, loadRedTickets]);
 
   useEffect(() => {
@@ -282,11 +340,41 @@ export function BizMigrationPage() {
   }, [batchId]);
 
   useEffect(() => {
-    if (!oldTaskId) {
+    if (!createOldTaskId) {
+      setCreateOldBatches([]);
+      return;
+    }
+    void bizStateListBatches(createOldTaskId, 30).then((r) => {
+      setCreateOldBatches(
+        ((r.items || []) as Record<string, unknown>[]).map((x) => ({
+          id: String(x.id || ""),
+          started_at: (x.started_at as string) || null,
+        })),
+      );
+    });
+  }, [createOldTaskId]);
+
+  useEffect(() => {
+    if (!createNewTaskId) {
+      setCreateNewBatches([]);
+      return;
+    }
+    void bizStateListBatches(createNewTaskId, 30).then((r) => {
+      setCreateNewBatches(
+        ((r.items || []) as Record<string, unknown>[]).map((x) => ({
+          id: String(x.id || ""),
+          started_at: (x.started_at as string) || null,
+        })),
+      );
+    });
+  }, [createNewTaskId]);
+
+  useEffect(() => {
+    if (!project?.old_task_id) {
       setOldBatches([]);
       return;
     }
-    void bizStateListBatches(oldTaskId, 30).then((r) => {
+    void bizStateListBatches(project.old_task_id, 30).then((r) => {
       setOldBatches(
         ((r.items || []) as Record<string, unknown>[]).map((x) => ({
           id: String(x.id || ""),
@@ -294,14 +382,14 @@ export function BizMigrationPage() {
         })),
       );
     });
-  }, [oldTaskId]);
+  }, [project?.old_task_id]);
 
   useEffect(() => {
-    if (!newTaskId) {
+    if (!project?.new_task_id) {
       setNewBatches([]);
       return;
     }
-    void bizStateListBatches(newTaskId, 30).then((r) => {
+    void bizStateListBatches(project.new_task_id, 30).then((r) => {
       setNewBatches(
         ((r.items || []) as Record<string, unknown>[]).map((x) => ({
           id: String(x.id || ""),
@@ -309,7 +397,15 @@ export function BizMigrationPage() {
         })),
       );
     });
-  }, [newTaskId]);
+  }, [project?.new_task_id]);
+
+  useEffect(() => {
+    if (project) {
+      setMappingId(project.mapping_id || "");
+      setOldBaselineId(project.old_baseline_batch_id || "");
+      setNewBaselineId(project.new_baseline_batch_id || "");
+    }
+  }, [project]);
 
   async function loadBoard(bid: string, runId = "") {
     try {
@@ -327,26 +423,60 @@ export function BizMigrationPage() {
     }
   }
 
+  function resetCreateForm() {
+    setCreateName("");
+    setCreateOldTaskId("");
+    setCreateNewTaskId("");
+    setCreateMappingId("");
+    setCreateOldBaselineId("");
+    setCreateNewBaselineId("");
+  }
+
+  const openCreate = () => {
+    closeProject();
+    resetCreateForm();
+    setCreateOpen(true);
+  };
+
+  const closeCreate = () => {
+    setCreateOpen(false);
+    resetCreateForm();
+  };
+
+  const openProject = (id: string, tab: DetailTab = "setup") => {
+    setProjectId(id);
+    setDetailTab(tab);
+    setSelectedPorts(new Set());
+    setPortFilter("");
+    setBatchLabel("");
+    setOnlyExpect(true);
+  };
+
+  const closeProject = () => {
+    setProjectId("");
+    setDetailTab("setup");
+  };
+
   async function onCreateProject() {
-    if (!newName.trim() || !oldTaskId || !newTaskId) {
+    if (!createName.trim() || !createOldTaskId || !createNewTaskId) {
       showError(t("bizMigration.needProjectFields"));
       return;
     }
     setBusy(true);
     try {
       const p = (await bizMigrationCreateProject({
-        name: newName.trim(),
-        old_task_id: oldTaskId,
-        new_task_id: newTaskId,
-        mapping_id: mappingId || "",
-        old_baseline_batch_id: oldBaselineId || "",
-        new_baseline_batch_id: newBaselineId || "",
+        name: createName.trim(),
+        old_task_id: createOldTaskId,
+        new_task_id: createNewTaskId,
+        mapping_id: createMappingId || "",
+        old_baseline_batch_id: createOldBaselineId || "",
+        new_baseline_batch_id: createNewBaselineId || "",
         status: "active",
       })) as Project;
       await reloadProjects();
-      setProjectId(p.id);
-      setNewName("");
+      closeCreate();
       showOk(t("bizMigration.projectCreated"));
+      openProject(p.id, "setup");
     } catch (e) {
       showError(formatErr(e));
     } finally {
@@ -393,11 +523,16 @@ export function BizMigrationPage() {
       setBatchLabel("");
       setSelectedPorts(new Set());
       if (Number((b as { open_red_count?: number }).open_red_count || 0) > 0) {
-        showOk(t("bizMigration.batchCreatedWithRed", { n: String((b as { open_red_count?: number }).open_red_count) }));
+        showOk(
+          t("bizMigration.batchCreatedWithRed", {
+            n: String((b as { open_red_count?: number }).open_red_count),
+          }),
+        );
       } else {
         showOk(t("bizMigration.batchCreated"));
       }
       await loadRedTickets(projectId);
+      setDetailTab("board");
     } catch (e) {
       showError(formatErr(e));
     } finally {
@@ -427,6 +562,7 @@ export function BizMigrationPage() {
         if (res.batch?.accept_run_id) {
           await loadBoard(batchId, res.batch.accept_run_id);
         }
+        setDetailTab("board");
       } else {
         await bizMigrationPatchBatch(batchId, { status });
         const res = await bizMigrationListBatches(projectId);
@@ -458,6 +594,7 @@ export function BizMigrationPage() {
       const run = await bizMigrationEvaluate(batchId, {});
       await loadBoard(batchId, String((run as { id?: string }).id || ""));
       showOk(t("bizMigration.evaluated"));
+      setDetailTab("board");
     } catch (e) {
       showError(formatErr(e));
     } finally {
@@ -469,13 +606,11 @@ export function BizMigrationPage() {
     if (!projectId) return;
     setBusy(true);
     try {
-      const res = await bizMigrationEnsurePortHighfreq(projectId, {
+      await bizMigrationEnsurePortHighfreq(projectId, {
         interval_sec: 60,
         collect_now: true,
       });
       await reloadProjects();
-      const pr = await bizMigrationListProjects();
-      setProjects((pr.items || []) as Project[]);
       showOk(t("bizMigration.highfreqReady"));
     } catch (e) {
       showError(formatErr(e));
@@ -497,16 +632,6 @@ export function BizMigrationPage() {
     }
   }
 
-  useEffect(() => {
-    if (project) {
-      setOldTaskId(project.old_task_id);
-      setNewTaskId(project.new_task_id);
-      setMappingId(project.mapping_id || "");
-      setOldBaselineId(project.old_baseline_batch_id || "");
-      setNewBaselineId(project.new_baseline_batch_id || "");
-    }
-  }, [project]);
-
   function togglePort(name: string) {
     setSelectedPorts((prev) => {
       const next = new Set(prev);
@@ -521,418 +646,638 @@ export function BizMigrationPage() {
     return key ? t(key) : v;
   }
 
+  function statusLabel(status: string) {
+    const s = String(status || "").toLowerCase();
+    if (s === "active") return t("bizMigration.statusActive");
+    if (s === "done" || s === "completed") return t("bizMigration.statusDone");
+    if (s === "paused") return t("bizMigration.statusPaused");
+    if (s === "pending") return t("bizMigration.statusPending");
+    if (s === "review") return t("bizMigration.statusReview");
+    return status || "—";
+  }
+
+  const taskOptions = (
+    <>
+      <option value="">—</option>
+      {tasks.map((x) => (
+        <option key={x.id} value={x.id}>
+          {taskLabel(x)}
+        </option>
+      ))}
+    </>
+  );
+
+  const batchOptions = (items: { id: string; started_at?: string | null }[]) => (
+    <>
+      <option value="">—</option>
+      {items.map((x) => (
+        <option key={x.id} value={x.id}>
+          {fmtTime(x.started_at) !== "—" ? fmtTime(x.started_at) : x.id.slice(0, 12)}
+        </option>
+      ))}
+    </>
+  );
+
   return (
-    <div className="nm-page" style={{ display: "grid", gap: 16 }}>
-      <div>
-        <h1 style={{ margin: 0, fontSize: "1.25rem" }}>{t("bizMigration.title")}</h1>
-        <p style={{ margin: "4px 0 0", opacity: 0.75, fontSize: 13 }}>{t("bizMigration.hintPort")}</p>
+    <section className="panel nm-page-panel">
+      <div className="panel__toolbar">
+        <h2>{t("bizMigration.title")}</h2>
+        <div className="btn-row">
+          <Button size="sm" variant="primary" onPress={openCreate}>
+            {t("bizMigration.create")}
+          </Button>
+        </div>
+      </div>
+      <p className="panel__hint muted">{t("bizMigration.hintPort")}</p>
+
+      <div className="pt-list">
+        <div className="pt-list-kpis">
+          <div className="pt-list-kpi">
+            <div className="pt-list-kpi__label">{t("bizMigration.kpiProjects")}</div>
+            <div className="pt-list-kpi__value">{projects.length}</div>
+          </div>
+          <div className="pt-list-kpi pt-list-kpi--live">
+            <div className="pt-list-kpi__label">{t("bizMigration.kpiActive")}</div>
+            <div className="pt-list-kpi__value">{activeCount}</div>
+          </div>
+        </div>
+
+        <div className="filter-inline">
+          <Input
+            value={listKeyword}
+            placeholder={t("bizMigration.listFilterPh")}
+            onChange={(e) => setListKeyword(e.target.value)}
+          />
+        </div>
+
+        <div className="pt-list-table-wrap">
+          <table className="data-table pt-list-table">
+            <thead>
+              <tr>
+                <th>{t("bizMigration.colName")}</th>
+                <th>{t("bizMigration.colPair")}</th>
+                <th>{t("bizMigration.colStatus")}</th>
+                <th>{t("bizMigration.colBaseline")}</th>
+                <th>{t("bizMigration.colCreated")}</th>
+                <th>{t("bizMigration.colActions")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredProjects.map((row) => (
+                <tr key={row.id}>
+                  <td>
+                    <div className="pt-list-task-name">{row.name}</div>
+                    {row.note ? <div className="muted">{row.note}</div> : null}
+                  </td>
+                  <td>
+                    <div className="pt-list-task-name">
+                      {row.old_task?.ne_name || row.old_task_id.slice(0, 8)}
+                    </div>
+                    <div className="muted">
+                      → {row.new_task?.ne_name || row.new_task_id.slice(0, 8)}
+                      {row.old_task?.ne_ip || row.new_task?.ne_ip
+                        ? ` · ${row.old_task?.ne_ip || "—"} / ${row.new_task?.ne_ip || "—"}`
+                        : ""}
+                    </div>
+                  </td>
+                  <td>
+                    <NmStatusChip color={jobChipColor(row.status)}>{statusLabel(row.status)}</NmStatusChip>
+                  </td>
+                  <td>
+                    {row.old_baseline_batch_id ? (
+                      <NmStatusChip color="success">{t("bizMigration.baselineSet")}</NmStatusChip>
+                    ) : (
+                      <NmStatusChip color="warning">{t("bizMigration.baselineUnset")}</NmStatusChip>
+                    )}
+                  </td>
+                  <td className="pt-list-time">{fmtTime(row.created_at)}</td>
+                  <td>
+                    <div className="pt-list-actions">
+                      <Button size="sm" variant="primary" onPress={() => openProject(row.id, "setup")}>
+                        {t("bizMigration.detail")}
+                      </Button>
+                      <Button size="sm" variant="ghost" onPress={() => openProject(row.id, "batches")}>
+                        {t("bizMigration.batches")}
+                      </Button>
+                      <Button size="sm" variant="secondary" onPress={() => openProject(row.id, "board")}>
+                        {t("bizMigration.board")}
+                      </Button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {!filteredProjects.length ? (
+                <tr>
+                  <td colSpan={6}>
+                    <div className="pt-list-empty">{t("bizMigration.empty")}</div>
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
       </div>
 
-      <section className="nm-card" style={{ display: "grid", gap: 10, padding: 12 }}>
-        <strong>{t("bizMigration.createProject")}</strong>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
-          <Input
-            label={t("bizMigration.projectName")}
-            value={newName}
-            onValueChange={setNewName}
-            size="sm"
-          />
-          <FieldSelect
-            label={t("bizMigration.oldTask")}
-            value={oldTaskId}
-            onChange={(e) => setOldTaskId(e.target.value)}
-            fullWidth
-          >
-            <option value="">—</option>
-            {tasks.map((x) => (
-              <option key={x.id} value={x.id}>
-                {x.ne_name || x.id} ({x.ne_ip || "-"})
-                {x.note ? ` · ${x.note}` : ""}
-                {x.interval_sec ? ` · ${x.interval_sec}s` : ""}
-              </option>
-            ))}
-          </FieldSelect>
-          <FieldSelect
-            label={t("bizMigration.newTask")}
-            value={newTaskId}
-            onChange={(e) => setNewTaskId(e.target.value)}
-            fullWidth
-          >
-            <option value="">—</option>
-            {tasks.map((x) => (
-              <option key={x.id} value={x.id}>
-                {x.ne_name || x.id} ({x.ne_ip || "-"})
-                {x.note ? ` · ${x.note}` : ""}
-                {x.interval_sec ? ` · ${x.interval_sec}s` : ""}
-              </option>
-            ))}
-          </FieldSelect>
-          <FieldSelect
-            label={t("bizMigration.portMapping")}
-            value={mappingId}
-            onChange={(e) => setMappingId(e.target.value)}
-            fullWidth
-          >
-            <option value="">—</option>
-            {mappings.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.name}
-              </option>
-            ))}
-          </FieldSelect>
-          <FieldSelect
-            label={t("bizMigration.oldBaseline")}
-            value={oldBaselineId}
-            onChange={(e) => setOldBaselineId(e.target.value)}
-            fullWidth
-          >
-            <option value="">—</option>
-            {oldBatches.map((x) => (
-              <option key={x.id} value={x.id}>
-                {String(x.started_at || x.id).slice(0, 32)}
-              </option>
-            ))}
-          </FieldSelect>
-          <FieldSelect
-            label={t("bizMigration.newBaseline")}
-            value={newBaselineId}
-            onChange={(e) => setNewBaselineId(e.target.value)}
-            fullWidth
-          >
-            <option value="">—</option>
-            {newBatches.map((x) => (
-              <option key={x.id} value={x.id}>
-                {String(x.started_at || x.id).slice(0, 32)}
-              </option>
-            ))}
-          </FieldSelect>
-        </div>
-        <Button size="sm" variant="primary" isDisabled={busy} onPress={() => void onCreateProject()}>
-          {t("bizMigration.createProject")}
-        </Button>
-      </section>
+      {/* Create task */}
+      <AppModalShell open={createOpen} onClose={closeCreate} size="lg">
+        <Modal.Header>
+          <Modal.Heading>{t("bizMigration.create")}</Modal.Heading>
+          <Modal.CloseTrigger />
+        </Modal.Header>
+        <Modal.Body className="flex flex-col gap-3">
+          <p className="muted">{t("bizMigration.createHint")}</p>
+          <div className="form-grid">
+            <label className="form-grid__full">
+              <span>{t("bizMigration.projectName")}</span>
+              <Input value={createName} onValueChange={setCreateName} size="sm" />
+            </label>
+            <label>
+              <span>{t("bizMigration.oldTask")}</span>
+              <FieldSelect
+                value={createOldTaskId}
+                onChange={(e) => setCreateOldTaskId(e.target.value)}
+                fullWidth
+                aria-label={t("bizMigration.oldTask")}
+              >
+                {taskOptions}
+              </FieldSelect>
+            </label>
+            <label>
+              <span>{t("bizMigration.newTask")}</span>
+              <FieldSelect
+                value={createNewTaskId}
+                onChange={(e) => setCreateNewTaskId(e.target.value)}
+                fullWidth
+                aria-label={t("bizMigration.newTask")}
+              >
+                {taskOptions}
+              </FieldSelect>
+            </label>
+            <label>
+              <span>{t("bizMigration.portMapping")}</span>
+              <FieldSelect
+                value={createMappingId}
+                onChange={(e) => setCreateMappingId(e.target.value)}
+                fullWidth
+                aria-label={t("bizMigration.portMapping")}
+              >
+                <option value="">—</option>
+                {mappings.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name}
+                  </option>
+                ))}
+              </FieldSelect>
+            </label>
+            <label>
+              <span>{t("bizMigration.oldBaseline")}</span>
+              <FieldSelect
+                value={createOldBaselineId}
+                onChange={(e) => setCreateOldBaselineId(e.target.value)}
+                fullWidth
+                aria-label={t("bizMigration.oldBaseline")}
+              >
+                {batchOptions(createOldBatches)}
+              </FieldSelect>
+            </label>
+            <label>
+              <span>{t("bizMigration.newBaseline")}</span>
+              <FieldSelect
+                value={createNewBaselineId}
+                onChange={(e) => setCreateNewBaselineId(e.target.value)}
+                fullWidth
+                aria-label={t("bizMigration.newBaseline")}
+              >
+                {batchOptions(createNewBatches)}
+              </FieldSelect>
+            </label>
+          </div>
+          {!tasks.length ? (
+            <p className="muted">
+              {t("bizMigration.needBizStateTasks")}{" "}
+              <Link to="/network/tasks/biz-state">{t("bizMigration.openBizState")}</Link>
+            </p>
+          ) : null}
+        </Modal.Body>
+        <Modal.Footer>
+          <Button size="sm" variant="secondary" onPress={closeCreate}>
+            {t("bizMigration.cancel")}
+          </Button>
+          <Button size="sm" variant="primary" isDisabled={busy} onPress={() => void onCreateProject()}>
+            {t("bizMigration.create")}
+          </Button>
+        </Modal.Footer>
+      </AppModalShell>
 
-      <section
-        style={{ display: "grid", gridTemplateColumns: "220px 1fr", gap: 12, alignItems: "start" }}
-      >
-        <div className="nm-card" style={{ padding: 10, display: "grid", gap: 6 }}>
-          <strong>{t("bizMigration.projects")}</strong>
-          {projects.length === 0 && (
-            <span style={{ fontSize: 12, opacity: 0.7 }}>{t("bizMigration.emptyProjects")}</span>
-          )}
-          {projects.map((p) => (
-            <button
-              key={p.id}
-              type="button"
-              onClick={() => setProjectId(p.id)}
-              style={{
-                textAlign: "left",
-                padding: "6px 8px",
-                borderRadius: 6,
-                border: projectId === p.id ? "1px solid #2563eb" : "1px solid transparent",
-                background: projectId === p.id ? "rgba(37,99,235,.08)" : "transparent",
-                cursor: "pointer",
-              }}
-            >
-              <div style={{ fontWeight: 600, fontSize: 13 }}>{p.name}</div>
-              <div style={{ fontSize: 11, opacity: 0.7 }}>
-                {p.old_task?.ne_name || p.old_task_id.slice(0, 6)} →{" "}
-                {p.new_task?.ne_name || p.new_task_id.slice(0, 6)}
-              </div>
-            </button>
-          ))}
-        </div>
-
-        <div style={{ display: "grid", gap: 12 }}>
-          {project && (
-            <div className="nm-card" style={{ padding: 12, display: "grid", gap: 10 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
-                <strong>{project.name}</strong>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  <Button
-                    size="sm"
-                    variant="primary"
-                    isDisabled={busy}
-                    onPress={() => void onEnsureHighfreq()}
-                  >
-                    {t("bizMigration.enableHighfreq")}
-                  </Button>
-                  <Button size="sm" variant="secondary" isDisabled={busy} onPress={() => void onCollectNow()}>
-                    {t("bizMigration.collectNow")}
-                  </Button>
-                  <Button size="sm" variant="secondary" isDisabled={busy} onPress={() => void onSaveBaseline()}>
-                    {t("bizMigration.saveBaseline")}
-                  </Button>
-                  <Link
-                    to="/network/tasks/biz-state"
-                    style={{ fontSize: 12, alignSelf: "center" }}
-                  >
-                    {t("bizMigration.openBizState")}
-                  </Link>
-                </div>
-              </div>
-              {(project.old_task || project.new_task) && (
-                <div style={{ fontSize: 12, opacity: 0.8 }}>
-                  {t("bizMigration.boundTasks")}:{" "}
-                  {project.old_task?.ne_name || project.old_task_id.slice(0, 8)}
-                  {project.old_task?.note ? ` (${project.old_task.note})` : ""} /
-                  {project.new_task?.ne_name || project.new_task_id.slice(0, 8)}
-                  {project.new_task?.note ? ` (${project.new_task.note})` : ""}
-                  {project.old_task?.interval_sec
-                    ? ` · ${project.old_task.interval_sec}s`
-                    : ""}
-                </div>
-              )}
-              {openRedCount > 0 && (
-                <div style={{ fontSize: 12, color: COLOR.red }}>
-                  {t("bizMigration.openRedHint", { n: String(openRedCount) })}
-                </div>
-              )}
-              <p style={{ margin: 0, fontSize: 12, opacity: 0.7 }}>{t("bizMigration.highfreqHint")}</p>
-
-              <div>
-                <div style={{ fontWeight: 600, marginBottom: 6 }}>
-                  {t("bizMigration.pickExpectPorts")} ({selectedPorts.size})
-                </div>
-                <Input
+      {/* Project detail */}
+      <AppModalShell open={Boolean(projectId && project)} onClose={closeProject} size="cover">
+        <Modal.Header>
+          <Modal.Heading>
+            {project?.name || t("bizMigration.detail")}
+            {project ? (
+              <span style={{ marginLeft: 10 }}>
+                <NmStatusChip color={jobChipColor(project.status)}>{statusLabel(project.status)}</NmStatusChip>
+              </span>
+            ) : null}
+          </Modal.Heading>
+          <Modal.CloseTrigger />
+        </Modal.Header>
+        <Modal.Body className="flex flex-col gap-3">
+          {project ? (
+            <>
+              <div className="btn-row" style={{ flexWrap: "wrap", gap: 8 }}>
+                <Button
                   size="sm"
-                  value={portFilter}
-                  onValueChange={setPortFilter}
-                  placeholder={t("bizMigration.portFilterPh")}
-                  style={{ marginBottom: 8 }}
-                />
-                {!project.old_baseline_batch_id && (
-                  <div style={{ fontSize: 12, color: COLOR.yellow, marginBottom: 6 }}>
-                    {t("bizMigration.needBaselineFirst")}
-                  </div>
-                )}
-                <div
-                  style={{
-                    maxHeight: 220,
-                    overflow: "auto",
-                    border: "1px solid rgba(0,0,0,.08)",
-                    borderRadius: 8,
-                  }}
+                  variant="primary"
+                  isDisabled={busy}
+                  onPress={() => void onEnsureHighfreq()}
                 >
-                  <table className="nm-table" style={{ width: "100%", fontSize: 12 }}>
-                    <thead>
-                      <tr>
-                        <th style={{ width: 36 }} />
-                        <th>{t("bizMigration.colPort")}</th>
-                        <th>admin/phy/prot</th>
-                        <th>{t("bizMigration.colMapped")}</th>
-                        <th>{t("bizMigration.colDesc")}</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filteredBaselinePorts.map((p) => (
-                        <tr key={p.interface} onClick={() => togglePort(p.interface)} style={{ cursor: "pointer" }}>
-                          <td>
-                            <input
-                              type="checkbox"
-                              checked={selectedPorts.has(p.interface)}
-                              onChange={() => togglePort(p.interface)}
-                            />
-                          </td>
-                          <td>{p.interface}</td>
-                          <td>
-                            {p.admin || "-"}/{p.phy || "-"}/{p.prot || "-"}
-                          </td>
-                          <td>{p.mapped_to || "—"}</td>
-                          <td style={{ maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis" }}>
-                            {p.description || ""}
-                          </td>
-                        </tr>
-                      ))}
-                      {filteredBaselinePorts.length === 0 && (
-                        <tr>
-                          <td colSpan={5} style={{ opacity: 0.6 }}>
-                            {t("bizMigration.emptyBaselinePorts")}
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "end" }}>
-                <Input
-                  label={t("bizMigration.batchLabel")}
-                  value={batchLabel}
-                  onValueChange={setBatchLabel}
-                  size="sm"
-                  placeholder={t("bizMigration.defaultBatchLabel")}
-                  style={{ minWidth: 160 }}
-                />
-                <Button size="sm" isDisabled={busy} onPress={() => void onCreateBatch()}>
-                  {t("bizMigration.createBatch")}
+                  {t("bizMigration.enableHighfreq")}
                 </Button>
-                <FieldSelect
-                  label={t("bizMigration.batches")}
-                  value={batchId}
-                  onChange={(e) => setBatchId(e.target.value)}
+                <Button size="sm" variant="secondary" isDisabled={busy} onPress={() => void onCollectNow()}>
+                  {t("bizMigration.collectNow")}
+                </Button>
+                <Link to="/network/tasks/biz-state" style={{ fontSize: 12, alignSelf: "center" }}>
+                  {t("bizMigration.openBizState")}
+                </Link>
+                {openRedCount > 0 ? (
+                  <span className="form-error" style={{ marginLeft: "auto", fontSize: 12 }}>
+                    {t("bizMigration.openRedHint", { n: String(openRedCount) })}
+                  </span>
+                ) : null}
+              </div>
+              <p className="muted" style={{ margin: 0, fontSize: 12 }}>
+                {t("bizMigration.boundTasks")}:{" "}
+                {project.old_task?.ne_name || project.old_task_id.slice(0, 8)}
+                {project.old_task?.note ? ` (${project.old_task.note})` : ""} /{" "}
+                {project.new_task?.ne_name || project.new_task_id.slice(0, 8)}
+                {project.new_task?.note ? ` (${project.new_task.note})` : ""}
+                {project.old_task?.interval_sec ? ` · ${project.old_task.interval_sec}s` : ""}
+              </p>
+              <p className="muted" style={{ margin: 0, fontSize: 12 }}>
+                {t("bizMigration.highfreqHint")}
+              </p>
+
+              <div className="btn-row nm-config-modal__tabs">
+                <Button
+                  size="sm"
+                  variant={detailTab === "setup" ? "primary" : "secondary"}
+                  onPress={() => setDetailTab("setup")}
                 >
-                  {batches.map((b) => (
-                    <option key={b.id} value={b.id}>
-                      {b.batch_label} ({b.status})
-                    </option>
-                  ))}
-                </FieldSelect>
-                {batch && (
-                  <>
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      isDisabled={busy}
-                      onPress={() => void setBatchStatus("active")}
-                    >
-                      {t("bizMigration.startBatch")}
+                  {t("bizMigration.tabSetup")}
+                </Button>
+                <Button
+                  size="sm"
+                  variant={detailTab === "batches" ? "primary" : "secondary"}
+                  onPress={() => setDetailTab("batches")}
+                >
+                  {t("bizMigration.tabBatches")}
+                </Button>
+                <Button
+                  size="sm"
+                  variant={detailTab === "board" ? "primary" : "secondary"}
+                  onPress={() => setDetailTab("board")}
+                >
+                  {t("bizMigration.tabBoard")}
+                </Button>
+              </div>
+
+              {detailTab === "setup" ? (
+                <div className="flex flex-col gap-3">
+                  <div className="form-grid">
+                    <label>
+                      <span>{t("bizMigration.portMapping")}</span>
+                      <FieldSelect
+                        value={mappingId}
+                        onChange={(e) => setMappingId(e.target.value)}
+                        fullWidth
+                        aria-label={t("bizMigration.portMapping")}
+                      >
+                        <option value="">—</option>
+                        {mappings.map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.name}
+                          </option>
+                        ))}
+                      </FieldSelect>
+                    </label>
+                    <label>
+                      <span>{t("bizMigration.oldBaseline")}</span>
+                      <FieldSelect
+                        value={oldBaselineId}
+                        onChange={(e) => setOldBaselineId(e.target.value)}
+                        fullWidth
+                        aria-label={t("bizMigration.oldBaseline")}
+                      >
+                        {batchOptions(oldBatches)}
+                      </FieldSelect>
+                    </label>
+                    <label>
+                      <span>{t("bizMigration.newBaseline")}</span>
+                      <FieldSelect
+                        value={newBaselineId}
+                        onChange={(e) => setNewBaselineId(e.target.value)}
+                        fullWidth
+                        aria-label={t("bizMigration.newBaseline")}
+                      >
+                        {batchOptions(newBatches)}
+                      </FieldSelect>
+                    </label>
+                  </div>
+                  <div className="btn-row">
+                    <Button size="sm" variant="primary" isDisabled={busy} onPress={() => void onSaveBaseline()}>
+                      {t("bizMigration.saveBaseline")}
                     </Button>
-                    <Button
+                  </div>
+                </div>
+              ) : null}
+
+              {detailTab === "batches" ? (
+                <div className="flex flex-col gap-3">
+                  <div>
+                    <div style={{ fontWeight: 600, marginBottom: 6 }}>
+                      {t("bizMigration.pickExpectPorts")} ({selectedPorts.size})
+                    </div>
+                    <div className="filter-inline" style={{ marginBottom: 8 }}>
+                      <Input
+                        size="sm"
+                        value={portFilter}
+                        onValueChange={setPortFilter}
+                        placeholder={t("bizMigration.portFilterPh")}
+                      />
+                    </div>
+                    {!project.old_baseline_batch_id ? (
+                      <div className="form-error" style={{ marginBottom: 6, fontSize: 12 }}>
+                        {t("bizMigration.needBaselineFirst")}
+                      </div>
+                    ) : null}
+                    <div className="pt-list-table-wrap" style={{ maxHeight: 260, overflow: "auto" }}>
+                      <table className="data-table pt-list-table">
+                        <thead>
+                          <tr>
+                            <th style={{ width: 36 }} />
+                            <th>{t("bizMigration.colPort")}</th>
+                            <th>admin/phy/prot</th>
+                            <th>{t("bizMigration.colMapped")}</th>
+                            <th>{t("bizMigration.colDesc")}</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {filteredBaselinePorts.map((p) => (
+                            <tr
+                              key={p.interface}
+                              onClick={() => togglePort(p.interface)}
+                              style={{ cursor: "pointer" }}
+                            >
+                              <td>
+                                <input
+                                  type="checkbox"
+                                  checked={selectedPorts.has(p.interface)}
+                                  onChange={() => togglePort(p.interface)}
+                                />
+                              </td>
+                              <td>{p.interface}</td>
+                              <td>
+                                {p.admin || "-"}/{p.phy || "-"}/{p.prot || "-"}
+                              </td>
+                              <td>{p.mapped_to || "—"}</td>
+                              <td style={{ maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis" }}>
+                                {p.description || ""}
+                              </td>
+                            </tr>
+                          ))}
+                          {!filteredBaselinePorts.length ? (
+                            <tr>
+                              <td colSpan={5}>
+                                <div className="pt-list-empty">{t("bizMigration.emptyBaselinePorts")}</div>
+                              </td>
+                            </tr>
+                          ) : null}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <div className="btn-row" style={{ flexWrap: "wrap", gap: 8, alignItems: "end" }}>
+                    <Input
+                      label={t("bizMigration.batchLabel")}
+                      value={batchLabel}
+                      onValueChange={setBatchLabel}
                       size="sm"
-                      variant="secondary"
-                      isDisabled={busy}
-                      onPress={() => void setBatchStatus("review")}
-                    >
-                      {t("bizMigration.finishBatch")}
+                      placeholder={t("bizMigration.defaultBatchLabel")}
+                      style={{ minWidth: 160 }}
+                    />
+                    <Button size="sm" variant="primary" isDisabled={busy} onPress={() => void onCreateBatch()}>
+                      {t("bizMigration.createBatch")}
                     </Button>
-                    <Button size="sm" variant="primary" isDisabled={busy} onPress={() => void onEvaluate()}>
+                    <FieldSelect
+                      label={t("bizMigration.batches")}
+                      value={batchId}
+                      onChange={(e) => setBatchId(e.target.value)}
+                      aria-label={t("bizMigration.batches")}
+                    >
+                      {batches.map((b) => (
+                        <option key={b.id} value={b.id}>
+                          {b.batch_label} ({statusLabel(b.status)})
+                        </option>
+                      ))}
+                    </FieldSelect>
+                    {batch ? (
+                      <>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          isDisabled={busy}
+                          onPress={() => void setBatchStatus("active")}
+                        >
+                          {t("bizMigration.startBatch")}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          isDisabled={busy}
+                          onPress={() => void setBatchStatus("review")}
+                        >
+                          {t("bizMigration.finishBatch")}
+                        </Button>
+                        <Button size="sm" variant="primary" isDisabled={busy} onPress={() => void onEvaluate()}>
+                          {t("bizMigration.evaluate")}
+                        </Button>
+                      </>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+
+              {detailTab === "board" ? (
+                <div className="flex flex-col gap-3">
+                  <div className="btn-row" style={{ flexWrap: "wrap", gap: 8, alignItems: "end" }}>
+                    <FieldSelect
+                      label={t("bizMigration.batches")}
+                      value={batchId}
+                      onChange={(e) => setBatchId(e.target.value)}
+                      aria-label={t("bizMigration.batches")}
+                    >
+                      {batches.map((b) => (
+                        <option key={b.id} value={b.id}>
+                          {b.batch_label} ({statusLabel(b.status)})
+                        </option>
+                      ))}
+                    </FieldSelect>
+                    <Button size="sm" variant="primary" isDisabled={busy || !batchId} onPress={() => void onEvaluate()}>
                       {t("bizMigration.evaluate")}
                     </Button>
-                  </>
-                )}
-              </div>
-            </div>
-          )}
-
-          {acceptInfo && (
-            <div className="nm-card" style={{ padding: 12, display: "grid", gap: 8 }}>
-              <strong>{t("bizMigration.acceptTitle")}</strong>
-              <div style={{ display: "flex", gap: 20, flexWrap: "wrap", fontVariantNumeric: "tabular-nums" }}>
-                <div style={{ color: acceptInfo.passed ? COLOR.green : COLOR.red, fontWeight: 600 }}>
-                  {acceptInfo.passed ? t("bizMigration.acceptPassedShort") : t("bizMigration.acceptFailedShort")}
-                </div>
-                <div>
-                  {t("bizMigration.progress")}: {acceptInfo.progress_ok ?? 0}/{acceptInfo.progress_total ?? 0}
-                </div>
-                <div style={{ color: COLOR.red }}>
-                  {t("bizMigration.anomaly")}: {acceptInfo.anomaly ?? 0}
-                </div>
-              </div>
-              <div style={{ fontSize: 12, opacity: 0.75 }}>{t("bizMigration.acceptCarryHint")}</div>
-            </div>
-          )}
-
-          {redTickets.length > 0 && (
-            <div className="nm-card" style={{ padding: 12, display: "grid", gap: 8 }}>
-              <strong>
-                {t("bizMigration.redTitle")} ({openRedCount} {t("bizMigration.redOpen")})
-              </strong>
-              <div style={{ overflowX: "auto" }}>
-                <table className="nm-table" style={{ width: "100%", fontSize: 12 }}>
-                  <thead>
-                    <tr>
-                      <th>{t("bizMigration.colOldPort")}</th>
-                      <th>{t("bizMigration.colNewPort")}</th>
-                      <th>{t("bizMigration.colOldStatus")}</th>
-                      <th>{t("bizMigration.colNewStatus")}</th>
-                      <th>{t("bizMigration.colVerdict")}</th>
-                      <th>{t("bizMigration.colStatus")}</th>
-                      <th />
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {redTickets.map((r) => (
-                      <tr key={r.id}>
-                        <td>{r.key_str}</td>
-                        <td>{r.new_key_str || "—"}</td>
-                        <td>{r.old_status || "—"}</td>
-                        <td>{r.new_status || "—"}</td>
-                        <td style={{ color: COLOR.red, fontWeight: 600 }}>{verdictLabel(r.verdict)}</td>
-                        <td>{r.status}</td>
-                        <td>
-                          {r.status !== "resolved" && (
-                            <Button size="sm" variant="secondary" onPress={() => void onResolveTicket(r.id)}>
-                              {t("bizMigration.resolveRed")}
-                            </Button>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {board?.run && (
-            <div className="nm-card" style={{ padding: 12, display: "grid", gap: 10 }}>
-              <strong>
-                {t("bizMigration.board")} · {t("bizMigration.metricPort")}
-              </strong>
-              <div style={{ display: "flex", gap: 24, fontVariantNumeric: "tabular-nums", flexWrap: "wrap" }}>
-                <div>
-                  {t("bizMigration.progress")}:{" "}
-                  <b>
-                    {board.run.summary?.progress?.ok ?? 0}/{board.run.summary?.progress?.total ?? 0}
-                  </b>
-                </div>
-                <div style={{ color: COLOR.red }}>
-                  {t("bizMigration.anomaly")}: <b>{board.run.summary?.anomaly ?? 0}</b>
-                </div>
-                {sheetCards[0] && (
-                  <div style={{ fontSize: 12, opacity: 0.75 }}>
-                    {sheetCards[0].title || sheetCards[0].metric_id}
+                    <label className="config-sync-policy-check">
+                      <input
+                        type="checkbox"
+                        checked={onlyExpect}
+                        onChange={(e) => setOnlyExpect(e.target.checked)}
+                      />
+                      <span>{t("bizMigration.onlyExpect")}</span>
+                    </label>
                   </div>
-                )}
-                <label style={{ fontSize: 12, display: "flex", gap: 6, alignItems: "center" }}>
-                  <input
-                    type="checkbox"
-                    checked={onlyExpect}
-                    onChange={(e) => setOnlyExpect(e.target.checked)}
-                  />
-                  {t("bizMigration.onlyExpect")}
-                </label>
-              </div>
 
-              <div style={{ overflowX: "auto" }}>
-                <table className="nm-table" style={{ width: "100%", fontSize: 12 }}>
-                  <thead>
-                    <tr>
-                      <th>{t("bizMigration.colOldPort")}</th>
-                      <th>{t("bizMigration.colNewPort")}</th>
-                      <th>{t("bizMigration.colOldStatus")}</th>
-                      <th>{t("bizMigration.colNewStatus")}</th>
-                      <th>{t("bizMigration.colVerdict")}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {visibleDiffs.map((d) => (
-                      <tr key={d.id}>
-                        <td>{d.key_str || "—"}</td>
-                        <td>{d.new_key_str || "—"}</td>
-                        <td>{d.old_status || "—"}</td>
-                        <td>{d.new_status || "—"}</td>
-                        <td style={{ color: COLOR[d.color] || COLOR.gray, fontWeight: 600 }}>
-                          {verdictLabel(d.verdict)}
-                        </td>
-                      </tr>
-                    ))}
-                    {visibleDiffs.length === 0 && (
-                      <tr>
-                        <td colSpan={5} style={{ opacity: 0.6 }}>
-                          {t("bizMigration.emptyDiffs")}
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-        </div>
-      </section>
-    </div>
+                  {acceptInfo ? (
+                    <div className="flex flex-col gap-2">
+                      <strong>{t("bizMigration.acceptTitle")}</strong>
+                      <div
+                        className="pt-list-kpis"
+                        style={{ display: "flex", gap: 16, flexWrap: "wrap", fontVariantNumeric: "tabular-nums" }}
+                      >
+                        <div style={{ color: acceptInfo.passed ? COLOR.green : COLOR.red, fontWeight: 600 }}>
+                          {acceptInfo.passed
+                            ? t("bizMigration.acceptPassedShort")
+                            : t("bizMigration.acceptFailedShort")}
+                        </div>
+                        <div>
+                          {t("bizMigration.progress")}: {acceptInfo.progress_ok ?? 0}/
+                          {acceptInfo.progress_total ?? 0}
+                        </div>
+                        <div style={{ color: COLOR.red }}>
+                          {t("bizMigration.anomaly")}: {acceptInfo.anomaly ?? 0}
+                        </div>
+                      </div>
+                      <div className="muted" style={{ fontSize: 12 }}>
+                        {t("bizMigration.acceptCarryHint")}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {redTickets.length > 0 ? (
+                    <div className="flex flex-col gap-2">
+                      <strong>
+                        {t("bizMigration.redTitle")} ({openRedCount} {t("bizMigration.redOpen")})
+                      </strong>
+                      <div className="pt-list-table-wrap">
+                        <table className="data-table pt-list-table">
+                          <thead>
+                            <tr>
+                              <th>{t("bizMigration.colOldPort")}</th>
+                              <th>{t("bizMigration.colNewPort")}</th>
+                              <th>{t("bizMigration.colOldStatus")}</th>
+                              <th>{t("bizMigration.colNewStatus")}</th>
+                              <th>{t("bizMigration.colVerdict")}</th>
+                              <th>{t("bizMigration.colStatus")}</th>
+                              <th />
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {redTickets.map((r) => (
+                              <tr key={r.id}>
+                                <td>{r.key_str}</td>
+                                <td>{r.new_key_str || "—"}</td>
+                                <td>{r.old_status || "—"}</td>
+                                <td>{r.new_status || "—"}</td>
+                                <td style={{ color: COLOR.red, fontWeight: 600 }}>{verdictLabel(r.verdict)}</td>
+                                <td>{r.status}</td>
+                                <td>
+                                  {r.status !== "resolved" ? (
+                                    <Button
+                                      size="sm"
+                                      variant="secondary"
+                                      onPress={() => void onResolveTicket(r.id)}
+                                    >
+                                      {t("bizMigration.resolveRed")}
+                                    </Button>
+                                  ) : null}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {board?.run ? (
+                    <div className="flex flex-col gap-2">
+                      <strong>
+                        {t("bizMigration.board")} · {t("bizMigration.metricPort")}
+                      </strong>
+                      <div style={{ display: "flex", gap: 24, fontVariantNumeric: "tabular-nums", flexWrap: "wrap" }}>
+                        <div>
+                          {t("bizMigration.progress")}:{" "}
+                          <b>
+                            {board.run.summary?.progress?.ok ?? 0}/{board.run.summary?.progress?.total ?? 0}
+                          </b>
+                        </div>
+                        <div style={{ color: COLOR.red }}>
+                          {t("bizMigration.anomaly")}: <b>{board.run.summary?.anomaly ?? 0}</b>
+                        </div>
+                        {sheetCards[0] ? (
+                          <div className="muted" style={{ fontSize: 12 }}>
+                            {sheetCards[0].title || sheetCards[0].metric_id}
+                          </div>
+                        ) : null}
+                      </div>
+                      <div className="pt-list-table-wrap">
+                        <table className="data-table pt-list-table">
+                          <thead>
+                            <tr>
+                              <th>{t("bizMigration.colOldPort")}</th>
+                              <th>{t("bizMigration.colNewPort")}</th>
+                              <th>{t("bizMigration.colOldStatus")}</th>
+                              <th>{t("bizMigration.colNewStatus")}</th>
+                              <th>{t("bizMigration.colVerdict")}</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {visibleDiffs.map((d) => (
+                              <tr key={d.id}>
+                                <td>{d.key_str || "—"}</td>
+                                <td>{d.new_key_str || "—"}</td>
+                                <td>{d.old_status || "—"}</td>
+                                <td>{d.new_status || "—"}</td>
+                                <td style={{ color: COLOR[d.color] || COLOR.gray, fontWeight: 600 }}>
+                                  {verdictLabel(d.verdict)}
+                                </td>
+                              </tr>
+                            ))}
+                            {!visibleDiffs.length ? (
+                              <tr>
+                                <td colSpan={5}>
+                                  <div className="pt-list-empty">{t("bizMigration.emptyDiffs")}</div>
+                                </td>
+                              </tr>
+                            ) : null}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="pt-list-empty">{t("bizMigration.emptyDiffs")}</div>
+                  )}
+                </div>
+              ) : null}
+            </>
+          ) : null}
+        </Modal.Body>
+        <Modal.Footer>
+          <Button size="sm" variant="secondary" onPress={closeProject}>
+            {t("bizMigration.cancel")}
+          </Button>
+        </Modal.Footer>
+      </AppModalShell>
+    </section>
   );
 }
