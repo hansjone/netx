@@ -79,9 +79,10 @@ def parse_expect_set(raw: dict[str, Any] | None) -> dict[str, set[str]]:
             if not isinstance(it, dict):
                 continue
             mid = str(it.get("metric_id") or "").strip()
-            if not mid:
+            sid = str(it.get("sheet_id") or "").strip() or mid
+            if not sid:
                 continue
-            bucket = out.setdefault(mid, set())
+            bucket = out.setdefault(sid, set())
             if it.get("key") is not None:
                 k = it.get("key")
                 if isinstance(k, (list, tuple)):
@@ -747,10 +748,20 @@ def expect_keys_for_metric(
     *,
     metric_id: str,
     iface_fields: list[str],
+    sheet_id: str = "",
 ) -> set[str]:
-    keys = set(expect.get(metric_id) or ())
+    """Resolve expect keys for a compare sheet.
+
+    Prefer ``sheet_id`` (split tables); fall back to ``metric_id`` for legacy
+    unsplit sheets / expect items that only carry metric_id.
+    """
+    sid = str(sheet_id or "").strip()
+    mid = str(metric_id or "").strip()
+    keys = set(expect.get(sid) or ()) if sid else set()
+    if not keys and mid:
+        keys = set(expect.get(mid) or ())
     # ports: shorthand is only for interface_brief, not every sheet with iface fields
-    if metric_id == PORT_METRIC_ID and expect.get("_ports"):
+    if mid == PORT_METRIC_ID and expect.get("_ports"):
         keys |= set(expect["_ports"])
     return keys
 
@@ -879,15 +890,34 @@ def _current_row(diff: dict[str, Any] | None) -> dict[str, Any]:
     return dict(diff.get("after") or {})
 
 
+def override_for_sheet(
+    sheet_overrides: list[dict[str, Any]] | None,
+    *,
+    sheet_id: str,
+    metric_id: str,
+) -> dict[str, Any]:
+    """Match a monitor override. sheet_id wins; a legacy metric-only override applies to every split."""
+    sid = str(sheet_id or "").strip()
+    mid = str(metric_id or "").strip()
+    legacy: dict[str, Any] | None = None
+    for ov in sheet_overrides or []:
+        if not isinstance(ov, dict):
+            continue
+        ov_sid = str(ov.get("sheet_id") or "").strip()
+        ov_mid = str(ov.get("metric_id") or "").strip()
+        if ov_sid and ov_sid == sid:
+            return ov
+        if not ov_sid and ov_mid and ov_mid in (sid, mid) and legacy is None:
+            legacy = ov
+    return legacy or {}
+
+
 def override_for_metric(
     sheet_overrides: list[dict[str, Any]] | None,
     metric_id: str,
 ) -> dict[str, Any]:
     mid = str(metric_id or "").strip()
-    for ov in sheet_overrides or []:
-        if isinstance(ov, dict) and str(ov.get("metric_id") or "").strip() == mid:
-            return ov
-    return {}
+    return override_for_sheet(sheet_overrides, sheet_id=mid, metric_id=mid)
 
 
 def evaluate_metric_dual(
@@ -907,9 +937,13 @@ def evaluate_metric_dual(
     field_rules: list[dict[str, Any]] | None = None,
     sheet_override: dict[str, Any] | None = None,
     out_of_expect: str = "strict",
+    sheet_id: str = "",
 ) -> dict[str, Any]:
     """Run old vs old-baseline, new vs new-baseline (or mapped old baseline), dual merge."""
-    expect_keys = expect_keys_for_metric(expect, metric_id=metric_id, iface_fields=iface_fields)
+    sid = str(sheet_id or "").strip() or str(metric_id or "").strip()
+    expect_keys = expect_keys_for_metric(
+        expect, metric_id=metric_id, iface_fields=iface_fields, sheet_id=sid
+    )
     ov = sheet_override or {}
     if ov.get("skip_dual"):
         return {
@@ -1155,6 +1189,8 @@ def evaluate_metric_dual(
 def port_sheet_def() -> dict[str, Any]:
     """Default sheet for port-status cutover monitor (interface_brief only)."""
     return {
+        "sheet_id": PORT_METRIC_ID,
+        "title": PORT_METRIC_ID,
         "metric_id": PORT_METRIC_ID,
         "key_fields": ["interface"],
         "iface_fields": ["interface"],

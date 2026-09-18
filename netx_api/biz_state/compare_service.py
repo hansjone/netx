@@ -225,6 +225,8 @@ def _sheet_meta_from_summary(summary: dict[str, Any], run: BizCompareRun, tpl: A
     return [
         {
             "metric_id": run.metric_id,
+            "sheet_id": run.metric_id,
+            "title": run.metric_id,
             "key_fields": list((tpl.key_fields if tpl else None) or []),
             "iface_fields": list((tpl.iface_fields if tpl else None) or []),
             "compare_fields": list((tpl.compare_fields if tpl else None) or []),
@@ -285,10 +287,23 @@ def _normalize_field_rules(raw: Any) -> list[dict[str, Any]]:
     return out
 
 
+def sheet_key(sheet: dict[str, Any] | None) -> str:
+    """Unique compare-item id. Falls back to metric_id so old sheets stay valid."""
+    data = sheet or {}
+    return str(data.get("sheet_id") or data.get("metric_id") or "").strip()
+
+
+def sheet_title(sheet: dict[str, Any] | None) -> str:
+    data = sheet or {}
+    return str(data.get("title") or "").strip() or sheet_key(data)
+
+
 def _sheet_def(
     *,
     metric_id: str,
     key_fields: list[str],
+    sheet_id: str | None = None,
+    title: str | None = None,
     iface_fields: list[str] | None = None,
     compare_fields: list[str] | None = None,
     display_fields: list[str] | None = None,
@@ -296,6 +311,8 @@ def _sheet_def(
     field_rules: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     mid = str(metric_id or "").strip()
+    sid = str(sheet_id or "").strip() or mid
+    ttl = str(title or "").strip() or sid
     keys = _str_list(key_fields)
     ifaces = _str_list(iface_fields)
     # compare_fields empty → presence-only mode (intentional)
@@ -320,6 +337,8 @@ def _sheet_def(
             display_fields=_str_list(display_fields),
         )
     sheet: dict[str, Any] = {
+        "sheet_id": sid,
+        "title": ttl,
         "metric_id": mid,
         "key_fields": keys,
         "iface_fields": ifaces,
@@ -389,13 +408,78 @@ def _default_sheet_for_metric(metric_id: str, *, compare_roles: tuple[str, ...] 
     )
 
 
+def _sheets_split_by_field(
+    metric_id: str,
+    field: str,
+    slices: tuple[tuple[str, str, str], ...],
+    *,
+    op: str = "eq",
+    compare_roles: tuple[str, ...] = ("state",),
+) -> list[dict[str, Any]]:
+    """One collected metric → many compare sheets, each a row_filter slice.
+
+    ``slices`` is ``(sheet_id, title, filter_value)``. Any metric can be split
+    this way (BGP afi, ISIS af, …); the engine does not special-case names.
+    """
+    out: list[dict[str, Any]] = []
+    for sid, title, value in slices:
+        base = _default_sheet_for_metric(metric_id, compare_roles=compare_roles)
+        out.append(
+            _sheet_def(
+                metric_id=metric_id,
+                sheet_id=sid,
+                title=title,
+                key_fields=list(base.get("key_fields") or []),
+                iface_fields=list(base.get("iface_fields") or []),
+                compare_fields=list(base.get("compare_fields") or []),
+                display_fields=list(base.get("display_fields") or []),
+                row_filters=[{"field": field, "op": op, "value": value}],
+                field_rules=list(base.get("field_rules") or []),
+            )
+        )
+    return out
+
+
+def _bgp_afi_sheets() -> list[dict[str, Any]]:
+    return _sheets_split_by_field(
+        "bgp_peer",
+        "afi",
+        (
+            ("bgp_peer.ipv4", "BGP IPv4", "ipv4"),
+            ("bgp_peer.ipv6", "BGP IPv6", "ipv6"),
+            ("bgp_peer.vpnv4", "BGP VPNv4", "vpnv4"),
+            ("bgp_peer.vpnv6", "BGP VPNv6", "vpnv6"),
+        ),
+        op="eq",
+    )
+
+
+def _isis_af_sheets() -> list[dict[str, Any]]:
+    return _sheets_split_by_field(
+        "isis_adjacency",
+        "af",
+        (
+            ("isis_adjacency.ipv4", "ISIS IPv4", "IPv4"),
+            ("isis_adjacency.ipv6", "ISIS IPv6", "IPv6"),
+        ),
+        op="contains",
+    )
+
+
+def _builtin_source_splits() -> dict[str, list[dict[str, Any]]]:
+    return {
+        "bgp_peer": _bgp_afi_sheets(),
+        "isis_adjacency": _isis_af_sheets(),
+    }
+
+
 def _default_zte_status_sheets() -> list[dict[str, Any]]:
     return [
-        _default_sheet_for_metric("isis_adjacency", compare_roles=("state",)),
+        *_isis_af_sheets(),
         _default_sheet_for_metric("interface_brief", compare_roles=("state",)),
         _default_sheet_for_metric("arp", compare_roles=("state",)),
         _default_sheet_for_metric("nd6_cache", compare_roles=("state",)),
-        _default_sheet_for_metric("bgp_peer", compare_roles=("state",)),
+        *_bgp_afi_sheets(),
     ]
 
 
@@ -421,6 +505,8 @@ def _normalize_sheet(raw: Any) -> dict[str, Any] | None:
         disp_arg = None
     return _sheet_def(
         metric_id=mid,
+        sheet_id=str(raw.get("sheet_id") or "").strip() or mid,
+        title=str(raw.get("title") or "").strip() or None,
         key_fields=keys,
         iface_fields=_str_list(raw.get("iface_fields")),
         compare_fields=_str_list(raw.get("compare_fields")),
@@ -458,10 +544,10 @@ def template_metrics(t: BizCompareTemplate) -> list[dict[str, Any]]:
         sheet = _normalize_sheet(item)
         if not sheet:
             continue
-        mid = sheet["metric_id"]
-        if mid in seen:
+        sid = sheet_key(sheet)
+        if sid in seen:
             continue
-        seen.add(mid)
+        seen.add(sid)
         out.append(sheet)
     if out:
         return out
@@ -494,10 +580,10 @@ def _parse_metrics_body(body: dict[str, Any]) -> list[dict[str, Any]]:
             sheet = _normalize_sheet(raw)
             if not sheet:
                 continue
-            mid = sheet["metric_id"]
-            if mid in seen:
-                raise HTTPException(status_code=400, detail=f"duplicate_metric:{mid}")
-            seen.add(mid)
+            sid = sheet_key(sheet)
+            if sid in seen:
+                raise HTTPException(status_code=400, detail=f"duplicate_sheet:{sid}")
+            seen.add(sid)
             sheets.append(sheet)
         if not sheets:
             raise HTTPException(status_code=400, detail="metrics_required")
@@ -524,6 +610,8 @@ def _parse_metrics_body(body: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         _sheet_def(
             metric_id=mid,
+            sheet_id=str(body.get("sheet_id") or "").strip() or mid,
+            title=str(body.get("title") or "").strip() or None,
             key_fields=keys,
             iface_fields=_str_list(body.get("iface_fields")),
             compare_fields=compare,
@@ -541,7 +629,7 @@ def _template_out(t: BizCompareTemplate) -> dict[str, Any]:
         "id": t.id,
         "name": t.name,
         "metrics": sheets,
-        "metric_ids": [s["metric_id"] for s in sheets],
+        "metric_ids": list(dict.fromkeys(s["metric_id"] for s in sheets if s.get("metric_id"))),
         # legacy mirrors (first sheet)
         "metric_id": (first or {}).get("metric_id") or t.metric_id or "",
         "key_fields": list((first or {}).get("key_fields") or t.key_fields or []),
@@ -698,8 +786,44 @@ def ensure_default_templates(db: Session) -> None:
     ensure_default_zte_status_template(db)
 
 
+def upgrade_builtin_split_sheets(db: Session) -> None:
+    """Split unfiltered whole-table sheets on the built-in ZTE template only.
+
+    A sheet is replaced when its id is still the source metric and it has no
+    row filters. Custom templates and already-split sheets are left alone.
+    """
+    row = (
+        db.query(BizCompareTemplate)
+        .filter(BizCompareTemplate.name == "ZTE status default")
+        .one_or_none()
+    )
+    if not row:
+        return
+    existing = template_metrics(row)
+    splits = _builtin_source_splits()
+    out: list[dict[str, Any]] = []
+    changed = False
+    replaced: set[str] = set()
+    for s in existing:
+        mid = str(s.get("metric_id") or "")
+        if mid in splits and sheet_key(s) == mid and not list(s.get("row_filters") or []):
+            if mid not in replaced:
+                out.extend(splits[mid])
+                replaced.add(mid)
+            changed = True
+            continue
+        out.append(s)
+    if not changed or not out:
+        return
+    _apply_sheets_to_row(row, out)
+    row.note = "Built-in ZTE status cutover (ISIS/IF/ARP/ND6/BGP, address-family sheets)"
+    row.updated_at = _utcnow()
+    db.commit()
+
+
 def list_templates(db: Session) -> list[dict[str, Any]]:
     ensure_default_templates(db)
+    upgrade_builtin_split_sheets(db)
     rows = db.query(BizCompareTemplate).order_by(BizCompareTemplate.name.asc()).all()
     return [_template_out(t) for t in rows]
 
@@ -1143,6 +1267,8 @@ def _run_sheet(
     summary["after_raw_count"] = len(after_raw)
     summary["row_filters"] = len(row_filters)
     return {
+        "sheet_id": sheet_key(sheet),
+        "title": sheet_title(sheet),
         "metric_id": sheet["metric_id"],
         "key_fields": key_fields,
         "iface_fields": iface_fields,
@@ -1198,7 +1324,7 @@ def run_compare(db: Session, job_id: str, *, force_after_batch_id: str = "") -> 
         s = one["summary"]
         for k in agg:
             agg[k] += int(s.get(k) or 0)
-        mapping_by_metric[one["metric_id"]] = one["mapping_stats"]
+        mapping_by_metric[sheet_key(one)] = one["mapping_stats"]
 
     first = sheet_results[0]
     field_counts: dict[str, int] = {}
@@ -1221,6 +1347,8 @@ def run_compare(db: Session, job_id: str, *, force_after_batch_id: str = "") -> 
         "top_changed_fields": top_fields,
         "sheets": [
             {
+                "sheet_id": s.get("sheet_id") or s["metric_id"],
+                "title": s.get("title") or s.get("sheet_id") or s["metric_id"],
                 "metric_id": s["metric_id"],
                 "key_fields": s["key_fields"],
                 "iface_fields": s["iface_fields"],
@@ -1255,7 +1383,7 @@ def run_compare(db: Session, job_id: str, *, force_after_batch_id: str = "") -> 
         _persist_sheet_diffs(
             db,
             run_id=run_id,
-            metric_id=str(s["metric_id"]),
+            metric_id=sheet_key(s),
             diffs=list(s.get("diffs") or []),
         )
     j.updated_at = _utcnow()
@@ -1352,6 +1480,8 @@ def _enrich_summary(summary: dict[str, Any], sheets: list[dict[str, Any]]) -> di
         sj = sf + su
         sheet_cards.append(
             {
+                "sheet_id": sheet_key(sh),
+                "title": sheet_title(sh),
                 "metric_id": sh.get("metric_id") or "",
                 "mode": sh.get("mode") or ("presence" if not sh.get("compare_fields") else "fields"),
                 "added": sa,
@@ -1413,6 +1543,8 @@ def get_run(db: Session, run_id: str) -> dict[str, Any]:
     # Never return full diffs in run detail (million-row safe)
     sheets = [
         {
+            "sheet_id": sh.get("sheet_id") or sh.get("metric_id") or "",
+            "title": sh.get("title") or sh.get("sheet_id") or sh.get("metric_id") or "",
             "metric_id": sh.get("metric_id") or "",
             "key_fields": list(sh.get("key_fields") or []),
             "iface_fields": list(sh.get("iface_fields") or []),
@@ -1459,6 +1591,20 @@ def get_run(db: Session, run_id: str) -> dict[str, Any]:
     }
 
 
+def _lookup_sheet(sheets: list[dict[str, Any]], key: str) -> dict[str, Any] | None:
+    """Find a result sheet by sheet_id, or by metric_id when that source is unique."""
+    k = str(key or "").strip()
+    if not k:
+        return sheets[0] if sheets else None
+    for s in sheets:
+        if sheet_key(s) == k:
+            return s
+    hits = [s for s in sheets if str(s.get("metric_id") or "") == k]
+    if len(hits) == 1:
+        return hits[0]
+    return None
+
+
 def list_run_diffs(
     db: Session,
     run_id: str,
@@ -1480,7 +1626,9 @@ def list_run_diffs(
     summary = dict(r.summary_json or {})
     tpl = db.get(BizCompareTemplate, r.template_id) if r.template_id else None
     sheets = _sheet_meta_from_summary(summary, r, tpl)
-    mid = (metric_id or "").strip() or (sheets[0].get("metric_id") if sheets else r.metric_id) or ""
+    asked = (metric_id or "").strip()
+    sheet = _lookup_sheet(sheets, asked) if asked else (sheets[0] if sheets else None)
+    mid = sheet_key(sheet) if sheet else (asked or str(r.metric_id or ""))
 
     if _run_has_diff_rows(db, run_id):
         q = db.query(BizCompareDiff).filter(
@@ -1509,10 +1657,9 @@ def list_run_diffs(
         }
 
     # Legacy: diffs embedded in summary_json / diffs_json
-    sheet = next((s for s in sheets if str(s.get("metric_id") or "") == mid), None)
     if sheet is None and sheets:
         sheet = sheets[0]
-        mid = str(sheet.get("metric_id") or mid)
+        mid = sheet_key(sheet)
     inline = list((sheet or {}).get("diffs") or [])
     if not inline and mid == r.metric_id:
         inline = list(r.diffs_json or [])
@@ -1556,7 +1703,9 @@ def _iter_sheet_diffs(db: Session, run_id: str, metric_id: str) -> list[dict[str
     summary = dict(r.summary_json or {})
     sheets = list(summary.get("sheets") or [])
     for sh in sheets:
-        if str(sh.get("metric_id") or "") == metric_id:
+        if sheet_key(sh) == metric_id or (
+            str(sh.get("metric_id") or "") == metric_id and sheet_key(sh) == metric_id
+        ):
             return list(sh.get("diffs") or [])
     if metric_id == r.metric_id:
         return list(r.diffs_json or [])
@@ -1584,17 +1733,17 @@ def export_run_zip(db: Session, run_id: str) -> bytes:
         ]
         for card in list(s.get("sheet_cards") or []):
             manifest.append(
-                f"- {card.get('metric_id')}: diff={card.get('diff_count')} "
+                f"- {card.get('title') or card.get('sheet_id') or card.get('metric_id')}: diff={card.get('diff_count')} "
                 f"pass={card.get('pass_rate')}% "
                 f"+{card.get('added')}/-{card.get('removed')}/~{card.get('changed')}/= {card.get('unchanged')}"
             )
         zf.writestr("manifest.txt", "\n".join(manifest) + "\n")
         for sheet in list(detail.get("sheets") or []):
-            mid = str(sheet.get("metric_id") or "sheet")
-            safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in mid)[:80] or "sheet"
+            sid = sheet_key(sheet) or "sheet"
+            safe = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in sid)[:80] or "sheet"
             sheet_full = {
                 **sheet,
-                "diffs": _iter_sheet_diffs(db, run_id, mid),
+                "diffs": _iter_sheet_diffs(db, run_id, sid),
             }
             zf.writestr(f"tables/{safe}.csv", _sheet_csv(sheet_full))
         sum_lines = ["metric_id,mode,before,after,added,removed,changed,unchanged,diff_count,pass_rate"]
@@ -1603,7 +1752,7 @@ def export_run_zip(db: Session, run_id: str) -> bytes:
                 ",".join(
                     _csv_cell(x)
                     for x in (
-                        card.get("metric_id"),
+                        card.get("title") or card.get("sheet_id") or card.get("metric_id"),
                         card.get("mode"),
                         card.get("before_count"),
                         card.get("after_count"),

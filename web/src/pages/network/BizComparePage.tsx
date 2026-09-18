@@ -49,6 +49,8 @@ type MetricField = {
 type MetricSchema = { metric_id: string; fields: MetricField[] };
 
 type MetricSheet = {
+  sheet_id?: string;
+  title?: string;
   metric_id: string;
   key_fields: string[];
   iface_fields: string[];
@@ -111,6 +113,8 @@ type DiffRow = {
 };
 
 type RunSheet = {
+  sheet_id?: string;
+  title?: string;
   metric_id: string;
   key_fields: string[];
   iface_fields: string[];
@@ -285,12 +289,22 @@ function taskLabel(row: TaskOpt) {
   return `${row.ne_name || row.ne_ip || row.id} (${row.vendor || "-"})`;
 }
 
+function sheetIdentity(s: { sheet_id?: string; metric_id?: string } | null | undefined): string {
+  return String(s?.sheet_id || s?.metric_id || "").trim();
+}
+
+function sheetLabel(s: { title?: string; sheet_id?: string; metric_id?: string } | null | undefined): string {
+  return String(s?.title || s?.sheet_id || s?.metric_id || "").trim() || "—";
+}
+
 function templateSheets(tpl?: Template | null): MetricSheet[] {
   if (!tpl) return [];
   if (tpl.metrics?.length) return tpl.metrics;
   if (tpl.metric_id) {
     return [
       {
+        sheet_id: tpl.metric_id,
+        title: tpl.metric_id,
         metric_id: tpl.metric_id,
         key_fields: [...(tpl.key_fields || [])],
         iface_fields: [...(tpl.iface_fields || [])],
@@ -311,6 +325,8 @@ function defaultSheetForMetric(schema: MetricSchema | undefined, metricId: strin
     .filter((f) => !f.is_key && (f.role === "state" || f.role === "meta"))
     .map((f) => f.name);
   const sheet: MetricSheet = {
+    sheet_id: metricId,
+    title: metricId,
     metric_id: metricId,
     key_fields,
     iface_fields: fields.filter((f) => f.is_interface).map((f) => f.name),
@@ -353,6 +369,8 @@ function cloneSheet(s: MetricSheet): MetricSheet {
       ? [...s.display_fields]
       : [...keys, ...compare];
   return {
+    sheet_id: s.sheet_id || s.metric_id,
+    title: s.title || s.sheet_id || s.metric_id,
     metric_id: s.metric_id,
     key_fields: keys,
     iface_fields: [...(s.iface_fields || [])],
@@ -368,6 +386,8 @@ const TEMPLATE_EXPORT_VERSION = 1;
 
 function templateExportPayload(tpl: Template) {
   const metrics = templateSheets(tpl).map((s) => ({
+    sheet_id: s.sheet_id || s.metric_id,
+    title: s.title || s.sheet_id || s.metric_id,
     metric_id: s.metric_id,
     key_fields: [...(s.key_fields || [])],
     iface_fields: [...(s.iface_fields || [])],
@@ -424,6 +444,8 @@ function parseTemplateImport(raw: unknown): {
       : [];
     if (!mid || !keys.length) continue;
     metrics.push({
+      sheet_id: String(m.sheet_id || mid).trim() || mid,
+      title: String(m.title || m.sheet_id || mid).trim() || mid,
       metric_id: mid,
       key_fields: keys,
       iface_fields: Array.isArray(m.iface_fields)
@@ -530,6 +552,7 @@ const FILTER_OPS = [
   "ne",
   "in",
   "not_in",
+  "contains",
   "empty",
   "not_empty",
   "regex",
@@ -834,13 +857,13 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
       setResultSheetId("");
       return;
     }
-    if (!resultSheetId || !runSheets.some((s) => s.metric_id === resultSheetId)) {
-      setResultSheetId(runSheets[0].metric_id);
+    if (!resultSheetId || !runSheets.some((s) => sheetIdentity(s) === resultSheetId)) {
+      setResultSheetId(sheetIdentity(runSheets[0]));
     }
   }, [runSheets, resultSheetId]);
 
   const activeRunSheet = useMemo(
-    () => runSheets.find((s) => s.metric_id === resultSheetId) || runSheets[0] || null,
+    () => runSheets.find((s) => sheetIdentity(s) === resultSheetId) || runSheets[0] || null,
     [runSheets, resultSheetId],
   );
 
@@ -851,7 +874,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
 
   useEffect(() => {
     const runId = String(runDetail?.id || "");
-    const mid = resultSheetId || activeRunSheet?.metric_id || "";
+    const mid = resultSheetId || sheetIdentity(activeRunSheet) || "";
     if (!runId || !mid || jobDetailTab !== "result") {
       setPagedDiffs([]);
       setResultTotal(0);
@@ -1002,6 +1025,8 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
   const resultPages = Math.max(1, Math.ceil(resultTotal / Math.max(1, resultPageSize)));
   const sheetCards = useMemo(() => {
     const raw = (summary.sheet_cards || []) as Array<{
+      sheet_id?: string;
+      title?: string;
       metric_id: string;
       mode?: string;
       added?: number;
@@ -1023,7 +1048,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
       return String(a.metric_id).localeCompare(String(b.metric_id));
     });
   }, [summary.sheet_cards]);
-  const activeSheetCard = sheetCards.find((c) => c.metric_id === resultSheetId) || sheetCards[0];
+  const activeSheetCard = sheetCards.find((c) => sheetIdentity(c) === resultSheetId) || sheetCards[0];
   const activeFail = sheetFailOf(activeSheetCard || {});
   const activeSuccess = sheetSuccessOf(activeSheetCard || {});
   const activePassRate = sheetPassRateOf(activeSheetCard || {});
@@ -1125,7 +1150,6 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     if (on) {
       const schema = metrics.find((m) => m.metric_id === metricId);
       setTplSheets((prev) => {
-        if (prev.some((s) => s.metric_id === metricId)) return prev;
         const next = [...prev, defaultSheetForMetric(schema, metricId)];
         setTplSheetIdx(next.length - 1);
         if (!prev.length) setShowMetricPicker(false);
@@ -1133,16 +1157,36 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
       });
       return;
     }
+    // Uncheck removes ALL sheets of this source metric
     setTplSheets((prev) => {
-      const idx = prev.findIndex((s) => s.metric_id === metricId);
-      if (idx < 0) return prev;
-      const next = prev.filter((_, i) => i !== idx);
+      const next = prev.filter((s) => s.metric_id !== metricId);
       setTplSheetIdx((cur) => {
         if (!next.length) return 0;
-        if (cur > idx) return cur - 1;
         if (cur >= next.length) return next.length - 1;
         return cur;
       });
+      return next;
+    });
+  };
+
+  const duplicateTplSheet = (idx: number) => {
+    setTplSheets((prev) => {
+      const src = prev[idx];
+      if (!src) return prev;
+      const baseId = sheetIdentity(src);
+      let n = 2;
+      let candidate = `${baseId}.${n}`;
+      const used = new Set(prev.map((s) => sheetIdentity(s)));
+      while (used.has(candidate)) {
+        n += 1;
+        candidate = `${baseId}.${n}`;
+      }
+      const copy = cloneSheet(src);
+      copy.sheet_id = candidate;
+      copy.title = `${sheetLabel(src)} (${n})`;
+      const next = [...prev];
+      next.splice(idx + 1, 0, copy);
+      setTplSheetIdx(idx + 1);
       return next;
     });
   };
@@ -1167,16 +1211,27 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     }
     for (const s of tplSheets) {
       if (!s.key_fields.length) {
-        showError(`${metricLabel(s.metric_id)}: ${t("bizCompare.keyRequired")}`);
+        showError(`${sheetLabel(s)}: ${t("bizCompare.keyRequired")}`);
         return;
       }
+      if (!sheetIdentity(s)) {
+        showError(`${s.metric_id}: ${t("bizCompare.sheetIdRequired")}`);
+        return;
+      }
+    }
+    const ids = tplSheets.map((s) => sheetIdentity(s));
+    if (new Set(ids).size !== ids.length) {
+      showError(t("bizCompare.duplicateSheetId"));
+      return;
     }
     setBusy(true);
     try {
       const body = {
-        name: tplName || tplSheets.map((s) => s.metric_id).join("+"),
+        name: tplName || tplSheets.map((s) => sheetLabel(s)).join("+"),
         note: tplNote,
         metrics: tplSheets.map((s) => ({
+          sheet_id: sheetIdentity(s),
+          title: s.title || sheetIdentity(s),
           metric_id: s.metric_id,
           key_fields: s.key_fields,
           iface_fields: s.iface_fields,
@@ -1239,6 +1294,8 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
         name: body.name,
         note: body.note,
         metrics: body.metrics.map((s) => ({
+          sheet_id: sheetIdentity(s),
+          title: s.title || sheetIdentity(s),
           metric_id: s.metric_id,
           key_fields: s.key_fields,
           iface_fields: s.iface_fields,
@@ -1701,9 +1758,9 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                       </td>
                       <td>
                         <div className="bs-cmp-metric-chips">
-                          {sheets.map((s) => (
-                            <code key={s.metric_id} className="bs-cmp-metric-chip">
-                              {s.metric_id}
+                          {sheets.map((s, i) => (
+                            <code key={`${sheetIdentity(s)}-${i}`} className="bs-cmp-metric-chip">
+                              {sheetLabel(s)}
                               {!s.compare_fields?.length ? (
                                 <span className="muted"> · {t("bizCompare.presenceShort")}</span>
                               ) : null}
@@ -1885,7 +1942,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                     const filterN = toOrGroups(s.row_filters || []).length;
                     return (
                       <button
-                        key={s.metric_id}
+                        key={`${sheetIdentity(s)}-${i}`}
                         type="button"
                         role="tab"
                         aria-selected={tplSheetIdx === i}
@@ -1895,7 +1952,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                           setTplPaneTab("fields");
                         }}
                       >
-                        <span className="ct-editor__nav-name">{s.metric_id}</span>
+                        <span className="ct-editor__nav-name">{sheetLabel(s)}</span>
                         <span className="ct-editor__nav-tag">
                           {!s.compare_fields.length
                             ? t("bizCompare.presenceShort")
@@ -1911,9 +1968,26 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
               {activeTplSheet ? (
                 <div className="ct-editor__pane">
                   <div className="ct-editor__pane-head">
-                    <div>
-                      <div className="ct-editor__metric">{activeTplSheet.metric_id}</div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div className="ct-editor__metric-edit" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        <Input
+                          value={activeTplSheet.title || ""}
+                          placeholder={t("bizCompare.sheetTitle")}
+                          aria-label={t("bizCompare.sheetTitle")}
+                          onChange={(e) => updateActiveSheet({ title: e.target.value })}
+                          style={{ maxWidth: 220 }}
+                        />
+                        <Input
+                          value={activeTplSheet.sheet_id || activeTplSheet.metric_id}
+                          placeholder={t("bizCompare.sheetId")}
+                          aria-label={t("bizCompare.sheetId")}
+                          onChange={(e) => updateActiveSheet({ sheet_id: e.target.value.trim() })}
+                          style={{ maxWidth: 220 }}
+                        />
+                      </div>
                       <div className="ct-editor__meta muted">
+                        {activeTplSheet.metric_id}
+                        {" · "}
                         {activeTplSheet.compare_fields.length
                           ? t("bizCompare.modeFieldsShort")
                           : t("bizCompare.presenceShort")}
@@ -1921,9 +1995,14 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                         Key {(activeTplSheet.key_fields || []).join(" · ") || "—"}
                       </div>
                     </div>
-                    <Button size="sm" variant="ghost" onPress={() => removeTplMetric(tplSheetIdx)}>
-                      {t("bizCompare.removeSheet")}
-                    </Button>
+                    <div className="btn-row" style={{ gap: 6 }}>
+                      <Button size="sm" variant="secondary" onPress={() => duplicateTplSheet(tplSheetIdx)}>
+                        {t("bizCompare.splitSheet")}
+                      </Button>
+                      <Button size="sm" variant="ghost" onPress={() => removeTplMetric(tplSheetIdx)}>
+                        {t("bizCompare.removeSheet")}
+                      </Button>
+                    </div>
                   </div>
 
                   <div className="mt-rule-tabs" role="tablist">
@@ -2354,6 +2433,8 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                             const fail = removed + changed;
                             const judged = fail + unchanged;
                             return {
+                              sheet_id: sheetIdentity(s),
+                              title: sheetLabel(s),
                               metric_id: s.metric_id,
                               mode: s.mode,
                               added: s.summary?.added,
@@ -2374,21 +2455,23 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                         const fail = sheetFailOf(c);
                         const ok = sheetSuccessOf(c);
                         const rate = sheetPassRateOf(c);
-                        const active = resultSheetId === c.metric_id;
+                        const id = sheetIdentity(c);
+                        const label = sheetLabel(c);
+                        const active = resultSheetId === id;
                         return (
                           <button
-                            key={c.metric_id}
+                            key={id}
                             type="button"
                             role="tab"
                             aria-selected={active}
                             className={`bs-cmp-nav__item${active ? " is-active" : ""}${
                               fail > 0 ? " has-diff" : " is-clean"
                             }`}
-                            onClick={() => setResultSheetId(c.metric_id)}
-                            title={`${c.metric_id} · ${t("bizCompare.kindFail")} ${fail} · ${t("bizCompare.kindSuccess")} ${ok} · ${t("bizCompare.passRateShort")} ${rate}%`}
+                            onClick={() => setResultSheetId(id)}
+                            title={`${label} · ${t("bizCompare.kindFail")} ${fail} · ${t("bizCompare.kindSuccess")} ${ok} · ${t("bizCompare.passRateShort")} ${rate}%`}
                           >
                             <span className="bs-cmp-nav__dot" aria-hidden />
-                            <span className="bs-cmp-nav__name">{c.metric_id}</span>
+                            <span className="bs-cmp-nav__name">{label}</span>
                             <span className="bs-cmp-nav__stats">
                               <span
                                 className={`bs-cmp-nav__num bs-cmp-nav__num--fail${
@@ -2420,9 +2503,9 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                         </span>
                         <strong
                           className="bs-cmp-strip__sheet-name"
-                          title={activeSheetCard?.metric_id || ""}
+                          title={sheetLabel(activeSheetCard)}
                         >
-                          {activeSheetCard?.metric_id || "—"}
+                          {sheetLabel(activeSheetCard)}
                         </strong>
                         <span className="muted bs-cmp-strip__sheet-mode">
                           {activeFail > 0 ? t("bizCompare.kindFail") : t("bizCompare.kindPass")}

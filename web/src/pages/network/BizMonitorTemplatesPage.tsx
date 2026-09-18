@@ -19,6 +19,8 @@ import {
 type MetricField = { name: string; display_name?: string };
 type MetricSchema = { metric_id: string; fields: MetricField[] };
 type CompareSheet = {
+  sheet_id?: string;
+  title?: string;
   metric_id: string;
   key_fields?: string[];
   iface_fields?: string[];
@@ -48,6 +50,7 @@ type DualPat = {
 };
 type SheetOverride = {
   metric_id: string;
+  sheet_id?: string;
   status_fields?: string[];
   down_values?: string[];
   up_values?: string[];
@@ -237,9 +240,10 @@ function defaultAnomalyPresenceOnly(): DualPat[] {
   ];
 }
 
-function emptyOverride(metricId: string): SheetOverride {
+function emptyOverride(metricId: string, sheetId = ""): SheetOverride {
   return {
     metric_id: metricId,
+    sheet_id: sheetId || metricId,
     status_fields: [],
     down_values: [],
     up_values: [],
@@ -249,14 +253,28 @@ function emptyOverride(metricId: string): SheetOverride {
   };
 }
 
-export function presetForMetric(metricId: string): SheetOverride {
+function sheetIdentity(s: { sheet_id?: string; metric_id?: string } | null | undefined): string {
+  return String(s?.sheet_id || s?.metric_id || "").trim();
+}
+
+function sheetLabel(s: { title?: string; sheet_id?: string; metric_id?: string } | null | undefined): string {
+  return String(s?.title || s?.sheet_id || s?.metric_id || "").trim() || "—";
+}
+
+export function presetForMetric(metricId: string, sheetId = ""): SheetOverride {
   const mid = metricId;
+  const sid = sheetId || mid;
+  const withId = (ov: SheetOverride): SheetOverride => ({
+    ...ov,
+    metric_id: mid,
+    sheet_id: sid,
+  });
   if (mid === "interface_brief") {
     const upConds: RuleCond[] = [
       { type: "value", field: "admin", op: "in", value: ["up"] },
       { type: "value", field: "phy", op: "in", value: ["up"] },
     ];
-    return {
+    return withId({
       metric_id: mid,
       status_fields: ["admin", "phy", "prot"],
       down_values: ["down"],
@@ -279,11 +297,11 @@ export function presetForMetric(metricId: string): SheetOverride {
       ],
       anomaly: defaultAnomalyForState("admin", ["down"]),
       skip_dual: false,
-    };
+    });
   }
-  if (mid === "bgp_peer") {
+  if (mid === "bgp_peer" || mid.startsWith("bgp_peer")) {
     const upConds: RuleCond[] = [{ type: "value", field: "state", op: "eq", value: "established" }];
-    return {
+    return withId({
       metric_id: mid,
       status_fields: ["state"],
       down_values: ["idle", "active", "connect", "down"],
@@ -310,10 +328,10 @@ export function presetForMetric(metricId: string): SheetOverride {
       ],
       anomaly: defaultAnomalyForState("state", ["idle", "active", "connect", "down"]),
       skip_dual: false,
-    };
+    });
   }
   if (mid === "arp" || mid === "nd6_cache" || mid === "lldp_neighbor") {
-    return {
+    return withId({
       metric_id: mid,
       status_fields: [],
       down_values: [],
@@ -321,13 +339,13 @@ export function presetForMetric(metricId: string): SheetOverride {
       success: [successFromPresence(["removed"], ["added"])],
       anomaly: defaultAnomalyPresenceOnly(),
       skip_dual: false,
-    };
+    });
   }
   if (mid.includes("isis") || mid.includes("ospf") || mid.includes("adjacency")) {
     const upConds: RuleCond[] = [
       { type: "value", field: "state", op: "in", value: ["up", "full", "2way"] },
     ];
-    return {
+    return withId({
       metric_id: mid,
       status_fields: ["state"],
       down_values: ["down", "init", "idle"],
@@ -354,10 +372,10 @@ export function presetForMetric(metricId: string): SheetOverride {
       ],
       anomaly: defaultAnomalyForState("state", ["down", "init", "idle"]),
       skip_dual: false,
-    };
+    });
   }
   if (mid.includes("route") || mid.includes("vrf")) {
-    return {
+    return withId({
       metric_id: mid,
       status_fields: [],
       down_values: [],
@@ -365,18 +383,23 @@ export function presetForMetric(metricId: string): SheetOverride {
       success: [successFromPresence(["removed"], ["added"])],
       anomaly: defaultAnomalyPresenceOnly(),
       skip_dual: false,
-    };
+    });
   }
-  return emptyOverride(mid);
+  return emptyOverride(mid, sid);
 }
 
-function skipPreset(metricId: string): SheetOverride {
-  return { ...emptyOverride(metricId), skip_dual: true, success: [], anomaly: [] };
+function skipPreset(metricId: string, sheetId = ""): SheetOverride {
+  return { ...emptyOverride(metricId, sheetId), skip_dual: true, success: [], anomaly: [] };
 }
 
-function overrideFor(overrides: SheetOverride[], metricId: string): SheetOverride {
-  const found = overrides.find((o) => o.metric_id === metricId);
-  const merged = found ? { ...emptyOverride(metricId), ...found, metric_id: metricId } : emptyOverride(metricId);
+function overrideFor(overrides: SheetOverride[], metricId: string, sheetId = ""): SheetOverride {
+  const sid = sheetId || metricId;
+  const found =
+    overrides.find((o) => (o.sheet_id || o.metric_id) === sid) ||
+    overrides.find((o) => !o.sheet_id && o.metric_id === metricId);
+  const merged = found
+    ? { ...emptyOverride(metricId, sid), ...found, metric_id: metricId, sheet_id: sid }
+    : emptyOverride(metricId, sid);
   return {
     ...merged,
     success: (merged.success || []).map((p) => normalizePat(p)),
@@ -788,16 +811,20 @@ export function BizMonitorTemplatesPage() {
   const sheets = useMemo(() => selectedCompare?.metrics || [], [selectedCompare]);
   const activeSheet = sheets[activeSheetIdx] || sheets[0] || null;
   const activeMetricId = activeSheet?.metric_id || "";
+  const activeSheetId = activeSheet ? sheetIdentity(activeSheet) : "";
   const activeOverride = useMemo(
-    () => (activeMetricId ? overrideFor(overrides, activeMetricId) : emptyOverride("")),
-    [overrides, activeMetricId],
+    () =>
+      activeMetricId
+        ? overrideFor(overrides, activeMetricId, activeSheetId)
+        : emptyOverride(""),
+    [overrides, activeMetricId, activeSheetId],
   );
   const activeFields = useMemo(() => {
     const schema = metricSchemas.find((m) => m.metric_id === activeMetricId);
     return schema?.fields || [];
   }, [metricSchemas, activeMetricId]);
 
-  const sheetKey = useMemo(() => sheets.map((s) => s.metric_id).join("|"), [sheets]);
+  const sheetKey = useMemo(() => sheets.map((s) => sheetIdentity(s)).join("|"), [sheets]);
 
   useEffect(() => {
     if (!sheets.length) {
@@ -810,16 +837,21 @@ export function BizMonitorTemplatesPage() {
   useEffect(() => {
     if (!sheetKey) return;
     setOverrides((prev) => {
-      const byId = new Map(prev.map((o) => [o.metric_id, o]));
-      return sheets.map((s) => byId.get(s.metric_id) || emptyOverride(s.metric_id));
+      const byId = new Map(prev.map((o) => [o.sheet_id || o.metric_id, o]));
+      return sheets.map(
+        (s) =>
+          byId.get(sheetIdentity(s)) ||
+          emptyOverride(s.metric_id, sheetIdentity(s)),
+      );
     });
   }, [compareId, sheetKey]);
 
-  const syncOverride = (metricId: string, patch: Partial<SheetOverride>) => {
+  const syncOverride = (metricId: string, patch: Partial<SheetOverride>, sheetId = "") => {
+    const sid = sheetId || sheetIdentity({ metric_id: metricId, sheet_id: sheetId });
     setOverrides((prev) => {
-      const others = prev.filter((o) => o.metric_id !== metricId);
-      const base = overrideFor(prev, metricId);
-      return [...others, { ...base, ...patch, metric_id: metricId }];
+      const others = prev.filter((o) => (o.sheet_id || o.metric_id) !== sid);
+      const base = overrideFor(prev, metricId, sid);
+      return [...others, { ...base, ...patch, metric_id: metricId, sheet_id: sid }];
     });
   };
 
@@ -858,15 +890,18 @@ export function BizMonitorTemplatesPage() {
   const closeEdit = () => setEditOpen(false);
 
   const applyPreset = (kind: "auto" | "skip") => {
-    if (!activeMetricId) return;
+    if (!activeMetricId || !activeSheetId) return;
     syncOverride(
       activeMetricId,
-      kind === "skip" ? skipPreset(activeMetricId) : presetForMetric(activeMetricId),
+      kind === "skip"
+        ? skipPreset(activeMetricId, activeSheetId)
+        : presetForMetric(activeMetricId, activeSheetId),
+      activeSheetId,
     );
   };
 
   const applyAllPresets = () => {
-    setOverrides(sheets.map((s) => presetForMetric(s.metric_id)));
+    setOverrides(sheets.map((s) => presetForMetric(s.metric_id, sheetIdentity(s))));
   };
 
   const save = async () => {
@@ -1080,10 +1115,11 @@ export function BizMonitorTemplatesPage() {
                 </div>
                 <div className="mt-editor__nav-list" role="tablist">
                   {sheets.map((s, i) => {
-                    const ov = overrideFor(overrides, s.metric_id);
+                    const sid = sheetIdentity(s);
+                    const ov = overrideFor(overrides, s.metric_id, sid);
                     return (
                       <button
-                        key={s.metric_id}
+                        key={sid}
                         type="button"
                         role="tab"
                         aria-selected={activeSheetIdx === i}
@@ -1093,7 +1129,7 @@ export function BizMonitorTemplatesPage() {
                           setRuleTab("success");
                         }}
                       >
-                        <span className="mt-editor__nav-name">{s.metric_id}</span>
+                        <span className="mt-editor__nav-name">{sheetLabel(s)}</span>
                         <span className="mt-editor__nav-tag">
                           {ov.skip_dual
                             ? t("bizMonitorTpl.tagSkip")
@@ -1116,9 +1152,9 @@ export function BizMonitorTemplatesPage() {
                 <div className="mt-editor__pane">
                   <div className="mt-editor__pane-head">
                     <div>
-                      <div className="mt-editor__metric">{activeMetricId}</div>
+                      <div className="mt-editor__metric">{sheetLabel(activeSheet)}</div>
                       <div className="mt-editor__meta muted">
-                        <span>Key {(activeSheet.key_fields || []).join(" · ") || "—"}</span>
+                        <span>{activeMetricId}</span>
                         <span>
                           {t("bizMonitorTpl.compare")}{" "}
                           {(activeSheet.compare_fields || []).length
@@ -1142,7 +1178,9 @@ export function BizMonitorTemplatesPage() {
                     <input
                       type="checkbox"
                       checked={Boolean(activeOverride.skip_dual)}
-                      onChange={(e) => syncOverride(activeMetricId, { skip_dual: e.target.checked })}
+                      onChange={(e) =>
+                        syncOverride(activeMetricId, { skip_dual: e.target.checked }, activeSheetId)
+                      }
                     />
                     <span>{t("bizMonitorTpl.skipDual")}</span>
                   </label>
@@ -1177,7 +1215,9 @@ export function BizMonitorTemplatesPage() {
                           patterns={activeOverride.success || []}
                           fieldChoices={fieldChoices}
                           t={t}
-                          onChange={(success) => syncOverride(activeMetricId, { success })}
+                          onChange={(success) =>
+                            syncOverride(activeMetricId, { success }, activeSheetId)
+                          }
                         />
                       ) : (
                         <DualPatternList
@@ -1185,7 +1225,9 @@ export function BizMonitorTemplatesPage() {
                           patterns={activeOverride.anomaly || []}
                           fieldChoices={fieldChoices}
                           t={t}
-                          onChange={(anomaly) => syncOverride(activeMetricId, { anomaly })}
+                          onChange={(anomaly) =>
+                            syncOverride(activeMetricId, { anomaly }, activeSheetId)
+                          }
                         />
                       )}
                     </>
@@ -1217,26 +1259,29 @@ export function BizMonitorTemplatesPage() {
                     {t("bizMonitorTpl.collectHint")}
                   </p>
                   <div className="mt-chip-row">
-                    {sheets.map((s) => {
-                      const checked = collectIds.length === 0 || collectIds.includes(s.metric_id);
+                    {Array.from(new Set(sheets.map((s) => s.metric_id).filter(Boolean))).map((mid) => {
+                      const checked = collectIds.length === 0 || collectIds.includes(mid);
                       const explicit = collectIds.length > 0;
+                      const allMids = Array.from(
+                        new Set(sheets.map((s) => s.metric_id).filter(Boolean)),
+                      );
                       return (
                         <Chip
-                          key={s.metric_id}
+                          key={mid}
                           active={checked}
-                          label={s.metric_id}
+                          label={mid}
                           onClick={() => {
                             if (!explicit) {
-                              setCollectIds(sheets.map((x) => x.metric_id).filter((id) => id !== s.metric_id));
+                              setCollectIds(allMids.filter((id) => id !== mid));
                               return;
                             }
                             setCollectIds((prev) => {
-                              if (prev.includes(s.metric_id)) {
-                                const next = prev.filter((x) => x !== s.metric_id);
-                                return next.length === sheets.length ? [] : next;
+                              if (prev.includes(mid)) {
+                                const next = prev.filter((x) => x !== mid);
+                                return next.length === allMids.length ? [] : next;
                               }
-                              const next = [...prev, s.metric_id];
-                              return next.length === sheets.length ? [] : next;
+                              const next = [...prev, mid];
+                              return next.length === allMids.length ? [] : next;
                             });
                           }}
                         />

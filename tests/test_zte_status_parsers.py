@@ -145,6 +145,12 @@ class ZteStatusParserTests(unittest.TestCase):
         conn = [r for r in rows if r["state"] == "Connect"]
         self.assertGreaterEqual(len(est), 3)
         self.assertGreaterEqual(len(conn), 3)
+        self.assertTrue(all("state_or_pfx" not in r for r in rows))
+        self.assertTrue(all(r["pfx_rcd"].isdigit() for r in est))
+        self.assertTrue(all(r["pfx_rcd"] == "" for r in conn))
+        one = next(r for r in rows if r["neighbor"] == "10.206.63.205")
+        self.assertEqual(one["state"], "Established")
+        self.assertEqual(one["pfx_rcd"], "642")
 
         ipv4 = _section(self.log, "show bgp ipv4 unicast summary", ("show bgp vpnv6",))
         rows2 = normalize_bgp_peer(raw_text=ipv4, command="show bgp ipv4 unicast summary")

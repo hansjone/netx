@@ -127,68 +127,89 @@ def _success_stateful(
     }
 
 
-def preset_override_for_metric(metric_id: str) -> dict[str, Any]:
-    """Default dual-verdict overlay for a compare-template sheet."""
+def preset_override_for_metric(metric_id: str, *, sheet_id: str = "") -> dict[str, Any]:
+    """Default dual-verdict overlay for a compare-template sheet.
+
+    ``metric_id`` is the collected source table; ``sheet_id`` identifies a
+    filtered split (e.g. bgp_peer.vpnv4). Presets key off the source metric.
+    """
     mid = str(metric_id or "").strip()
-    if mid == PORT_METRIC_ID:
+    sid = str(sheet_id or "").strip()
+    # Callers may pass only a split id like "bgp_peer.vpnv4"
+    if not mid and sid:
+        mid = sid.split(".", 1)[0]
+    if not sid:
+        sid = mid
+    look = mid.split(".", 1)[0] if "." in mid else mid
+
+    def _out(body: dict[str, Any]) -> dict[str, Any]:
+        body["metric_id"] = mid or look
+        if sid and sid != (mid or look):
+            body["sheet_id"] = sid
+        return body
+
+    if look == PORT_METRIC_ID:
         up = [
             {"type": "value", "field": "admin", "op": "in", "value": ["up"]},
             {"type": "value", "field": "phy", "op": "in", "value": ["up"]},
         ]
-        return {
-            "metric_id": mid,
-            "status_fields": list(PORT_STATUS_FIELDS),
-            "down_values": ["down"],
-            "up_values": ["up"],
-            "success": [
-                _success_stateful(
-                    old_down_groups=[
-                        [
-                            {"type": "value", "field": "admin", "op": "in", "value": ["down"]},
-                            {"type": "value", "field": "phy", "op": "in", "value": ["down"]},
-                        ]
-                    ],
-                    new_up_conds=up,
-                )
-            ],
-            "anomaly": _default_anomaly_for_state("admin", ["down"]),
-        }
-    if mid == "bgp_peer":
+        return _out(
+            {
+                "status_fields": list(PORT_STATUS_FIELDS),
+                "down_values": ["down"],
+                "up_values": ["up"],
+                "success": [
+                    _success_stateful(
+                        old_down_groups=[
+                            [
+                                {"type": "value", "field": "admin", "op": "in", "value": ["down"]},
+                                {"type": "value", "field": "phy", "op": "in", "value": ["down"]},
+                            ]
+                        ],
+                        new_up_conds=up,
+                    )
+                ],
+                "anomaly": _default_anomaly_for_state("admin", ["down"]),
+            }
+        )
+    if look == "bgp_peer":
         up = [{"type": "value", "field": "state", "op": "eq", "value": "established"}]
-        return {
-            "metric_id": mid,
-            "status_fields": ["state"],
-            "down_values": ["idle", "active", "connect", "down"],
-            "up_values": ["established"],
-            "success": [
-                _success_stateful(
-                    old_down_groups=[
-                        [
-                            {
-                                "type": "value",
-                                "field": "state",
-                                "op": "in",
-                                "value": ["idle", "active", "connect", "down"],
-                            }
-                        ]
-                    ],
-                    new_up_conds=up,
-                )
-            ],
-            "anomaly": _default_anomaly_for_state(
-                "state", ["idle", "active", "connect", "down"]
-            ),
-        }
-    if mid in ("arp", "nd6_cache", "lldp_neighbor"):
-        return {
-            "metric_id": mid,
-            "status_fields": [],
-            "down_values": [],
-            "up_values": [],
-            "success": [_success_presence_migrate()],
-            "anomaly": _default_anomaly_presence_only(),
-        }
-    if "isis" in mid or "ospf" in mid or "adjacency" in mid:
+        return _out(
+            {
+                "status_fields": ["state"],
+                "down_values": ["idle", "active", "connect", "down"],
+                "up_values": ["established"],
+                "success": [
+                    _success_stateful(
+                        old_down_groups=[
+                            [
+                                {
+                                    "type": "value",
+                                    "field": "state",
+                                    "op": "in",
+                                    "value": ["idle", "active", "connect", "down"],
+                                }
+                            ]
+                        ],
+                        new_up_conds=up,
+                    )
+                ],
+                "anomaly": _default_anomaly_for_state(
+                    "state", ["idle", "active", "connect", "down"]
+                ),
+            }
+        )
+    if look in ("arp", "nd6_cache", "lldp_neighbor"):
+        return _out(
+            {
+                "status_fields": [],
+                "down_values": [],
+                "up_values": [],
+                "success": [_success_presence_migrate()],
+                "anomaly": _default_anomaly_presence_only(),
+            }
+        )
+    if "isis" in look or "ospf" in look or "adjacency" in look:
         up = [
             {
                 "type": "value",
@@ -197,45 +218,48 @@ def preset_override_for_metric(metric_id: str) -> dict[str, Any]:
                 "value": ["up", "full", "2way"],
             }
         ]
-        return {
-            "metric_id": mid,
-            "status_fields": ["state"],
-            "down_values": ["down", "init", "idle"],
-            "up_values": ["up", "full", "2way"],
-            "success": [
-                _success_stateful(
-                    old_down_groups=[
-                        [
-                            {
-                                "type": "value",
-                                "field": "state",
-                                "op": "in",
-                                "value": ["down", "init", "idle"],
-                            }
-                        ]
-                    ],
-                    new_up_conds=up,
-                )
-            ],
-            "anomaly": _default_anomaly_for_state("state", ["down", "init", "idle"]),
-        }
-    if "route" in mid or "vrf" in mid:
-        return {
-            "metric_id": mid,
+        return _out(
+            {
+                "status_fields": ["state"],
+                "down_values": ["down", "init", "idle"],
+                "up_values": ["up", "full", "2way"],
+                "success": [
+                    _success_stateful(
+                        old_down_groups=[
+                            [
+                                {
+                                    "type": "value",
+                                    "field": "state",
+                                    "op": "in",
+                                    "value": ["down", "init", "idle"],
+                                }
+                            ]
+                        ],
+                        new_up_conds=up,
+                    )
+                ],
+                "anomaly": _default_anomaly_for_state("state", ["down", "init", "idle"]),
+            }
+        )
+    if "route" in look or "vrf" in look:
+        return _out(
+            {
+                "status_fields": [],
+                "down_values": [],
+                "up_values": [],
+                "success": [_success_presence_migrate()],
+                "anomaly": _default_anomaly_presence_only(),
+            }
+        )
+    return _out(
+        {
             "status_fields": [],
             "down_values": [],
             "up_values": [],
             "success": [_success_presence_migrate()],
             "anomaly": _default_anomaly_presence_only(),
         }
-    return {
-        "metric_id": mid,
-        "status_fields": [],
-        "down_values": [],
-        "up_values": [],
-        "success": [_success_presence_migrate()],
-        "anomaly": _default_anomaly_presence_only(),
-    }
+    )
 
 
 def ensure_default_monitor_templates(db: Session) -> None:
@@ -264,7 +288,14 @@ def ensure_default_monitor_templates(db: Session) -> None:
     ]
     if zte:
         zte_sheets = cmp_svc.template_metrics(zte)
-        zte_overrides = [preset_override_for_metric(str(s.get("metric_id") or "")) for s in zte_sheets if s.get("metric_id")]
+        zte_overrides = [
+            preset_override_for_metric(
+                str(s.get("metric_id") or ""),
+                sheet_id=str(s.get("sheet_id") or s.get("metric_id") or ""),
+            )
+            for s in zte_sheets
+            if s.get("metric_id")
+        ]
         seeds.append(
             BizMonitorTemplate(
                 id=uuid4().hex,

@@ -44,7 +44,7 @@ class BizMigrationBatch(Base):
     batch_label: Mapped[str] = mapped_column(String(128), default="")
     # pending | active | review | done
     status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
-    # {"ports": ["gei-..."], "items": [{"metric_id":"bgp_peer","key":"..."}]}
+    # {"ports": ["gei-..."], "items": [{"metric_id":"bgp_peer","sheet_id":"bgp_peer.vpnv4","key":"..."}]}
     expect_set_json: Mapped[dict] = mapped_column(_JsonType, default=dict)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

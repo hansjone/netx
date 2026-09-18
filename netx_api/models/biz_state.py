@@ -205,8 +205,11 @@ class BizStateCommandOverride(Base):
 class BizCompareTemplate(Base):
     """Compare template: one or more metric sheets with key/iface/compare roles.
 
-    ``metrics_json`` is the source of truth (list of sheet defs). Legacy
-    ``metric_id`` / ``key_fields`` / … mirror the first sheet for older rows.
+    ``metrics_json`` is the source of truth (list of sheet defs). Each sheet has
+    ``metric_id`` (collected source table) and optional ``sheet_id`` / ``title`` /
+    ``row_filters`` so one source can be split into multiple compare items
+    (e.g. bgp_peer → vpnv4/vpnv6). Legacy ``metric_id`` / ``key_fields`` / …
+    mirror the first sheet for older rows.
     Empty ``compare_fields`` on a sheet = presence-only (entry set match).
     """
 

@@ -76,7 +76,6 @@ def normalize_bgp_peer(
                 "up_down": m.group("up")[:32],
                 "state": state[:64],
                 "pfx_rcd": pfx[:32],
-                "state_or_pfx": state_raw[:64],
             }
         )
     return out

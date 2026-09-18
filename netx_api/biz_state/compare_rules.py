@@ -44,6 +44,9 @@ def eval_leaf_filter(row: Mapping[str, Any], filt: Mapping[str, Any]) -> bool:
     if op in ("not_in", "nin"):
         opts = {str(x).strip().lower() for x in _as_list(expect) if str(x).strip()}
         return raw.lower() not in opts
+    if op == "contains":
+        needle = str(expect or "").strip().lower()
+        return bool(needle) and needle in raw.lower()
     if op == "empty":
         return not raw
     if op in ("not_empty", "nonempty"):

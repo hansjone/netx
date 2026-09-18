@@ -10,6 +10,7 @@ from netx_api.biz_state.compare_rules import (
     arp_dynamic_row_filters,
     effective_compare_fields,
     effective_display_fields,
+    eval_leaf_filter,
     normalize_value,
     values_equal,
 )
@@ -314,6 +315,57 @@ class CompareDiffPagingTests(unittest.TestCase):
 
 
 class CompareSheetDefaultsTests(unittest.TestCase):
+    def test_contains_filter_op(self) -> None:
+        row = {"af": "IPv4,IPv6"}
+        self.assertTrue(eval_leaf_filter(row, {"field": "af", "op": "contains", "value": "IPv4"}))
+        self.assertTrue(eval_leaf_filter(row, {"field": "af", "op": "contains", "value": "ipv6"}))
+        self.assertFalse(eval_leaf_filter(row, {"field": "af", "op": "contains", "value": "vpn"}))
+
+    def test_zte_default_splits_bgp_and_isis(self) -> None:
+        from netx_api.biz_state.compare_service import _default_zte_status_sheets, sheet_key
+
+        sheets = _default_zte_status_sheets()
+        ids = [sheet_key(s) for s in sheets]
+        self.assertIn("bgp_peer.ipv4", ids)
+        self.assertIn("bgp_peer.vpnv4", ids)
+        self.assertIn("bgp_peer.vpnv6", ids)
+        self.assertIn("isis_adjacency.ipv4", ids)
+        self.assertIn("isis_adjacency.ipv6", ids)
+        # Same source metric may appear multiple times
+        self.assertEqual(sum(1 for s in sheets if s["metric_id"] == "bgp_peer"), 4)
+        vpnv4 = next(s for s in sheets if sheet_key(s) == "bgp_peer.vpnv4")
+        self.assertEqual(vpnv4["row_filters"], [{"field": "afi", "op": "eq", "value": "vpnv4"}])
+        isis4 = next(s for s in sheets if sheet_key(s) == "isis_adjacency.ipv4")
+        self.assertEqual(isis4["row_filters"][0]["op"], "contains")
+
+    def test_normalize_allows_duplicate_metric_with_distinct_sheet_id(self) -> None:
+        from netx_api.biz_state.compare_service import _normalize_sheet, sheet_key
+
+        a = _normalize_sheet(
+            {
+                "sheet_id": "bgp_peer.vpnv4",
+                "title": "BGP VPNv4",
+                "metric_id": "bgp_peer",
+                "key_fields": ["afi", "neighbor"],
+                "compare_fields": ["state"],
+                "row_filters": [{"field": "afi", "op": "eq", "value": "vpnv4"}],
+            }
+        )
+        b = _normalize_sheet(
+            {
+                "sheet_id": "bgp_peer.ipv4",
+                "title": "BGP IPv4",
+                "metric_id": "bgp_peer",
+                "key_fields": ["afi", "neighbor"],
+                "compare_fields": ["state"],
+                "row_filters": [{"field": "afi", "op": "eq", "value": "ipv4"}],
+            }
+        )
+        self.assertIsNotNone(a)
+        self.assertIsNotNone(b)
+        self.assertEqual(a["metric_id"], b["metric_id"])
+        self.assertNotEqual(sheet_key(a), sheet_key(b))
+
     def test_arp_default_sheet_has_row_filters(self) -> None:
         from netx_api.biz_state.compare_service import _default_sheet_for_metric
 

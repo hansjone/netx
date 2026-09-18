@@ -68,7 +68,10 @@ type MigBatch = {
   id: string;
   batch_label: string;
   status: string;
-  expect_set?: { ports?: string[]; items?: Array<{ metric_id: string; key?: string; keys?: string[] }> };
+  expect_set?: {
+    ports?: string[];
+    items?: Array<{ metric_id: string; sheet_id?: string; key?: string; keys?: string[] }>;
+  };
   accept_status?: string;
   accept_run_id?: string;
   accept_summary?: {
@@ -91,6 +94,7 @@ type RedTicket = {
 };
 type SheetCard = {
   metric_id: string;
+  sheet_id?: string;
   title?: string;
   progress_ok: number;
   progress_total: number;
@@ -101,6 +105,7 @@ type SheetCard = {
 type DiffRow = {
   id: string;
   metric_id: string;
+  sheet_id?: string;
   verdict: string;
   color: string;
   old_kind: string;
@@ -129,10 +134,20 @@ type ExpectSheetItem = {
 };
 type ExpectSheet = {
   metric_id: string;
+  sheet_id?: string;
+  title?: string;
   key_fields: string[];
   iface_fields: string[];
   items: ExpectSheetItem[];
 };
+
+function sheetIdentity(s: { sheet_id?: string; metric_id?: string } | null | undefined): string {
+  return String(s?.sheet_id || s?.metric_id || "").trim();
+}
+
+function sheetLabel(s: { title?: string; sheet_id?: string; metric_id?: string } | null | undefined): string {
+  return String(s?.title || s?.sheet_id || s?.metric_id || "").trim() || "—";
+}
 
 type DetailTab = "setup" | "batches" | "board";
 
@@ -237,7 +252,11 @@ export function BizMigrationPage() {
   const sheetCards = board?.run?.summary?.sheet_cards || [];
   const visibleDiffs = useMemo(() => {
     let rows = diffs;
-    if (boardMetricId) rows = rows.filter((d) => d.metric_id === boardMetricId);
+    if (boardMetricId) {
+      rows = rows.filter(
+        (d) => sheetIdentity(d) === boardMetricId || d.metric_id === boardMetricId,
+      );
+    }
     if (onlyExpect) rows = rows.filter((d) => d.in_expect);
     return rows;
   }, [diffs, onlyExpect, boardMetricId]);
@@ -245,10 +264,12 @@ export function BizMigrationPage() {
   const boardMetricOptions = useMemo(() => {
     const ids = new Set<string>();
     for (const c of sheetCards) {
-      if (c.metric_id) ids.add(c.metric_id);
+      const id = sheetIdentity(c);
+      if (id) ids.add(id);
     }
     for (const d of diffs) {
-      if (d.metric_id) ids.add(d.metric_id);
+      const id = sheetIdentity(d);
+      if (id) ids.add(id);
     }
     return [...ids];
   }, [sheetCards, diffs]);
@@ -288,7 +309,8 @@ export function BizMigrationPage() {
   }, [batch]);
 
   const filteredExpectItems = useMemo(() => {
-    const sheet = expectSheets.find((s) => s.metric_id === expectMetricId) || expectSheets[0];
+    const sheet =
+      expectSheets.find((s) => sheetIdentity(s) === expectMetricId) || expectSheets[0];
     const items = sheet?.items || [];
     const kw = portFilter.trim().toLowerCase();
     if (!kw) return items;
@@ -378,8 +400,8 @@ export function BizMigrationPage() {
       const sheets = (res.sheets || []) as ExpectSheet[];
       setExpectSheets(sheets);
       setExpectMetricId((prev) => {
-        if (prev && sheets.some((s) => s.metric_id === prev)) return prev;
-        return sheets[0]?.metric_id || "";
+        if (prev && sheets.some((s) => sheetIdentity(s) === prev)) return prev;
+        return sheets[0] ? sheetIdentity(sheets[0]) : "";
       });
     } catch {
       setExpectSheets([]);
@@ -712,11 +734,14 @@ export function BizMigrationPage() {
   async function onCreateBatch() {
     if (!projectId) return;
     // One item per selected key. A flat `keys: [a, b]` is parsed as one composite key.
-    const items: Array<{ metric_id: string; key: string }> = [];
+    const items: Array<{ metric_id: string; sheet_id?: string; key: string }> = [];
     const ports: string[] = [];
     for (const sheet of expectSheets) {
       const keys = sheet.items.map((it) => it.key).filter((k) => selectedExpectKeys.has(k));
-      for (const key of keys) items.push({ metric_id: sheet.metric_id, key });
+      const sid = sheetIdentity(sheet);
+      for (const key of keys) {
+        items.push({ metric_id: sheet.metric_id, sheet_id: sid, key });
+      }
       if (sheet.metric_id === "interface_brief") ports.push(...keys);
     }
     if (!items.length && !ports.length) {
@@ -1416,20 +1441,30 @@ export function BizMigrationPage() {
                       <div className="ct-editor__nav-list" role="tablist">
                         {(expectSheets.length
                           ? expectSheets
-                          : [{ metric_id: "—", items: [] as ExpectSheetItem[], key_fields: [] as string[], iface_fields: [] as string[] }]
+                          : [
+                              {
+                                metric_id: "—",
+                                sheet_id: "—",
+                                title: "—",
+                                items: [] as ExpectSheetItem[],
+                                key_fields: [] as string[],
+                                iface_fields: [] as string[],
+                              },
+                            ]
                         ).map((s) => {
+                          const sid = sheetIdentity(s);
                           const active =
-                            (expectMetricId || expectSheets[0]?.metric_id) === s.metric_id;
+                            (expectMetricId || sheetIdentity(expectSheets[0])) === sid;
                           return (
                             <button
-                              key={s.metric_id}
+                              key={sid}
                               type="button"
                               role="tab"
                               aria-selected={active}
                               className={`ct-editor__nav-item${active ? " is-active" : ""}`}
-                              onClick={() => setExpectMetricId(s.metric_id)}
+                              onClick={() => setExpectMetricId(sid)}
                             >
-                              <span className="ct-editor__nav-name">{s.metric_id}</span>
+                              <span className="ct-editor__nav-name">{sheetLabel(s)}</span>
                               <span className="ct-editor__nav-tag">{s.items.length}</span>
                             </button>
                           );
@@ -1605,7 +1640,7 @@ export function BizMigrationPage() {
                       {t("bizMigration.newBaselineMissingBanner", {
                         metrics: sheetCards
                           .filter((c) => c.new_baseline_missing)
-                          .map((c) => c.metric_id)
+                          .map((c) => sheetLabel(c))
                           .join(", "),
                       })}
                     </div>
@@ -1703,22 +1738,23 @@ export function BizMigrationPage() {
                             <span className="bs-cmp-nav__name">{t("bizMigration.allMetrics")}</span>
                           </button>
                           {sheetCards.map((c) => {
-                            const active = boardMetricId === c.metric_id;
+                            const sid = sheetIdentity(c);
+                            const active = boardMetricId === sid;
                             const hot = (c.anomaly || 0) > 0 || Boolean(c.new_baseline_missing);
                             return (
                               <button
-                                key={c.metric_id}
+                                key={sid}
                                 type="button"
                                 role="tab"
                                 aria-selected={active}
                                 className={`bs-cmp-nav__item${active ? " is-active" : ""}${
                                   hot ? " has-diff" : " is-clean"
                                 }`}
-                                onClick={() => setBoardMetricId(c.metric_id)}
+                                onClick={() => setBoardMetricId(sid)}
                               >
                                 <span className="bs-cmp-nav__dot" />
                                 <span className="bs-cmp-nav__name">
-                                  {c.metric_id}
+                                  {sheetLabel(c)}
                                   {c.new_baseline_missing ? " · baseline" : ""}
                                 </span>
                                 <span className="bs-cmp-nav__stats">
@@ -1754,7 +1790,7 @@ export function BizMigrationPage() {
                               <tbody>
                                 {visibleDiffs.map((d) => (
                                   <tr key={d.id}>
-                                    <td>{d.metric_id || "—"}</td>
+                                    <td>{sheetLabel(d)}</td>
                                     <td>
                                       <code>{d.key_str || "—"}</code>
                                     </td>

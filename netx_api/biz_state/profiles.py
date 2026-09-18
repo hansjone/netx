@@ -298,7 +298,6 @@ _BGP_PEER_FIELDS: list[FieldDef] = [
     FieldDef("as_num", length=16, role="state", display_name="AS"),
     FieldDef("state", length=64, role="state", display_name="State"),
     FieldDef("pfx_rcd", length=32, role="state", display_name="PfxRcd"),
-    FieldDef("state_or_pfx", length=64, role="meta", display_name="State/PfxRcd"),
     FieldDef("ver", length=8, role="meta", display_name="Ver"),
     FieldDef("msg_rcvd", length=32, role="meta", display_name="MsgRcvd"),
     FieldDef("msg_send", length=32, role="meta", display_name="MsgSend"),

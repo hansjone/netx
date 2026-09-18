@@ -27,6 +27,55 @@ PORT_OVERRIDE = {
 
 
 class ParseExpectSetTests(unittest.TestCase):
+    def test_items_sheet_id_bucket(self):
+        got = parse_expect_set(
+            {
+                "items": [
+                    {"metric_id": "bgp_peer", "sheet_id": "bgp_peer.vpnv4", "key": "1.1.1.1"},
+                    {"metric_id": "bgp_peer", "sheet_id": "bgp_peer.ipv4", "key": "2.2.2.2"},
+                ]
+            }
+        )
+        self.assertEqual(got["bgp_peer.vpnv4"], {"1.1.1.1"})
+        self.assertEqual(got["bgp_peer.ipv4"], {"2.2.2.2"})
+        self.assertNotIn("bgp_peer", got)
+
+    def test_expect_keys_prefer_sheet_id(self):
+        expect = parse_expect_set(
+            {
+                "items": [
+                    {"metric_id": "bgp_peer", "sheet_id": "bgp_peer.vpnv4", "key": "1.1.1.1"},
+                    {"metric_id": "bgp_peer", "key": "9.9.9.9"},
+                ]
+            }
+        )
+        self.assertEqual(
+            expect_keys_for_metric(
+                expect, metric_id="bgp_peer", iface_fields=[], sheet_id="bgp_peer.vpnv4"
+            ),
+            {"1.1.1.1"},
+        )
+        self.assertEqual(
+            expect_keys_for_metric(expect, metric_id="bgp_peer", iface_fields=[]),
+            {"9.9.9.9"},
+        )
+
+    def test_override_for_sheet_prefers_sheet_id(self):
+        from netx_api.biz_migration.evaluate import override_for_sheet
+
+        overrides = [
+            {"metric_id": "bgp_peer", "status_fields": ["state"]},
+            {"metric_id": "bgp_peer", "sheet_id": "bgp_peer.vpnv4", "status_fields": ["state", "pfx_rcd"]},
+        ]
+        hit = override_for_sheet(
+            overrides, sheet_id="bgp_peer.vpnv4", metric_id="bgp_peer"
+        )
+        self.assertEqual(hit["status_fields"], ["state", "pfx_rcd"])
+        legacy = override_for_sheet(
+            overrides, sheet_id="bgp_peer.ipv4", metric_id="bgp_peer"
+        )
+        self.assertEqual(legacy["status_fields"], ["state"])
+
     def test_ports_go_to_interface_brief(self):
         got = parse_expect_set({"ports": ["gei-1", "gei-2", ""]})
         self.assertEqual(got["interface_brief"], {"gei-1", "gei-2"})

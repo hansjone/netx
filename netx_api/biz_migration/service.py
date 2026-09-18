@@ -9,7 +9,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from ..biz_state.compare_rules import apply_row_filters
-from ..biz_state.compare_service import _load_metric_rows, _port_map_dict, template_metrics
+from ..biz_state.compare_service import _load_metric_rows, _port_map_dict, sheet_key, sheet_title, template_metrics
 from ..models import (
     BizCompareTemplate,
     BizMigrationBatch,
@@ -27,7 +27,7 @@ from . import monitor_templates as mon_tpl
 from .evaluate import (
     PORT_METRIC_ID,
     evaluate_metric_dual,
-    override_for_metric,
+    override_for_sheet,
     parse_expect_set,
     port_sheet_def,
 )
@@ -124,7 +124,12 @@ def resolve_collect_metric_ids(db: Session, proj: BizMigrationProject) -> list[s
     if collect:
         return collect
     sheets, _, _ = resolve_evaluate_sheets(db, mt)
-    return [str(s.get("metric_id") or "").strip() for s in sheets if str(s.get("metric_id") or "").strip()]
+    seen: list[str] = []
+    for s in sheets:
+        mid = str(s.get("metric_id") or "").strip()
+        if mid and mid not in seen:
+            seen.append(mid)
+    return seen
 
 
 def project_to_dict(db: Session, p: BizMigrationProject) -> dict[str, Any]:
@@ -372,6 +377,7 @@ def run_evaluate(
 
     for sheet in sheets:
         mid = str(sheet.get("metric_id") or "").strip()
+        sid = sheet_key(sheet)
         key_fields = list(sheet.get("key_fields") or [])
         if not mid or not key_fields:
             continue
@@ -379,7 +385,7 @@ def run_evaluate(
         compare_fields = list(sheet.get("compare_fields") or [])
         row_filters = list(sheet.get("row_filters") or [])
         field_rules = list(sheet.get("field_rules") or [])
-        sheet_ov = override_for_metric(sheet_overrides, mid)
+        sheet_ov = override_for_sheet(sheet_overrides, sheet_id=sid, metric_id=mid)
         if sheet_ov.get("skip_dual"):
             continue
 
@@ -402,6 +408,7 @@ def run_evaluate(
 
         one = evaluate_metric_dual(
             metric_id=mid,
+            sheet_id=sid,
             key_fields=key_fields,
             iface_fields=iface_fields,
             compare_fields=compare_fields,
@@ -420,7 +427,8 @@ def run_evaluate(
         sheet_cards.append(
             {
                 "metric_id": mid,
-                "title": mid,
+                "sheet_id": sid,
+                "title": sheet_title(sheet),
                 "progress_ok": one["progress_ok"],
                 "progress_total": one["progress_total"],
                 "anomaly": one["anomaly"],
@@ -433,6 +441,7 @@ def run_evaluate(
         )
         for r in one["rows"]:
             r["seq"] = seq
+            r["sheet_id"] = sid
             seq += 1
             all_rows.append(r)
             v = str(r.get("verdict") or "")
@@ -460,7 +469,7 @@ def run_evaluate(
             "anomaly": sum(c["anomaly"] for c in sheet_cards),
             "new_baseline_missing": any(bool(c.get("new_baseline_missing")) for c in sheet_cards),
             "missing_metrics": [
-                str(c.get("metric_id") or "")
+                str(c.get("title") or c.get("sheet_id") or c.get("metric_id") or "")
                 for c in sheet_cards
                 if c.get("new_baseline_missing")
             ],
@@ -499,6 +508,7 @@ def run_evaluate(
                     "old_status": r.get("old_status"),
                     "new_status": r.get("new_status"),
                     "rule_hit": r.get("rule_hit") or "",
+                    "sheet_id": r.get("sheet_id") or "",
                 },
                 old_kind=str(r.get("old_kind") or ""),
                 new_kind=str(r.get("new_kind") or ""),
@@ -545,6 +555,7 @@ def diff_to_dict(d: BizMigrationDiff) -> dict[str, Any]:
     return {
         "id": d.id,
         "metric_id": d.metric_id,
+        "sheet_id": kj.get("sheet_id") or d.metric_id or "",
         "seq": d.seq,
         "verdict": d.verdict,
         "color": d.color,
@@ -610,10 +621,11 @@ def list_baseline_expect_objects(db: Session, project_id: str) -> dict[str, Any]
     out_sheets: list[dict[str, Any]] = []
     for sheet in sheets:
         mid = str(sheet.get("metric_id") or "").strip()
+        sid = sheet_key(sheet)
         key_fields = [str(k) for k in (sheet.get("key_fields") or []) if str(k).strip()]
         if not mid or not key_fields:
             continue
-        sheet_ov = override_for_metric(sheet_overrides, mid)
+        sheet_ov = override_for_sheet(sheet_overrides, sheet_id=sid, metric_id=mid)
         if sheet_ov.get("skip_dual"):
             continue
         iface_fields = [str(k) for k in (sheet.get("iface_fields") or []) if str(k).strip()]
@@ -643,6 +655,8 @@ def list_baseline_expect_objects(db: Session, project_id: str) -> dict[str, Any]
         out_sheets.append(
             {
                 "metric_id": mid,
+                "sheet_id": sid,
+                "title": sheet_title(sheet),
                 "key_fields": key_fields,
                 "iface_fields": iface_fields,
                 "items": items,
