@@ -381,6 +381,8 @@ const zh = {
     failFields: "失败项",
     failFieldsEmpty: "—",
     failWholeRow: "整行",
+    pairBefore: "前",
+    pairAfter: "后",
     sheetAllPass: "全部一致",
     filterFailField: "失败比对项",
     filterFailFieldAll: "全部失败项",

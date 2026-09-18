@@ -381,6 +381,8 @@ const en = {
     failFields: "Failed fields",
     failFieldsEmpty: "—",
     failWholeRow: "Whole row",
+    pairBefore: "Before",
+    pairAfter: "After",
     sheetAllPass: "All match",
     filterFailField: "Failed compare field",
     filterFailFieldAll: "Any failed field",

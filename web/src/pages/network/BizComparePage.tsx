@@ -138,6 +138,51 @@ function failFieldNames(d: DiffRow): string[] {
   return Object.keys(d.changes || {});
 }
 
+/** Non-key fields: always show before/after pair for cutover review. */
+function PairCell(props: {
+  beforeText: string;
+  afterText: string;
+  mismatch: boolean;
+  reason?: string;
+  beforeLabel: string;
+  afterLabel: string;
+}) {
+  const { beforeText, afterText, mismatch, reason, beforeLabel, afterLabel } = props;
+  const pre = beforeText || "—";
+  const post = afterText || "—";
+  return (
+    <td
+      className={`bs-cmp-val-cell bs-cmp-val-cell--pair${
+        mismatch ? " bs-cmp-val-cell--diff" : ""
+      }`}
+    >
+      <div className="bs-cmp-pair">
+        <div className="bs-cmp-pair__row">
+          <span className="bs-cmp-pair__tag">{beforeLabel}</span>
+          <span
+            className={`bs-cmp-val${mismatch ? " bs-cmp-val--pre" : ""}${
+              !beforeText ? " is-empty" : ""
+            }`}
+          >
+            {pre}
+          </span>
+        </div>
+        <div className="bs-cmp-pair__row">
+          <span className="bs-cmp-pair__tag">{afterLabel}</span>
+          <span
+            className={`bs-cmp-val${mismatch ? " bs-cmp-val--post" : ""}${
+              !afterText ? " is-empty" : ""
+            }`}
+          >
+            {post}
+          </span>
+        </div>
+      </div>
+      {reason ? <div className="bs-cmp-val-reason muted">{reason}</div> : null}
+    </td>
+  );
+}
+
 function toggleInList(list: string[], name: string, on: boolean): string[] {
   if (on) return list.includes(name) ? list : [...list, name];
   return list.filter((x) => x !== name);
@@ -2263,58 +2308,22 @@ export function BizComparePage() {
                                 {resultColumns.extras.map((f) => {
                                   const pv = cellText(pre[f]);
                                   const av = cellText(post[f]);
-                                  const isCmp = resultColumns.compareSet.has(f);
                                   const ch = d.changes?.[f];
-                                  if (!isCmp) {
-                                    const show =
-                                      d.kind === "removed" ? pv || "—" : av || pv || "—";
-                                    return (
-                                      <td key={f} className="bs-cmp-val-cell bs-cmp-val-cell--ctx">
-                                        <span className="bs-cmp-val">{show}</span>
-                                      </td>
-                                    );
-                                  }
-                                  if (d.kind === "added") {
-                                    return (
-                                      <td key={f} className="bs-cmp-val-cell">
-                                        <span className="bs-cmp-val bs-cmp-val--post">
-                                          {av || "—"}
-                                        </span>
-                                      </td>
-                                    );
-                                  }
-                                  if (d.kind === "removed") {
-                                    return (
-                                      <td key={f} className="bs-cmp-val-cell">
-                                        <span className="bs-cmp-val bs-cmp-val--pre">
-                                          {pv || "—"}
-                                        </span>
-                                      </td>
-                                    );
-                                  }
-                                  const mismatch = Boolean(ch);
-                                  if (!mismatch) {
-                                    return (
-                                      <td key={f} className="bs-cmp-val-cell">
-                                        <span className="bs-cmp-val">{pv || av || "—"}</span>
-                                      </td>
-                                    );
-                                  }
+                                  const isCmp = resultColumns.compareSet.has(f);
+                                  // Compare fields: engine mismatch; display fields: value differ / side missing
+                                  const mismatch = isCmp
+                                    ? Boolean(ch) || d.kind === "added" || d.kind === "removed"
+                                    : pv !== av;
                                   return (
-                                    <td key={f} className="bs-cmp-val-cell bs-cmp-val-cell--diff">
-                                      <span className="bs-cmp-val bs-cmp-val--pre">
-                                        {pv || "—"}
-                                      </span>
-                                      <span className="bs-cmp-val-arrow" aria-hidden>
-                                        →
-                                      </span>
-                                      <span className="bs-cmp-val bs-cmp-val--post">
-                                        {av || "—"}
-                                      </span>
-                                      {ch?.reason ? (
-                                        <div className="bs-cmp-val-reason muted">{ch.reason}</div>
-                                      ) : null}
-                                    </td>
+                                    <PairCell
+                                      key={f}
+                                      beforeText={pv}
+                                      afterText={av}
+                                      mismatch={mismatch}
+                                      reason={ch?.reason}
+                                      beforeLabel={t("bizCompare.pairBefore")}
+                                      afterLabel={t("bizCompare.pairAfter")}
+                                    />
                                   );
                                 })}
                               </tr>
