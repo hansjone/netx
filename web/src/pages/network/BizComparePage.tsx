@@ -525,6 +525,152 @@ function emptyLeaf(field = ""): RowFilter {
   return { field, op: "eq", value: "" };
 }
 
+const FILTER_OPS = [
+  "eq",
+  "ne",
+  "in",
+  "not_in",
+  "empty",
+  "not_empty",
+  "regex",
+  "age_timer",
+] as const;
+
+function TplRowFiltersEditor({
+  groups,
+  fieldOpts,
+  t,
+  onChange,
+}: {
+  groups: RowFilter[][];
+  fieldOpts: string[];
+  t: (k: string, vars?: Record<string, string | number>) => string;
+  onChange: (next: RowFilter[][]) => void;
+}) {
+  const setGroups = onChange;
+  return (
+    <div className="ct-filters">
+      <p className="muted ct-filters__hint">{t("bizCompare.rowFiltersHintShort")}</p>
+      <div className="ct-filters__actions">
+        <button
+          type="button"
+          className="mt-link-btn"
+          onClick={() => setGroups([...(groups.length ? groups : []), [emptyLeaf(fieldOpts[0] || "")]])}
+        >
+          {t("bizCompare.filterAddOrShort")}
+        </button>
+        {groups.length ? (
+          <button type="button" className="mt-link-btn" onClick={() => setGroups([])}>
+            {t("bizCompare.filterClear")}
+          </button>
+        ) : null}
+      </div>
+      {!groups.length ? <p className="muted ct-filters__empty">{t("bizCompare.rowFiltersEmpty")}</p> : null}
+      {groups.map((group, gi) => (
+        <div key={gi} className="mt-or-wrap">
+          {gi > 0 ? <div className="mt-logic-badge mt-logic-badge--or">{t("bizCompare.filterOr")}</div> : null}
+          <div className="mt-and-box">
+            <div className="mt-and-box__head">
+              <span className="muted">{t("bizCompare.filterGroupN", { n: String(gi + 1) })}</span>
+              <button
+                type="button"
+                className="mt-icon-btn"
+                aria-label={t("bizCompare.filterRemoveGroup")}
+                onClick={() => setGroups(groups.filter((_, i) => i !== gi))}
+              >
+                ×
+              </button>
+            </div>
+            {group.map((filt, fi) => (
+              <div key={fi}>
+                {fi > 0 ? (
+                  <div className="mt-logic-badge mt-logic-badge--and">{t("bizCompare.filterAnd")}</div>
+                ) : null}
+                <div className="ct-filter-row">
+                  <select
+                    className="mt-select"
+                    value={filt.field || ""}
+                    onChange={(e) => {
+                      const next = groups.map((g) => g.map((x) => ({ ...x })));
+                      next[gi][fi] = { ...next[gi][fi], field: e.target.value };
+                      setGroups(next);
+                    }}
+                  >
+                    <option value="">{t("bizCompare.filterField")}</option>
+                    {fieldOpts.map((name) => (
+                      <option key={name} value={name}>
+                        {name}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    className="mt-select"
+                    value={filt.op || "eq"}
+                    onChange={(e) => {
+                      const next = groups.map((g) => g.map((x) => ({ ...x })));
+                      next[gi][fi] = { ...next[gi][fi], op: e.target.value };
+                      setGroups(next);
+                    }}
+                  >
+                    {FILTER_OPS.map((op) => (
+                      <option key={op} value={op}>
+                        {op}
+                      </option>
+                    ))}
+                  </select>
+                  <Input
+                    value={
+                      Array.isArray(filt.value) ? filt.value.join(",") : String(filt.value ?? "")
+                    }
+                    placeholder={t("bizCompare.filterValue")}
+                    isDisabled={["empty", "not_empty", "age_timer"].includes(filt.op || "")}
+                    onChange={(e) => {
+                      const next = groups.map((g) => g.map((x) => ({ ...x })));
+                      const op = next[gi][fi]?.op || "eq";
+                      let value: string | string[] = e.target.value;
+                      if (op === "in" || op === "not_in") {
+                        value = e.target.value
+                          .split(",")
+                          .map((x) => x.trim())
+                          .filter(Boolean);
+                      }
+                      next[gi][fi] = { ...next[gi][fi], value };
+                      setGroups(next);
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="mt-icon-btn"
+                    aria-label={t("bizCompare.filterRemoveGroup")}
+                    onClick={() => {
+                      const next = groups.map((g) => g.map((x) => ({ ...x })));
+                      next[gi].splice(fi, 1);
+                      setGroups(next.filter((g) => g.length));
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+              </div>
+            ))}
+            <button
+              type="button"
+              className="mt-link-btn"
+              onClick={() => {
+                const next = groups.map((g) => g.map((x) => ({ ...x })));
+                next[gi].push(emptyLeaf(fieldOpts[0] || ""));
+                setGroups(next);
+              }}
+            >
+              {t("bizCompare.filterAddAndShort")}
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function metricLabel(id: string) {
   return id;
 }
@@ -554,6 +700,8 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
   const [tplNote, setTplNote] = useState("");
   const [tplSheets, setTplSheets] = useState<MetricSheet[]>([]);
   const [tplSheetIdx, setTplSheetIdx] = useState(0);
+  const [tplPaneTab, setTplPaneTab] = useState<"fields" | "filters">("fields");
+  const [showMetricPicker, setShowMetricPicker] = useState(true);
 
   // job create / detail
   const [jobCreateOpen, setJobCreateOpen] = useState(false);
@@ -570,7 +718,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
   const [afterBatchId, setAfterBatchId] = useState("");
   const [mode, setMode] = useState<"manual" | "auto">("manual");
   const [mapName, setMapName] = useState("端口映射");
-  const [mapText, setMapText] = useState("before_if,after_if\n");
+  const [mapText, setMapText] = useState("");
   const [validateOut, setValidateOut] = useState<any>(null);
   const [runs, setRuns] = useState<any[]>([]);
   const [runDetail, setRunDetail] = useState<any>(null);
@@ -956,6 +1104,8 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     setTplNote("");
     setTplSheets([]);
     setTplSheetIdx(0);
+    setTplPaneTab("fields");
+    setShowMetricPicker(true);
     setTplOpen(true);
   };
 
@@ -966,6 +1116,8 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     setTplNote(tpl.note || "");
     setTplSheets(sheets.length ? sheets.map(cloneSheet) : []);
     setTplSheetIdx(0);
+    setTplPaneTab("fields");
+    setShowMetricPicker(!sheets.length);
     setTplOpen(true);
   };
 
@@ -976,6 +1128,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
         if (prev.some((s) => s.metric_id === metricId)) return prev;
         const next = [...prev, defaultSheetForMetric(schema, metricId)];
         setTplSheetIdx(next.length - 1);
+        if (!prev.length) setShowMetricPicker(false);
         return next;
       });
       return;
@@ -1141,7 +1294,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     if (!m) return;
     setMappingId(id);
     setMapName(m.name);
-    setMapText(["before_if,after_if", ...m.rows.map((r) => `${r.before_if},${r.after_if}`)].join("\n"));
+    setMapText(m.rows.map((r) => `${r.before_if},${r.after_if}`).join("\n"));
   };
 
   const saveMapping = async () => {
@@ -1196,7 +1349,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     if (preset?.mapping_id) loadMappingText(preset.mapping_id);
     else {
       setMapName(t("bizCompare.mapping"));
-      setMapText("before_if,after_if\n");
+      setMapText("");
     }
   };
 
@@ -1417,7 +1570,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                 if (id) loadMappingText(id);
                 else {
                   setMappingId("");
-                  setMapText("before_if,after_if\n");
+                  setMapText("");
                 }
               }}
             >
@@ -1657,472 +1810,342 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
       </div>
 
       {/* Template editor */}
-      <AppModalShell open={tplOpen} onClose={() => setTplOpen(false)} size="lg" className="app-heroui-modal--xl">
+      <AppModalShell open={tplOpen} onClose={() => setTplOpen(false)} size="cover">
         <Modal.Header>
           <Modal.Heading>
             {tplEditId ? t("bizCompare.editTemplate") : t("bizCompare.newTemplate")}
           </Modal.Heading>
           <Modal.CloseTrigger />
         </Modal.Header>
-        <Modal.Body className="flex flex-col gap-3">
-          <label className="ui-field ui-field--full">
-            <span className="ui-field__label">{t("bizCompare.colName")}</span>
-            <Input value={tplName} onChange={(e) => setTplName(e.target.value)} />
-          </label>
-          <label className="ui-field ui-field--full">
-            <span className="ui-field__label">{t("bizCompare.note")}</span>
-            <Input value={tplNote} onChange={(e) => setTplNote(e.target.value)} />
-          </label>
+        <Modal.Body className="flex flex-col gap-3 ct-editor">
+          <div className="ct-editor__basics">
+            <Input
+              value={tplName}
+              onChange={(e) => setTplName(e.target.value)}
+              placeholder={t("bizCompare.colName")}
+              aria-label={t("bizCompare.colName")}
+            />
+            <Input
+              value={tplNote}
+              onChange={(e) => setTplNote(e.target.value)}
+              placeholder={t("bizCompare.note")}
+              aria-label={t("bizCompare.note")}
+            />
+          </div>
 
-          <div className="ui-field ui-field--full">
-            <span className="ui-field__label">{t("bizCompare.stepPickMetrics")}</span>
-            <p className="muted" style={{ marginTop: 0 }}>
-              {t("bizCompare.pickMetricsHint")}
-            </p>
-            <div
-              className="pt-list-table-wrap"
-              style={{ maxHeight: 220, overflow: "auto", border: "1px solid var(--border, #ddd)", borderRadius: 6 }}
-            >
-              <table className="data-table pt-list-table">
-                <thead>
-                  <tr>
-                    <th style={{ width: 48 }} />
-                    <th>{t("bizCompare.addMetric")}</th>
-                    <th>{t("bizCompare.colFields")}</th>
-                  </tr>
-                </thead>
-                <tbody>
+          <div className="ct-editor__pick">
+            <div className="ct-editor__pick-head">
+              <span className="ct-editor__pick-title">
+                {t("bizCompare.stepPickMetrics")}
+                <span className="muted" style={{ fontWeight: 400, marginLeft: 8 }}>
+                  {t("bizCompare.selectedCount", { n: String(tplSheets.length) })}
+                </span>
+              </span>
+              <Button size="sm" variant="ghost" onPress={() => setShowMetricPicker((v) => !v)}>
+                {showMetricPicker ? t("bizCompare.hideMetrics") : t("bizCompare.showMetrics")}
+              </Button>
+            </div>
+            {showMetricPicker ? (
+              <>
+                <p className="muted ct-editor__pick-hint">{t("bizCompare.pickMetricsHintShort")}</p>
+                <div className="ct-metric-chips">
                   {metrics.map((m) => {
                     const checked = tplSheets.some((s) => s.metric_id === m.metric_id);
                     return (
-                      <tr key={m.metric_id}>
-                        <td>
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={(e) => toggleTplMetric(m.metric_id, e.target.checked)}
-                          />
-                        </td>
-                        <td>
-                          <code>{m.metric_id}</code>
-                        </td>
-                        <td className="muted">{m.fields?.length || 0}</td>
-                      </tr>
+                      <button
+                        key={m.metric_id}
+                        type="button"
+                        className={`mt-chip${checked ? " is-on" : ""}`}
+                        aria-pressed={checked}
+                        onClick={() => toggleTplMetric(m.metric_id, !checked)}
+                      >
+                        {m.metric_id}
+                        <span className="ct-metric-chip__n">{m.fields?.length || 0}</span>
+                      </button>
                     );
                   })}
                   {!metrics.length ? (
-                    <tr>
-                      <td colSpan={3}>
-                        <div className="pt-list-empty">{t("bizCompare.noMetricFields")}</div>
-                      </td>
-                    </tr>
+                    <span className="muted">{t("bizCompare.noMetricFields")}</span>
                   ) : null}
-                </tbody>
-              </table>
-            </div>
-            <p className="muted">
-              {t("bizCompare.selectedCount", { n: String(tplSheets.length) })}
-            </p>
-          </div>
-
-          <div className="ui-field ui-field--full">
-            <span className="ui-field__label">{t("bizCompare.stepConfigRules")}</span>
-            <p className="muted" style={{ marginTop: 0 }}>
-              {t("bizCompare.templateHint")}
-            </p>
+                </div>
+              </>
+            ) : null}
           </div>
 
           {!tplSheets.length ? (
             <div className="pt-list-empty">{t("bizCompare.noMetricsYet")}</div>
           ) : (
-            <>
-              <div className="bs-sheet-tabs" role="tablist">
-                {tplSheets.map((s, i) => (
-                  <button
-                    key={s.metric_id}
-                    type="button"
-                    className={`bs-sheet-tab${i === tplSheetIdx ? " is-active" : ""}`}
-                    onClick={() => setTplSheetIdx(i)}
-                  >
-                    {s.metric_id}
-                    {!s.compare_fields.length ? (
-                      <span className="bs-sheet-tab__count">{t("bizCompare.presenceShort")}</span>
-                    ) : (
-                      <span className="bs-sheet-tab__count">{s.compare_fields.length}</span>
-                    )}
-                    {(s.row_filters || []).length ? (
-                      <span className="bs-sheet-tab__count">F{(s.row_filters || []).length}</span>
-                    ) : null}
-                  </button>
-                ))}
-              </div>
+            <div className="ct-editor__main">
+              <aside className="ct-editor__nav" aria-label={t("bizCompare.colSheets")}>
+                <div className="ct-editor__nav-head">
+                  <span>{t("bizCompare.colSheets")}</span>
+                </div>
+                <div className="ct-editor__nav-list" role="tablist">
+                  {tplSheets.map((s, i) => {
+                    const filterN = toOrGroups(s.row_filters || []).length;
+                    return (
+                      <button
+                        key={s.metric_id}
+                        type="button"
+                        role="tab"
+                        aria-selected={tplSheetIdx === i}
+                        className={`ct-editor__nav-item${tplSheetIdx === i ? " is-active" : ""}`}
+                        onClick={() => {
+                          setTplSheetIdx(i);
+                          setTplPaneTab("fields");
+                        }}
+                      >
+                        <span className="ct-editor__nav-name">{s.metric_id}</span>
+                        <span className="ct-editor__nav-tag">
+                          {!s.compare_fields.length
+                            ? t("bizCompare.presenceShort")
+                            : t("bizCompare.tagCompareN", { n: String(s.compare_fields.length) })}
+                          {filterN ? ` · F${filterN}` : ""}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </aside>
 
               {activeTplSheet ? (
-                <>
-                  <div className="filter-inline" style={{ justifyContent: "space-between" }}>
-                    <span className="muted">
-                      {activeTplSheet.compare_fields.length
-                        ? t("bizCompare.modeFields")
-                        : t("bizCompare.modePresence")}
-                      {(activeTplSheet.row_filters || []).length
-                        ? ` · ${(activeTplSheet.row_filters || []).length} filter(s)`
-                        : ""}
-                    </span>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onPress={() => removeTplMetric(tplSheetIdx)}
-                    >
+                <div className="ct-editor__pane">
+                  <div className="ct-editor__pane-head">
+                    <div>
+                      <div className="ct-editor__metric">{activeTplSheet.metric_id}</div>
+                      <div className="ct-editor__meta muted">
+                        {activeTplSheet.compare_fields.length
+                          ? t("bizCompare.modeFieldsShort")
+                          : t("bizCompare.presenceShort")}
+                        {" · "}
+                        Key {(activeTplSheet.key_fields || []).join(" · ") || "—"}
+                      </div>
+                    </div>
+                    <Button size="sm" variant="ghost" onPress={() => removeTplMetric(tplSheetIdx)}>
                       {t("bizCompare.removeSheet")}
                     </Button>
                   </div>
 
-                  <div className="ui-field ui-field--full">
-                    <span className="ui-field__label">{t("bizCompare.rowFilters")}</span>
-                    <p className="muted" style={{ marginTop: 0 }}>
-                      {t("bizCompare.rowFiltersHint")}
-                    </p>
-                    {(() => {
-                      const groups = toOrGroups(activeTplSheet.row_filters || []);
-                      const setGroups = (next: RowFilter[][]) =>
-                        updateActiveSheet({ row_filters: fromOrGroups(next) });
-                      const fieldOpts = activeTplFields.map((f) => f.name);
-                      const opOpts = [
-                        "eq",
-                        "ne",
-                        "in",
-                        "not_in",
-                        "empty",
-                        "not_empty",
-                        "regex",
-                        "age_timer",
-                      ];
-                      return (
-                        <>
-                          <div className="filter-inline" style={{ flexWrap: "wrap", gap: 8 }}>
-                            <Button
-                              size="sm"
-                              variant="secondary"
-                              onPress={() => {
-                                const g = groups.length ? groups : [];
-                                setGroups([
-                                  ...g,
-                                  [emptyLeaf(fieldOpts[0] || "")],
-                                ]);
-                              }}
-                            >
-                              {t("bizCompare.filterAddOr")}
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onPress={() => setGroups([])}
-                            >
-                              {t("bizCompare.filterClear")}
-                            </Button>
-                          </div>
-                          {!groups.length ? (
-                            <p className="muted">{t("bizCompare.rowFiltersEmpty")}</p>
-                          ) : null}
-                          {groups.map((group, gi) => (
-                            <div
-                              key={gi}
-                              style={{
-                                marginTop: 10,
-                                padding: "8px 10px",
-                                border: "1px solid var(--border, #ddd)",
-                                borderRadius: 6,
-                              }}
-                            >
-                              {gi > 0 ? (
-                                <div className="muted" style={{ marginBottom: 6 }}>
-                                  {t("bizCompare.filterOr")}
-                                </div>
-                              ) : null}
-                              {group.map((filt, fi) => (
-                                <div key={fi} className="filter-inline" style={{ marginTop: fi ? 6 : 0 }}>
-                                  <select
-                                    value={filt.field || ""}
-                                    onChange={(e) => {
-                                      const next = groups.map((g) => g.map((x) => ({ ...x })));
-                                      next[gi][fi] = { ...next[gi][fi], field: e.target.value };
-                                      setGroups(next);
-                                    }}
-                                  >
-                                    <option value="">{t("bizCompare.filterField")}</option>
-                                    {fieldOpts.map((name) => (
-                                      <option key={name} value={name}>
-                                        {name}
-                                      </option>
-                                    ))}
-                                  </select>
-                                  <select
-                                    value={filt.op || "eq"}
-                                    onChange={(e) => {
-                                      const next = groups.map((g) => g.map((x) => ({ ...x })));
-                                      next[gi][fi] = { ...next[gi][fi], op: e.target.value };
-                                      setGroups(next);
-                                    }}
-                                  >
-                                    {opOpts.map((op) => (
-                                      <option key={op} value={op}>
-                                        {op}
-                                      </option>
-                                    ))}
-                                  </select>
-                                  <Input
-                                    value={
-                                      Array.isArray(filt.value)
-                                        ? filt.value.join(",")
-                                        : String(filt.value ?? "")
-                                    }
-                                    placeholder={t("bizCompare.filterValue")}
-                                    isDisabled={["empty", "not_empty", "age_timer"].includes(
-                                      filt.op || "",
-                                    )}
-                                    onChange={(e) => {
-                                      const next = groups.map((g) => g.map((x) => ({ ...x })));
-                                      const op = next[gi][fi]?.op || "eq";
-                                      let value: string | string[] = e.target.value;
-                                      if (op === "in" || op === "not_in") {
-                                        value = e.target.value
-                                          .split(",")
-                                          .map((x) => x.trim())
-                                          .filter(Boolean);
-                                      }
-                                      next[gi][fi] = { ...next[gi][fi], value };
-                                      setGroups(next);
-                                    }}
-                                  />
-                                  <Button
-                                    size="sm"
-                                    variant="ghost"
-                                    onPress={() => {
-                                      const next = groups.map((g) => g.map((x) => ({ ...x })));
-                                      next[gi].splice(fi, 1);
-                                      setGroups(next.filter((g) => g.length));
-                                    }}
-                                  >
-                                    ×
-                                  </Button>
-                                </div>
-                              ))}
-                              <div className="filter-inline" style={{ marginTop: 8, gap: 8 }}>
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  onPress={() => {
-                                    const next = groups.map((g) => g.map((x) => ({ ...x })));
-                                    next[gi].push(emptyLeaf(fieldOpts[0] || ""));
-                                    setGroups(next);
-                                  }}
-                                >
-                                  {t("bizCompare.filterAddAnd")}
-                                </Button>
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  onPress={() => {
-                                    const next = groups.filter((_, i) => i !== gi);
-                                    setGroups(next);
-                                  }}
-                                >
-                                  {t("bizCompare.filterRemoveGroup")}
-                                </Button>
-                              </div>
-                            </div>
-                          ))}
-                        </>
-                      );
-                    })()}
+                  <div className="mt-rule-tabs" role="tablist">
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={tplPaneTab === "fields"}
+                      className={`mt-rule-tab${tplPaneTab === "fields" ? " is-active" : ""}`}
+                      onClick={() => setTplPaneTab("fields")}
+                    >
+                      {t("bizCompare.tabFields")}
+                      <span className="mt-rule-tab__n">{activeTplFields.length}</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={tplPaneTab === "filters"}
+                      className={`mt-rule-tab${tplPaneTab === "filters" ? " is-active" : ""}`}
+                      onClick={() => setTplPaneTab("filters")}
+                    >
+                      {t("bizCompare.tabFilters")}
+                      <span className="mt-rule-tab__n">
+                        {toOrGroups(activeTplSheet.row_filters || []).length}
+                      </span>
+                    </button>
                   </div>
 
-                  <div className="pt-list-table-wrap">
-                    <table className="data-table pt-list-table">
-                      <thead>
-                        <tr>
-                          <th>{t("bizCompare.field")}</th>
-                          <th>{t("bizCompare.keyFields")}</th>
-                          <th>{t("bizCompare.ifaceFields")}</th>
-                          <th>{t("bizCompare.compareFields")}</th>
-                          <th>{t("bizCompare.compareMode")}</th>
-                          <th>{t("bizCompare.tolerance")}</th>
-                          <th>{t("bizCompare.displayField")}</th>
-                          <th>{t("bizCompare.normalizeField")}</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {activeTplFields.map((f) => {
-                          const isKey = activeTplSheet.key_fields.includes(f.name);
-                          const isCompare =
-                            !isKey && activeTplSheet.compare_fields.includes(f.name);
-                          const isDisplay = (activeTplSheet.display_fields || []).includes(f.name);
-                          const rule = ruleForField(activeTplSheet, f.name);
-                          const cmpMode = (rule.compare || "eq").toLowerCase() || "eq";
-                          const norm = rule.normalize || "none";
-                          const needsTol = cmpMode === "numeric" || cmpMode === "percent";
-                          return (
-                            <tr key={f.name}>
-                              <td>
-                                <div className="pt-list-task-name">{f.display_name || f.name}</div>
-                                <div className="muted">
-                                  <code>{f.name}</code> · {f.role}
-                                </div>
-                              </td>
-                              <td>
-                                <input
-                                  type="checkbox"
-                                  checked={isKey}
-                                  onChange={(e) =>
-                                    updateActiveSheet({
-                                      key_fields: toggleInList(
-                                        activeTplSheet.key_fields,
-                                        f.name,
-                                        e.target.checked,
-                                      ),
-                                    })
-                                  }
-                                />
-                              </td>
-                              <td>
-                                <input
-                                  type="checkbox"
-                                  checked={activeTplSheet.iface_fields.includes(f.name)}
-                                  onChange={(e) =>
-                                    updateActiveSheet({
-                                      iface_fields: toggleInList(
-                                        activeTplSheet.iface_fields,
-                                        f.name,
-                                        e.target.checked,
-                                      ),
-                                    })
-                                  }
-                                />
-                              </td>
-                              <td>
-                                <input
-                                  type="checkbox"
-                                  disabled={isKey}
-                                  title={isKey ? t("bizCompare.keyIsIdentity") : undefined}
-                                  checked={isCompare}
-                                  onChange={(e) =>
-                                    updateActiveSheet({
-                                      compare_fields: toggleInList(
-                                        activeTplSheet.compare_fields,
-                                        f.name,
-                                        e.target.checked,
-                                      ),
-                                    })
-                                  }
-                                />
-                              </td>
-                              <td>
-                                <select
-                                  value={cmpMode === "ignore" ? "eq" : cmpMode}
-                                  disabled={!isCompare}
-                                  onChange={(e) =>
-                                    updateActiveSheet({
-                                      field_rules: upsertFieldRule(activeTplSheet, f.name, {
-                                        compare: e.target.value,
-                                        tolerance:
-                                          e.target.value === "eq"
-                                            ? undefined
-                                            : rule.tolerance ?? 0,
-                                      }),
-                                    })
-                                  }
-                                >
-                                  <option value="eq">{t("bizCompare.modeEq")}</option>
-                                  <option value="numeric">{t("bizCompare.modeNumeric")}</option>
-                                  <option value="percent">{t("bizCompare.modePercent")}</option>
-                                </select>
-                              </td>
-                              <td>
-                                <Input
-                                  type="number"
-                                  value={
-                                    needsTol && rule.tolerance !== undefined && rule.tolerance !== null
-                                      ? String(rule.tolerance)
-                                      : ""
-                                  }
-                                  placeholder={cmpMode === "percent" ? "%" : ""}
-                                  isDisabled={!isCompare || !needsTol}
-                                  onChange={(e) => {
-                                    const raw = e.target.value.trim();
-                                    const tol = raw === "" ? undefined : Number(raw);
-                                    updateActiveSheet({
-                                      field_rules: upsertFieldRule(activeTplSheet, f.name, {
-                                        compare: cmpMode,
-                                        tolerance: Number.isFinite(tol as number)
-                                          ? (tol as number)
-                                          : undefined,
-                                      }),
-                                    });
-                                  }}
-                                />
-                              </td>
-                              <td>
-                                <input
-                                  type="checkbox"
-                                  disabled={isKey}
-                                  title={isKey ? t("bizCompare.keyAlwaysDisplay") : undefined}
-                                  checked={isKey || isDisplay}
-                                  onChange={(e) =>
-                                    updateActiveSheet({
-                                      display_fields: toggleInList(
-                                        activeTplSheet.display_fields || [],
-                                        f.name,
-                                        e.target.checked,
-                                      ),
-                                    })
-                                  }
-                                />
-                              </td>
-                              <td>
-                                <select
-                                  value={norm}
-                                  disabled={!isCompare}
-                                  onChange={(e) =>
-                                    updateActiveSheet({
-                                      field_rules: upsertFieldRule(activeTplSheet, f.name, {
-                                        normalize: e.target.value,
-                                      }),
-                                    })
-                                  }
-                                >
-                                  <option value="none">{t("bizCompare.normalizeNone")}</option>
-                                  <option value="lower">{t("bizCompare.normalizeLower")}</option>
-                                  <option value="upper">{t("bizCompare.normalizeUpper")}</option>
-                                  <option value="mac">{t("bizCompare.normalizeMac")}</option>
-                                  <option value="empty_as_blank">
-                                    {t("bizCompare.normalizeEmpty")}
-                                  </option>
-                                </select>
+                  {tplPaneTab === "filters" ? (
+                    <TplRowFiltersEditor
+                      groups={toOrGroups(activeTplSheet.row_filters || [])}
+                      fieldOpts={activeTplFields.map((f) => f.name)}
+                      t={t}
+                      onChange={(next) => updateActiveSheet({ row_filters: fromOrGroups(next) })}
+                    />
+                  ) : (
+                    <div className="pt-list-table-wrap ct-field-table-wrap">
+                      <p className="muted ct-field-hint">{t("bizCompare.fieldsHintShort")}</p>
+                      <table className="data-table pt-list-table ct-field-table">
+                        <thead>
+                          <tr>
+                            <th>{t("bizCompare.field")}</th>
+                            <th title={t("bizCompare.keyFields")}>{t("bizCompare.keyFields")}</th>
+                            <th title={t("bizCompare.ifaceFields")}>{t("bizCompare.ifaceFields")}</th>
+                            <th title={t("bizCompare.compareFields")}>{t("bizCompare.compareFields")}</th>
+                            <th>{t("bizCompare.compareMode")}</th>
+                            <th>{t("bizCompare.tolerance")}</th>
+                            <th>{t("bizCompare.displayField")}</th>
+                            <th>{t("bizCompare.normalizeField")}</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {activeTplFields.map((f) => {
+                            const isKey = activeTplSheet.key_fields.includes(f.name);
+                            const isCompare =
+                              !isKey && activeTplSheet.compare_fields.includes(f.name);
+                            const isDisplay = (activeTplSheet.display_fields || []).includes(f.name);
+                            const rule = ruleForField(activeTplSheet, f.name);
+                            const cmpMode = (rule.compare || "eq").toLowerCase() || "eq";
+                            const norm = rule.normalize || "none";
+                            const needsTol = cmpMode === "numeric" || cmpMode === "percent";
+                            return (
+                              <tr key={f.name}>
+                                <td>
+                                  <code className="ct-field-name">{f.name}</code>
+                                </td>
+                                <td>
+                                  <input
+                                    type="checkbox"
+                                    checked={isKey}
+                                    onChange={(e) =>
+                                      updateActiveSheet({
+                                        key_fields: toggleInList(
+                                          activeTplSheet.key_fields,
+                                          f.name,
+                                          e.target.checked,
+                                        ),
+                                      })
+                                    }
+                                  />
+                                </td>
+                                <td>
+                                  <input
+                                    type="checkbox"
+                                    checked={activeTplSheet.iface_fields.includes(f.name)}
+                                    onChange={(e) =>
+                                      updateActiveSheet({
+                                        iface_fields: toggleInList(
+                                          activeTplSheet.iface_fields,
+                                          f.name,
+                                          e.target.checked,
+                                        ),
+                                      })
+                                    }
+                                  />
+                                </td>
+                                <td>
+                                  <input
+                                    type="checkbox"
+                                    disabled={isKey}
+                                    title={isKey ? t("bizCompare.keyIsIdentity") : undefined}
+                                    checked={isCompare}
+                                    onChange={(e) =>
+                                      updateActiveSheet({
+                                        compare_fields: toggleInList(
+                                          activeTplSheet.compare_fields,
+                                          f.name,
+                                          e.target.checked,
+                                        ),
+                                      })
+                                    }
+                                  />
+                                </td>
+                                <td>
+                                  <select
+                                    className="mt-select"
+                                    value={cmpMode === "ignore" ? "eq" : cmpMode}
+                                    disabled={!isCompare}
+                                    onChange={(e) =>
+                                      updateActiveSheet({
+                                        field_rules: upsertFieldRule(activeTplSheet, f.name, {
+                                          compare: e.target.value,
+                                          tolerance:
+                                            e.target.value === "eq" ? undefined : rule.tolerance ?? 0,
+                                        }),
+                                      })
+                                    }
+                                  >
+                                    <option value="eq">{t("bizCompare.modeEq")}</option>
+                                    <option value="numeric">{t("bizCompare.modeNumeric")}</option>
+                                    <option value="percent">{t("bizCompare.modePercent")}</option>
+                                  </select>
+                                </td>
+                                <td>
+                                  <Input
+                                    type="number"
+                                    value={
+                                      needsTol &&
+                                      rule.tolerance !== undefined &&
+                                      rule.tolerance !== null
+                                        ? String(rule.tolerance)
+                                        : ""
+                                    }
+                                    placeholder={cmpMode === "percent" ? "%" : ""}
+                                    isDisabled={!isCompare || !needsTol}
+                                    onChange={(e) => {
+                                      const raw = e.target.value.trim();
+                                      const tol = raw === "" ? undefined : Number(raw);
+                                      updateActiveSheet({
+                                        field_rules: upsertFieldRule(activeTplSheet, f.name, {
+                                          compare: cmpMode,
+                                          tolerance: Number.isFinite(tol as number)
+                                            ? (tol as number)
+                                            : undefined,
+                                        }),
+                                      });
+                                    }}
+                                  />
+                                </td>
+                                <td>
+                                  <input
+                                    type="checkbox"
+                                    disabled={isKey}
+                                    title={isKey ? t("bizCompare.keyAlwaysDisplay") : undefined}
+                                    checked={isKey || isDisplay}
+                                    onChange={(e) =>
+                                      updateActiveSheet({
+                                        display_fields: toggleInList(
+                                          activeTplSheet.display_fields || [],
+                                          f.name,
+                                          e.target.checked,
+                                        ),
+                                      })
+                                    }
+                                  />
+                                </td>
+                                <td>
+                                  <select
+                                    className="mt-select"
+                                    value={norm}
+                                    disabled={!isCompare}
+                                    onChange={(e) =>
+                                      updateActiveSheet({
+                                        field_rules: upsertFieldRule(activeTplSheet, f.name, {
+                                          normalize: e.target.value,
+                                        }),
+                                      })
+                                    }
+                                  >
+                                    <option value="none">{t("bizCompare.normalizeNone")}</option>
+                                    <option value="lower">{t("bizCompare.normalizeLower")}</option>
+                                    <option value="upper">{t("bizCompare.normalizeUpper")}</option>
+                                    <option value="mac">{t("bizCompare.normalizeMac")}</option>
+                                    <option value="empty_as_blank">
+                                      {t("bizCompare.normalizeEmpty")}
+                                    </option>
+                                  </select>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                          {!activeTplFields.length ? (
+                            <tr>
+                              <td colSpan={8}>
+                                <div className="pt-list-empty">{t("bizCompare.noMetricFields")}</div>
                               </td>
                             </tr>
-                          );
-                        })}
-                        {!activeTplFields.length ? (
-                          <tr>
-                            <td colSpan={8}>
-                              <div className="pt-list-empty">{t("bizCompare.noMetricFields")}</div>
-                            </td>
-                          </tr>
-                        ) : null}
-                      </tbody>
-                    </table>
-                  </div>
-                </>
+                          ) : null}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
               ) : null}
-            </>
+            </div>
           )}
         </Modal.Body>
         <Modal.Footer>
+          <Button size="sm" variant="secondary" onPress={() => setTplOpen(false)}>
+            {t("bizState.cancel")}
+          </Button>
           <Button size="sm" variant="primary" isDisabled={busy} onPress={() => void saveTemplate()}>
             {t("bizCompare.saveTemplate")}
-          </Button>
-          <Button size="sm" variant="ghost" onPress={() => setTplOpen(false)}>
-            {t("bizState.cancel")}
           </Button>
         </Modal.Footer>
       </AppModalShell>

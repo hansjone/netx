@@ -83,14 +83,33 @@ def parse_expect_set(raw: dict[str, Any] | None) -> dict[str, set[str]]:
                 continue
             bucket = out.setdefault(mid, set())
             if it.get("key") is not None:
-                bucket.add(str(it.get("key") or "").strip())
+                k = it.get("key")
+                if isinstance(k, (list, tuple)):
+                    joined = "|".join(str(p).strip() for p in k if str(p).strip())
+                    if joined:
+                        bucket.add(joined)
+                else:
+                    s = str(k or "").strip()
+                    if s:
+                        bucket.add(s)
             keys = it.get("keys")
             if isinstance(keys, list):
-                if all(not isinstance(x, (list, tuple, dict)) for x in keys):
-                    bucket.add("|".join(str(x).strip() for x in keys))
+                # Flat list of segments → one composite key; else each entry is a key
+                # (string or nested list/tuple of segments).
+                if keys and all(not isinstance(x, (list, tuple, dict)) for x in keys):
+                    joined = "|".join(str(x).strip() for x in keys if str(x).strip())
+                    if joined:
+                        bucket.add(joined)
                 else:
                     for x in keys:
-                        bucket.add(str(x).strip())
+                        if isinstance(x, (list, tuple)):
+                            joined = "|".join(str(p).strip() for p in x if str(p).strip())
+                            if joined:
+                                bucket.add(joined)
+                        else:
+                            s = str(x or "").strip()
+                            if s:
+                                bucket.add(s)
     return {k: {x for x in v if x} for k, v in out.items() if v}
 
 
@@ -126,7 +145,7 @@ def field_token(field: str, value: str) -> str:
 
 def _fields_for_tokens(
     sheet_override: dict[str, Any] | None,
-    success_patterns: list[dict[str, Any]] | None,
+    *pattern_lists: list[dict[str, Any]] | None,
 ) -> set[str]:
     """Fields whose current values should be emitted as field:* tokens."""
     ov = sheet_override or {}
@@ -140,17 +159,38 @@ def _fields_for_tokens(
             s = str(ft.get("field") or "").strip()
             if s:
                 fields.add(s)
-    for pat in success_patterns or []:
+    patterns: list[Any] = []
+    for pl in pattern_lists:
+        if pl:
+            patterns.extend(pl)
+    if not patterns:
+        for key in ("success", "anomaly"):
+            raw = ov.get(key)
+            if isinstance(raw, list):
+                patterns.extend(raw)
+    for pat in patterns:
         if not isinstance(pat, dict):
             continue
         for side in ("old", "new"):
             for tok in pat.get(side) or []:
                 t = str(tok or "")
                 if t.startswith("field:") and t.count(":") >= 2:
-                    # field:name:value
                     parts = t.split(":", 2)
                     if parts[1]:
                         fields.add(parts[1])
+            for cond in pat.get(f"{side}_conds") or []:
+                if isinstance(cond, dict) and str(cond.get("type") or "") in ("", "field", "value"):
+                    s = str(cond.get("field") or "").strip()
+                    if s:
+                        fields.add(s)
+            for group in pat.get(f"{side}_groups") or []:
+                if not isinstance(group, list):
+                    continue
+                for cond in group:
+                    if isinstance(cond, dict) and str(cond.get("type") or "") in ("", "field", "value"):
+                        s = str(cond.get("field") or "").strip()
+                        if s:
+                            fields.add(s)
     return fields
 
 
@@ -183,21 +223,313 @@ def _side_tokens(
     return toks
 
 
+def _norm_list_values(raw: Any) -> list[str]:
+    if isinstance(raw, list):
+        return [str(x).strip().lower() for x in raw if str(x).strip()]
+    s = str(raw or "").strip()
+    if not s:
+        return []
+    if "," in s:
+        return [x.strip().lower() for x in s.split(",") if x.strip()]
+    return [s.lower()]
+
+
+def _eval_field_op(
+    row: dict[str, Any] | None,
+    field: str,
+    op: str,
+    value: Any,
+    *,
+    base_row: dict[str, Any] | None = None,
+) -> bool:
+    """Evaluate a value condition on current row (optionally vs baseline)."""
+    f = str(field or "").strip()
+    if not f:
+        return False
+    raw = "" if not row else str(row.get(f) or "").strip()
+    val = raw.lower()
+    o = str(op or "eq").strip().lower()
+    if o in ("changed", "diff"):
+        base = "" if not base_row else str(base_row.get(f) or "").strip().lower()
+        if not row:
+            return False
+        return base != val
+    if o in ("unchanged", "same"):
+        if not row:
+            return False
+        base = "" if not base_row else str(base_row.get(f) or "").strip().lower()
+        return base == val
+    if o == "empty":
+        return not val
+    if o == "not_empty":
+        return bool(val)
+    need = _norm_list_values(value)
+    if o == "eq":
+        return bool(need) and val == need[0]
+    if o == "ne":
+        return bool(need) and val != need[0]
+    if o == "in":
+        return bool(need) and val in need
+    if o == "not_in":
+        return bool(need) and val not in need
+    return False
+
+
+def _normalize_cond_type(cond: dict[str, Any]) -> str:
+    ctype = str(cond.get("type") or "").strip().lower()
+    if ctype in ("kind", "presence"):
+        return "presence"
+    if ctype in ("field", "value"):
+        return "value"
+    if ctype == "status":
+        # Legacy status class → treat as presence-of-status-token via status arg
+        return "status"
+    if cond.get("kind") is not None:
+        return "presence"
+    if cond.get("status") is not None:
+        return "status"
+    if cond.get("field"):
+        return "value"
+    return ctype
+
+
+def _eval_condition(
+    cond: Any,
+    *,
+    kind: str,
+    status: str,
+    row: dict[str, Any] | None,
+    tokens: set[str],
+    base_row: dict[str, Any] | None = None,
+) -> bool:
+    """One leaf: presence (no field) or value (needs field + strategy)."""
+    if isinstance(cond, str):
+        t = str(cond).strip()
+        return bool(t) and t in tokens
+    if not isinstance(cond, dict):
+        return False
+    ctype = _normalize_cond_type(cond)
+    if ctype == "presence":
+        want = str(
+            cond.get("value")
+            if cond.get("value") is not None
+            else cond.get("kind")
+            or ""
+        ).strip()
+        return bool(want) and want == str(kind or "").strip()
+    if ctype == "status":
+        want = str(
+            cond.get("value")
+            if cond.get("value") is not None
+            else cond.get("status")
+            or ""
+        ).strip()
+        return bool(want) and want == str(status or "").strip()
+    if ctype == "value":
+        field = str(cond.get("field") or "").strip()
+        if not field:
+            # Legacy status token with no field bound yet.
+            need = _norm_list_values(cond.get("value"))
+            return bool(need) and str(status or "").strip().lower() in need
+        # Gone / missing row: value strategies do not apply (use presence instead).
+        if str(kind or "").strip() == "removed" or not row:
+            return str(cond.get("op") or "eq").strip().lower() == "empty"
+        return _eval_field_op(
+            row,
+            field,
+            str(cond.get("op") or "eq"),
+            cond.get("value"),
+            base_row=base_row,
+        )
+    return False
+
+
+def _legacy_tokens_from_pat(pat: dict[str, Any], side: str) -> list[str]:
+    return [str(x) for x in (pat.get(side) or []) if str(x).strip()]
+
+
+def _conds_list_for_side(pat: dict[str, Any], side: str) -> list[Any]:
+    key = f"{side}_conds"
+    raw = pat.get(key)
+    if isinstance(raw, list) and raw:
+        return list(raw)
+    return _legacy_tokens_from_pat(pat, side)
+
+
+def _groups_for_side(pat: dict[str, Any], side: str) -> list[list[Any]]:
+    """OR-of-AND groups. Prefer ``old_groups``/``new_groups``; migrate flat conds.
+
+    Explicit empty list means don't-care for that side (no groups to match).
+    """
+    key = f"{side}_groups"
+    if key in pat and isinstance(pat.get(key), list):
+        raw = pat.get(key) or []
+        if not raw:
+            return []
+        groups: list[list[Any]] = []
+        for g in raw:
+            if isinstance(g, list) and g:
+                groups.append(list(g))
+            elif g is not None and not isinstance(g, list):
+                groups.append([g])
+        return groups
+    conds = _conds_list_for_side(pat, side)
+    if not conds:
+        return []
+    mode = str(pat.get(f"{side}_mode") or "any").strip().lower()
+    if mode == "all":
+        return [list(conds)]
+    # any → each cond is its own OR group
+    return [[c] for c in conds]
+
+
+def _match_groups(
+    groups: list[list[Any]],
+    *,
+    kind: str,
+    status: str,
+    row: dict[str, Any] | None,
+    tokens: set[str],
+    base_row: dict[str, Any] | None = None,
+) -> bool:
+    """Group OR; within group AND."""
+    if not groups:
+        return False
+    for group in groups:
+        leaves = [c for c in group if c is not None]
+        if not leaves:
+            continue
+        if all(
+            _eval_condition(
+                c,
+                kind=kind,
+                status=status,
+                row=row,
+                tokens=tokens,
+                base_row=base_row,
+            )
+            for c in leaves
+        ):
+            return True
+    return False
+
+
+def _match_dual_pattern(
+    pat: dict[str, Any],
+    *,
+    old_kind: str,
+    new_kind: str,
+    old_status: str,
+    new_status: str,
+    old_row: dict[str, Any] | None,
+    new_row: dict[str, Any] | None,
+    old_tokens: set[str],
+    new_tokens: set[str],
+    old_base: dict[str, Any] | None,
+    new_base: dict[str, Any] | None,
+    require_both_sides: bool,
+) -> bool:
+    """Match one dual pattern. Empty side groups = don't-care when not requiring both."""
+    old_groups = _groups_for_side(pat, "old")
+    new_groups = _groups_for_side(pat, "new")
+    if require_both_sides:
+        if not old_groups or not new_groups:
+            return False
+    elif not old_groups and not new_groups:
+        return False
+    old_ok = True if not old_groups else _match_groups(
+        old_groups,
+        kind=old_kind,
+        status=old_status,
+        row=old_row,
+        tokens=old_tokens,
+        base_row=old_base,
+    )
+    new_ok = True if not new_groups else _match_groups(
+        new_groups,
+        kind=new_kind,
+        status=new_status,
+        row=new_row,
+        tokens=new_tokens,
+        base_row=new_base,
+    )
+    return old_ok and new_ok
+
+
+def _pattern_both_sides(pat: dict[str, Any]) -> bool:
+    return bool(_groups_for_side(pat, "old")) and bool(_groups_for_side(pat, "new"))
+
+
+def _match_patterns(
+    patterns: list[dict[str, Any]] | None,
+    *,
+    old_kind: str = "",
+    new_kind: str = "",
+    old_status: str = "none",
+    new_status: str = "none",
+    old_row: dict[str, Any] | None = None,
+    new_row: dict[str, Any] | None = None,
+    old_tokens: set[str] | None = None,
+    new_tokens: set[str] | None = None,
+    old_base: dict[str, Any] | None = None,
+    new_base: dict[str, Any] | None = None,
+    require_both_sides: bool = True,
+) -> int:
+    """Return 1-based matched pattern index, or 0 if none match."""
+    ot = old_tokens or set()
+    nt = new_tokens or set()
+    for i, pat in enumerate(patterns or [], start=1):
+        if not isinstance(pat, dict):
+            continue
+        if _match_dual_pattern(
+            pat,
+            old_kind=old_kind,
+            new_kind=new_kind,
+            old_status=old_status,
+            new_status=new_status,
+            old_row=old_row,
+            new_row=new_row,
+            old_tokens=ot,
+            new_tokens=nt,
+            old_base=old_base,
+            new_base=new_base,
+            require_both_sides=require_both_sides,
+        ):
+            return i
+    return 0
+
+
 def _match_success(
     old_tokens: set[str],
     new_tokens: set[str],
     success_patterns: list[dict[str, Any]] | None,
+    *,
+    old_kind: str = "",
+    new_kind: str = "",
+    old_status: str = "none",
+    new_status: str = "none",
+    old_row: dict[str, Any] | None = None,
+    new_row: dict[str, Any] | None = None,
+    old_base: dict[str, Any] | None = None,
+    new_base: dict[str, Any] | None = None,
 ) -> bool:
-    for pat in success_patterns or []:
-        if not isinstance(pat, dict):
-            continue
-        old_need = {str(x) for x in (pat.get("old") or []) if str(x)}
-        new_need = {str(x) for x in (pat.get("new") or []) if str(x)}
-        if not old_need or not new_need:
-            continue
-        if (old_need & old_tokens) and (new_need & new_tokens):
-            return True
-    return False
+    return (
+        _match_patterns(
+            success_patterns,
+            old_kind=old_kind,
+            new_kind=new_kind,
+            old_status=old_status,
+            new_status=new_status,
+            old_row=old_row,
+            new_row=new_row,
+            old_tokens=old_tokens,
+            new_tokens=new_tokens,
+            old_base=old_base,
+            new_base=new_base,
+            require_both_sides=True,
+        )
+        > 0
+    )
 
 
 def _match_field_token_rules(
@@ -232,63 +564,156 @@ def dual_verdict(
     old_status: str = "none",
     new_status: str = "none",
     success_patterns: list[dict[str, Any]] | None = None,
+    anomaly_patterns: list[dict[str, Any]] | None = None,
     out_of_expect: str = "strict",
     old_row: dict[str, Any] | None = None,
     new_row: dict[str, Any] | None = None,
+    old_base: dict[str, Any] | None = None,
+    new_base: dict[str, Any] | None = None,
     sheet_override: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
-    """Synthesize old+new into migration board verdict.
+    """Synthesize old+new into migration board verdict. See dual_verdict_ex."""
+    verdict, color, _hit = dual_verdict_ex(
+        old_kind=old_kind,
+        new_kind=new_kind,
+        in_expect=in_expect,
+        window_active=window_active,
+        acceptance=acceptance,
+        old_status=old_status,
+        new_status=new_status,
+        success_patterns=success_patterns,
+        anomaly_patterns=anomaly_patterns,
+        out_of_expect=out_of_expect,
+        old_row=old_row,
+        new_row=new_row,
+        old_base=old_base,
+        new_base=new_base,
+        sheet_override=sheet_override,
+    )
+    return verdict, color
 
-    ``acceptance=True`` (本批完成终验): unfinished expect items become red
-    (``unfinished`` / ``lost``), not yellow migrating.
 
-    When ``success_patterns`` is set (from monitor sheet_overrides), tokens may
-    include kinds, status classes (up/down), and ``field:name:value``.
+def dual_verdict_ex(
+    *,
+    old_kind: str,
+    new_kind: str,
+    in_expect: bool,
+    window_active: bool,
+    acceptance: bool = False,
+    old_status: str = "none",
+    new_status: str = "none",
+    success_patterns: list[dict[str, Any]] | None = None,
+    anomaly_patterns: list[dict[str, Any]] | None = None,
+    out_of_expect: str = "strict",
+    old_row: dict[str, Any] | None = None,
+    new_row: dict[str, Any] | None = None,
+    old_base: dict[str, Any] | None = None,
+    new_base: dict[str, Any] | None = None,
+    sheet_override: dict[str, Any] | None = None,
+) -> tuple[str, str, str]:
+    """Like dual_verdict, plus rule_hit label (success#N / anomaly#N / heuristic).
 
-    ``out_of_expect``: strict (default) | warn (yellow instead of red) | ignore.
+    Patterns use OR-of-AND groups (``old_groups`` / ``new_groups``):
+    within a group = AND, between groups = OR. Leaf types:
+      - presence: row existence vs baseline (removed/added/unchanged/changed)
+      - value: field strategy (eq/ne/in/empty/changed/…)
+
+    Order (in expect): success → anomaly → heuristics.
+    Anomaly may leave a side empty (= don't-care).
+    During an active cutover window (not acceptance), side-only anomaly
+    patterns are deferred so mid-migration downs do not false-red.
+    When success or anomaly patterns are non-empty (rules mode), skip invented
+    green-migrate and catch-all anomaly; keep lost / migrating only.
     """
     ov = sheet_override or {}
-    fields = _fields_for_tokens(ov, success_patterns)
+    if anomaly_patterns is None and isinstance(ov.get("anomaly"), list):
+        anomaly_patterns = list(ov.get("anomaly") or [])
+    fields = _fields_for_tokens(ov, success_patterns, anomaly_patterns)
     old_toks = _side_tokens(old_kind, old_status, row=old_row, fields=fields)
     new_toks = _side_tokens(new_kind, new_status, row=new_row, fields=fields)
     field_ok = _match_field_token_rules(old_row, new_row, list(ov.get("field_tokens") or []) or None)
 
-    if in_expect and field_ok and _match_success(old_toks, new_toks, success_patterns):
-        return "migrated", "green"
+    match_kw = dict(
+        old_kind=old_kind,
+        new_kind=new_kind,
+        old_status=old_status,
+        new_status=new_status,
+        old_row=old_row,
+        new_row=new_row,
+        old_tokens=old_toks,
+        new_tokens=new_toks,
+        old_base=old_base,
+        new_base=new_base,
+    )
+
+    hit = _match_patterns(success_patterns, require_both_sides=True, **match_kw)
+    if in_expect and field_ok and hit:
+        return "migrated", "green", f"success#{hit}"
 
     ooe = str(out_of_expect or "strict").strip().lower()
     if not in_expect:
         if ooe == "ignore":
-            return "not_involved", "gray"
+            return "not_involved", "gray", "out_of_expect:ignore"
         if old_kind in ("removed", "changed") or new_kind in ("removed", "changed"):
+            # Both gone / old gone with no new → lost; any other drift (incl. new-only
+            # removed while old still present) → anomaly.
             if old_kind == "removed" and new_kind in ("", "removed"):
-                return ("lost", "yellow") if ooe == "warn" else ("lost", "red")
-            if old_kind in ("removed", "changed") or new_kind in ("changed",):
-                return ("anomaly", "yellow") if ooe == "warn" else ("anomaly", "red")
+                label = "lost" if ooe == "warn" else "lost"
+                color = "yellow" if ooe == "warn" else "red"
+                return label, color, "out_of_expect:lost"
+            return (
+                ("anomaly", "yellow", "out_of_expect:anomaly")
+                if ooe == "warn"
+                else ("anomaly", "red", "out_of_expect:anomaly")
+            )
         if old_kind == "added" or new_kind == "added":
-            return "unexpected_new", "yellow"
-        return "not_involved", "gray"
+            return "unexpected_new", "yellow", "out_of_expect:added"
+        return "not_involved", "gray", "out_of_expect:none"
 
-    if old_kind in ("removed", "changed") and new_kind in ("added", "unchanged", "changed"):
-        return "migrated", "green"
+    # field_tokens gate success only — do not block anomaly on a gone side
+    anomaly_list = list(anomaly_patterns or [])
+    if window_active and not acceptance:
+        # Side-only anomaly = don't-care other side; defer until acceptance / window closed.
+        anomaly_list = [p for p in anomaly_list if isinstance(p, dict) and _pattern_both_sides(p)]
+    ahit = _match_patterns(anomaly_list, require_both_sides=False, **match_kw)
+    if in_expect and ahit:
+        return "anomaly", "red", f"anomaly#{ahit}"
+
+    # Explicit success/anomaly lists mean "rules mode": do not invent green migrate
+    # or catch-all anomaly; keep lost / migrating as mid-state fallbacks only.
+    rules_mode = bool(success_patterns) or bool(anomaly_patterns)
+
+    if (
+        not rules_mode
+        and old_kind in ("removed", "changed")
+        and new_kind in ("added", "unchanged", "changed")
+    ):
+        return "migrated", "green", "heuristic:migrate"
     if old_kind == "removed" and new_kind in ("", "removed"):
-        return "lost", "red"
+        return "lost", "red", "heuristic:lost"
     if old_kind in ("unchanged", "") and new_kind in ("unchanged", "added", "changed"):
         if acceptance:
-            return "unfinished", "red"
-        return "migrating", "yellow"
+            return "unfinished", "red", "heuristic:unfinished"
+        return "migrating", "yellow", "heuristic:migrating"
     if old_kind == "unchanged" and new_kind in ("", "removed"):
         if acceptance:
-            return "unfinished", "red"
-        return "migrating", "yellow"
-    side_v, side_c = side_verdict(kind=old_kind or "unchanged", in_expect=True, window_active=window_active)
-    if side_c == "red" or (new_kind in ("removed",) and old_kind != "removed"):
-        return "anomaly", "red"
+            return "unfinished", "red", "heuristic:unfinished"
+        return "migrating", "yellow", "heuristic:migrating"
+    if not rules_mode:
+        side_v, side_c = side_verdict(
+            kind=old_kind or "unchanged", in_expect=True, window_active=window_active
+        )
+        if side_c == "red" or (new_kind in ("removed",) and old_kind != "removed"):
+            return "anomaly", "red", "heuristic:anomaly"
+    else:
+        side_v, _side_c = side_verdict(
+            kind=old_kind or "unchanged", in_expect=True, window_active=window_active
+        )
     if acceptance:
-        return "unfinished", "red"
+        return "unfinished", "red", "heuristic:unfinished"
     if window_active or side_v.startswith("expected"):
-        return "migrating", "yellow"
-    return "migrating", "yellow"
+        return "migrating", "yellow", "heuristic:migrating"
+    return "migrating", "yellow", "heuristic:migrating"
 
 
 def build_diff_index_from_compare(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -324,9 +749,124 @@ def expect_keys_for_metric(
     iface_fields: list[str],
 ) -> set[str]:
     keys = set(expect.get(metric_id) or ())
-    if iface_fields and expect.get("_ports"):
+    # ports: shorthand is only for interface_brief, not every sheet with iface fields
+    if metric_id == PORT_METRIC_ID and expect.get("_ports"):
         keys |= set(expect["_ports"])
     return keys
+
+
+def _map_defines_iface_expect(metric_id: str, iface_fields: list[str], port_map: dict[str, str]) -> bool:
+    """Iface sheets: a non-empty port map is the expect scope.
+
+    BGP / PW keep the batch expect picker even if a column is marked iface.
+    """
+    if not port_map or not iface_fields:
+        return False
+    mid = str(metric_id or "").strip().lower()
+    if "bgp" in mid or "pw" in mid or "pseudowire" in mid:
+        return False
+    return True
+
+
+def _iface_values(key_str: str, *, key_fields: list[str], iface_fields: list[str]) -> list[str]:
+    parts = str(key_str or "").split("|")
+    iface_set = {str(f) for f in iface_fields}
+    if key_fields and len(parts) == len(key_fields):
+        return [parts[i] for i, f in enumerate(key_fields) if f in iface_set and parts[i]]
+    if len(key_fields) == 1 and key_fields[0] in iface_set and key_str:
+        return [key_str]
+    return []
+
+
+def _key_in_port_map(
+    key_str: str,
+    *,
+    key_fields: list[str],
+    iface_fields: list[str],
+    port_map: dict[str, str],
+) -> bool:
+    """True when every interface segment of the key is an old-side map entry."""
+    vals = _iface_values(key_str, key_fields=key_fields, iface_fields=iface_fields)
+    if not vals:
+        return False
+    return all(v in port_map for v in vals)
+
+
+def _port_identity(key_fields: list[str], iface_fields: list[str]) -> bool:
+    """Key is the interface itself (interface_brief), not a business row hanging off it."""
+    if not key_fields or not iface_fields:
+        return False
+    iface_set = {str(f) for f in iface_fields}
+    return all(str(f) in iface_set for f in key_fields)
+
+
+def _unmapped_same_iface_anomaly(
+    *,
+    old_kind: str,
+    new_kind: str,
+    old_status: str,
+    new_status: str,
+) -> bool:
+    """Same name, not in the map: old down/gone + new still up is not a migration."""
+    old_bad = old_kind in ("removed", "changed") or old_status == "down"
+    new_up = new_kind in ("added", "unchanged", "changed") and new_status != "down"
+    return old_bad and new_up
+
+
+def _remap_key_str(
+    key_str: str,
+    *,
+    key_fields: list[str],
+    iface_fields: list[str],
+    port_map: dict[str, str],
+) -> str:
+    """Map old-side key_str → new-side using iface segments (not whole-string only)."""
+    if not key_str:
+        return key_str
+    if not port_map:
+        return key_str
+    if key_str in port_map and (not key_fields or len(key_fields) == 1):
+        return port_map[key_str]
+    parts = str(key_str).split("|")
+    if key_fields and len(parts) == len(key_fields):
+        iface_set = {str(f) for f in iface_fields}
+        out: list[str] = []
+        for i, f in enumerate(key_fields):
+            v = parts[i]
+            if f in iface_set and v in port_map:
+                out.append(port_map[v])
+            else:
+                out.append(v)
+        return "|".join(out)
+    return port_map.get(key_str, key_str)
+
+
+def _reverse_remap_key_str(
+    key_str: str,
+    *,
+    key_fields: list[str],
+    iface_fields: list[str],
+    rev_map: dict[str, str],
+) -> str:
+    """Map new-side key_str → old-side canon identity."""
+    if not key_str:
+        return key_str
+    if not rev_map:
+        return key_str
+    if key_str in rev_map and (not key_fields or len(key_fields) == 1):
+        return rev_map[key_str]
+    parts = str(key_str).split("|")
+    if key_fields and len(parts) == len(key_fields):
+        iface_set = {str(f) for f in iface_fields}
+        out: list[str] = []
+        for i, f in enumerate(key_fields):
+            v = parts[i]
+            if f in iface_set and v in rev_map:
+                out.append(rev_map[v])
+            else:
+                out.append(v)
+        return "|".join(out)
+    return rev_map.get(key_str, key_str)
 
 
 def _current_row(diff: dict[str, Any] | None) -> dict[str, Any]:
@@ -381,8 +921,12 @@ def evaluate_metric_dual(
             "anomaly": 0,
             "rows": [],
             "skipped": True,
+            "new_baseline_mode": "skipped",
+            "new_baseline_missing": False,
+            "anomaly_in_expect": 0,
         }
     success_patterns = list(ov.get("success") or []) if isinstance(ov.get("success"), list) else []
+    anomaly_patterns = list(ov.get("anomaly") or []) if isinstance(ov.get("anomaly"), list) else []
 
     old_cmp = compare_rows(
         before_rows=old_baseline_rows,
@@ -395,15 +939,34 @@ def evaluate_metric_dual(
     )
     old_idx = build_diff_index_from_compare(old_cmp)
 
+    new_baseline_mode = "provided"
+    new_baseline_missing = False
     if new_baseline_rows is not None:
-        new_before = new_baseline_rows
+        new_before = list(new_baseline_rows)
+        new_baseline_mode = "provided"
+        # Explicit empty batch is as unusable as "no baseline" for presence semantics.
+        if not new_before and (old_baseline_rows or new_current_rows):
+            if port_map and iface_fields:
+                new_before = [
+                    apply_port_map(r, iface_fields=iface_fields, port_map=port_map)
+                    for r in old_baseline_rows
+                ]
+                new_baseline_mode = "port_mapped"
+                new_baseline_missing = False
+            else:
+                new_baseline_missing = True
+                new_baseline_mode = "empty"
     elif port_map and iface_fields:
         new_before = [
             apply_port_map(r, iface_fields=iface_fields, port_map=port_map)
             for r in old_baseline_rows
         ]
+        new_baseline_mode = "port_mapped"
     else:
         new_before = []
+        new_baseline_mode = "empty"
+        # No new baseline and no map → every current new row looks like "added".
+        new_baseline_missing = bool(old_baseline_rows or new_current_rows)
 
     new_cmp = compare_rows(
         before_rows=new_before,
@@ -417,6 +980,26 @@ def evaluate_metric_dual(
     new_idx = build_diff_index_from_compare(new_cmp)
 
     rev_map = {v: k for k, v in port_map.items()}
+    map_scoped = _map_defines_iface_expect(metric_id, iface_fields, port_map)
+    if map_scoped:
+        scoped: set[str] = set()
+        for ks in old_idx:
+            if _key_in_port_map(
+                ks, key_fields=key_fields, iface_fields=iface_fields, port_map=port_map
+            ):
+                scoped.add(ks)
+        for ks in new_idx:
+            canon = _reverse_remap_key_str(
+                ks,
+                key_fields=key_fields,
+                iface_fields=iface_fields,
+                rev_map=rev_map,
+            )
+            if _key_in_port_map(
+                canon, key_fields=key_fields, iface_fields=iface_fields, port_map=port_map
+            ):
+                scoped.add(canon)
+        expect_keys = scoped
 
     canon_keys: list[str] = []
     seen: set[str] = set()
@@ -431,15 +1014,28 @@ def evaluate_metric_dual(
     for ks in sorted(old_idx):
         _add(ks)
     for ks in sorted(new_idx):
-        _add(rev_map.get(ks, ks))
+        _add(
+            _reverse_remap_key_str(
+                ks,
+                key_fields=key_fields,
+                iface_fields=iface_fields,
+                rev_map=rev_map,
+            )
+        )
 
     rows_out: list[dict[str, Any]] = []
     progress_ok = 0
     progress_total = 0
     anomaly = 0
+    anomaly_in_expect = 0
 
     for old_ks in canon_keys:
-        new_ks = port_map.get(old_ks, old_ks)
+        new_ks = _remap_key_str(
+            old_ks,
+            key_fields=key_fields,
+            iface_fields=iface_fields,
+            port_map=port_map,
+        )
         in_exp = old_ks in expect_keys
         if in_exp:
             progress_total += 1
@@ -458,27 +1054,50 @@ def evaluate_metric_dual(
 
         old_cur = _current_row(od)
         new_cur = _current_row(nd)
+        old_base = dict((od or {}).get("before") or {})
+        new_base = dict((nd or {}).get("before") or {})
         old_st = classify_status(old_cur, ov)
         new_st = classify_status(new_cur, ov)
 
-        verdict, color = dual_verdict(
-            old_kind=old_kind or "",
-            new_kind=new_kind or "",
-            in_expect=in_exp,
-            window_active=window_active,
-            acceptance=acceptance,
-            old_status=old_st,
-            new_status=new_st,
-            success_patterns=success_patterns or None,
-            out_of_expect=out_of_expect,
-            old_row=old_cur or None,
-            new_row=new_cur or None,
-            sheet_override=ov,
-        )
+        # Mapped iface rows are the expect set. Unmapped rows stay out of the
+        # migration compare, except same-name ports where old went down and the
+        # new device's same port is up — that is anomaly, not a successful cutover.
+        if map_scoped and not in_exp:
+            if not (
+                _port_identity(key_fields, iface_fields)
+                and _unmapped_same_iface_anomaly(
+                    old_kind=old_kind,
+                    new_kind=new_kind,
+                    old_status=old_st,
+                    new_status=new_st,
+                )
+            ):
+                continue
+            verdict, color, rule_hit = "anomaly", "red", "unmapped_same_iface"
+        else:
+            verdict, color, rule_hit = dual_verdict_ex(
+                old_kind=old_kind or "",
+                new_kind=new_kind or "",
+                in_expect=in_exp,
+                window_active=window_active,
+                acceptance=acceptance,
+                old_status=old_st,
+                new_status=new_st,
+                success_patterns=success_patterns or None,
+                anomaly_patterns=anomaly_patterns or None,
+                out_of_expect=out_of_expect,
+                old_row=old_cur or None,
+                new_row=new_cur or None,
+                old_base=old_base or None,
+                new_base=new_base or None,
+                sheet_override=ov,
+            )
         if in_exp and verdict == "migrated" and color == "green":
             progress_ok += 1
         if color == "red":
             anomaly += 1
+            if in_exp:
+                anomaly_in_expect += 1
 
         rows_out.append(
             {
@@ -488,6 +1107,7 @@ def evaluate_metric_dual(
                 "new_key_str": new_ks,
                 "verdict": verdict,
                 "color": color,
+                "rule_hit": rule_hit,
                 "in_expect": in_exp,
                 "old_kind": old_kind,
                 "new_kind": new_kind,
@@ -525,7 +1145,10 @@ def evaluate_metric_dual(
         "progress_ok": progress_ok,
         "progress_total": progress_total if progress_total else len(expect_keys),
         "anomaly": anomaly,
+        "anomaly_in_expect": anomaly_in_expect,
         "rows": rows_out,
+        "new_baseline_mode": new_baseline_mode,
+        "new_baseline_missing": new_baseline_missing,
     }
 
 

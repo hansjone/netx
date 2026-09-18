@@ -67,24 +67,117 @@ def ensure_port_compare_template(db: Session) -> BizCompareTemplate:
     return row
 
 
+def _anomaly_both_gone() -> dict[str, Any]:
+    return {
+        "old_groups": [[{"type": "presence", "value": "removed"}]],
+        "new_groups": [[{"type": "presence", "value": "removed"}]],
+    }
+
+
+def _anomaly_side_only(side: str, groups: list[list[dict[str, Any]]]) -> dict[str, Any]:
+    return {
+        "old_groups": groups if side == "old" else [],
+        "new_groups": groups if side == "new" else [],
+    }
+
+
+def _default_anomaly_for_state(field: str, down_values: list[str]) -> list[dict[str, Any]]:
+    down = [{"type": "value", "field": field, "op": "in", "value": list(down_values)}]
+    gone = [{"type": "presence", "value": "removed"}]
+    return [
+        _anomaly_both_gone(),
+        _anomaly_side_only("old", [gone, down]),
+        _anomaly_side_only("new", [gone, down]),
+    ]
+
+
+def _default_anomaly_presence_only() -> list[dict[str, Any]]:
+    gone = [{"type": "presence", "value": "removed"}]
+    return [
+        _anomaly_both_gone(),
+        _anomaly_side_only("old", [gone]),
+        _anomaly_side_only("new", [gone]),
+    ]
+
+
+def _success_presence_migrate() -> dict[str, Any]:
+    """Old gone → new appeared (no bare unchanged = false green)."""
+    return {
+        "old_groups": [[{"type": "presence", "value": "removed"}]],
+        "new_groups": [[{"type": "presence", "value": "added"}]],
+    }
+
+
+def _success_stateful(
+    *,
+    old_down_groups: list[list[dict[str, Any]]],
+    new_up_conds: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Success requires healthy new side — bare unchanged alone is not enough."""
+    return {
+        "old_groups": [
+            [{"type": "presence", "value": "removed"}],
+            *old_down_groups,
+        ],
+        "new_groups": [
+            [{"type": "presence", "value": "added"}, *new_up_conds],
+            [{"type": "presence", "value": "unchanged"}, *new_up_conds],
+            list(new_up_conds),
+        ],
+    }
+
+
 def preset_override_for_metric(metric_id: str) -> dict[str, Any]:
     """Default dual-verdict overlay for a compare-template sheet."""
     mid = str(metric_id or "").strip()
     if mid == PORT_METRIC_ID:
+        up = [
+            {"type": "value", "field": "admin", "op": "in", "value": ["up"]},
+            {"type": "value", "field": "phy", "op": "in", "value": ["up"]},
+        ]
         return {
             "metric_id": mid,
             "status_fields": list(PORT_STATUS_FIELDS),
             "down_values": ["down"],
             "up_values": ["up"],
-            "success": [{"old": ["removed", "down"], "new": ["added", "up", "unchanged"]}],
+            "success": [
+                _success_stateful(
+                    old_down_groups=[
+                        [
+                            {"type": "value", "field": "admin", "op": "in", "value": ["down"]},
+                            {"type": "value", "field": "phy", "op": "in", "value": ["down"]},
+                        ]
+                    ],
+                    new_up_conds=up,
+                )
+            ],
+            "anomaly": _default_anomaly_for_state("admin", ["down"]),
         }
     if mid == "bgp_peer":
+        up = [{"type": "value", "field": "state", "op": "eq", "value": "established"}]
         return {
             "metric_id": mid,
             "status_fields": ["state"],
             "down_values": ["idle", "active", "connect", "down"],
             "up_values": ["established"],
-            "success": [{"old": ["removed", "down"], "new": ["added", "up", "unchanged"]}],
+            "success": [
+                _success_stateful(
+                    old_down_groups=[
+                        [
+                            {
+                                "type": "value",
+                                "field": "state",
+                                "op": "in",
+                                "value": ["idle", "active", "connect", "down"],
+                            }
+                        ]
+                    ],
+                    new_up_conds=up,
+                )
+            ],
+            "anomaly": _default_anomaly_for_state(
+                "state", ["idle", "active", "connect", "down"]
+            ),
         }
     if mid in ("arp", "nd6_cache", "lldp_neighbor"):
         return {
@@ -92,15 +185,39 @@ def preset_override_for_metric(metric_id: str) -> dict[str, Any]:
             "status_fields": [],
             "down_values": [],
             "up_values": [],
-            "success": [{"old": ["removed"], "new": ["added", "unchanged"]}],
+            "success": [_success_presence_migrate()],
+            "anomaly": _default_anomaly_presence_only(),
         }
     if "isis" in mid or "ospf" in mid or "adjacency" in mid:
+        up = [
+            {
+                "type": "value",
+                "field": "state",
+                "op": "in",
+                "value": ["up", "full", "2way"],
+            }
+        ]
         return {
             "metric_id": mid,
             "status_fields": ["state"],
             "down_values": ["down", "init", "idle"],
             "up_values": ["up", "full", "2way"],
-            "success": [{"old": ["removed", "down"], "new": ["added", "up", "unchanged"]}],
+            "success": [
+                _success_stateful(
+                    old_down_groups=[
+                        [
+                            {
+                                "type": "value",
+                                "field": "state",
+                                "op": "in",
+                                "value": ["down", "init", "idle"],
+                            }
+                        ]
+                    ],
+                    new_up_conds=up,
+                )
+            ],
+            "anomaly": _default_anomaly_for_state("state", ["down", "init", "idle"]),
         }
     if "route" in mid or "vrf" in mid:
         return {
@@ -108,14 +225,16 @@ def preset_override_for_metric(metric_id: str) -> dict[str, Any]:
             "status_fields": [],
             "down_values": [],
             "up_values": [],
-            "success": [{"old": ["removed"], "new": ["added", "unchanged"]}],
+            "success": [_success_presence_migrate()],
+            "anomaly": _default_anomaly_presence_only(),
         }
     return {
         "metric_id": mid,
         "status_fields": [],
-        "down_values": ["down"],
-        "up_values": ["up"],
-        "success": [{"old": ["removed"], "new": ["added", "unchanged"]}],
+        "down_values": [],
+        "up_values": [],
+        "success": [_success_presence_migrate()],
+        "anomaly": _default_anomaly_presence_only(),
     }
 
 

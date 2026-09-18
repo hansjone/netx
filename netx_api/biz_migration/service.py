@@ -341,6 +341,8 @@ def run_evaluate(
         raise HTTPException(status_code=404, detail="project_not_found")
     if not proj.old_baseline_batch_id:
         raise HTTPException(status_code=400, detail="old_baseline_required")
+    if not proj.new_baseline_batch_id:
+        raise HTTPException(status_code=400, detail="new_baseline_required")
 
     old_batch = db.get(BizStateBatch, old_batch_id.strip()) if old_batch_id.strip() else None
     if not old_batch:
@@ -389,12 +391,10 @@ def run_evaluate(
             _load_metric_rows(db, batch_id=old_cur, metric_id=mid),
             row_filters,
         )
-        new_base_rows = None
-        if proj.new_baseline_batch_id:
-            new_base_rows = apply_row_filters(
-                _load_metric_rows(db, batch_id=proj.new_baseline_batch_id, metric_id=mid),
-                row_filters,
-            )
+        new_base_rows = apply_row_filters(
+            _load_metric_rows(db, batch_id=proj.new_baseline_batch_id, metric_id=mid),
+            row_filters,
+        )
         new_now = apply_row_filters(
             _load_metric_rows(db, batch_id=new_cur, metric_id=mid),
             row_filters,
@@ -424,8 +424,11 @@ def run_evaluate(
                 "progress_ok": one["progress_ok"],
                 "progress_total": one["progress_total"],
                 "anomaly": one["anomaly"],
+                "anomaly_in_expect": int(one.get("anomaly_in_expect") or 0),
                 "old_summary": one["old_summary"],
                 "new_summary": one["new_summary"],
+                "new_baseline_mode": one.get("new_baseline_mode") or "provided",
+                "new_baseline_missing": bool(one.get("new_baseline_missing")),
             }
         )
         for r in one["rows"]:
@@ -455,6 +458,12 @@ def run_evaluate(
                 "total": sum(c["progress_total"] for c in sheet_cards),
             },
             "anomaly": sum(c["anomaly"] for c in sheet_cards),
+            "new_baseline_missing": any(bool(c.get("new_baseline_missing")) for c in sheet_cards),
+            "missing_metrics": [
+                str(c.get("metric_id") or "")
+                for c in sheet_cards
+                if c.get("new_baseline_missing")
+            ],
             "verdict_counts": verdict_counts,
             "window_active": window_active,
             "expect_ports": sorted(expect.get("_ports") or ()),
@@ -489,6 +498,7 @@ def run_evaluate(
                     "new_key_str": r.get("new_key_str"),
                     "old_status": r.get("old_status"),
                     "new_status": r.get("new_status"),
+                    "rule_hit": r.get("rule_hit") or "",
                 },
                 old_kind=str(r.get("old_kind") or ""),
                 new_kind=str(r.get("new_kind") or ""),
@@ -543,6 +553,7 @@ def diff_to_dict(d: BizMigrationDiff) -> dict[str, Any]:
         "new_key_str": kj.get("new_key_str") or "",
         "old_status": kj.get("old_status") or "",
         "new_status": kj.get("new_status") or "",
+        "rule_hit": kj.get("rule_hit") or "",
         "old_kind": d.old_kind,
         "new_kind": d.new_kind,
         "old": d.old_json,
@@ -594,13 +605,16 @@ def list_baseline_expect_objects(db: Session, project_id: str) -> dict[str, Any]
     if not p.old_baseline_batch_id:
         return {"batch_id": "", "sheets": [], "mapped": {}}
     mt = resolve_project_monitor_template(db, p)
-    sheets, _, _ = resolve_evaluate_sheets(db, mt)
+    sheets, sheet_overrides, _ = resolve_evaluate_sheets(db, mt)
     port_map = _port_map_dict(db, p.mapping_id)
     out_sheets: list[dict[str, Any]] = []
     for sheet in sheets:
         mid = str(sheet.get("metric_id") or "").strip()
         key_fields = [str(k) for k in (sheet.get("key_fields") or []) if str(k).strip()]
         if not mid or not key_fields:
+            continue
+        sheet_ov = override_for_metric(sheet_overrides, mid)
+        if sheet_ov.get("skip_dual"):
             continue
         iface_fields = [str(k) for k in (sheet.get("iface_fields") or []) if str(k).strip()]
         rows_raw = apply_row_filters(
@@ -1008,10 +1022,22 @@ def finish_batch(
     anomaly = int(summary.get("anomaly") or 0)
     ok = int(progress.get("ok") or 0)
     total = int(progress.get("total") or 0)
-    passed = anomaly == 0 and (total == 0 or ok >= total)
+    missing_metrics = [str(x) for x in (summary.get("missing_metrics") or []) if str(x)]
+    fail_reasons: list[str] = []
+    if total <= 0:
+        fail_reasons.append("empty_expect")
+    if missing_metrics:
+        fail_reasons.append("new_baseline_missing")
+    if anomaly:
+        fail_reasons.append("anomaly")
+    if total > 0 and ok < total:
+        fail_reasons.append("incomplete")
+    passed = not fail_reasons
 
     accept_summary = {
         "passed": passed,
+        "fail_reasons": fail_reasons,
+        "missing_metrics": missing_metrics,
         "progress_ok": ok,
         "progress_total": total,
         "anomaly": anomaly,

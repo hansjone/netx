@@ -2090,6 +2090,11 @@ export const bizMigrationEvaluate = (batchId: string, body: Record<string, unkno
     body,
   );
 
+export const bizMigrationListRuns = (batchId: string, limit = 20) =>
+  apiGet<{ items?: Array<Record<string, unknown>> }>(
+    `/v1/biz-migration/batches/${encodeURIComponent(batchId)}/runs?limit=${limit}`,
+  );
+
 export const bizMigrationGetBoard = (batchId: string, runId = "") => {
   const q = runId ? `?run_id=${encodeURIComponent(runId)}` : "";
   return apiGet<Record<string, unknown>>(

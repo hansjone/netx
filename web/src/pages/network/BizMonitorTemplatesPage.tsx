@@ -26,13 +26,33 @@ type CompareSheet = {
   display_fields?: string[];
 };
 type CompareTpl = { id: string; name: string; metrics?: CompareSheet[] };
-type SuccessPat = { old: string[]; new: string[] };
+/** Leaf: presence (row existence) or value (field + strategy). */
+type RuleCond = {
+  type: "presence" | "value";
+  field?: string;
+  op?: string;
+  value?: string | string[];
+};
+/** OR-of-AND: each inner list is AND; outer list is OR. */
+type CondGroup = RuleCond[];
+type DualPat = {
+  old_groups?: CondGroup[];
+  new_groups?: CondGroup[];
+  /** Legacy — migrated into groups on normalize. */
+  old?: string[];
+  new?: string[];
+  old_mode?: "any" | "all";
+  new_mode?: "any" | "all";
+  old_conds?: RuleCond[];
+  new_conds?: RuleCond[];
+};
 type SheetOverride = {
   metric_id: string;
   status_fields?: string[];
   down_values?: string[];
   up_values?: string[];
-  success?: SuccessPat[];
+  success?: DualPat[];
+  anomaly?: DualPat[];
   skip_dual?: boolean;
   field_tokens?: Array<{ side: string; field: string; in: string[] }>;
 };
@@ -47,40 +67,248 @@ type MonitorTpl = {
   note?: string;
 };
 
-const KIND_TOKENS = ["removed", "added", "unchanged", "changed"] as const;
-const STATUS_TOKENS = ["up", "down", "other"] as const;
+const PRESENCE_TOKENS = [
+  { id: "removed", labelKey: "tokRemoved" },
+  { id: "added", labelKey: "tokAdded" },
+  { id: "unchanged", labelKey: "tokUnchanged" },
+  { id: "changed", labelKey: "tokChanged" },
+] as const;
+
+const VALUE_OPS = [
+  "eq",
+  "ne",
+  "in",
+  "not_in",
+  "empty",
+  "not_empty",
+  "changed",
+  "unchanged",
+] as const;
+
+const OPS_NEED_VALUE = new Set(["eq", "ne", "in", "not_in"]);
+
+function emptyCond(type: RuleCond["type"] = "presence", field = ""): RuleCond {
+  if (type === "value") return { type: "value", field, op: "eq", value: "" };
+  return { type: "presence", value: "removed" };
+}
+
+function emptyGroup(type: RuleCond["type"] = "presence", field = ""): CondGroup {
+  return [emptyCond(type, field)];
+}
+
+function migrateLegacyCond(raw: Record<string, unknown>): RuleCond {
+  const typ = String(raw.type || "").toLowerCase();
+  if (typ === "status") {
+    // Legacy status class: bind a field later; empty field still matches the old class.
+    return { type: "value", field: "", op: "eq", value: String(raw.value ?? raw.status ?? "") };
+  }
+  if (typ === "field" || typ === "value") {
+    return {
+      type: "value",
+      field: String(raw.field || ""),
+      op: String(raw.op || "eq"),
+      value: (raw.value as string | string[]) ?? "",
+    };
+  }
+  if (typ === "kind" || typ === "presence" || raw.kind != null) {
+    return {
+      type: "presence",
+      value: String(raw.value ?? raw.kind ?? "removed"),
+    };
+  }
+  if (raw.field) {
+    return {
+      type: "value",
+      field: String(raw.field),
+      op: String(raw.op || "eq"),
+      value: (raw.value as string | string[]) ?? "",
+    };
+  }
+  return { type: "presence", value: String(raw.value || "removed") };
+}
+
+function tokenToCond(tok: string): RuleCond {
+  if (PRESENCE_TOKENS.some((x) => x.id === tok)) return { type: "presence", value: tok };
+  if (tok === "up" || tok === "down" || tok === "other") {
+    return { type: "value", field: "", op: "eq", value: tok };
+  }
+  if (tok.startsWith("field:")) {
+    const rest = tok.slice("field:".length);
+    const i = rest.indexOf(":");
+    if (i > 0) {
+      return { type: "value", field: rest.slice(0, i), op: "eq", value: rest.slice(i + 1) };
+    }
+  }
+  return { type: "presence", value: tok };
+}
+
+function groupsFromFlat(conds: RuleCond[], mode: "any" | "all"): CondGroup[] {
+  if (!conds.length) return [];
+  if (mode === "all") return [conds];
+  return conds.map((c) => [c]);
+}
+
+function groupsFromLegacyTokens(tokens: string[] | undefined): CondGroup[] {
+  return (tokens || []).map((tok) => [tokenToCond(tok)]);
+}
+
+function normalizeGroups(
+  groups: CondGroup[] | undefined,
+  flatConds: RuleCond[] | undefined,
+  mode: "any" | "all" | undefined,
+  legacyTokens: string[] | undefined,
+): CondGroup[] {
+  if (Array.isArray(groups)) {
+    if (!groups.length) return [];
+    return groups
+      .map((g) =>
+        (g || [])
+          .filter(Boolean)
+          .map((c) => migrateLegacyCond(c as unknown as Record<string, unknown>)),
+      )
+      .filter((g) => g.length > 0);
+  }
+  if (flatConds?.length) {
+    return groupsFromFlat(
+      flatConds.map((c) => migrateLegacyCond(c as unknown as Record<string, unknown>)),
+      mode || "any",
+    );
+  }
+  return groupsFromLegacyTokens(legacyTokens);
+}
+
+function normalizePat(pat: DualPat, opts?: { allowEmptySide?: boolean }): DualPat {
+  const allowEmpty = Boolean(opts?.allowEmptySide);
+  const old_groups = normalizeGroups(pat.old_groups, pat.old_conds, pat.old_mode, pat.old);
+  const new_groups = normalizeGroups(pat.new_groups, pat.new_conds, pat.new_mode, pat.new);
+  if (allowEmpty) {
+    return { old_groups, new_groups };
+  }
+  return {
+    old_groups: old_groups.length ? old_groups : [emptyGroup("presence")],
+    new_groups: new_groups.length ? new_groups : [emptyGroup("presence")],
+  };
+}
+
+function successFromPresence(oldVals: string[], newVals: string[]): DualPat {
+  return normalizePat({
+    old_groups: oldVals.map((v) => [{ type: "presence", value: v }]),
+    new_groups: newVals.map((v) => [{ type: "presence", value: v }]),
+  });
+}
+
+function anomalyBothGone(): DualPat {
+  return normalizePat(
+    {
+      old_groups: [[{ type: "presence", value: "removed" }]],
+      new_groups: [[{ type: "presence", value: "removed" }]],
+    },
+    { allowEmptySide: true },
+  );
+}
+
+function anomalySideOnly(
+  side: "old" | "new",
+  groups: CondGroup[],
+): DualPat {
+  return normalizePat(
+    {
+      old_groups: side === "old" ? groups : [],
+      new_groups: side === "new" ? groups : [],
+    },
+    { allowEmptySide: true },
+  );
+}
+
+function defaultAnomalyForState(field: string, downValues: string[]): DualPat[] {
+  const downGroup: CondGroup = [{ type: "value", field, op: "in", value: downValues }];
+  return [
+    anomalyBothGone(),
+    anomalySideOnly("old", [[{ type: "presence", value: "removed" }], downGroup]),
+    anomalySideOnly("new", [[{ type: "presence", value: "removed" }], downGroup]),
+  ];
+}
+
+function defaultAnomalyPresenceOnly(): DualPat[] {
+  return [
+    anomalyBothGone(),
+    anomalySideOnly("old", [[{ type: "presence", value: "removed" }]]),
+    anomalySideOnly("new", [[{ type: "presence", value: "removed" }]]),
+  ];
+}
 
 function emptyOverride(metricId: string): SheetOverride {
   return {
     metric_id: metricId,
     status_fields: [],
-    down_values: ["down"],
-    up_values: ["up"],
-    success: [{ old: ["removed"], new: ["added", "unchanged"] }],
+    down_values: [],
+    up_values: [],
+    success: [successFromPresence(["removed"], ["added"])],
+    anomaly: defaultAnomalyPresenceOnly(),
     skip_dual: false,
   };
 }
 
-/** Built-in presets aligned with backend seeds. */
 export function presetForMetric(metricId: string): SheetOverride {
   const mid = metricId;
   if (mid === "interface_brief") {
+    const upConds: RuleCond[] = [
+      { type: "value", field: "admin", op: "in", value: ["up"] },
+      { type: "value", field: "phy", op: "in", value: ["up"] },
+    ];
     return {
       metric_id: mid,
       status_fields: ["admin", "phy", "prot"],
       down_values: ["down"],
       up_values: ["up"],
-      success: [{ old: ["removed", "down"], new: ["added", "up", "unchanged"] }],
+      success: [
+        normalizePat({
+          old_groups: [
+            [{ type: "presence", value: "removed" }],
+            [
+              { type: "value", field: "admin", op: "in", value: ["down"] },
+              { type: "value", field: "phy", op: "in", value: ["down"] },
+            ],
+          ],
+          new_groups: [
+            [{ type: "presence", value: "added" }, ...upConds],
+            [{ type: "presence", value: "unchanged" }, ...upConds],
+            upConds,
+          ],
+        }),
+      ],
+      anomaly: defaultAnomalyForState("admin", ["down"]),
       skip_dual: false,
     };
   }
   if (mid === "bgp_peer") {
+    const upConds: RuleCond[] = [{ type: "value", field: "state", op: "eq", value: "established" }];
     return {
       metric_id: mid,
       status_fields: ["state"],
       down_values: ["idle", "active", "connect", "down"],
       up_values: ["established"],
-      success: [{ old: ["removed", "down"], new: ["added", "up", "unchanged"] }],
+      success: [
+        normalizePat({
+          old_groups: [
+            [{ type: "presence", value: "removed" }],
+            [
+              {
+                type: "value",
+                field: "state",
+                op: "in",
+                value: ["idle", "active", "connect", "down"],
+              },
+            ],
+          ],
+          new_groups: [
+            [{ type: "presence", value: "added" }, ...upConds],
+            [{ type: "presence", value: "unchanged" }, ...upConds],
+            upConds,
+          ],
+        }),
+      ],
+      anomaly: defaultAnomalyForState("state", ["idle", "active", "connect", "down"]),
       skip_dual: false,
     };
   }
@@ -90,17 +318,41 @@ export function presetForMetric(metricId: string): SheetOverride {
       status_fields: [],
       down_values: [],
       up_values: [],
-      success: [{ old: ["removed"], new: ["added", "unchanged"] }],
+      success: [successFromPresence(["removed"], ["added"])],
+      anomaly: defaultAnomalyPresenceOnly(),
       skip_dual: false,
     };
   }
   if (mid.includes("isis") || mid.includes("ospf") || mid.includes("adjacency")) {
+    const upConds: RuleCond[] = [
+      { type: "value", field: "state", op: "in", value: ["up", "full", "2way"] },
+    ];
     return {
       metric_id: mid,
-      status_fields: ["state", "status"].filter(Boolean),
+      status_fields: ["state"],
       down_values: ["down", "init", "idle"],
       up_values: ["up", "full", "2way"],
-      success: [{ old: ["removed", "down"], new: ["added", "up", "unchanged"] }],
+      success: [
+        normalizePat({
+          old_groups: [
+            [{ type: "presence", value: "removed" }],
+            [
+              {
+                type: "value",
+                field: "state",
+                op: "in",
+                value: ["down", "init", "idle"],
+              },
+            ],
+          ],
+          new_groups: [
+            [{ type: "presence", value: "added" }, ...upConds],
+            [{ type: "presence", value: "unchanged" }, ...upConds],
+            upConds,
+          ],
+        }),
+      ],
+      anomaly: defaultAnomalyForState("state", ["down", "init", "idle"]),
       skip_dual: false,
     };
   }
@@ -110,7 +362,8 @@ export function presetForMetric(metricId: string): SheetOverride {
       status_fields: [],
       down_values: [],
       up_values: [],
-      success: [{ old: ["removed"], new: ["added", "unchanged"] }],
+      success: [successFromPresence(["removed"], ["added"])],
+      anomaly: defaultAnomalyPresenceOnly(),
       skip_dual: false,
     };
   }
@@ -118,15 +371,17 @@ export function presetForMetric(metricId: string): SheetOverride {
 }
 
 function skipPreset(metricId: string): SheetOverride {
-  return { ...emptyOverride(metricId), skip_dual: true, success: [] };
+  return { ...emptyOverride(metricId), skip_dual: true, success: [], anomaly: [] };
 }
 
-function overrideFor(
-  overrides: SheetOverride[],
-  metricId: string,
-): SheetOverride {
+function overrideFor(overrides: SheetOverride[], metricId: string): SheetOverride {
   const found = overrides.find((o) => o.metric_id === metricId);
-  return found ? { ...emptyOverride(metricId), ...found, metric_id: metricId } : emptyOverride(metricId);
+  const merged = found ? { ...emptyOverride(metricId), ...found, metric_id: metricId } : emptyOverride(metricId);
+  return {
+    ...merged,
+    success: (merged.success || []).map((p) => normalizePat(p)),
+    anomaly: (merged.anomaly || []).map((p) => normalizePat(p, { allowEmptySide: true })),
+  };
 }
 
 function csvValues(raw: string): string[] {
@@ -136,9 +391,325 @@ function csvValues(raw: string): string[] {
     .filter(Boolean);
 }
 
-function toggleInList(list: string[], value: string): string[] {
-  if (list.includes(value)) return list.filter((x) => x !== value);
-  return [...list, value];
+function Chip({
+  active,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`mt-chip${active ? " is-on" : ""}`}
+      aria-pressed={active}
+    >
+      {label}
+    </button>
+  );
+}
+
+function patchGroupCond(
+  groups: CondGroup[],
+  gi: number,
+  ci: number,
+  patch: Partial<RuleCond> | RuleCond,
+): CondGroup[] {
+  return groups.map((g, i) =>
+    i === gi ? g.map((x, j) => (j === ci ? { ...x, ...patch } : x)) : g,
+  );
+}
+
+function SideGroupsEditor({
+  allowEmpty,
+  groups,
+  fieldChoices,
+  t,
+  onChange,
+}: {
+  allowEmpty: boolean;
+  groups: CondGroup[];
+  fieldChoices: MetricField[];
+  t: (k: string, vars?: Record<string, string | number>) => string;
+  onChange: (next: CondGroup[]) => void;
+}) {
+  const dontCare = allowEmpty && groups.length === 0;
+  const setGroups = (next: CondGroup[]) => {
+    if (!next.length && !allowEmpty) onChange([emptyGroup()]);
+    else onChange(next);
+  };
+
+  return (
+    <div className="mt-side">
+      {allowEmpty ? (
+        <label className="mt-dontcare">
+          <input
+            type="checkbox"
+            checked={dontCare}
+            onChange={(e) => {
+              if (e.target.checked) setGroups([]);
+              else setGroups([emptyGroup("presence")]);
+            }}
+          />
+          <span>{t("bizMonitorTpl.sideDontCare")}</span>
+        </label>
+      ) : null}
+      {dontCare ? (
+        <p className="muted mt-side-empty">{t("bizMonitorTpl.sideDontCareHint")}</p>
+      ) : (
+        <>
+          {groups.map((group, gi) => (
+            <div key={gi} className="mt-or-wrap">
+              {gi > 0 ? <div className="mt-logic-badge mt-logic-badge--or">{t("bizMonitorTpl.or")}</div> : null}
+              <div className="mt-and-box">
+                <div className="mt-and-box__head">
+                  <span className="muted">{t("bizMonitorTpl.groupN", { n: String(gi + 1) })}</span>
+                  <button
+                    type="button"
+                    className="mt-icon-btn"
+                    aria-label={t("bizMonitorTpl.removeRow")}
+                    onClick={() => {
+                      const next = groups.filter((_, i) => i !== gi);
+                      setGroups(next.length ? next : allowEmpty ? [] : [emptyGroup()]);
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+                {group.map((cond, ci) => (
+                  <div key={ci}>
+                    {ci > 0 ? (
+                      <div className="mt-logic-badge mt-logic-badge--and">{t("bizMonitorTpl.and")}</div>
+                    ) : null}
+                    <div className={`mt-cond-row${cond.type === "value" ? " is-value" : " is-presence"}`}>
+                      <select
+                        className="mt-select"
+                        value={cond.type}
+                        onChange={(e) => {
+                          const typ = e.target.value as RuleCond["type"];
+                          setGroups(
+                            patchGroupCond(
+                              groups,
+                              gi,
+                              ci,
+                              emptyCond(typ, fieldChoices[0]?.name || ""),
+                            ),
+                          );
+                        }}
+                      >
+                        <option value="presence">{t("bizMonitorTpl.groupPresence")}</option>
+                        <option value="value">{t("bizMonitorTpl.groupValue")}</option>
+                      </select>
+                      {cond.type === "presence" ? (
+                        <select
+                          className="mt-select mt-select--grow"
+                          value={String(cond.value || "removed")}
+                          onChange={(e) =>
+                            setGroups(patchGroupCond(groups, gi, ci, { value: e.target.value }))
+                          }
+                        >
+                          {PRESENCE_TOKENS.map((tok) => (
+                            <option key={tok.id} value={tok.id}>
+                              {t(`bizMonitorTpl.${tok.labelKey}`)}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <>
+                          <select
+                            className="mt-select"
+                            value={cond.field || ""}
+                            onChange={(e) =>
+                              setGroups(patchGroupCond(groups, gi, ci, { field: e.target.value }))
+                            }
+                          >
+                            <option value="">{t("bizMonitorTpl.pickField")}</option>
+                            {fieldChoices.map((f) => (
+                              <option key={f.name} value={f.name}>
+                                {f.name}
+                              </option>
+                            ))}
+                          </select>
+                          <select
+                            className="mt-select"
+                            value={cond.op || "eq"}
+                            onChange={(e) =>
+                              setGroups(patchGroupCond(groups, gi, ci, { op: e.target.value }))
+                            }
+                          >
+                            {VALUE_OPS.map((op) => (
+                              <option key={op} value={op}>
+                                {t(`bizMonitorTpl.op_${op}`)}
+                              </option>
+                            ))}
+                          </select>
+                          <Input
+                            className="mt-cond-value"
+                            value={
+                              Array.isArray(cond.value)
+                                ? cond.value.join(",")
+                                : String(cond.value ?? "")
+                            }
+                            disabled={!OPS_NEED_VALUE.has(cond.op || "eq")}
+                            placeholder={
+                              cond.op === "in" || cond.op === "not_in"
+                                ? "a,b,c"
+                                : t("bizMonitorTpl.condValue")
+                            }
+                            onChange={(e) => {
+                              const raw = e.target.value;
+                              const val =
+                                cond.op === "in" || cond.op === "not_in" ? csvValues(raw) : raw;
+                              setGroups(patchGroupCond(groups, gi, ci, { value: val }));
+                            }}
+                          />
+                        </>
+                      )}
+                      <button
+                        type="button"
+                        className="mt-icon-btn"
+                        aria-label={t("bizMonitorTpl.removeRow")}
+                        onClick={() => {
+                          const next = groups
+                            .map((g, i) => (i === gi ? g.filter((_, j) => j !== ci) : g))
+                            .filter((g) => g.length > 0);
+                          setGroups(next.length ? next : allowEmpty ? [] : [emptyGroup()]);
+                        }}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  className="mt-link-btn"
+                  onClick={() =>
+                    setGroups(
+                      groups.map((g, i) =>
+                        i === gi ? [...g, emptyCond("value", fieldChoices[0]?.name || "")] : g,
+                      ),
+                    )
+                  }
+                >
+                  {t("bizMonitorTpl.addAndShort")}
+                </button>
+              </div>
+            </div>
+          ))}
+          <button
+            type="button"
+            className="mt-link-btn"
+            onClick={() => setGroups([...groups, emptyGroup("presence")])}
+          >
+            {t("bizMonitorTpl.addOrShort")}
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+function DualPatternList({
+  kind,
+  patterns,
+  fieldChoices,
+  t,
+  onChange,
+}: {
+  kind: "success" | "anomaly";
+  patterns: DualPat[];
+  fieldChoices: MetricField[];
+  t: (k: string, vars?: Record<string, string | number>) => string;
+  onChange: (next: DualPat[]) => void;
+}) {
+  const allowEmpty = kind === "anomaly";
+  const cardClass = kind === "anomaly" ? "mt-rule-card mt-rule-card--anomaly" : "mt-rule-card";
+  const rowKey = kind === "anomaly" ? "anomalyRow" : "successRow";
+  const addKey = kind === "anomaly" ? "addAnomalyRow" : "addSuccessRow";
+  const hintKey = kind === "anomaly" ? "anomalyPatternsHintShort" : "successPatternsHintShort";
+
+  const setPat = (pi: number, nextPat: DualPat) => {
+    const list = [...patterns];
+    list[pi] = normalizePat(nextPat, { allowEmptySide: allowEmpty });
+    onChange(list);
+  };
+
+  const updateSideGroups = (pi: number, side: "old" | "new", groups: CondGroup[]) => {
+    const pat = normalizePat(patterns[pi] || {}, { allowEmptySide: allowEmpty });
+    const nextGroups = groups.length > 0 ? groups : allowEmpty ? [] : [emptyGroup()];
+    if (side === "old") setPat(pi, { ...pat, old_groups: nextGroups });
+    else setPat(pi, { ...pat, new_groups: nextGroups });
+  };
+
+  const defaultNewPat = (): DualPat =>
+    kind === "anomaly" ? anomalyBothGone() : successFromPresence(["removed"], ["added"]);
+
+  return (
+    <div className={`mt-block mt-block--${kind}`}>
+      <p className="muted mt-block__hint">{t(`bizMonitorTpl.${hintKey}`)}</p>
+      {patterns.map((rawPat, pi) => {
+        const pat = normalizePat(rawPat, { allowEmptySide: allowEmpty });
+        return (
+          <div key={pi} className={cardClass}>
+            <div className="mt-rule-card__head">
+              <span>{t(`bizMonitorTpl.${rowKey}`, { n: String(pi + 1) })}</span>
+              <Button
+                size="sm"
+                variant="ghost"
+                onPress={() => {
+                  const next = patterns.filter((_, i) => i !== pi);
+                  onChange(next.length ? next : kind === "success" ? [defaultNewPat()] : []);
+                }}
+              >
+                {t("bizMonitorTpl.removeRow")}
+              </Button>
+            </div>
+            <div className="mt-rule-card__grid">
+              <div className="mt-side-col">
+                <div className="mt-side-col__label">{t("bizMonitorTpl.oldSideAny")}</div>
+                <SideGroupsEditor
+                  allowEmpty={allowEmpty}
+                  groups={pat.old_groups || []}
+                  fieldChoices={fieldChoices}
+                  t={t}
+                  onChange={(g) => updateSideGroups(pi, "old", g)}
+                />
+              </div>
+              <div className="mt-rule-arrow" aria-hidden>
+                →
+              </div>
+              <div className="mt-side-col">
+                <div className="mt-side-col__label">{t("bizMonitorTpl.newSideAny")}</div>
+                <SideGroupsEditor
+                  allowEmpty={allowEmpty}
+                  groups={pat.new_groups || []}
+                  fieldChoices={fieldChoices}
+                  t={t}
+                  onChange={(g) => updateSideGroups(pi, "new", g)}
+                />
+              </div>
+            </div>
+          </div>
+        );
+      })}
+      <Button
+        size="sm"
+        variant="secondary"
+        onPress={() =>
+          onChange([
+            ...patterns.map((p) => normalizePat(p, { allowEmptySide: allowEmpty })),
+            defaultNewPat(),
+          ])
+        }
+      >
+        {t(`bizMonitorTpl.${addKey}`)}
+      </Button>
+    </div>
+  );
 }
 
 export function BizMonitorTemplatesPage() {
@@ -161,6 +732,8 @@ export function BizMonitorTemplatesPage() {
   const [collectIds, setCollectIds] = useState<string[]>([]);
   const [overrides, setOverrides] = useState<SheetOverride[]>([]);
   const [activeSheetIdx, setActiveSheetIdx] = useState(0);
+  const [ruleTab, setRuleTab] = useState<"success" | "anomaly">("success");
+  const [showMore, setShowMore] = useState(false);
   const [showAdvancedJson, setShowAdvancedJson] = useState(false);
   const [overridesText, setOverridesText] = useState("[]");
 
@@ -212,16 +785,13 @@ export function BizMonitorTemplatesPage() {
     () => compareTpls.find((c) => c.id === compareId) || null,
     [compareTpls, compareId],
   );
-
   const sheets = useMemo(() => selectedCompare?.metrics || [], [selectedCompare]);
-
   const activeSheet = sheets[activeSheetIdx] || sheets[0] || null;
   const activeMetricId = activeSheet?.metric_id || "";
   const activeOverride = useMemo(
     () => (activeMetricId ? overrideFor(overrides, activeMetricId) : emptyOverride("")),
     [overrides, activeMetricId],
   );
-
   const activeFields = useMemo(() => {
     const schema = metricSchemas.find((m) => m.metric_id === activeMetricId);
     return schema?.fields || [];
@@ -256,13 +826,14 @@ export function BizMonitorTemplatesPage() {
   const openCreate = () => {
     setEditId("");
     setName("");
-    const first = compareTpls[0]?.id || "";
-    setCompareId(first);
+    setCompareId(compareTpls[0]?.id || "");
     setNote("");
     setOutOfExpect("strict");
     setCollectIds([]);
     setOverrides([]);
     setActiveSheetIdx(0);
+    setRuleTab("success");
+    setShowMore(false);
     setShowAdvancedJson(false);
     setOverridesText("[]");
     setEditOpen(true);
@@ -273,11 +844,12 @@ export function BizMonitorTemplatesPage() {
     setName(row.name || "");
     setCompareId(row.compare_template_id || "");
     setNote(row.note || "");
-    const d = row.defaults || {};
-    setOutOfExpect(String(d.out_of_expect || "strict"));
+    setOutOfExpect(String((row.defaults || {}).out_of_expect || "strict"));
     setCollectIds(Array.isArray(row.collect_metric_ids) ? [...row.collect_metric_ids] : []);
     setOverrides(Array.isArray(row.sheet_overrides) ? (row.sheet_overrides as SheetOverride[]) : []);
     setActiveSheetIdx(0);
+    setRuleTab("success");
+    setShowMore(false);
     setShowAdvancedJson(false);
     setOverridesText(JSON.stringify(row.sheet_overrides || [], null, 2));
     setEditOpen(true);
@@ -287,8 +859,10 @@ export function BizMonitorTemplatesPage() {
 
   const applyPreset = (kind: "auto" | "skip") => {
     if (!activeMetricId) return;
-    const next = kind === "skip" ? skipPreset(activeMetricId) : presetForMetric(activeMetricId);
-    syncOverride(activeMetricId, next);
+    syncOverride(
+      activeMetricId,
+      kind === "skip" ? skipPreset(activeMetricId) : presetForMetric(activeMetricId),
+    );
   };
 
   const applyAllPresets = () => {
@@ -300,26 +874,32 @@ export function BizMonitorTemplatesPage() {
       showError(t("bizMonitorTpl.needName"));
       return;
     }
-    let sheet_overrides = overrides.filter((o) => o.metric_id);
+    let sheet_overrides = overrides
+      .filter((o) => o.metric_id)
+      .map((o) => ({
+        ...o,
+        success: (o.success || []).map((p) => normalizePat(p)),
+        anomaly: (o.anomaly || []).map((p) => normalizePat(p, { allowEmptySide: true })),
+      }));
     if (showAdvancedJson) {
       try {
         const parsed = JSON.parse(overridesText || "[]") as unknown[];
         if (!Array.isArray(parsed)) throw new Error("overrides");
-        sheet_overrides = parsed as SheetOverride[];
+        sheet_overrides = (parsed as SheetOverride[]).map((o) => ({
+          ...o,
+          success: (o.success || []).map((p) => normalizePat(p)),
+          anomaly: (o.anomaly || []).map((p) => normalizePat(p, { allowEmptySide: true })),
+        }));
       } catch {
         showError(t("bizMonitorTpl.overridesInvalid"));
         return;
       }
     }
-    const defaults = {
-      dual_mode: "migrate_pair",
-      out_of_expect: outOfExpect || "strict",
-    };
     const body = {
       name: name.trim(),
       compare_template_id: compareId,
       collect_metric_ids: collectIds,
-      defaults,
+      defaults: { dual_mode: "migrate_pair", out_of_expect: outOfExpect || "strict" },
       sheet_overrides,
       note: note.trim(),
     };
@@ -355,18 +935,12 @@ export function BizMonitorTemplatesPage() {
     }
   };
 
-  const tokenOptions = useMemo(() => {
-    const fieldToks: string[] = [];
-    for (const f of activeOverride.status_fields || []) {
-      for (const v of activeOverride.down_values || []) {
-        fieldToks.push(`field:${f}:${v}`);
-      }
-      for (const v of activeOverride.up_values || []) {
-        fieldToks.push(`field:${f}:${v}`);
-      }
-    }
-    return [...KIND_TOKENS, ...STATUS_TOKENS, ...fieldToks];
-  }, [activeOverride]);
+  const fieldChoices: MetricField[] =
+    activeFields.length > 0
+      ? activeFields
+      : [...(activeSheet?.compare_fields || []), ...(activeSheet?.key_fields || [])].map((n) => ({
+          name: n,
+        }));
 
   return (
     <section className="panel nm-page-panel">
@@ -390,7 +964,6 @@ export function BizMonitorTemplatesPage() {
             <div className="pt-list-kpi__value">{items.length}</div>
           </div>
         </div>
-
         <div className="filter-inline">
           <Input
             value={listKw}
@@ -398,7 +971,6 @@ export function BizMonitorTemplatesPage() {
             onChange={(e) => setListKw(e.target.value)}
           />
         </div>
-
         <div className="pt-list-table-wrap">
           <table className="data-table pt-list-table">
             <thead>
@@ -454,12 +1026,9 @@ export function BizMonitorTemplatesPage() {
           </Modal.Heading>
           <Modal.CloseTrigger />
         </Modal.Header>
-        <Modal.Body className="flex flex-col gap-4">
-          <p className="muted" style={{ margin: 0, fontSize: 12 }}>
-            {t("bizMonitorTpl.formHint")}
-          </p>
-
-          <div className="flex flex-col gap-2">
+        <Modal.Body className="flex flex-col gap-3 mt-editor">
+          {/* Basics */}
+          <div className="mt-editor__basics">
             <Input
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -474,32 +1043,20 @@ export function BizMonitorTemplatesPage() {
                 setActiveSheetIdx(0);
               }}
               fullWidth
-              hint={t("bizMonitorTpl.compareHint")}
             >
               <option value="">{t("bizMonitorTpl.pickCompare")}</option>
               {compareTpls.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.name}
-                  {(c.metrics || []).length ? ` (${(c.metrics || []).length})` : ""}
+                  {(c.metrics || []).length ? ` · ${(c.metrics || []).length}${t("bizMonitorTpl.sheetsUnit")}` : ""}
                 </option>
               ))}
             </FieldSelect>
-            <Input
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-              placeholder={t("bizMonitorTpl.colNote")}
-              aria-label={t("bizMonitorTpl.colNote")}
-            />
-          </div>
-
-          <div className="flex flex-col gap-2">
-            <strong style={{ fontSize: 13 }}>{t("bizMonitorTpl.globalPolicy")}</strong>
             <FieldSelect
               label={t("bizMonitorTpl.outOfExpect")}
               value={outOfExpect}
               onChange={(e) => setOutOfExpect(e.target.value)}
               fullWidth
-              hint={t("bizMonitorTpl.outOfExpectHint")}
             >
               <option value="strict">{t("bizMonitorTpl.ooeStrict")}</option>
               <option value="warn">{t("bizMonitorTpl.ooeWarn")}</option>
@@ -507,288 +1064,130 @@ export function BizMonitorTemplatesPage() {
             </FieldSelect>
           </div>
 
-          {sheets.length ? (
-            <div className="flex flex-col gap-2">
-              <strong style={{ fontSize: 13 }}>{t("bizMonitorTpl.collectTitle")}</strong>
-              <p className="muted" style={{ margin: 0, fontSize: 12 }}>
-                {t("bizMonitorTpl.collectHint")}
-              </p>
-              <div className="btn-row" style={{ flexWrap: "wrap", gap: 8 }}>
-                {sheets.map((s) => {
-                  const checked = collectIds.length === 0 || collectIds.includes(s.metric_id);
-                  const explicit = collectIds.length > 0;
-                  return (
-                    <label key={s.metric_id} className="config-sync-policy-check" style={{ margin: 0 }}>
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => {
-                          if (!explicit) {
-                            setCollectIds(
-                              sheets.map((x) => x.metric_id).filter((id) => id !== s.metric_id),
-                            );
-                            return;
-                          }
-                          setCollectIds((prev) => {
-                            if (prev.includes(s.metric_id)) {
-                              const next = prev.filter((x) => x !== s.metric_id);
-                              return next.length === sheets.length ? [] : next;
-                            }
-                            const next = [...prev, s.metric_id];
-                            return next.length === sheets.length ? [] : next;
-                          });
+          {!sheets.length ? (
+            <p className="muted" style={{ margin: 0 }}>
+              {t("bizMonitorTpl.needCompareFirst")}
+            </p>
+          ) : (
+            <div className="mt-editor__main">
+              {/* Left sheet nav */}
+              <aside className="mt-editor__nav" aria-label={t("bizMonitorTpl.sheetRules")}>
+                <div className="mt-editor__nav-head">
+                  <span>{t("bizMonitorTpl.sheetRules")}</span>
+                  <Button size="sm" variant="ghost" onPress={applyAllPresets}>
+                    {t("bizMonitorTpl.applyAllPresetsShort")}
+                  </Button>
+                </div>
+                <div className="mt-editor__nav-list" role="tablist">
+                  {sheets.map((s, i) => {
+                    const ov = overrideFor(overrides, s.metric_id);
+                    return (
+                      <button
+                        key={s.metric_id}
+                        type="button"
+                        role="tab"
+                        aria-selected={activeSheetIdx === i}
+                        className={`mt-editor__nav-item${activeSheetIdx === i ? " is-active" : ""}`}
+                        onClick={() => {
+                          setActiveSheetIdx(i);
+                          setRuleTab("success");
                         }}
-                      />
-                      <span>{s.metric_id}</span>
-                    </label>
-                  );
-                })}
-                {collectIds.length ? (
-                  <Button size="sm" variant="ghost" onPress={() => setCollectIds([])}>
-                    {t("bizMonitorTpl.collectAll")}
-                  </Button>
-                ) : null}
-              </div>
-            </div>
-          ) : null}
+                      >
+                        <span className="mt-editor__nav-name">{s.metric_id}</span>
+                        <span className="mt-editor__nav-tag">
+                          {ov.skip_dual
+                            ? t("bizMonitorTpl.tagSkip")
+                            : (ov.success || []).length || (ov.anomaly || []).length
+                              ? t("bizMonitorTpl.tagRules", {
+                                  n: String(
+                                    (ov.success || []).length + (ov.anomaly || []).length,
+                                  ),
+                                })
+                              : t("bizMonitorTpl.tagEmpty")}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </aside>
 
-          {sheets.length ? (
-            <div className="flex flex-col gap-3">
-              <div className="btn-row" style={{ justifyContent: "space-between", flexWrap: "wrap" }}>
-                <strong style={{ fontSize: 13 }}>{t("bizMonitorTpl.sheetRules")}</strong>
-                <Button size="sm" variant="secondary" onPress={applyAllPresets}>
-                  {t("bizMonitorTpl.applyAllPresets")}
-                </Button>
-              </div>
-              <div className="bs-sheet-tabs btn-row" style={{ flexWrap: "wrap", gap: 6 }}>
-                {sheets.map((s, i) => (
-                  <Button
-                    key={s.metric_id}
-                    size="sm"
-                    variant={activeSheetIdx === i ? "primary" : "secondary"}
-                    onPress={() => setActiveSheetIdx(i)}
-                  >
-                    {s.metric_id}
-                    {overrideFor(overrides, s.metric_id).skip_dual ? " · skip" : ""}
-                  </Button>
-                ))}
-              </div>
-
+              {/* Right rule editor */}
               {activeSheet ? (
-                <div className="flex flex-col gap-3" style={{ borderTop: "1px solid var(--border, #e5e7eb)", paddingTop: 12 }}>
-                  <p className="muted" style={{ margin: 0, fontSize: 12 }}>
-                    {t("bizMonitorTpl.sheetHowReadonly")}: Key=
-                    {(activeSheet.key_fields || []).join(",") || "—"} ·{" "}
-                    {t("bizMonitorTpl.iface")}=
-                    {(activeSheet.iface_fields || []).join(",") || "—"} ·{" "}
-                    {t("bizMonitorTpl.compare")}=
-                    {(activeSheet.compare_fields || []).length
-                      ? (activeSheet.compare_fields || []).join(",")
-                      : t("bizMonitorTpl.presenceOnly")}
-                    {" · "}
-                    <Link to="/network/cutover/compare-templates">{t("bizMonitorTpl.editInCompare")}</Link>
-                  </p>
-
-                  <div className="btn-row" style={{ flexWrap: "wrap", gap: 8 }}>
-                    <Button size="sm" variant="secondary" onPress={() => applyPreset("auto")}>
-                      {t("bizMonitorTpl.presetAuto")}
-                    </Button>
-                    <Button size="sm" variant="ghost" onPress={() => applyPreset("skip")}>
-                      {t("bizMonitorTpl.presetSkip")}
-                    </Button>
-                    <label className="config-sync-policy-check" style={{ marginLeft: 8 }}>
-                      <input
-                        type="checkbox"
-                        checked={Boolean(activeOverride.skip_dual)}
-                        onChange={(e) =>
-                          syncOverride(activeMetricId, { skip_dual: e.target.checked })
-                        }
-                      />
-                      <span>{t("bizMonitorTpl.skipDual")}</span>
-                    </label>
+                <div className="mt-editor__pane">
+                  <div className="mt-editor__pane-head">
+                    <div>
+                      <div className="mt-editor__metric">{activeMetricId}</div>
+                      <div className="mt-editor__meta muted">
+                        <span>Key {(activeSheet.key_fields || []).join(" · ") || "—"}</span>
+                        <span>
+                          {t("bizMonitorTpl.compare")}{" "}
+                          {(activeSheet.compare_fields || []).length
+                            ? (activeSheet.compare_fields || []).join(" · ")
+                            : t("bizMonitorTpl.presenceOnly")}
+                        </span>
+                        <Link to="/network/cutover/compare-templates">{t("bizMonitorTpl.editInCompare")}</Link>
+                      </div>
+                    </div>
+                    <div className="btn-row" style={{ gap: 6 }}>
+                      <Button size="sm" variant="secondary" onPress={() => applyPreset("auto")}>
+                        {t("bizMonitorTpl.presetAuto")}
+                      </Button>
+                      <Button size="sm" variant="ghost" onPress={() => applyPreset("skip")}>
+                        {t("bizMonitorTpl.presetSkip")}
+                      </Button>
+                    </div>
                   </div>
+
+                  <label className="mt-skip-check">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(activeOverride.skip_dual)}
+                      onChange={(e) => syncOverride(activeMetricId, { skip_dual: e.target.checked })}
+                    />
+                    <span>{t("bizMonitorTpl.skipDual")}</span>
+                  </label>
 
                   {!activeOverride.skip_dual ? (
                     <>
-                      <div className="flex flex-col gap-2">
-                        <strong style={{ fontSize: 13 }}>{t("bizMonitorTpl.statusFields")}</strong>
-                        <p className="muted" style={{ margin: 0, fontSize: 12 }}>
-                          {t("bizMonitorTpl.statusFieldsHint")}
-                        </p>
-                        <div className="btn-row" style={{ flexWrap: "wrap", gap: 8 }}>
-                          {(activeFields.length
-                            ? activeFields
-                            : [
-                                ...(activeSheet.compare_fields || []),
-                                ...(activeSheet.key_fields || []),
-                              ].map((n) => ({ name: n }))
-                          ).map((f) => (
-                            <label key={f.name} className="config-sync-policy-check" style={{ margin: 0 }}>
-                              <input
-                                type="checkbox"
-                                checked={(activeOverride.status_fields || []).includes(f.name)}
-                                onChange={() =>
-                                  syncOverride(activeMetricId, {
-                                    status_fields: toggleInList(
-                                      activeOverride.status_fields || [],
-                                      f.name,
-                                    ),
-                                  })
-                                }
-                              />
-                              <span>{f.display_name || f.name}</span>
-                            </label>
-                          ))}
-                          {!activeFields.length && !(activeSheet.compare_fields || []).length ? (
-                            <span className="muted" style={{ fontSize: 12 }}>
-                              {t("bizMonitorTpl.noFields")}
-                            </span>
-                          ) : null}
-                        </div>
-                        <div
-                          style={{
-                            display: "grid",
-                            gridTemplateColumns: "1fr 1fr",
-                            gap: 12,
-                          }}
+                      <div className="mt-rule-tabs" role="tablist">
+                        <button
+                          type="button"
+                          role="tab"
+                          aria-selected={ruleTab === "success"}
+                          className={`mt-rule-tab${ruleTab === "success" ? " is-active" : ""}`}
+                          onClick={() => setRuleTab("success")}
                         >
-                          <div className="flex flex-col gap-1">
-                            <span className="muted" style={{ fontSize: 12 }}>
-                              {t("bizMonitorTpl.downValues")}
-                            </span>
-                            <Input
-                              value={(activeOverride.down_values || []).join(", ")}
-                              onChange={(e) =>
-                                syncOverride(activeMetricId, {
-                                  down_values: csvValues(e.target.value),
-                                })
-                              }
-                              placeholder="down, idle"
-                              aria-label={t("bizMonitorTpl.downValues")}
-                            />
-                          </div>
-                          <div className="flex flex-col gap-1">
-                            <span className="muted" style={{ fontSize: 12 }}>
-                              {t("bizMonitorTpl.upValues")}
-                            </span>
-                            <Input
-                              value={(activeOverride.up_values || []).join(", ")}
-                              onChange={(e) =>
-                                syncOverride(activeMetricId, {
-                                  up_values: csvValues(e.target.value),
-                                })
-                              }
-                              placeholder="up, established"
-                              aria-label={t("bizMonitorTpl.upValues")}
-                            />
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="flex flex-col gap-2">
-                        <strong style={{ fontSize: 13 }}>{t("bizMonitorTpl.successPatterns")}</strong>
-                        <p className="muted" style={{ margin: 0, fontSize: 12 }}>
-                          {t("bizMonitorTpl.successPatternsHint")}
-                        </p>
-                        {(activeOverride.success || []).map((pat, pi) => (
-                          <div
-                            key={pi}
-                            style={{
-                              display: "grid",
-                              gridTemplateColumns: "1fr 1fr auto",
-                              gap: 12,
-                              alignItems: "start",
-                              padding: "8px 0",
-                              borderBottom: "1px solid var(--border, #eee)",
-                            }}
-                          >
-                            <div>
-                              <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>
-                                {t("bizMonitorTpl.oldSideAny")}
-                              </div>
-                              <div className="btn-row" style={{ flexWrap: "wrap", gap: 4 }}>
-                                {tokenOptions.map((tok) => (
-                                  <label
-                                    key={`o-${pi}-${tok}`}
-                                    className="config-sync-policy-check"
-                                    style={{ margin: 0, fontSize: 12 }}
-                                  >
-                                    <input
-                                      type="checkbox"
-                                      checked={(pat.old || []).includes(tok)}
-                                      onChange={() => {
-                                        const success = [...(activeOverride.success || [])];
-                                        success[pi] = {
-                                          ...pat,
-                                          old: toggleInList(pat.old || [], tok),
-                                        };
-                                        syncOverride(activeMetricId, { success });
-                                      }}
-                                    />
-                                    <span>{tok}</span>
-                                  </label>
-                                ))}
-                              </div>
-                            </div>
-                            <div>
-                              <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>
-                                {t("bizMonitorTpl.newSideAny")}
-                              </div>
-                              <div className="btn-row" style={{ flexWrap: "wrap", gap: 4 }}>
-                                {tokenOptions.map((tok) => (
-                                  <label
-                                    key={`n-${pi}-${tok}`}
-                                    className="config-sync-policy-check"
-                                    style={{ margin: 0, fontSize: 12 }}
-                                  >
-                                    <input
-                                      type="checkbox"
-                                      checked={(pat.new || []).includes(tok)}
-                                      onChange={() => {
-                                        const success = [...(activeOverride.success || [])];
-                                        success[pi] = {
-                                          ...pat,
-                                          new: toggleInList(pat.new || [], tok),
-                                        };
-                                        syncOverride(activeMetricId, { success });
-                                      }}
-                                    />
-                                    <span>{tok}</span>
-                                  </label>
-                                ))}
-                              </div>
-                            </div>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onPress={() => {
-                                const success = (activeOverride.success || []).filter((_, i) => i !== pi);
-                                syncOverride(activeMetricId, {
-                                  success: success.length
-                                    ? success
-                                    : [{ old: ["removed"], new: ["added"] }],
-                                });
-                              }}
-                            >
-                              ×
-                            </Button>
-                          </div>
-                        ))}
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onPress={() =>
-                            syncOverride(activeMetricId, {
-                              success: [
-                                ...(activeOverride.success || []),
-                                { old: ["removed"], new: ["added"] },
-                              ],
-                            })
-                          }
+                          {t("bizMonitorTpl.successPatternsShort")}
+                          <span className="mt-rule-tab__n">{(activeOverride.success || []).length}</span>
+                        </button>
+                        <button
+                          type="button"
+                          role="tab"
+                          aria-selected={ruleTab === "anomaly"}
+                          className={`mt-rule-tab mt-rule-tab--anomaly${ruleTab === "anomaly" ? " is-active" : ""}`}
+                          onClick={() => setRuleTab("anomaly")}
                         >
-                          {t("bizMonitorTpl.addSuccessRow")}
-                        </Button>
+                          {t("bizMonitorTpl.anomalyPatternsShort")}
+                          <span className="mt-rule-tab__n">{(activeOverride.anomaly || []).length}</span>
+                        </button>
                       </div>
+                      {ruleTab === "success" ? (
+                        <DualPatternList
+                          kind="success"
+                          patterns={activeOverride.success || []}
+                          fieldChoices={fieldChoices}
+                          t={t}
+                          onChange={(success) => syncOverride(activeMetricId, { success })}
+                        />
+                      ) : (
+                        <DualPatternList
+                          kind="anomaly"
+                          patterns={activeOverride.anomaly || []}
+                          fieldChoices={fieldChoices}
+                          t={t}
+                          onChange={(anomaly) => syncOverride(activeMetricId, { anomaly })}
+                        />
+                      )}
                     </>
                   ) : (
                     <p className="muted" style={{ margin: 0, fontSize: 12 }}>
@@ -798,40 +1197,86 @@ export function BizMonitorTemplatesPage() {
                 </div>
               ) : null}
             </div>
-          ) : (
-            <p className="muted" style={{ margin: 0, fontSize: 12 }}>
-              {t("bizMonitorTpl.needCompareFirst")}
-            </p>
           )}
 
-          <div className="flex flex-col gap-2">
-            <Button
-              size="sm"
-              variant="ghost"
-              onPress={() => {
-                if (!showAdvancedJson) {
-                  setOverridesText(JSON.stringify(overrides, null, 2));
-                } else {
-                  try {
-                    const parsed = JSON.parse(overridesText || "[]") as SheetOverride[];
-                    if (Array.isArray(parsed)) setOverrides(parsed);
-                  } catch {
-                    /* keep visual */
-                  }
-                }
-                setShowAdvancedJson((v) => !v);
-              }}
-            >
-              {showAdvancedJson ? t("bizMonitorTpl.hideJson") : t("bizMonitorTpl.showJson")}
+          <div className="mt-editor__more">
+            <Button size="sm" variant="ghost" onPress={() => setShowMore((v) => !v)}>
+              {showMore ? t("bizMonitorTpl.hideMore") : t("bizMonitorTpl.showMore")}
             </Button>
-            {showAdvancedJson ? (
-              <textarea
-                className="form-textarea"
-                style={{ minHeight: 160, fontFamily: "ui-monospace, monospace", fontSize: 12 }}
-                value={overridesText}
-                onChange={(e) => setOverridesText(e.target.value)}
-                aria-label={t("bizMonitorTpl.overrides")}
-              />
+            {showMore ? (
+              <div className="flex flex-col gap-3" style={{ marginTop: 8 }}>
+                <Input
+                  value={note}
+                  onChange={(e) => setNote(e.target.value)}
+                  placeholder={t("bizMonitorTpl.colNote")}
+                  aria-label={t("bizMonitorTpl.colNote")}
+                />
+                <div>
+                  <div className="mt-block__title">{t("bizMonitorTpl.collectTitle")}</div>
+                  <p className="muted" style={{ margin: "0 0 6px", fontSize: 12 }}>
+                    {t("bizMonitorTpl.collectHint")}
+                  </p>
+                  <div className="mt-chip-row">
+                    {sheets.map((s) => {
+                      const checked = collectIds.length === 0 || collectIds.includes(s.metric_id);
+                      const explicit = collectIds.length > 0;
+                      return (
+                        <Chip
+                          key={s.metric_id}
+                          active={checked}
+                          label={s.metric_id}
+                          onClick={() => {
+                            if (!explicit) {
+                              setCollectIds(sheets.map((x) => x.metric_id).filter((id) => id !== s.metric_id));
+                              return;
+                            }
+                            setCollectIds((prev) => {
+                              if (prev.includes(s.metric_id)) {
+                                const next = prev.filter((x) => x !== s.metric_id);
+                                return next.length === sheets.length ? [] : next;
+                              }
+                              const next = [...prev, s.metric_id];
+                              return next.length === sheets.length ? [] : next;
+                            });
+                          }}
+                        />
+                      );
+                    })}
+                    {collectIds.length ? (
+                      <Button size="sm" variant="ghost" onPress={() => setCollectIds([])}>
+                        {t("bizMonitorTpl.collectAll")}
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onPress={() => {
+                    if (!showAdvancedJson) setOverridesText(JSON.stringify(overrides, null, 2));
+                    else {
+                      try {
+                        const parsed = JSON.parse(overridesText || "[]") as SheetOverride[];
+                        if (Array.isArray(parsed)) setOverrides(parsed);
+                      } catch {
+                        /* keep */
+                      }
+                    }
+                    setShowAdvancedJson((v) => !v);
+                  }}
+                >
+                  {showAdvancedJson ? t("bizMonitorTpl.hideJson") : t("bizMonitorTpl.showJson")}
+                </Button>
+                {showAdvancedJson ? (
+                  <textarea
+                    className="form-textarea"
+                    style={{ minHeight: 140, fontFamily: "ui-monospace, monospace", fontSize: 12 }}
+                    value={overridesText}
+                    onChange={(e) => setOverridesText(e.target.value)}
+                    aria-label={t("bizMonitorTpl.overrides")}
+                  />
+                ) : null}
+              </div>
             ) : null}
           </div>
         </Modal.Body>
