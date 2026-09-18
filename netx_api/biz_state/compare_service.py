@@ -21,6 +21,7 @@ from ..models import (
     BizPortMappingRow,
     BizStateBatch,
     BizStateLldpNeighbor,
+    BizStateTask,
 )
 from ..timeutil import utcnow_naive
 from .compare_engine import compare_rows, mapping_stats
@@ -37,6 +38,59 @@ from .profiles import metric_field_map
 def _utcnow() -> datetime:
     return utcnow_naive()
 
+
+def _compare_side(db: Session, batch_id: str) -> dict[str, Any]:
+    """Human-readable before/after side for board header (who vs who)."""
+    bid = str(batch_id or "").strip()
+    if not bid:
+        return {
+            "batch_id": "",
+            "task_id": "",
+            "ne_name": "",
+            "ne_id": "",
+            "ne_ip": "",
+            "vendor": "",
+            "status": "",
+            "row_count": 0,
+            "started_at": None,
+            "label": "",
+        }
+    b = db.get(BizStateBatch, bid)
+    if not b:
+        return {
+            "batch_id": bid,
+            "task_id": "",
+            "ne_name": "",
+            "ne_id": "",
+            "ne_ip": "",
+            "vendor": "",
+            "status": "missing",
+            "row_count": 0,
+            "started_at": None,
+            "label": bid[:12],
+        }
+    task = db.get(BizStateTask, b.task_id) if b.task_id else None
+    ne_name = str(b.ne_name or (task.ne_name if task else "") or "").strip()
+    ne_id = str(b.ne_id or (task.ne_id if task else "") or "").strip()
+    ne_ip = str((task.ne_ip if task else "") or "").strip()
+    vendor = str(b.vendor or (task.vendor if task else "") or "").strip()
+    title = ne_name or ne_id or (b.task_id or bid)[:12]
+    if ne_ip and ne_ip not in (ne_name, ne_id, title):
+        label = f"{title} ({ne_ip})"
+    else:
+        label = title
+    return {
+        "batch_id": bid,
+        "task_id": str(b.task_id or ""),
+        "ne_name": ne_name,
+        "ne_id": ne_id,
+        "ne_ip": ne_ip,
+        "vendor": vendor,
+        "status": str(b.status or ""),
+        "row_count": int(b.row_count or 0),
+        "started_at": b.started_at.isoformat() + "Z" if b.started_at else None,
+        "label": label,
+    }
 
 _DIFF_CHUNK = 2000
 _SEARCH_TEXT_MAX = 4000
@@ -1338,13 +1392,22 @@ def get_run(db: Session, run_id: str) -> dict[str, Any]:
     ]
     enriched = _enrich_summary(summary, raw_sheets)
     stored = "rows" if _run_has_diff_rows(db, run_id) else "inline"
+    job = db.get(BizCompareJob, r.job_id) if r.job_id else None
+    mapping = db.get(BizPortMapping, r.mapping_id) if r.mapping_id else None
+    before_side = _compare_side(db, r.before_batch_id)
+    after_side = _compare_side(db, r.after_batch_id)
     return {
         "id": r.id,
         "job_id": r.job_id,
+        "job_name": (job.name if job else "") or "",
         "template_id": r.template_id,
+        "template_name": (tpl.name if tpl else "") or "",
         "mapping_id": r.mapping_id,
+        "mapping_name": (mapping.name if mapping else "") or "",
         "before_batch_id": r.before_batch_id,
         "after_batch_id": r.after_batch_id,
+        "before": before_side,
+        "after": after_side,
         "metric_id": r.metric_id,
         "status": r.status,
         "summary": enriched,
@@ -1532,6 +1595,8 @@ def list_runs(db: Session, job_id: str, *, limit: int = 20) -> list[dict[str, An
             "id": r.id,
             "before_batch_id": r.before_batch_id,
             "after_batch_id": r.after_batch_id,
+            "before": _compare_side(db, r.before_batch_id),
+            "after": _compare_side(db, r.after_batch_id),
             "status": r.status,
             "summary": {
                 k: (r.summary_json or {}).get(k, 0)

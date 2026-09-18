@@ -138,44 +138,62 @@ function failFieldNames(d: DiffRow): string[] {
   return Object.keys(d.changes || {});
 }
 
+/** Prefer first non-empty row dict (API may return {} for null sides). */
+function pickSideRow(
+  ...candidates: Array<Record<string, unknown> | null | undefined>
+): Record<string, unknown> {
+  for (const c of candidates) {
+    if (c && typeof c === "object" && Object.keys(c).length > 0) return c;
+  }
+  return {};
+}
+
 /** Non-key fields: always show before/after pair for cutover review. */
 function PairCell(props: {
   beforeText: string;
   afterText: string;
+  kind: string;
   mismatch: boolean;
   reason?: string;
   beforeLabel: string;
   afterLabel: string;
 }) {
-  const { beforeText, afterText, mismatch, reason, beforeLabel, afterLabel } = props;
+  const { beforeText, afterText, kind, mismatch, reason, beforeLabel, afterLabel } = props;
   const pre = beforeText || "—";
   const post = afterText || "—";
+  const isAdded = kind === "added";
+  const isRemoved = kind === "removed";
+  // Whole-row missing/extra: emphasize the present side; do not strike it out.
+  const preClass = [
+    "bs-cmp-val",
+    !beforeText || isAdded ? "is-empty" : "",
+    isRemoved && beforeText ? "bs-cmp-val--present-pre" : "",
+    !isAdded && !isRemoved && mismatch && beforeText ? "bs-cmp-val--pre" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const postClass = [
+    "bs-cmp-val",
+    !afterText || isRemoved ? "is-empty" : "",
+    isAdded && afterText ? "bs-cmp-val--present-post" : "",
+    !isAdded && !isRemoved && mismatch && afterText ? "bs-cmp-val--post" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
   return (
     <td
       className={`bs-cmp-val-cell bs-cmp-val-cell--pair${
-        mismatch ? " bs-cmp-val-cell--diff" : ""
-      }`}
+        mismatch || isAdded || isRemoved ? " bs-cmp-val-cell--diff" : ""
+      }${isAdded ? " is-added" : ""}${isRemoved ? " is-removed" : ""}`}
     >
       <div className="bs-cmp-pair">
         <div className="bs-cmp-pair__row">
           <span className="bs-cmp-pair__tag">{beforeLabel}</span>
-          <span
-            className={`bs-cmp-val${mismatch ? " bs-cmp-val--pre" : ""}${
-              !beforeText ? " is-empty" : ""
-            }`}
-          >
-            {pre}
-          </span>
+          <span className={preClass}>{isAdded ? "—" : pre}</span>
         </div>
         <div className="bs-cmp-pair__row">
           <span className="bs-cmp-pair__tag">{afterLabel}</span>
-          <span
-            className={`bs-cmp-val${mismatch ? " bs-cmp-val--post" : ""}${
-              !afterText ? " is-empty" : ""
-            }`}
-          >
-            {post}
-          </span>
+          <span className={postClass}>{isRemoved ? "—" : post}</span>
         </div>
       </div>
       {reason ? <div className="bs-cmp-val-reason muted">{reason}</div> : null}
@@ -672,7 +690,19 @@ export function BizComparePage() {
       const rest = display.filter((f) => !keySet.has(f));
       display = [...keys, ...rest];
     }
-    const extras = display.filter((f) => !keySet.has(f));
+    let extras = display.filter((f) => !keySet.has(f));
+    // Presence / sparse display: if no value columns, pull fields from sample
+    // added/removed rows so 缺失/多余 still show side data.
+    if (!extras.length && pagedDiffs.length) {
+      const sample =
+        pagedDiffs.find((d) => d.kind === "added" || d.kind === "removed") || pagedDiffs[0];
+      const side = pickSideRow(
+        sample?.mapped_before as Record<string, unknown> | undefined,
+        sample?.before as Record<string, unknown> | undefined,
+        sample?.after as Record<string, unknown> | undefined,
+      );
+      extras = Object.keys(side).filter((f) => !keySet.has(f) && !f.startsWith("_"));
+    }
     return {
       keys,
       compare,
@@ -2037,14 +2067,21 @@ export function BizComparePage() {
                   }}
                 >
                   <option value="">{t("bizCompare.pickRun")}</option>
-                  {runs.map((r) => (
-                    <option key={r.id} value={r.id}>
-                      {fmtTime(r.created_at)} · {t("bizCompare.failCount")}{" "}
-                      {(r.summary?.added ?? 0) +
-                        (r.summary?.removed ?? 0) +
-                        (r.summary?.changed ?? 0)}
-                    </option>
-                  ))}
+                  {runs.map((r) => {
+                    const bl = (r as any).before?.label || "";
+                    const al = (r as any).after?.label || "";
+                    const sides =
+                      bl || al ? `${bl || "—"} → ${al || "—"} · ` : "";
+                    return (
+                      <option key={r.id} value={r.id}>
+                        {sides}
+                        {fmtTime(r.created_at)} · {t("bizCompare.failCount")}{" "}
+                        {(r.summary?.added ?? 0) +
+                          (r.summary?.removed ?? 0) +
+                          (r.summary?.changed ?? 0)}
+                      </option>
+                    );
+                  })}
                 </FieldSelect>
                 <div className="btn-row">
                   <Button
@@ -2067,6 +2104,64 @@ export function BizComparePage() {
               </div>
 
               {runDetail ? (
+                <>
+                  <div className="bs-cmp-sides" aria-label={t("bizCompare.sidesTitle")}>
+                    <div className="bs-cmp-sides__side is-before">
+                      <span className="bs-cmp-sides__tag">{t("bizCompare.sideBefore")}</span>
+                      <strong className="bs-cmp-sides__name" title={runDetail.before?.label || ""}>
+                        {runDetail.before?.label || runDetail.before_batch_id || "—"}
+                      </strong>
+                      <span className="bs-cmp-sides__meta muted">
+                        {[
+                          runDetail.before?.vendor,
+                          fmtTime(runDetail.before?.started_at),
+                          runDetail.before?.status
+                            ? `rows=${runDetail.before?.row_count ?? 0}`
+                            : "",
+                        ]
+                          .filter(Boolean)
+                          .join(" · ") || "—"}
+                      </span>
+                    </div>
+                    <div className="bs-cmp-sides__vs" aria-hidden>
+                      <span>{t("bizCompare.sidesVs")}</span>
+                    </div>
+                    <div className="bs-cmp-sides__side is-after">
+                      <span className="bs-cmp-sides__tag">{t("bizCompare.sideAfter")}</span>
+                      <strong className="bs-cmp-sides__name" title={runDetail.after?.label || ""}>
+                        {runDetail.after?.label || runDetail.after_batch_id || "—"}
+                      </strong>
+                      <span className="bs-cmp-sides__meta muted">
+                        {[
+                          runDetail.after?.vendor,
+                          fmtTime(runDetail.after?.started_at),
+                          runDetail.after?.status
+                            ? `rows=${runDetail.after?.row_count ?? 0}`
+                            : "",
+                        ]
+                          .filter(Boolean)
+                          .join(" · ") || "—"}
+                      </span>
+                    </div>
+                    {(runDetail.job_name || runDetail.template_name || runDetail.mapping_name) && (
+                      <div className="bs-cmp-sides__context muted">
+                        {[
+                          runDetail.job_name
+                            ? `${t("bizCompare.jobName")}: ${runDetail.job_name}`
+                            : "",
+                          runDetail.template_name
+                            ? `${t("bizCompare.template")}: ${runDetail.template_name}`
+                            : "",
+                          runDetail.mapping_name
+                            ? `${t("bizCompare.mapName")}: ${runDetail.mapping_name}`
+                            : "",
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </div>
+                    )}
+                  </div>
+
                 <div className="bs-cmp-board__body">
                   <aside className="bs-cmp-nav" aria-label={t("bizCompare.sheetNavTitle")}>
                     <div className="bs-cmp-nav__head">
@@ -2293,11 +2388,13 @@ export function BizComparePage() {
                         </thead>
                         <tbody>
                           {pagedDiffs.map((d, i) => {
-                            const pre = (d.mapped_before || d.before || {}) as Record<
-                              string,
-                              unknown
-                            >;
-                            const post = (d.after || {}) as Record<string, unknown>;
+                            const pre = pickSideRow(
+                              d.mapped_before as Record<string, unknown> | null | undefined,
+                              d.before as Record<string, unknown> | null | undefined,
+                            );
+                            const post = pickSideRow(
+                              d.after as Record<string, unknown> | null | undefined,
+                            );
                             const isFail = d.kind !== "unchanged";
                             return (
                               <tr key={i} className={`bs-cmp-row bs-cmp-row--${d.kind}`}>
@@ -2326,15 +2423,18 @@ export function BizComparePage() {
                                   const av = cellText(post[f]);
                                   const ch = d.changes?.[f];
                                   const isCmp = resultColumns.compareSet.has(f);
-                                  // Compare fields: engine mismatch; display fields: value differ / side missing
-                                  const mismatch = isCmp
-                                    ? Boolean(ch) || d.kind === "added" || d.kind === "removed"
-                                    : pv !== av;
+                                  const mismatch =
+                                    d.kind === "added" || d.kind === "removed"
+                                      ? Boolean(pv || av)
+                                      : isCmp
+                                        ? Boolean(ch)
+                                        : pv !== av;
                                   return (
                                     <PairCell
                                       key={f}
                                       beforeText={pv}
                                       afterText={av}
+                                      kind={d.kind}
                                       mismatch={mismatch}
                                       reason={ch?.reason}
                                       beforeLabel={t("bizCompare.pairBefore")}
@@ -2377,6 +2477,7 @@ export function BizComparePage() {
                     />
                   </div>
                 </div>
+                </>
               ) : (
                 <div className="pt-list-empty">{t("bizCompare.noRuns")}</div>
               )}
