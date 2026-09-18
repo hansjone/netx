@@ -2254,25 +2254,41 @@ export function BizComparePage() {
                             <th className="bs-cmp-col-kind">{t("bizCompare.colKind")}</th>
                             <th className="bs-cmp-col-fail">{t("bizCompare.colFailFields")}</th>
                             {resultColumns.keys.map((k) => (
-                              <th key={k}>{k}</th>
-                            ))}
-                            {resultColumns.extras.map((f) => (
-                              <th
-                                key={f}
-                                className={
-                                  resultColumns.compareSet.has(f)
-                                    ? "bs-cmp-col-compare"
-                                    : "bs-cmp-col-display"
-                                }
-                                title={
-                                  resultColumns.compareSet.has(f)
-                                    ? t("bizCompare.compareFields")
-                                    : t("bizCompare.displayField")
-                                }
-                              >
-                                {f}
+                              <th key={k} className="bs-cmp-col-key">
+                                <span className="bs-cmp-th">
+                                  <span className="bs-cmp-th__role bs-cmp-th__role--key">
+                                    {t("bizCompare.keyFields")}
+                                  </span>
+                                  <span className="bs-cmp-th__name">{k}</span>
+                                </span>
                               </th>
                             ))}
+                            {resultColumns.extras.map((f) => {
+                              const isCmp = resultColumns.compareSet.has(f);
+                              return (
+                                <th
+                                  key={f}
+                                  className={
+                                    isCmp ? "bs-cmp-col-compare" : "bs-cmp-col-display"
+                                  }
+                                >
+                                  <span className="bs-cmp-th">
+                                    <span
+                                      className={`bs-cmp-th__role ${
+                                        isCmp
+                                          ? "bs-cmp-th__role--compare"
+                                          : "bs-cmp-th__role--display"
+                                      }`}
+                                    >
+                                      {isCmp
+                                        ? t("bizCompare.compareFields")
+                                        : t("bizCompare.displayField")}
+                                    </span>
+                                    <span className="bs-cmp-th__name">{f}</span>
+                                  </span>
+                                </th>
+                              );
+                            })}
                           </tr>
                         </thead>
                         <tbody>

@@ -10637,6 +10637,57 @@ html.login-page--paused .login-page__flare {
   box-shadow: 0 1px 0 rgba(148, 163, 184, 0.22);
   font-size: 12px;
   white-space: nowrap;
+  vertical-align: bottom;
+}
+
+.bs-cmp-th {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  min-width: 0;
+}
+
+.bs-cmp-th__role {
+  display: inline-block;
+  padding: 0 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.5;
+  letter-spacing: 0.02em;
+}
+
+.bs-cmp-th__role--key {
+  background: rgba(59, 130, 246, 0.2);
+  color: #93c5fd;
+}
+
+.bs-cmp-th__role--compare {
+  background: rgba(245, 158, 11, 0.22);
+  color: #fcd34d;
+}
+
+.bs-cmp-th__role--display {
+  background: rgba(148, 163, 184, 0.16);
+  color: #cbd5e1;
+}
+
+.bs-cmp-th__name {
+  color: #e2e8f0;
+  font-weight: 600;
+}
+
+.bs-cmp-col-key {
+  background: rgba(59, 130, 246, 0.06);
+}
+
+.bs-cmp-col-compare {
+  background: rgba(245, 158, 11, 0.05);
+}
+
+.bs-cmp-col-display {
+  background: transparent;
 }
 
 .bs-cmp-overview__verdict {
