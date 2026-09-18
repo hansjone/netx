@@ -10096,39 +10096,52 @@ html.login-page--paused .login-page__flare {
 
 .bs-cmp-board__toolbar {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px 12px;
+  flex-wrap: nowrap;
+  gap: 10px;
   align-items: center;
   justify-content: flex-start;
   flex: 0 0 auto;
+  min-height: 36px;
+}
+
+.bs-cmp-board__run-select {
+  flex: 0 1 280px;
+  min-width: 160px;
+  max-width: 320px;
+  height: 32px;
+  margin: 0;
 }
 
 .bs-cmp-board__actions {
   margin-left: auto;
   flex: 0 0 auto;
+  align-items: center;
 }
 
 .bs-cmp-sides {
   display: inline-flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 6px 8px;
   min-width: 0;
   flex: 1 1 auto;
-  padding: 4px 8px;
+  height: 32px;
+  padding: 0 8px;
   border-radius: 8px;
   border: 1px solid var(--bs-cmp-border, rgba(148, 163, 184, 0.22));
   background: rgba(15, 23, 42, 0.45);
+  overflow: hidden;
 }
 
 .bs-cmp-sides__side {
   display: inline-flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 4px 8px;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 6px;
   min-width: 0;
-  padding: 2px 6px;
+  padding: 0 6px;
   border-radius: 6px;
+  height: 24px;
 }
 
 .bs-cmp-sides__side.is-before {
@@ -10158,14 +10171,14 @@ html.login-page--paused .login-page__flare {
 }
 
 .bs-cmp-sides__name {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
   color: #f1f5f9;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 14rem;
-  line-height: 1.3;
+  max-width: 10rem;
+  line-height: 1.2;
 }
 
 .bs-cmp-sides__meta {
@@ -10175,19 +10188,22 @@ html.login-page--paused .login-page__flare {
   flex: 0 0 auto;
 }
 
-.bs-cmp-sides__vs {
+.bs-cmp-sides__arrow {
   flex: 0 0 auto;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: rgba(59, 130, 246, 0.18);
-  border: 1px solid rgba(96, 165, 250, 0.35);
   color: #93c5fd;
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.02em;
+  font-weight: 700;
+  opacity: 0.85;
 }
 
-@media (max-width: 900px) {
+.bs-cmp-sides__vs {
+  display: none;
+}
+
+@media (max-width: 1100px) {
+  .bs-cmp-board__toolbar {
+    flex-wrap: wrap;
+  }
+
   .bs-cmp-board__actions {
     margin-left: 0;
   }
@@ -10195,10 +10211,9 @@ html.login-page--paused .login-page__flare {
   .bs-cmp-sides {
     flex: 1 1 100%;
     order: 3;
-  }
-
-  .bs-cmp-board__actions {
-    order: 2;
+    height: auto;
+    min-height: 32px;
+    padding: 4px 8px;
   }
 }
 
@@ -10368,6 +10383,16 @@ html.login-page--paused .login-page__flare {
 
 .bs-cmp-nav__badge--unchanged b {
   color: #94a3b8;
+}
+
+.bs-cmp-nav__badge--pass.is-hot {
+  color: #bbf7d0;
+  background: rgba(34, 197, 94, 0.14);
+  border-color: rgba(74, 222, 128, 0.35);
+}
+
+.bs-cmp-nav__badge--pass.is-hot b {
+  color: #86efac;
 }
 
 .bs-cmp-main {

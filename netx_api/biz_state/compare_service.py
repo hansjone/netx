@@ -39,49 +39,71 @@ def _utcnow() -> datetime:
     return utcnow_naive()
 
 
-def _compare_side(db: Session, batch_id: str) -> dict[str, Any]:
+def _compare_side(
+    db: Session,
+    batch_id: str,
+    *,
+    fallback_task_id: str = "",
+) -> dict[str, Any]:
     """Human-readable before/after side for board header (who vs who)."""
     bid = str(batch_id or "").strip()
+    fb_tid = str(fallback_task_id or "").strip()
+    empty = {
+        "batch_id": bid,
+        "task_id": fb_tid,
+        "ne_name": "",
+        "ne_id": "",
+        "ne_ip": "",
+        "vendor": "",
+        "status": "",
+        "row_count": 0,
+        "started_at": None,
+        "label": "",
+    }
     if not bid:
-        return {
-            "batch_id": "",
-            "task_id": "",
-            "ne_name": "",
-            "ne_id": "",
-            "ne_ip": "",
-            "vendor": "",
-            "status": "",
-            "row_count": 0,
-            "started_at": None,
-            "label": "",
-        }
+        # Still resolve device from job task when batch not chosen yet
+        if fb_tid:
+            task = db.get(BizStateTask, fb_tid)
+            if task:
+                ne_name = str(task.ne_name or "").strip()
+                ne_ip = str(task.ne_ip or "").strip()
+                label = ne_name or ne_ip or fb_tid[:12]
+                return {
+                    **empty,
+                    "ne_name": ne_name,
+                    "ne_id": str(task.ne_id or "").strip(),
+                    "ne_ip": ne_ip,
+                    "vendor": str(task.vendor or "").strip(),
+                    "label": label,
+                }
+        return empty
     b = db.get(BizStateBatch, bid)
     if not b:
+        task = db.get(BizStateTask, fb_tid) if fb_tid else None
+        ne_name = str((task.ne_name if task else "") or "").strip()
+        ne_ip = str((task.ne_ip if task else "") or "").strip()
+        label = ne_name or ne_ip or bid[:12]
         return {
-            "batch_id": bid,
-            "task_id": "",
-            "ne_name": "",
-            "ne_id": "",
-            "ne_ip": "",
-            "vendor": "",
+            **empty,
             "status": "missing",
-            "row_count": 0,
-            "started_at": None,
-            "label": bid[:12],
+            "ne_name": ne_name,
+            "ne_id": str((task.ne_id if task else "") or "").strip(),
+            "ne_ip": ne_ip,
+            "vendor": str((task.vendor if task else "") or "").strip(),
+            "label": label,
         }
     task = db.get(BizStateTask, b.task_id) if b.task_id else None
+    if task is None and fb_tid:
+        task = db.get(BizStateTask, fb_tid)
     ne_name = str(b.ne_name or (task.ne_name if task else "") or "").strip()
     ne_id = str(b.ne_id or (task.ne_id if task else "") or "").strip()
     ne_ip = str((task.ne_ip if task else "") or "").strip()
     vendor = str(b.vendor or (task.vendor if task else "") or "").strip()
-    title = ne_name or ne_id or (b.task_id or bid)[:12]
-    if ne_ip and ne_ip not in (ne_name, ne_id, title):
-        label = f"{title} ({ne_ip})"
-    else:
-        label = title
+    title = ne_name or ne_ip or ne_id or ""
+    label = title if title else bid[:12]
     return {
         "batch_id": bid,
-        "task_id": str(b.task_id or ""),
+        "task_id": str(b.task_id or fb_tid or ""),
         "ne_name": ne_name,
         "ne_id": ne_id,
         "ne_ip": ne_ip,
@@ -1394,8 +1416,12 @@ def get_run(db: Session, run_id: str) -> dict[str, Any]:
     stored = "rows" if _run_has_diff_rows(db, run_id) else "inline"
     job = db.get(BizCompareJob, r.job_id) if r.job_id else None
     mapping = db.get(BizPortMapping, r.mapping_id) if r.mapping_id else None
-    before_side = _compare_side(db, r.before_batch_id)
-    after_side = _compare_side(db, r.after_batch_id)
+    before_side = _compare_side(
+        db, r.before_batch_id, fallback_task_id=(job.before_task_id if job else "")
+    )
+    after_side = _compare_side(
+        db, r.after_batch_id, fallback_task_id=(job.after_task_id if job else "")
+    )
     return {
         "id": r.id,
         "job_id": r.job_id,
@@ -1590,13 +1616,16 @@ def list_runs(db: Session, job_id: str, *, limit: int = 20) -> list[dict[str, An
         .limit(max(1, min(100, int(limit))))
         .all()
     )
+    job = db.get(BizCompareJob, job_id)
+    before_tid = str(job.before_task_id or "") if job else ""
+    after_tid = str(job.after_task_id or "") if job else ""
     return [
         {
             "id": r.id,
             "before_batch_id": r.before_batch_id,
             "after_batch_id": r.after_batch_id,
-            "before": _compare_side(db, r.before_batch_id),
-            "after": _compare_side(db, r.after_batch_id),
+            "before": _compare_side(db, r.before_batch_id, fallback_task_id=before_tid),
+            "after": _compare_side(db, r.after_batch_id, fallback_task_id=after_tid),
             "status": r.status,
             "summary": {
                 k: (r.summary_json or {}).get(k, 0)

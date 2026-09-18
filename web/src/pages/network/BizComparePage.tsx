@@ -213,13 +213,41 @@ function sideDeviceName(side?: {
   batch_id?: string;
 } | null): string {
   if (!side) return "—";
-  return (
-    String(side.ne_name || "").trim() ||
-    String(side.ne_ip || "").trim() ||
-    String(side.label || "").trim() ||
-    String(side.batch_id || "").slice(0, 8) ||
-    "—"
-  );
+  const name = String(side.ne_name || "").trim();
+  const ip = String(side.ne_ip || "").trim();
+  const label = String(side.label || "").trim();
+  // Prefer real device identity; ignore hex-ish fallbacks that look like batch ids
+  if (name) return name;
+  if (ip) return ip;
+  if (label && !/^[a-f0-9]{8,32}$/i.test(label)) return label;
+  return "—";
+}
+
+function sideCollectTime(side?: { started_at?: string | null } | null): string {
+  return fmtTime(side?.started_at);
+}
+
+function enrichSideFromTask(
+  side: Record<string, unknown> | null | undefined,
+  taskId: string,
+  tasks: TaskOpt[],
+): { ne_name?: string; ne_ip?: string; label?: string; batch_id?: string; started_at?: string | null } {
+  const base = { ...(side || {}) } as {
+    ne_name?: string;
+    ne_ip?: string;
+    label?: string;
+    batch_id?: string;
+    started_at?: string | null;
+  };
+  if (sideDeviceName(base) !== "—") return base;
+  const task = tasks.find((t) => t.id === taskId);
+  if (!task) return base;
+  return {
+    ...base,
+    ne_name: task.ne_name || base.ne_name,
+    ne_ip: task.ne_ip || base.ne_ip,
+    label: task.ne_name || task.ne_ip || base.label,
+  };
 }
 
 function taskLabel(row: TaskOpt) {
@@ -2074,8 +2102,9 @@ export function BizComparePage() {
               className={`bs-cmp-board${boardFs ? " is-fullscreen" : ""}`}
             >
               <div className="bs-cmp-board__toolbar">
-                <FieldSelect
-                  label={t("bizCompare.pickBatchRun")}
+                <select
+                  className="ui-field__select bs-cmp-board__run-select"
+                  aria-label={t("bizCompare.pickBatchRun")}
                   value={runDetail?.id || ""}
                   onChange={(e) => {
                     const id = e.target.value;
@@ -2084,44 +2113,70 @@ export function BizComparePage() {
                 >
                   <option value="">{t("bizCompare.pickRun")}</option>
                   {runs.map((r) => {
-                    const bl = sideDeviceName((r as any).before);
-                    const al = sideDeviceName((r as any).after);
-                    const sides =
-                      bl !== "—" || al !== "—" ? `${bl} → ${al} · ` : "";
+                    const before = enrichSideFromTask(
+                      (r as any).before,
+                      beforeTaskId,
+                      tasks,
+                    );
+                    const after = enrichSideFromTask(
+                      (r as any).after,
+                      afterTaskId || beforeTaskId,
+                      tasks,
+                    );
+                    const bl = sideDeviceName(before);
+                    const al = sideDeviceName(after);
                     return (
                       <option key={r.id} value={r.id}>
-                        {sides}
-                        {fmtTime(r.created_at)} · {t("bizCompare.failCount")}{" "}
-                        {(r.summary?.added ?? 0) +
-                          (r.summary?.removed ?? 0) +
-                          (r.summary?.changed ?? 0)}
+                        {bl} {sideCollectTime(before)} → {al} {sideCollectTime(after)}
                       </option>
                     );
                   })}
-                </FieldSelect>
+                </select>
                 {runDetail ? (
                   <div className="bs-cmp-sides" aria-label={t("bizCompare.sidesTitle")}>
-                    <div className="bs-cmp-sides__side is-before">
-                      <span className="bs-cmp-sides__tag">{t("bizCompare.sideBefore")}</span>
-                      <strong className="bs-cmp-sides__name" title={sideDeviceName(runDetail.before)}>
-                        {sideDeviceName(runDetail.before)}
-                      </strong>
-                      <span className="bs-cmp-sides__meta muted">
-                        {fmtTime(runDetail.before?.started_at)}
-                      </span>
-                    </div>
-                    <span className="bs-cmp-sides__vs" aria-hidden>
-                      {t("bizCompare.sidesVs")}
-                    </span>
-                    <div className="bs-cmp-sides__side is-after">
-                      <span className="bs-cmp-sides__tag">{t("bizCompare.sideAfter")}</span>
-                      <strong className="bs-cmp-sides__name" title={sideDeviceName(runDetail.after)}>
-                        {sideDeviceName(runDetail.after)}
-                      </strong>
-                      <span className="bs-cmp-sides__meta muted">
-                        {fmtTime(runDetail.after?.started_at)}
-                      </span>
-                    </div>
+                    {(() => {
+                      const before = enrichSideFromTask(
+                        runDetail.before,
+                        beforeTaskId,
+                        tasks,
+                      );
+                      const after = enrichSideFromTask(
+                        runDetail.after,
+                        afterTaskId || beforeTaskId,
+                        tasks,
+                      );
+                      return (
+                        <>
+                          <div className="bs-cmp-sides__side is-before">
+                            <span className="bs-cmp-sides__tag">{t("bizCompare.sideBefore")}</span>
+                            <strong
+                              className="bs-cmp-sides__name"
+                              title={sideDeviceName(before)}
+                            >
+                              {sideDeviceName(before)}
+                            </strong>
+                            <span className="bs-cmp-sides__meta muted">
+                              {sideCollectTime(before)}
+                            </span>
+                          </div>
+                          <span className="bs-cmp-sides__arrow" aria-hidden>
+                            →
+                          </span>
+                          <div className="bs-cmp-sides__side is-after">
+                            <span className="bs-cmp-sides__tag">{t("bizCompare.sideAfter")}</span>
+                            <strong
+                              className="bs-cmp-sides__name"
+                              title={sideDeviceName(after)}
+                            >
+                              {sideDeviceName(after)}
+                            </strong>
+                            <span className="bs-cmp-sides__meta muted">
+                              {sideCollectTime(after)}
+                            </span>
+                          </div>
+                        </>
+                      );
+                    })()}
                   </div>
                 ) : null}
                 <div className="btn-row bs-cmp-board__actions">
@@ -2193,31 +2248,39 @@ export function BizComparePage() {
                           >
                             <span className="bs-cmp-nav__dot" aria-hidden />
                             <span className="bs-cmp-nav__name">{c.metric_id}</span>
-                            <span className="bs-cmp-nav__badges" aria-label={c.metric_id}>
-                              <span
-                                className={`bs-cmp-nav__badge bs-cmp-nav__badge--removed${
-                                  Number(c.removed || 0) > 0 ? " is-hot" : ""
-                                }`}
-                              >
-                                {t("bizCompare.missCount")} <b>{Number(c.removed || 0)}</b>
-                              </span>
-                              <span
-                                className={`bs-cmp-nav__badge bs-cmp-nav__badge--added${
-                                  Number(c.added || 0) > 0 ? " is-hot" : ""
-                                }`}
-                              >
-                                {t("bizCompare.extraCount")} <b>{Number(c.added || 0)}</b>
-                              </span>
-                              <span
-                                className={`bs-cmp-nav__badge bs-cmp-nav__badge--changed${
-                                  Number(c.changed || 0) > 0 ? " is-hot" : ""
-                                }`}
-                              >
-                                {t("bizCompare.mismatchCount")} <b>{Number(c.changed || 0)}</b>
-                              </span>
-                              <span className="bs-cmp-nav__badge bs-cmp-nav__badge--unchanged">
-                                {t("bizCompare.matchCount")} <b>{Number(c.unchanged || 0)}</b>
-                              </span>
+                            <span className="bs-cmp-nav__badges">
+                              {dirty > 0 ? (
+                                <>
+                                  {Number(c.removed || 0) > 0 ? (
+                                    <span className="bs-cmp-nav__badge bs-cmp-nav__badge--removed is-hot">
+                                      {t("bizCompare.missCount")}{" "}
+                                      <b>{Number(c.removed || 0)}</b>
+                                    </span>
+                                  ) : null}
+                                  {Number(c.added || 0) > 0 ? (
+                                    <span className="bs-cmp-nav__badge bs-cmp-nav__badge--added is-hot">
+                                      {t("bizCompare.extraCount")}{" "}
+                                      <b>{Number(c.added || 0)}</b>
+                                    </span>
+                                  ) : null}
+                                  {Number(c.changed || 0) > 0 ? (
+                                    <span className="bs-cmp-nav__badge bs-cmp-nav__badge--changed is-hot">
+                                      {t("bizCompare.mismatchCount")}{" "}
+                                      <b>{Number(c.changed || 0)}</b>
+                                    </span>
+                                  ) : null}
+                                </>
+                              ) : (
+                                <span className="bs-cmp-nav__badge bs-cmp-nav__badge--pass is-hot">
+                                  {t("bizCompare.kindPass")}
+                                  {Number(c.unchanged || 0) > 0 ? (
+                                    <>
+                                      {" "}
+                                      <b>{Number(c.unchanged || 0)}</b>
+                                    </>
+                                  ) : null}
+                                </span>
+                              )}
                             </span>
                           </button>
                         );
