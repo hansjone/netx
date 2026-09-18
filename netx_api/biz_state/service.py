@@ -406,6 +406,8 @@ def list_batches(db: Session, task_id: str, *, limit: int = 50) -> list[dict[str
             "command_count": b.command_count,
             "row_count": b.row_count,
             "message": b.message,
+            "ne_name": b.ne_name or "",
+            "ne_id": b.ne_id or "",
             "started_at": b.started_at.isoformat() + "Z" if b.started_at else None,
             "ended_at": b.ended_at.isoformat() + "Z" if b.ended_at else None,
         }

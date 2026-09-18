@@ -224,30 +224,61 @@ function sideDeviceName(side?: {
 }
 
 function sideCollectTime(side?: { started_at?: string | null } | null): string {
-  return fmtTime(side?.started_at);
+  const raw = side?.started_at;
+  if (!raw) return "—";
+  const full = fmtTime(raw);
+  if (!full || full === raw) {
+    // Prefer compact local time when possible
+    try {
+      const d = new Date(/[zZ]$|[+-]\d{2}:\d{2}$/.test(String(raw)) ? raw : `${String(raw).replace(" ", "T")}Z`);
+      if (!Number.isNaN(d.getTime())) {
+        const m = d.getMonth() + 1;
+        const day = d.getDate();
+        const hh = String(d.getHours()).padStart(2, "0");
+        const mm = String(d.getMinutes()).padStart(2, "0");
+        return `${m}/${day} ${hh}:${mm}`;
+      }
+    } catch {
+      /* fall through */
+    }
+    return full || "—";
+  }
+  // Compact: drop seconds / year noise from locale string when long
+  // e.g. "2026/9/18 09:35:53" -> "9/18 09:35"
+  const m = String(full).match(/(?:\d{4}[/-])?(\d{1,2})[/-](\d{1,2})\s+(\d{2}):(\d{2})/);
+  if (m) return `${m[1]}/${m[2]} ${m[3]}:${m[4]}`;
+  return full;
 }
 
-function enrichSideFromTask(
+type SideInfo = {
+  ne_name?: string;
+  ne_ip?: string;
+  label?: string;
+  batch_id?: string;
+  started_at?: string | null;
+};
+
+function enrichSide(
   side: Record<string, unknown> | null | undefined,
   taskId: string,
   tasks: TaskOpt[],
-): { ne_name?: string; ne_ip?: string; label?: string; batch_id?: string; started_at?: string | null } {
-  const base = { ...(side || {}) } as {
-    ne_name?: string;
-    ne_ip?: string;
-    label?: string;
-    batch_id?: string;
-    started_at?: string | null;
-  };
-  if (sideDeviceName(base) !== "—") return base;
-  const task = tasks.find((t) => t.id === taskId);
-  if (!task) return base;
-  return {
-    ...base,
-    ne_name: task.ne_name || base.ne_name,
-    ne_ip: task.ne_ip || base.ne_ip,
-    label: task.ne_name || task.ne_ip || base.label,
-  };
+  batches: BatchOpt[],
+): SideInfo {
+  const base: SideInfo = { ...(side || {}) } as SideInfo;
+  const bid = String(base.batch_id || "").trim();
+  if (!base.started_at && bid) {
+    const batch = batches.find((b) => b.id === bid);
+    if (batch?.started_at) base.started_at = batch.started_at;
+  }
+  if (sideDeviceName(base) === "—") {
+    const task = tasks.find((t) => t.id === taskId);
+    if (task) {
+      base.ne_name = task.ne_name || base.ne_name;
+      base.ne_ip = task.ne_ip || base.ne_ip;
+      base.label = task.ne_name || task.ne_ip || base.label;
+    }
+  }
+  return base;
 }
 
 function taskLabel(row: TaskOpt) {
@@ -2113,15 +2144,17 @@ export function BizComparePage() {
                 >
                   <option value="">{t("bizCompare.pickRun")}</option>
                   {runs.map((r) => {
-                    const before = enrichSideFromTask(
+                    const before = enrichSide(
                       (r as any).before,
                       beforeTaskId,
                       tasks,
+                      beforeBatches,
                     );
-                    const after = enrichSideFromTask(
+                    const after = enrichSide(
                       (r as any).after,
                       afterTaskId || beforeTaskId,
                       tasks,
+                      afterBatches.length ? afterBatches : beforeBatches,
                     );
                     const bl = sideDeviceName(before);
                     const al = sideDeviceName(after);
@@ -2135,28 +2168,31 @@ export function BizComparePage() {
                 {runDetail ? (
                   <div className="bs-cmp-sides" aria-label={t("bizCompare.sidesTitle")}>
                     {(() => {
-                      const before = enrichSideFromTask(
+                      const before = enrichSide(
                         runDetail.before,
                         beforeTaskId,
                         tasks,
+                        beforeBatches,
                       );
-                      const after = enrichSideFromTask(
+                      const after = enrichSide(
                         runDetail.after,
                         afterTaskId || beforeTaskId,
                         tasks,
+                        afterBatches.length ? afterBatches : beforeBatches,
                       );
+                      const beforeName = sideDeviceName(before);
+                      const afterName = sideDeviceName(after);
+                      const beforeTime = sideCollectTime(before);
+                      const afterTime = sideCollectTime(after);
                       return (
                         <>
                           <div className="bs-cmp-sides__side is-before">
                             <span className="bs-cmp-sides__tag">{t("bizCompare.sideBefore")}</span>
-                            <strong
-                              className="bs-cmp-sides__name"
-                              title={sideDeviceName(before)}
-                            >
-                              {sideDeviceName(before)}
+                            <strong className="bs-cmp-sides__name" title={`${beforeName} ${beforeTime}`}>
+                              {beforeName}
                             </strong>
-                            <span className="bs-cmp-sides__meta muted">
-                              {sideCollectTime(before)}
+                            <span className="bs-cmp-sides__meta" title={beforeTime}>
+                              {beforeTime}
                             </span>
                           </div>
                           <span className="bs-cmp-sides__arrow" aria-hidden>
@@ -2164,14 +2200,11 @@ export function BizComparePage() {
                           </span>
                           <div className="bs-cmp-sides__side is-after">
                             <span className="bs-cmp-sides__tag">{t("bizCompare.sideAfter")}</span>
-                            <strong
-                              className="bs-cmp-sides__name"
-                              title={sideDeviceName(after)}
-                            >
-                              {sideDeviceName(after)}
+                            <strong className="bs-cmp-sides__name" title={`${afterName} ${afterTime}`}>
+                              {afterName}
                             </strong>
-                            <span className="bs-cmp-sides__meta muted">
-                              {sideCollectTime(after)}
+                            <span className="bs-cmp-sides__meta" title={afterTime}>
+                              {afterTime}
                             </span>
                           </div>
                         </>
@@ -2212,6 +2245,32 @@ export function BizComparePage() {
                           ? ` · ${t("bizCompare.sheetFailCount", { n: String(sheetFailCount) })}`
                           : ""}
                       </div>
+                      <div className="bs-cmp-nav__legend" aria-hidden>
+                        <span
+                          className="bs-cmp-nav__num bs-cmp-nav__num--removed is-hot"
+                          title={t("bizCompare.missCount")}
+                        >
+                          -
+                        </span>
+                        <span
+                          className="bs-cmp-nav__num bs-cmp-nav__num--added is-hot"
+                          title={t("bizCompare.extraCount")}
+                        >
+                          +
+                        </span>
+                        <span
+                          className="bs-cmp-nav__num bs-cmp-nav__num--changed is-hot"
+                          title={t("bizCompare.mismatchCount")}
+                        >
+                          ~
+                        </span>
+                        <span
+                          className="bs-cmp-nav__num bs-cmp-nav__num--unchanged"
+                          title={t("bizCompare.matchCount")}
+                        >
+                          =
+                        </span>
+                      </div>
                     </div>
                     <div className="bs-cmp-nav__list" role="tablist">
                       {(sheetCards.length
@@ -2248,39 +2307,34 @@ export function BizComparePage() {
                           >
                             <span className="bs-cmp-nav__dot" aria-hidden />
                             <span className="bs-cmp-nav__name">{c.metric_id}</span>
-                            <span className="bs-cmp-nav__badges">
-                              {dirty > 0 ? (
-                                <>
-                                  {Number(c.removed || 0) > 0 ? (
-                                    <span className="bs-cmp-nav__badge bs-cmp-nav__badge--removed is-hot">
-                                      {t("bizCompare.missCount")}{" "}
-                                      <b>{Number(c.removed || 0)}</b>
-                                    </span>
-                                  ) : null}
-                                  {Number(c.added || 0) > 0 ? (
-                                    <span className="bs-cmp-nav__badge bs-cmp-nav__badge--added is-hot">
-                                      {t("bizCompare.extraCount")}{" "}
-                                      <b>{Number(c.added || 0)}</b>
-                                    </span>
-                                  ) : null}
-                                  {Number(c.changed || 0) > 0 ? (
-                                    <span className="bs-cmp-nav__badge bs-cmp-nav__badge--changed is-hot">
-                                      {t("bizCompare.mismatchCount")}{" "}
-                                      <b>{Number(c.changed || 0)}</b>
-                                    </span>
-                                  ) : null}
-                                </>
-                              ) : (
-                                <span className="bs-cmp-nav__badge bs-cmp-nav__badge--pass is-hot">
-                                  {t("bizCompare.kindPass")}
-                                  {Number(c.unchanged || 0) > 0 ? (
-                                    <>
-                                      {" "}
-                                      <b>{Number(c.unchanged || 0)}</b>
-                                    </>
-                                  ) : null}
-                                </span>
-                              )}
+                            <span
+                              className="bs-cmp-nav__stats"
+                              title={`${t("bizCompare.missCount")} ${Number(c.removed || 0)} · ${t("bizCompare.extraCount")} ${Number(c.added || 0)} · ${t("bizCompare.mismatchCount")} ${Number(c.changed || 0)} · ${t("bizCompare.matchCount")} ${Number(c.unchanged || 0)}`}
+                            >
+                              <span
+                                className={`bs-cmp-nav__num bs-cmp-nav__num--removed${
+                                  Number(c.removed || 0) > 0 ? " is-hot" : ""
+                                }`}
+                              >
+                                {Number(c.removed || 0)}
+                              </span>
+                              <span
+                                className={`bs-cmp-nav__num bs-cmp-nav__num--added${
+                                  Number(c.added || 0) > 0 ? " is-hot" : ""
+                                }`}
+                              >
+                                {Number(c.added || 0)}
+                              </span>
+                              <span
+                                className={`bs-cmp-nav__num bs-cmp-nav__num--changed${
+                                  Number(c.changed || 0) > 0 ? " is-hot" : ""
+                                }`}
+                              >
+                                {Number(c.changed || 0)}
+                              </span>
+                              <span className="bs-cmp-nav__num bs-cmp-nav__num--unchanged">
+                                {Number(c.unchanged || 0)}
+                              </span>
                             </span>
                           </button>
                         );
