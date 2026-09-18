@@ -61,6 +61,8 @@ def apply_biz_state_schema(conn: Connection) -> None:
         ")",
         "CREATE INDEX IF NOT EXISTS ix_biz_monitor_template_name ON biz_monitor_template (name)",
         "CREATE INDEX IF NOT EXISTS ix_biz_monitor_template_compare ON biz_monitor_template (compare_template_id)",
+        "ALTER TABLE biz_migration_project ADD COLUMN IF NOT EXISTS monitor_template_id VARCHAR(64) DEFAULT ''",
+        "CREATE INDEX IF NOT EXISTS ix_biz_migration_project_monitor_tpl ON biz_migration_project (monitor_template_id)",
     ):
         try:
             _run_sql(conn, sql)

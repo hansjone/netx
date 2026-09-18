@@ -26,6 +26,8 @@ class BizMigrationProject(Base):
     new_baseline_batch_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     # Reuse biz_port_mapping (before_if=old, after_if=new)
     mapping_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    # BizMonitorTemplate — HOW (via compare template) + dual/status rules
+    monitor_template_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     status: Mapped[str] = mapped_column(String(32), default="draft", index=True)  # draft|active|done
     note: Mapped[str] = mapped_column(String(512), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)

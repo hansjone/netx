@@ -9,19 +9,28 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from ..biz_state.compare_rules import apply_row_filters
-from ..biz_state.compare_service import _load_metric_rows, _port_map_dict
+from ..biz_state.compare_service import _load_metric_rows, _port_map_dict, template_metrics
 from ..models import (
+    BizCompareTemplate,
     BizMigrationBatch,
     BizMigrationDiff,
     BizMigrationProject,
     BizMigrationRedTicket,
     BizMigrationRun,
+    BizMonitorTemplate,
     BizPortMapping,
     BizStateBatch,
     BizStateTask,
 )
 from ..timeutil import utcnow_naive
-from .evaluate import PORT_METRIC_ID, evaluate_metric_dual, parse_expect_set, port_sheet_def
+from . import monitor_templates as mon_tpl
+from .evaluate import (
+    PORT_METRIC_ID,
+    evaluate_metric_dual,
+    override_for_metric,
+    parse_expect_set,
+    port_sheet_def,
+)
 
 
 def _task_brief(db: Session, task_id: str) -> dict[str, Any]:
@@ -52,6 +61,72 @@ def _batch_brief(db: Session, batch_id: str) -> dict[str, Any]:
     }
 
 
+def _monitor_template_brief(db: Session, template_id: str) -> dict[str, Any]:
+    tid = str(template_id or "").strip()
+    if not tid:
+        return {"id": "", "name": "", "compare_template_id": "", "compare_template_name": ""}
+    row = db.get(BizMonitorTemplate, tid)
+    if not row:
+        return {"id": tid, "name": "", "compare_template_id": "", "compare_template_name": ""}
+    cmp_name = ""
+    if row.compare_template_id:
+        ct = db.get(BizCompareTemplate, row.compare_template_id)
+        cmp_name = (ct.name if ct else "") or ""
+    return {
+        "id": row.id,
+        "name": row.name or "",
+        "compare_template_id": row.compare_template_id or "",
+        "compare_template_name": cmp_name,
+        "collect_metric_ids": list(row.collect_metric_ids_json or []),
+    }
+
+
+def resolve_project_monitor_template(db: Session, proj: BizMigrationProject) -> BizMonitorTemplate:
+    """Return monitor template for project; seed default port template if unbound."""
+    mon_tpl.ensure_default_monitor_templates(db)
+    tid = str(getattr(proj, "monitor_template_id", None) or "").strip()
+    row = db.get(BizMonitorTemplate, tid) if tid else None
+    if row:
+        return row
+    default_id = mon_tpl.default_port_monitor_template_id(db)
+    row = db.get(BizMonitorTemplate, default_id) if default_id else None
+    if not row:
+        raise HTTPException(status_code=400, detail="monitor_template_required")
+    # Persist default on first use so UI shows binding
+    if not tid:
+        proj.monitor_template_id = row.id
+        proj.updated_at = utcnow_naive()
+        db.commit()
+        db.refresh(proj)
+    return row
+
+
+def resolve_evaluate_sheets(
+    db: Session, mt: BizMonitorTemplate
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    """Return (sheets, sheet_overrides, defaults) from monitor → compare template."""
+    overrides = list(mt.sheet_overrides_json or []) if isinstance(mt.sheet_overrides_json, list) else []
+    defaults = dict(mt.defaults_json or {}) if isinstance(mt.defaults_json, dict) else {}
+    cid = str(mt.compare_template_id or "").strip()
+    if cid:
+        ct = db.get(BizCompareTemplate, cid)
+        if ct:
+            sheets = template_metrics(ct)
+            if sheets:
+                return sheets, overrides, defaults
+    # Fallback: built-in port sheet (legacy)
+    return [port_sheet_def()], overrides, defaults
+
+
+def resolve_collect_metric_ids(db: Session, proj: BizMigrationProject) -> list[str]:
+    mt = resolve_project_monitor_template(db, proj)
+    collect = [str(x).strip() for x in (mt.collect_metric_ids_json or []) if str(x).strip()]
+    if collect:
+        return collect
+    sheets, _, _ = resolve_evaluate_sheets(db, mt)
+    return [str(s.get("metric_id") or "").strip() for s in sheets if str(s.get("metric_id") or "").strip()]
+
+
 def project_to_dict(db: Session, p: BizMigrationProject) -> dict[str, Any]:
     return {
         "id": p.id,
@@ -61,6 +136,8 @@ def project_to_dict(db: Session, p: BizMigrationProject) -> dict[str, Any]:
         "old_baseline_batch_id": p.old_baseline_batch_id,
         "new_baseline_batch_id": p.new_baseline_batch_id,
         "mapping_id": p.mapping_id,
+        "monitor_template_id": getattr(p, "monitor_template_id", None) or "",
+        "monitor_template": _monitor_template_brief(db, getattr(p, "monitor_template_id", None) or ""),
         "status": p.status,
         "note": p.note,
         "old_task": _task_brief(db, p.old_task_id),
@@ -108,6 +185,12 @@ def create_project(db: Session, body: dict[str, Any]) -> dict[str, Any]:
     mapping_id = str(body.get("mapping_id") or "").strip()
     if mapping_id and not db.get(BizPortMapping, mapping_id):
         raise HTTPException(status_code=404, detail="mapping_not_found")
+    monitor_template_id = str(body.get("monitor_template_id") or "").strip()
+    if monitor_template_id:
+        if not db.get(BizMonitorTemplate, monitor_template_id):
+            raise HTTPException(status_code=404, detail="monitor_template_not_found")
+    else:
+        monitor_template_id = mon_tpl.default_port_monitor_template_id(db)
     p = BizMigrationProject(
         id=uuid4().hex,
         name=name,
@@ -116,6 +199,7 @@ def create_project(db: Session, body: dict[str, Any]) -> dict[str, Any]:
         old_baseline_batch_id=str(body.get("old_baseline_batch_id") or "").strip(),
         new_baseline_batch_id=str(body.get("new_baseline_batch_id") or "").strip(),
         mapping_id=mapping_id,
+        monitor_template_id=monitor_template_id,
         status=str(body.get("status") or "draft").strip() or "draft",
         note=str(body.get("note") or "")[:500],
     )
@@ -157,6 +241,11 @@ def patch_project(db: Session, project_id: str, body: dict[str, Any]) -> dict[st
         if bid and not db.get(BizStateBatch, bid):
             raise HTTPException(status_code=404, detail="batch_not_found")
         p.new_baseline_batch_id = bid
+    if "monitor_template_id" in body and body["monitor_template_id"] is not None:
+        mid = str(body["monitor_template_id"] or "").strip()
+        if mid and not db.get(BizMonitorTemplate, mid):
+            raise HTTPException(status_code=404, detail="monitor_template_not_found")
+        p.monitor_template_id = mid
     p.updated_at = utcnow_naive()
     db.commit()
     db.refresh(p)
@@ -270,7 +359,8 @@ def run_evaluate(
     expect = parse_expect_set(mb.expect_set_json if isinstance(mb.expect_set_json, dict) else {})
     # Final acceptance: window closed → unfinished expect = red
     window_active = (mb.status == "active") and (not acceptance)
-    sheets = [port_sheet_def()]
+    mt = resolve_project_monitor_template(db, proj)
+    sheets, sheet_overrides, _defaults = resolve_evaluate_sheets(db, mt)
 
     sheet_cards: list[dict[str, Any]] = []
     all_rows: list[dict[str, Any]] = []
@@ -278,13 +368,15 @@ def run_evaluate(
     verdict_counts: dict[str, int] = {}
 
     for sheet in sheets:
-        mid = sheet["metric_id"]
+        mid = str(sheet.get("metric_id") or "").strip()
         key_fields = list(sheet.get("key_fields") or [])
-        if not key_fields:
+        if not mid or not key_fields:
             continue
         iface_fields = list(sheet.get("iface_fields") or [])
         compare_fields = list(sheet.get("compare_fields") or [])
         row_filters = list(sheet.get("row_filters") or [])
+        field_rules = list(sheet.get("field_rules") or [])
+        sheet_ov = override_for_metric(sheet_overrides, mid)
 
         old_base = apply_row_filters(
             _load_metric_rows(db, batch_id=proj.old_baseline_batch_id, metric_id=mid),
@@ -314,15 +406,17 @@ def run_evaluate(
             old_current_rows=old_now,
             new_baseline_rows=new_base_rows,
             new_current_rows=new_now,
-            port_map=port_map,
+            port_map=port_map if iface_fields else {},
             expect=expect,
             window_active=window_active,
             acceptance=acceptance,
+            field_rules=field_rules,
+            sheet_override=sheet_ov,
         )
         sheet_cards.append(
             {
                 "metric_id": mid,
-                "title": "端口状态",
+                "title": mid,
                 "progress_ok": one["progress_ok"],
                 "progress_total": one["progress_total"],
                 "anomaly": one["anomaly"],
@@ -347,7 +441,9 @@ def run_evaluate(
         purpose=str(purpose or ("acceptance" if acceptance else "manual"))[:32],
         status="success",
         summary_json={
-            "metric_focus": PORT_METRIC_ID,
+            "metric_focus": sheets[0].get("metric_id") if sheets else PORT_METRIC_ID,
+            "monitor_template_id": mt.id,
+            "compare_template_id": mt.compare_template_id or "",
             "acceptance": acceptance,
             "sheet_cards": sheet_cards,
             "progress": {
@@ -486,23 +582,84 @@ def list_baseline_ports(db: Session, project_id: str) -> dict[str, Any]:
     }
 
 
-def _iface_brief_item(*, vendor: str, device_type: str) -> dict[str, Any]:
+def list_baseline_expect_objects(db: Session, project_id: str) -> dict[str, Any]:
+    """Per-sheet baseline keys for multi-metric expect picking."""
+    p = db.get(BizMigrationProject, project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="project_not_found")
+    if not p.old_baseline_batch_id:
+        return {"batch_id": "", "sheets": [], "mapped": {}}
+    mt = resolve_project_monitor_template(db, p)
+    sheets, _, _ = resolve_evaluate_sheets(db, mt)
+    port_map = _port_map_dict(db, p.mapping_id)
+    out_sheets: list[dict[str, Any]] = []
+    for sheet in sheets:
+        mid = str(sheet.get("metric_id") or "").strip()
+        key_fields = [str(k) for k in (sheet.get("key_fields") or []) if str(k).strip()]
+        if not mid or not key_fields:
+            continue
+        iface_fields = [str(k) for k in (sheet.get("iface_fields") or []) if str(k).strip()]
+        rows_raw = apply_row_filters(
+            _load_metric_rows(db, batch_id=p.old_baseline_batch_id, metric_id=mid),
+            list(sheet.get("row_filters") or []),
+        )
+        items: list[dict[str, Any]] = []
+        for r in rows_raw:
+            keys = [str(r.get(f) or "").strip() for f in key_fields]
+            if not any(keys):
+                continue
+            key_str = "|".join(keys)
+            mapped = ""
+            if iface_fields and key_fields and key_fields[0] in iface_fields:
+                mapped = port_map.get(keys[0]) or ""
+            items.append(
+                {
+                    "key": key_str,
+                    "keys": keys,
+                    "mapped_to": mapped,
+                    "label": key_str,
+                    "row": {f: r.get(f) for f in list(dict.fromkeys([*key_fields, *iface_fields, "description", "admin", "phy", "prot"])) if f in r},
+                }
+            )
+        items.sort(key=lambda x: str(x["key"]))
+        out_sheets.append(
+            {
+                "metric_id": mid,
+                "key_fields": key_fields,
+                "iface_fields": iface_fields,
+                "items": items,
+            }
+        )
+    return {
+        "batch_id": p.old_baseline_batch_id,
+        "monitor_template_id": mt.id,
+        "sheets": out_sheets,
+        "mapped": port_map,
+    }
+
+
+def _catalog_item_for_metric(*, vendor: str, device_type: str, metric_id: str) -> dict[str, Any]:
     from ..biz_state.profiles import profiles_for_vendor
     from ..lldp_shared import resolve_vendor_key
 
+    mid = str(metric_id or "").strip()
     vkey = resolve_vendor_key(vendor, device_type)
     for p in profiles_for_vendor(vkey):
-        if p.metric_id == PORT_METRIC_ID and p.kind == "collect":
+        if p.metric_id == mid and p.kind == "collect":
             return {
                 "source_profile_id": p.profile_id,
                 "kind": "catalog",
                 "enabled": True,
-                "title": p.title or "interface brief",
+                "title": p.title or mid,
             }
     raise HTTPException(
         status_code=400,
-        detail=f"no_interface_brief_profile_for_vendor:{vkey or vendor or 'unknown'}",
+        detail=f"no_profile_for_metric:{mid}:{vkey or vendor or 'unknown'}",
     )
+
+
+def _iface_brief_item(*, vendor: str, device_type: str) -> dict[str, Any]:
+    return _catalog_item_for_metric(vendor=vendor, device_type=device_type, metric_id=PORT_METRIC_ID)
 
 
 def _enabled_metric_ids(db: Session, task_id: str) -> set[str]:
@@ -525,10 +682,15 @@ def _enabled_metric_ids(db: Session, task_id: str) -> set[str]:
     return out
 
 
-def _is_port_highfreq_task(db: Session, task: BizStateTask) -> bool:
-    """True when task is interface_brief-only with short interval (cutover HF)."""
+def _is_highfreq_task(db: Session, task: BizStateTask, want_metrics: set[str]) -> bool:
+    """True when task metrics match want set and interval is short (cutover HF)."""
     metrics = _enabled_metric_ids(db, task.id)
-    return metrics == {PORT_METRIC_ID} and int(task.interval_sec or 0) <= 300
+    return metrics == set(want_metrics) and int(task.interval_sec or 0) <= 300
+
+
+def _is_port_highfreq_task(db: Session, task: BizStateTask) -> bool:
+    """Back-compat: interface_brief-only HF."""
+    return _is_highfreq_task(db, task, {PORT_METRIC_ID})
 
 
 def _ensure_side_highfreq(
@@ -538,19 +700,31 @@ def _ensure_side_highfreq(
     project_name: str,
     interval_sec: int,
     retention_days: int,
+    metric_ids: list[str],
 ) -> tuple[BizStateTask, bool]:
-    """Return (task, created). Reuse if already HF port-only; else create sibling."""
+    """Return (task, created). Reuse if already HF for metric set; else create sibling."""
     from ..biz_state import service as biz_svc
 
-    if _is_port_highfreq_task(db, template):
+    want = {str(m).strip() for m in metric_ids if str(m).strip()}
+    if not want:
+        want = {PORT_METRIC_ID}
+
+    if _is_highfreq_task(db, template, want):
         if template.status != "running":
             biz_svc.update_task(db, template.id, {"status": "running"})
             refreshed = db.get(BizStateTask, template.id)
             return refreshed or template, False
         return template, False
 
-    item = _iface_brief_item(vendor=template.vendor, device_type=template.device_type)
-    note = f"割接高频-端口/{project_name}"[:256]
+    items = [
+        _catalog_item_for_metric(
+            vendor=template.vendor,
+            device_type=template.device_type,
+            metric_id=mid,
+        )
+        for mid in sorted(want)
+    ]
+    note = f"割接高频/{'+'.join(sorted(want)[:3])}/{project_name}"[:256]
     created = biz_svc.create_task(
         db,
         {
@@ -564,7 +738,7 @@ def _ensure_side_highfreq(
             "status": "running",
             "interval_sec": interval_sec,
             "retention_days": retention_days,
-            "items": [item],
+            "items": items,
         },
     )
     task = db.get(BizStateTask, str(created.get("id") or ""))
@@ -581,11 +755,25 @@ def ensure_port_highfreq(
     retention_days: int = 7,
     collect_now: bool = True,
 ) -> dict[str, Any]:
-    """Create/bind interface_brief-only high-freq biz_state tasks for old/new NEs.
+    """Create/bind high-freq biz_state tasks for old/new NEs using monitor collect_metric_ids."""
+    return ensure_highfreq(
+        db,
+        project_id,
+        interval_sec=interval_sec,
+        retention_days=retention_days,
+        collect_now=collect_now,
+    )
 
-    Collection stays in biz_state — migration only points at the tasks.
-    Later metrics can be added on the same tasks via the biz-state UI.
-    """
+
+def ensure_highfreq(
+    db: Session,
+    project_id: str,
+    *,
+    interval_sec: int = 60,
+    retention_days: int = 7,
+    collect_now: bool = True,
+) -> dict[str, Any]:
+    """Create/bind HF collect tasks from project's monitor template collect_metric_ids."""
     from ..biz_state.collect_runner import dispatch_collect
 
     proj = db.get(BizMigrationProject, project_id)
@@ -596,6 +784,7 @@ def ensure_port_highfreq(
     if not old_tpl or not new_tpl:
         raise HTTPException(status_code=400, detail="old_new_task_required")
 
+    metric_ids = resolve_collect_metric_ids(db, proj)
     iv = max(60, int(interval_sec or 60))
     ret = max(1, int(retention_days or 7))
     old_task, old_created = _ensure_side_highfreq(
@@ -604,8 +793,8 @@ def ensure_port_highfreq(
         project_name=proj.name,
         interval_sec=iv,
         retention_days=ret,
+        metric_ids=metric_ids,
     )
-    # re-load templates after possible commits inside ensure
     new_tpl = db.get(BizStateTask, proj.new_task_id)
     if not new_tpl:
         raise HTTPException(status_code=400, detail="new_task_required")
@@ -615,6 +804,7 @@ def ensure_port_highfreq(
         project_name=proj.name,
         interval_sec=iv,
         retention_days=ret,
+        metric_ids=metric_ids,
     )
 
     proj = db.get(BizMigrationProject, project_id)
@@ -641,6 +831,7 @@ def ensure_port_highfreq(
         "old_created": old_created,
         "new_created": new_created,
         "interval_sec": iv,
+        "collect_metric_ids": metric_ids,
         "collect": collect,
     }
 

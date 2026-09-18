@@ -11,11 +11,11 @@ import {
   bizMigrationCollectNow,
   bizMigrationCreateBatch,
   bizMigrationCreateProject,
-  bizMigrationEnsurePortHighfreq,
+  bizMigrationEnsureHighfreq,
   bizMigrationEvaluate,
   bizMigrationFinishBatch,
   bizMigrationGetBoard,
-  bizMigrationListBaselinePorts,
+  bizMigrationListBaselineExpect,
   bizMigrationListBatches,
   bizMigrationListDiffs,
   bizMigrationListProjects,
@@ -23,6 +23,7 @@ import {
   bizMigrationPatchBatch,
   bizMigrationPatchProject,
   bizMigrationResolveRedTicket,
+  bizMonitorListTemplates,
   bizStateListBatches,
   bizStateListTasks,
   formatErr,
@@ -31,6 +32,13 @@ import { formatSystemTime } from "../../utils/time";
 import { jobChipColor, NmStatusChip } from "./nmChips";
 
 type TaskOpt = { id: string; ne_name: string; ne_ip: string; note?: string; interval_sec?: number };
+type MonitorTplOpt = {
+  id: string;
+  name: string;
+  compare_template_id?: string;
+  compare_template_name?: string;
+  collect_metric_ids?: string[];
+};
 type Project = {
   id: string;
   name: string;
@@ -39,6 +47,8 @@ type Project = {
   old_baseline_batch_id: string;
   new_baseline_batch_id: string;
   mapping_id: string;
+  monitor_template_id?: string;
+  monitor_template?: MonitorTplOpt;
   status: string;
   note?: string;
   created_at?: string | null;
@@ -49,7 +59,7 @@ type MigBatch = {
   id: string;
   batch_label: string;
   status: string;
-  expect_set?: { ports?: string[] };
+  expect_set?: { ports?: string[]; items?: Array<{ metric_id: string; key?: string; keys?: string[] }> };
   accept_status?: string;
   accept_run_id?: string;
   accept_summary?: {
@@ -90,13 +100,18 @@ type DiffRow = {
   old_status?: string;
   new_status?: string;
 };
-type BaselinePort = {
-  interface: string;
-  admin?: string;
-  phy?: string;
-  prot?: string;
-  description?: string;
+type ExpectSheetItem = {
+  key: string;
+  keys: string[];
   mapped_to?: string;
+  label?: string;
+  row?: Record<string, unknown>;
+};
+type ExpectSheet = {
+  metric_id: string;
+  key_fields: string[];
+  iface_fields: string[];
+  items: ExpectSheetItem[];
 };
 
 type DetailTab = "setup" | "batches" | "board";
@@ -147,14 +162,17 @@ export function BizMigrationPage() {
   const [createOldTaskId, setCreateOldTaskId] = useState("");
   const [createNewTaskId, setCreateNewTaskId] = useState("");
   const [createMappingId, setCreateMappingId] = useState("");
+  const [createMonitorTplId, setCreateMonitorTplId] = useState("");
   const [createOldBaselineId, setCreateOldBaselineId] = useState("");
   const [createNewBaselineId, setCreateNewBaselineId] = useState("");
   const [createOldBatches, setCreateOldBatches] = useState<{ id: string; started_at?: string | null }[]>([]);
   const [createNewBatches, setCreateNewBatches] = useState<{ id: string; started_at?: string | null }[]>([]);
+  const [monitorTpls, setMonitorTpls] = useState<MonitorTplOpt[]>([]);
 
   const [projectId, setProjectId] = useState("");
   const [detailTab, setDetailTab] = useState<DetailTab>("setup");
   const [mappingId, setMappingId] = useState("");
+  const [monitorTplId, setMonitorTplId] = useState("");
   const [oldBaselineId, setOldBaselineId] = useState("");
   const [newBaselineId, setNewBaselineId] = useState("");
   const [oldBatches, setOldBatches] = useState<{ id: string; started_at?: string | null }[]>([]);
@@ -174,9 +192,11 @@ export function BizMigrationPage() {
   } | null>(null);
   const [diffs, setDiffs] = useState<DiffRow[]>([]);
   const [onlyExpect, setOnlyExpect] = useState(true);
+  const [boardMetricId, setBoardMetricId] = useState("");
   const [batchLabel, setBatchLabel] = useState("");
-  const [baselinePorts, setBaselinePorts] = useState<BaselinePort[]>([]);
-  const [selectedPorts, setSelectedPorts] = useState<Set<string>>(new Set());
+  const [expectSheets, setExpectSheets] = useState<ExpectSheet[]>([]);
+  const [expectMetricId, setExpectMetricId] = useState("");
+  const [selectedExpectKeys, setSelectedExpectKeys] = useState<Set<string>>(new Set());
   const [portFilter, setPortFilter] = useState("");
   const [redTickets, setRedTickets] = useState<RedTicket[]>([]);
   const [openRedCount, setOpenRedCount] = useState(0);
@@ -188,10 +208,23 @@ export function BizMigrationPage() {
   );
   const batch = useMemo(() => batches.find((b) => b.id === batchId) || null, [batches, batchId]);
   const sheetCards = board?.run?.summary?.sheet_cards || [];
-  const visibleDiffs = useMemo(
-    () => (onlyExpect ? diffs.filter((d) => d.in_expect) : diffs),
-    [diffs, onlyExpect],
-  );
+  const visibleDiffs = useMemo(() => {
+    let rows = diffs;
+    if (boardMetricId) rows = rows.filter((d) => d.metric_id === boardMetricId);
+    if (onlyExpect) rows = rows.filter((d) => d.in_expect);
+    return rows;
+  }, [diffs, onlyExpect, boardMetricId]);
+
+  const boardMetricOptions = useMemo(() => {
+    const ids = new Set<string>();
+    for (const c of sheetCards) {
+      if (c.metric_id) ids.add(c.metric_id);
+    }
+    for (const d of diffs) {
+      if (d.metric_id) ids.add(d.metric_id);
+    }
+    return [...ids];
+  }, [sheetCards, diffs]);
 
   const filteredProjects = useMemo(() => {
     const kw = debouncedListKw.trim().toLowerCase();
@@ -227,33 +260,37 @@ export function BizMigrationPage() {
     }
   }, [batch]);
 
-  const filteredBaselinePorts = useMemo(() => {
+  const filteredExpectItems = useMemo(() => {
+    const sheet = expectSheets.find((s) => s.metric_id === expectMetricId) || expectSheets[0];
+    const items = sheet?.items || [];
     const kw = portFilter.trim().toLowerCase();
-    if (!kw) return baselinePorts;
-    return baselinePorts.filter(
-      (p) =>
-        p.interface.toLowerCase().includes(kw) ||
-        String(p.description || "")
-          .toLowerCase()
-          .includes(kw),
-    );
-  }, [baselinePorts, portFilter]);
+    if (!kw) return items;
+    return items.filter((it) => {
+      const blob = `${it.key} ${it.label || ""} ${JSON.stringify(it.row || {})}`.toLowerCase();
+      return blob.includes(kw);
+    });
+  }, [expectSheets, expectMetricId, portFilter]);
 
   const reloadProjects = useCallback(async () => {
     const res = await bizMigrationListProjects();
     setProjects((res.items || []) as Project[]);
   }, []);
 
-  const loadBaselinePorts = useCallback(async (pid: string) => {
+  const loadBaselineExpect = useCallback(async (pid: string) => {
     if (!pid) {
-      setBaselinePorts([]);
+      setExpectSheets([]);
       return;
     }
     try {
-      const res = await bizMigrationListBaselinePorts(pid);
-      setBaselinePorts(res.ports || []);
+      const res = await bizMigrationListBaselineExpect(pid);
+      const sheets = (res.sheets || []) as ExpectSheet[];
+      setExpectSheets(sheets);
+      setExpectMetricId((prev) => {
+        if (prev && sheets.some((s) => s.metric_id === prev)) return prev;
+        return sheets[0]?.metric_id || "";
+      });
     } catch {
-      setBaselinePorts([]);
+      setExpectSheets([]);
     }
   }, []);
 
@@ -276,10 +313,11 @@ export function BizMigrationPage() {
   useEffect(() => {
     void (async () => {
       try {
-        const [pr, tk, mp] = await Promise.all([
+        const [pr, tk, mp, mt] = await Promise.all([
           bizMigrationListProjects(),
           bizStateListTasks(),
           bizCompareListMappings(),
+          bizMonitorListTemplates(),
         ]);
         setProjects((pr.items || []) as Project[]);
         setTasks(
@@ -297,6 +335,20 @@ export function BizMigrationPage() {
             name: String(x.name || x.id || ""),
           })),
         );
+        const mts = ((mt.items || []) as Record<string, unknown>[]).map((x) => ({
+          id: String(x.id || ""),
+          name: String(x.name || x.id || ""),
+          compare_template_id: String(x.compare_template_id || ""),
+          compare_template_name: String(x.compare_template_name || ""),
+          collect_metric_ids: Array.isArray(x.collect_metric_ids)
+            ? (x.collect_metric_ids as string[])
+            : [],
+        }));
+        setMonitorTpls(mts);
+        if (!createMonitorTplId && mts.length) {
+          const port = mts.find((x) => x.name.includes("端口") || x.name.toLowerCase().includes("port"));
+          setCreateMonitorTplId(port?.id || mts[0].id);
+        }
       } catch (e) {
         showError(formatErr(e));
       }
@@ -321,13 +373,13 @@ export function BizMigrationPage() {
         const items = (res.items || []) as MigBatch[];
         setBatches(items);
         setBatchId((prev) => (items.find((b) => b.id === prev) ? prev : items[0]?.id || ""));
-        await loadBaselinePorts(projectId);
+        await loadBaselineExpect(projectId);
         await loadRedTickets(projectId);
       } catch (e) {
         showError(formatErr(e));
       }
     })();
-  }, [projectId, showError, loadBaselinePorts, loadRedTickets]);
+  }, [projectId, showError, loadBaselineExpect, loadRedTickets]);
 
   useEffect(() => {
     if (!batchId) {
@@ -402,6 +454,7 @@ export function BizMigrationPage() {
   useEffect(() => {
     if (project) {
       setMappingId(project.mapping_id || "");
+      setMonitorTplId(project.monitor_template_id || project.monitor_template?.id || "");
       setOldBaselineId(project.old_baseline_batch_id || "");
       setNewBaselineId(project.new_baseline_batch_id || "");
     }
@@ -430,6 +483,8 @@ export function BizMigrationPage() {
     setCreateMappingId("");
     setCreateOldBaselineId("");
     setCreateNewBaselineId("");
+    const port = monitorTpls.find((x) => x.name.includes("端口") || x.name.toLowerCase().includes("port"));
+    setCreateMonitorTplId(port?.id || monitorTpls[0]?.id || "");
   }
 
   const openCreate = () => {
@@ -446,7 +501,7 @@ export function BizMigrationPage() {
   const openProject = (id: string, tab: DetailTab = "setup") => {
     setProjectId(id);
     setDetailTab(tab);
-    setSelectedPorts(new Set());
+    setSelectedExpectKeys(new Set());
     setPortFilter("");
     setBatchLabel("");
     setOnlyExpect(true);
@@ -469,6 +524,7 @@ export function BizMigrationPage() {
         old_task_id: createOldTaskId,
         new_task_id: createNewTaskId,
         mapping_id: createMappingId || "",
+        monitor_template_id: createMonitorTplId || "",
         old_baseline_batch_id: createOldBaselineId || "",
         new_baseline_batch_id: createNewBaselineId || "",
         status: "active",
@@ -492,9 +548,10 @@ export function BizMigrationPage() {
         old_baseline_batch_id: oldBaselineId || project?.old_baseline_batch_id || "",
         new_baseline_batch_id: newBaselineId || project?.new_baseline_batch_id || "",
         mapping_id: mappingId || project?.mapping_id || "",
+        monitor_template_id: monitorTplId || project?.monitor_template_id || "",
       });
       await reloadProjects();
-      await loadBaselinePorts(projectId);
+      await loadBaselineExpect(projectId);
       showOk(t("bizMigration.baselineSaved"));
     } catch (e) {
       showError(formatErr(e));
@@ -505,8 +562,15 @@ export function BizMigrationPage() {
 
   async function onCreateBatch() {
     if (!projectId) return;
-    const ports = [...selectedPorts];
-    if (!ports.length) {
+    const items: Array<{ metric_id: string; keys: string[] }> = [];
+    const ports: string[] = [];
+    for (const sheet of expectSheets) {
+      const keys = sheet.items.map((it) => it.key).filter((k) => selectedExpectKeys.has(k));
+      if (!keys.length) continue;
+      items.push({ metric_id: sheet.metric_id, keys });
+      if (sheet.metric_id === "interface_brief") ports.push(...keys);
+    }
+    if (!items.length && !ports.length) {
       showError(t("bizMigration.needExpectPorts"));
       return;
     }
@@ -514,14 +578,14 @@ export function BizMigrationPage() {
     try {
       const b = (await bizMigrationCreateBatch(projectId, {
         batch_label: batchLabel.trim() || t("bizMigration.defaultBatchLabel"),
-        expect_set: { ports },
+        expect_set: { ports, items },
         status: "pending",
       })) as MigBatch;
       const res = await bizMigrationListBatches(projectId);
       setBatches((res.items || []) as MigBatch[]);
       setBatchId(b.id);
       setBatchLabel("");
-      setSelectedPorts(new Set());
+      setSelectedExpectKeys(new Set());
       if (Number((b as { open_red_count?: number }).open_red_count || 0) > 0) {
         showOk(
           t("bizMigration.batchCreatedWithRed", {
@@ -606,7 +670,7 @@ export function BizMigrationPage() {
     if (!projectId) return;
     setBusy(true);
     try {
-      await bizMigrationEnsurePortHighfreq(projectId, {
+      await bizMigrationEnsureHighfreq(projectId, {
         interval_sec: 60,
         collect_now: true,
       });
@@ -632,14 +696,24 @@ export function BizMigrationPage() {
     }
   }
 
-  function togglePort(name: string) {
-    setSelectedPorts((prev) => {
+  function toggleExpectKey(key: string) {
+    setSelectedExpectKeys((prev) => {
       const next = new Set(prev);
-      if (next.has(name)) next.delete(name);
-      else next.add(name);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
   }
+
+  const selectedMonitorTpl = useMemo(() => {
+    const id = monitorTplId || project?.monitor_template_id || "";
+    return monitorTpls.find((x) => x.id === id) || project?.monitor_template || null;
+  }, [monitorTplId, monitorTpls, project]);
+
+  const createMonitorTpl = useMemo(
+    () => monitorTpls.find((x) => x.id === createMonitorTplId) || null,
+    [monitorTpls, createMonitorTplId],
+  );
 
   function verdictLabel(v: string) {
     const key = VERDICT_I18N[v];
@@ -856,6 +930,34 @@ export function BizMigrationPage() {
               {t("bizMigration.sectionOptionalHint")}
             </p>
             <FieldSelect
+              label={t("bizMigration.monitorTemplate")}
+              value={createMonitorTplId}
+              onChange={(e) => setCreateMonitorTplId(e.target.value)}
+              fullWidth
+              hint={
+                createMonitorTpl?.compare_template_name
+                  ? t("bizMigration.compareTemplateBound", {
+                      name: createMonitorTpl.compare_template_name,
+                    })
+                  : t("bizMigration.monitorTemplateHint")
+              }
+            >
+              <option value="">{t("bizMigration.optionalNone")}</option>
+              {monitorTpls.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name}
+                </option>
+              ))}
+            </FieldSelect>
+            {createMonitorTpl?.compare_template_id ? (
+              <p className="muted" style={{ margin: 0, fontSize: 12 }}>
+                {t("bizMigration.compareTemplate")}:{" "}
+                <Link to="/network/cutover/compare-templates" onClick={closeCreate}>
+                  {createMonitorTpl.compare_template_name || createMonitorTpl.compare_template_id}
+                </Link>
+              </p>
+            ) : null}
+            <FieldSelect
               label={t("bizMigration.portMapping")}
               value={createMappingId}
               onChange={(e) => setCreateMappingId(e.target.value)}
@@ -1033,6 +1135,32 @@ export function BizMigrationPage() {
                   </div>
 
                   <div className="flex flex-col gap-2">
+                    <strong style={{ fontSize: 13 }}>{t("bizMigration.monitorTemplate")}</strong>
+                    <FieldSelect
+                      value={monitorTplId}
+                      onChange={(e) => setMonitorTplId(e.target.value)}
+                      fullWidth
+                      hint={t("bizMigration.monitorTemplateHint")}
+                    >
+                      <option value="">{t("bizMigration.optionalNone")}</option>
+                      {monitorTpls.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.name}
+                        </option>
+                      ))}
+                    </FieldSelect>
+                    {selectedMonitorTpl?.compare_template_id || selectedMonitorTpl?.compare_template_name ? (
+                      <p className="muted" style={{ margin: 0, fontSize: 12 }}>
+                        {t("bizMigration.compareTemplate")}:{" "}
+                        <Link to="/network/cutover/compare-templates">
+                          {selectedMonitorTpl.compare_template_name ||
+                            selectedMonitorTpl.compare_template_id}
+                        </Link>
+                      </p>
+                    ) : null}
+                  </div>
+
+                  <div className="flex flex-col gap-2">
                     <strong style={{ fontSize: 13 }}>{t("bizMigration.portMapping")}</strong>
                     <FieldSelect
                       value={mappingId}
@@ -1095,8 +1223,28 @@ export function BizMigrationPage() {
                 <div className="flex flex-col gap-3">
                   <div>
                     <div style={{ fontWeight: 600, marginBottom: 6 }}>
-                      {t("bizMigration.pickExpectPorts")} ({selectedPorts.size})
+                      {t("bizMigration.pickExpectPorts")} ({selectedExpectKeys.size})
                     </div>
+                    {expectSheets.length > 1 ? (
+                      <div className="btn-row" style={{ flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+                        {expectSheets.map((s) => (
+                          <Button
+                            key={s.metric_id}
+                            size="sm"
+                            variant={
+                              (expectMetricId || expectSheets[0]?.metric_id) === s.metric_id
+                                ? "primary"
+                                : "secondary"
+                            }
+                            onPress={() => {
+                              setExpectMetricId(s.metric_id);
+                            }}
+                          >
+                            {s.metric_id} ({s.items.length})
+                          </Button>
+                        ))}
+                      </div>
+                    ) : null}
                     <div className="filter-inline" style={{ marginBottom: 8 }}>
                       <Input
                         size="sm"
@@ -1115,39 +1263,51 @@ export function BizMigrationPage() {
                         <thead>
                           <tr>
                             <th style={{ width: 36 }} />
-                            <th>{t("bizMigration.colPort")}</th>
-                            <th>admin/phy/prot</th>
+                            <th>{t("bizMigration.colKey")}</th>
                             <th>{t("bizMigration.colMapped")}</th>
                             <th>{t("bizMigration.colDesc")}</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {filteredBaselinePorts.map((p) => (
-                            <tr
-                              key={p.interface}
-                              onClick={() => togglePort(p.interface)}
-                              style={{ cursor: "pointer" }}
-                            >
-                              <td>
-                                <input
-                                  type="checkbox"
-                                  checked={selectedPorts.has(p.interface)}
-                                  onChange={() => togglePort(p.interface)}
-                                />
-                              </td>
-                              <td>{p.interface}</td>
-                              <td>
-                                {p.admin || "-"}/{p.phy || "-"}/{p.prot || "-"}
-                              </td>
-                              <td>{p.mapped_to || "—"}</td>
-                              <td style={{ maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis" }}>
-                                {p.description || ""}
-                              </td>
-                            </tr>
-                          ))}
-                          {!filteredBaselinePorts.length ? (
+                          {filteredExpectItems.map((it) => {
+                            const row = it.row || {};
+                            const statusBits = ["admin", "phy", "prot"]
+                              .map((k) => (row[k] != null ? String(row[k]) : ""))
+                              .filter(Boolean);
+                            const desc =
+                              it.label ||
+                              String(row.description || row.desc || row.peer || row.neighbor || "") ||
+                              (statusBits.length ? statusBits.join("/") : "");
+                            return (
+                              <tr
+                                key={it.key}
+                                onClick={() => toggleExpectKey(it.key)}
+                                style={{ cursor: "pointer" }}
+                              >
+                                <td>
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedExpectKeys.has(it.key)}
+                                    onChange={() => toggleExpectKey(it.key)}
+                                  />
+                                </td>
+                                <td>{it.key}</td>
+                                <td>{it.mapped_to || "—"}</td>
+                                <td
+                                  style={{
+                                    maxWidth: 220,
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                  }}
+                                >
+                                  {desc}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                          {!filteredExpectItems.length ? (
                             <tr>
-                              <td colSpan={5}>
+                              <td colSpan={4}>
                                 <div className="pt-list-empty">{t("bizMigration.emptyBaselinePorts")}</div>
                               </td>
                             </tr>
@@ -1226,6 +1386,21 @@ export function BizMigrationPage() {
                     <Button size="sm" variant="primary" isDisabled={busy || !batchId} onPress={() => void onEvaluate()}>
                       {t("bizMigration.evaluate")}
                     </Button>
+                    {boardMetricOptions.length > 1 ? (
+                      <FieldSelect
+                        label={t("bizMigration.colMetric")}
+                        value={boardMetricId}
+                        onChange={(e) => setBoardMetricId(e.target.value)}
+                        aria-label={t("bizMigration.colMetric")}
+                      >
+                        <option value="">{t("bizMigration.allMetrics")}</option>
+                        {boardMetricOptions.map((mid) => (
+                          <option key={mid} value={mid}>
+                            {mid}
+                          </option>
+                        ))}
+                      </FieldSelect>
+                    ) : null}
                     <label className="config-sync-policy-check">
                       <input
                         type="checkbox"
@@ -1310,43 +1485,66 @@ export function BizMigrationPage() {
 
                   {board?.run ? (
                     <div className="flex flex-col gap-2">
-                      <strong>
-                        {t("bizMigration.board")} · {t("bizMigration.metricPort")}
-                      </strong>
-                      <div style={{ display: "flex", gap: 24, fontVariantNumeric: "tabular-nums", flexWrap: "wrap" }}>
-                        <div>
-                          {t("bizMigration.progress")}:{" "}
-                          <b>
-                            {board.run.summary?.progress?.ok ?? 0}/{board.run.summary?.progress?.total ?? 0}
-                          </b>
+                      <strong>{t("bizMigration.board")}</strong>
+                      {sheetCards.length ? (
+                        <div style={{ display: "flex", gap: 16, flexWrap: "wrap", fontVariantNumeric: "tabular-nums" }}>
+                          {sheetCards.map((c) => (
+                            <div
+                              key={c.metric_id}
+                              style={{
+                                minWidth: 140,
+                                cursor: "pointer",
+                                opacity: !boardMetricId || boardMetricId === c.metric_id ? 1 : 0.55,
+                              }}
+                              onClick={() =>
+                                setBoardMetricId((prev) => (prev === c.metric_id ? "" : c.metric_id))
+                              }
+                            >
+                              <div className="muted" style={{ fontSize: 12 }}>
+                                {c.title || c.metric_id}
+                              </div>
+                              <div>
+                                {t("bizMigration.progress")}: {c.progress_ok}/{c.progress_total}
+                              </div>
+                              <div style={{ color: COLOR.red }}>
+                                {t("bizMigration.anomaly")}: {c.anomaly}
+                              </div>
+                            </div>
+                          ))}
                         </div>
-                        <div style={{ color: COLOR.red }}>
-                          {t("bizMigration.anomaly")}: <b>{board.run.summary?.anomaly ?? 0}</b>
-                        </div>
-                        {sheetCards[0] ? (
-                          <div className="muted" style={{ fontSize: 12 }}>
-                            {sheetCards[0].title || sheetCards[0].metric_id}
+                      ) : (
+                        <div style={{ display: "flex", gap: 24, fontVariantNumeric: "tabular-nums", flexWrap: "wrap" }}>
+                          <div>
+                            {t("bizMigration.progress")}:{" "}
+                            <b>
+                              {board.run.summary?.progress?.ok ?? 0}/{board.run.summary?.progress?.total ?? 0}
+                            </b>
                           </div>
-                        ) : null}
-                      </div>
+                          <div style={{ color: COLOR.red }}>
+                            {t("bizMigration.anomaly")}: <b>{board.run.summary?.anomaly ?? 0}</b>
+                          </div>
+                        </div>
+                      )}
                       <div className="pt-list-table-wrap">
                         <table className="data-table pt-list-table">
                           <thead>
                             <tr>
-                              <th>{t("bizMigration.colOldPort")}</th>
-                              <th>{t("bizMigration.colNewPort")}</th>
-                              <th>{t("bizMigration.colOldStatus")}</th>
-                              <th>{t("bizMigration.colNewStatus")}</th>
+                              <th>{t("bizMigration.colMetric")}</th>
+                              <th>{t("bizMigration.colKey")}</th>
+                              <th>{t("bizMigration.colMapped")}</th>
+                              <th>{t("bizMigration.colOld")}</th>
+                              <th>{t("bizMigration.colNew")}</th>
                               <th>{t("bizMigration.colVerdict")}</th>
                             </tr>
                           </thead>
                           <tbody>
                             {visibleDiffs.map((d) => (
                               <tr key={d.id}>
+                                <td>{d.metric_id || "—"}</td>
                                 <td>{d.key_str || "—"}</td>
                                 <td>{d.new_key_str || "—"}</td>
-                                <td>{d.old_status || "—"}</td>
-                                <td>{d.new_status || "—"}</td>
+                                <td>{d.old_status || d.old_kind || "—"}</td>
+                                <td>{d.new_status || d.new_kind || "—"}</td>
                                 <td style={{ color: COLOR[d.color] || COLOR.gray, fontWeight: 600 }}>
                                   {verdictLabel(d.verdict)}
                                 </td>
@@ -1354,7 +1552,7 @@ export function BizMigrationPage() {
                             ))}
                             {!visibleDiffs.length ? (
                               <tr>
-                                <td colSpan={5}>
+                                <td colSpan={6}>
                                   <div className="pt-list-empty">{t("bizMigration.emptyDiffs")}</div>
                                 </td>
                               </tr>

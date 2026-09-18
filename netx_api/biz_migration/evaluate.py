@@ -24,6 +24,39 @@ def port_status_label(row: dict[str, Any] | None) -> str:
     return "/".join(parts)
 
 
+def status_label(row: dict[str, Any] | None, sheet_override: dict[str, Any] | None = None) -> str:
+    """Human status for board; uses sheet_override.status_fields when set."""
+    ov = sheet_override or {}
+    fields = [str(f) for f in (ov.get("status_fields") or []) if str(f).strip()]
+    if not fields:
+        return port_status_label(row)
+    if not row:
+        return "—"
+    parts = [str(row.get(f) or "-").lower() for f in fields]
+    if all(p == "-" for p in parts):
+        return "—"
+    return "/".join(parts)
+
+
+def classify_status(row: dict[str, Any] | None, sheet_override: dict[str, Any] | None) -> str:
+    """Classify current row as up|down|other|none from sheet_override status semantics."""
+    ov = sheet_override or {}
+    fields = [str(f) for f in (ov.get("status_fields") or []) if str(f).strip()]
+    if not fields or not row:
+        return "none"
+    down_vals = {str(x).lower() for x in (ov.get("down_values") or ["down"])}
+    up_vals = {str(x).lower() for x in (ov.get("up_values") or ["up"])}
+    vals = [str(row.get(f) or "").strip().lower() for f in fields]
+    vals = [v for v in vals if v]
+    if not vals:
+        return "none"
+    if any(v in down_vals for v in vals):
+        return "down"
+    if vals and all(v in up_vals for v in vals):
+        return "up"
+    return "other"
+
+
 def parse_expect_set(raw: dict[str, Any] | None) -> dict[str, set[str]]:
     """Return metric_id → set of key strings (old-side / before-map identity).
 
@@ -86,6 +119,34 @@ def side_verdict(
     return "ok", "gray"
 
 
+def _side_tokens(kind: str, status: str) -> set[str]:
+    toks: set[str] = set()
+    k = str(kind or "").strip()
+    if k:
+        toks.add(k)
+    s = str(status or "").strip()
+    if s and s != "none":
+        toks.add(s)
+    return toks
+
+
+def _match_success(
+    old_tokens: set[str],
+    new_tokens: set[str],
+    success_patterns: list[dict[str, Any]] | None,
+) -> bool:
+    for pat in success_patterns or []:
+        if not isinstance(pat, dict):
+            continue
+        old_need = {str(x) for x in (pat.get("old") or []) if str(x)}
+        new_need = {str(x) for x in (pat.get("new") or []) if str(x)}
+        if not old_need or not new_need:
+            continue
+        if (old_need & old_tokens) and (new_need & new_tokens):
+            return True
+    return False
+
+
 def dual_verdict(
     *,
     old_kind: str,
@@ -93,12 +154,25 @@ def dual_verdict(
     in_expect: bool,
     window_active: bool,
     acceptance: bool = False,
+    old_status: str = "none",
+    new_status: str = "none",
+    success_patterns: list[dict[str, Any]] | None = None,
 ) -> tuple[str, str]:
     """Synthesize old+new into migration board verdict.
 
     ``acceptance=True`` (本批完成终验): unfinished expect items become red
     (``unfinished`` / ``lost``), not yellow migrating.
+
+    When ``success_patterns`` is set (from monitor sheet_overrides), tokens may
+    include kinds and status classes (up/down) so e.g. old down + new up → migrated.
     """
+    if in_expect and _match_success(
+        _side_tokens(old_kind, old_status),
+        _side_tokens(new_kind, new_status),
+        success_patterns,
+    ):
+        return "migrated", "green"
+
     if not in_expect:
         if old_kind in ("removed", "changed") or new_kind in ("removed", "changed"):
             if old_kind == "removed" and new_kind in ("", "removed"):
@@ -179,6 +253,17 @@ def _current_row(diff: dict[str, Any] | None) -> dict[str, Any]:
     return dict(diff.get("after") or {})
 
 
+def override_for_metric(
+    sheet_overrides: list[dict[str, Any]] | None,
+    metric_id: str,
+) -> dict[str, Any]:
+    mid = str(metric_id or "").strip()
+    for ov in sheet_overrides or []:
+        if isinstance(ov, dict) and str(ov.get("metric_id") or "").strip() == mid:
+            return ov
+    return {}
+
+
 def evaluate_metric_dual(
     *,
     metric_id: str,
@@ -193,9 +278,13 @@ def evaluate_metric_dual(
     expect: dict[str, set[str]],
     window_active: bool,
     acceptance: bool = False,
+    field_rules: list[dict[str, Any]] | None = None,
+    sheet_override: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run old vs old-baseline, new vs new-baseline (or mapped old baseline), dual merge."""
     expect_keys = expect_keys_for_metric(expect, metric_id=metric_id, iface_fields=iface_fields)
+    ov = sheet_override or {}
+    success_patterns = list(ov.get("success") or []) if isinstance(ov.get("success"), list) else []
 
     old_cmp = compare_rows(
         before_rows=old_baseline_rows,
@@ -204,6 +293,7 @@ def evaluate_metric_dual(
         iface_fields=[],
         compare_fields=compare_fields,
         port_map=None,
+        field_rules=field_rules,
     )
     old_idx = build_diff_index_from_compare(old_cmp)
 
@@ -224,6 +314,7 @@ def evaluate_metric_dual(
         iface_fields=[],
         compare_fields=compare_fields,
         port_map=None,
+        field_rules=field_rules,
     )
     new_idx = build_diff_index_from_compare(new_cmp)
 
@@ -267,20 +358,25 @@ def evaluate_metric_dual(
         if nd is None:
             new_kind = ""
 
+        old_cur = _current_row(od)
+        new_cur = _current_row(nd)
+        old_st = classify_status(old_cur, ov)
+        new_st = classify_status(new_cur, ov)
+
         verdict, color = dual_verdict(
             old_kind=old_kind or "",
             new_kind=new_kind or "",
             in_expect=in_exp,
             window_active=window_active,
             acceptance=acceptance,
+            old_status=old_st,
+            new_status=new_st,
+            success_patterns=success_patterns or None,
         )
         if in_exp and verdict == "migrated" and color == "green":
             progress_ok += 1
         if color == "red":
             anomaly += 1
-
-        old_cur = _current_row(od)
-        new_cur = _current_row(nd)
 
         rows_out.append(
             {
@@ -297,10 +393,10 @@ def evaluate_metric_dual(
                 "new": new_cur,
                 "old_baseline": dict((od or {}).get("before") or {}),
                 "new_baseline": dict((nd or {}).get("before") or {}),
-                "old_status": port_status_label(old_cur)
+                "old_status": status_label(old_cur, ov)
                 if old_cur
                 else ("gone" if old_kind == "removed" else "—"),
-                "new_status": port_status_label(new_cur)
+                "new_status": status_label(new_cur, ov)
                 if new_cur
                 else ("gone" if new_kind == "removed" else "—"),
                 "old_side": side_verdict(

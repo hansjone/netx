@@ -2016,14 +2016,36 @@ export const bizMigrationListBaselinePorts = (projectId: string) =>
     }[];
   }>(`/v1/biz-migration/projects/${encodeURIComponent(projectId)}/baseline-ports`);
 
-export const bizMigrationEnsurePortHighfreq = (
+export const bizMigrationListBaselineExpect = (projectId: string) =>
+  apiGet<{
+    batch_id: string;
+    monitor_template_id?: string;
+    sheets: Array<{
+      metric_id: string;
+      key_fields: string[];
+      iface_fields: string[];
+      items: Array<{
+        key: string;
+        keys: string[];
+        mapped_to?: string;
+        label?: string;
+        row?: Record<string, unknown>;
+      }>;
+    }>;
+    mapped?: Record<string, string>;
+  }>(`/v1/biz-migration/projects/${encodeURIComponent(projectId)}/baseline-expect`);
+
+export const bizMigrationEnsureHighfreq = (
   projectId: string,
   body: { interval_sec?: number; retention_days?: number; collect_now?: boolean } = {},
 ) =>
   apiPost<Record<string, unknown>>(
-    `/v1/biz-migration/projects/${encodeURIComponent(projectId)}/ensure-port-highfreq`,
+    `/v1/biz-migration/projects/${encodeURIComponent(projectId)}/ensure-highfreq`,
     body,
   );
+
+/** @deprecated use bizMigrationEnsureHighfreq */
+export const bizMigrationEnsurePortHighfreq = bizMigrationEnsureHighfreq;
 
 export const bizMigrationCollectNow = (projectId: string) =>
   apiPost<Record<string, unknown>>(

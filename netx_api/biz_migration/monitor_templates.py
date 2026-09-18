@@ -123,6 +123,27 @@ def ensure_default_monitor_templates(db: Session) -> None:
     db.commit()
 
 
+def default_port_monitor_template_id(db: Session) -> str:
+    """Ensure seeds exist and return id of 「端口割接监控」 (or first template)."""
+    ensure_default_monitor_templates(db)
+    row = (
+        db.query(BizMonitorTemplate)
+        .filter(BizMonitorTemplate.name == "端口割接监控")
+        .one_or_none()
+    )
+    if row:
+        return row.id
+    first = db.query(BizMonitorTemplate).order_by(BizMonitorTemplate.created_at.asc()).first()
+    return first.id if first else ""
+
+
+def get_monitor_template_row(db: Session, template_id: str) -> BizMonitorTemplate | None:
+    tid = str(template_id or "").strip()
+    if not tid:
+        return None
+    return db.get(BizMonitorTemplate, tid)
+
+
 def list_monitor_templates(db: Session) -> list[dict[str, Any]]:
     ensure_default_monitor_templates(db)
     names = _compare_name_map(db)

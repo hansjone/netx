@@ -22,6 +22,7 @@ class ProjectIn(BaseModel):
     old_baseline_batch_id: str = ""
     new_baseline_batch_id: str = ""
     mapping_id: str = ""
+    monitor_template_id: str = ""
     status: str = "draft"
     note: str = ""
 
@@ -31,6 +32,7 @@ class ProjectPatchIn(BaseModel):
     old_baseline_batch_id: str | None = None
     new_baseline_batch_id: str | None = None
     mapping_id: str | None = None
+    monitor_template_id: str | None = None
     status: str | None = None
     note: str | None = None
 
@@ -103,6 +105,12 @@ def api_baseline_ports(project_id: str, db: Session = Depends(get_db)):
     return svc.list_baseline_ports(db, project_id)
 
 
+@router.get("/projects/{project_id}/baseline-expect")
+def api_baseline_expect(project_id: str, db: Session = Depends(get_db)):
+    """Multi-metric baseline keys for expect-set picking (from monitor template sheets)."""
+    return svc.list_baseline_expect_objects(db, project_id)
+
+
 class EnsureHighfreqIn(BaseModel):
     interval_sec: int = 60
     retention_days: int = 7
@@ -110,14 +118,15 @@ class EnsureHighfreqIn(BaseModel):
 
 
 @router.post("/projects/{project_id}/ensure-port-highfreq")
+@router.post("/projects/{project_id}/ensure-highfreq")
 def api_ensure_port_highfreq(
     project_id: str,
     body: EnsureHighfreqIn | None = None,
     db: Session = Depends(get_db),
 ):
-    """Create/bind biz_state high-freq interface_brief tasks for old/new NEs."""
+    """Create/bind HF biz_state tasks from monitor template collect_metric_ids."""
     payload = body.model_dump() if body else {}
-    return svc.ensure_port_highfreq(
+    return svc.ensure_highfreq(
         db,
         project_id,
         interval_sec=int(payload.get("interval_sec") or 60),
