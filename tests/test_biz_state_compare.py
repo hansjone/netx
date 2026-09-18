@@ -303,7 +303,7 @@ class CompareDiffPagingTests(unittest.TestCase):
             },
         ]
         only_diff = _filter_inline_diffs(diffs, kind="diff", kw="")
-        self.assertEqual({d["kind"] for d in only_diff}, {"added", "removed", "changed"})
+        self.assertEqual({d["kind"] for d in only_diff}, {"removed", "changed"})
         only_added = _filter_inline_diffs(diffs, kind="added", kw="")
         self.assertEqual(len(only_added), 1)
         hit = _filter_inline_diffs(diffs, kind="all", kw='"p":"4"')

@@ -795,15 +795,49 @@ export function BizComparePage() {
     return kind;
   };
 
-  const verdictLabel = (kind: string) => {
-    if (kind === "unchanged") return t("bizCompare.kindPass");
-    return t("bizCompare.kindFail");
+  /** Table verdict: fail = missing+mismatch; success = match; added is special. */
+  const rowVerdict = (kind: string): { label: string; tone: "fail" | "pass" | "added" } => {
+    if (kind === "added") return { label: t("bizCompare.kindAddedShort"), tone: "added" };
+    if (kind === "unchanged") return { label: t("bizCompare.kindSuccess"), tone: "pass" };
+    return { label: t("bizCompare.kindFail"), tone: "fail" };
   };
 
   const failFieldsLabel = (d: DiffRow) => {
-    if (d.kind === "added" || d.kind === "removed") return t("bizCompare.failWholeRow");
+    if (d.kind === "added") return t("bizCompare.kindAddedShort");
+    if (d.kind === "removed") return t("bizCompare.failWholeRow");
     const names = failFieldNames(d);
     return names.length ? names.join(" · ") : t("bizCompare.failFieldsEmpty");
+  };
+
+  const sheetFailOf = (c: {
+    fail_count?: number;
+    diff_count?: number;
+    removed?: number;
+    changed?: number;
+  }) =>
+    Number(
+      c.fail_count ??
+        c.diff_count ??
+        Number(c.removed || 0) + Number(c.changed || 0),
+    );
+
+  const sheetSuccessOf = (c: { success_count?: number; unchanged?: number }) =>
+    Number(c.success_count ?? c.unchanged ?? 0);
+
+  const sheetPassRateOf = (c: {
+    pass_rate?: number;
+    fail_count?: number;
+    diff_count?: number;
+    removed?: number;
+    changed?: number;
+    success_count?: number;
+    unchanged?: number;
+  }) => {
+    if (c.pass_rate !== undefined && c.pass_rate !== null) return Number(c.pass_rate);
+    const fail = sheetFailOf(c);
+    const ok = sheetSuccessOf(c);
+    const judged = fail + ok;
+    return judged ? Math.round((ok / judged) * 1000) / 10 : 100;
   };
 
   const summary = runDetail?.summary || {};
@@ -818,20 +852,25 @@ export function BizComparePage() {
       unchanged?: number;
       before_count?: number;
       after_count?: number;
+      fail_count?: number;
+      success_count?: number;
       diff_count?: number;
       pass_rate?: number;
     }>;
-    // Diffs first so ops can scan quickly when many sheets
+    // Failures first so ops can scan quickly when many sheets
     return [...raw].sort((a, b) => {
-      const da = Number(a.diff_count || 0);
-      const db = Number(b.diff_count || 0);
+      const da = sheetFailOf(a);
+      const db = sheetFailOf(b);
       if (da !== db) return db - da;
       return String(a.metric_id).localeCompare(String(b.metric_id));
     });
   }, [summary.sheet_cards]);
-  const sheetFailCount = sheetCards.filter((c) => Number(c.diff_count || 0) > 0).length;
+  const sheetFailCount = sheetCards.filter((c) => sheetFailOf(c) > 0).length;
   const activeSheetCard = sheetCards.find((c) => c.metric_id === resultSheetId) || sheetCards[0];
-
+  const activeFail = sheetFailOf(activeSheetCard || {});
+  const activeSuccess = sheetSuccessOf(activeSheetCard || {});
+  const activePassRate = sheetPassRateOf(activeSheetCard || {});
+  const activeAdded = Number(activeSheetCard?.added || 0);
   useEffect(() => {
     const syncFs = () => {
       const el = boardRef.current;
@@ -2247,51 +2286,55 @@ export function BizComparePage() {
                       </div>
                       <div className="bs-cmp-nav__legend" aria-hidden>
                         <span
-                          className="bs-cmp-nav__num bs-cmp-nav__num--removed is-hot"
-                          title={t("bizCompare.missCount")}
+                          className="bs-cmp-nav__num bs-cmp-nav__num--fail is-hot"
+                          title={t("bizCompare.kindFail")}
                         >
-                          -
+                          {t("bizCompare.kindFail")}
                         </span>
                         <span
-                          className="bs-cmp-nav__num bs-cmp-nav__num--added is-hot"
-                          title={t("bizCompare.extraCount")}
+                          className="bs-cmp-nav__num bs-cmp-nav__num--ok is-hot"
+                          title={t("bizCompare.kindSuccess")}
                         >
-                          +
+                          {t("bizCompare.kindSuccess")}
                         </span>
                         <span
-                          className="bs-cmp-nav__num bs-cmp-nav__num--changed is-hot"
-                          title={t("bizCompare.mismatchCount")}
+                          className="bs-cmp-nav__num bs-cmp-nav__num--rate"
+                          title={t("bizCompare.passRateShort")}
                         >
-                          ~
-                        </span>
-                        <span
-                          className="bs-cmp-nav__num bs-cmp-nav__num--unchanged"
-                          title={t("bizCompare.matchCount")}
-                        >
-                          =
+                          %
                         </span>
                       </div>
                     </div>
                     <div className="bs-cmp-nav__list" role="tablist">
                       {(sheetCards.length
                         ? sheetCards
-                        : runSheets.map((s) => ({
-                            metric_id: s.metric_id,
-                            mode: s.mode,
-                            added: s.summary?.added,
-                            removed: s.summary?.removed,
-                            changed: s.summary?.changed,
-                            unchanged: s.summary?.unchanged,
-                            before_count: s.summary?.before_count,
-                            after_count: s.summary?.after_count,
-                            diff_count:
-                              Number(s.summary?.added || 0) +
-                              Number(s.summary?.removed || 0) +
-                              Number(s.summary?.changed || 0),
-                            pass_rate: s.summary?.pass_rate,
-                          }))
+                        : runSheets.map((s) => {
+                            const removed = Number(s.summary?.removed || 0);
+                            const changed = Number(s.summary?.changed || 0);
+                            const unchanged = Number(s.summary?.unchanged || 0);
+                            const fail = removed + changed;
+                            const judged = fail + unchanged;
+                            return {
+                              metric_id: s.metric_id,
+                              mode: s.mode,
+                              added: s.summary?.added,
+                              removed,
+                              changed,
+                              unchanged,
+                              before_count: s.summary?.before_count,
+                              after_count: s.summary?.after_count,
+                              fail_count: fail,
+                              success_count: unchanged,
+                              diff_count: fail,
+                              pass_rate: judged
+                                ? Math.round((unchanged / judged) * 1000) / 10
+                                : 100,
+                            };
+                          })
                       ).map((c) => {
-                        const dirty = Number(c.diff_count || 0);
+                        const fail = sheetFailOf(c);
+                        const ok = sheetSuccessOf(c);
+                        const rate = sheetPassRateOf(c);
                         const active = resultSheetId === c.metric_id;
                         return (
                           <button
@@ -2300,40 +2343,26 @@ export function BizComparePage() {
                             role="tab"
                             aria-selected={active}
                             className={`bs-cmp-nav__item${active ? " is-active" : ""}${
-                              dirty > 0 ? " has-diff" : " is-clean"
+                              fail > 0 ? " has-diff" : " is-clean"
                             }`}
                             onClick={() => setResultSheetId(c.metric_id)}
-                            title={c.metric_id}
+                            title={`${c.metric_id} · ${t("bizCompare.kindFail")} ${fail} · ${t("bizCompare.kindSuccess")} ${ok} · ${t("bizCompare.passRateShort")} ${rate}%`}
                           >
                             <span className="bs-cmp-nav__dot" aria-hidden />
                             <span className="bs-cmp-nav__name">{c.metric_id}</span>
-                            <span
-                              className="bs-cmp-nav__stats"
-                              title={`${t("bizCompare.missCount")} ${Number(c.removed || 0)} · ${t("bizCompare.extraCount")} ${Number(c.added || 0)} · ${t("bizCompare.mismatchCount")} ${Number(c.changed || 0)} · ${t("bizCompare.matchCount")} ${Number(c.unchanged || 0)}`}
-                            >
+                            <span className="bs-cmp-nav__stats">
                               <span
-                                className={`bs-cmp-nav__num bs-cmp-nav__num--removed${
-                                  Number(c.removed || 0) > 0 ? " is-hot" : ""
+                                className={`bs-cmp-nav__num bs-cmp-nav__num--fail${
+                                  fail > 0 ? " is-hot" : ""
                                 }`}
                               >
-                                {Number(c.removed || 0)}
+                                {fail}
                               </span>
-                              <span
-                                className={`bs-cmp-nav__num bs-cmp-nav__num--added${
-                                  Number(c.added || 0) > 0 ? " is-hot" : ""
-                                }`}
-                              >
-                                {Number(c.added || 0)}
+                              <span className="bs-cmp-nav__num bs-cmp-nav__num--ok is-hot">
+                                {ok}
                               </span>
-                              <span
-                                className={`bs-cmp-nav__num bs-cmp-nav__num--changed${
-                                  Number(c.changed || 0) > 0 ? " is-hot" : ""
-                                }`}
-                              >
-                                {Number(c.changed || 0)}
-                              </span>
-                              <span className="bs-cmp-nav__num bs-cmp-nav__num--unchanged">
-                                {Number(c.unchanged || 0)}
+                              <span className="bs-cmp-nav__num bs-cmp-nav__num--rate">
+                                {rate}%
                               </span>
                             </span>
                           </button>
@@ -2344,9 +2373,7 @@ export function BizComparePage() {
 
                   <div className="bs-cmp-main">
                     <div
-                      className={`bs-cmp-strip${
-                        Number(activeSheetCard?.diff_count || 0) > 0 ? " is-warn" : " is-ok"
-                      }`}
+                      className={`bs-cmp-strip${activeFail > 0 ? " is-warn" : " is-ok"}`}
                     >
                       <div className="bs-cmp-strip__sheet">
                         <span className="bs-cmp-strip__sheet-tag">
@@ -2359,9 +2386,8 @@ export function BizComparePage() {
                           {activeSheetCard?.metric_id || "—"}
                         </strong>
                         <span className="muted bs-cmp-strip__sheet-mode">
-                          {Number(activeSheetCard?.diff_count || 0) > 0
-                            ? t("bizCompare.kindFail")
-                            : t("bizCompare.kindPass")}
+                          {activeFail > 0 ? t("bizCompare.kindFail") : t("bizCompare.kindPass")}
+                          {` · ${t("bizCompare.passRateShort")} ${activePassRate}%`}
                           {activeSheetCard?.mode === "presence"
                             ? ` · ${t("bizCompare.presenceShort")}`
                             : ""}
@@ -2370,11 +2396,9 @@ export function BizComparePage() {
                       <div className="bs-cmp-strip__kinds" role="group">
                         {(
                           [
-                            ["diff", Number(activeSheetCard?.diff_count || 0), "diff"],
-                            ["removed", activeSheetCard?.removed ?? 0, "removed"],
-                            ["added", activeSheetCard?.added ?? 0, "added"],
-                            ["changed", activeSheetCard?.changed ?? 0, "changed"],
-                            ["unchanged", activeSheetCard?.unchanged ?? 0, "unchanged"],
+                            ["diff", activeFail, "diff"],
+                            ["added", activeAdded, "added"],
+                            ["unchanged", activeSuccess, "unchanged"],
                             ["all", null, "all"],
                           ] as const
                         ).map(([id, n, cls]) => (
@@ -2390,7 +2414,9 @@ export function BizComparePage() {
                               ? t("bizCompare.kindDiff")
                               : id === "all"
                                 ? t("bizCompare.kindAll")
-                                : kindLabel(id)}
+                                : id === "added"
+                                  ? t("bizCompare.kindAddedShort")
+                                  : t("bizCompare.kindSuccess")}
                             {n !== null ? (
                               <>
                                 {" "}
@@ -2473,23 +2499,24 @@ export function BizComparePage() {
                             const post = pickSideRow(
                               d.after as Record<string, unknown> | null | undefined,
                             );
-                            const isFail = d.kind !== "unchanged";
+                            const verdict = rowVerdict(d.kind);
+                            const isFail = verdict.tone === "fail";
                             return (
                               <tr key={i} className={`bs-cmp-row bs-cmp-row--${d.kind}`}>
                                 <td className="bs-cmp-col-kind">
-                                  <span
-                                    className={`bs-cmp-badge bs-cmp-badge--${
-                                      isFail ? "fail" : "pass"
-                                    }`}
-                                  >
-                                    {verdictLabel(d.kind)}
+                                  <span className={`bs-cmp-badge bs-cmp-badge--${verdict.tone}`}>
+                                    {verdict.label}
                                   </span>
-                                  <span className={`bs-cmp-badge bs-cmp-badge--${d.kind}`}>
-                                    {kindLabel(d.kind)}
-                                  </span>
+                                  {isFail ? (
+                                    <span className={`bs-cmp-badge bs-cmp-badge--${d.kind}`}>
+                                      {kindLabel(d.kind)}
+                                    </span>
+                                  ) : null}
                                 </td>
                                 <td className="bs-cmp-fail-cell">
-                                  {isFail ? failFieldsLabel(d) : t("bizCompare.failFieldsEmpty")}
+                                  {verdict.tone === "pass"
+                                    ? t("bizCompare.failFieldsEmpty")
+                                    : failFieldsLabel(d)}
                                 </td>
                                 {resultColumns.keys.map((k) => (
                                   <td key={k} className="bs-cmp-key-cell">

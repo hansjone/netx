@@ -205,7 +205,8 @@ def _filter_inline_diffs(
     for d in diffs:
         dk = str(d.get("kind") or "")
         if kind_n == "diff":
-            if dk == "unchanged":
+            # Fail = missing + mismatch; added is a special bucket
+            if dk not in ("removed", "changed"):
                 continue
         elif kind_n != "all" and dk != kind_n:
             continue
@@ -1328,10 +1329,16 @@ def _enrich_summary(summary: dict[str, Any], sheets: list[dict[str, Any]]) -> di
     before_count = int(summary.get("before_count") or 0)
     after_count = int(summary.get("after_count") or 0)
     total = added + removed + changed + unchanged
+    # Compare verdict: fail = missing + mismatch; success = match; added is special
+    fail_count = removed + changed
+    success_count = unchanged
+    judged = fail_count + success_count
     matched = changed + unchanged
-    diff_count = added + removed + changed
-    pass_rate = round((unchanged / matched) * 100, 1) if matched else (100.0 if total == 0 else 0.0)
-    diff_rate = round((diff_count / total) * 100, 1) if total else 0.0
+    diff_count = fail_count
+    pass_rate = (
+        round((success_count / judged) * 100, 1) if judged else (100.0 if total == 0 else 0.0)
+    )
+    diff_rate = round((fail_count / judged) * 100, 1) if judged else 0.0
 
     sheet_cards: list[dict[str, Any]] = []
     for sh in sheets:
@@ -1341,7 +1348,8 @@ def _enrich_summary(summary: dict[str, Any], sheets: list[dict[str, Any]]) -> di
         sc = int(ss.get("changed") or 0)
         su = int(ss.get("unchanged") or 0)
         st = sa + sr + sc + su
-        sm = sc + su
+        sf = sr + sc
+        sj = sf + su
         sheet_cards.append(
             {
                 "metric_id": sh.get("metric_id") or "",
@@ -1352,8 +1360,10 @@ def _enrich_summary(summary: dict[str, Any], sheets: list[dict[str, Any]]) -> di
                 "unchanged": su,
                 "before_count": int(ss.get("before_count") or 0),
                 "after_count": int(ss.get("after_count") or 0),
-                "diff_count": sa + sr + sc,
-                "pass_rate": round((su / sm) * 100, 1) if sm else (100.0 if st == 0 else 0.0),
+                "fail_count": sf,
+                "success_count": su,
+                "diff_count": sf,
+                "pass_rate": round((su / sj) * 100, 1) if sj else (100.0 if st == 0 else 0.0),
             }
         )
 
@@ -1382,10 +1392,12 @@ def _enrich_summary(summary: dict[str, Any], sheets: list[dict[str, Any]]) -> di
         "sheet_count": int(summary.get("sheet_count") or len(sheets) or 0),
         "total_rows": total,
         "matched_rows": matched,
+        "fail_count": fail_count,
+        "success_count": success_count,
         "diff_count": diff_count,
         "pass_rate": pass_rate,
         "diff_rate": diff_rate,
-        "ok": diff_count == 0,
+        "ok": fail_count == 0,
         "sheet_cards": sheet_cards,
         "top_changed_fields": top_fields,
     }
@@ -1476,7 +1488,7 @@ def list_run_diffs(
             BizCompareDiff.metric_id == mid,
         )
         if kind_n == "diff":
-            q = q.filter(BizCompareDiff.kind.in_(("added", "removed", "changed")))
+            q = q.filter(BizCompareDiff.kind.in_(("removed", "changed")))
         elif kind_n != "all":
             q = q.filter(BizCompareDiff.kind == kind_n)
         if kw_n:
