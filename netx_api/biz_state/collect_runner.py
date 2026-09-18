@@ -272,7 +272,6 @@ def dispatch_collect(task_id: str) -> None:
         device_type = str(task.device_type or "")
         source = str(task.source or "managed").strip().lower()
         ne_id = str(task.ne_id or "").strip()
-        retention = int(task.retention_batches or 30)
     finally:
         db.close()
 
@@ -288,7 +287,6 @@ def dispatch_collect(task_id: str) -> None:
             ne_id=ne_id,
             vendor=vendor,
             device_type=device_type,
-            retention=retention,
         )
     except Exception as exc:
         _log.exception("biz_state collect failed task=%s", task_id)
@@ -315,7 +313,6 @@ def _run_collect_session(
     ne_id: str,
     vendor: str,
     device_type: str,
-    retention: int,
 ) -> None:
     per_cmd = int(settings.ne_collect_read_timeout_sec or 120)
     cap = int(settings.ne_collect_run_timeout_cap_sec or 600)
@@ -678,29 +675,29 @@ def _run_collect_session(
                 except Exception:
                     _log.exception("biz_state auto compare hook failed task=%s", task_id)
 
-        _purge_old_batches(db, task_id=task_id, keep=retention)
+        _purge_task_retention(db, task_id=task_id)
     finally:
         db.close()
 
 
-def _purge_old_batches(db, *, task_id: str, keep: int) -> None:
-    keep_n = max(1, int(keep or 30))
-    rows = (
-        db.query(BizStateBatch)
-        .filter(BizStateBatch.task_id == task_id)
-        .order_by(BizStateBatch.started_at.desc())
-        .all()
-    )
-    drop = rows[keep_n:]
-    for b in drop:
-        bid = b.id
-        db.query(BizStateLldpNeighbor).filter(BizStateLldpNeighbor.batch_id == bid).delete()
-        db.query(BizStateVrfRouteSummary).filter(BizStateVrfRouteSummary.batch_id == bid).delete()
-        db.query(BizStateMetricRow).filter(BizStateMetricRow.batch_id == bid).delete()
-        db.query(BizStateBatchCommand).filter(BizStateBatchCommand.batch_id == bid).delete()
-        db.delete(b)
-    if drop:
-        db.commit()
+def _purge_task_retention(db, *, task_id: str) -> None:
+    from .retention import purge_task_batches
+
+    task = db.get(BizStateTask, task_id)
+    if not task:
+        return
+    try:
+        info = purge_task_batches(db, task)
+        if info.get("dropped"):
+            _log.info(
+                "biz_state retention purged task=%s dropped=%s days=%s daily=%s",
+                task_id,
+                info.get("dropped"),
+                info.get("retention_days"),
+                info.get("daily_keep_enabled"),
+            )
+    except Exception:
+        _log.exception("biz_state retention purge failed task=%s", task_id)
 
 
 def trigger_collect_now(task_id: str) -> dict[str, Any]:

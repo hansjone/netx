@@ -86,6 +86,12 @@ export const NETWORK_NAV: readonly NetworkNavGroup[] = [
         labelKey: "network.nav.bizCompare",
         group: "tasks",
       },
+      {
+        id: "biz-migration",
+        path: "/network/tasks/biz-migration",
+        labelKey: "network.nav.bizMigration",
+        group: "tasks",
+      },
     ],
   },
 ] as const;

@@ -42,6 +42,13 @@ from .biz_state import (
     BizStateTaskItem,
     BizStateTaskItemBinding,
 )
+from .biz_migration import (
+    BizMigrationBatch,
+    BizMigrationDiff,
+    BizMigrationProject,
+    BizMigrationRedTicket,
+    BizMigrationRun,
+)
 from .port_traffic import (
     PortTrafficBoard,
     PortTrafficDevice,
@@ -146,4 +153,9 @@ __all__ = [
     "BizCompareJob",
     "BizCompareRun",
     "BizCompareDiff",
+    "BizMigrationProject",
+    "BizMigrationBatch",
+    "BizMigrationRun",
+    "BizMigrationDiff",
+    "BizMigrationRedTicket",
 ]

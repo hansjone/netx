@@ -7,8 +7,10 @@ import { useDebouncedValue } from "../../hooks/useDebouncedValue";
 import { useToast } from "../../hooks/useToast";
 import { useI18n } from "../../i18n";
 import {
+  bizStateBulkDeleteBatches,
   bizStateCollectNow,
   bizStateCreateTask,
+  bizStateDeleteBatch,
   bizStateDeleteTask,
   bizStateDiscover,
   bizStateDownloadExport,
@@ -18,6 +20,8 @@ import {
   bizStateListProfiles,
   bizStateListTasks,
   bizStatePatchTask,
+  bizStatePurgeTask,
+  bizStateSetBatchBaseline,
   bizStateSetBindings,
   fetchCliTargets,
   formatErr,
@@ -33,6 +37,7 @@ type TaskRow = {
   ne_name: string;
   ne_ip: string;
   vendor: string;
+  note?: string;
   status: string;
   collect_running: boolean;
   last_error: string;
@@ -57,6 +62,9 @@ type BatchRow = {
   row_count: number;
   command_count: number;
   started_at?: string | null;
+  is_baseline?: boolean;
+  protected?: boolean;
+  protect_reasons?: string[];
 };
 
 type Candidate = { value: string; label: string; rd?: string };
@@ -269,7 +277,10 @@ export function BizStatePage() {
   const [taskTab, setTaskTab] = useState<TaskTab>("profiles");
   const [intervalValue, setIntervalValue] = useState(1);
   const [intervalUnit, setIntervalUnit] = useState<"days" | "hours" | "seconds">("hours");
-  const [retentionBatches, setRetentionBatches] = useState(30);
+  const [retentionDays, setRetentionDays] = useState(30);
+  const [dailyKeepEnabled, setDailyKeepEnabled] = useState(false);
+  const [dailyKeepCount, setDailyKeepCount] = useState(10);
+  const [selectedBatchIds, setSelectedBatchIds] = useState<string[]>([]);
 
   // VRF bind (inside task modal)
   const [bindItemId, setBindItemId] = useState("");
@@ -333,7 +344,7 @@ export function BizStatePage() {
     if (!kw) return tasks;
     return tasks.filter((row) => {
       const blob =
-        `${row.ne_name} ${row.ne_ip} ${row.vendor} ${row.status} ${row.source || ""} ${row.last_error}`.toLowerCase();
+        `${row.ne_name} ${row.ne_ip} ${row.vendor} ${row.note || ""} ${row.status} ${row.source || ""} ${row.last_error}`.toLowerCase();
       return blob.includes(kw);
     });
   }, [tasks, debouncedListKw]);
@@ -382,9 +393,12 @@ export function BizStatePage() {
     const ui = secToIntervalUi(Number(task.interval_sec || 3600));
     setIntervalValue(ui.value);
     setIntervalUnit(ui.unit);
-    setRetentionBatches(Math.max(1, Number(task.retention_batches || 30)));
-    const b = await bizStateListBatches(id);
+    setRetentionDays(Math.max(1, Number(task.retention_days || 30)));
+    setDailyKeepEnabled(Boolean(task.daily_keep_enabled));
+    setDailyKeepCount(Math.max(1, Number(task.daily_keep_count || 10)));
+    const b = await bizStateListBatches(id, 200);
     setBatches((b.items || []) as BatchRow[]);
+    setSelectedBatchIds([]);
     const p = await bizStateListProfiles({
       vendor: task.vendor || "",
       device_type: task.device_type || "",
@@ -457,11 +471,89 @@ export function BizStatePage() {
     try {
       await bizStatePatchTask(taskId, {
         interval_sec: intervalUiToSec(intervalValue, intervalUnit),
-        retention_batches: Math.max(1, Number(retentionBatches) || 30),
+        retention_days: Math.max(1, Number(retentionDays) || 30),
+        daily_keep_enabled: dailyKeepEnabled,
+        daily_keep_count: Math.max(1, Number(dailyKeepCount) || 10),
       });
       showOk(t("bizState.scheduleSaved"));
       await loadTask(taskId);
       await refreshTasks();
+    } catch (e) {
+      showError(formatErr(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggleBatchSelect = (id: string, protectedBatch: boolean) => {
+    if (protectedBatch) return;
+    setSelectedBatchIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    );
+  };
+
+  const selectDeletableBatches = () => {
+    setSelectedBatchIds(batches.filter((b) => !b.protected).map((b) => b.id));
+  };
+
+  const markBaseline = async (batchId: string, marked: boolean) => {
+    setBusy(true);
+    try {
+      await bizStateSetBatchBaseline(batchId, marked);
+      if (taskId) await loadTask(taskId);
+    } catch (e) {
+      showError(formatErr(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeBatch = async (batchId: string) => {
+    if (!window.confirm(t("bizState.confirmDeleteBatch"))) return;
+    setBusy(true);
+    try {
+      await bizStateDeleteBatch(batchId);
+      showOk(t("bizState.batchDeleted"));
+      if (taskId) await loadTask(taskId);
+    } catch (e) {
+      showError(formatErr(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const bulkRemoveBatches = async () => {
+    if (!selectedBatchIds.length) return;
+    if (
+      !window.confirm(
+        t("bizState.confirmBulkDelete").replace("{{count}}", String(selectedBatchIds.length)),
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await bizStateBulkDeleteBatches(selectedBatchIds);
+      showOk(
+        t("bizState.bulkDeleted")
+          .replace("{{deleted}}", String(res.deleted_count || 0))
+          .replace("{{skipped}}", String((res.skipped || []).length)),
+      );
+      if (taskId) await loadTask(taskId);
+    } catch (e) {
+      showError(formatErr(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const purgeNow = async () => {
+    if (!taskId) return;
+    setBusy(true);
+    try {
+      const res = await bizStatePurgeTask(taskId);
+      showOk(t("bizState.purgeOk").replace("{{dropped}}", String(res.dropped || 0)));
+      await loadTask(taskId);
     } catch (e) {
       showError(formatErr(e));
     } finally {
@@ -670,6 +762,7 @@ export function BizStatePage() {
                     <div className="pt-list-task-name">{row.ne_name || row.ne_ip || "—"}</div>
                     <div className="muted">
                       {row.vendor || "—"} · {row.ne_ip || "—"}
+                      {row.note ? ` · ${row.note}` : ""}
                     </div>
                     {row.last_error ? <div className="form-error">{row.last_error}</div> : null}
                   </td>
@@ -939,16 +1032,41 @@ export function BizStatePage() {
                 <Input
                   type="number"
                   min={1}
-                  max={200}
-                  value={String(retentionBatches)}
-                  onChange={(e) => setRetentionBatches(Math.max(1, Number(e.target.value) || 1))}
+                  max={3650}
+                  value={String(retentionDays)}
+                  onChange={(e) => setRetentionDays(Math.max(1, Number(e.target.value) || 1))}
                 />
               </label>
+              <label className="config-sync-policy-field" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={dailyKeepEnabled}
+                  disabled={busy}
+                  onChange={(e) => setDailyKeepEnabled(e.target.checked)}
+                />
+                <span>{t("bizState.dailyKeepEnabled")}</span>
+              </label>
+              {dailyKeepEnabled ? (
+                <label className="config-sync-policy-field">
+                  <span>{t("bizState.dailyKeepCount")}</span>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={1000}
+                    value={String(dailyKeepCount)}
+                    onChange={(e) => setDailyKeepCount(Math.max(1, Number(e.target.value) || 1))}
+                  />
+                </label>
+              ) : null}
               <Button size="sm" variant="secondary" isDisabled={busy} onPress={() => void saveSchedule()}>
                 {t("bizState.saveSchedule")}
               </Button>
+              <Button size="sm" variant="ghost" isDisabled={busy} onPress={() => void purgeNow()}>
+                {t("bizState.purgeNow")}
+              </Button>
               <span className="muted">
-                {detail.vendor || "—"} · {detail.ne_ip || "—"} · {t("bizState.scheduleHint")}
+                {detail.vendor || "—"} · {detail.ne_ip || "—"} · {t("bizState.retentionHint")}
+                {dailyKeepEnabled ? ` · ${t("bizState.dailyKeepHint")}` : ""}
               </span>
             </div>
           ) : null}
@@ -1086,41 +1204,104 @@ export function BizStatePage() {
             </>
           ) : (
             <div className="pt-list-table-wrap">
+              <div className="btn-row" style={{ marginBottom: 8, gap: 8, flexWrap: "wrap" }}>
+                <Button size="sm" variant="ghost" isDisabled={busy || !batches.length} onPress={selectDeletableBatches}>
+                  {t("bizState.selectAll")}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="danger"
+                  isDisabled={busy || !selectedBatchIds.length}
+                  onPress={() => void bulkRemoveBatches()}
+                >
+                  {t("bizState.bulkDelete")}
+                  {selectedBatchIds.length ? ` (${selectedBatchIds.length})` : ""}
+                </Button>
+              </div>
               <table className="data-table pt-list-table">
                 <thead>
                   <tr>
+                    <th style={{ width: 36 }} />
                     <th>{t("bizState.colTime")}</th>
                     <th>{t("bizState.colStatus")}</th>
+                    <th>{t("bizState.colProtect")}</th>
                     <th>{t("bizState.colRows")}</th>
                     <th>{t("bizState.colActions")}</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {batches.map((b) => (
-                    <tr key={b.id}>
-                      <td className="pt-list-time">{fmtTime(b.started_at)}</td>
-                      <td>
-                        <NmStatusChip color={jobChipColor(b.status)}>{b.status}</NmStatusChip>
-                      </td>
-                      <td className="pt-list-num">
-                        {b.row_count}
-                        <span className="muted"> / {b.command_count} cmd</span>
-                      </td>
-                      <td>
-                        <div className="pt-list-actions">
-                          <Button size="sm" variant="primary" onPress={() => void openBatch(b.id)}>
-                            {t("bizState.viewBatch")}
-                          </Button>
-                          <Button size="sm" variant="ghost" onPress={() => void bizStateDownloadExport(b.id)}>
-                            {t("bizState.export")}
-                          </Button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
+                  {batches.map((b) => {
+                    const locked = Boolean(b.protected);
+                    return (
+                      <tr key={b.id}>
+                        <td>
+                          <input
+                            type="checkbox"
+                            checked={selectedBatchIds.includes(b.id)}
+                            disabled={locked || busy}
+                            onChange={() => toggleBatchSelect(b.id, locked)}
+                          />
+                        </td>
+                        <td className="pt-list-time">{fmtTime(b.started_at)}</td>
+                        <td>
+                          <NmStatusChip color={jobChipColor(b.status)}>{b.status}</NmStatusChip>
+                        </td>
+                        <td>
+                          {b.is_baseline ? (
+                            <NmStatusChip color="accent">{t("bizState.baseline")}</NmStatusChip>
+                          ) : locked ? (
+                            <span className="muted">{t("bizState.protected")}</span>
+                          ) : (
+                            "—"
+                          )}
+                        </td>
+                        <td className="pt-list-num">
+                          {b.row_count}
+                          <span className="muted"> / {b.command_count} cmd</span>
+                        </td>
+                        <td>
+                          <div className="pt-list-actions">
+                            <Button size="sm" variant="primary" onPress={() => void openBatch(b.id)}>
+                              {t("bizState.viewBatch")}
+                            </Button>
+                            <Button size="sm" variant="ghost" onPress={() => void bizStateDownloadExport(b.id)}>
+                              {t("bizState.export")}
+                            </Button>
+                            {b.is_baseline ? (
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                isDisabled={busy}
+                                onPress={() => void markBaseline(b.id, false)}
+                              >
+                                {t("bizState.unmarkBaseline")}
+                              </Button>
+                            ) : (
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                isDisabled={busy}
+                                onPress={() => void markBaseline(b.id, true)}
+                              >
+                                {t("bizState.markBaseline")}
+                              </Button>
+                            )}
+                            <Button
+                              size="sm"
+                              variant="danger"
+                              isDisabled={busy || locked}
+                              onPress={() => void removeBatch(b.id)}
+                            >
+                              {t("bizState.deleteBatch")}
+                            </Button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
                   {!batches.length ? (
                     <tr>
-                      <td colSpan={4}>
+                      <td colSpan={6}>
                         <div className="pt-list-empty">{t("bizState.noBatches")}</div>
                       </td>
                     </tr>

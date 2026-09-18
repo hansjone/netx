@@ -24,6 +24,7 @@ from .ops_router import router as ops_router
 from .parser_config import load_parser_config
 from .port_traffic_router import router as port_traffic_router
 from .biz_state_router import router as biz_state_router
+from .biz_migration_router import router as biz_migration_router
 from .sql_router import router as sql_router
 from .sql_router import sql_query, sql_ume_query  # noqa: F401 — tests import from main
 from .topology_router import router as topology_router
@@ -76,6 +77,7 @@ app.include_router(collection_router)
 app.include_router(config_sync_router)
 app.include_router(port_traffic_router)
 app.include_router(biz_state_router)
+app.include_router(biz_migration_router)
 app.include_router(webcrt_router)
 app.include_router(topology_router)
 app.include_router(lldp_collect_router)

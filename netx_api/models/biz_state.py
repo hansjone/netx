@@ -14,10 +14,13 @@ from ._types import JsonType as _JsonType
 
 
 class BizStateTask(Base):
-    """Per-NE business state monitoring config."""
+    """Per-NE business state monitoring config.
+
+    Multiple tasks per ``(source, ne_id)`` are allowed (e.g. hourly full +
+    cutover high-freq port-only).
+    """
 
     __tablename__ = "biz_state_task"
-    __table_args__ = (UniqueConstraint("source", "ne_id", name="uq_biz_state_task_ne"),)
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
     source: Mapped[str] = mapped_column(String(32), default="managed", index=True)
@@ -29,6 +32,12 @@ class BizStateTask(Base):
     note: Mapped[str] = mapped_column(String(256), default="")
     status: Mapped[str] = mapped_column(String(32), default="draft", index=True)  # draft|running|paused|stopped
     interval_sec: Mapped[int] = mapped_column(Integer, default=300)
+    # Keep snapshots for N calendar days (protected baselines/refs never auto-deleted)
+    retention_days: Mapped[int] = mapped_column(Integer, default=30)
+    # Optional: keep only N batches per past calendar day (purge extras next day). Default off.
+    daily_keep_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    daily_keep_count: Mapped[int] = mapped_column(Integer, default=10)
+    # Legacy column kept for brownfield reads; unused by new purge path
     retention_batches: Mapped[int] = mapped_column(Integer, default=30)
     collect_running: Mapped[bool] = mapped_column(Boolean, default=False)
     last_collect_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -83,6 +92,9 @@ class BizStateBatch(Base):
     message: Mapped[str] = mapped_column(String(1024), default="")
     started_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Manual pin: excluded from auto-purge until revoked
+    is_baseline: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    baseline_marked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class BizStateBatchCommand(Base):

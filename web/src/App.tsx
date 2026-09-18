@@ -49,6 +49,9 @@ const BizStatePage = lazy(() =>
 const BizComparePage = lazy(() =>
   import("./pages/network/BizComparePage").then((m) => ({ default: m.BizComparePage })),
 );
+const BizMigrationPage = lazy(() =>
+  import("./pages/network/BizMigrationPage").then((m) => ({ default: m.BizMigrationPage })),
+);
 const UsersPage = lazy(() => import("./pages/UsersPage").then((m) => ({ default: m.UsersPage })));
 const AuditLayout = lazy(() =>
   import("./pages/audit/AuditLayout").then((m) => ({ default: m.AuditLayout })),
@@ -128,6 +131,7 @@ function ProtectedApp() {
             <Route path="tasks/port-traffic" element={<PortTrafficPage />} />
             <Route path="tasks/biz-state" element={<BizStatePage />} />
             <Route path="tasks/biz-compare" element={<BizComparePage />} />
+            <Route path="tasks/biz-migration" element={<BizMigrationPage />} />
           </Route>
           <Route path="/collect" element={<Navigate to="/network/tasks/collect" replace />} />
           <Route path="/users" element={<UsersPage />} />

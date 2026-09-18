@@ -44,17 +44,30 @@ class TaskCreateIn(BaseModel):
     vendor: str = ""
     device_type: str = ""
     note: str = ""
+    status: str = "draft"
     interval_sec: int = 3600
-    retention_batches: int = 30
+    retention_days: int = 30
+    daily_keep_enabled: bool = False
+    daily_keep_count: int = 10
     items: list[TaskItemIn] = Field(default_factory=list)
 
 
 class TaskPatchIn(BaseModel):
     note: str | None = None
     interval_sec: int | None = None
-    retention_batches: int | None = None
+    retention_days: int | None = None
+    daily_keep_enabled: bool | None = None
+    daily_keep_count: int | None = None
     status: str | None = None
     items: list[TaskItemIn] | None = None
+
+
+class BatchBaselineIn(BaseModel):
+    marked: bool = True
+
+
+class BatchBulkDeleteIn(BaseModel):
+    batch_ids: list[str] = Field(default_factory=list)
 
 
 class PreviewIn(BaseModel):
@@ -190,6 +203,31 @@ def api_list_batches(
     task_id: str, limit: int = 50, db: Session = Depends(get_db)
 ) -> dict[str, Any]:
     return {"items": svc.list_batches(db, task_id, limit=limit)}
+
+
+@router.post("/tasks/{task_id}/purge")
+def api_purge_task(task_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Apply retention policy now (age + optional daily keep). Protected batches skipped."""
+    return svc.run_purge_for_task(db, task_id)
+
+
+@router.post("/batches/bulk-delete")
+def api_bulk_delete_batches(
+    body: BatchBulkDeleteIn, db: Session = Depends(get_db)
+) -> dict[str, Any]:
+    return svc.delete_batches_bulk(db, list(body.batch_ids or []))
+
+
+@router.post("/batches/{batch_id}/baseline")
+def api_set_batch_baseline(
+    batch_id: str, body: BatchBaselineIn, db: Session = Depends(get_db)
+) -> dict[str, Any]:
+    return svc.set_batch_baseline(db, batch_id, marked=bool(body.marked))
+
+
+@router.delete("/batches/{batch_id}")
+def api_delete_batch(batch_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    return svc.delete_batch(db, batch_id)
 
 
 @router.get("/batches/{batch_id}")

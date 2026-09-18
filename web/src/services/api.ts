@@ -1813,6 +1813,29 @@ export const bizStateListBatches = (taskId: string, limit = 50) =>
     `/v1/biz-state/tasks/${encodeURIComponent(taskId)}/batches?limit=${limit}`,
   );
 
+export const bizStateSetBatchBaseline = (batchId: string, marked: boolean) =>
+  apiPost<Record<string, unknown>>(
+    `/v1/biz-state/batches/${encodeURIComponent(batchId)}/baseline`,
+    { marked },
+  );
+
+export const bizStateDeleteBatch = (batchId: string) =>
+  apiDelete<{ ok: boolean }>(`/v1/biz-state/batches/${encodeURIComponent(batchId)}`);
+
+export const bizStateBulkDeleteBatches = (batchIds: string[]) =>
+  apiPost<{
+    ok: boolean;
+    deleted: string[];
+    skipped: { batch_id: string; reasons: string[] }[];
+    deleted_count: number;
+  }>("/v1/biz-state/batches/bulk-delete", { batch_ids: batchIds });
+
+export const bizStatePurgeTask = (taskId: string) =>
+  apiPost<Record<string, unknown>>(
+    `/v1/biz-state/tasks/${encodeURIComponent(taskId)}/purge`,
+    {},
+  );
+
 export const bizStateGetBatch = (batchId: string) =>
   apiGet<Record<string, unknown>>(`/v1/biz-state/batches/${encodeURIComponent(batchId)}`);
 
@@ -1958,4 +1981,118 @@ export const bizCompareDownloadRun = async (runId: string): Promise<void> => {
   } finally {
     URL.revokeObjectURL(url);
   }
+};
+
+// --- biz-migration (cutover monitor, separate from compare) ---
+
+export const bizMigrationListProjects = () =>
+  apiGet<{ items: Record<string, unknown>[] }>("/v1/biz-migration/projects");
+
+export const bizMigrationCreateProject = (body: Record<string, unknown>) =>
+  apiPost<Record<string, unknown>>("/v1/biz-migration/projects", body);
+
+export const bizMigrationPatchProject = (projectId: string, body: Record<string, unknown>) =>
+  apiPatch<Record<string, unknown>>(
+    `/v1/biz-migration/projects/${encodeURIComponent(projectId)}`,
+    body,
+  );
+
+export const bizMigrationListBatches = (projectId: string) =>
+  apiGet<{ items: Record<string, unknown>[] }>(
+    `/v1/biz-migration/projects/${encodeURIComponent(projectId)}/batches`,
+  );
+
+export const bizMigrationListBaselinePorts = (projectId: string) =>
+  apiGet<{
+    batch_id: string;
+    metric_id: string;
+    ports: {
+      interface: string;
+      admin?: string;
+      phy?: string;
+      prot?: string;
+      description?: string;
+      mapped_to?: string;
+    }[];
+  }>(`/v1/biz-migration/projects/${encodeURIComponent(projectId)}/baseline-ports`);
+
+export const bizMigrationEnsurePortHighfreq = (
+  projectId: string,
+  body: { interval_sec?: number; retention_days?: number; collect_now?: boolean } = {},
+) =>
+  apiPost<Record<string, unknown>>(
+    `/v1/biz-migration/projects/${encodeURIComponent(projectId)}/ensure-port-highfreq`,
+    body,
+  );
+
+export const bizMigrationCollectNow = (projectId: string) =>
+  apiPost<Record<string, unknown>>(
+    `/v1/biz-migration/projects/${encodeURIComponent(projectId)}/collect-now`,
+    {},
+  );
+
+export const bizMigrationFinishBatch = (batchId: string, markDone = false) =>
+  apiPost<Record<string, unknown>>(
+    `/v1/biz-migration/batches/${encodeURIComponent(batchId)}/finish?mark_done=${markDone ? "true" : "false"}`,
+    {},
+  );
+
+export const bizMigrationListRedTickets = (projectId: string, status = "") => {
+  const q = status ? `?status=${encodeURIComponent(status)}` : "";
+  return apiGet<{ open_count: number; items: Record<string, unknown>[] }>(
+    `/v1/biz-migration/projects/${encodeURIComponent(projectId)}/red-tickets${q}`,
+  );
+};
+
+export const bizMigrationResolveRedTicket = (ticketId: string, note = "") =>
+  apiPost<Record<string, unknown>>(
+    `/v1/biz-migration/red-tickets/${encodeURIComponent(ticketId)}/resolve`,
+    { note },
+  );
+
+export const bizMigrationCreateBatch = (projectId: string, body: Record<string, unknown>) =>
+  apiPost<Record<string, unknown>>(
+    `/v1/biz-migration/projects/${encodeURIComponent(projectId)}/batches`,
+    body,
+  );
+
+export const bizMigrationPatchBatch = (batchId: string, body: Record<string, unknown>) =>
+  apiPatch<Record<string, unknown>>(
+    `/v1/biz-migration/batches/${encodeURIComponent(batchId)}`,
+    body,
+  );
+
+export const bizMigrationEvaluate = (batchId: string, body: Record<string, unknown> = {}) =>
+  apiPost<Record<string, unknown>>(
+    `/v1/biz-migration/batches/${encodeURIComponent(batchId)}/evaluate`,
+    body,
+  );
+
+export const bizMigrationGetBoard = (batchId: string, runId = "") => {
+  const q = runId ? `?run_id=${encodeURIComponent(runId)}` : "";
+  return apiGet<Record<string, unknown>>(
+    `/v1/biz-migration/batches/${encodeURIComponent(batchId)}/board${q}`,
+  );
+};
+
+export const bizMigrationListDiffs = (params: {
+  runId: string;
+  metricId?: string;
+  verdict?: string;
+  color?: string;
+  kw?: string;
+  offset?: number;
+  limit?: number;
+}) => {
+  const p = new URLSearchParams();
+  if (params.metricId) p.set("metric_id", params.metricId);
+  if (params.verdict) p.set("verdict", params.verdict);
+  if (params.color) p.set("color", params.color);
+  if (params.kw) p.set("kw", params.kw);
+  if (params.offset != null) p.set("offset", String(params.offset));
+  if (params.limit != null) p.set("limit", String(params.limit));
+  const qs = p.toString();
+  return apiGet<{ items: Record<string, unknown>[]; total: number }>(
+    `/v1/biz-migration/runs/${encodeURIComponent(params.runId)}/diffs${qs ? `?${qs}` : ""}`,
+  );
 };

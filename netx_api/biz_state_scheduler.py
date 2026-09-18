@@ -19,10 +19,38 @@ _thread: threading.Thread | None = None
 _dispatch_pool: ThreadPoolExecutor | None = None
 _pool_lock = threading.Lock()
 _last_tick_mono: float = 0.0
+_last_purge_mono: float = 0.0
+_PURGE_INTERVAL_SEC = 3600.0
 
 
 def _utcnow() -> datetime:
     return datetime.utcnow()
+
+
+def _maybe_purge_retention() -> None:
+    """Hourly sweep so paused/HF tasks still get retention cleanup."""
+    import time as _time
+
+    global _last_purge_mono
+    now = _time.monotonic()
+    if _last_purge_mono and (now - _last_purge_mono) < _PURGE_INTERVAL_SEC:
+        return
+    _last_purge_mono = now
+    db = SessionLocal()
+    try:
+        from .biz_state.retention import purge_all_tasks
+
+        info = purge_all_tasks(db)
+        if info.get("dropped"):
+            _log.info(
+                "biz_state periodic retention dropped=%s tasks=%s",
+                info.get("dropped"),
+                len(info.get("tasks") or []),
+            )
+    except Exception:
+        _log.exception("biz_state periodic retention failed")
+    finally:
+        db.close()
 
 
 def _dispatch_pool_get() -> ThreadPoolExecutor:
@@ -98,6 +126,10 @@ def _loop() -> None:
             try_dispatch_due_tasks()
         except Exception:
             _log.exception("biz_state scheduler tick failed")
+        try:
+            _maybe_purge_retention()
+        except Exception:
+            _log.exception("biz_state retention tick failed")
 
 
 def start_biz_state_scheduler() -> None:

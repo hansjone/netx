@@ -28,6 +28,12 @@ from ..models import (
 from ..timeutil import utcnow_naive
 from .command_match import preview_task_item
 from .profiles import all_profiles, get_profile, profile_to_public_dict, profiles_for_vendor
+from .retention import (
+    batch_protect_info,
+    delete_batch_data,
+    protected_batch_map,
+    purge_task_batches,
+)
 
 
 def _utcnow() -> datetime:
@@ -134,17 +140,13 @@ def create_task(db: Session, body: dict[str, Any]) -> dict[str, Any]:
     ne_id = str(body.get("ne_id") or "").strip()
     if not ne_id:
         raise HTTPException(status_code=400, detail="ne_id_required")
-    existing = (
-        db.query(BizStateTask)
-        .filter(BizStateTask.source == source, BizStateTask.ne_id == ne_id)
-        .one_or_none()
-    )
-    if existing:
-        raise HTTPException(status_code=409, detail="task_already_exists_for_ne")
 
     meta = _ne_meta(db, source=source, ne_id=ne_id)
     vendor = str(body.get("vendor") or meta["vendor"] or "")
     device_type = str(body.get("device_type") or meta["device_type"] or "")
+    status = str(body.get("status") or "draft").strip() or "draft"
+    if status not in ("draft", "running", "paused", "stopped"):
+        status = "draft"
     task = BizStateTask(
         id=uuid4().hex,
         source=source,
@@ -154,9 +156,13 @@ def create_task(db: Session, body: dict[str, Any]) -> dict[str, Any]:
         vendor=vendor,
         device_type=device_type,
         note=str(body.get("note") or "")[:256],
-        status="draft",
+        status=status,
         interval_sec=max(60, int(body.get("interval_sec") or 3600)),
-        retention_batches=max(1, int(body.get("retention_batches") or 30)),
+        retention_days=max(1, min(3650, int(body.get("retention_days") or 30))),
+        daily_keep_enabled=bool(body.get("daily_keep_enabled") or False),
+        daily_keep_count=max(1, min(1000, int(body.get("daily_keep_count") or 10))),
+        # keep legacy column in sync for brownfield readers
+        retention_batches=max(1, int(body.get("retention_days") or body.get("retention_batches") or 30)),
         created_at=_utcnow(),
         updated_at=_utcnow(),
     )
@@ -230,8 +236,17 @@ def update_task(db: Session, task_id: str, body: dict[str, Any]) -> dict[str, An
         task.note = str(body.get("note") or "")[:256]
     if "interval_sec" in body:
         task.interval_sec = max(60, int(body.get("interval_sec") or 3600))
-    if "retention_batches" in body:
-        task.retention_batches = max(1, int(body.get("retention_batches") or 30))
+    if "retention_days" in body:
+        task.retention_days = max(1, min(3650, int(body.get("retention_days") or 30)))
+        task.retention_batches = task.retention_days  # legacy mirror
+    elif "retention_batches" in body:
+        # backward compat: treat as days if old clients still send it
+        task.retention_days = max(1, min(3650, int(body.get("retention_batches") or 30)))
+        task.retention_batches = task.retention_days
+    if "daily_keep_enabled" in body:
+        task.daily_keep_enabled = bool(body.get("daily_keep_enabled"))
+    if "daily_keep_count" in body:
+        task.daily_keep_count = max(1, min(1000, int(body.get("daily_keep_count") or 10)))
     if "items" in body:
         _replace_items(db, task.id, list(body.get("items") or []))
     if "status" in body:
@@ -337,7 +352,9 @@ def get_task(db: Session, task_id: str) -> dict[str, Any]:
         "note": task.note,
         "status": task.status,
         "interval_sec": task.interval_sec,
-        "retention_batches": task.retention_batches,
+        "retention_days": int(getattr(task, "retention_days", None) or 30),
+        "daily_keep_enabled": bool(getattr(task, "daily_keep_enabled", False)),
+        "daily_keep_count": int(getattr(task, "daily_keep_count", None) or 10),
         "collect_running": bool(task.collect_running),
         "last_collect_started_at": task.last_collect_started_at.isoformat() + "Z"
         if task.last_collect_started_at
@@ -360,6 +377,7 @@ def list_tasks(db: Session) -> list[dict[str, Any]]:
             "ne_name": t.ne_name,
             "ne_ip": t.ne_ip,
             "vendor": t.vendor,
+            "note": t.note,
             "status": t.status,
             "interval_sec": t.interval_sec,
             "collect_running": bool(t.collect_running),
@@ -377,11 +395,20 @@ def delete_task(db: Session, task_id: str) -> None:
     if not task:
         raise HTTPException(status_code=404, detail="task_not_found")
     batches = db.query(BizStateBatch).filter(BizStateBatch.task_id == task_id).all()
+    # Refuse if any batch is still referenced by compare/migration (manual baseline is OK to drop with task)
+    pmap = protected_batch_map(db, task_id=task_id)
+    blocked: list[dict[str, Any]] = []
     for b in batches:
-        db.query(BizStateLldpNeighbor).filter(BizStateLldpNeighbor.batch_id == b.id).delete()
-        db.query(BizStateVrfRouteSummary).filter(BizStateVrfRouteSummary.batch_id == b.id).delete()
-        db.query(BizStateBatchCommand).filter(BizStateBatchCommand.batch_id == b.id).delete()
-        db.delete(b)
+        reasons = [r for r in pmap.get(b.id, []) if r != "manual_baseline"]
+        if reasons:
+            blocked.append({"batch_id": b.id, "reasons": reasons})
+    if blocked:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "batches_referenced", "items": blocked[:20]},
+        )
+    for b in batches:
+        delete_batch_data(db, b.id)
     items = db.query(BizStateTaskItem).filter(BizStateTaskItem.task_id == task_id).all()
     for it in items:
         db.query(BizStateTaskItemBinding).filter(BizStateTaskItemBinding.item_id == it.id).delete()
@@ -391,28 +418,101 @@ def delete_task(db: Session, task_id: str) -> None:
     db.commit()
 
 
+def _batch_list_item(b: BizStateBatch, protect: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": b.id,
+        "status": b.status,
+        "command_count": b.command_count,
+        "row_count": b.row_count,
+        "message": b.message,
+        "ne_name": b.ne_name or "",
+        "ne_id": b.ne_id or "",
+        "started_at": b.started_at.isoformat() + "Z" if b.started_at else None,
+        "ended_at": b.ended_at.isoformat() + "Z" if b.ended_at else None,
+        "is_baseline": bool(getattr(b, "is_baseline", False)),
+        "baseline_marked_at": b.baseline_marked_at.isoformat() + "Z"
+        if getattr(b, "baseline_marked_at", None)
+        else None,
+        "protected": bool(protect.get("protected")),
+        "protect_reasons": list(protect.get("reasons") or []),
+    }
+
+
 def list_batches(db: Session, task_id: str, *, limit: int = 50) -> list[dict[str, Any]]:
     rows = (
         db.query(BizStateBatch)
         .filter(BizStateBatch.task_id == task_id)
         .order_by(BizStateBatch.started_at.desc())
-        .limit(max(1, min(200, int(limit))))
+        .limit(max(1, min(500, int(limit))))
         .all()
     )
-    return [
-        {
-            "id": b.id,
-            "status": b.status,
-            "command_count": b.command_count,
-            "row_count": b.row_count,
-            "message": b.message,
-            "ne_name": b.ne_name or "",
-            "ne_id": b.ne_id or "",
-            "started_at": b.started_at.isoformat() + "Z" if b.started_at else None,
-            "ended_at": b.ended_at.isoformat() + "Z" if b.ended_at else None,
-        }
-        for b in rows
-    ]
+    pmap = protected_batch_map(db, task_id=task_id)
+    out: list[dict[str, Any]] = []
+    for b in rows:
+        reasons = list(pmap.get(b.id, []))
+        if bool(getattr(b, "is_baseline", False)) and "manual_baseline" not in reasons:
+            reasons = ["manual_baseline", *reasons]
+        out.append(
+            _batch_list_item(
+                b,
+                {"protected": bool(reasons), "reasons": reasons},
+            )
+        )
+    return out
+
+
+def set_batch_baseline(db: Session, batch_id: str, *, marked: bool) -> dict[str, Any]:
+    b = db.get(BizStateBatch, batch_id)
+    if not b:
+        raise HTTPException(status_code=404, detail="batch_not_found")
+    b.is_baseline = bool(marked)
+    b.baseline_marked_at = _utcnow() if marked else None
+    db.commit()
+    return _batch_list_item(b, batch_protect_info(db, batch_id))
+
+
+def delete_batch(db: Session, batch_id: str) -> dict[str, Any]:
+    b = db.get(BizStateBatch, batch_id)
+    if not b:
+        raise HTTPException(status_code=404, detail="batch_not_found")
+    info = batch_protect_info(db, batch_id)
+    if info.get("protected"):
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "batch_protected", "reasons": info.get("reasons") or []},
+        )
+    delete_batch_data(db, batch_id)
+    db.commit()
+    return {"ok": True, "batch_id": batch_id}
+
+
+def delete_batches_bulk(db: Session, batch_ids: list[str]) -> dict[str, Any]:
+    deleted: list[str] = []
+    skipped: list[dict[str, Any]] = []
+    for raw in batch_ids:
+        bid = str(raw or "").strip()
+        if not bid:
+            continue
+        b = db.get(BizStateBatch, bid)
+        if not b:
+            skipped.append({"batch_id": bid, "reasons": ["not_found"]})
+            continue
+        info = batch_protect_info(db, bid)
+        if info.get("protected"):
+            skipped.append({"batch_id": bid, "reasons": info.get("reasons") or []})
+            continue
+        delete_batch_data(db, bid)
+        deleted.append(bid)
+    if deleted:
+        db.commit()
+    return {"ok": True, "deleted": deleted, "skipped": skipped, "deleted_count": len(deleted)}
+
+
+def run_purge_for_task(db: Session, task_id: str) -> dict[str, Any]:
+    task = db.get(BizStateTask, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="task_not_found")
+    return purge_task_batches(db, task)
 
 
 def get_batch(db: Session, batch_id: str) -> dict[str, Any]:
@@ -454,6 +554,7 @@ def get_batch(db: Session, batch_id: str) -> dict[str, Any]:
     for r in metric_rows:
         mid = str(r.metric_id or "")
         metrics_by_id.setdefault(mid, []).append(dict(r.data_json or {}))
+    protect = batch_protect_info(db, batch_id)
     return {
         "id": b.id,
         "task_id": b.task_id,
@@ -463,6 +564,12 @@ def get_batch(db: Session, batch_id: str) -> dict[str, Any]:
         "message": b.message,
         "started_at": b.started_at.isoformat() + "Z" if b.started_at else None,
         "ended_at": b.ended_at.isoformat() + "Z" if b.ended_at else None,
+        "is_baseline": bool(getattr(b, "is_baseline", False)),
+        "baseline_marked_at": b.baseline_marked_at.isoformat() + "Z"
+        if getattr(b, "baseline_marked_at", None)
+        else None,
+        "protected": bool(protect.get("protected")),
+        "protect_reasons": list(protect.get("reasons") or []),
         "commands": [
             {
                 "id": c.id,
