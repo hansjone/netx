@@ -131,6 +131,49 @@ class VerdictTests(unittest.TestCase):
             ("migrated", "green"),
         )
 
+    def test_out_of_expect_ignore(self):
+        self.assertEqual(
+            dual_verdict(
+                old_kind="removed",
+                new_kind="",
+                in_expect=False,
+                window_active=False,
+                out_of_expect="ignore",
+            ),
+            ("not_involved", "gray"),
+        )
+
+    def test_out_of_expect_warn_is_yellow(self):
+        self.assertEqual(
+            dual_verdict(
+                old_kind="removed",
+                new_kind="unchanged",
+                in_expect=False,
+                window_active=False,
+                out_of_expect="warn",
+            ),
+            ("anomaly", "yellow"),
+        )
+
+    def test_field_token_success(self):
+        self.assertEqual(
+            dual_verdict(
+                old_kind="changed",
+                new_kind="changed",
+                in_expect=True,
+                window_active=True,
+                old_status="other",
+                new_status="other",
+                success_patterns=[
+                    {"old": ["field:state:idle"], "new": ["field:state:established"]}
+                ],
+                old_row={"state": "Idle"},
+                new_row={"state": "Established"},
+                sheet_override={"status_fields": ["state"]},
+            ),
+            ("migrated", "green"),
+        )
+
 
 class EvaluateMetricDualTests(unittest.TestCase):
     def test_port_migration_happy_path(self):
@@ -205,6 +248,85 @@ class EvaluateMetricDualTests(unittest.TestCase):
         )
         migrated = [r for r in out["rows"] if r["verdict"] == "migrated"]
         self.assertTrue(migrated, out["rows"])
+
+    def test_arp_presence_migrated(self):
+        old_base = [{"ip": "10.0.0.1", "mac": "aaaa.bbbb.cccc"}]
+        old_cur: list[dict] = []
+        new_cur = [{"ip": "10.0.0.1", "mac": "aaaa.bbbb.cccc"}]
+        expect = parse_expect_set({"items": [{"metric_id": "arp", "key": "10.0.0.1"}]})
+        out = evaluate_metric_dual(
+            metric_id="arp",
+            key_fields=["ip"],
+            iface_fields=[],
+            compare_fields=[],
+            old_baseline_rows=old_base,
+            old_current_rows=old_cur,
+            new_baseline_rows=None,
+            new_current_rows=new_cur,
+            port_map={},
+            expect=expect,
+            window_active=True,
+            sheet_override={
+                "metric_id": "arp",
+                "success": [{"old": ["removed"], "new": ["added", "unchanged"]}],
+            },
+        )
+        migrated = [r for r in out["rows"] if r["verdict"] == "migrated"]
+        self.assertTrue(migrated, out["rows"])
+
+    def test_bgp_idle_to_established(self):
+        bgp_ov = {
+            "metric_id": "bgp_peer",
+            "status_fields": ["state"],
+            "down_values": ["idle", "active", "connect", "down"],
+            "up_values": ["established"],
+            "success": [{"old": ["removed", "down"], "new": ["added", "up", "unchanged"]}],
+        }
+        old_base = [{"peer": "1.1.1.1", "state": "Established"}]
+        old_cur = [{"peer": "1.1.1.1", "state": "Idle"}]
+        new_base = [{"peer": "1.1.1.1", "state": "Idle"}]
+        new_cur = [{"peer": "1.1.1.1", "state": "Established"}]
+        expect = parse_expect_set({"items": [{"metric_id": "bgp_peer", "key": "1.1.1.1"}]})
+        out = evaluate_metric_dual(
+            metric_id="bgp_peer",
+            key_fields=["peer"],
+            iface_fields=[],
+            compare_fields=["state"],
+            old_baseline_rows=old_base,
+            old_current_rows=old_cur,
+            new_baseline_rows=new_base,
+            new_current_rows=new_cur,
+            port_map={},
+            expect=expect,
+            window_active=True,
+            sheet_override=bgp_ov,
+        )
+        migrated = [r for r in out["rows"] if r["verdict"] == "migrated"]
+        self.assertTrue(migrated, out["rows"])
+
+    def test_out_of_expect_ignore_no_red(self):
+        old_base = [{"interface": "gei-keep", "admin": "up", "phy": "up", "prot": "up"}]
+        old_cur: list[dict] = []
+        new_cur = [{"interface": "gei-keep", "admin": "up", "phy": "up", "prot": "up"}]
+        expect = parse_expect_set({"ports": []})
+        out = evaluate_metric_dual(
+            metric_id="interface_brief",
+            key_fields=["interface"],
+            iface_fields=["interface"],
+            compare_fields=["admin", "phy", "prot"],
+            old_baseline_rows=old_base,
+            old_current_rows=old_cur,
+            new_baseline_rows=None,
+            new_current_rows=new_cur,
+            port_map={},
+            expect=expect,
+            window_active=False,
+            out_of_expect="ignore",
+        )
+        reds = [r for r in out["rows"] if r["color"] == "red"]
+        self.assertFalse(reds, out["rows"])
+        involved = [r for r in out["rows"] if r["verdict"] != "not_involved"]
+        self.assertFalse(involved, out["rows"])
 
     def test_unexpected_loss_is_anomaly(self):
         old_base = [{"interface": "gei-keep", "admin": "up", "phy": "up", "prot": "up"}]

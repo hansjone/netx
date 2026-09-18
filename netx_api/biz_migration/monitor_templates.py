@@ -67,6 +67,58 @@ def ensure_port_compare_template(db: Session) -> BizCompareTemplate:
     return row
 
 
+def preset_override_for_metric(metric_id: str) -> dict[str, Any]:
+    """Default dual-verdict overlay for a compare-template sheet."""
+    mid = str(metric_id or "").strip()
+    if mid == PORT_METRIC_ID:
+        return {
+            "metric_id": mid,
+            "status_fields": list(PORT_STATUS_FIELDS),
+            "down_values": ["down"],
+            "up_values": ["up"],
+            "success": [{"old": ["removed", "down"], "new": ["added", "up", "unchanged"]}],
+        }
+    if mid == "bgp_peer":
+        return {
+            "metric_id": mid,
+            "status_fields": ["state"],
+            "down_values": ["idle", "active", "connect", "down"],
+            "up_values": ["established"],
+            "success": [{"old": ["removed", "down"], "new": ["added", "up", "unchanged"]}],
+        }
+    if mid in ("arp", "nd6_cache", "lldp_neighbor"):
+        return {
+            "metric_id": mid,
+            "status_fields": [],
+            "down_values": [],
+            "up_values": [],
+            "success": [{"old": ["removed"], "new": ["added", "unchanged"]}],
+        }
+    if "isis" in mid or "ospf" in mid or "adjacency" in mid:
+        return {
+            "metric_id": mid,
+            "status_fields": ["state"],
+            "down_values": ["down", "init", "idle"],
+            "up_values": ["up", "full", "2way"],
+            "success": [{"old": ["removed", "down"], "new": ["added", "up", "unchanged"]}],
+        }
+    if "route" in mid or "vrf" in mid:
+        return {
+            "metric_id": mid,
+            "status_fields": [],
+            "down_values": [],
+            "up_values": [],
+            "success": [{"old": ["removed"], "new": ["added", "unchanged"]}],
+        }
+    return {
+        "metric_id": mid,
+        "status_fields": [],
+        "down_values": ["down"],
+        "up_values": ["up"],
+        "success": [{"old": ["removed"], "new": ["added", "unchanged"]}],
+    }
+
+
 def ensure_default_monitor_templates(db: Session) -> None:
     """Seed once when monitor-template table is empty."""
     if db.query(BizMonitorTemplate.id).limit(1).first():
@@ -85,26 +137,15 @@ def ensure_default_monitor_templates(db: Session) -> None:
             compare_template_id=port_tpl.id,
             collect_metric_ids_json=[PORT_METRIC_ID],
             defaults_json={"dual_mode": "migrate_pair", "out_of_expect": "strict"},
-            sheet_overrides_json=[
-                {
-                    "metric_id": PORT_METRIC_ID,
-                    "status_fields": list(PORT_STATUS_FIELDS),
-                    "down_values": ["down"],
-                    "up_values": ["up"],
-                    "success": [
-                        {
-                            "old": ["removed", "down"],
-                            "new": ["added", "up", "unchanged"],
-                        }
-                    ],
-                }
-            ],
+            sheet_overrides_json=[preset_override_for_metric(PORT_METRIC_ID)],
             note="Default: port status dual-verdict with up/down semantics",
             created_at=_utcnow(),
             updated_at=_utcnow(),
         ),
     ]
     if zte:
+        zte_sheets = cmp_svc.template_metrics(zte)
+        zte_overrides = [preset_override_for_metric(str(s.get("metric_id") or "")) for s in zte_sheets if s.get("metric_id")]
         seeds.append(
             BizMonitorTemplate(
                 id=uuid4().hex,
@@ -112,8 +153,8 @@ def ensure_default_monitor_templates(db: Session) -> None:
                 compare_template_id=zte.id,
                 collect_metric_ids_json=[],
                 defaults_json={"dual_mode": "migrate_pair", "out_of_expect": "strict"},
-                sheet_overrides_json=[],
-                note="Uses ZTE status compare template; presence dual-verdict",
+                sheet_overrides_json=zte_overrides,
+                note="ZTE multi-sheet: port/ARP/BGP/… dual presets",
                 created_at=_utcnow(),
                 updated_at=_utcnow(),
             )

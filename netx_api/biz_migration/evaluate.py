@@ -119,7 +119,59 @@ def side_verdict(
     return "ok", "gray"
 
 
-def _side_tokens(kind: str, status: str) -> set[str]:
+def field_token(field: str, value: str) -> str:
+    """Canonical field token used in success patterns: field:<name>:<value>."""
+    return f"field:{str(field).strip().lower()}:{str(value).strip().lower()}"
+
+
+def _fields_for_tokens(
+    sheet_override: dict[str, Any] | None,
+    success_patterns: list[dict[str, Any]] | None,
+) -> set[str]:
+    """Fields whose current values should be emitted as field:* tokens."""
+    ov = sheet_override or {}
+    fields: set[str] = set()
+    for f in ov.get("status_fields") or []:
+        s = str(f or "").strip()
+        if s:
+            fields.add(s)
+    for ft in ov.get("field_tokens") or []:
+        if isinstance(ft, dict):
+            s = str(ft.get("field") or "").strip()
+            if s:
+                fields.add(s)
+    for pat in success_patterns or []:
+        if not isinstance(pat, dict):
+            continue
+        for side in ("old", "new"):
+            for tok in pat.get(side) or []:
+                t = str(tok or "")
+                if t.startswith("field:") and t.count(":") >= 2:
+                    # field:name:value
+                    parts = t.split(":", 2)
+                    if parts[1]:
+                        fields.add(parts[1])
+    return fields
+
+
+def _field_tokens_from_row(row: dict[str, Any] | None, fields: set[str]) -> set[str]:
+    if not row or not fields:
+        return set()
+    out: set[str] = set()
+    for f in fields:
+        v = str(row.get(f) or "").strip()
+        if v:
+            out.add(field_token(f, v))
+    return out
+
+
+def _side_tokens(
+    kind: str,
+    status: str,
+    *,
+    row: dict[str, Any] | None = None,
+    fields: set[str] | None = None,
+) -> set[str]:
     toks: set[str] = set()
     k = str(kind or "").strip()
     if k:
@@ -127,6 +179,7 @@ def _side_tokens(kind: str, status: str) -> set[str]:
     s = str(status or "").strip()
     if s and s != "none":
         toks.add(s)
+    toks |= _field_tokens_from_row(row, fields or set())
     return toks
 
 
@@ -147,6 +200,28 @@ def _match_success(
     return False
 
 
+def _match_field_token_rules(
+    old_row: dict[str, Any] | None,
+    new_row: dict[str, Any] | None,
+    field_tokens: list[dict[str, Any]] | None,
+) -> bool:
+    """Optional AND constraints: each {side, field, in:[...]} must hold."""
+    rules = [r for r in (field_tokens or []) if isinstance(r, dict)]
+    if not rules:
+        return True
+    for ft in rules:
+        side = str(ft.get("side") or "").strip().lower()
+        field = str(ft.get("field") or "").strip()
+        allowed = {str(x).strip().lower() for x in (ft.get("in") or []) if str(x).strip()}
+        if not field or not allowed:
+            continue
+        row = old_row if side == "old" else new_row if side == "new" else None
+        val = str((row or {}).get(field) or "").strip().lower()
+        if val not in allowed:
+            return False
+    return True
+
+
 def dual_verdict(
     *,
     old_kind: str,
@@ -157,6 +232,10 @@ def dual_verdict(
     old_status: str = "none",
     new_status: str = "none",
     success_patterns: list[dict[str, Any]] | None = None,
+    out_of_expect: str = "strict",
+    old_row: dict[str, Any] | None = None,
+    new_row: dict[str, Any] | None = None,
+    sheet_override: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
     """Synthesize old+new into migration board verdict.
 
@@ -164,21 +243,28 @@ def dual_verdict(
     (``unfinished`` / ``lost``), not yellow migrating.
 
     When ``success_patterns`` is set (from monitor sheet_overrides), tokens may
-    include kinds and status classes (up/down) so e.g. old down + new up → migrated.
+    include kinds, status classes (up/down), and ``field:name:value``.
+
+    ``out_of_expect``: strict (default) | warn (yellow instead of red) | ignore.
     """
-    if in_expect and _match_success(
-        _side_tokens(old_kind, old_status),
-        _side_tokens(new_kind, new_status),
-        success_patterns,
-    ):
+    ov = sheet_override or {}
+    fields = _fields_for_tokens(ov, success_patterns)
+    old_toks = _side_tokens(old_kind, old_status, row=old_row, fields=fields)
+    new_toks = _side_tokens(new_kind, new_status, row=new_row, fields=fields)
+    field_ok = _match_field_token_rules(old_row, new_row, list(ov.get("field_tokens") or []) or None)
+
+    if in_expect and field_ok and _match_success(old_toks, new_toks, success_patterns):
         return "migrated", "green"
 
+    ooe = str(out_of_expect or "strict").strip().lower()
     if not in_expect:
+        if ooe == "ignore":
+            return "not_involved", "gray"
         if old_kind in ("removed", "changed") or new_kind in ("removed", "changed"):
             if old_kind == "removed" and new_kind in ("", "removed"):
-                return "lost", "red"
+                return ("lost", "yellow") if ooe == "warn" else ("lost", "red")
             if old_kind in ("removed", "changed") or new_kind in ("changed",):
-                return "anomaly", "red"
+                return ("anomaly", "yellow") if ooe == "warn" else ("anomaly", "red")
         if old_kind == "added" or new_kind == "added":
             return "unexpected_new", "yellow"
         return "not_involved", "gray"
@@ -195,12 +281,12 @@ def dual_verdict(
         if acceptance:
             return "unfinished", "red"
         return "migrating", "yellow"
-    ov, oc = side_verdict(kind=old_kind or "unchanged", in_expect=True, window_active=window_active)
-    if oc == "red" or (new_kind in ("removed",) and old_kind != "removed"):
+    side_v, side_c = side_verdict(kind=old_kind or "unchanged", in_expect=True, window_active=window_active)
+    if side_c == "red" or (new_kind in ("removed",) and old_kind != "removed"):
         return "anomaly", "red"
     if acceptance:
         return "unfinished", "red"
-    if window_active or ov.startswith("expected"):
+    if window_active or side_v.startswith("expected"):
         return "migrating", "yellow"
     return "migrating", "yellow"
 
@@ -280,10 +366,22 @@ def evaluate_metric_dual(
     acceptance: bool = False,
     field_rules: list[dict[str, Any]] | None = None,
     sheet_override: dict[str, Any] | None = None,
+    out_of_expect: str = "strict",
 ) -> dict[str, Any]:
     """Run old vs old-baseline, new vs new-baseline (or mapped old baseline), dual merge."""
     expect_keys = expect_keys_for_metric(expect, metric_id=metric_id, iface_fields=iface_fields)
     ov = sheet_override or {}
+    if ov.get("skip_dual"):
+        return {
+            "metric_id": metric_id,
+            "old_summary": {},
+            "new_summary": {},
+            "progress_ok": 0,
+            "progress_total": 0,
+            "anomaly": 0,
+            "rows": [],
+            "skipped": True,
+        }
     success_patterns = list(ov.get("success") or []) if isinstance(ov.get("success"), list) else []
 
     old_cmp = compare_rows(
@@ -372,6 +470,10 @@ def evaluate_metric_dual(
             old_status=old_st,
             new_status=new_st,
             success_patterns=success_patterns or None,
+            out_of_expect=out_of_expect,
+            old_row=old_cur or None,
+            new_row=new_cur or None,
+            sheet_override=ov,
         )
         if in_exp and verdict == "migrated" and color == "green":
             progress_ok += 1

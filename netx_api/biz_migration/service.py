@@ -360,7 +360,8 @@ def run_evaluate(
     # Final acceptance: window closed → unfinished expect = red
     window_active = (mb.status == "active") and (not acceptance)
     mt = resolve_project_monitor_template(db, proj)
-    sheets, sheet_overrides, _defaults = resolve_evaluate_sheets(db, mt)
+    sheets, sheet_overrides, defaults = resolve_evaluate_sheets(db, mt)
+    out_of_expect = str((defaults or {}).get("out_of_expect") or "strict").strip().lower()
 
     sheet_cards: list[dict[str, Any]] = []
     all_rows: list[dict[str, Any]] = []
@@ -377,6 +378,8 @@ def run_evaluate(
         row_filters = list(sheet.get("row_filters") or [])
         field_rules = list(sheet.get("field_rules") or [])
         sheet_ov = override_for_metric(sheet_overrides, mid)
+        if sheet_ov.get("skip_dual"):
+            continue
 
         old_base = apply_row_filters(
             _load_metric_rows(db, batch_id=proj.old_baseline_batch_id, metric_id=mid),
@@ -412,6 +415,7 @@ def run_evaluate(
             acceptance=acceptance,
             field_rules=field_rules,
             sheet_override=sheet_ov,
+            out_of_expect=out_of_expect,
         )
         sheet_cards.append(
             {
