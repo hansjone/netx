@@ -814,12 +814,18 @@ export function BizComparePage() {
     diff_count?: number;
     removed?: number;
     changed?: number;
-  }) =>
-    Number(
-      c.fail_count ??
-        c.diff_count ??
-        Number(c.removed || 0) + Number(c.changed || 0),
-    );
+    added?: number;
+  }) => {
+    // Always derive from removed+changed so "新增" never counts as fail
+    // (legacy diff_count used to include added).
+    if (c.removed !== undefined || c.changed !== undefined) {
+      return Number(c.removed || 0) + Number(c.changed || 0);
+    }
+    if (c.fail_count !== undefined) return Number(c.fail_count || 0);
+    const legacy = Number(c.diff_count || 0);
+    const added = Number(c.added || 0);
+    return Math.max(0, legacy - added);
+  };
 
   const sheetSuccessOf = (c: { success_count?: number; unchanged?: number }) =>
     Number(c.success_count ?? c.unchanged ?? 0);
@@ -832,8 +838,9 @@ export function BizComparePage() {
     changed?: number;
     success_count?: number;
     unchanged?: number;
+    added?: number;
   }) => {
-    if (c.pass_rate !== undefined && c.pass_rate !== null) return Number(c.pass_rate);
+    // Always recompute from fail/success so added never skews pass rate
     const fail = sheetFailOf(c);
     const ok = sheetSuccessOf(c);
     const judged = fail + ok;
@@ -865,7 +872,6 @@ export function BizComparePage() {
       return String(a.metric_id).localeCompare(String(b.metric_id));
     });
   }, [summary.sheet_cards]);
-  const sheetFailCount = sheetCards.filter((c) => sheetFailOf(c) > 0).length;
   const activeSheetCard = sheetCards.find((c) => c.metric_id === resultSheetId) || sheetCards[0];
   const activeFail = sheetFailOf(activeSheetCard || {});
   const activeSuccess = sheetSuccessOf(activeSheetCard || {});
@@ -2275,16 +2281,19 @@ export function BizComparePage() {
                 <div className="bs-cmp-board__body">
                   <aside className="bs-cmp-nav" aria-label={t("bizCompare.sheetNavTitle")}>
                     <div className="bs-cmp-nav__head">
-                      <div className="bs-cmp-nav__title">{t("bizCompare.sheetNavTitle")}</div>
-                      <div className="bs-cmp-nav__hint">
-                        {t("bizCompare.sheetNavHint", {
-                          n: String(sheetCards.length || runSheets.length),
-                        })}
-                        {sheetFailCount > 0
-                          ? ` · ${t("bizCompare.sheetFailCount", { n: String(sheetFailCount) })}`
-                          : ""}
-                      </div>
-                      <div className="bs-cmp-nav__legend" aria-hidden>
+                      <span className="bs-cmp-nav__dot bs-cmp-nav__dot--spacer" aria-hidden />
+                      <span className="bs-cmp-nav__head-main">
+                        <span className="bs-cmp-nav__title">{t("bizCompare.sheetNavTitle")}</span>
+                        <span
+                          className="bs-cmp-nav__count"
+                          title={t("bizCompare.sheetNavHint", {
+                            n: String(sheetCards.length || runSheets.length),
+                          })}
+                        >
+                          {sheetCards.length || runSheets.length}
+                        </span>
+                      </span>
+                      <span className="bs-cmp-nav__legend" aria-hidden>
                         <span
                           className="bs-cmp-nav__num bs-cmp-nav__num--fail is-hot"
                           title={t("bizCompare.kindFail")}
@@ -2303,7 +2312,7 @@ export function BizComparePage() {
                         >
                           %
                         </span>
-                      </div>
+                      </span>
                     </div>
                     <div className="bs-cmp-nav__list" role="tablist">
                       {(sheetCards.length

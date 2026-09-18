@@ -10242,9 +10242,25 @@ html.login-page--paused .login-page__flare {
 }
 
 .bs-cmp-nav__head {
-  padding: 10px 12px 8px;
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0 8px;
+  padding: 8px 10px;
   border-bottom: 1px solid var(--bs-cmp-border);
   flex: 0 0 auto;
+  min-height: 36px;
+}
+
+.bs-cmp-nav__dot--spacer {
+  visibility: hidden;
+}
+
+.bs-cmp-nav__head-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
 }
 
 .bs-cmp-nav__title {
@@ -10252,35 +10268,45 @@ html.login-page--paused .login-page__flare {
   font-weight: 700;
   letter-spacing: 0.02em;
   color: #f1f5f9;
+  white-space: nowrap;
+}
+
+.bs-cmp-nav__count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.35rem;
+  height: 1.2rem;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  color: #93c5fd;
+  background: rgba(59, 130, 246, 0.18);
+  border: 1px solid rgba(96, 165, 250, 0.35);
 }
 
 .bs-cmp-nav__hint {
-  margin-top: 2px;
-  font-size: 11px;
-  color: var(--bs-cmp-muted);
-  line-height: 1.35;
+  display: none;
 }
 
-.bs-cmp-nav__legend {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(1.6em, auto));
-  gap: 4px 6px;
-  justify-items: end;
-  margin-top: 6px;
-  margin-left: auto;
-  width: fit-content;
-  font-size: 10px;
-  font-weight: 700;
-}
-
+.bs-cmp-nav__legend,
 .bs-cmp-nav__stats {
   display: inline-grid;
-  grid-template-columns: repeat(3, minmax(1.6em, auto));
-  gap: 2px 6px;
+  grid-template-columns: 2.6em 2.6em 2.8em;
+  gap: 2px;
   justify-items: end;
   align-items: center;
   flex: 0 0 auto;
   font-variant-numeric: tabular-nums;
+}
+
+.bs-cmp-nav__legend {
+  margin: 0;
+  font-size: 10px;
+  font-weight: 700;
 }
 
 .bs-cmp-nav__num {
@@ -10289,6 +10315,11 @@ html.login-page--paused .login-page__flare {
   line-height: 1;
   color: #475569;
   opacity: 0.55;
+  white-space: nowrap;
+}
+
+.bs-cmp-nav__legend .bs-cmp-nav__num {
+  font-size: 10px;
 }
 
 .bs-cmp-nav__num--fail.is-hot {
@@ -10304,7 +10335,6 @@ html.login-page--paused .login-page__flare {
 .bs-cmp-nav__num--rate {
   color: #93c5fd;
   opacity: 0.95;
-  min-width: 2.6em;
 }
 
 .bs-cmp-nav__list {
