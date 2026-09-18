@@ -156,7 +156,7 @@ const en = {
       configSync: "Config sync",
       portTraffic: "Port traffic",
       portTrafficWall: "Traffic wall",
-      bizState: "Business state",
+      bizState: "Business monitor",
       bizCompare: "Business compare",
       bizMigration: "Cutover monitor",
     },
@@ -168,7 +168,7 @@ const en = {
     },
   },
   bizState: {
-    title: "Business state",
+    title: "Business monitor",
     create: "Create task",
     createHint: "Pick any valid NE (managed / UME); search supported",
     created: "Task created",
@@ -509,7 +509,7 @@ const en = {
     verdictOk: "OK",
     enableHighfreq: "Enable high-freq port collect",
     highfreqHint:
-      "Creates/reuses biz-state tasks with interface_brief only on old/new NEs. Add BGP etc. later on the same tasks in Business state.",
+      "Creates/reuses biz-state tasks with interface_brief only on old/new NEs. Add BGP etc. later on the same tasks in Business monitor.",
     highfreqReady: "High-freq port collect tasks ready and bound to this project",
     collectNow: "Collect old+new now",
     collectTriggered: "Collect triggered",

@@ -156,8 +156,8 @@ const zh = {
       configSync: "配置同步",
       portTraffic: "流量监控",
       portTrafficWall: "流量大屏",
-      bizState: "业务状态监控",
-      bizCompare: "业务状态比对",
+      bizState: "业务监控",
+      bizCompare: "业务对比",
       bizMigration: "割接监控",
     },
     collapseNav: "折叠侧栏",
@@ -168,7 +168,7 @@ const zh = {
     },
   },
   bizState: {
-    title: "业务状态监控",
+    title: "业务监控",
     create: "创建任务",
     createHint: "从托管 / UME 等有效网元中选择（支持查找）",
     created: "已创建任务",
@@ -264,7 +264,7 @@ const zh = {
     bindingsSaved: "参数关联已保存",
   },
   bizCompare: {
-    title: "业务状态比对",
+    title: "业务对比",
     templates: "比对模板",
     newTemplate: "新建模板",
     editTemplate: "编辑模板",
@@ -447,7 +447,7 @@ const zh = {
   },
   bizMigration: {
     title: "割接监控",
-    hint: "与业务状态比对独立：相对基线漂移 + 本批预期 + 老/新双端判定。复用采集任务与端口映射。",
+    hint: "与业务对比独立：相对基线漂移 + 本批预期 + 老/新双端判定。复用采集任务与端口映射。",
     hintPort: "当前监控项：端口状态（interface_brief / admin·phy·prot）。选基线 → 勾选本批端口 → 判定看板。",
     createProject: "新建割接项目",
     projectName: "项目名称",
