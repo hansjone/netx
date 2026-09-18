@@ -359,7 +359,9 @@ export function BizMigrationPage() {
     if (!projectId) {
       setBatches([]);
       setBatchId("");
-      setBaselinePorts([]);
+      setExpectSheets([]);
+      setExpectMetricId("");
+      setSelectedExpectKeys(new Set());
       setRedTickets([]);
       setOpenRedCount(0);
       setBoard(null);
