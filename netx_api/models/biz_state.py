@@ -221,6 +221,27 @@ class BizCompareTemplate(Base):
     ignore_fields: Mapped[list] = mapped_column(_JsonType, default=list)
     metrics_json: Mapped[list] = mapped_column(_JsonType, default=list)
     note: Mapped[str] = mapped_column(String(512), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+
+
+class BizMonitorTemplate(Base):
+    """Cutover/monitor overlay on a BizCompareTemplate (HOW + WHEN rules).
+
+    ``compare_template_id`` selects sheets / field rules.
+    ``defaults_json`` / ``sheet_overrides_json`` carry dual-verdict & status semantics.
+    ``collect_metric_ids_json`` optional HF collect subset.
+    """
+
+    __tablename__ = "biz_monitor_template"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
+    name: Mapped[str] = mapped_column(String(256), default="", index=True)
+    compare_template_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    collect_metric_ids_json: Mapped[list] = mapped_column(_JsonType, default=list)
+    defaults_json: Mapped[dict] = mapped_column(_JsonType, default=dict)
+    sheet_overrides_json: Mapped[list] = mapped_column(_JsonType, default=list)
+    note: Mapped[str] = mapped_column(String(512), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
 

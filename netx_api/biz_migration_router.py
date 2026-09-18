@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from .biz_migration import service as svc
+from .biz_migration import monitor_templates as mon_tpl
 from .db import get_db
 
 router = APIRouter(prefix="/v1/biz-migration", tags=["biz-migration"])
@@ -39,6 +40,24 @@ class BatchIn(BaseModel):
     expect_set: dict[str, Any] = Field(default_factory=dict)
     status: str = "pending"
     note: str = ""
+
+
+class MonitorTemplateIn(BaseModel):
+    name: str = ""
+    compare_template_id: str = ""
+    collect_metric_ids: list[str] = Field(default_factory=list)
+    defaults: dict[str, Any] = Field(default_factory=dict)
+    sheet_overrides: list[dict[str, Any]] = Field(default_factory=list)
+    note: str = ""
+
+
+class MonitorTemplatePatchIn(BaseModel):
+    name: str | None = None
+    compare_template_id: str | None = None
+    collect_metric_ids: list[str] | None = None
+    defaults: dict[str, Any] | None = None
+    sheet_overrides: list[dict[str, Any]] | None = None
+    note: str | None = None
 
 
 class BatchPatchIn(BaseModel):
@@ -209,3 +228,35 @@ def api_list_diffs(
         offset=offset,
         limit=limit,
     )
+
+
+@router.get("/monitor-templates")
+def api_list_monitor_templates(db: Session = Depends(get_db)):
+    return {"items": mon_tpl.list_monitor_templates(db)}
+
+
+@router.post("/monitor-templates")
+def api_create_monitor_template(body: MonitorTemplateIn, db: Session = Depends(get_db)):
+    return mon_tpl.create_monitor_template(db, body.model_dump())
+
+
+@router.get("/monitor-templates/{template_id}")
+def api_get_monitor_template(template_id: str, db: Session = Depends(get_db)):
+    return mon_tpl.get_monitor_template(db, template_id)
+
+
+@router.patch("/monitor-templates/{template_id}")
+def api_patch_monitor_template(
+    template_id: str,
+    body: MonitorTemplatePatchIn,
+    db: Session = Depends(get_db),
+):
+    return mon_tpl.update_monitor_template(
+        db, template_id, body.model_dump(exclude_unset=True)
+    )
+
+
+@router.delete("/monitor-templates/{template_id}")
+def api_delete_monitor_template(template_id: str, db: Session = Depends(get_db)):
+    mon_tpl.delete_monitor_template(db, template_id)
+    return {"ok": True}

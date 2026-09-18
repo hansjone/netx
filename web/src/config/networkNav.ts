@@ -1,9 +1,9 @@
 /**
  * Left-nav tree for the Network Management module.
- * Add leaf items here when extending (devices / topology / alarms / tasks).
+ * Add leaf items here when extending (devices / topology / alarms / tasks / cutover).
  */
 
-export type NetworkNavGroupId = "detail" | "topologyMgmt" | "tasks";
+export type NetworkNavGroupId = "detail" | "topologyMgmt" | "tasks" | "cutoverCompare";
 
 export type NetworkNavItem = {
   id: string;
@@ -74,23 +74,41 @@ export const NETWORK_NAV: readonly NetworkNavGroup[] = [
         labelKey: "network.nav.portTrafficWall",
         group: "tasks",
       },
+    ],
+  },
+  {
+    id: "cutoverCompare",
+    labelKey: "network.nav.cutoverCompare",
+    items: [
       {
         id: "biz-state",
-        path: "/network/tasks/biz-state",
+        path: "/network/cutover/biz-state",
         labelKey: "network.nav.bizState",
-        group: "tasks",
+        group: "cutoverCompare",
       },
       {
         id: "biz-compare",
-        path: "/network/tasks/biz-compare",
+        path: "/network/cutover/biz-compare",
         labelKey: "network.nav.bizCompare",
-        group: "tasks",
+        group: "cutoverCompare",
       },
       {
         id: "biz-migration",
-        path: "/network/tasks/biz-migration",
+        path: "/network/cutover/biz-migration",
         labelKey: "network.nav.bizMigration",
-        group: "tasks",
+        group: "cutoverCompare",
+      },
+      {
+        id: "compare-templates",
+        path: "/network/cutover/compare-templates",
+        labelKey: "network.nav.compareTemplates",
+        group: "cutoverCompare",
+      },
+      {
+        id: "monitor-templates",
+        path: "/network/cutover/monitor-templates",
+        labelKey: "network.nav.monitorTemplates",
+        group: "cutoverCompare",
       },
     ],
   },

@@ -52,6 +52,11 @@ const BizComparePage = lazy(() =>
 const BizMigrationPage = lazy(() =>
   import("./pages/network/BizMigrationPage").then((m) => ({ default: m.BizMigrationPage })),
 );
+const BizMonitorTemplatesPage = lazy(() =>
+  import("./pages/network/BizMonitorTemplatesPage").then((m) => ({
+    default: m.BizMonitorTemplatesPage,
+  })),
+);
 const UsersPage = lazy(() => import("./pages/UsersPage").then((m) => ({ default: m.UsersPage })));
 const AuditLayout = lazy(() =>
   import("./pages/audit/AuditLayout").then((m) => ({ default: m.AuditLayout })),
@@ -129,9 +134,23 @@ function ProtectedApp() {
             <Route path="tasks/config-sync" element={<ConfigSyncPage />} />
             <Route path="tasks/port-traffic/wall" element={<LegacyPortTrafficWallRedirect />} />
             <Route path="tasks/port-traffic" element={<PortTrafficPage />} />
-            <Route path="tasks/biz-state" element={<BizStatePage />} />
-            <Route path="tasks/biz-compare" element={<BizComparePage />} />
-            <Route path="tasks/biz-migration" element={<BizMigrationPage />} />
+            <Route path="tasks/biz-state" element={<Navigate to="/network/cutover/biz-state" replace />} />
+            <Route
+              path="tasks/biz-compare"
+              element={<Navigate to="/network/cutover/biz-compare" replace />}
+            />
+            <Route
+              path="tasks/biz-migration"
+              element={<Navigate to="/network/cutover/biz-migration" replace />}
+            />
+            <Route path="cutover/biz-state" element={<BizStatePage />} />
+            <Route path="cutover/biz-compare" element={<BizComparePage pageMode="jobs" />} />
+            <Route path="cutover/biz-migration" element={<BizMigrationPage />} />
+            <Route
+              path="cutover/compare-templates"
+              element={<BizComparePage pageMode="templates" />}
+            />
+            <Route path="cutover/monitor-templates" element={<BizMonitorTemplatesPage />} />
           </Route>
           <Route path="/collect" element={<Navigate to="/network/tasks/collect" replace />} />
           <Route path="/users" element={<UsersPage />} />

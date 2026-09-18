@@ -688,7 +688,12 @@ export function BizMigrationPage() {
           </Button>
         </div>
       </div>
-      <p className="panel__hint muted">{t("bizMigration.hintPort")}</p>
+      <p className="panel__hint muted">
+        {t("bizMigration.hintPort")}{" "}
+        <Link to="/network/cutover/monitor-templates">{t("network.nav.monitorTemplates")}</Link>
+        {" · "}
+        <Link to="/network/cutover/compare-templates">{t("network.nav.compareTemplates")}</Link>
+      </p>
 
       <div className="pt-list">
         <div className="pt-list-kpis">
@@ -838,7 +843,7 @@ export function BizMigrationPage() {
             {!tasks.length ? (
               <p className="muted" style={{ margin: 0, fontSize: 12 }}>
                 {t("bizMigration.needBizStateTasks")}{" "}
-                <Link to="/network/tasks/biz-state" onClick={closeCreate}>
+                <Link to="/network/cutover/biz-state" onClick={closeCreate}>
                   {t("bizMigration.openBizState")}
                 </Link>
               </p>
@@ -941,7 +946,7 @@ export function BizMigrationPage() {
                 <Button size="sm" variant="secondary" isDisabled={busy} onPress={() => void onCollectNow()}>
                   {t("bizMigration.collectNow")}
                 </Button>
-                <Link to="/network/tasks/biz-state" style={{ fontSize: 12, alignSelf: "center" }}>
+                <Link to="/network/cutover/biz-state" style={{ fontSize: 12, alignSelf: "center" }}>
                   {t("bizMigration.openBizState")}
                 </Link>
                 {openRedCount > 0 ? (

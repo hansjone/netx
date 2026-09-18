@@ -529,11 +529,14 @@ function metricLabel(id: string) {
   return id;
 }
 
-export function BizComparePage() {
+export type BizComparePageMode = "jobs" | "templates" | "all";
+
+export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePageMode }) {
   const { t } = useI18n();
   const { showOk, showError } = useToast();
 
-  const [pageTab, setPageTab] = useState<PageTab>("jobs");
+  const [pageTab, setPageTab] = useState<PageTab>(pageMode === "templates" ? "templates" : "jobs");
+  const showTabSwitch = pageMode === "all";
   const [busy, setBusy] = useState(false);
 
   const [tasks, setTasks] = useState<TaskOpt[]>([]);
@@ -1094,7 +1097,7 @@ export function BizComparePage() {
       });
       showOk(t("bizCompare.templateImported"));
       await refresh();
-      setPageTab("templates");
+      if (pageMode !== "jobs") setPageTab("templates");
     } catch (e) {
       showError(formatErr(e));
     } finally {
@@ -1453,7 +1456,9 @@ export function BizComparePage() {
   return (
     <section className="panel nm-page-panel">
       <div className="panel__toolbar">
-        <h2>{t("bizCompare.title")}</h2>
+        <h2>
+          {pageMode === "templates" ? t("bizCompare.templates") : t("bizCompare.title")}
+        </h2>
         <div className="btn-row">
           {pageTab === "templates" ? (
             <>
@@ -1488,24 +1493,26 @@ export function BizComparePage() {
       </div>
 
       <div className="pt-list">
-        <div className="btn-row nm-config-modal__tabs" role="tablist">
-          <Button
-            size="sm"
-            variant={pageTab === "jobs" ? "primary" : "secondary"}
-            className={pageTab === "jobs" ? "is-active" : undefined}
-            onPress={() => setPageTab("jobs")}
-          >
-            {t("bizCompare.jobList")}
-          </Button>
-          <Button
-            size="sm"
-            variant={pageTab === "templates" ? "primary" : "secondary"}
-            className={pageTab === "templates" ? "is-active" : undefined}
-            onPress={() => setPageTab("templates")}
-          >
-            {t("bizCompare.templates")}
-          </Button>
-        </div>
+        {showTabSwitch ? (
+          <div className="btn-row nm-config-modal__tabs" role="tablist">
+            <Button
+              size="sm"
+              variant={pageTab === "jobs" ? "primary" : "secondary"}
+              className={pageTab === "jobs" ? "is-active" : undefined}
+              onPress={() => setPageTab("jobs")}
+            >
+              {t("bizCompare.jobList")}
+            </Button>
+            <Button
+              size="sm"
+              variant={pageTab === "templates" ? "primary" : "secondary"}
+              className={pageTab === "templates" ? "is-active" : undefined}
+              onPress={() => setPageTab("templates")}
+            >
+              {t("bizCompare.templates")}
+            </Button>
+          </div>
+        ) : null}
 
         <div className="filter-inline">
           <Input

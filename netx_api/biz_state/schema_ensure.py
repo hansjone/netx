@@ -48,6 +48,19 @@ def apply_biz_state_schema(conn: Connection) -> None:
         "ALTER TABLE biz_migration_batch ADD COLUMN IF NOT EXISTS accept_summary_json JSON DEFAULT '{}'",
         "ALTER TABLE biz_migration_run ADD COLUMN IF NOT EXISTS purpose VARCHAR(32) DEFAULT 'manual'",
         "CREATE INDEX IF NOT EXISTS ix_biz_migration_red_project_status ON biz_migration_red_ticket (project_id, status)",
+        "CREATE TABLE IF NOT EXISTS biz_monitor_template ("
+        "id VARCHAR(64) PRIMARY KEY,"
+        "name VARCHAR(256) DEFAULT '',"
+        "compare_template_id VARCHAR(64) DEFAULT '',"
+        "collect_metric_ids_json JSON DEFAULT '[]',"
+        "defaults_json JSON DEFAULT '{}',"
+        "sheet_overrides_json JSON DEFAULT '[]',"
+        "note VARCHAR(512) DEFAULT '',"
+        "created_at TIMESTAMP,"
+        "updated_at TIMESTAMP"
+        ")",
+        "CREATE INDEX IF NOT EXISTS ix_biz_monitor_template_name ON biz_monitor_template (name)",
+        "CREATE INDEX IF NOT EXISTS ix_biz_monitor_template_compare ON biz_monitor_template (compare_template_id)",
     ):
         try:
             _run_sql(conn, sql)
