@@ -627,6 +627,41 @@ def get_batch(db: Session, batch_id: str) -> dict[str, Any]:
     }
 
 
+def get_batch_command(db: Session, batch_id: str, command_id: str) -> dict[str, Any]:
+    """Full CLI raw text for one collect command (AI / deep dive)."""
+    from ..models import BizStateBatchCommand
+
+    b = db.get(BizStateBatch, batch_id)
+    if not b:
+        raise HTTPException(status_code=404, detail="batch_not_found")
+    c = db.get(BizStateBatchCommand, command_id)
+    if not c or c.batch_id != batch_id:
+        raise HTTPException(status_code=404, detail="command_not_found")
+    task = db.get(BizStateTask, b.task_id) if b.task_id else None
+    return {
+        "id": c.id,
+        "batch_id": batch_id,
+        "task_id": b.task_id,
+        "device": {
+            "ne_id": task.ne_id if task else "",
+            "ne_name": task.ne_name if task else "",
+            "ne_ip": task.ne_ip if task else "",
+        },
+        "profile_id": c.profile_id,
+        "parser_id": c.parser_id,
+        "metric_id": c.metric_id,
+        "raw_command": c.raw_command,
+        "params": c.params_json or {},
+        "parse_status": c.parse_status,
+        "row_count": c.row_count,
+        "message": c.message,
+        "raw_text": c.raw_text or "",
+        "collected_at": c.created_at.isoformat() + "Z" if c.created_at else None,
+        "batch_started_at": b.started_at.isoformat() + "Z" if b.started_at else None,
+        "batch_ended_at": b.ended_at.isoformat() + "Z" if b.ended_at else None,
+    }
+
+
 def export_batch_zip(db: Session, batch_id: str) -> bytes:
     detail = get_batch(db, batch_id)
     buf = io.BytesIO()

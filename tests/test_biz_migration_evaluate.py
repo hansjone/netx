@@ -1160,5 +1160,56 @@ class PortMapScopeTests(unittest.TestCase):
         self.assertTrue(any(r["key_str"] == "1.1.1.1" and r["in_expect"] for r in out["rows"]))
 
 
+class DisplayRawABTests(unittest.TestCase):
+    """Board/AI must show device-raw A/B, not post-map BB."""
+
+    def test_normalize_and_map_keeps_display_ab(self):
+        # Old device shows GE-…; template normalizes GE→gei; map gei-old → xgei-new.
+        # New device collected xgei-new. Internal match is gei-old↔xgei-new;
+        # display must stay GE-old / xgei-new (never xgei-new / xgei-new).
+        rules = [{"from": "GE", "to": "gei"}]
+        out = evaluate_metric_dual(
+            metric_id="interface_brief",
+            key_fields=["interface"],
+            iface_fields=["interface"],
+            compare_fields=["admin", "phy", "prot"],
+            old_baseline_rows=[
+                {"interface": "GE-old", "admin": "up", "phy": "up", "prot": "up"}
+            ],
+            old_current_rows=[],
+            new_baseline_rows=None,
+            new_current_rows=[
+                {"interface": "xgei-new", "admin": "up", "phy": "up", "prot": "up"}
+            ],
+            port_map={"gei-old": "xgei-new"},
+            expect=parse_expect_set({"ports": ["gei-old"]}),
+            window_active=True,
+            sheet_override=PORT_OVERRIDE,
+            iface_normalize_rules=rules,
+        )
+        migrated = [r for r in out["rows"] if r["verdict"] == "migrated"]
+        self.assertTrue(migrated, out["rows"])
+        row = migrated[0]
+        self.assertEqual(row["old_key"], "GE-old")
+        self.assertEqual(row["new_key"], "xgei-new")
+        self.assertEqual(row["key_str"], "GE-old")
+        self.assertEqual(row["new_key_str"], "xgei-new")
+        self.assertEqual(row["match_old_key"], "gei-old")
+        self.assertEqual(row["match_new_key"], "xgei-new")
+        self.assertEqual(row["old"].get("interface"), "GE-old")
+        self.assertEqual(row["new"].get("interface"), "xgei-new")
+        pm = row["evidence"]["port_map"]
+        self.assertTrue(pm["applied"])
+        self.assertEqual(pm["display_before"], "GE-old")
+        self.assertEqual(pm["display_after"], "xgei-new")
+        self.assertEqual(pm["match_before"], "gei-old")
+        self.assertEqual(pm["match_after"], "xgei-new")
+        old_iface = row["evidence"]["old"]["iface"][0]
+        self.assertEqual(old_iface["raw"], "GE-old")
+        self.assertEqual(old_iface["normalized"], "gei-old")
+        self.assertTrue(old_iface["mapped"])
+        self.assertEqual(old_iface["map_to"], "xgei-new")
+
+
 if __name__ == "__main__":
     unittest.main()

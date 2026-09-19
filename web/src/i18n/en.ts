@@ -609,6 +609,7 @@ const en = {
     runHistory: "Runs",
     runLatest: "Latest",
     colRuleHit: "Rule hit",
+    colCommand: "Collect command",
     mappingBound: "Mapping saved and bound to this project",
     allMetrics: "All metrics",
     colMetric: "Metric",

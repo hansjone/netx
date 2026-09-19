@@ -217,15 +217,60 @@ type MigBatch = {
     verdict_counts?: Record<string, number>;
   };
 };
+type DiffRow = {
+  id: string;
+  metric_id: string;
+  sheet_id?: string;
+  verdict: string;
+  color: string;
+  old_kind: string;
+  new_kind: string;
+  in_expect: boolean;
+  old_key?: string;
+  new_key?: string;
+  key_str?: string;
+  new_key_str?: string;
+  match_old_key?: string;
+  match_new_key?: string;
+  old_status?: string;
+  new_status?: string;
+  rule_hit?: string;
+  evidence?: {
+    old?: {
+      device?: { ne_name?: string; ne_ip?: string };
+      command?: { raw_command?: string; parse_status?: string };
+      collect?: { collected_at?: string; batch_id?: string };
+      iface?: Array<{ raw?: string; normalized?: string; mapped?: boolean; map_to?: string }>;
+    };
+    new?: {
+      device?: { ne_name?: string; ne_ip?: string };
+      command?: { raw_command?: string; parse_status?: string };
+      collect?: { collected_at?: string; batch_id?: string };
+      iface?: Array<{ raw?: string; normalized?: string }>;
+    };
+    port_map?: {
+      applied?: boolean;
+      match_before?: string;
+      match_after?: string;
+      display_before?: string;
+      display_after?: string;
+    };
+  };
+  old?: Record<string, unknown>;
+  new?: Record<string, unknown>;
+};
 type RedTicket = {
   id: string;
   batch_id: string;
+  old_key?: string;
+  new_key?: string;
   key_str: string;
   new_key_str?: string;
   verdict: string;
   old_status?: string;
   new_status?: string;
   status: string;
+  evidence?: DiffRow["evidence"];
 };
 type SheetCard = {
   metric_id: string;
@@ -238,21 +283,6 @@ type SheetCard = {
   new_baseline_mode?: string;
   collect_skipped?: boolean;
   current_missing?: boolean;
-};
-type DiffRow = {
-  id: string;
-  metric_id: string;
-  sheet_id?: string;
-  verdict: string;
-  color: string;
-  old_kind: string;
-  new_kind: string;
-  in_expect: boolean;
-  key_str?: string;
-  new_key_str?: string;
-  old_status?: string;
-  new_status?: string;
-  rule_hit?: string;
 };
 type EvalRun = {
   id: string;
@@ -2635,9 +2665,11 @@ export function BizMigrationPage() {
                           {redTickets.map((r) => (
                             <tr key={r.id}>
                               <td>
-                                <code>{r.key_str}</code>
+                                <code>{r.old_key || r.key_str}</code>
                               </td>
-                              <td>{r.new_key_str || "—"}</td>
+                              <td>
+                                <code>{r.new_key || r.new_key_str || "—"}</code>
+                              </td>
                               <td>{r.old_status || "—"}</td>
                               <td>{r.new_status || "—"}</td>
                               <td style={{ color: COLOR.red, fontWeight: 600 }}>{verdictLabel(r.verdict)}</td>
@@ -2744,24 +2776,53 @@ export function BizMigrationPage() {
                               <thead>
                                 <tr>
                                   <th>{t("bizMigration.colMetric")}</th>
-                                  <th>{t("bizMigration.colKey")}</th>
-                                  <th>{t("bizMigration.colMapped")}</th>
+                                  <th>{t("bizMigration.colOldPort")}</th>
+                                  <th>{t("bizMigration.colNewPort")}</th>
                                   <th>{t("bizMigration.colOld")}</th>
                                   <th>{t("bizMigration.colNew")}</th>
+                                  <th>{t("bizMigration.colCommand")}</th>
                                   <th>{t("bizMigration.colVerdict")}</th>
                                   <th>{t("bizMigration.colRuleHit")}</th>
                                 </tr>
                               </thead>
                               <tbody>
-                                {visibleDiffs.map((d) => (
-                                  <tr key={d.id}>
+                                {visibleDiffs.map((d) => {
+                                  const oldKey = d.old_key || d.key_str || "—";
+                                  const newKey = d.new_key || d.new_key_str || "—";
+                                  const matchHint =
+                                    d.match_old_key &&
+                                    d.match_new_key &&
+                                    (d.match_old_key !== oldKey || d.match_new_key !== newKey)
+                                      ? `match ${d.match_old_key} → ${d.match_new_key}`
+                                      : "";
+                                  const oldCmd = d.evidence?.old?.command?.raw_command || "";
+                                  const newCmd = d.evidence?.new?.command?.raw_command || "";
+                                  const cmdLabel = oldCmd || newCmd || "—";
+                                  const cmdTitle = [
+                                    d.evidence?.old?.device?.ne_name &&
+                                      `old: ${d.evidence.old.device.ne_name}`,
+                                    oldCmd && `old cmd: ${oldCmd}`,
+                                    d.evidence?.new?.device?.ne_name &&
+                                      `new: ${d.evidence.new.device.ne_name}`,
+                                    newCmd && `new cmd: ${newCmd}`,
+                                    matchHint,
+                                  ]
+                                    .filter(Boolean)
+                                    .join("\n");
+                                  return (
+                                  <tr key={d.id} title={cmdTitle || undefined}>
                                     <td>{sheetLabel(d)}</td>
                                     <td>
-                                      <code>{d.key_str || "—"}</code>
+                                      <code>{oldKey}</code>
                                     </td>
-                                    <td>{d.new_key_str || "—"}</td>
+                                    <td>
+                                      <code>{newKey || "—"}</code>
+                                    </td>
                                     <td>{d.old_status || d.old_kind || "—"}</td>
                                     <td>{d.new_status || d.new_kind || "—"}</td>
+                                    <td className="muted">
+                                      <code style={{ fontSize: 11 }}>{cmdLabel}</code>
+                                    </td>
                                     <td
                                       style={{
                                         color: COLOR[d.color] || COLOR.gray,
@@ -2774,10 +2835,11 @@ export function BizMigrationPage() {
                                       <code style={{ fontSize: 11 }}>{d.rule_hit || "—"}</code>
                                     </td>
                                   </tr>
-                                ))}
+                                  );
+                                })}
                                 {!visibleDiffs.length ? (
                                   <tr>
-                                    <td colSpan={7}>
+                                    <td colSpan={8}>
                                       <div className="pt-list-empty">{t("bizMigration.emptyDiffs")}</div>
                                     </td>
                                   </tr>

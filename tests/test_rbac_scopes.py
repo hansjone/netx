@@ -40,6 +40,7 @@ class ScopeUnitTests(unittest.TestCase):
         self.assertNotIn(SCOPE_WEBCRT, MCP_DEFAULT_SCOPES)
         self.assertNotIn(SCOPE_SQL, MCP_DEFAULT_SCOPES)
         self.assertIn("ne:exec", MCP_DEFAULT_SCOPES)
+        self.assertIn("biz-monitor:read", MCP_DEFAULT_SCOPES)
 
     def test_token_intersection(self) -> None:
         user = {"alarms:read", "ne:read", "ne:exec", "sql:query"}
@@ -54,7 +55,18 @@ class ScopeUnitTests(unittest.TestCase):
         self.assertEqual(required_scope_for_request("POST", "/v1/managed-ne"), "ne:write")
         self.assertEqual(required_scope_for_request("POST", "/v1/topology/fabric/paths"), "ne:read")
         self.assertEqual(required_scope_for_request("POST", "/v1/topology/fabric/edges"), "ne:write")
-
+        self.assertEqual(
+            required_scope_for_request("GET", "/v1/biz-migration/monitor-context"),
+            "biz-monitor:read",
+        )
+        self.assertEqual(
+            required_scope_for_request("GET", "/v1/biz-state/batches/abc"),
+            "biz-monitor:read",
+        )
+        self.assertEqual(
+            required_scope_for_request("POST", "/v1/biz-migration/projects"),
+            "ops:write",
+        )
 
 class SqlGuardTests(unittest.TestCase):
     def test_allows_cte(self) -> None:

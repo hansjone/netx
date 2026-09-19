@@ -1191,6 +1191,14 @@ def _load_metric_rows(db: Session, *, batch_id: str, metric_id: str) -> list[dic
                 "remote_if": n.remote_if,
                 "remote_ip": n.remote_ip,
                 "protocol": n.protocol,
+                "_netx": {
+                    "batch_id": batch_id,
+                    "batch_command_id": n.batch_command_id or "",
+                    "task_id": n.task_id or "",
+                    "ne_id": n.ne_id or "",
+                    "collected_at": n.collected_at.isoformat() + "Z" if n.collected_at else None,
+                    "row_id": n.id,
+                },
             }
             for n in rows
         ]
@@ -1203,7 +1211,19 @@ def _load_metric_rows(db: Session, *, batch_id: str, metric_id: str) -> list[dic
             .all()
         )
         return [
-            {"vrf": r.vrf, "source": r.source, "networks": r.networks}
+            {
+                "vrf": r.vrf,
+                "source": r.source,
+                "networks": r.networks,
+                "_netx": {
+                    "batch_id": batch_id,
+                    "batch_command_id": r.batch_command_id or "",
+                    "task_id": r.task_id or "",
+                    "ne_id": r.ne_id or "",
+                    "collected_at": r.collected_at.isoformat() + "Z" if r.collected_at else None,
+                    "row_id": r.id,
+                },
+            }
             for r in rows
         ]
     # Generic tabular metrics (ISIS / interface / ARP / ND6 / BGP …)
@@ -1221,7 +1241,21 @@ def _load_metric_rows(db: Session, *, batch_id: str, metric_id: str) -> list[dic
     if rows:
         # Raw rows only — filtering belongs to the compare sheet template
         # (``row_filters``), not metric-specific branches here.
-        return [dict(r.data_json or {}) for r in rows]
+        # ``_netx`` is collector provenance (stripped before field compare).
+        return [
+            {
+                **dict(r.data_json or {}),
+                "_netx": {
+                    "batch_id": batch_id,
+                    "batch_command_id": r.batch_command_id or "",
+                    "task_id": r.task_id or "",
+                    "ne_id": r.ne_id or "",
+                    "collected_at": r.collected_at.isoformat() + "Z" if r.collected_at else None,
+                    "row_id": r.id,
+                },
+            }
+            for r in rows
+        ]
     # Known metric with zero rows is OK; unknown metric still errors
     if metric_id in metric_field_map():
         return []

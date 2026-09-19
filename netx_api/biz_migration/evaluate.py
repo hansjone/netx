@@ -938,6 +938,89 @@ def override_for_metric(
     return override_for_sheet(sheet_overrides, sheet_id=mid, metric_id=mid)
 
 
+def strip_netx(row: dict[str, Any] | None) -> dict[str, Any]:
+    """Drop collector provenance key before compare / board row bodies."""
+    if not row:
+        return {}
+    return {k: v for k, v in row.items() if k != "_netx"}
+
+
+def row_match_key(
+    row: dict[str, Any],
+    *,
+    key_fields: list[str],
+    iface_fields: list[str],
+    rules: list[dict[str, str]] | None,
+) -> str:
+    from ..biz_state.iface_normalize import apply_iface_normalize
+
+    data = strip_netx(row)
+    if iface_fields and rules:
+        data = apply_iface_normalize(dict(data), iface_fields=iface_fields, rules=rules)
+    return "|".join(str(data.get(k) or "").strip() for k in key_fields)
+
+
+def index_raw_by_match_key(
+    raw_rows: list[dict[str, Any]],
+    *,
+    key_fields: list[str],
+    iface_fields: list[str],
+    rules: list[dict[str, str]] | None,
+) -> dict[str, dict[str, Any]]:
+    """First raw row per internal match key (normalized iface, raw elsewhere)."""
+    idx: dict[str, dict[str, Any]] = {}
+    for raw in raw_rows:
+        ks = row_match_key(raw, key_fields=key_fields, iface_fields=iface_fields, rules=rules)
+        if ks and ks not in idx:
+            idx[ks] = raw
+    return idx
+
+
+def display_key_from_raw(raw: dict[str, Any] | None, key_fields: list[str]) -> str:
+    """Board / AI facing identity: as collected on the device (no normalize / map)."""
+    if not raw or not key_fields:
+        return ""
+    data = strip_netx(raw)
+    return "|".join(str(data.get(k) or "").strip() for k in key_fields)
+
+
+def iface_lineage(
+    raw: dict[str, Any] | None,
+    *,
+    iface_fields: list[str],
+    rules: list[dict[str, str]] | None,
+    port_map: dict[str, str] | None,
+    apply_map: bool,
+) -> list[dict[str, Any]]:
+    """Per iface field: raw → normalized → (optional) mapped."""
+    from ..biz_state.iface_normalize import normalize_iface_name, resolve_mapped_iface
+
+    if not raw or not iface_fields:
+        return []
+    data = strip_netx(raw)
+    pmap = port_map or {}
+    out: list[dict[str, Any]] = []
+    for f in iface_fields:
+        raw_v = str(data.get(f) or "").strip()
+        norm_v = normalize_iface_name(raw_v, rules) if rules else raw_v
+        mapped = False
+        map_to = ""
+        if apply_map and pmap and norm_v:
+            map_to = resolve_mapped_iface(norm_v, pmap)
+            mapped = bool(map_to) and map_to != norm_v
+        out.append(
+            {
+                "field": f,
+                "raw": raw_v,
+                "normalized": norm_v,
+                "mapped": mapped,
+                "map_from": norm_v if apply_map and pmap else "",
+                "map_to": map_to if apply_map and pmap else "",
+            }
+        )
+    return out
+
+
 def evaluate_metric_dual(
     *,
     metric_id: str,
@@ -958,7 +1041,12 @@ def evaluate_metric_dual(
     sheet_id: str = "",
     iface_normalize_rules: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
-    """Run old vs old-baseline, new vs new-baseline (or mapped old baseline), dual merge."""
+    """Run old vs old-baseline, new vs new-baseline (or mapped old baseline), dual merge.
+
+    Matching uses normalized (+ port-mapped) keys internally.
+    Board / AI fields ``old_key`` / ``new_key`` and ``old`` / ``new`` stay **raw**
+    device values (A/B), never the post-map BB form.
+    """
     from ..biz_state.iface_normalize import (
         apply_iface_normalize_rows,
         normalize_iface_rules,
@@ -986,20 +1074,48 @@ def evaluate_metric_dual(
     success_patterns = list(ov.get("success") or []) if isinstance(ov.get("success"), list) else []
     anomaly_patterns = list(ov.get("anomaly") or []) if isinstance(ov.get("anomaly"), list) else []
 
+    # Keep collector originals for display / evidence; compare on normalized copies.
+    raw_old_base = [dict(r) for r in (old_baseline_rows or [])]
+    raw_old_cur = [dict(r) for r in (old_current_rows or [])]
+    raw_new_cur = [dict(r) for r in (new_current_rows or [])]
+    raw_new_base = (
+        [dict(r) for r in new_baseline_rows] if new_baseline_rows is not None else None
+    )
+
     norm_rules = normalize_iface_rules(iface_normalize_rules)
     old_baseline_rows = apply_iface_normalize_rows(
-        old_baseline_rows, iface_fields=iface_fields, rules=norm_rules
+        [strip_netx(r) for r in raw_old_base], iface_fields=iface_fields, rules=norm_rules
     )
     old_current_rows = apply_iface_normalize_rows(
-        old_current_rows, iface_fields=iface_fields, rules=norm_rules
+        [strip_netx(r) for r in raw_old_cur], iface_fields=iface_fields, rules=norm_rules
     )
     new_current_rows = apply_iface_normalize_rows(
-        new_current_rows, iface_fields=iface_fields, rules=norm_rules
+        [strip_netx(r) for r in raw_new_cur], iface_fields=iface_fields, rules=norm_rules
     )
-    if new_baseline_rows is not None:
+    if raw_new_base is not None:
         new_baseline_rows = apply_iface_normalize_rows(
-            new_baseline_rows, iface_fields=iface_fields, rules=norm_rules
+            [strip_netx(r) for r in raw_new_base],
+            iface_fields=iface_fields,
+            rules=norm_rules,
         )
+    else:
+        new_baseline_rows = None
+
+    old_raw_cur_idx = index_raw_by_match_key(
+        raw_old_cur, key_fields=key_fields, iface_fields=iface_fields, rules=norm_rules
+    )
+    old_raw_base_idx = index_raw_by_match_key(
+        raw_old_base, key_fields=key_fields, iface_fields=iface_fields, rules=norm_rules
+    )
+    new_raw_cur_idx = index_raw_by_match_key(
+        raw_new_cur, key_fields=key_fields, iface_fields=iface_fields, rules=norm_rules
+    )
+    new_raw_base_idx = index_raw_by_match_key(
+        raw_new_base or [],
+        key_fields=key_fields,
+        iface_fields=iface_fields,
+        rules=norm_rules,
+    )
 
     old_cmp = compare_rows(
         before_rows=old_baseline_rows,
@@ -1173,22 +1289,83 @@ def evaluate_metric_dual(
             if in_exp:
                 anomaly_in_expect += 1
 
+        # Prefer live raw rows; fall back to baseline raw. Never use port-mapped
+        # synthetic "before" as the new-side display row.
+        raw_old = old_raw_cur_idx.get(old_ks) or old_raw_base_idx.get(old_ks)
+        raw_new = new_raw_cur_idx.get(new_ks) or new_raw_cur_idx.get(old_ks)
+        if not raw_new:
+            raw_new = new_raw_base_idx.get(new_ks) or new_raw_base_idx.get(old_ks)
+
+        display_old = display_key_from_raw(raw_old, key_fields) or old_ks
+        display_new = display_key_from_raw(raw_new, key_fields) or (
+            new_ks if raw_new is not None else ""
+        )
+        # If new side missing entirely, still show map target as hint only in match_*
+        if not display_new and new_ks and new_ks != old_ks:
+            display_new = ""
+
+        old_disp = strip_netx(raw_old) if raw_old else {}
+        new_disp = strip_netx(raw_new) if raw_new else {}
+        old_base_raw = strip_netx(old_raw_base_idx.get(old_ks)) if old_raw_base_idx.get(old_ks) else {}
+        new_base_raw = (
+            strip_netx(new_raw_base_idx.get(new_ks) or new_raw_base_idx.get(old_ks))
+            if (new_raw_base_idx.get(new_ks) or new_raw_base_idx.get(old_ks))
+            else {}
+        )
+
+        evidence = {
+            "old": {
+                "netx": dict((raw_old or {}).get("_netx") or {}),
+                "iface": iface_lineage(
+                    raw_old,
+                    iface_fields=iface_fields,
+                    rules=norm_rules,
+                    port_map=port_map,
+                    apply_map=True,
+                ),
+            },
+            "new": {
+                "netx": dict((raw_new or {}).get("_netx") or {}),
+                "iface": iface_lineage(
+                    raw_new,
+                    iface_fields=iface_fields,
+                    rules=norm_rules,
+                    port_map=None,
+                    apply_map=False,
+                ),
+            },
+            "port_map": {
+                "applied": bool(port_map and iface_fields and old_ks != new_ks),
+                "match_before": old_ks,
+                "match_after": new_ks,
+                "display_before": display_old,
+                "display_after": display_new,
+            },
+        }
+
         rows_out.append(
             {
                 "metric_id": metric_id,
                 "key": (od or nd or {}).get("key") or [old_ks],
-                "key_str": old_ks,
-                "new_key_str": new_ks,
+                # Display identity (A/B as collected) — board & MCP primary
+                "old_key": display_old,
+                "new_key": display_new,
+                # Internal match keys (normalized / remapped)
+                "match_old_key": old_ks,
+                "match_new_key": new_ks,
+                # Aliases: key_str = display old; new_key_str = display new
+                "key_str": display_old,
+                "new_key_str": display_new,
                 "verdict": verdict,
                 "color": color,
                 "rule_hit": rule_hit,
                 "in_expect": in_exp,
                 "old_kind": old_kind,
                 "new_kind": new_kind,
-                "old": old_cur,
-                "new": new_cur,
-                "old_baseline": dict((od or {}).get("before") or {}),
-                "new_baseline": dict((nd or {}).get("before") or {}),
+                "old": old_disp,
+                "new": new_disp,
+                "old_baseline": old_base_raw,
+                "new_baseline": new_base_raw,
                 "old_status": status_label(old_cur, ov)
                 if old_cur
                 else ("gone" if old_kind == "removed" else "—"),
@@ -1209,6 +1386,7 @@ def evaluate_metric_dual(
                 )
                 if new_kind
                 else ("", "gray"),
+                "evidence": evidence,
             }
         )
 

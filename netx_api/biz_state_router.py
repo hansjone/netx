@@ -237,6 +237,13 @@ def api_get_batch(batch_id: str, db: Session = Depends(get_db)) -> dict[str, Any
     return svc.get_batch(db, batch_id)
 
 
+@router.get("/batches/{batch_id}/commands/{command_id}")
+def api_get_batch_command(
+    batch_id: str, command_id: str, db: Session = Depends(get_db)
+) -> dict[str, Any]:
+    return svc.get_batch_command(db, batch_id, command_id)
+
+
 @router.get("/batches/{batch_id}/export")
 def api_export_batch(batch_id: str, db: Session = Depends(get_db)) -> StreamingResponse:
     data = svc.export_batch_zip(db, batch_id)

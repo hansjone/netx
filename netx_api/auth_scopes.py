@@ -16,6 +16,7 @@ SCOPE_WEBCRT = "webcrt:session"
 SCOPE_SQL = "sql:query"
 SCOPE_ADMIN_USERS = "admin:users"
 SCOPE_OPS_WRITE = "ops:write"
+SCOPE_BIZ_MONITOR_READ = "biz-monitor:read"
 
 ALL_SCOPES: frozenset[str] = frozenset(
     {
@@ -27,20 +28,22 @@ ALL_SCOPES: frozenset[str] = frozenset(
         SCOPE_SQL,
         SCOPE_ADMIN_USERS,
         SCOPE_OPS_WRITE,
+        SCOPE_BIZ_MONITOR_READ,
     }
 )
 
 ROLE_DEFAULT_SCOPES: dict[str, frozenset[str]] = {
     "admin": ALL_SCOPES,
-    # Read-only operator by default (alarms + inventory).
-    "user": frozenset({SCOPE_ALARMS_READ, SCOPE_NE_READ}),
+    # Read-only operator by default (alarms + inventory + biz monitor read).
+    "user": frozenset({SCOPE_ALARMS_READ, SCOPE_NE_READ, SCOPE_BIZ_MONITOR_READ}),
 }
 
-# Default MCP bootstrap token: diagnostics CLI allowed; no interactive shell / SQL / writes.
+# Default MCP bootstrap token: diagnostics CLI + biz monitor read; no SQL / writes.
 MCP_DEFAULT_SCOPES: tuple[str, ...] = (
     SCOPE_ALARMS_READ,
     SCOPE_NE_READ,
     SCOPE_NE_EXEC,
+    SCOPE_BIZ_MONITOR_READ,
 )
 
 
@@ -177,6 +180,11 @@ def required_scope_for_request(method: str, path: str) -> str | None:
 
     if p.startswith("/v1/integrations"):
         return SCOPE_ALARMS_READ
+
+    if p.startswith("/v1/biz-migration") or p.startswith("/v1/biz-state"):
+        if m in ("POST", "PUT", "PATCH", "DELETE"):
+            return SCOPE_OPS_WRITE
+        return SCOPE_BIZ_MONITOR_READ
 
     # Auth self-service, api-tokens, audit: any authenticated user
     return None

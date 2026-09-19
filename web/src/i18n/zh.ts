@@ -602,6 +602,7 @@ const zh = {
     runHistory: "判定历史",
     runLatest: "最新一次",
     colRuleHit: "命中规则",
+    colCommand: "采集命令",
     mappingBound: "映射已保存并绑定到本任务",
     allMetrics: "全部监控项",
     colMetric: "监控项",

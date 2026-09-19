@@ -322,9 +322,17 @@ def _project_collect_override(proj: BizMigrationProject) -> list[str]:
 def _task_brief(db: Session, task_id: str) -> dict[str, Any]:
     t = db.get(BizStateTask, task_id) if task_id else None
     if not t:
-        return {"id": task_id or "", "ne_name": "", "ne_ip": "", "vendor": "", "purpose": ""}
+        return {
+            "id": task_id or "",
+            "ne_id": "",
+            "ne_name": "",
+            "ne_ip": "",
+            "vendor": "",
+            "purpose": "",
+        }
     return {
         "id": t.id,
+        "ne_id": t.ne_id or "",
         "ne_name": t.ne_name,
         "ne_ip": t.ne_ip,
         "vendor": t.vendor,
@@ -838,6 +846,7 @@ def run_evaluate(
 
     sheet_cards: list[dict[str, Any]] = []
     all_rows: list[dict[str, Any]] = []
+    metric_batches: dict[str, dict[str, str]] = {}
     seq = 0
     verdict_counts: dict[str, int] = {}
 
@@ -936,6 +945,16 @@ def run_evaluate(
             out_of_expect=out_of_expect,
             iface_normalize_rules=iface_norm,
         )
+        old_tid = _hf_task_id_for_metric(proj, "old", mid) or current_task_id(proj, "old")
+        new_tid = _hf_task_id_for_metric(proj, "new", mid) or current_task_id(proj, "new")
+        old_task_brief = _task_brief(db, old_tid)
+        new_task_brief = _task_brief(db, new_tid)
+        metric_batches[mid] = {
+            "old_batch_id": old_cur_mid,
+            "new_batch_id": new_cur_mid,
+            "old_task_id": old_tid,
+            "new_task_id": new_tid,
+        }
         sheet_cards.append(
             {
                 "metric_id": mid,
@@ -950,9 +969,19 @@ def run_evaluate(
                 "new_baseline_mode": one.get("new_baseline_mode") or "provided",
                 "new_baseline_missing": bool(one.get("new_baseline_missing")),
                 "collect_skipped": False,
+                "old_batch_id": old_cur_mid,
+                "new_batch_id": new_cur_mid,
             }
         )
         for r in one["rows"]:
+            _enrich_row_evidence(
+                db,
+                r,
+                old_batch_id=old_cur_mid,
+                new_batch_id=new_cur_mid,
+                old_task=old_task_brief,
+                new_task=new_task_brief,
+            )
             r["seq"] = seq
             r["sheet_id"] = sid
             seq += 1
@@ -977,6 +1006,7 @@ def run_evaluate(
             "monitor_template_id": mt.id,
             "compare_template_id": mt.compare_template_id or "",
             "acceptance": acceptance,
+            "metric_batches": metric_batches,
             "sheet_cards": sheet_cards,
             "progress": {
                 "ok": sum(c["progress_ok"] for c in active_cards),
@@ -1011,10 +1041,16 @@ def run_evaluate(
     db.flush()
     for r in all_rows:
         key_list = r.get("key") or []
+        ev = r.get("evidence") if isinstance(r.get("evidence"), dict) else {}
+        pm = ev.get("port_map") if isinstance(ev.get("port_map"), dict) else {}
         search = " ".join(
             [
-                str(r.get("key_str") or ""),
-                str(r.get("new_key_str") or ""),
+                str(r.get("old_key") or r.get("key_str") or ""),
+                str(r.get("new_key") or r.get("new_key_str") or ""),
+                str(r.get("match_old_key") or ""),
+                str(r.get("match_new_key") or ""),
+                str(pm.get("match_before") or ""),
+                str(pm.get("match_after") or ""),
                 str(r.get("verdict") or ""),
                 str(r.get("old_status") or ""),
                 str(r.get("new_status") or ""),
@@ -1031,12 +1067,17 @@ def run_evaluate(
                 color=str(r.get("color") or ""),
                 key_json={
                     "key": key_list,
-                    "key_str": r.get("key_str"),
-                    "new_key_str": r.get("new_key_str"),
+                    "old_key": r.get("old_key") or r.get("key_str"),
+                    "new_key": r.get("new_key") or r.get("new_key_str"),
+                    "key_str": r.get("old_key") or r.get("key_str"),
+                    "new_key_str": r.get("new_key") or r.get("new_key_str"),
+                    "match_old_key": r.get("match_old_key") or "",
+                    "match_new_key": r.get("match_new_key") or "",
                     "old_status": r.get("old_status"),
                     "new_status": r.get("new_status"),
                     "rule_hit": r.get("rule_hit") or "",
                     "sheet_id": r.get("sheet_id") or "",
+                    "evidence": r.get("evidence") or {},
                 },
                 old_kind=str(r.get("old_kind") or ""),
                 new_kind=str(r.get("new_kind") or ""),
@@ -1078,8 +1119,69 @@ def run_to_dict(db: Session, run: BizMigrationRun, *, include_diffs: bool = Fals
     return out
 
 
+def _command_brief(db: Session, command_id: str) -> dict[str, Any]:
+    from ..models import BizStateBatchCommand
+
+    cid = str(command_id or "").strip()
+    if not cid:
+        return {}
+    c = db.get(BizStateBatchCommand, cid)
+    if not c:
+        return {"command_id": cid}
+    return {
+        "command_id": c.id,
+        "raw_command": c.raw_command or "",
+        "parse_status": c.parse_status or "",
+        "row_count": int(c.row_count or 0),
+        "profile_id": c.profile_id or "",
+        "parser_id": c.parser_id or "",
+        "metric_id": c.metric_id or "",
+        "message": (c.message or "")[:300],
+    }
+
+
+def _enrich_row_evidence(
+    db: Session,
+    row: dict[str, Any],
+    *,
+    old_batch_id: str,
+    new_batch_id: str,
+    old_task: dict[str, Any] | None,
+    new_task: dict[str, Any] | None,
+) -> None:
+    """Attach device / collect / show-command onto evaluate evidence (in-place)."""
+    ev = dict(row.get("evidence") or {})
+    for side, brief, batch_id in (
+        ("old", old_task or {}, old_batch_id),
+        ("new", new_task or {}, new_batch_id),
+    ):
+        side_ev = dict(ev.get(side) or {})
+        netx = dict(side_ev.get("netx") or {})
+        cmd = _command_brief(db, str(netx.get("batch_command_id") or ""))
+        side_ev["device"] = {
+            "ne_id": str(brief.get("ne_id") or netx.get("ne_id") or ""),
+            "ne_name": str(brief.get("ne_name") or ""),
+            "ne_ip": str(brief.get("ne_ip") or ""),
+            "side": side,
+        }
+        # Prefer the metric row's own batch (baseline vs current); fall back to
+        # the side's evaluate batch id used for this sheet.
+        side_ev["collect"] = {
+            "task_id": str(netx.get("task_id") or brief.get("id") or ""),
+            "batch_id": str(netx.get("batch_id") or batch_id or ""),
+            "side_batch_id": str(batch_id or ""),
+            "collected_at": netx.get("collected_at"),
+            "parse_status": str(cmd.get("parse_status") or ""),
+        }
+        side_ev["command"] = cmd
+        ev[side] = side_ev
+    row["evidence"] = ev
+
+
 def diff_to_dict(d: BizMigrationDiff) -> dict[str, Any]:
     kj = d.key_json if isinstance(d.key_json, dict) else {}
+    old_key = str(kj.get("old_key") or kj.get("key_str") or "")
+    new_key = str(kj.get("new_key") or kj.get("new_key_str") or "")
     return {
         "id": d.id,
         "metric_id": d.metric_id,
@@ -1088,11 +1190,16 @@ def diff_to_dict(d: BizMigrationDiff) -> dict[str, Any]:
         "verdict": d.verdict,
         "color": d.color,
         "key": kj,
-        "key_str": kj.get("key_str") or "",
-        "new_key_str": kj.get("new_key_str") or "",
+        "old_key": old_key,
+        "new_key": new_key,
+        "key_str": old_key,
+        "new_key_str": new_key,
+        "match_old_key": str(kj.get("match_old_key") or ""),
+        "match_new_key": str(kj.get("match_new_key") or ""),
         "old_status": kj.get("old_status") or "",
         "new_status": kj.get("new_status") or "",
         "rule_hit": kj.get("rule_hit") or "",
+        "evidence": dict(kj.get("evidence") or {}),
         "old_kind": d.old_kind,
         "new_kind": d.new_kind,
         "old": d.old_json,
@@ -1690,19 +1797,27 @@ def collect_project_now(db: Session, project_id: str) -> dict[str, Any]:
 
 
 def _red_ticket_to_dict(t: BizMigrationRedTicket) -> dict[str, Any]:
+    detail = dict(t.detail_json or {})
+    old_key = str(detail.get("old_key") or t.key_str or "")
+    new_key = str(detail.get("new_key") or t.new_key_str or "")
     return {
         "id": t.id,
         "project_id": t.project_id,
         "batch_id": t.batch_id,
         "run_id": t.run_id,
         "metric_id": t.metric_id,
-        "key_str": t.key_str,
-        "new_key_str": t.new_key_str,
+        "old_key": old_key,
+        "new_key": new_key,
+        "key_str": old_key,
+        "new_key_str": new_key,
+        "match_old_key": str(detail.get("match_old_key") or ""),
+        "match_new_key": str(detail.get("match_new_key") or ""),
         "verdict": t.verdict,
         "color": t.color,
         "old_status": t.old_status,
         "new_status": t.new_status,
-        "detail": dict(t.detail_json or {}),
+        "detail": detail,
+        "evidence": dict(detail.get("evidence") or {}),
         "status": t.status,
         "carried_to_batch_id": t.carried_to_batch_id,
         "note": t.note,
@@ -1793,6 +1908,11 @@ def _persist_red_tickets_from_run(
                 "in_expect": d.in_expect,
                 "old": d.old_json,
                 "new": d.new_json,
+                "old_key": kj.get("old_key") or kj.get("key_str") or "",
+                "new_key": kj.get("new_key") or kj.get("new_key_str") or "",
+                "match_old_key": kj.get("match_old_key") or "",
+                "match_new_key": kj.get("match_new_key") or "",
+                "evidence": dict(kj.get("evidence") or {}),
             },
             status="open",
         )
@@ -2004,3 +2124,110 @@ def board(db: Session, batch_id: str, run_id: str = "") -> dict[str, Any]:
         "batch": batch_to_dict(mb),
         "run": run_to_dict(db, run) if run else None,
     }
+
+
+def get_monitor_context(
+    db: Session,
+    *,
+    project_id: str = "",
+    task_id: str = "",
+) -> dict[str, Any]:
+    """Fat read for AI / ops: project definition + templates + mapping + tasks.
+
+    Prefer ``project_id`` (cutover). ``task_id`` alone returns that biz_state task
+    and any cutover project that references it.
+    """
+    from ..biz_state import compare_service as cmp_svc
+    from ..biz_state import service as biz_svc
+
+    pid = str(project_id or "").strip()
+    tid = str(task_id or "").strip()
+    if not pid and not tid:
+        raise HTTPException(status_code=400, detail="project_id_or_task_id_required")
+
+    proj_row: BizMigrationProject | None = None
+    if pid:
+        proj_row = db.get(BizMigrationProject, pid)
+        if not proj_row:
+            raise HTTPException(status_code=404, detail="project_not_found")
+    elif tid:
+        proj_row = (
+            db.query(BizMigrationProject)
+            .filter(
+                (BizMigrationProject.old_task_id == tid)
+                | (BizMigrationProject.new_task_id == tid)
+                | (BizMigrationProject.old_hf_task_id == tid)
+                | (BizMigrationProject.new_hf_task_id == tid)
+            )
+            .order_by(BizMigrationProject.updated_at.desc())
+            .first()
+        )
+
+    out: dict[str, Any] = {
+        "project": None,
+        "monitor_template": None,
+        "compare_template": None,
+        "port_mapping": None,
+        "tasks": {},
+        "task": None,
+    }
+
+    if tid:
+        try:
+            out["task"] = biz_svc.get_task(db, tid)
+        except HTTPException:
+            if not proj_row:
+                raise
+
+    if not proj_row:
+        return out
+
+    migrate_project_hf_slots(db, proj_row, commit=False)
+    out["project"] = project_to_dict(db, proj_row)
+
+    mt_id = str(getattr(proj_row, "monitor_template_id", None) or "").strip()
+    if mt_id:
+        try:
+            out["monitor_template"] = mon_tpl.get_monitor_template(db, mt_id)
+        except HTTPException:
+            out["monitor_template"] = None
+
+    ct_id = ""
+    if isinstance(out.get("monitor_template"), dict):
+        ct_id = str(out["monitor_template"].get("compare_template_id") or "").strip()
+    if ct_id:
+        ct = db.get(BizCompareTemplate, ct_id)
+        if ct:
+            out["compare_template"] = cmp_svc._template_out(ct)  # noqa: SLF001
+
+    map_id = str(proj_row.mapping_id or "").strip()
+    if map_id:
+        m = db.get(BizPortMapping, map_id)
+        if m:
+            out["port_mapping"] = cmp_svc._mapping_out(db, m)  # noqa: SLF001
+
+    task_ids = {
+        "old_portrait": proj_row.old_task_id or "",
+        "new_portrait": proj_row.new_task_id or "",
+        "old_hf": getattr(proj_row, "old_hf_task_id", None) or "",
+        "new_hf": getattr(proj_row, "new_hf_task_id", None) or "",
+    }
+    for side in ("old", "new"):
+        for i, b in enumerate(_hf_bindings(proj_row, side)):
+            bid = str(b.get("task_id") or "").strip()
+            if bid:
+                task_ids[f"{side}_hf_{i}"] = bid
+
+    tasks: dict[str, Any] = {}
+    for label, task_ref in task_ids.items():
+        if not task_ref or task_ref in {t.get("id") for t in tasks.values() if isinstance(t, dict)}:
+            # still key by label even if duplicate id
+            pass
+        if not task_ref:
+            continue
+        try:
+            tasks[label] = biz_svc.get_task(db, task_ref)
+        except HTTPException:
+            tasks[label] = {"id": task_ref, "error": "task_not_found"}
+    out["tasks"] = tasks
+    return out

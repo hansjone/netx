@@ -21,6 +21,7 @@ def test_http_mcp_tool_list_has_expected_tools() -> None:
     assert "execManagedNe" in names
     assert "listCliTargets" in names
     assert "findTopologyPaths" in names
+    assert "getBizMonitorContext" not in names
     assert "queryUmeAlarms" not in names
     assert "queryTopologyEdges" not in names
     exec_tool = next(t for t in HTTP_MCP_TOOLS if t.get("name") == "execManagedNe")

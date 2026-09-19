@@ -125,6 +125,16 @@ def api_get_project(project_id: str, db: Session = Depends(get_db)):
     return svc.get_project(db, project_id)
 
 
+@router.get("/monitor-context")
+def api_monitor_context(
+    project_id: str = "",
+    task_id: str = "",
+    db: Session = Depends(get_db),
+):
+    """Fat definition bundle for AI / ops (templates, mapping, tasks)."""
+    return svc.get_monitor_context(db, project_id=project_id, task_id=task_id)
+
+
 @router.patch("/projects/{project_id}")
 def api_patch_project(project_id: str, body: ProjectPatchIn, db: Session = Depends(get_db)):
     return svc.patch_project(db, project_id, body.model_dump(exclude_unset=True))
