@@ -1,0 +1,19 @@
+Value MAC (\S+)
+Value VPN (\S+)
+Value VLAN (\S+)
+Value OUTGOING (.*)
+Value ATTRIBUTE (\S+)
+
+Start
+  ^MAC\s+VPN -> Entries
+  ^Total\s+MAC
+  ^Headers:
+  ^\s*$$
+  ^.* -> Start
+
+Entries
+  ^${MAC}\s+${VPN}\s+${VLAN}\s+${OUTGOING}\s+${ATTRIBUTE}\s*$$ -> Record
+  ^\s*$$
+  ^\S+\s*#\s*$$ -> End
+  ^.*#\s*$$ -> End
+  ^.* -> Entries

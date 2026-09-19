@@ -1,0 +1,23 @@
+Value Filldown PROCESS_ID (\d+)
+Value Required NEIGHBOR_ID (\S+)
+Value PRI (\S+)
+Value STATE (\S+)
+Value DEAD_TIME (\S+)
+Value ADDRESS (\S+)
+Value INTERFACE (\S+)
+
+Start
+  ^\s*OSPF\s+Router\s+with\s+ID\s+\S+\s+\(Process\s+ID\s+${PROCESS_ID}\) -> Neighbors
+  ^Neighbor\s+ID -> Neighbors
+  ^\s*$$
+  ^.* -> Start
+
+Neighbors
+  ^\s*OSPF\s+Router\s+with\s+ID\s+\S+\s+\(Process\s+ID\s+${PROCESS_ID}\) -> Neighbors
+  ^Neighbor\s+ID
+  ^Codes:
+  ^${NEIGHBOR_ID}\s+${PRI}\s+${STATE}\s+${DEAD_TIME}\s+${ADDRESS}\s+${INTERFACE}\s*$$ -> Record
+  ^\s*$$
+  ^\S+\s*#\s*$$ -> End
+  ^.*#\s*$$ -> End
+  ^.* -> Neighbors

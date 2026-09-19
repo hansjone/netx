@@ -1,0 +1,18 @@
+Value INTERFACE (\S+)
+Value OPTIC_TYPE (\S+)
+Value WAVELENGTH (\S+)
+Value RX_POWER (\S+)
+Value TX_POWER (\S+)
+Value STATUS (\S+)
+
+Start
+  ^Interface\s+Type -> Entries
+  ^\s*$$
+  ^.* -> Start
+
+Entries
+  ^${INTERFACE}\s+${OPTIC_TYPE}\s+${WAVELENGTH}\s+${RX_POWER}\s+${TX_POWER}\s+${STATUS}(?:\s+\S+)?\s*$$ -> Record
+  ^\s*$$
+  ^\S+\s*#\s*$$ -> End
+  ^.*#\s*$$ -> End
+  ^.* -> Entries

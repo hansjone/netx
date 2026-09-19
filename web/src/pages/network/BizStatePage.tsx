@@ -38,6 +38,7 @@ type TaskRow = {
   ne_ip: string;
   vendor: string;
   note?: string;
+  purpose?: string;
   status: string;
   collect_running: boolean;
   last_error: string;
@@ -257,6 +258,7 @@ export function BizStatePage() {
   const [busy, setBusy] = useState(false);
   const [listKeyword, setListKeyword] = useState("");
   const debouncedListKw = useDebouncedValue(listKeyword, 250);
+  const [purposeFilter, setPurposeFilter] = useState<"all" | "portrait" | "cutover_hf">("all");
 
   // create-task modal (all valid CLI targets)
   const [createOpen, setCreateOpen] = useState(false);
@@ -296,9 +298,11 @@ export function BizStatePage() {
   const debouncedSheetKw = useDebouncedValue(sheetKeyword, 200);
 
   const refreshTasks = useCallback(async () => {
-    const res = await bizStateListTasks();
+    const purpose =
+      purposeFilter === "all" ? "" : purposeFilter === "portrait" ? "portrait" : "cutover_hf";
+    const res = await bizStateListTasks(purpose);
     setTasks((res.items || []) as TaskRow[]);
-  }, []);
+  }, [purposeFilter]);
 
   useEffect(() => {
     void (async () => {
@@ -308,7 +312,7 @@ export function BizStatePage() {
         showError(formatErr(e));
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount once
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- refresh when purpose filter / refreshTasks changes
   }, [refreshTasks]);
 
   useEffect(() => {
@@ -344,7 +348,7 @@ export function BizStatePage() {
     if (!kw) return tasks;
     return tasks.filter((row) => {
       const blob =
-        `${row.ne_name} ${row.ne_ip} ${row.vendor} ${row.note || ""} ${row.status} ${row.source || ""} ${row.last_error}`.toLowerCase();
+        `${row.ne_name} ${row.ne_ip} ${row.vendor} ${row.note || ""} ${row.purpose || ""} ${row.status} ${row.source || ""} ${row.last_error}`.toLowerCase();
       return blob.includes(kw);
     });
   }, [tasks, debouncedListKw]);
@@ -740,6 +744,17 @@ export function BizStatePage() {
             placeholder={t("bizState.listFilterPh")}
             onChange={(e) => setListKeyword(e.target.value)}
           />
+          <FieldSelect
+            value={purposeFilter}
+            onChange={(e) =>
+              setPurposeFilter(e.target.value as "all" | "portrait" | "cutover_hf")
+            }
+            aria-label={t("bizState.purposeFilter")}
+          >
+            <option value="all">{t("bizState.purposeAll")}</option>
+            <option value="portrait">{t("bizState.purposePortrait")}</option>
+            <option value="cutover_hf">{t("bizState.purposeCutoverHf")}</option>
+          </FieldSelect>
         </div>
 
         <div className="pt-list-table-wrap">
@@ -748,6 +763,7 @@ export function BizStatePage() {
               <tr>
                 <th>{t("bizState.colNe")}</th>
                 <th>{t("bizState.colSource")}</th>
+                <th>{t("bizState.colPurpose")}</th>
                 <th>{t("bizState.colInterval")}</th>
                 <th>{t("bizState.scheduleEnabled")}</th>
                 <th>{t("bizState.colStatus")}</th>
@@ -769,6 +785,15 @@ export function BizStatePage() {
                   <td>
                     <NmStatusChip color={sourceChipColor(row.source)}>
                       {row.source || "managed"}
+                    </NmStatusChip>
+                  </td>
+                  <td>
+                    <NmStatusChip
+                      color={row.purpose === "cutover_hf" ? "accent" : "default"}
+                    >
+                      {row.purpose === "cutover_hf"
+                        ? t("bizState.purposeCutoverHf")
+                        : t("bizState.purposePortrait")}
                     </NmStatusChip>
                   </td>
                   <td className="pt-list-num">
@@ -824,7 +849,7 @@ export function BizStatePage() {
                             for (let i = 0; i < 20; i++) {
                               await new Promise((r) => setTimeout(r, 1500));
                               await refreshTasks();
-                              const cur = (await bizStateListTasks()).items?.find(
+                              const cur = (await bizStateListTasks(purposeFilter === "all" ? "" : purposeFilter)).items?.find(
                                 (x: any) => x.id === row.id,
                               );
                               if (!cur?.collect_running) break;
@@ -853,7 +878,7 @@ export function BizStatePage() {
               ))}
                 {!filteredTasks.length ? (
                   <tr>
-                    <td colSpan={7}>
+                    <td colSpan={8}>
                       <div className="pt-list-empty">{t("bizState.empty")}</div>
                     </td>
                   </tr>

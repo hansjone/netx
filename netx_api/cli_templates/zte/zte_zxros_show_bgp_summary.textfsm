@@ -1,0 +1,22 @@
+Value NEIGHBOR (\S+)
+Value VER (\d+)
+Value ASN (\S+)
+Value MSG_RCVD (\d+)
+Value MSG_SEND (\d+)
+Value UP_DOWN (\S+)
+Value STATE_PFX (\S+)
+
+Start
+  ^Neighbor\s+Ver\s+As -> Peers
+  ^\s*$$
+  ^.* -> Start
+
+Peers
+  ^${NEIGHBOR}\s+${VER}\s+${ASN}\s+${MSG_RCVD}\s+${MSG_SEND}\s+${UP_DOWN}\s+${STATE_PFX}\s*$$ -> Record
+  ^All\s+
+  ^BGP\s+
+  ^Local\s+
+  ^\s*$$
+  ^\S+\s*#\s*$$ -> End
+  ^.*#\s*$$ -> End
+  ^.* -> Peers

@@ -1,0 +1,23 @@
+Value FLAGS (\S*)
+Value DEST (\S+)
+Value GATEWAY (\S+)
+Value INTERFACE (\S+)
+Value OWNER (\S+)
+Value PRI (\S+)
+Value METRIC (\S+)
+
+Start
+  ^\s*Dest\s+Gw -> Entries
+  ^Headers:
+  ^Codes
+  ^Status\s+codes
+  ^\s*$$
+  ^.* -> Start
+
+Entries
+  ^\s*${FLAGS}\s*${DEST}\s+${GATEWAY}\s+${INTERFACE}\s+${OWNER}\s+${PRI}\s+${METRIC}\s*$$ -> Record
+  ^\s*${DEST}\s+${GATEWAY}\s+${INTERFACE}\s+${OWNER}\s+${PRI}\s+${METRIC}\s*$$ -> Record
+  ^\s*$$
+  ^\S+\s*#\s*$$ -> End
+  ^.*#\s*$$ -> End
+  ^.* -> Entries

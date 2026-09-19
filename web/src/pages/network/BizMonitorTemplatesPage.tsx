@@ -1,5 +1,5 @@
 import { Button, Input, Modal } from "@heroui/react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { AppModalShell } from "../../components/ui/AppModalShell";
 import { FieldSelect } from "../../components/ui/FieldSelect";
@@ -69,6 +69,71 @@ type MonitorTpl = {
   sheet_overrides?: SheetOverride[];
   note?: string;
 };
+
+const MONITOR_EXPORT_FORMAT = "netx.biz_monitor_template";
+const MONITOR_EXPORT_VERSION = 1;
+
+function downloadJsonFile(filename: string, data: unknown) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function monitorExportPayload(tpl: MonitorTpl) {
+  return {
+    format: MONITOR_EXPORT_FORMAT,
+    version: MONITOR_EXPORT_VERSION,
+    exported_at: new Date().toISOString(),
+    name: tpl.name,
+    note: tpl.note || "",
+    compare_template_id: tpl.compare_template_id || "",
+    compare_template_name: tpl.compare_template_name || "",
+    collect_metric_ids: [...(tpl.collect_metric_ids || [])],
+    defaults: { ...(tpl.defaults || {}) },
+    sheet_overrides: JSON.parse(JSON.stringify(tpl.sheet_overrides || [])),
+  };
+}
+
+function parseMonitorImport(raw: unknown): {
+  name: string;
+  note: string;
+  compare_template_id: string;
+  compare_template_name: string;
+  collect_metric_ids: string[];
+  defaults: Record<string, unknown>;
+  sheet_overrides: SheetOverride[];
+} | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  const name = String(o.name || "").trim();
+  if (!name) return null;
+  const compare_template_id = String(o.compare_template_id || "").trim();
+  const compare_template_name = String(o.compare_template_name || "").trim();
+  if (!compare_template_id && !compare_template_name) return null;
+  const collect = Array.isArray(o.collect_metric_ids)
+    ? (o.collect_metric_ids as unknown[]).map((x) => String(x).trim()).filter(Boolean)
+    : [];
+  const defaults =
+    o.defaults && typeof o.defaults === "object" && !Array.isArray(o.defaults)
+      ? (o.defaults as Record<string, unknown>)
+      : { dual_mode: "migrate_pair", out_of_expect: "strict" };
+  const sheet_overrides = Array.isArray(o.sheet_overrides)
+    ? (o.sheet_overrides as SheetOverride[])
+    : [];
+  return {
+    name,
+    note: String(o.note || ""),
+    compare_template_id,
+    compare_template_name,
+    collect_metric_ids: collect,
+    defaults,
+    sheet_overrides,
+  };
+}
 
 const PRESENCE_TOKENS = [
   { id: "removed", labelKey: "tokRemoved" },
@@ -481,7 +546,9 @@ function SideGroupsEditor({
         </label>
       ) : null}
       {dontCare ? (
-        <p className="muted mt-side-empty">{t("bizMonitorTpl.sideDontCareHint")}</p>
+        <div className="mt-side-empty-box">
+          <p className="muted mt-side-empty">{t("bizMonitorTpl.sideDontCareHint")}</p>
+        </div>
       ) : (
         <>
           {groups.map((group, gi) => (
@@ -759,6 +826,7 @@ export function BizMonitorTemplatesPage() {
   const [showMore, setShowMore] = useState(false);
   const [showAdvancedJson, setShowAdvancedJson] = useState(false);
   const [overridesText, setOverridesText] = useState("[]");
+  const tplImportRef = useRef<HTMLInputElement>(null);
 
   const refresh = useCallback(async () => {
     const [mon, cmp, metrics] = await Promise.all([
@@ -970,6 +1038,60 @@ export function BizMonitorTemplatesPage() {
     }
   };
 
+  const exportTemplate = (tpl: MonitorTpl) => {
+    const payload = monitorExportPayload(tpl);
+    const safe = (tpl.name || "template").replace(/[^\w\u4e00-\u9fff.-]+/g, "_").slice(0, 64);
+    downloadJsonFile(`netx-monitor-template-${safe}.json`, payload);
+    showOk(t("bizMonitorTpl.templateExported"));
+  };
+
+  const importTemplateFile = async (file: File) => {
+    setBusy(true);
+    try {
+      const text = await file.text();
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        showError(t("bizMonitorTpl.templateImportInvalid"));
+        return;
+      }
+      const body = parseMonitorImport(parsed);
+      if (!body) {
+        showError(t("bizMonitorTpl.templateImportInvalid"));
+        return;
+      }
+      let compareId = body.compare_template_id;
+      if (!compareTpls.some((c) => c.id === compareId)) {
+        compareId = "";
+      }
+      if (!compareId && body.compare_template_name) {
+        const want = body.compare_template_name.trim().toLowerCase();
+        const byName = compareTpls.find((c) => c.name.trim().toLowerCase() === want);
+        compareId = byName?.id || "";
+      }
+      if (!compareId) {
+        showError(t("bizMonitorTpl.templateImportCompareMissing"));
+        return;
+      }
+      await bizMonitorCreateTemplate({
+        name: body.name,
+        note: body.note,
+        compare_template_id: compareId,
+        collect_metric_ids: body.collect_metric_ids,
+        defaults: body.defaults,
+        sheet_overrides: body.sheet_overrides,
+      });
+      showOk(t("bizMonitorTpl.templateImported"));
+      await refresh();
+    } catch (e) {
+      showError(formatErr(e));
+    } finally {
+      setBusy(false);
+      if (tplImportRef.current) tplImportRef.current.value = "";
+    }
+  };
+
   const fieldChoices: MetricField[] =
     activeFields.length > 0
       ? activeFields
@@ -982,6 +1104,24 @@ export function BizMonitorTemplatesPage() {
       <div className="panel__toolbar">
         <h2>{t("bizMonitorTpl.title")}</h2>
         <div className="btn-row">
+          <input
+            ref={tplImportRef}
+            type="file"
+            accept="application/json,.json"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) void importTemplateFile(f);
+            }}
+          />
+          <Button
+            size="sm"
+            variant="secondary"
+            isDisabled={busy}
+            onPress={() => tplImportRef.current?.click()}
+          >
+            {t("bizMonitorTpl.importTemplate")}
+          </Button>
           <Button size="sm" variant="primary" onPress={openCreate}>
             {t("bizMonitorTpl.create")}
           </Button>
@@ -990,6 +1130,8 @@ export function BizMonitorTemplatesPage() {
       <p className="panel__hint muted">{t("bizMonitorTpl.hint")}</p>
       <p className="muted" style={{ fontSize: 12, marginTop: -4 }}>
         <Link to="/network/cutover/compare-templates">{t("bizMonitorTpl.openCompare")}</Link>
+        {" · "}
+        {t("bizMonitorTpl.templateImportHint")}
       </p>
 
       <div className="pt-list">
@@ -1034,6 +1176,9 @@ export function BizMonitorTemplatesPage() {
                     <div className="pt-list-actions">
                       <Button size="sm" variant="primary" onPress={() => openEdit(row)}>
                         {t("bizMonitorTpl.edit")}
+                      </Button>
+                      <Button size="sm" variant="secondary" onPress={() => exportTemplate(row)}>
+                        {t("bizMonitorTpl.exportTemplate")}
                       </Button>
                       <Button size="sm" variant="ghost" isDisabled={busy} onPress={() => void remove(row.id)}>
                         {t("bizMonitorTpl.delete")}

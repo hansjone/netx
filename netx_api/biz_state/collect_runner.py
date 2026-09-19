@@ -158,10 +158,27 @@ def _persist_vrf_route_summary(
 _GENERIC_METRICS = {
     "isis_adjacency",
     "interface_brief",
+    "interface_detail",
     "arp",
     "if_intf",
     "nd6_cache",
     "bgp_peer",
+    "ospf_neighbor",
+    "vrrp",
+    "optical_brief",
+    "bgp_route",
+    "ip_route",
+    "ipv6_route",
+    "l2vpn_pw",
+    "l2vpn_mac",
+    "evpn_mac",
+    "config_vrf",
+    "config_interface",
+    "config_bgp_peer",
+    "config_l2vpn_pw",
+    "config_static_route",
+    "config_ospf",
+    "config_isis",
 }
 _METRIC_CHUNK = 2000
 
@@ -500,7 +517,7 @@ def _run_collect_session(
                         aux_results: dict[str, Any] = {}
                         for aux in list(hit.profile.aux_commands or []):
                             try:
-                                ra = resolve_aux_command(aux)
+                                ra = resolve_aux_command(aux, params=merged)
                             except ValueError as exc:
                                 aux_row = BizStateBatchCommand(
                                     id=uuid4().hex,
@@ -534,6 +551,7 @@ def _run_collect_session(
                                 ra.command,
                                 parser_id=ra.parser_id,
                                 textfsm_command=ra.textfsm_command,
+                                params=merged,
                                 cmd_row_id=aux_row.id,
                             )
                             aux_results[ra.key] = entry

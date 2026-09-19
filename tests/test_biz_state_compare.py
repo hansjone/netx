@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import unittest
 
 from netx_api.biz_state.compare_engine import compare_rows, mapping_stats
@@ -117,6 +118,26 @@ class CompareEngineTests(unittest.TestCase):
         self.assertEqual(out["summary"]["added"], 0)
         self.assertEqual(out["summary"]["removed"], 0)
         self.assertTrue(out["mapping_stats"].get("ignore_port_changes"))
+
+    def test_empty_port_map_keeps_iface_when_required_for_uniqueness(self) -> None:
+        """OSPF/VRRP-style: same neighbor_id on many interfaces must not collapse."""
+        before = [
+            {"process_id": "1", "neighbor_id": "2.2.2.2", "interface": "sg1", "address": "10.0.0.1"},
+            {"process_id": "1", "neighbor_id": "2.2.2.2", "interface": "sg2", "address": "10.0.0.2"},
+        ]
+        after = copy.deepcopy(before)
+        out = compare_rows(
+            before_rows=before,
+            after_rows=after,
+            key_fields=["process_id", "neighbor_id", "interface"],
+            iface_fields=["interface"],
+            compare_fields=["address"],
+            port_map={},
+        )
+        self.assertEqual(out["summary"]["unchanged"], 2)
+        self.assertEqual(out["summary"]["changed"], 0)
+        self.assertIn("interface", out["summary"]["match_key_fields"])
+        self.assertFalse(out["mapping_stats"].get("ignore_port_changes"))
 
     def test_unchanged_rows_are_listed(self) -> None:
         before = [{"local_if": "a", "remote_sys": "X", "remote_if": "1", "remote_ip": "1"}]
@@ -331,12 +352,45 @@ class CompareSheetDefaultsTests(unittest.TestCase):
         self.assertIn("bgp_peer.vpnv6", ids)
         self.assertIn("isis_adjacency.ipv4", ids)
         self.assertIn("isis_adjacency.ipv6", ids)
-        # Same source metric may appear multiple times
-        self.assertEqual(sum(1 for s in sheets if s["metric_id"] == "bgp_peer"), 4)
+        # Same source metric may appear multiple times (afi splits)
+        self.assertEqual(sum(1 for s in sheets if s["metric_id"] == "bgp_peer"), 6)
+        self.assertIn("bgp_peer.evpn", ids)
+        self.assertIn("bgp_peer.vpls", ids)
+        self.assertIn("vrrp.ipv4", ids)
+        self.assertIn("lldp_neighbor", ids)
+        detail = next(s for s in sheets if sheet_key(s) == "interface_detail")
+        self.assertEqual(detail["compare_fields"], ["admin"])
+        self.assertIn("input_bps", detail["display_fields"])
+        optical = next(s for s in sheets if sheet_key(s) == "optical_brief")
+        self.assertEqual(optical["compare_fields"], ["status"])
+        self.assertIn("rx_power", optical["display_fields"])
+        bgp4 = next(s for s in sheets if sheet_key(s) == "bgp_peer.ipv4")
+        self.assertEqual(bgp4["compare_fields"], ["as_num", "state"])
+        self.assertIn("pfx_rcd", bgp4["display_fields"])
         vpnv4 = next(s for s in sheets if sheet_key(s) == "bgp_peer.vpnv4")
         self.assertEqual(vpnv4["row_filters"], [{"field": "afi", "op": "eq", "value": "vpnv4"}])
         isis4 = next(s for s in sheets if sheet_key(s) == "isis_adjacency.ipv4")
         self.assertEqual(isis4["row_filters"][0]["op"], "contains")
+
+    def test_duplicate_match_keys_are_reported(self) -> None:
+        before = [
+            {"local_if": "a", "remote_sys": "X", "remote_if": "1", "remote_ip": "1"},
+            {"local_if": "a", "remote_sys": "X", "remote_if": "1", "remote_ip": "9"},
+        ]
+        after = [
+            {"local_if": "a", "remote_sys": "X", "remote_if": "1", "remote_ip": "1"},
+            {"local_if": "a", "remote_sys": "X", "remote_if": "1", "remote_ip": "2"},
+        ]
+        out = compare_rows(
+            before_rows=before,
+            after_rows=after,
+            key_fields=["local_if", "remote_sys", "remote_if"],
+            iface_fields=["local_if"],
+            compare_fields=["remote_ip"],
+            port_map={"a": "a"},
+        )
+        self.assertEqual(out["summary"]["duplicate_keys_before"], 1)
+        self.assertEqual(out["summary"]["duplicate_keys_after"], 1)
 
     def test_normalize_allows_duplicate_metric_with_distinct_sheet_id(self) -> None:
         from netx_api.biz_state.compare_service import _normalize_sheet, sheet_key

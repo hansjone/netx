@@ -77,11 +77,61 @@ def shutdown_biz_state_dispatch_pool(*, wait: bool = False) -> None:
             _dispatch_pool = None
 
 
+def _sync_cutover_hf_windows() -> None:
+    """Pause/resume cutover_hf tasks according to migration project hf_start/hf_end."""
+    db = SessionLocal()
+    try:
+        from .biz_migration.service import (
+            PURPOSE_CUTOVER_HF,
+            _all_hf_task_ids,
+            _hf_window_status,
+        )
+        from .biz_state import service as biz_svc
+        from .models import BizMigrationProject
+
+        projects = db.query(BizMigrationProject).all()
+        for proj in projects:
+            want = _hf_window_status(proj)
+            tids = _all_hf_task_ids(proj, "old") + _all_hf_task_ids(proj, "new")
+            for tid in tids:
+                task = db.get(BizStateTask, tid)
+                if not task:
+                    continue
+                purpose = str(getattr(task, "purpose", None) or "").strip()
+                if purpose and purpose != PURPOSE_CUTOVER_HF:
+                    continue
+                if want == "paused" and task.status == "running":
+                    try:
+                        patch = {"status": "paused"}
+                        if purpose != PURPOSE_CUTOVER_HF:
+                            patch["purpose"] = PURPOSE_CUTOVER_HF
+                        biz_svc.update_task(db, tid, patch)
+                    except Exception:
+                        _log.exception("pause hf window failed task=%s", tid)
+                elif want == "running" and task.status == "paused":
+                    try:
+                        patch = {"status": "running"}
+                        if purpose != PURPOSE_CUTOVER_HF:
+                            patch["purpose"] = PURPOSE_CUTOVER_HF
+                        biz_svc.update_task(db, tid, patch)
+                    except Exception:
+                        _log.exception("resume hf window failed task=%s", tid)
+    except Exception:
+        _log.exception("cutover hf window sync failed")
+    finally:
+        db.close()
+
+
 def try_dispatch_due_tasks() -> int:
     import time as _time
 
     global _last_tick_mono
     _last_tick_mono = _time.monotonic()
+
+    try:
+        _sync_cutover_hf_windows()
+    except Exception:
+        _log.exception("hf window sync tick failed")
 
     db = SessionLocal()
     try:

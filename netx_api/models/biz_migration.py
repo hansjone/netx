@@ -14,20 +14,40 @@ from ._types import JsonType as _JsonType
 
 
 class BizMigrationProject(Base):
-    """Cutover project linking old/new collect tasks + baselines."""
+    """Cutover project linking old/new portrait + HF collect tasks + baselines.
+
+    ``old_task_id`` / ``new_task_id`` = portrait (biz-monitor) tasks — baseline source.
+    ``old_hf_task_id`` / ``new_hf_task_id`` = cutover high-freq tasks — current source.
+    """
 
     __tablename__ = "biz_migration_project"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
     name: Mapped[str] = mapped_column(String(256), default="", index=True)
+    # Portrait / biz-monitor tasks (baseline batches come from these)
     old_task_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     new_task_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    # Cutover high-freq tasks (current batches for evaluate)
+    old_hf_task_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    new_hf_task_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     old_baseline_batch_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     new_baseline_batch_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     # Reuse biz_port_mapping (before_if=old, after_if=new)
     mapping_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     # BizMonitorTemplate — HOW (via compare template) + dual/status rules
     monitor_template_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    # Project-level collect override (empty = use monitor template)
+    collect_metric_ids_json: Mapped[list] = mapped_column(_JsonType, default=list)
+    # Per-metric interval overrides: {"interface_brief": 60, "bgp_peer": 300}
+    metric_interval_sec_json: Mapped[dict] = mapped_column(_JsonType, default=dict)
+    # HF bindings (may be multiple tasks when intervals differ):
+    # [{"task_id":"...","metric_ids":["interface_brief"],"interval_sec":60}, ...]
+    old_hf_bindings_json: Mapped[list] = mapped_column(_JsonType, default=list)
+    new_hf_bindings_json: Mapped[list] = mapped_column(_JsonType, default=list)
+    # HF schedule window (project-level)
+    hf_interval_sec: Mapped[int] = mapped_column(Integer, default=60)
+    hf_start_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    hf_end_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="draft", index=True)  # draft|active|done
     note: Mapped[str] = mapped_column(String(512), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)

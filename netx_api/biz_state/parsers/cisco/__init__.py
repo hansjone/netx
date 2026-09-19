@@ -2,7 +2,9 @@
 
 LLDP already works via ``common.lldp_neighbors`` (profile ``parser_id=lldp_neighbors``).
 
-Stub modules (not registered until implemented)::
+Shared ``metric_id`` schemas live in ``profiles.py`` (ZTE is the reference
+implementation). Stub modules keep normalize signatures aligned — do **not**
+register in ``PARSERS`` until implemented::
 
     interface_brief.py  arp.py  isis_adjacency.py  nd6_cache.py  bgp_peer.py
 

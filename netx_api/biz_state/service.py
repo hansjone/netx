@@ -156,6 +156,7 @@ def create_task(db: Session, body: dict[str, Any]) -> dict[str, Any]:
         vendor=vendor,
         device_type=device_type,
         note=str(body.get("note") or "")[:256],
+        purpose=str(body.get("purpose") or "")[:32],
         status=status,
         interval_sec=max(60, int(body.get("interval_sec") or 3600)),
         retention_days=max(1, min(3650, int(body.get("retention_days") or 30))),
@@ -234,6 +235,8 @@ def update_task(db: Session, task_id: str, body: dict[str, Any]) -> dict[str, An
         raise HTTPException(status_code=404, detail="task_not_found")
     if "note" in body:
         task.note = str(body.get("note") or "")[:256]
+    if "purpose" in body and body["purpose"] is not None:
+        task.purpose = str(body.get("purpose") or "")[:32]
     if "interval_sec" in body:
         task.interval_sec = max(60, int(body.get("interval_sec") or 3600))
     if "retention_days" in body:
@@ -253,7 +256,11 @@ def update_task(db: Session, task_id: str, body: dict[str, Any]) -> dict[str, An
         st = str(body.get("status") or "").strip()
         if st in ("draft", "running", "paused", "stopped"):
             if st == "running":
-                _assert_bindings_ready(db, task.id)
+                # Cutover HF: NE-scoped catalogs; placeholder bindings optional / stamped later
+                purpose = str(getattr(task, "purpose", None) or "").strip()
+                note = str(getattr(task, "note", None) or "")
+                if purpose != "cutover_hf" and not note.startswith("割接高频"):
+                    _assert_bindings_ready(db, task.id)
             task.status = st
     task.updated_at = _utcnow()
     db.commit()
@@ -350,6 +357,7 @@ def get_task(db: Session, task_id: str) -> dict[str, Any]:
         "vendor": task.vendor,
         "device_type": task.device_type,
         "note": task.note,
+        "purpose": str(getattr(task, "purpose", None) or ""),
         "status": task.status,
         "interval_sec": task.interval_sec,
         "retention_days": int(getattr(task, "retention_days", None) or 30),
@@ -367,8 +375,24 @@ def get_task(db: Session, task_id: str) -> dict[str, Any]:
     }
 
 
-def list_tasks(db: Session) -> list[dict[str, Any]]:
-    rows = db.query(BizStateTask).order_by(BizStateTask.updated_at.desc()).all()
+def list_tasks(db: Session, *, purpose: str | None = None) -> list[dict[str, Any]]:
+    from sqlalchemy import or_
+
+    q = db.query(BizStateTask)
+    purpose_f = str(purpose or "").strip()
+    if purpose_f:
+        if purpose_f == "portrait":
+            # Portrait = empty purpose or explicit portrait (exclude cutover_hf)
+            q = q.filter(
+                or_(
+                    BizStateTask.purpose == "",
+                    BizStateTask.purpose == "portrait",
+                    BizStateTask.purpose.is_(None),
+                )
+            )
+        else:
+            q = q.filter(BizStateTask.purpose == purpose_f)
+    rows = q.order_by(BizStateTask.updated_at.desc()).all()
     return [
         {
             "id": t.id,
@@ -378,6 +402,7 @@ def list_tasks(db: Session) -> list[dict[str, Any]]:
             "ne_ip": t.ne_ip,
             "vendor": t.vendor,
             "note": t.note,
+            "purpose": str(getattr(t, "purpose", None) or ""),
             "status": t.status,
             "interval_sec": t.interval_sec,
             "collect_running": bool(t.collect_running),

@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from ..models import BizCompareTemplate, BizMonitorTemplate
 from ..timeutil import utcnow_naive
 from ..biz_state import compare_service as cmp_svc
+from ..biz_state.iface_normalize import default_zte_iface_normalize_rules
 from .evaluate import PORT_METRIC_ID, PORT_STATUS_FIELDS
 
 
@@ -18,13 +19,27 @@ def _utcnow():
     return utcnow_naive()
 
 
-def _out(row: BizMonitorTemplate, compare_name: str = "") -> dict[str, Any]:
+def _out(row: BizMonitorTemplate, compare_name: str = "", *, db: Session | None = None) -> dict[str, Any]:
+    collect = [str(x).strip() for x in (row.collect_metric_ids_json or []) if str(x).strip()]
+    effective = list(collect)
+    if not effective and db is not None:
+        ct = db.get(BizCompareTemplate, row.compare_template_id) if row.compare_template_id else None
+        if ct:
+            seen: list[str] = []
+            for s in cmp_svc.template_metrics(ct):
+                mid = str(s.get("metric_id") or "").strip()
+                if mid and mid not in seen:
+                    seen.append(mid)
+            effective = seen
+    if not effective:
+        effective = [PORT_METRIC_ID]
     return {
         "id": row.id,
         "name": row.name,
         "compare_template_id": row.compare_template_id or "",
         "compare_template_name": compare_name,
-        "collect_metric_ids": list(row.collect_metric_ids_json or []),
+        "collect_metric_ids": collect,
+        "collect_metric_ids_effective": effective,
         "defaults": dict(row.defaults_json or {}),
         "sheet_overrides": list(row.sheet_overrides_json or []),
         "note": row.note or "",
@@ -52,6 +67,11 @@ def ensure_port_compare_template(db: Session) -> BizCompareTemplate:
         "field_rules": [],
     }
     if row:
+        if not cmp_svc.template_iface_normalize(row):
+            cmp_svc._set_template_iface_normalize(row, default_zte_iface_normalize_rules())  # noqa: SLF001
+            row.updated_at = _utcnow()
+            db.commit()
+            db.refresh(row)
         return row
     row = BizCompareTemplate(
         id=uuid4().hex,
@@ -61,6 +81,7 @@ def ensure_port_compare_template(db: Session) -> BizCompareTemplate:
         updated_at=_utcnow(),
     )
     cmp_svc._apply_sheets_to_row(row, [sheet])  # noqa: SLF001 — shared normalizer
+    cmp_svc._set_template_iface_normalize(row, default_zte_iface_normalize_rules())  # noqa: SLF001
     db.add(row)
     db.commit()
     db.refresh(row)
@@ -262,68 +283,61 @@ def preset_override_for_metric(metric_id: str, *, sheet_id: str = "") -> dict[st
     )
 
 
+DEFAULT_MONITOR_TEMPLATE_NAME = "默认割接监控"
+
+
 def ensure_default_monitor_templates(db: Session) -> None:
-    """Seed once when monitor-template table is empty."""
+    """Seed once when monitor-template table is empty — one template on the full status compare."""
     if db.query(BizMonitorTemplate.id).limit(1).first():
         return
     cmp_svc.ensure_default_templates(db)
-    port_tpl = ensure_port_compare_template(db)
     zte = (
         db.query(BizCompareTemplate)
         .filter(BizCompareTemplate.name == "ZTE status default")
         .one_or_none()
     )
-    seeds = [
+    if not zte:
+        return
+    zte_sheets = cmp_svc.template_metrics(zte)
+    zte_overrides = [
+        preset_override_for_metric(
+            str(s.get("metric_id") or ""),
+            sheet_id=str(s.get("sheet_id") or s.get("metric_id") or ""),
+        )
+        for s in zte_sheets
+        if s.get("metric_id")
+    ]
+    db.add(
         BizMonitorTemplate(
             id=uuid4().hex,
-            name="端口割接监控",
-            compare_template_id=port_tpl.id,
-            collect_metric_ids_json=[PORT_METRIC_ID],
+            name=DEFAULT_MONITOR_TEMPLATE_NAME,
+            compare_template_id=zte.id,
+            collect_metric_ids_json=[],
             defaults_json={"dual_mode": "migrate_pair", "out_of_expect": "strict"},
-            sheet_overrides_json=[preset_override_for_metric(PORT_METRIC_ID)],
-            note="Default: port status dual-verdict with up/down semantics",
+            sheet_overrides_json=zte_overrides,
+            note="Default: full status dual-verdict (port/ARP/BGP/…)",
             created_at=_utcnow(),
             updated_at=_utcnow(),
-        ),
-    ]
-    if zte:
-        zte_sheets = cmp_svc.template_metrics(zte)
-        zte_overrides = [
-            preset_override_for_metric(
-                str(s.get("metric_id") or ""),
-                sheet_id=str(s.get("sheet_id") or s.get("metric_id") or ""),
-            )
-            for s in zte_sheets
-            if s.get("metric_id")
-        ]
-        seeds.append(
-            BizMonitorTemplate(
-                id=uuid4().hex,
-                name="ZTE 状态割接监控",
-                compare_template_id=zte.id,
-                collect_metric_ids_json=[],
-                defaults_json={"dual_mode": "migrate_pair", "out_of_expect": "strict"},
-                sheet_overrides_json=zte_overrides,
-                note="ZTE multi-sheet: port/ARP/BGP/… dual presets",
-                created_at=_utcnow(),
-                updated_at=_utcnow(),
-            )
         )
-    for s in seeds:
-        db.add(s)
+    )
     db.commit()
 
 
 def default_port_monitor_template_id(db: Session) -> str:
-    """Ensure seeds exist and return id of 「端口割接监控」 (or first template)."""
+    """Ensure seeds exist and return the default monitor template id."""
     ensure_default_monitor_templates(db)
-    row = (
-        db.query(BizMonitorTemplate)
-        .filter(BizMonitorTemplate.name == "端口割接监控")
-        .one_or_none()
-    )
-    if row:
-        return row.id
+    for name in (
+        DEFAULT_MONITOR_TEMPLATE_NAME,
+        "ZTE 状态割接监控",
+        "端口割接监控",
+    ):
+        row = (
+            db.query(BizMonitorTemplate)
+            .filter(BizMonitorTemplate.name == name)
+            .one_or_none()
+        )
+        if row:
+            return row.id
     first = db.query(BizMonitorTemplate).order_by(BizMonitorTemplate.created_at.asc()).first()
     return first.id if first else ""
 
@@ -339,7 +353,7 @@ def list_monitor_templates(db: Session) -> list[dict[str, Any]]:
     ensure_default_monitor_templates(db)
     names = _compare_name_map(db)
     rows = db.query(BizMonitorTemplate).order_by(BizMonitorTemplate.name.asc()).all()
-    return [_out(r, names.get(r.compare_template_id or "", "")) for r in rows]
+    return [_out(r, names.get(r.compare_template_id or "", ""), db=db) for r in rows]
 
 
 def get_monitor_template(db: Session, template_id: str) -> dict[str, Any]:
@@ -347,7 +361,7 @@ def get_monitor_template(db: Session, template_id: str) -> dict[str, Any]:
     if not row:
         raise HTTPException(status_code=404, detail="monitor_template_not_found")
     names = _compare_name_map(db)
-    return _out(row, names.get(row.compare_template_id or "", ""))
+    return _out(row, names.get(row.compare_template_id or "", ""), db=db)
 
 
 def create_monitor_template(db: Session, body: dict[str, Any]) -> dict[str, Any]:
@@ -381,7 +395,7 @@ def create_monitor_template(db: Session, body: dict[str, Any]) -> dict[str, Any]
     db.commit()
     db.refresh(row)
     names = _compare_name_map(db)
-    return _out(row, names.get(row.compare_template_id or "", ""))
+    return _out(row, names.get(row.compare_template_id or "", ""), db=db)
 
 
 def update_monitor_template(db: Session, template_id: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -417,7 +431,7 @@ def update_monitor_template(db: Session, template_id: str, body: dict[str, Any])
     db.commit()
     db.refresh(row)
     names = _compare_name_map(db)
-    return _out(row, names.get(row.compare_template_id or "", ""))
+    return _out(row, names.get(row.compare_template_id or "", ""), db=db)
 
 
 def delete_monitor_template(db: Session, template_id: str) -> None:

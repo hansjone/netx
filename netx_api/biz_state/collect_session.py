@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Callable
+import re
 
 from .command_match import normalize_command
 from .enrich import EnrichJoin, apply_enrich_joins
@@ -34,8 +35,11 @@ class ResolvedAux:
     profile: ParseProfile
 
 
-def resolve_aux_command(aux: AuxCommand) -> ResolvedAux:
-    """Resolve aux from ``profile_id`` (single source of truth)."""
+def resolve_aux_command(
+    aux: AuxCommand,
+    params: dict[str, str] | None = None,
+) -> ResolvedAux:
+    """Resolve aux from ``profile_id``; render ``<placeholders>`` from primary params."""
     key = str(aux.key or "").strip()
     pid = str(aux.profile_id or "").strip()
     if not key or not pid:
@@ -43,10 +47,22 @@ def resolve_aux_command(aux: AuxCommand) -> ResolvedAux:
     prof = get_profile(pid)
     if not prof:
         raise ValueError(f"aux profile not found: {pid}")
-    cmd = normalize_command(prof.command_template)
+    tmpl = str(prof.command_template or "")
+    rendered = tmpl
+    for name, val in dict(params or {}).items():
+        n = str(name or "").strip()
+        if not n:
+            continue
+        rendered = rendered.replace(f"<{n}>", str(val or "").strip())
+    cmd = normalize_command(rendered)
     if not cmd:
         raise ValueError(f"aux profile {pid} has empty command_template")
+    if re.search(r"<[^>]+>", cmd):
+        raise ValueError(f"aux profile {pid} unresolved placeholders: {cmd}")
     textfsm = str(prof.textfsm_command or cmd).strip()
+    # Prefer concrete rendered command for FSM when aux had placeholders
+    if params and any(f"<{k}>" in tmpl for k in (params or {})):
+        textfsm = cmd
     parser_id = str(prof.parser_id or "").strip()
     meta = get_parser_meta(parser_id) if parser_id else None
     rule_keys = tuple((meta or {}).get("rule_keys") or ())

@@ -44,6 +44,7 @@ class TaskCreateIn(BaseModel):
     vendor: str = ""
     device_type: str = ""
     note: str = ""
+    purpose: str = ""
     status: str = "draft"
     interval_sec: int = 3600
     retention_days: int = 30
@@ -54,6 +55,7 @@ class TaskCreateIn(BaseModel):
 
 class TaskPatchIn(BaseModel):
     note: str | None = None
+    purpose: str | None = None
     interval_sec: int | None = None
     retention_days: int | None = None
     daily_keep_enabled: bool | None = None
@@ -151,8 +153,8 @@ def api_set_bindings(
 
 
 @router.get("/tasks")
-def api_list_tasks(db: Session = Depends(get_db)) -> dict[str, Any]:
-    return {"items": svc.list_tasks(db)}
+def api_list_tasks(purpose: str = "", db: Session = Depends(get_db)) -> dict[str, Any]:
+    return {"items": svc.list_tasks(db, purpose=purpose or None)}
 
 
 @router.post("/tasks")
@@ -285,6 +287,8 @@ class TemplateIn(BaseModel):
     note: str = ""
     # Preferred: multi-metric sheets
     metrics: list[TemplateMetricIn] | None = None
+    # Template-owned interface type aliases (GE→gei, …)
+    iface_normalize_rules: list[dict[str, str]] | None = None
     # Legacy single-metric fields (still accepted)
     metric_id: str = "lldp_neighbor"
     key_fields: list[str] = Field(default_factory=list)
@@ -300,6 +304,7 @@ class TemplatePatchIn(BaseModel):
     name: str | None = None
     note: str | None = None
     metrics: list[TemplateMetricIn] | None = None
+    iface_normalize_rules: list[dict[str, str]] | None = None
     metric_id: str | None = None
     key_fields: list[str] | None = None
     iface_fields: list[str] | None = None

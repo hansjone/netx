@@ -796,11 +796,21 @@ def _key_in_port_map(
     iface_fields: list[str],
     port_map: dict[str, str],
 ) -> bool:
-    """True when every interface segment of the key is an old-side map entry."""
+    """True when every interface segment of the key is covered by the map.
+
+    Covered = exact map key, or parent (before last ``.``) is a map key.
+    """
     vals = _iface_values(key_str, key_fields=key_fields, iface_fields=iface_fields)
     if not vals:
         return False
-    return all(v in port_map for v in vals)
+    for v in vals:
+        if v in port_map:
+            continue
+        parent = v.rsplit(".", 1)[0] if "." in v else ""
+        if parent and parent in port_map:
+            continue
+        return False
+    return True
 
 
 def _port_identity(key_fields: list[str], iface_fields: list[str]) -> bool:
@@ -832,24 +842,28 @@ def _remap_key_str(
     port_map: dict[str, str],
 ) -> str:
     """Map old-side key_str → new-side using iface segments (not whole-string only)."""
+    from ..biz_state.iface_normalize import resolve_mapped_iface
+
     if not key_str:
         return key_str
     if not port_map:
         return key_str
-    if key_str in port_map and (not key_fields or len(key_fields) == 1):
-        return port_map[key_str]
+    if (not key_fields or len(key_fields) == 1) and (
+        key_str in port_map or ("." in key_str and key_str.rsplit(".", 1)[0] in port_map)
+    ):
+        return resolve_mapped_iface(key_str, port_map)
     parts = str(key_str).split("|")
     if key_fields and len(parts) == len(key_fields):
         iface_set = {str(f) for f in iface_fields}
         out: list[str] = []
         for i, f in enumerate(key_fields):
             v = parts[i]
-            if f in iface_set and v in port_map:
-                out.append(port_map[v])
+            if f in iface_set:
+                out.append(resolve_mapped_iface(v, port_map))
             else:
                 out.append(v)
         return "|".join(out)
-    return port_map.get(key_str, key_str)
+    return resolve_mapped_iface(key_str, port_map)
 
 
 def _reverse_remap_key_str(
@@ -860,24 +874,28 @@ def _reverse_remap_key_str(
     rev_map: dict[str, str],
 ) -> str:
     """Map new-side key_str → old-side canon identity."""
+    from ..biz_state.iface_normalize import resolve_mapped_iface
+
     if not key_str:
         return key_str
     if not rev_map:
         return key_str
-    if key_str in rev_map and (not key_fields or len(key_fields) == 1):
-        return rev_map[key_str]
+    if (not key_fields or len(key_fields) == 1) and (
+        key_str in rev_map or ("." in key_str and key_str.rsplit(".", 1)[0] in rev_map)
+    ):
+        return resolve_mapped_iface(key_str, rev_map)
     parts = str(key_str).split("|")
     if key_fields and len(parts) == len(key_fields):
         iface_set = {str(f) for f in iface_fields}
         out: list[str] = []
         for i, f in enumerate(key_fields):
             v = parts[i]
-            if f in iface_set and v in rev_map:
-                out.append(rev_map[v])
+            if f in iface_set:
+                out.append(resolve_mapped_iface(v, rev_map))
             else:
                 out.append(v)
         return "|".join(out)
-    return rev_map.get(key_str, key_str)
+    return resolve_mapped_iface(key_str, rev_map)
 
 
 def _current_row(diff: dict[str, Any] | None) -> dict[str, Any]:
@@ -938,8 +956,14 @@ def evaluate_metric_dual(
     sheet_override: dict[str, Any] | None = None,
     out_of_expect: str = "strict",
     sheet_id: str = "",
+    iface_normalize_rules: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Run old vs old-baseline, new vs new-baseline (or mapped old baseline), dual merge."""
+    from ..biz_state.iface_normalize import (
+        apply_iface_normalize_rows,
+        normalize_iface_rules,
+    )
+
     sid = str(sheet_id or "").strip() or str(metric_id or "").strip()
     expect_keys = expect_keys_for_metric(
         expect, metric_id=metric_id, iface_fields=iface_fields, sheet_id=sid
@@ -962,6 +986,21 @@ def evaluate_metric_dual(
     success_patterns = list(ov.get("success") or []) if isinstance(ov.get("success"), list) else []
     anomaly_patterns = list(ov.get("anomaly") or []) if isinstance(ov.get("anomaly"), list) else []
 
+    norm_rules = normalize_iface_rules(iface_normalize_rules)
+    old_baseline_rows = apply_iface_normalize_rows(
+        old_baseline_rows, iface_fields=iface_fields, rules=norm_rules
+    )
+    old_current_rows = apply_iface_normalize_rows(
+        old_current_rows, iface_fields=iface_fields, rules=norm_rules
+    )
+    new_current_rows = apply_iface_normalize_rows(
+        new_current_rows, iface_fields=iface_fields, rules=norm_rules
+    )
+    if new_baseline_rows is not None:
+        new_baseline_rows = apply_iface_normalize_rows(
+            new_baseline_rows, iface_fields=iface_fields, rules=norm_rules
+        )
+
     old_cmp = compare_rows(
         before_rows=old_baseline_rows,
         after_rows=old_current_rows,
@@ -970,6 +1009,7 @@ def evaluate_metric_dual(
         compare_fields=compare_fields,
         port_map=None,
         field_rules=field_rules,
+        iface_normalize_rules=None,  # already applied
     )
     old_idx = build_diff_index_from_compare(old_cmp)
 

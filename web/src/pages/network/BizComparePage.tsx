@@ -85,6 +85,7 @@ type Template = {
   key_fields: string[];
   iface_fields: string[];
   compare_fields: string[];
+  iface_normalize_rules?: { from: string; to: string }[];
   note: string;
 };
 
@@ -405,6 +406,7 @@ function templateExportPayload(tpl: Template) {
     exported_at: new Date().toISOString(),
     name: tpl.name,
     note: tpl.note || "",
+    iface_normalize_rules: [...(tpl.iface_normalize_rules || [])],
     metrics,
   };
 }
@@ -413,6 +415,7 @@ function parseTemplateImport(raw: unknown): {
   name: string;
   note: string;
   metrics: MetricSheet[];
+  iface_normalize_rules?: { from: string; to: string }[];
 } | null {
   if (!raw || typeof raw !== "object") return null;
   const o = raw as Record<string, unknown>;
@@ -462,7 +465,49 @@ function parseTemplateImport(raw: unknown): {
     });
   }
   if (!metrics.length) return null;
-  return { name, note, metrics };
+  const normRaw = o.iface_normalize_rules;
+  const iface_normalize_rules: { from: string; to: string }[] = [];
+  if (Array.isArray(normRaw)) {
+    for (const item of normRaw) {
+      if (!item || typeof item !== "object") continue;
+      const r = item as Record<string, unknown>;
+      const fr = String(r.from || "").trim();
+      const to = String(r.to || "").trim();
+      if (fr && to) iface_normalize_rules.push({ from: fr, to });
+    }
+  }
+  return { name, note, metrics, iface_normalize_rules };
+}
+
+function ifaceNormRulesToText(rules?: { from: string; to: string }[]): string {
+  return (rules || []).map((r) => `${r.from},${r.to}`).join("\n");
+}
+
+function parseIfaceNormText(text: string): { from: string; to: string }[] {
+  const out: { from: string; to: string }[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const s = line.trim();
+    if (!s || s.startsWith("#")) continue;
+    let fr = "";
+    let to = "";
+    if (s.includes(",")) {
+      const i = s.indexOf(",");
+      fr = s.slice(0, i).trim();
+      to = s.slice(i + 1).trim();
+    } else if (s.includes("\t")) {
+      const i = s.indexOf("\t");
+      fr = s.slice(0, i).trim();
+      to = s.slice(i + 1).trim();
+    } else {
+      const parts = s.split(/\s+/);
+      if (parts.length >= 2) {
+        fr = parts[0];
+        to = parts.slice(1).join(" ");
+      }
+    }
+    if (fr && to) out.push({ from: fr, to });
+  }
+  return out;
 }
 
 function downloadJsonFile(filename: string, data: unknown) {
@@ -721,6 +766,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
   const [tplEditId, setTplEditId] = useState("");
   const [tplName, setTplName] = useState("");
   const [tplNote, setTplNote] = useState("");
+  const [tplNormText, setTplNormText] = useState("");
   const [tplSheets, setTplSheets] = useState<MetricSheet[]>([]);
   const [tplSheetIdx, setTplSheetIdx] = useState(0);
   const [tplPaneTab, setTplPaneTab] = useState<"fields" | "filters">("fields");
@@ -1127,6 +1173,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     setTplEditId("");
     setTplName("");
     setTplNote("");
+    setTplNormText("XXVGE,xxvgei\nXGE,xgei\nCGE,cgei\nGE,gei\nSG,smartgroup");
     setTplSheets([]);
     setTplSheetIdx(0);
     setTplPaneTab("fields");
@@ -1139,6 +1186,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     setTplEditId(tpl.id);
     setTplName(tpl.name);
     setTplNote(tpl.note || "");
+    setTplNormText(ifaceNormRulesToText(tpl.iface_normalize_rules));
     setTplSheets(sheets.length ? sheets.map(cloneSheet) : []);
     setTplSheetIdx(0);
     setTplPaneTab("fields");
@@ -1229,6 +1277,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
       const body = {
         name: tplName || tplSheets.map((s) => sheetLabel(s)).join("+"),
         note: tplNote,
+        iface_normalize_rules: parseIfaceNormText(tplNormText),
         metrics: tplSheets.map((s) => ({
           sheet_id: sheetIdentity(s),
           title: s.title || sheetIdentity(s),
@@ -1293,6 +1342,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
       await bizCompareCreateTemplate({
         name: body.name,
         note: body.note,
+        iface_normalize_rules: body.iface_normalize_rules || [],
         metrics: body.metrics.map((s) => ({
           sheet_id: sheetIdentity(s),
           title: s.title || sheetIdentity(s),
@@ -1887,6 +1937,19 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
               onChange={(e) => setTplNote(e.target.value)}
               placeholder={t("bizCompare.note")}
               aria-label={t("bizCompare.note")}
+            />
+          </div>
+
+          <div className="ct-editor__norm">
+            <div className="ct-editor__pick-title">{t("bizCompare.ifaceNormalize")}</div>
+            <p className="muted ct-editor__pick-hint">{t("bizCompare.ifaceNormalizeHint")}</p>
+            <textarea
+              className="ct-editor__norm-area"
+              rows={5}
+              value={tplNormText}
+              onChange={(e) => setTplNormText(e.target.value)}
+              placeholder={"GE,gei\nSG,smartgroup"}
+              aria-label={t("bizCompare.ifaceNormalize")}
             />
           </div>
 

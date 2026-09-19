@@ -1790,8 +1790,10 @@ export const bizStateSetBindings = (
     { bindings },
   );
 
-export const bizStateListTasks = () =>
-  apiGet<{ items: Record<string, unknown>[] }>("/v1/biz-state/tasks");
+export const bizStateListTasks = (purpose = "") => {
+  const q = purpose ? `?purpose=${encodeURIComponent(purpose)}` : "";
+  return apiGet<{ items: Record<string, unknown>[] }>(`/v1/biz-state/tasks${q}`);
+};
 
 export const bizStateCreateTask = (body: Record<string, unknown>) =>
   apiPost<Record<string, unknown>>("/v1/biz-state/tasks", body);
@@ -1988,6 +1990,20 @@ export const bizCompareDownloadRun = async (runId: string): Promise<void> => {
 export const bizMigrationListProjects = () =>
   apiGet<{ items: Record<string, unknown>[] }>("/v1/biz-migration/projects");
 
+export const bizMigrationNePortrait = (params: { source: string; ne_id: string; limit?: number }) => {
+  const q = new URLSearchParams();
+  q.set("source", params.source || "managed");
+  q.set("ne_id", params.ne_id);
+  if (params.limit != null) q.set("limit", String(params.limit));
+  return apiGet<{
+    source: string;
+    ne_id: string;
+    task: Record<string, unknown> | null;
+    batches: Array<{ id: string; started_at?: string | null; status?: string; row_count?: number }>;
+    hint?: string;
+  }>(`/v1/biz-migration/ne-portrait?${q.toString()}`);
+};
+
 export const bizMigrationCreateProject = (body: Record<string, unknown>) =>
   apiPost<Record<string, unknown>>("/v1/biz-migration/projects", body);
 
@@ -1996,6 +2012,9 @@ export const bizMigrationPatchProject = (projectId: string, body: Record<string,
     `/v1/biz-migration/projects/${encodeURIComponent(projectId)}`,
     body,
   );
+
+export const bizMigrationDeleteProject = (projectId: string) =>
+  apiDelete<{ ok?: boolean }>(`/v1/biz-migration/projects/${encodeURIComponent(projectId)}`);
 
 export const bizMigrationListBatches = (projectId: string) =>
   apiGet<{ items: Record<string, unknown>[] }>(
@@ -2037,7 +2056,16 @@ export const bizMigrationListBaselineExpect = (projectId: string) =>
 
 export const bizMigrationEnsureHighfreq = (
   projectId: string,
-  body: { interval_sec?: number; retention_days?: number; collect_now?: boolean } = {},
+  body: {
+    interval_sec?: number;
+    retention_days?: number;
+    collect_now?: boolean;
+    collect_metric_ids?: string[];
+    hf_start_at?: string | null;
+    hf_end_at?: string | null;
+    old_ne?: Record<string, unknown>;
+    new_ne?: Record<string, unknown>;
+  } = {},
 ) =>
   apiPost<Record<string, unknown>>(
     `/v1/biz-migration/projects/${encodeURIComponent(projectId)}/ensure-highfreq`,

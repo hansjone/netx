@@ -32,6 +32,11 @@ from .compare_rules import (
     effective_compare_fields,
     effective_display_fields,
 )
+from .iface_normalize import (
+    apply_iface_normalize_rows,
+    default_zte_iface_normalize_rules,
+    normalize_iface_rules,
+)
 from .profiles import metric_field_map
 
 
@@ -397,6 +402,15 @@ def _default_sheet_for_metric(metric_id: str, *, compare_roles: tuple[str, ...] 
         # Context columns: show but not necessarily compare
         ctx = [n for n in ("vrf", "entry_type", "age") if n not in keys and n not in compare]
         extra["display_fields"] = list(keys) + list(compare) + ctx
+    elif metric_id in ("interface_detail", "optical_brief", "bgp_peer"):
+        # Counters (rates / optical power / pfx_rcd) stay visible but out of default compare.
+        counters = [f.name for f in fields if (not f.is_key) and f.role == "counter"]
+        meta = [
+            f.name
+            for f in fields
+            if (not f.is_key) and f.role == "meta" and f.name not in compare
+        ]
+        extra["display_fields"] = list(keys) + list(compare) + counters + meta
     return _sheet_def(
         metric_id=metric_id,
         key_fields=keys,
@@ -449,6 +463,20 @@ def _bgp_afi_sheets() -> list[dict[str, Any]]:
             ("bgp_peer.ipv6", "BGP IPv6", "ipv6"),
             ("bgp_peer.vpnv4", "BGP VPNv4", "vpnv4"),
             ("bgp_peer.vpnv6", "BGP VPNv6", "vpnv6"),
+            ("bgp_peer.evpn", "BGP EVPN", "evpn"),
+            ("bgp_peer.vpls", "BGP VPLS", "vpls"),
+        ),
+        op="eq",
+    )
+
+
+def _vrrp_af_sheets() -> list[dict[str, Any]]:
+    return _sheets_split_by_field(
+        "vrrp",
+        "af",
+        (
+            ("vrrp.ipv4", "VRRP IPv4", "ipv4"),
+            ("vrrp.ipv6", "VRRP IPv6", "ipv6"),
         ),
         op="eq",
     )
@@ -470,6 +498,7 @@ def _builtin_source_splits() -> dict[str, list[dict[str, Any]]]:
     return {
         "bgp_peer": _bgp_afi_sheets(),
         "isis_adjacency": _isis_af_sheets(),
+        "vrrp": _vrrp_af_sheets(),
     }
 
 
@@ -477,9 +506,44 @@ def _default_zte_status_sheets() -> list[dict[str, Any]]:
     return [
         *_isis_af_sheets(),
         _default_sheet_for_metric("interface_brief", compare_roles=("state",)),
+        _default_sheet_for_metric("interface_detail", compare_roles=("state",)),
         _default_sheet_for_metric("arp", compare_roles=("state",)),
         _default_sheet_for_metric("nd6_cache", compare_roles=("state",)),
+        _default_sheet_for_metric("ospf_neighbor", compare_roles=("state",)),
+        *_vrrp_af_sheets(),
+        _default_sheet_for_metric("optical_brief", compare_roles=("state",)),
         *_bgp_afi_sheets(),
+        _default_sheet_for_metric("l2vpn_pw", compare_roles=("state",)),
+        _default_lldp_sheet(),
+    ]
+
+
+def _default_zte_config_sheets() -> list[dict[str, Any]]:
+    """Config-intent metrics for cutover / intent-vs-intent compare."""
+    return [
+        _default_sheet_for_metric("config_vrf", compare_roles=("state",)),
+        _default_sheet_for_metric("config_interface", compare_roles=("state",)),
+        _default_sheet_for_metric("config_bgp_peer", compare_roles=("state",)),
+        _default_sheet_for_metric("config_l2vpn_pw", compare_roles=("state",)),
+        *_sheets_split_by_field(
+            "config_static_route",
+            "af",
+            (
+                ("config_static_route.ipv4", "Static IPv4", "ipv4"),
+                ("config_static_route.ipv6", "Static IPv6", "ipv6"),
+            ),
+            compare_roles=("state",),
+        ),
+        *_sheets_split_by_field(
+            "config_ospf",
+            "af",
+            (
+                ("config_ospf.ipv4", "OSPF IPv4", "ipv4"),
+                ("config_ospf.ipv6", "OSPF IPv6", "ipv6"),
+            ),
+            compare_roles=("state",),
+        ),
+        _default_sheet_for_metric("config_isis", compare_roles=("state",)),
     ]
 
 
@@ -622,6 +686,17 @@ def _parse_metrics_body(body: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def template_iface_normalize(t: BizCompareTemplate | None) -> list[dict[str, str]]:
+    """Resolved iface type-alias rules for a compare template."""
+    if t is None:
+        return []
+    return normalize_iface_rules(getattr(t, "iface_normalize_json", None) or [])
+
+
+def _set_template_iface_normalize(t: BizCompareTemplate, raw: Any) -> None:
+    t.iface_normalize_json = normalize_iface_rules(raw)
+
+
 def _template_out(t: BizCompareTemplate) -> dict[str, Any]:
     sheets = template_metrics(t)
     first = sheets[0] if sheets else None
@@ -636,6 +711,7 @@ def _template_out(t: BizCompareTemplate) -> dict[str, Any]:
         "iface_fields": list((first or {}).get("iface_fields") or t.iface_fields or []),
         "compare_fields": list((first or {}).get("compare_fields") or t.compare_fields or []),
         "ignore_fields": [],
+        "iface_normalize_rules": template_iface_normalize(t),
         "note": t.note,
         "updated_at": t.updated_at.isoformat() + "Z" if t.updated_at else None,
     }
@@ -730,21 +806,37 @@ def ensure_default_zte_status_template(db: Session) -> BizCompareTemplate:
     name = "ZTE status default"
     row = db.query(BizCompareTemplate).filter(BizCompareTemplate.name == name).one_or_none()
     sheets = _default_zte_status_sheets()
+    # Volatile counters must not stay in compare_fields on upgraded installs.
+    _STRIP_COMPARE: dict[str, frozenset[str]] = {
+        "interface_detail": frozenset({"input_bps", "output_bps", "in_util", "out_util"}),
+        "optical_brief": frozenset({"rx_power", "tx_power"}),
+        "bgp_peer": frozenset({"pfx_rcd"}),
+    }
     if row:
         existing = template_metrics(row)
         want = {s["metric_id"] for s in sheets}
         have = {s["metric_id"] for s in existing}
         changed = bool(want - have)
-        # Migrate ARP sheet: inject template row_filters if missing (replaces code filter)
         upgraded: list[dict[str, Any]] = []
         by_want = {s["metric_id"]: s for s in sheets}
         for s in existing:
             cur = dict(s)
-            if cur.get("metric_id") == "arp" and not cur.get("row_filters"):
+            mid = str(cur.get("metric_id") or "")
+            if mid == "arp" and not cur.get("row_filters"):
                 cur["row_filters"] = list(by_want.get("arp", {}).get("row_filters") or arp_dynamic_row_filters())
                 if not cur.get("field_rules") and by_want.get("arp", {}).get("field_rules"):
                     cur["field_rules"] = list(by_want["arp"]["field_rules"])
                 changed = True
+            strip = _STRIP_COMPARE.get(mid)
+            if strip:
+                old_cmp = list(cur.get("compare_fields") or [])
+                new_cmp = [f for f in old_cmp if f not in strip]
+                if new_cmp != old_cmp:
+                    cur["compare_fields"] = new_cmp
+                    want_disp = list((by_want.get(mid) or {}).get("display_fields") or [])
+                    if want_disp:
+                        cur["display_fields"] = want_disp
+                    changed = True
             upgraded.append(_normalize_sheet(cur) or cur)
         if want - have:
             for s in sheets:
@@ -753,7 +845,12 @@ def ensure_default_zte_status_template(db: Session) -> BizCompareTemplate:
             changed = True
         if changed:
             _apply_sheets_to_row(row, upgraded if upgraded else sheets)
-            row.note = "Built-in ZTE status cutover (ISIS/IF/ARP/ND6/BGP)"
+            row.note = "Built-in ZTE status cutover (ISIS/IF/ARP/ND6/BGP/LLDP)"
+            row.updated_at = _utcnow()
+            db.commit()
+            db.refresh(row)
+        if not template_iface_normalize(row):
+            _set_template_iface_normalize(row, default_zte_iface_normalize_rules())
             row.updated_at = _utcnow()
             db.commit()
             db.refresh(row)
@@ -761,11 +858,51 @@ def ensure_default_zte_status_template(db: Session) -> BizCompareTemplate:
     row = BizCompareTemplate(
         id=uuid4().hex,
         name=name,
-        note="Built-in ZTE status cutover (ISIS/IF/ARP/ND6/BGP)",
+        note="Built-in ZTE status cutover (ISIS/IF/ARP/ND6/BGP/LLDP)",
         created_at=_utcnow(),
         updated_at=_utcnow(),
     )
     _apply_sheets_to_row(row, sheets)
+    _set_template_iface_normalize(row, default_zte_iface_normalize_rules())
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def ensure_default_zte_config_template(db: Session) -> BizCompareTemplate:
+    name = "ZTE config intent default"
+    row = db.query(BizCompareTemplate).filter(BizCompareTemplate.name == name).one_or_none()
+    sheets = _default_zte_config_sheets()
+    if row:
+        existing = template_metrics(row)
+        want = {s["metric_id"] for s in sheets}
+        have = {s["metric_id"] for s in existing}
+        if want - have:
+            upgraded = list(existing)
+            for s in sheets:
+                if s["metric_id"] not in have:
+                    upgraded.append(s)
+            _apply_sheets_to_row(row, upgraded)
+            row.note = "Built-in ZTE config intent (VRF/IF/BGP/L2VPN PW)"
+            row.updated_at = _utcnow()
+            db.commit()
+            db.refresh(row)
+        if not template_iface_normalize(row):
+            _set_template_iface_normalize(row, default_zte_iface_normalize_rules())
+            row.updated_at = _utcnow()
+            db.commit()
+            db.refresh(row)
+        return row
+    row = BizCompareTemplate(
+        id=uuid4().hex,
+        name=name,
+        note="Built-in ZTE config intent (VRF/IF/BGP/L2VPN PW)",
+        created_at=_utcnow(),
+        updated_at=_utcnow(),
+    )
+    _apply_sheets_to_row(row, sheets)
+    _set_template_iface_normalize(row, default_zte_iface_normalize_rules())
     db.add(row)
     db.commit()
     db.refresh(row)
@@ -773,16 +910,11 @@ def ensure_default_zte_status_template(db: Session) -> BizCompareTemplate:
 
 
 def ensure_default_templates(db: Session) -> None:
-    """Seed built-ins only on first install (empty table).
+    """Seed the single built-in compare template (most complete status sheet set).
 
-    Operators own templates after that — do not recreate deleted built-ins
-    or overwrite customized sheets on every list call.
+    Operators own additional templates after that — do not recreate deleted
+    siblings (port-only / LLDP / VRF / config) on every list call.
     """
-    if db.query(BizCompareTemplate.id).limit(1).first():
-        return
-    ensure_default_cutover_template(db)
-    ensure_default_lldp_template(db)
-    ensure_default_vrf_template(db)
     ensure_default_zte_status_template(db)
 
 
@@ -871,6 +1003,10 @@ def create_template(db: Session, body: dict[str, Any]) -> dict[str, Any]:
         updated_at=_utcnow(),
     )
     _apply_sheets_to_row(t, sheets)
+    if "iface_normalize_rules" in body or "iface_normalize_json" in body:
+        _set_template_iface_normalize(
+            t, body.get("iface_normalize_rules", body.get("iface_normalize_json"))
+        )
     db.add(t)
     db.commit()
     return _template_out(t)
@@ -884,6 +1020,11 @@ def update_template(db: Session, template_id: str, body: dict[str, Any]) -> dict
         t.name = str(body.get("name") or "")[:256]
     if "note" in body:
         t.note = str(body.get("note") or "")[:512]
+    if "iface_normalize_rules" in body or "iface_normalize_json" in body:
+        _set_template_iface_normalize(
+            t, body.get("iface_normalize_rules", body.get("iface_normalize_json"))
+        )
+        t.updated_at = _utcnow()
     if any(
         k in body
         for k in (
@@ -1105,12 +1246,22 @@ def validate_mapping(
     pmap = _port_map_dict(db, mapping_id)
     # Validate against first sheet that has iface fields (or first sheet)
     target = next((s for s in sheets if s.get("iface_fields")), sheets[0])
-    before = _load_metric_rows(db, batch_id=before_batch_id, metric_id=target["metric_id"])
-    after = _load_metric_rows(db, batch_id=after_batch_id, metric_id=target["metric_id"])
+    iface_fields = list(target.get("iface_fields") or [])
+    norm = template_iface_normalize(tpl)
+    before = apply_iface_normalize_rows(
+        _load_metric_rows(db, batch_id=before_batch_id, metric_id=target["metric_id"]),
+        iface_fields=iface_fields,
+        rules=norm,
+    )
+    after = apply_iface_normalize_rows(
+        _load_metric_rows(db, batch_id=after_batch_id, metric_id=target["metric_id"]),
+        iface_fields=iface_fields,
+        rules=norm,
+    )
     return mapping_stats(
         before_rows=before,
         after_rows=after,
-        iface_fields=list(target.get("iface_fields") or []),
+        iface_fields=iface_fields,
         port_map=pmap,
     )
 
@@ -1232,6 +1383,7 @@ def _run_sheet(
     before_batch_id: str,
     after_batch_id: str,
     port_map: dict[str, str],
+    iface_normalize_rules: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     key_fields = list(sheet.get("key_fields") or [])
     iface_fields = list(sheet.get("iface_fields") or [])
@@ -1261,6 +1413,7 @@ def _run_sheet(
         compare_fields=compare_fields,
         port_map=port_map,
         field_rules=field_rules,
+        iface_normalize_rules=iface_normalize_rules,
     )
     summary = dict(result["summary"])
     summary["before_raw_count"] = len(before_raw)
@@ -1302,6 +1455,7 @@ def run_compare(db: Session, job_id: str, *, force_after_batch_id: str = "") -> 
         raise HTTPException(status_code=400, detail="template_has_no_metrics")
 
     pmap = _port_map_dict(db, j.mapping_id)
+    norm_rules = template_iface_normalize(tpl)
     sheet_results: list[dict[str, Any]] = []
     agg = {
         "before_count": 0,
@@ -1319,6 +1473,7 @@ def run_compare(db: Session, job_id: str, *, force_after_batch_id: str = "") -> 
             before_batch_id=before_batch_id,
             after_batch_id=after_batch_id,
             port_map=pmap,
+            iface_normalize_rules=norm_rules,
         )
         sheet_results.append(one)
         s = one["summary"]

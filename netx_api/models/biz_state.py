@@ -30,6 +30,8 @@ class BizStateTask(Base):
     vendor: Mapped[str] = mapped_column(String(64), default="")
     device_type: Mapped[str] = mapped_column(String(64), default="")
     note: Mapped[str] = mapped_column(String(256), default="")
+    # "" | portrait | cutover_hf — filter cutover HF in biz-state list
+    purpose: Mapped[str] = mapped_column(String(32), default="", index=True)
     status: Mapped[str] = mapped_column(String(32), default="draft", index=True)  # draft|running|paused|stopped
     interval_sec: Mapped[int] = mapped_column(Integer, default=300)
     # Keep snapshots for N calendar days (protected baselines/refs never auto-deleted)
@@ -223,6 +225,8 @@ class BizCompareTemplate(Base):
     compare_fields: Mapped[list] = mapped_column(_JsonType, default=list)
     ignore_fields: Mapped[list] = mapped_column(_JsonType, default=list)
     metrics_json: Mapped[list] = mapped_column(_JsonType, default=list)
+    # Template-owned type aliases: [{"from":"GE","to":"gei"}, ...]
+    iface_normalize_json: Mapped[list] = mapped_column(_JsonType, default=list)
     note: Mapped[str] = mapped_column(String(512), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)

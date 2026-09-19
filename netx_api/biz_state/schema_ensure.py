@@ -17,6 +17,7 @@ def apply_biz_state_schema(conn: Connection) -> None:
     # Keep lightweight indexes that older DBs might miss.
     for sql in (
         "ALTER TABLE biz_compare_template ADD COLUMN IF NOT EXISTS metrics_json JSON DEFAULT '[]'",
+        "ALTER TABLE biz_compare_template ADD COLUMN IF NOT EXISTS iface_normalize_json JSON DEFAULT '[]'",
         "CREATE INDEX IF NOT EXISTS ix_biz_state_task_status ON biz_state_task (status)",
         "CREATE INDEX IF NOT EXISTS ix_biz_state_batch_task_id ON biz_state_batch (task_id)",
         "CREATE INDEX IF NOT EXISTS ix_biz_state_batch_command_batch_id ON biz_state_batch_command (batch_id)",
@@ -63,6 +64,19 @@ def apply_biz_state_schema(conn: Connection) -> None:
         "CREATE INDEX IF NOT EXISTS ix_biz_monitor_template_compare ON biz_monitor_template (compare_template_id)",
         "ALTER TABLE biz_migration_project ADD COLUMN IF NOT EXISTS monitor_template_id VARCHAR(64) DEFAULT ''",
         "CREATE INDEX IF NOT EXISTS ix_biz_migration_project_monitor_tpl ON biz_migration_project (monitor_template_id)",
+        "ALTER TABLE biz_migration_project ADD COLUMN IF NOT EXISTS old_hf_task_id VARCHAR(64) DEFAULT ''",
+        "ALTER TABLE biz_migration_project ADD COLUMN IF NOT EXISTS new_hf_task_id VARCHAR(64) DEFAULT ''",
+        "CREATE INDEX IF NOT EXISTS ix_biz_migration_project_old_hf ON biz_migration_project (old_hf_task_id)",
+        "CREATE INDEX IF NOT EXISTS ix_biz_migration_project_new_hf ON biz_migration_project (new_hf_task_id)",
+        "ALTER TABLE biz_migration_project ADD COLUMN IF NOT EXISTS collect_metric_ids_json JSON DEFAULT '[]'",
+        "ALTER TABLE biz_migration_project ADD COLUMN IF NOT EXISTS hf_interval_sec INTEGER DEFAULT 60",
+        "ALTER TABLE biz_migration_project ADD COLUMN IF NOT EXISTS hf_start_at TIMESTAMP",
+        "ALTER TABLE biz_migration_project ADD COLUMN IF NOT EXISTS hf_end_at TIMESTAMP",
+        "ALTER TABLE biz_migration_project ADD COLUMN IF NOT EXISTS metric_interval_sec_json JSON DEFAULT '{}'",
+        "ALTER TABLE biz_migration_project ADD COLUMN IF NOT EXISTS old_hf_bindings_json JSON DEFAULT '[]'",
+        "ALTER TABLE biz_migration_project ADD COLUMN IF NOT EXISTS new_hf_bindings_json JSON DEFAULT '[]'",
+        "ALTER TABLE biz_state_task ADD COLUMN IF NOT EXISTS purpose VARCHAR(32) DEFAULT ''",
+        "CREATE INDEX IF NOT EXISTS ix_biz_state_task_purpose ON biz_state_task (purpose)",
     ):
         try:
             _run_sql(conn, sql)

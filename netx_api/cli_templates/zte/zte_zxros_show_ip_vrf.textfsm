@@ -1,6 +1,7 @@
 Value Required NAME (\S+)
 Value RD (\S+)
-Value INTERFACES (.*)
+Value PROTOCOLS (\S+)
+Value VRF_ID (\d+)
 
 Start
   ^Name\s+Default\s+RD -> Records
@@ -10,7 +11,8 @@ Start
   ^.* -> Start
 
 Records
-  ^${NAME}\s+${RD}\s+${INTERFACES}\s*$$ -> Record
+  ^${NAME}\s+${RD}\s+${PROTOCOLS}\s+${VRF_ID}\s*$$ -> Record
+  ^${NAME}\s+${RD}\s+${PROTOCOLS}\s*$$ -> Record
   ^${NAME}\s+${RD}\s*$$ -> Record
   ^${NAME}\s*$$ -> Record
   ^-+

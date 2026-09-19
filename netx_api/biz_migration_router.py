@@ -17,22 +17,45 @@ router = APIRouter(prefix="/v1/biz-migration", tags=["biz-migration"])
 
 class ProjectIn(BaseModel):
     name: str
-    old_task_id: str
-    new_task_id: str
+    old_task_id: str = ""
+    new_task_id: str = ""
+    old_hf_task_id: str = ""
+    new_hf_task_id: str = ""
     old_baseline_batch_id: str = ""
     new_baseline_batch_id: str = ""
     mapping_id: str = ""
+    mapping_name: str = ""
+    mapping_rows: list[dict[str, Any]] = Field(default_factory=list)
     monitor_template_id: str = ""
-    status: str = "draft"
+    collect_metric_ids: list[str] = Field(default_factory=list)
+    metric_interval_sec: dict[str, int] = Field(default_factory=dict)
+    hf_interval_sec: int = 60
+    hf_start_at: str | None = None
+    hf_end_at: str | None = None
+    create_hf: bool = True
+    collect_now: bool = False
+    retention_days: int = 7
+    old_ne: dict[str, Any] | None = None
+    new_ne: dict[str, Any] | None = None
+    status: str = "active"
     note: str = ""
 
 
 class ProjectPatchIn(BaseModel):
     name: str | None = None
+    old_task_id: str | None = None
+    new_task_id: str | None = None
+    old_hf_task_id: str | None = None
+    new_hf_task_id: str | None = None
     old_baseline_batch_id: str | None = None
     new_baseline_batch_id: str | None = None
     mapping_id: str | None = None
     monitor_template_id: str | None = None
+    collect_metric_ids: list[str] | None = None
+    metric_interval_sec: dict[str, int] | None = None
+    hf_interval_sec: int | None = None
+    hf_start_at: str | None = None
+    hf_end_at: str | None = None
     status: str | None = None
     note: str | None = None
 
@@ -79,6 +102,19 @@ def api_list_projects(db: Session = Depends(get_db)):
     return {"items": svc.list_projects(db)}
 
 
+@router.get("/ne-portrait")
+def api_ne_portrait(
+    source: str = "managed",
+    ne_id: str = "",
+    limit: int = 30,
+    db: Session = Depends(get_db),
+):
+    """Portrait biz_state task + recent batches for a NE (baseline picker)."""
+    if not str(ne_id or "").strip():
+        return {"source": source, "ne_id": "", "task": None, "batches": [], "hint": "ne_id_required"}
+    return svc.list_ne_portrait_options(db, source=source, ne_id=ne_id, limit=limit)
+
+
 @router.post("/projects")
 def api_create_project(body: ProjectIn, db: Session = Depends(get_db)):
     return svc.create_project(db, body.model_dump())
@@ -112,9 +148,14 @@ def api_baseline_expect(project_id: str, db: Session = Depends(get_db)):
 
 
 class EnsureHighfreqIn(BaseModel):
-    interval_sec: int = 60
+    interval_sec: int | None = None
     retention_days: int = 7
     collect_now: bool = True
+    old_ne: dict[str, Any] | None = None
+    new_ne: dict[str, Any] | None = None
+    collect_metric_ids: list[str] | None = None
+    hf_start_at: str | None = None
+    hf_end_at: str | None = None
 
 
 @router.post("/projects/{project_id}/ensure-port-highfreq")
@@ -124,14 +165,28 @@ def api_ensure_port_highfreq(
     body: EnsureHighfreqIn | None = None,
     db: Session = Depends(get_db),
 ):
-    """Create/bind HF biz_state tasks from monitor template collect_metric_ids."""
-    payload = body.model_dump() if body else {}
+    """Create/bind HF biz_state tasks into hf slots (portrait slots untouched)."""
+    payload = body.model_dump(exclude_unset=True) if body else {}
+    # Persist schedule / collect override before ensure
+    patch: dict[str, Any] = {}
+    if "collect_metric_ids" in payload and payload["collect_metric_ids"] is not None:
+        patch["collect_metric_ids"] = payload["collect_metric_ids"]
+    if "hf_start_at" in payload:
+        patch["hf_start_at"] = payload.get("hf_start_at")
+    if "hf_end_at" in payload:
+        patch["hf_end_at"] = payload.get("hf_end_at")
+    if "interval_sec" in payload and payload["interval_sec"] is not None:
+        patch["hf_interval_sec"] = payload["interval_sec"]
+    if patch:
+        svc.patch_project(db, project_id, patch)
     return svc.ensure_highfreq(
         db,
         project_id,
-        interval_sec=int(payload.get("interval_sec") or 60),
+        interval_sec=payload.get("interval_sec"),
         retention_days=int(payload.get("retention_days") or 7),
         collect_now=bool(payload.get("collect_now", True)),
+        old_ne=payload.get("old_ne"),
+        new_ne=payload.get("new_ne"),
     )
 
 

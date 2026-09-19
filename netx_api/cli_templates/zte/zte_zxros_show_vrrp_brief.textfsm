@@ -1,0 +1,21 @@
+Value INTERFACE (\S+)
+Value VR_ID (\S+)
+Value PRIORITY (\S+)
+Value TIME (\S+)
+Value FLAGS (\S*)
+Value STATE (\S+)
+Value MASTER_ADDR (\S+)
+Value VROUTER_ADDR (\S+)
+
+Start
+  ^Interface\s+vrID -> Entries
+  ^\s*$$
+  ^.* -> Start
+
+Entries
+  ^${INTERFACE}\s+${VR_ID}\s+${PRIORITY}\s+${TIME}\s+${FLAGS}\s+${STATE}\s+${MASTER_ADDR}\s+${VROUTER_ADDR}\s*$$ -> Record
+  ^${INTERFACE}\s+${VR_ID}\s+${PRIORITY}\s+${TIME}\s+${STATE}\s+${MASTER_ADDR}\s+${VROUTER_ADDR}\s*$$ -> Record
+  ^\s*$$
+  ^\S+\s*#\s*$$ -> End
+  ^.*#\s*$$ -> End
+  ^.* -> Entries

@@ -1,0 +1,23 @@
+Value PW_NAME (\S+)
+Value PEER (\S+)
+Value FEC (\S+)
+Value PW_TYPE (\S+)
+Value STATE (\S+)
+Value LLABEL (\S+)
+Value RLABEL (\S+)
+Value VPN_OWNER (\S+)
+
+Start
+  ^PWName\s+PeerIP -> Entries
+  ^PW\s+count
+  ^Headers:
+  ^Codes
+  ^\s*$$
+  ^.* -> Start
+
+Entries
+  ^${PW_NAME}\s+${PEER}\s+${FEC}\s+${PW_TYPE}\s+${STATE}\s+${LLABEL}\s+${RLABEL}\s+${VPN_OWNER}\s*$$ -> Record
+  ^\s*$$
+  ^\S+\s*#\s*$$ -> End
+  ^.*#\s*$$ -> End
+  ^.* -> Entries

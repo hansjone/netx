@@ -1,0 +1,23 @@
+Value NETWORK (\S+)
+Value NEXT_HOP (\S+)
+Value METRIC (\S*)
+Value LOC_PRF (\S*)
+Value RT_PRF (\S*)
+Value PATH (.*)
+
+Start
+  ^\s*Network\s+Next\s+Hop -> Routes
+  ^Status\s+codes
+  ^Origin\s+codes
+  ^Route\s+Distinguisher
+  ^\s*$$
+  ^.* -> Start
+
+Routes
+  ^Route\s+Distinguisher
+  ^\s*\*?\s*>?\s*${NETWORK}\s+${NEXT_HOP}\s+${METRIC}\s+${LOC_PRF}\s+${RT_PRF}\s+${PATH}\s*$$ -> Record
+  ^\s*\*?\s*>?\s*${NETWORK}\s+${NEXT_HOP}\s+${PATH}\s*$$ -> Record
+  ^\s*$$
+  ^\S+\s*#\s*$$ -> End
+  ^.*#\s*$$ -> End
+  ^.* -> Routes
