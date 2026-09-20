@@ -9953,6 +9953,45 @@ html.login-page--paused .login-page__flare {
   gap: 8px 12px;
 }
 
+.bs-id-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(2, 6, 23, 0.45);
+}
+
+.bs-id-row--inline {
+  width: auto;
+  flex: 1 1 220px;
+}
+
+.bs-id-row__label {
+  flex: 0 0 auto;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #94a3b8;
+}
+
+.bs-id-row__value {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #e2e8f0;
+  white-space: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  word-break: normal;
+}
+
 .bs-sheet-cmd-bar {
   display: flex;
   flex-direction: column;

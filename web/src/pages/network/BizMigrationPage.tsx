@@ -37,6 +37,7 @@ import {
 } from "../../services/api";
 // bizStateListTasks not needed for create — NEs + auto HF
 import type { CliTargetItem } from "../../types";
+import { writeClipboardText } from "../../utils/clipboard";
 import { pageCount } from "../../utils/display";
 import { formatSystemTime, localDatetimeInputToUtcIso, utcIsoToLocalDatetimeInput } from "../../utils/time";
 import { jobChipColor, NmStatusChip, sourceChipColor } from "./nmChips";
@@ -1426,13 +1427,25 @@ export function BizMigrationPage() {
   const batchOptions = (items: { id: string; started_at?: string | null }[]) => (
     <>
       <option value="">—</option>
-      {items.map((x) => (
-        <option key={x.id} value={x.id}>
-          {fmtTime(x.started_at) !== "—" ? fmtTime(x.started_at) : x.id.slice(0, 12)}
-        </option>
-      ))}
+      {items.map((x) => {
+        const when = fmtTime(x.started_at);
+        const label = when !== "—" ? `${when} · ${x.id}` : x.id;
+        return (
+          <option key={x.id} value={x.id} title={x.id}>
+            {label}
+          </option>
+        );
+      })}
     </>
   );
+
+  const copyBatchId = (id: string) => {
+    void (async () => {
+      const ok = await writeClipboardText(id);
+      if (ok) showOk(t("common.copied"));
+      else showError(t("common.opFailed"));
+    })();
+  };
 
   return (
     <section className="panel nm-page-panel">
@@ -2340,8 +2353,8 @@ export function BizMigrationPage() {
                         aria-label={t("bizMigration.batches")}
                       >
                         {batches.map((b) => (
-                          <option key={b.id} value={b.id}>
-                            {b.batch_label} ({statusLabel(b.status)})
+                          <option key={b.id} value={b.id} title={b.id}>
+                            {b.batch_label} ({statusLabel(b.status)}) · {b.id}
                           </option>
                         ))}
                       </FieldSelect>
@@ -2397,6 +2410,15 @@ export function BizMigrationPage() {
                       ) : null}
                     </div>
                   </div>
+                  {batch ? (
+                    <div className="bs-id-row" title={batch.id}>
+                      <span className="bs-id-row__label">{t("bizMigration.batchId")}</span>
+                      <code className="bs-id-row__value">{batch.id}</code>
+                      <Button size="sm" variant="ghost" onPress={() => copyBatchId(batch.id)}>
+                        {t("bizMigration.copyBatchId")}
+                      </Button>
+                    </div>
+                  ) : null}
 
                   <div className="ct-editor__main bm-batches__main">
                     <aside className="ct-editor__nav" aria-label={t("bizMigration.pickExpectPorts")}>
@@ -2530,11 +2552,20 @@ export function BizMigrationPage() {
                       aria-label={t("bizMigration.batches")}
                     >
                       {batches.map((b) => (
-                        <option key={b.id} value={b.id}>
-                          {b.batch_label} ({statusLabel(b.status)})
+                        <option key={b.id} value={b.id} title={b.id}>
+                          {b.batch_label} ({statusLabel(b.status)}) · {b.id}
                         </option>
                       ))}
                     </FieldSelect>
+                    {batchId ? (
+                      <div className="bs-id-row bs-id-row--inline" title={batchId}>
+                        <span className="bs-id-row__label">{t("bizMigration.batchId")}</span>
+                        <code className="bs-id-row__value">{batchId}</code>
+                        <Button size="sm" variant="ghost" onPress={() => copyBatchId(batchId)}>
+                          {t("bizMigration.copyBatchId")}
+                        </Button>
+                      </div>
+                    ) : null}
                     <FieldSelect
                       value={pinOldBatchId}
                       onChange={(e) => setPinOldBatchId(e.target.value)}

@@ -2,10 +2,10 @@
 name: netx-biz-monitor
 description: >-
   Overnight cutover / biz_state monitor analysis via netxops host tools
-  (netx__listBizMonitors / netx__getBizMonitor*). List projects/tasks first
-  when no id is given; then read definitions, board, reds/diffs with evidence
-  (device-raw A/B, show commands), and judge tool false-positive vs real
-  business fault. Does not create templates/tasks.
+  (netx__listBizMonitors / listBizMonitorBatches / getBizMonitor*). List
+  projects/tasks then batches when no id is given; read definitions, board,
+  reds/diffs with evidence (device-raw A/B, show commands), and judge tool
+  false-positive vs real business fault. Does not create templates/tasks.
 ---
 
 # netx-biz-monitor（割接 / 业务监控只读分析）
@@ -18,6 +18,7 @@ description: >-
 | 工具 | 用途 |
 |------|------|
 | `netx__listBizMonitors` | **入口目录**：列出割接/监控对比项目 + 业务监控任务（**无需** project_id） |
+| `netx__listBizMonitorBatches` | **批次目录**：`project_id`→割接批次；`task_id`→采集批次；`kind=runs`→evaluate run |
 | `netx__getBizMonitorContext` | 任务定义：项目、监控/对比模板、归一化规则、端口映射、关联任务与命令项 |
 | `netx__getBizMonitorBoard` | 批次进度、evaluate run、sheet 卡、verdict 统计 |
 | `netx__listBizMonitorReds` | 红单 + **evidence** |
@@ -37,12 +38,13 @@ description: >-
 ## 推荐顺序
 
 1. 无 id → `listBizMonitors`（`kind=projects|tasks|all`，可加 `q` / `purpose`）  
-2. `getBizMonitorContext(project_id)` — 弄清盯什么  
-3. `getBizMonitorBoard(batch_id)` — 进度 / missing / skipped  
-4. `listBizMonitorReds` 或 `getBizMonitorDiffs(color=red)`  
-5. 看 evidence：parse 失败？current_missing？映射 miss？归一化误伤？  
-6. 需要原文 → `getBizCollectCommandRaw`  
-7. 像真障 → `execManagedNe` 现场核对  
+2. `listBizMonitorBatches(project_id)` 或 `(task_id)` — 拿到 **完整 batch_id**；需要 run 时再 `kind=runs` / `include_runs`  
+3. `getBizMonitorContext(project_id)` — 弄清盯什么  
+4. `getBizMonitorBoard(batch_id)` — 进度 / missing / skipped  
+5. `listBizMonitorReds` 或 `getBizMonitorDiffs(color=red)`  
+6. 看 evidence：parse 失败？current_missing？映射 miss？归一化误伤？  
+7. 需要原文 → `getBizCollectCommandRaw`  
+8. 像真障 → `execManagedNe` 现场核对  
 
 ## Verdict 速查（skill 解释，工具不硬编码）
 

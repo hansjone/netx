@@ -30,6 +30,7 @@ import {
 } from "../../services/api";
 import type { CliTargetItem } from "../../types";
 import { pageCount } from "../../utils/display";
+import { writeClipboardText } from "../../utils/clipboard";
 import { formatSystemTime } from "../../utils/time";
 import { jobChipColor, NmStatusChip, sourceChipColor } from "./nmChips";
 
@@ -1502,9 +1503,7 @@ export function BizStatePage() {
         className="app-heroui-modal--xl bs-workbook-modal"
       >
         <Modal.Header>
-          <Modal.Heading>
-            {t("bizState.batchWorkbook")} · {batchDetail?.id?.slice(0, 8)}…
-          </Modal.Heading>
+          <Modal.Heading>{t("bizState.batchWorkbook")}</Modal.Heading>
           <Modal.CloseTrigger />
         </Modal.Header>
         <Modal.Body className="flex flex-col gap-2 bs-workbook-body">
@@ -1517,6 +1516,24 @@ export function BizStatePage() {
                 {batchDetail.command_count} cmd · {batchDetail.row_count} rows ·{" "}
                 {fmtTime(batchDetail.started_at)}
               </span>
+              <div className="bs-id-row" title={String(batchDetail.id || "")}>
+                <span className="bs-id-row__label">{t("bizState.batchId")}</span>
+                <code className="bs-id-row__value">{String(batchDetail.id || "")}</code>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  isDisabled={!batchDetail.id}
+                  onPress={() => {
+                    void (async () => {
+                      const ok = await writeClipboardText(String(batchDetail.id || ""));
+                      if (ok) showOk(t("common.copied"));
+                      else showError(t("common.opFailed"));
+                    })();
+                  }}
+                >
+                  {t("bizState.copyBatchId")}
+                </Button>
+              </div>
             </div>
           ) : null}
 
