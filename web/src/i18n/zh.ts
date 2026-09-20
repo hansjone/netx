@@ -1303,7 +1303,7 @@ const zh = {
     colIp: "IP",
     apiKeysTitle: "API Key 管理",
     apiKeysHelp:
-      "网页登录不用 API Key，Key 给 MCP/脚本用。生成时默认 alarms:read + ne:read + ne:write + ne:exec，之后用「改权限」增减（保存即生效，不必重生明文）。明文仅创建时显示一次。管理员可代其他用户签发，权限不能超过所属用户已有能力；未接 MCP 的项为预留。全站未吊销 Key 上限 {{max}} 把（吊销后可再建）。",
+      "网页登录不用 API Key，Key 给 MCP/脚本与 netxops 用。生成时默认 alarms:read + ne:read + ne:write + ne:exec + biz-monitor:read，之后用「改权限」增减（保存即生效，不必重生明文）。明文仅创建时显示一次。管理员可代其他用户签发，权限不能超过所属用户已有能力；未接的项为预留。全站未吊销 Key 上限 {{max}} 把（吊销后可再建）。",
     tokenQuota: "未吊销 {{active}} / {{max}}",
     tokenLimitReached: "已达 API Key 上限（{{max}}），请先吊销不用的 Key",
     tokenName: "名称",
@@ -1340,6 +1340,7 @@ const zh = {
     scopeNeRead: "ne:read — 网元/拓扑只读（MCP）",
     scopeNeWrite: "ne:write — 网元/拓扑写入、画图（MCP）",
     scopeNeExec: "ne:exec — 托管网元 CLI（netx MCP）",
+    scopeBizMonitorRead: "biz-monitor:read — 业务监控/割接只读（netxops）",
     scopeSql: "sql:query — UME SQL（netx MCP）",
     scopeWebcrt: "webcrt:session — WebCRT（预留 MCP）",
     scopeAdminUsers: "admin:users — 用户管理（预留 MCP）",

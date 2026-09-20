@@ -1313,7 +1313,7 @@ const en = {
     colIp: "IP",
     apiKeysTitle: "API Key management",
     apiKeysHelp:
-      "The web UI uses login sessions, not API keys — keys are for MCP/scripts. Defaults on create: alarms:read + ne:read + ne:write + ne:exec; refine later with Edit scopes (takes effect immediately, no need to regenerate). Secret is shown once. Admins may issue for other users; scopes cannot exceed the owner's. Unused scopes are reserved for future MCP tools. System-wide cap: {{max}} non-revoked keys (revoke to free a slot).",
+      "The web UI uses login sessions, not API keys — keys are for MCP/scripts and netxops. Defaults on create: alarms:read + ne:read + ne:write + ne:exec + biz-monitor:read; refine later with Edit scopes (takes effect immediately, no need to regenerate). Secret is shown once. Admins may issue for other users; scopes cannot exceed the owner's. Unused scopes are reserved. System-wide cap: {{max}} non-revoked keys (revoke to free a slot).",
     tokenQuota: "Active {{active}} / {{max}}",
     tokenLimitReached: "API key limit reached ({{max}}). Revoke unused keys first.",
     tokenName: "Name",
@@ -1350,6 +1350,7 @@ const en = {
     scopeNeRead: "ne:read — NE / topology read (MCP)",
     scopeNeWrite: "ne:write — NE / topology write / draw (MCP)",
     scopeNeExec: "ne:exec — Managed NE CLI (netx MCP)",
+    scopeBizMonitorRead: "biz-monitor:read — Biz monitor / cutover read (netxops)",
     scopeSql: "sql:query — UME SQL (netx MCP)",
     scopeWebcrt: "webcrt:session — WebCRT (reserved MCP)",
     scopeAdminUsers: "admin:users — User admin (reserved MCP)",

@@ -36,6 +36,7 @@ const ALL_SCOPE_KEYS = [
   "ne:read",
   "ne:write",
   "ne:exec",
+  "biz-monitor:read",
   "sql:query",
   "webcrt:session",
   "admin:users",
@@ -43,13 +44,20 @@ const ALL_SCOPE_KEYS = [
 ] as const;
 
 /** Applied on create; refine later via「改权限」. */
-const CREATE_DEFAULT_SCOPES = ["alarms:read", "ne:read", "ne:exec", "ne:write"] as const;
+const CREATE_DEFAULT_SCOPES = [
+  "alarms:read",
+  "ne:read",
+  "ne:exec",
+  "ne:write",
+  "biz-monitor:read",
+] as const;
 
 const SCOPE_LABEL_KEYS: Record<(typeof ALL_SCOPE_KEYS)[number], string> = {
   "alarms:read": "auth.scopeAlarmsRead",
   "ne:read": "auth.scopeNeRead",
   "ne:write": "auth.scopeNeWrite",
   "ne:exec": "auth.scopeNeExec",
+  "biz-monitor:read": "auth.scopeBizMonitorRead",
   "sql:query": "auth.scopeSql",
   "webcrt:session": "auth.scopeWebcrt",
   "admin:users": "auth.scopeAdminUsers",
