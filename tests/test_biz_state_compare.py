@@ -420,6 +420,30 @@ class CompareSheetDefaultsTests(unittest.TestCase):
         self.assertEqual(a["metric_id"], b["metric_id"])
         self.assertNotEqual(sheet_key(a), sheet_key(b))
 
+    def test_template_in_roundtrip_keeps_split_sheet_ids(self) -> None:
+        """Export → TemplateIn → create must preserve 拆表 sheet_id (ISIS/BGP/VRRP)."""
+        from netx_api.biz_state.compare_service import (
+            _default_zte_status_sheets,
+            _parse_metrics_body,
+            sheet_key,
+        )
+        from netx_api.biz_state_router import TemplateIn
+
+        sheets = _default_zte_status_sheets()
+        body = TemplateIn(
+            name="ZTE status roundtrip",
+            metrics=sheets,
+        ).model_dump()
+        parsed = _parse_metrics_body(body)
+        self.assertEqual(len(parsed), len(sheets))
+        ids = [sheet_key(s) for s in parsed]
+        self.assertIn("isis_adjacency.ipv4", ids)
+        self.assertIn("isis_adjacency.ipv6", ids)
+        self.assertEqual(sum(1 for s in parsed if s["metric_id"] == "isis_adjacency"), 2)
+        self.assertEqual(sum(1 for s in parsed if s["metric_id"] == "bgp_peer"), 6)
+        isis4 = next(s for s in parsed if sheet_key(s) == "isis_adjacency.ipv4")
+        self.assertTrue(str(isis4.get("title") or "").strip())
+
     def test_arp_default_sheet_has_row_filters(self) -> None:
         from netx_api.biz_state.compare_service import _default_sheet_for_metric
 

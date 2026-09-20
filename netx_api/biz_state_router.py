@@ -303,6 +303,9 @@ class RowFilterIn(BaseModel):
 
 class TemplateMetricIn(BaseModel):
     metric_id: str
+    # Split sheets share metric_id; identity is sheet_id (export/import must keep both).
+    sheet_id: str = ""
+    title: str = ""
     key_fields: list[str] = Field(default_factory=list)
     iface_fields: list[str] = Field(default_factory=list)
     compare_fields: list[str] = Field(default_factory=list)
