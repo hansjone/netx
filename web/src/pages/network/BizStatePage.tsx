@@ -15,8 +15,10 @@ import {
   bizStateDiscover,
   bizStateDownloadExport,
   bizStateGetBatch,
+  bizStateGetBatchCommand,
   bizStateGetTask,
   bizStateListBatches,
+  bizStateListBatchMetricRows,
   bizStateListProfiles,
   bizStateListTasks,
   bizStatePatchTask,
@@ -71,17 +73,30 @@ type BatchRow = {
 type Candidate = { value: string; label: string; rd?: string };
 
 type SheetCol = { key: string; header: string };
-type SheetDef = {
+
+type SheetCmd = {
+  id: string;
+  raw_command: string;
+  parse_status?: string;
+  row_count?: number;
+  message?: string;
+  has_raw?: boolean;
+  profile_id?: string;
+};
+
+type SheetTab = {
   id: string;
   title: string;
-  columns: SheetCol[];
-  rows: Record<string, unknown>[];
+  rowCount: number;
+  commands: SheetCmd[];
 };
 
 type TaskTab = "profiles" | "batches";
 type NeSourceFilter = "all" | "managed" | "ume";
 
 const NE_PAGE_SIZE = 10;
+const SHEET_PAGE_SIZE_OPTIONS = [20, 50, 100, 200];
+const DEFAULT_SHEET_PAGE_SIZE = 50;
 
 function fmtIntervalLabel(
   sec: number,
@@ -156,93 +171,39 @@ function metricSheetTitle(metricId: string, t: (k: string) => string): string {
     lldp_neighbor: t("bizState.sheetLldp"),
     isis_adjacency: t("bizState.sheetIsis"),
     interface_brief: t("bizState.sheetIfaceBrief"),
+    interface_detail: t("bizState.sheetIfaceBrief"),
     arp: t("bizState.sheetArp"),
     nd6_cache: t("bizState.sheetNd6"),
     bgp_peer: t("bizState.sheetBgpPeer"),
+    config_interface: t("bizState.sheetConfigIface"),
+    config_vrf: t("bizState.sheetConfigVrf"),
+    config_bgp_peer: t("bizState.sheetConfigBgp"),
   };
   return map[metricId] || metricId;
 }
 
-function rowsForMetric(batch: any, metricId: string): Record<string, unknown>[] {
-  const mid = String(metricId || "").trim();
-  if (!mid) return [];
-  const fromGeneric = (batch?.metrics || {})[mid];
-  if (Array.isArray(fromGeneric) && fromGeneric.length) {
-    return fromGeneric as Record<string, unknown>[];
-  }
-  if (mid === "lldp_neighbor") {
-    return ((batch?.lldp_neighbors || []) as Record<string, unknown>[]) || [];
-  }
-  return Array.isArray(fromGeneric) ? (fromGeneric as Record<string, unknown>[]) : [];
-}
-
-function buildBatchSheets(batch: any, t: (k: string) => string): SheetDef[] {
-  const sheets: SheetDef[] = [];
-  const cmds = (batch?.commands || []) as any[];
+function buildSheetTabs(batch: any, t: (k: string) => string): SheetTab[] {
+  const tabs: SheetTab[] = [];
+  const cmds = (batch?.commands || []) as SheetCmd[];
   if (cmds.length) {
-    sheets.push({
+    tabs.push({
       id: "commands",
       title: t("bizState.sheetCommands"),
-      columns: [
-        { key: "raw_command", header: t("bizState.colCommand") },
-        { key: "metric_id", header: "metric" },
-        { key: "parse_status", header: t("bizState.colStatus") },
-        { key: "row_count", header: t("bizState.colRows") },
-        { key: "message", header: t("bizState.colMessage") },
-      ],
-      rows: cmds.map((c) => ({
-        raw_command: c.raw_command,
-        metric_id: c.metric_id,
-        parse_status: c.parse_status,
-        row_count: c.row_count,
-        message: c.message,
-        profile_id: c.profile_id,
-      })),
+      rowCount: cmds.length,
+      commands: cmds,
     });
   }
-
-  // Collect metric ids: command order first, then legacy / metrics payload
-  const metricOrder: string[] = [];
-  const pushMid = (mid: string) => {
-    const id = String(mid || "").trim();
-    if (!id || id === "vrf_list" || id === "commands") return;
-    if (!metricOrder.includes(id)) metricOrder.push(id);
-  };
-  for (const c of cmds) pushMid(String(c.metric_id || ""));
-  for (const mid of Object.keys(batch?.metrics || {})) pushMid(mid);
-  if ((batch?.lldp_neighbors || []).length) pushMid("lldp_neighbor");
-
-  for (const mid of metricOrder) {
-    const rows = rowsForMetric(batch, mid);
-    // Still show a sheet when the command ran (even 0 rows) so empty/fail is visible
-    const ran = cmds.some((c) => String(c.metric_id || "") === mid);
-    if (!rows.length && !ran) continue;
-    const columns =
-      rows.length > 0
-        ? columnsFromRows(rows)
-        : [{ key: "_empty", header: "—" }];
-    sheets.push({
+  for (const s of (batch?.sheets || []) as any[]) {
+    const mid = String(s?.metric_id || "").trim();
+    if (!mid || mid === "vrf_list") continue;
+    tabs.push({
       id: mid,
       title: metricSheetTitle(mid, t),
-      columns,
-      rows,
+      rowCount: Number(s?.row_count || 0),
+      commands: Array.isArray(s?.commands) ? (s.commands as SheetCmd[]) : [],
     });
   }
-  return sheets;
-}
-
-function filterSheetRows(
-  rows: Record<string, unknown>[],
-  columns: SheetCol[],
-  keyword: string,
-  columnKey: string,
-): Record<string, unknown>[] {
-  const kw = keyword.trim().toLowerCase();
-  if (!kw) return rows;
-  return rows.filter((row) => {
-    const keys = columnKey ? [columnKey] : columns.map((c) => c.key);
-    return keys.some((k) => cellText(row[k]).toLowerCase().includes(kw));
-  });
+  return tabs;
 }
 
 export function BizStatePage() {
@@ -285,12 +246,23 @@ export function BizStatePage() {
   const [selectedVrfs, setSelectedVrfs] = useState<string[]>([]);
   const [discoverCmd, setDiscoverCmd] = useState("");
 
-  // batch workbook modal
+  // batch workbook modal (summary + lazy-paged metric sheets)
   const [batchDetail, setBatchDetail] = useState<any>(null);
   const [sheetId, setSheetId] = useState("");
   const [sheetKeyword, setSheetKeyword] = useState("");
   const [sheetColumn, setSheetColumn] = useState("");
-  const debouncedSheetKw = useDebouncedValue(sheetKeyword, 200);
+  const debouncedSheetKw = useDebouncedValue(sheetKeyword, 250);
+  const [sheetPage, setSheetPage] = useState(1);
+  const [sheetPageSize, setSheetPageSize] = useState(DEFAULT_SHEET_PAGE_SIZE);
+  const [sheetRows, setSheetRows] = useState<Record<string, unknown>[]>([]);
+  const [sheetColumns, setSheetColumns] = useState<SheetCol[]>([]);
+  const [sheetTotal, setSheetTotal] = useState(0);
+  const [sheetLoading, setSheetLoading] = useState(false);
+  const [rawLogOpen, setRawLogOpen] = useState(false);
+  const [rawLogLoading, setRawLogLoading] = useState(false);
+  const [rawLogCmd, setRawLogCmd] = useState("");
+  const [rawLogText, setRawLogText] = useState("");
+  const [rawLogMeta, setRawLogMeta] = useState("");
 
   const refreshTasks = useCallback(async () => {
     const purpose =
@@ -353,25 +325,127 @@ export function BizStatePage() {
     [profiles],
   );
 
-  const sheets = useMemo(
-    () => (batchDetail ? buildBatchSheets(batchDetail, t) : []),
+  const sheetTabs = useMemo(
+    () => (batchDetail ? buildSheetTabs(batchDetail, t) : []),
     [batchDetail, t],
   );
 
   const activeSheet = useMemo(() => {
-    if (!sheets.length) return null;
-    return sheets.find((s) => s.id === sheetId) || sheets[0];
-  }, [sheets, sheetId]);
+    if (!sheetTabs.length) return null;
+    return sheetTabs.find((s) => s.id === sheetId) || sheetTabs[0];
+  }, [sheetTabs, sheetId]);
 
-  const filteredSheetRows = useMemo(() => {
+  const commandsSheetColumns = useMemo<SheetCol[]>(
+    () => [
+      { key: "raw_command", header: t("bizState.colCommand") },
+      { key: "metric_id", header: "metric" },
+      { key: "parse_status", header: t("bizState.colStatus") },
+      { key: "row_count", header: t("bizState.colRows") },
+      { key: "message", header: t("bizState.colMessage") },
+      { key: "_actions", header: t("bizState.colActions") },
+    ],
+    [t],
+  );
+
+  const displayColumns = useMemo(() => {
     if (!activeSheet) return [];
-    return filterSheetRows(
-      activeSheet.rows,
-      activeSheet.columns,
+    if (activeSheet.id === "commands") return commandsSheetColumns;
+    return sheetColumns.length ? sheetColumns : [{ key: "_empty", header: "—" }];
+  }, [activeSheet, commandsSheetColumns, sheetColumns]);
+
+  const displayRows = useMemo(() => {
+    if (!activeSheet) return [];
+    if (activeSheet.id === "commands") {
+      const cmds = (batchDetail?.commands || []) as Record<string, unknown>[];
+      const kw = debouncedSheetKw.trim().toLowerCase();
+      const filtered = !kw
+        ? cmds
+        : cmds.filter((row) => {
+            const keys = sheetColumn
+              ? [sheetColumn]
+              : ["raw_command", "metric_id", "parse_status", "row_count", "message"];
+            return keys.some((k) => cellText(row[k]).toLowerCase().includes(kw));
+          });
+      const start = (sheetPage - 1) * sheetPageSize;
+      return filtered.slice(start, start + sheetPageSize).map((c) => ({ ...c }));
+    }
+    return sheetRows;
+  }, [
+    activeSheet,
+    batchDetail,
+    debouncedSheetKw,
+    sheetColumn,
+    sheetPage,
+    sheetPageSize,
+    sheetRows,
+  ]);
+
+  const displayTotal = useMemo(() => {
+    if (!activeSheet) return 0;
+    if (activeSheet.id === "commands") {
+      const cmds = (batchDetail?.commands || []) as Record<string, unknown>[];
+      const kw = debouncedSheetKw.trim().toLowerCase();
+      if (!kw) return cmds.length;
+      return cmds.filter((row) => {
+        const keys = sheetColumn
+          ? [sheetColumn]
+          : ["raw_command", "metric_id", "parse_status", "row_count", "message"];
+        return keys.some((k) => cellText(row[k]).toLowerCase().includes(kw));
+      }).length;
+    }
+    return sheetTotal;
+  }, [activeSheet, batchDetail, debouncedSheetKw, sheetColumn, sheetTotal]);
+
+  const loadSheetPage = useCallback(
+    async (batchId: string, metricId: string, page: number, pageSize: number, kw: string, column: string) => {
+      if (!batchId || !metricId || metricId === "commands") return;
+      setSheetLoading(true);
+      try {
+        const res = await bizStateListBatchMetricRows({
+          batchId,
+          metricId,
+          page,
+          pageSize,
+          kw,
+          column,
+        });
+        setSheetRows(res.items || []);
+        setSheetTotal(Number(res.total || 0));
+        const cols = (res.columns || []).map((c) => ({
+          key: c.key,
+          header: c.header || c.key,
+        }));
+        setSheetColumns(cols.length ? cols : columnsFromRows(res.items || []));
+      } catch (e) {
+        showError(formatErr(e));
+        setSheetRows([]);
+        setSheetTotal(0);
+      } finally {
+        setSheetLoading(false);
+      }
+    },
+    [showError],
+  );
+
+  useEffect(() => {
+    if (!batchDetail?.id || !activeSheet || activeSheet.id === "commands") return;
+    void loadSheetPage(
+      String(batchDetail.id),
+      activeSheet.id,
+      sheetPage,
+      sheetPageSize,
       debouncedSheetKw,
       sheetColumn,
     );
-  }, [activeSheet, debouncedSheetKw, sheetColumn]);
+  }, [
+    batchDetail?.id,
+    activeSheet,
+    sheetPage,
+    sheetPageSize,
+    debouncedSheetKw,
+    sheetColumn,
+    loadSheetPage,
+  ]);
 
   const openCreate = () => {
     setCreateOpen(true);
@@ -689,10 +763,13 @@ export function BizStatePage() {
       setBatchDetail(d);
       setSheetKeyword("");
       setSheetColumn("");
-      const built = buildBatchSheets(d, t);
-      // Prefer first metric with rows; fall back to commands / first tab
+      setSheetPage(1);
+      setSheetRows([]);
+      setSheetColumns([]);
+      setSheetTotal(0);
+      const built = buildSheetTabs(d, t);
       const prefer =
-        built.find((s) => s.id !== "commands" && s.rows.length > 0) ||
+        built.find((s) => s.id !== "commands" && s.rowCount > 0) ||
         built.find((s) => s.id !== "commands") ||
         built[0];
       setSheetId(prefer?.id || "");
@@ -706,6 +783,48 @@ export function BizStatePage() {
     setSheetId("");
     setSheetKeyword("");
     setSheetColumn("");
+    setSheetPage(1);
+    setSheetRows([]);
+    setSheetColumns([]);
+    setSheetTotal(0);
+    setRawLogOpen(false);
+    setRawLogText("");
+  };
+
+  const openRawLog = async (commandId: string) => {
+    if (!batchDetail?.id || !commandId) return;
+    setRawLogOpen(true);
+    setRawLogLoading(true);
+    setRawLogText("");
+    setRawLogCmd("");
+    setRawLogMeta("");
+    try {
+      const d = await bizStateGetBatchCommand(String(batchDetail.id), commandId);
+      setRawLogCmd(String(d.raw_command || ""));
+      setRawLogText(String(d.raw_text || ""));
+      const bits = [
+        d.parse_status,
+        d.metric_id,
+        d.row_count != null ? `${d.row_count} rows` : "",
+        d.collected_at ? fmtTime(d.collected_at) : "",
+      ].filter(Boolean);
+      setRawLogMeta(bits.join(" · "));
+    } catch (e) {
+      showError(formatErr(e));
+      setRawLogOpen(false);
+    } finally {
+      setRawLogLoading(false);
+    }
+  };
+
+  const selectSheet = (id: string) => {
+    setSheetId(id);
+    setSheetKeyword("");
+    setSheetColumn("");
+    setSheetPage(1);
+    setSheetRows([]);
+    setSheetColumns([]);
+    setSheetTotal(0);
   };
 
   const runningCount = tasks.filter((x) => x.status === "running").length;
@@ -1344,7 +1463,7 @@ export function BizStatePage() {
         </Modal.Footer>
       </AppModalShell>
 
-      {/* Batch workbook: one sheet per monitor metric */}
+      {/* Batch workbook: summary + lazy-paged metric sheets */}
       <AppModalShell
         open={Boolean(batchDetail)}
         onClose={closeBatch}
@@ -1359,55 +1478,94 @@ export function BizStatePage() {
         </Modal.Header>
         <Modal.Body className="flex flex-col gap-2 bs-workbook-body">
           {batchDetail ? (
-            <p className="muted">
-              {batchDetail.status} · {batchDetail.command_count} cmd · {batchDetail.row_count} rows ·{" "}
-              {fmtTime(batchDetail.started_at)}
-            </p>
+            <div className="bs-workbook-meta">
+              <NmStatusChip color={jobChipColor(String(batchDetail.status || ""))}>
+                {String(batchDetail.status || "—")}
+              </NmStatusChip>
+              <span className="muted">
+                {batchDetail.command_count} cmd · {batchDetail.row_count} rows ·{" "}
+                {fmtTime(batchDetail.started_at)}
+              </span>
+            </div>
           ) : null}
 
           <div className="bs-sheet-tabs bs-sheet-tabs--top" role="tablist" aria-label={t("bizState.batchWorkbook")}>
-            {sheets.map((s) => (
+            {sheetTabs.map((s) => (
               <button
                 key={s.id}
                 type="button"
                 role="tab"
                 aria-selected={activeSheet?.id === s.id}
                 className={`bs-sheet-tab${activeSheet?.id === s.id ? " is-active" : ""}`}
-                onClick={() => {
-                  setSheetId(s.id);
-                  setSheetKeyword("");
-                  setSheetColumn("");
-                }}
+                onClick={() => selectSheet(s.id)}
               >
                 {s.title}
-                <span className="bs-sheet-tab__count">{s.rows.length}</span>
+                <span className="bs-sheet-tab__count">{s.rowCount}</span>
               </button>
             ))}
-            {!sheets.length ? <span className="muted">{t("bizState.sheetEmpty")}</span> : null}
+            {!sheetTabs.length ? <span className="muted">{t("bizState.sheetEmpty")}</span> : null}
           </div>
 
           {activeSheet ? (
             <>
+              {activeSheet.id !== "commands" && activeSheet.commands.length ? (
+                <div className="bs-sheet-cmd-bar">
+                  <div className="bs-sheet-cmd-bar__label">{t("bizState.collectCommand")}</div>
+                  <div className="bs-sheet-cmd-list">
+                    {activeSheet.commands.map((c) => (
+                      <div key={c.id} className="bs-sheet-cmd-row">
+                        <code className="bs-sheet-cmd-code" title={c.raw_command}>
+                          {c.raw_command || "—"}
+                        </code>
+                        <div className="bs-sheet-cmd-actions">
+                          {c.parse_status ? (
+                            <NmStatusChip color={jobChipColor(String(c.parse_status))}>
+                              {c.parse_status}
+                            </NmStatusChip>
+                          ) : null}
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            isDisabled={!c.has_raw}
+                            onPress={() => void openRawLog(c.id)}
+                          >
+                            {t("bizState.viewRawLog")}
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
               <div className="filter-inline bs-sheet-filter">
                 <FieldSelect
                   value={sheetColumn}
-                  onChange={(e) => setSheetColumn(e.target.value)}
+                  onChange={(e) => {
+                    setSheetColumn(e.target.value);
+                    setSheetPage(1);
+                  }}
                   aria-label={t("bizState.filterColumn")}
                 >
                   <option value="">{t("bizState.filterAllCols")}</option>
-                  {activeSheet.columns.map((c) => (
-                    <option key={c.key} value={c.key}>
-                      {c.header}
-                    </option>
-                  ))}
+                  {displayColumns
+                    .filter((c) => c.key !== "_actions" && c.key !== "_empty")
+                    .map((c) => (
+                      <option key={c.key} value={c.key}>
+                        {c.header}
+                      </option>
+                    ))}
                 </FieldSelect>
                 <Input
                   value={sheetKeyword}
                   placeholder={t("bizState.sheetFilterPh")}
-                  onChange={(e) => setSheetKeyword(e.target.value)}
+                  onChange={(e) => {
+                    setSheetKeyword(e.target.value);
+                    setSheetPage(1);
+                  }}
                 />
                 <span className="muted bs-sheet-count">
-                  {filteredSheetRows.length}/{activeSheet.rows.length}
+                  {sheetLoading ? t("bizState.sheetLoading") : `${displayTotal} ${t("bizState.colRows")}`}
                 </span>
               </div>
 
@@ -1415,20 +1573,31 @@ export function BizStatePage() {
                 <table className="data-table pt-list-table">
                   <thead>
                     <tr>
-                      {activeSheet.columns.map((c) => (
+                      {displayColumns.map((c) => (
                         <th key={c.key}>{c.header}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredSheetRows.slice(0, 2000).map((row, i) => (
-                      <tr key={i}>
-                        {activeSheet.columns.map((c) => (
+                    {displayRows.map((row, i) => (
+                      <tr key={String(row.id || i)}>
+                        {displayColumns.map((c) => (
                           <td key={c.key}>
-                            {c.key === "parse_status" ? (
+                            {c.key === "_actions" ? (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                isDisabled={!row.has_raw}
+                                onPress={() => void openRawLog(String(row.id || ""))}
+                              >
+                                {t("bizState.viewRawLog")}
+                              </Button>
+                            ) : c.key === "parse_status" ? (
                               <NmStatusChip color={jobChipColor(cellText(row[c.key]))}>
                                 {cellText(row[c.key]) || "—"}
                               </NmStatusChip>
+                            ) : c.key === "raw_command" ? (
+                              <code className="bs-inline-cmd">{cellText(row[c.key]) || "—"}</code>
                             ) : (
                               cellText(row[c.key]) || "—"
                             )}
@@ -1436,16 +1605,37 @@ export function BizStatePage() {
                         ))}
                       </tr>
                     ))}
-                    {!filteredSheetRows.length ? (
+                    {!displayRows.length && !sheetLoading ? (
                       <tr>
-                        <td colSpan={Math.max(1, activeSheet.columns.length)}>
+                        <td colSpan={Math.max(1, displayColumns.length)}>
                           <div className="pt-list-empty">{t("bizState.sheetEmpty")}</div>
+                        </td>
+                      </tr>
+                    ) : null}
+                    {sheetLoading && activeSheet.id !== "commands" && !displayRows.length ? (
+                      <tr>
+                        <td colSpan={Math.max(1, displayColumns.length)}>
+                          <div className="pt-list-empty muted">{t("bizState.sheetLoading")}</div>
                         </td>
                       </tr>
                     ) : null}
                   </tbody>
                 </table>
               </div>
+
+              <ListPager
+                page={sheetPage}
+                pages={pageCount(displayTotal, sheetPageSize)}
+                total={displayTotal}
+                pageSize={sheetPageSize}
+                pageSizeOptions={SHEET_PAGE_SIZE_OPTIONS}
+                disabled={sheetLoading}
+                onPageChange={setSheetPage}
+                onPageSizeChange={(n) => {
+                  setSheetPageSize(n);
+                  setSheetPage(1);
+                }}
+              />
             </>
           ) : (
             <div className="pt-list-empty">{t("bizState.sheetEmpty")}</div>
@@ -1458,6 +1648,33 @@ export function BizStatePage() {
             </Button>
           ) : null}
           <Button size="sm" variant="ghost" onPress={closeBatch}>
+            {t("bizState.cancel")}
+          </Button>
+        </Modal.Footer>
+      </AppModalShell>
+
+      {/* Raw CLI log viewer */}
+      <AppModalShell
+        open={rawLogOpen}
+        onClose={() => setRawLogOpen(false)}
+        size="lg"
+        className="app-heroui-modal--lg bs-rawlog-modal"
+      >
+        <Modal.Header>
+          <Modal.Heading>{t("bizState.rawLogTitle")}</Modal.Heading>
+          <Modal.CloseTrigger />
+        </Modal.Header>
+        <Modal.Body className="flex flex-col gap-2 bs-rawlog-body">
+          {rawLogCmd ? <code className="bs-sheet-cmd-code bs-sheet-cmd-code--block">{rawLogCmd}</code> : null}
+          {rawLogMeta ? <p className="muted">{rawLogMeta}</p> : null}
+          {rawLogLoading ? (
+            <div className="pt-list-empty muted">{t("bizState.sheetLoading")}</div>
+          ) : (
+            <pre className="bs-rawlog-pre">{rawLogText || t("bizState.rawLogEmpty")}</pre>
+          )}
+        </Modal.Body>
+        <Modal.Footer>
+          <Button size="sm" variant="ghost" onPress={() => setRawLogOpen(false)}>
             {t("bizState.cancel")}
           </Button>
         </Modal.Footer>

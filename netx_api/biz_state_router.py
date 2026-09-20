@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -235,6 +235,27 @@ def api_delete_batch(batch_id: str, db: Session = Depends(get_db)) -> dict[str, 
 @router.get("/batches/{batch_id}")
 def api_get_batch(batch_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
     return svc.get_batch(db, batch_id)
+
+
+@router.get("/batches/{batch_id}/metrics/{metric_id}")
+def api_list_batch_metric_rows(
+    batch_id: str,
+    metric_id: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    kw: str = Query(""),
+    column: str = Query(""),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    return svc.list_batch_metric_rows(
+        db,
+        batch_id,
+        metric_id,
+        page=page,
+        page_size=page_size,
+        kw=kw,
+        column=column,
+    )
 
 
 @router.get("/batches/{batch_id}/commands/{command_id}")

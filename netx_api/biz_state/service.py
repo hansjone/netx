@@ -9,6 +9,7 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import HTTPException
+from sqlalchemy import String, cast, func, or_
 from sqlalchemy.orm import Session
 
 from ..lldp_shared import resolve_vendor_key
@@ -26,7 +27,13 @@ from ..models import (
 )
 from ..timeutil import utcnow_naive
 from .command_match import preview_task_item
-from .profiles import all_profiles, get_profile, profile_to_public_dict, profiles_for_vendor
+from .profiles import (
+    all_profiles,
+    get_profile,
+    metric_field_map,
+    profile_to_public_dict,
+    profiles_for_vendor,
+)
 from .retention import (
     batch_protect_info,
     delete_batch_data,
@@ -540,6 +547,7 @@ def run_purge_for_task(db: Session, task_id: str) -> dict[str, Any]:
 
 
 def get_batch(db: Session, batch_id: str) -> dict[str, Any]:
+    """Batch workbook summary: meta + commands + sheet catalog (no metric row payload)."""
     b = db.get(BizStateBatch, batch_id)
     if not b:
         raise HTTPException(status_code=404, detail="batch_not_found")
@@ -549,29 +557,87 @@ def get_batch(db: Session, batch_id: str) -> dict[str, Any]:
         .order_by(BizStateBatchCommand.created_at.asc())
         .all()
     )
-    neighbors = (
-        db.query(BizStateLldpNeighbor)
-        .filter(BizStateLldpNeighbor.batch_id == batch_id)
-        .order_by(BizStateLldpNeighbor.local_if.asc())
-        .limit(5000)
-        .all()
-    )
-    metric_rows = (
-        db.query(BizStateMetricRow)
-        .filter(BizStateMetricRow.batch_id == batch_id)
-        .order_by(
-            BizStateMetricRow.metric_id.asc(),
-            BizStateMetricRow.seq.asc(),
-            BizStateMetricRow.id.asc(),
-        )
-        .limit(20000)
-        .all()
-    )
-    metrics_by_id: dict[str, list[dict[str, Any]]] = {}
-    for r in metric_rows:
-        mid = str(r.metric_id or "")
-        metrics_by_id.setdefault(mid, []).append(dict(r.data_json or {}))
     protect = batch_protect_info(db, batch_id)
+
+    # Per-metric row counts (generic table)
+    metric_counts: dict[str, int] = {}
+    for mid, cnt in (
+        db.query(BizStateMetricRow.metric_id, func.count(BizStateMetricRow.id))
+        .filter(BizStateMetricRow.batch_id == batch_id)
+        .group_by(BizStateMetricRow.metric_id)
+        .all()
+    ):
+        key = str(mid or "").strip()
+        if key:
+            metric_counts[key] = int(cnt or 0)
+
+    lldp_count = (
+        db.query(func.count(BizStateLldpNeighbor.id))
+        .filter(BizStateLldpNeighbor.batch_id == batch_id)
+        .scalar()
+    )
+    lldp_n = int(lldp_count or 0)
+    if lldp_n:
+        metric_counts["lldp_neighbor"] = lldp_n
+
+    cmd_payload: list[dict[str, Any]] = []
+    sheets_order: list[str] = []
+    sheet_cmds: dict[str, list[dict[str, Any]]] = {}
+
+    def _push_sheet(mid: str, cmd_info: dict[str, Any] | None = None) -> None:
+        id_ = str(mid or "").strip()
+        if not id_ or id_ in ("vrf_list", "commands"):
+            return
+        if id_ not in sheets_order:
+            sheets_order.append(id_)
+            sheet_cmds.setdefault(id_, [])
+        if cmd_info is not None:
+            sheet_cmds[id_].append(cmd_info)
+
+    for c in cmds:
+        info = {
+            "id": c.id,
+            "profile_id": c.profile_id,
+            "parser_id": c.parser_id,
+            "metric_id": c.metric_id,
+            "raw_command": c.raw_command,
+            "params": c.params_json or {},
+            "parse_status": c.parse_status,
+            "row_count": c.row_count,
+            "message": c.message,
+            "has_raw": bool(str(c.raw_text or "").strip()),
+        }
+        cmd_payload.append(info)
+        mid = str(c.metric_id or "").strip()
+        if mid and mid not in ("", "vrf_list"):
+            _push_sheet(
+                mid,
+                {
+                    "id": c.id,
+                    "raw_command": c.raw_command,
+                    "parse_status": c.parse_status,
+                    "row_count": c.row_count,
+                    "message": c.message,
+                    "has_raw": info["has_raw"],
+                    "profile_id": c.profile_id,
+                },
+            )
+        # Aux command rows may have empty metric_id — still attach by profile if needed later
+
+    for mid in metric_counts:
+        if mid not in sheets_order:
+            sheets_order.append(mid)
+            sheet_cmds.setdefault(mid, [])
+
+    sheets = [
+        {
+            "metric_id": mid,
+            "row_count": int(metric_counts.get(mid) or 0),
+            "commands": list(sheet_cmds.get(mid) or []),
+        }
+        for mid in sheets_order
+    ]
+
     return {
         "id": b.id,
         "task_id": b.task_id,
@@ -587,22 +653,77 @@ def get_batch(db: Session, batch_id: str) -> dict[str, Any]:
         else None,
         "protected": bool(protect.get("protected")),
         "protect_reasons": list(protect.get("reasons") or []),
-        "commands": [
-            {
-                "id": c.id,
-                "profile_id": c.profile_id,
-                "parser_id": c.parser_id,
-                "metric_id": c.metric_id,
-                "raw_command": c.raw_command,
-                "params": c.params_json or {},
-                "parse_status": c.parse_status,
-                "row_count": c.row_count,
-                "message": c.message,
-                "raw_text_preview": (c.raw_text or "")[:2000],
-            }
-            for c in cmds
-        ],
-        "lldp_neighbors": [
+        "commands": cmd_payload,
+        "sheets": sheets,
+    }
+
+
+def list_batch_metric_rows(
+    db: Session,
+    batch_id: str,
+    metric_id: str,
+    *,
+    page: int = 1,
+    page_size: int = 50,
+    kw: str = "",
+    column: str = "",
+) -> dict[str, Any]:
+    """Paginated rows for one batch metric sheet (server-side filter)."""
+    b = db.get(BizStateBatch, batch_id)
+    if not b:
+        raise HTTPException(status_code=404, detail="batch_not_found")
+    mid = str(metric_id or "").strip()
+    if not mid or mid in ("commands", "vrf_list"):
+        raise HTTPException(status_code=400, detail="invalid_metric_id")
+
+    page_n = max(1, int(page or 1))
+    size_n = max(1, min(200, int(page_size or 50)))
+    kw_n = str(kw or "").strip()
+    col_n = str(column or "").strip()
+
+    fields = metric_field_map().get(mid) or []
+    columns = [
+        {
+            "key": f.name,
+            "header": f.display_name or f.name,
+            "role": f.role,
+            "is_key": bool(f.is_key),
+        }
+        for f in fields
+    ]
+
+    if mid == "lldp_neighbor":
+        q = db.query(BizStateLldpNeighbor).filter(BizStateLldpNeighbor.batch_id == batch_id)
+        if kw_n:
+            like = f"%{kw_n}%"
+            if col_n == "local_if":
+                q = q.filter(BizStateLldpNeighbor.local_if.ilike(like))
+            elif col_n == "remote_sys":
+                q = q.filter(BizStateLldpNeighbor.remote_sys.ilike(like))
+            elif col_n == "remote_if":
+                q = q.filter(BizStateLldpNeighbor.remote_if.ilike(like))
+            elif col_n == "remote_ip":
+                q = q.filter(BizStateLldpNeighbor.remote_ip.ilike(like))
+            elif col_n == "protocol":
+                q = q.filter(BizStateLldpNeighbor.protocol.ilike(like))
+            else:
+                q = q.filter(
+                    or_(
+                        BizStateLldpNeighbor.local_if.ilike(like),
+                        BizStateLldpNeighbor.remote_sys.ilike(like),
+                        BizStateLldpNeighbor.remote_if.ilike(like),
+                        BizStateLldpNeighbor.remote_ip.ilike(like),
+                        BizStateLldpNeighbor.protocol.ilike(like),
+                    )
+                )
+        total = int(q.count() or 0)
+        rows_db = (
+            q.order_by(BizStateLldpNeighbor.local_if.asc())
+            .offset((page_n - 1) * size_n)
+            .limit(size_n)
+            .all()
+        )
+        items = [
             {
                 "local_if": n.local_if,
                 "remote_sys": n.remote_sys,
@@ -610,9 +731,56 @@ def get_batch(db: Session, batch_id: str) -> dict[str, Any]:
                 "remote_ip": n.remote_ip,
                 "protocol": n.protocol,
             }
-            for n in neighbors
-        ],
-        "metrics": metrics_by_id,
+            for n in rows_db
+        ]
+        if not columns:
+            columns = [
+                {"key": "local_if", "header": "local_if", "role": "identity", "is_key": True},
+                {"key": "remote_sys", "header": "remote_sys", "role": "identity", "is_key": True},
+                {"key": "remote_if", "header": "remote_if", "role": "identity", "is_key": True},
+                {"key": "remote_ip", "header": "remote_ip", "role": "meta", "is_key": False},
+                {"key": "protocol", "header": "protocol", "role": "meta", "is_key": False},
+            ]
+    else:
+        q = db.query(BizStateMetricRow).filter(
+            BizStateMetricRow.batch_id == batch_id,
+            BizStateMetricRow.metric_id == mid,
+        )
+        if kw_n:
+            like = f"%{kw_n}%"
+            if col_n:
+                # JSON path as text — works on Postgres JSONB and SQLite JSON
+                q = q.filter(cast(BizStateMetricRow.data_json[col_n], String).ilike(like))
+            else:
+                q = q.filter(cast(BizStateMetricRow.data_json, String).ilike(like))
+        total = int(q.count() or 0)
+        rows_db = (
+            q.order_by(BizStateMetricRow.seq.asc(), BizStateMetricRow.id.asc())
+            .offset((page_n - 1) * size_n)
+            .limit(size_n)
+            .all()
+        )
+        items = [dict(r.data_json or {}) for r in rows_db]
+        if not columns and items:
+            keys: list[str] = []
+            for rec in items:
+                for k in rec.keys():
+                    if k not in keys:
+                        keys.append(str(k))
+            columns = [
+                {"key": k, "header": k, "role": "identity", "is_key": False} for k in keys
+            ]
+
+    pages = max(1, (total + size_n - 1) // size_n) if total else 1
+    return {
+        "batch_id": batch_id,
+        "metric_id": mid,
+        "total": total,
+        "page": page_n,
+        "page_size": size_n,
+        "pages": pages,
+        "columns": columns,
+        "items": items,
     }
 
 
@@ -655,7 +823,6 @@ def export_batch_zip(db: Session, batch_id: str) -> bytes:
     detail = get_batch(db, batch_id)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        # manifest
         lines = [
             f"batch_id={detail['id']}",
             f"task_id={detail['task_id']}",
@@ -674,41 +841,61 @@ def export_batch_zip(db: Session, batch_id: str) -> bytes:
 
         for c in detail["commands"]:
             safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in c["raw_command"])[:80]
-            zf.writestr(f"raw/{c['id']}_{safe}.txt", c.get("raw_text_preview") or "")
-            # full raw from DB
             row = db.get(BizStateBatchCommand, c["id"])
-            if row and row.raw_text:
-                zf.writestr(f"raw/{c['id']}_{safe}.full.txt", row.raw_text)
+            raw = (row.raw_text if row else "") or ""
+            if raw:
+                zf.writestr(f"raw/{c['id']}_{safe}.full.txt", raw)
+                zf.writestr(f"raw/{c['id']}_{safe}.txt", raw[:2000])
 
-        # CSV
+        # LLDP CSV
+        neighbors = (
+            db.query(BizStateLldpNeighbor)
+            .filter(BizStateLldpNeighbor.batch_id == batch_id)
+            .order_by(BizStateLldpNeighbor.local_if.asc())
+            .all()
+        )
         csv_lines = ["local_if,remote_sys,remote_if,remote_ip,protocol"]
-        for n in detail["lldp_neighbors"]:
+        for n in neighbors:
             csv_lines.append(
                 ",".join(
                     [
-                        _csv(n["local_if"]),
-                        _csv(n["remote_sys"]),
-                        _csv(n["remote_if"]),
-                        _csv(n["remote_ip"]),
-                        _csv(n["protocol"]),
+                        _csv(n.local_if),
+                        _csv(n.remote_sys),
+                        _csv(n.remote_if),
+                        _csv(n.remote_ip),
+                        _csv(n.protocol),
                     ]
                 )
             )
         zf.writestr("tables/lldp_neighbor.csv", "\n".join(csv_lines) + "\n")
 
-        for mid, rows in sorted((detail.get("metrics") or {}).items()):
+        # Generic metrics CSV (stream by metric_id)
+        for sheet in detail.get("sheets") or []:
+            mid = str(sheet.get("metric_id") or "").strip()
+            if not mid or mid == "lldp_neighbor":
+                continue
+            rows = (
+                db.query(BizStateMetricRow)
+                .filter(
+                    BizStateMetricRow.batch_id == batch_id,
+                    BizStateMetricRow.metric_id == mid,
+                )
+                .order_by(BizStateMetricRow.seq.asc(), BizStateMetricRow.id.asc())
+                .all()
+            )
             if not rows:
                 continue
+            recs = [dict(r.data_json or {}) for r in rows]
             cols: list[str] = []
-            for rec in rows:
+            for rec in recs:
                 for k in rec.keys():
                     if k not in cols:
                         cols.append(str(k))
-            lines = [",".join(_csv(c) for c in cols)]
-            for rec in rows:
-                lines.append(",".join(_csv(str(rec.get(c, "") or "")) for c in cols))
+            out_lines = [",".join(_csv(c) for c in cols)]
+            for rec in recs:
+                out_lines.append(",".join(_csv(str(rec.get(c, "") or "")) for c in cols))
             safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in mid)[:80] or "metric"
-            zf.writestr(f"tables/{safe}.csv", "\n".join(lines) + "\n")
+            zf.writestr(f"tables/{safe}.csv", "\n".join(out_lines) + "\n")
     return buf.getvalue()
 
 

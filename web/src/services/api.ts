@@ -1841,6 +1841,49 @@ export const bizStatePurgeTask = (taskId: string) =>
 export const bizStateGetBatch = (batchId: string) =>
   apiGet<Record<string, unknown>>(`/v1/biz-state/batches/${encodeURIComponent(batchId)}`);
 
+export const bizStateListBatchMetricRows = (params: {
+  batchId: string;
+  metricId: string;
+  page?: number;
+  pageSize?: number;
+  kw?: string;
+  column?: string;
+}) => {
+  const p = new URLSearchParams();
+  p.set("page", String(Math.max(1, Number(params.page || 1))));
+  p.set("page_size", String(Math.max(1, Math.min(200, Number(params.pageSize || 50)))));
+  if (params.kw) p.set("kw", params.kw);
+  if (params.column) p.set("column", params.column);
+  return apiGet<{
+    batch_id: string;
+    metric_id: string;
+    total: number;
+    page: number;
+    page_size: number;
+    pages: number;
+    columns: Array<{ key: string; header: string; role?: string; is_key?: boolean }>;
+    items: Record<string, unknown>[];
+  }>(
+    `/v1/biz-state/batches/${encodeURIComponent(params.batchId)}/metrics/${encodeURIComponent(params.metricId)}?${p.toString()}`,
+  );
+};
+
+export const bizStateGetBatchCommand = (batchId: string, commandId: string) =>
+  apiGet<{
+    id: string;
+    batch_id: string;
+    raw_command: string;
+    metric_id: string;
+    parse_status: string;
+    row_count: number;
+    message: string;
+    raw_text: string;
+    collected_at?: string | null;
+    device?: { ne_id?: string; ne_name?: string; ne_ip?: string };
+  }>(
+    `/v1/biz-state/batches/${encodeURIComponent(batchId)}/commands/${encodeURIComponent(commandId)}`,
+  );
+
 export const bizStateDownloadExport = async (batchId: string): Promise<void> => {
   const path = `/v1/biz-state/batches/${encodeURIComponent(batchId)}/export`;
   const res = await fetch(path, { method: "GET", credentials: fetchCreds, headers: authHeaders() });
