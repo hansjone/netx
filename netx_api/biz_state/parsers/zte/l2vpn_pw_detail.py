@@ -12,6 +12,7 @@ from ..common.pipeline import prefer_fsm
 RULE_KEYS = ("zte_zxros_show_l2vpn_forwardinfo_detail",)
 
 _SERVICE_RE = re.compile(r"^Service type and instance name:\[([^\]]+)\]\s*$", re.I)
+_SERVICE_SPLIT_RE = re.compile(r"^(VPLS|VPWS)\s+(.+)$", re.I)
 # Two-column "Label : value   Label : value" or single "Label : value"
 _KV_PAIR_RE = re.compile(
     r"([A-Za-z][A-Za-z0-9 /|_.-]*)\s*:\s*"
@@ -78,12 +79,25 @@ def _empty() -> dict[str, str]:
     }
 
 
+def _split_service(raw: str) -> tuple[str, str]:
+    """Split ``VPLS foo`` / ``VPWS bar`` into (type, instance name)."""
+    text = str(raw or "").strip()
+    if not text:
+        return "", ""
+    m = _SERVICE_SPLIT_RE.match(text)
+    if m:
+        return m.group(1).upper(), m.group(2).strip()
+    return "", text
+
+
 def _row_out(cur: dict[str, str]) -> dict[str, Any] | None:
     pw = str(cur.get("pw_name") or "").strip()
     if not pw:
         return None
+    svc_type, svc_name = _split_service(str(cur.get("service_instance") or ""))
     return {
-        "service_instance": str(cur.get("service_instance") or "")[:256],
+        "service_instance_type": svc_type[:32],
+        "service_instance": svc_name[:256],
         "pw_name": pw[:128],
         "peer": str(cur.get("peer") or "")[:64],
         "vcid": str(cur.get("vcid") or "")[:64],

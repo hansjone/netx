@@ -382,6 +382,7 @@ _L2VPN_PW_DETAIL_FIELDS: list[FieldDef] = [
     FieldDef("vc_status", length=32, role="state", display_name="VC Status"),
     FieldDef("remote_status", length=32, role="state", display_name="Remote"),
     FieldDef("activation_status", length=32, role="state", display_name="Activation"),
+    FieldDef("service_instance_type", length=32, role="meta", display_name="Service Type"),
     FieldDef("service_instance", length=256, role="meta", display_name="Service"),
     FieldDef("conn_mode", length=32, role="meta", display_name="Mode"),
     FieldDef("signaling", length=32, role="meta", display_name="Signaling"),

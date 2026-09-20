@@ -341,7 +341,10 @@ class ZteExtendedParserTests(unittest.TestCase):
         self.assertEqual(by["pw19001"]["remote_status"], "ALLOK")
         self.assertEqual(by["pw19001"]["vcid"], "19001")
         self.assertEqual(by["pw19001"]["peer"], "10.0.0.6")
-        self.assertIn("demo-vpls-1", by["pw19001"]["service_instance"])
+        self.assertEqual(by["pw19001"]["service_instance_type"], "VPLS")
+        self.assertEqual(by["pw19001"]["service_instance"], "qualified demo-vpls-1")
+        self.assertEqual(by["pw19011"]["service_instance_type"], "VPLS")
+        self.assertEqual(by["pw19011"]["service_instance"], "demo-vpls-2")
         self.assertEqual(by["pw19011"]["vc_status"].upper(), "DOWN")
         self.assertEqual(by["pw19011"]["vccv_cv"], "LSP|BFD_BASIC_HEAD")
 
@@ -377,7 +380,10 @@ class ZteExtendedParserTests(unittest.TestCase):
         )
         self.assertEqual(len(rows), 6)
         self.assertTrue(all(r["vc_status"].upper() == "UP" for r in rows))
+        self.assertTrue(all(r["service_instance_type"] == "VPLS" for r in rows))
         self.assertEqual(rows[0]["pw_name"], "pw19001")
+        self.assertEqual(rows[0]["service_instance"], "qualified mxy-martini-vpls-1")
+        self.assertEqual(rows[2]["service_instance"], "VPLS_4202")
         self.assertEqual(rows[-1]["pw_name"], "pw1230002")
 
     def test_profiles_and_expand(self) -> None:
