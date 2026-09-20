@@ -1248,9 +1248,20 @@ def _job_out(j: BizCompareJob) -> dict[str, Any]:
         "after_batch_id": j.after_batch_id,
         "mode": j.mode,
         "status": j.status,
+        "enabled_sheet_ids": _str_list(getattr(j, "enabled_sheet_ids", None)),
         "note": j.note,
         "updated_at": j.updated_at.isoformat() + "Z" if j.updated_at else None,
     }
+
+
+def _filter_enabled_sheets(
+    sheets_cfg: list[dict[str, Any]], enabled_sheet_ids: list[str] | None
+) -> list[dict[str, Any]]:
+    """Empty enabled list → all sheets; else keep matching sheet_id only."""
+    allowed = set(_str_list(enabled_sheet_ids))
+    if not allowed:
+        return sheets_cfg
+    return [s for s in sheets_cfg if sheet_key(s) in allowed]
 
 
 def list_jobs(db: Session) -> list[dict[str, Any]]:
@@ -1267,6 +1278,7 @@ def create_job(db: Session, body: dict[str, Any]) -> dict[str, Any]:
     else:
         if not db.get(BizCompareTemplate, template_id):
             raise HTTPException(status_code=404, detail="template_not_found")
+    enabled = _str_list(body.get("enabled_sheet_ids"))
     j = BizCompareJob(
         id=uuid4().hex,
         name=str(body.get("name") or "compare")[:256],
@@ -1278,6 +1290,7 @@ def create_job(db: Session, body: dict[str, Any]) -> dict[str, Any]:
         after_batch_id=str(body.get("after_batch_id") or ""),
         mode=str(body.get("mode") or "manual")[:16],
         status="ready",
+        enabled_sheet_ids=enabled,
         note=str(body.get("note") or "")[:512],
         created_at=_utcnow(),
         updated_at=_utcnow(),
@@ -1307,6 +1320,8 @@ def update_job(db: Session, job_id: str, body: dict[str, Any]) -> dict[str, Any]
     ):
         if key in body and body.get(key) is not None:
             setattr(j, key, str(body.get(key) or ""))
+    if "enabled_sheet_ids" in body:
+        j.enabled_sheet_ids = _str_list(body.get("enabled_sheet_ids"))
     j.updated_at = _utcnow()
     db.commit()
     return _job_out(j)
@@ -1326,6 +1341,20 @@ def delete_job(db: Session, job_id: str) -> None:
     db.query(BizCompareRun).filter(BizCompareRun.job_id == job_id).delete()
     db.delete(j)
     db.commit()
+
+
+def delete_run(db: Session, run_id: str) -> dict[str, Any]:
+    """Delete one compare run and its diffs; leave the job intact."""
+    r = db.get(BizCompareRun, run_id)
+    if not r:
+        raise HTTPException(status_code=404, detail="run_not_found")
+    job_id = str(r.job_id or "")
+    db.query(BizCompareDiff).filter(BizCompareDiff.run_id == run_id).delete(
+        synchronize_session=False
+    )
+    db.delete(r)
+    db.commit()
+    return {"ok": True, "job_id": job_id, "run_id": run_id}
 
 
 def _resolve_after_batch(db: Session, job: BizCompareJob) -> str:
@@ -1423,6 +1452,9 @@ def run_compare(db: Session, job_id: str, *, force_after_batch_id: str = "") -> 
     sheets_cfg = template_metrics(tpl)
     if not sheets_cfg:
         raise HTTPException(status_code=400, detail="template_has_no_metrics")
+    sheets_cfg = _filter_enabled_sheets(sheets_cfg, getattr(j, "enabled_sheet_ids", None))
+    if not sheets_cfg:
+        raise HTTPException(status_code=400, detail="no_enabled_sheets")
 
     pmap = _port_map_dict(db, j.mapping_id)
     norm_rules = template_iface_normalize(tpl)

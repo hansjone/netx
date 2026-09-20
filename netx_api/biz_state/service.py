@@ -235,6 +235,11 @@ def _replace_items(db: Session, task_id: str, items_in: list[dict[str, Any]]) ->
             )
 
 
+def set_task_status(db: Session, task_id: str, status: str) -> dict[str, Any]:
+    """Set lifecycle status: draft | running | paused | stopped."""
+    return update_task(db, task_id, {"status": status})
+
+
 def update_task(db: Session, task_id: str, body: dict[str, Any]) -> dict[str, Any]:
     task = db.get(BizStateTask, task_id)
     if not task:

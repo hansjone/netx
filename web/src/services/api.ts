@@ -1804,6 +1804,12 @@ export const bizStateGetTask = (taskId: string) =>
 export const bizStatePatchTask = (taskId: string, body: Record<string, unknown>) =>
   apiPatch<Record<string, unknown>>(`/v1/biz-state/tasks/${encodeURIComponent(taskId)}`, body);
 
+export const bizStatePauseTask = (taskId: string) =>
+  apiPost<Record<string, unknown>>(`/v1/biz-state/tasks/${encodeURIComponent(taskId)}/pause`, {});
+
+export const bizStateStartTask = (taskId: string) =>
+  apiPost<Record<string, unknown>>(`/v1/biz-state/tasks/${encodeURIComponent(taskId)}/start`, {});
+
 export const bizStateDeleteTask = (taskId: string) =>
   apiDelete<{ ok: boolean }>(`/v1/biz-state/tasks/${encodeURIComponent(taskId)}`);
 
@@ -1984,6 +1990,11 @@ export const bizCompareListRuns = (jobId: string, limit = 20) =>
 
 export const bizCompareGetRun = (runId: string) =>
   apiGet<Record<string, unknown>>(`/v1/biz-state/compare/runs/${encodeURIComponent(runId)}`);
+
+export const bizCompareDeleteRun = (runId: string) =>
+  apiDelete<{ ok: boolean; job_id?: string; run_id?: string }>(
+    `/v1/biz-state/compare/runs/${encodeURIComponent(runId)}`,
+  );
 
 export const bizCompareListRunDiffs = (params: {
   runId: string;

@@ -444,6 +444,20 @@ class CompareSheetDefaultsTests(unittest.TestCase):
         isis4 = next(s for s in parsed if sheet_key(s) == "isis_adjacency.ipv4")
         self.assertTrue(str(isis4.get("title") or "").strip())
 
+    def test_filter_enabled_sheets_empty_means_all(self) -> None:
+        from netx_api.biz_state.compare_service import _filter_enabled_sheets, sheet_key
+
+        sheets = [
+            {"sheet_id": "isis_adjacency.ipv4", "metric_id": "isis_adjacency"},
+            {"sheet_id": "isis_adjacency.ipv6", "metric_id": "isis_adjacency"},
+            {"sheet_id": "arp", "metric_id": "arp"},
+        ]
+        self.assertEqual(len(_filter_enabled_sheets(sheets, None)), 3)
+        self.assertEqual(len(_filter_enabled_sheets(sheets, [])), 3)
+        only = _filter_enabled_sheets(sheets, ["isis_adjacency.ipv4", "arp"])
+        self.assertEqual([sheet_key(s) for s in only], ["isis_adjacency.ipv4", "arp"])
+        self.assertEqual(_filter_enabled_sheets(sheets, ["missing"]), [])
+
     def test_arp_default_sheet_has_row_filters(self) -> None:
         from netx_api.biz_state.compare_service import _default_sheet_for_metric
 

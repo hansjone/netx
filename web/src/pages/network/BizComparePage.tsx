@@ -11,6 +11,7 @@ import {
   bizCompareCreateMapping,
   bizCompareCreateTemplate,
   bizCompareDeleteJob,
+  bizCompareDeleteRun,
   bizCompareDeleteTemplate,
   bizCompareDownloadRun,
   bizCompareGetRun,
@@ -35,6 +36,8 @@ import { jobChipColor, NmStatusChip } from "./nmChips";
 type PageTab = "templates" | "jobs";
 type JobDetailTab = "config" | "result";
 type KindFilter = "diff" | "all" | "added" | "removed" | "changed" | "unchanged";
+type CreateJobStep = 0 | 1 | 2 | 3;
+const CREATE_JOB_STEPS = 4;
 
 type TaskOpt = { id: string; ne_name: string; ne_ip: string; vendor: string };
 type BatchOpt = { id: string; status: string; row_count: number; started_at?: string | null };
@@ -101,6 +104,7 @@ type Job = {
   after_batch_id: string;
   mode: string;
   status: string;
+  enabled_sheet_ids?: string[];
   note?: string;
 };
 
@@ -774,10 +778,12 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
 
   // job create / detail
   const [jobCreateOpen, setJobCreateOpen] = useState(false);
+  const [createStep, setCreateStep] = useState<CreateJobStep>(0);
   const [jobId, setJobId] = useState("");
   const [jobDetailTab, setJobDetailTab] = useState<JobDetailTab>("config");
   const [name, setName] = useState("");
   const [templateId, setTemplateId] = useState("");
+  const [enabledSheetIds, setEnabledSheetIds] = useState<string[]>([]);
   const [mappingId, setMappingId] = useState("");
   const [beforeTaskId, setBeforeTaskId] = useState("");
   const [afterTaskId, setAfterTaskId] = useState("");
@@ -872,6 +878,66 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
       return `${x.name} ${mids} ${x.note}`.toLowerCase().includes(kw);
     });
   }, [templates, debouncedListKw]);
+
+  const selectedJobTemplate = useMemo(
+    () => templates.find((x) => x.id === templateId) || null,
+    [templates, templateId],
+  );
+
+  const jobTemplateSheets = useMemo(
+    () => (selectedJobTemplate ? templateSheets(selectedJobTemplate) : []),
+    [selectedJobTemplate],
+  );
+
+  const jobSheetAllIds = useMemo(
+    () => jobTemplateSheets.map((s) => sheetIdentity(s)).filter(Boolean),
+    [jobTemplateSheets],
+  );
+
+  const isJobSheetOn = useCallback(
+    (sid: string) => {
+      if (!enabledSheetIds.length) return true;
+      return enabledSheetIds.includes(sid);
+    },
+    [enabledSheetIds],
+  );
+
+  const enabledJobSheetCount = useMemo(() => {
+    if (!jobSheetAllIds.length) return 0;
+    if (!enabledSheetIds.length) return jobSheetAllIds.length;
+    return jobSheetAllIds.filter((id) => enabledSheetIds.includes(id)).length;
+  }, [jobSheetAllIds, enabledSheetIds]);
+
+  const toggleJobSheet = useCallback(
+    (sid: string) => {
+      const all = jobSheetAllIds;
+      if (!all.length) return;
+      const currentlyOn = !enabledSheetIds.length
+        ? [...all]
+        : enabledSheetIds.filter((id) => all.includes(id));
+      const next = currentlyOn.includes(sid)
+        ? currentlyOn.filter((id) => id !== sid)
+        : [...currentlyOn, sid];
+      // Empty list means "all on" (new template sheets auto-included)
+      setEnabledSheetIds(next.length === all.length ? [] : next);
+    },
+    [jobSheetAllIds, enabledSheetIds],
+  );
+
+  const setJobTemplateAndSheets = useCallback(
+    (nextTplId: string, presetIds?: string[] | null) => {
+      setTemplateId(nextTplId);
+      const tpl = templates.find((x) => x.id === nextTplId);
+      const all = tpl ? templateSheets(tpl).map((s) => sheetIdentity(s)).filter(Boolean) : [];
+      if (presetIds && presetIds.length) {
+        const kept = presetIds.filter((id) => all.includes(id));
+        setEnabledSheetIds(kept.length === all.length ? [] : kept);
+      } else {
+        setEnabledSheetIds([]);
+      }
+    },
+    [templates],
+  );
 
   const activeTplSheet = tplSheets[tplSheetIdx] || null;
   const activeTplFields = useMemo(() => {
@@ -1444,8 +1510,18 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
   };
 
   const resetJobForm = (preset?: Partial<Job>) => {
+    const tplId = preset?.template_id || templates[0]?.id || "";
     setName(preset?.name || t("bizCompare.defaultJobName"));
-    setTemplateId(preset?.template_id || templates[0]?.id || "");
+    setTemplateId(tplId);
+    const tpl = templates.find((x) => x.id === tplId);
+    const all = tpl ? templateSheets(tpl).map((s) => sheetIdentity(s)).filter(Boolean) : [];
+    const presetIds = (preset?.enabled_sheet_ids || []).map(String).filter(Boolean);
+    if (presetIds.length) {
+      const kept = presetIds.filter((id) => all.includes(id));
+      setEnabledSheetIds(kept.length === all.length ? [] : kept);
+    } else {
+      setEnabledSheetIds([]);
+    }
     setMappingId(preset?.mapping_id || "");
     setBeforeTaskId(preset?.before_task_id || "");
     setAfterTaskId(preset?.after_task_id || "");
@@ -1460,26 +1536,85 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     }
   };
 
+  const jobConfigBody = () => ({
+    name,
+    template_id: templateId,
+    mapping_id: mappingId,
+    before_task_id: beforeTaskId,
+    after_task_id: afterTaskId || beforeTaskId,
+    before_batch_id: beforeBatchId,
+    after_batch_id: mode === "manual" ? afterBatchId : "",
+    mode,
+    enabled_sheet_ids: enabledSheetIds,
+  });
+
+  const closeCreateJob = () => {
+    setJobCreateOpen(false);
+    setCreateStep(0);
+  };
+
   const openCreateJob = () => {
     resetJobForm();
+    setCreateStep(0);
     setJobCreateOpen(true);
   };
 
+  const canAdvanceCreateStep = (step: CreateJobStep): boolean => {
+    if (step === 0) return Boolean(name.trim() && templateId);
+    if (step === 1) return enabledJobSheetCount > 0;
+    if (step === 2) {
+      if (!beforeTaskId || !beforeBatchId) return false;
+      if (mode === "manual" && !afterBatchId) return false;
+      return true;
+    }
+    return true;
+  };
+
+  const createStepBlockReason = (step: CreateJobStep): string | null => {
+    if (step === 0) {
+      if (!name.trim()) return t("bizCompare.needJobName");
+      if (!templateId) return t("bizCompare.needTemplate");
+      return null;
+    }
+    if (step === 1) {
+      if (!enabledJobSheetCount) return t("bizCompare.needSheets");
+      return null;
+    }
+    if (step === 2) {
+      if (!beforeTaskId || !beforeBatchId) return t("bizCompare.needBeforeBatch");
+      if (mode === "manual" && !afterBatchId) return t("bizCompare.needAfterBatch");
+      return null;
+    }
+    return null;
+  };
+
+  const onCreateNext = () => {
+    const reason = createStepBlockReason(createStep);
+    if (reason) {
+      showError(reason);
+      return;
+    }
+    setCreateStep((s) => Math.min(CREATE_JOB_STEPS - 1, (s + 1) as CreateJobStep) as CreateJobStep);
+  };
+
+  const onCreateBack = () => {
+    setCreateStep((s) => Math.max(0, s - 1) as CreateJobStep);
+  };
+
   const createJob = async () => {
+    const reason =
+      createStepBlockReason(0) ||
+      createStepBlockReason(1) ||
+      createStepBlockReason(2);
+    if (reason) {
+      showError(reason);
+      return;
+    }
     setBusy(true);
     try {
-      const j = await bizCompareCreateJob({
-        name,
-        template_id: templateId,
-        mapping_id: mappingId,
-        before_task_id: beforeTaskId,
-        after_task_id: afterTaskId || beforeTaskId,
-        before_batch_id: beforeBatchId,
-        after_batch_id: mode === "manual" ? afterBatchId : "",
-        mode,
-      });
+      const j = await bizCompareCreateJob(jobConfigBody());
       showOk(t("bizCompare.created"));
-      setJobCreateOpen(false);
+      closeCreateJob();
       await refresh();
       await openJob(String(j.id));
     } catch (e) {
@@ -1520,18 +1655,13 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
 
   const saveJobConfig = async () => {
     if (!jobId) return;
+    if (!enabledJobSheetCount) {
+      showError(t("bizCompare.needSheets"));
+      return;
+    }
     setBusy(true);
     try {
-      await bizCompareUpdateJob(jobId, {
-        name,
-        template_id: templateId,
-        mapping_id: mappingId,
-        before_task_id: beforeTaskId,
-        after_task_id: afterTaskId || beforeTaskId,
-        before_batch_id: beforeBatchId,
-        after_batch_id: mode === "manual" ? afterBatchId : "",
-        mode,
-      });
+      await bizCompareUpdateJob(jobId, jobConfigBody());
       showOk(t("bizCompare.jobSaved"));
       await refresh();
     } catch (e) {
@@ -1543,15 +1673,13 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
 
   const runNow = async () => {
     if (!jobId) return;
+    if (!enabledJobSheetCount) {
+      showError(t("bizCompare.needSheets"));
+      return;
+    }
     setBusy(true);
     try {
-      await bizCompareUpdateJob(jobId, {
-        before_batch_id: beforeBatchId,
-        after_batch_id: mode === "manual" ? afterBatchId : "",
-        mode,
-        mapping_id: mappingId,
-        template_id: templateId,
-      });
+      await bizCompareUpdateJob(jobId, jobConfigBody());
       const run = await bizCompareRunJob(jobId);
       setRunDetail(run);
       setJobDetailTab("result");
@@ -1578,36 +1706,120 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     }
   };
 
-  const renderJobForm = (compact = false) => (
-    <div className="bs-cmp-form" style={{ display: "grid", gap: 8 }}>
-      <label className="ui-field ui-field--full">
-        <span className="ui-field__label">{t("bizCompare.jobName")}</span>
-        <Input value={name} onChange={(e) => setName(e.target.value)} />
-      </label>
-      <FieldSelect
-        label={t("bizCompare.template")}
-        value={templateId}
-        onChange={(e) => setTemplateId(e.target.value)}
-        fullWidth
-      >
-        {templates.map((tpl) => {
-          const mids = tpl.metric_ids || templateSheets(tpl).map((s) => s.metric_id);
+  const removeRun = async (runId: string) => {
+    if (!runId) return;
+    if (!window.confirm(t("bizCompare.confirmDeleteRun"))) return;
+    setBusy(true);
+    try {
+      const wasCurrent = String(runDetail?.id || "") === runId;
+      await bizCompareDeleteRun(runId);
+      let nextRuns: typeof runs = [];
+      if (jobId) {
+        const r = await bizCompareListRuns(jobId);
+        nextRuns = r.items || [];
+      } else {
+        nextRuns = (runs || []).filter((r) => String(r.id) !== runId);
+      }
+      setRuns(nextRuns);
+      if (wasCurrent) {
+        if (nextRuns.length) {
+          await loadRun(String(nextRuns[0].id));
+        } else {
+          setRunDetail(null);
+          setResultSheetId("");
+        }
+      }
+      showOk(t("bizCompare.runDeleted"));
+    } catch (e) {
+      showError(formatErr(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const renderSheetChips = () => (
+    <div className="bm-create__pane" style={{ padding: 0, border: "none", background: "transparent" }}>
+      <div className="bm-mapping__label">
+        {t("bizCompare.enabledSheets")}
+        <span className="muted" style={{ fontWeight: 400, marginLeft: 8 }}>
+          {enabledJobSheetCount}/{jobSheetAllIds.length || 0}
+        </span>
+      </div>
+      <p className="muted bm-hint">{t("bizCompare.enabledSheetsHint")}</p>
+      <div className="bm-metric-chips">
+        {jobTemplateSheets.map((s) => {
+          const sid = sheetIdentity(s);
+          const on = isJobSheetOn(sid);
           return (
-            <option key={tpl.id} value={tpl.id}>
-              {tpl.name} ({mids.length} {t("bizCompare.sheetsUnit")})
-            </option>
+            <button
+              key={sid}
+              type="button"
+              className={`bm-metric-chip${on ? " is-on" : ""}`}
+              onClick={() => toggleJobSheet(sid)}
+              title={s.metric_id !== sid ? s.metric_id : undefined}
+            >
+              {sheetLabel(s)}
+            </button>
           );
         })}
-      </FieldSelect>
-      <FieldSelect
-        label={t("bizCompare.mode")}
-        value={mode}
-        onChange={(e) => setMode(e.target.value as "manual" | "auto")}
-        fullWidth
-      >
-        <option value="manual">{t("bizCompare.modeManual")}</option>
-        <option value="auto">{t("bizCompare.modeAuto")}</option>
-      </FieldSelect>
+      </div>
+      {!jobTemplateSheets.length ? (
+        <p className="muted bm-hint">{t("bizCompare.noTemplateSheets")}</p>
+      ) : null}
+      {jobTemplateSheets.length && !enabledJobSheetCount ? (
+        <p className="form-error bm-hint">{t("bizCompare.needSheets")}</p>
+      ) : null}
+    </div>
+  );
+
+  const renderMappingBlock = () => (
+    <div className="bs-cmp-mapping">
+      <h4 style={{ margin: "8px 0" }}>{t("bizCompare.mapping")}</h4>
+      <p className="muted">{t("bizCompare.mappingOptionalHint")}</p>
+      <div className="filter-inline" style={{ marginBottom: 8 }}>
+        <FieldSelect
+          value={mappingId}
+          onChange={(e) => {
+            const id = e.target.value;
+            if (id) loadMappingText(id);
+            else {
+              setMappingId("");
+              setMapText("");
+            }
+          }}
+        >
+          <option value="">{t("bizCompare.newMapping")}</option>
+          {mappings.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.name}
+            </option>
+          ))}
+        </FieldSelect>
+        <Input value={mapName} placeholder={t("bizCompare.mapName")} onChange={(e) => setMapName(e.target.value)} />
+        <Button size="sm" variant="secondary" isDisabled={busy} onPress={() => void saveMapping()}>
+          {t("bizCompare.saveMapping")}
+        </Button>
+        <Button size="sm" variant="secondary" isDisabled={busy} onPress={() => void doValidate()}>
+          {t("bizCompare.validateMapping")}
+        </Button>
+      </div>
+      <textarea
+        value={mapText}
+        onChange={(e) => setMapText(e.target.value)}
+        placeholder={t("bizCompare.mapHint")}
+        rows={5}
+        style={{ width: "100%", fontFamily: "ui-monospace, monospace" }}
+      />
+      {validateOut ? (
+        <pre className="muted" style={{ fontSize: 12, maxHeight: 120, overflow: "auto" }}>
+          {JSON.stringify(validateOut, null, 2)}
+        </pre>
+      ) : null}
+    </div>
+  );
+
+  const renderBatchFields = () => (
+    <>
       <FieldSelect
         label={t("bizCompare.beforeTask")}
         value={beforeTaskId}
@@ -1664,52 +1876,42 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
       ) : (
         <p className="muted">{t("bizCompare.autoHint")}</p>
       )}
+    </>
+  );
 
-      {!compact ? (
-        <div className="bs-cmp-mapping">
-          <h4 style={{ margin: "8px 0" }}>{t("bizCompare.mapping")}</h4>
-          <p className="muted">{t("bizCompare.mappingOptionalHint")}</p>
-          <div className="filter-inline" style={{ marginBottom: 8 }}>
-            <FieldSelect
-              value={mappingId}
-              onChange={(e) => {
-                const id = e.target.value;
-                if (id) loadMappingText(id);
-                else {
-                  setMappingId("");
-                  setMapText("");
-                }
-              }}
-            >
-              <option value="">{t("bizCompare.newMapping")}</option>
-              {mappings.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.name}
-                </option>
-              ))}
-            </FieldSelect>
-            <Input value={mapName} placeholder={t("bizCompare.mapName")} onChange={(e) => setMapName(e.target.value)} />
-            <Button size="sm" variant="secondary" isDisabled={busy} onPress={() => void saveMapping()}>
-              {t("bizCompare.saveMapping")}
-            </Button>
-            <Button size="sm" variant="secondary" isDisabled={busy} onPress={() => void doValidate()}>
-              {t("bizCompare.validateMapping")}
-            </Button>
-          </div>
-          <textarea
-            value={mapText}
-            onChange={(e) => setMapText(e.target.value)}
-            placeholder={t("bizCompare.mapHint")}
-            rows={5}
-            style={{ width: "100%", fontFamily: "ui-monospace, monospace" }}
-          />
-          {validateOut ? (
-            <pre className="muted" style={{ fontSize: 12, maxHeight: 120, overflow: "auto" }}>
-              {JSON.stringify(validateOut, null, 2)}
-            </pre>
-          ) : null}
-        </div>
-      ) : null}
+  const renderJobForm = () => (
+    <div className="bs-cmp-form" style={{ display: "grid", gap: 8 }}>
+      <label className="ui-field ui-field--full">
+        <span className="ui-field__label">{t("bizCompare.jobName")}</span>
+        <Input value={name} onChange={(e) => setName(e.target.value)} />
+      </label>
+      <FieldSelect
+        label={t("bizCompare.template")}
+        value={templateId}
+        onChange={(e) => setJobTemplateAndSheets(e.target.value)}
+        fullWidth
+      >
+        {templates.map((tpl) => {
+          const n = templateSheets(tpl).length;
+          return (
+            <option key={tpl.id} value={tpl.id}>
+              {tpl.name} ({n} {t("bizCompare.sheetsUnit")})
+            </option>
+          );
+        })}
+      </FieldSelect>
+      <FieldSelect
+        label={t("bizCompare.mode")}
+        value={mode}
+        onChange={(e) => setMode(e.target.value as "manual" | "auto")}
+        fullWidth
+      >
+        <option value="manual">{t("bizCompare.modeManual")}</option>
+        <option value="auto">{t("bizCompare.modeAuto")}</option>
+      </FieldSelect>
+      {renderSheetChips()}
+      {renderBatchFields()}
+      {renderMappingBlock()}
     </div>
   );
 
@@ -1896,7 +2098,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                             isDisabled={busy}
                             onPress={() => void removeJob(j.id)}
                           >
-                            {t("bizCompare.delete")}
+                            {t("bizCompare.deleteJob")}
                           </Button>
                         </div>
                       </td>
@@ -2101,21 +2303,22 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                       onChange={(next) => updateActiveSheet({ row_filters: fromOrGroups(next) })}
                     />
                   ) : (
-                    <div className="pt-list-table-wrap ct-field-table-wrap">
+                    <>
                       <p className="muted ct-field-hint">{t("bizCompare.fieldsHintShort")}</p>
-                      <table className="data-table pt-list-table ct-field-table">
-                        <thead>
-                          <tr>
-                            <th>{t("bizCompare.field")}</th>
-                            <th title={t("bizCompare.keyFields")}>{t("bizCompare.keyFields")}</th>
-                            <th title={t("bizCompare.ifaceFields")}>{t("bizCompare.ifaceFields")}</th>
-                            <th title={t("bizCompare.compareFields")}>{t("bizCompare.compareFields")}</th>
-                            <th>{t("bizCompare.compareMode")}</th>
-                            <th>{t("bizCompare.tolerance")}</th>
-                            <th>{t("bizCompare.displayField")}</th>
-                            <th>{t("bizCompare.normalizeField")}</th>
-                          </tr>
-                        </thead>
+                      <div className="pt-list-table-wrap ct-field-table-wrap">
+                        <table className="data-table pt-list-table ct-field-table">
+                          <thead>
+                            <tr>
+                              <th>{t("bizCompare.field")}</th>
+                              <th title={t("bizCompare.keyFields")}>{t("bizCompare.keyFields")}</th>
+                              <th title={t("bizCompare.ifaceFields")}>{t("bizCompare.ifaceFields")}</th>
+                              <th title={t("bizCompare.compareFields")}>{t("bizCompare.compareFields")}</th>
+                              <th>{t("bizCompare.compareMode")}</th>
+                              <th>{t("bizCompare.tolerance")}</th>
+                              <th>{t("bizCompare.displayField")}</th>
+                              <th>{t("bizCompare.normalizeField")}</th>
+                            </tr>
+                          </thead>
                         <tbody>
                           {activeTplFields.map((f) => {
                             const isKey = activeTplSheet.key_fields.includes(f.name);
@@ -2266,16 +2469,17 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                               </tr>
                             );
                           })}
-                          {!activeTplFields.length ? (
-                            <tr>
-                              <td colSpan={8}>
-                                <div className="pt-list-empty">{t("bizCompare.noMetricFields")}</div>
-                              </td>
-                            </tr>
-                          ) : null}
-                        </tbody>
-                      </table>
-                    </div>
+                            {!activeTplFields.length ? (
+                              <tr>
+                                <td colSpan={8}>
+                                  <div className="pt-list-empty">{t("bizCompare.noMetricFields")}</div>
+                                </td>
+                              </tr>
+                            ) : null}
+                          </tbody>
+                        </table>
+                      </div>
+                    </>
                   )}
                 </div>
               ) : null}
@@ -2292,20 +2496,118 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
         </Modal.Footer>
       </AppModalShell>
 
-      {/* Create job */}
-      <AppModalShell open={jobCreateOpen} onClose={() => setJobCreateOpen(false)} size="lg">
+      {/* Create job — guided steps */}
+      <AppModalShell
+        open={jobCreateOpen}
+        onClose={closeCreateJob}
+        size="lg"
+        className="bm-create-modal"
+      >
         <Modal.Header>
           <Modal.Heading>{t("bizCompare.createCompare")}</Modal.Heading>
           <Modal.CloseTrigger />
         </Modal.Header>
-        <Modal.Body className="flex flex-col gap-3">{renderJobForm(true)}</Modal.Body>
+        <Modal.Body className="flex flex-col gap-3 bm-create">
+          <nav className="bm-steps" aria-label={t("bizCompare.createSteps")}>
+            {(
+              [
+                t("bizCompare.stepBasics"),
+                t("bizCompare.stepSheets"),
+                t("bizCompare.stepBatches"),
+                t("bizCompare.stepMapping"),
+              ] as const
+            ).map((label, i) => {
+              const done = i < createStep;
+              const active = i === createStep;
+              return (
+                <button
+                  key={label}
+                  type="button"
+                  className={`bm-steps__item${active ? " is-active" : ""}${done ? " is-done" : ""}`}
+                  onClick={() => {
+                    if (i <= createStep) {
+                      setCreateStep(i as CreateJobStep);
+                      return;
+                    }
+                    let ok = true;
+                    for (let s = 0; s < i; s++) {
+                      if (!canAdvanceCreateStep(s as CreateJobStep)) {
+                        ok = false;
+                        break;
+                      }
+                    }
+                    if (ok) setCreateStep(i as CreateJobStep);
+                  }}
+                >
+                  <span className="bm-steps__num">{done ? "✓" : i + 1}</span>
+                  <span className="bm-steps__label">{label}</span>
+                </button>
+              );
+            })}
+          </nav>
+
+          {createStep === 0 ? (
+            <div className="bm-create__pane bs-cmp-form" style={{ display: "grid", gap: 8 }}>
+              <label className="ui-field ui-field--full">
+                <span className="ui-field__label">{t("bizCompare.jobName")}</span>
+                <Input value={name} onChange={(e) => setName(e.target.value)} />
+              </label>
+              <FieldSelect
+                label={t("bizCompare.template")}
+                value={templateId}
+                onChange={(e) => setJobTemplateAndSheets(e.target.value)}
+                fullWidth
+              >
+                {templates.map((tpl) => {
+                  const n = templateSheets(tpl).length;
+                  return (
+                    <option key={tpl.id} value={tpl.id}>
+                      {tpl.name} ({n} {t("bizCompare.sheetsUnit")})
+                    </option>
+                  );
+                })}
+              </FieldSelect>
+              <FieldSelect
+                label={t("bizCompare.mode")}
+                value={mode}
+                onChange={(e) => setMode(e.target.value as "manual" | "auto")}
+                fullWidth
+              >
+                <option value="manual">{t("bizCompare.modeManual")}</option>
+                <option value="auto">{t("bizCompare.modeAuto")}</option>
+              </FieldSelect>
+            </div>
+          ) : null}
+
+          {createStep === 1 ? <div className="bm-create__pane">{renderSheetChips()}</div> : null}
+
+          {createStep === 2 ? (
+            <div className="bm-create__pane bs-cmp-form" style={{ display: "grid", gap: 8 }}>
+              {renderBatchFields()}
+            </div>
+          ) : null}
+
+          {createStep === 3 ? <div className="bm-create__pane">{renderMappingBlock()}</div> : null}
+        </Modal.Body>
         <Modal.Footer>
-          <Button size="sm" variant="primary" isDisabled={busy} onPress={() => void createJob()}>
-            {t("bizCompare.createCompare")}
-          </Button>
-          <Button size="sm" variant="ghost" onPress={() => setJobCreateOpen(false)}>
+          <Button size="sm" variant="secondary" onPress={closeCreateJob}>
             {t("bizState.cancel")}
           </Button>
+          <div className="bm-create__footer-spacer" />
+          {createStep > 0 ? (
+            <Button size="sm" variant="secondary" onPress={onCreateBack}>
+              {t("bizCompare.back")}
+            </Button>
+          ) : null}
+          {createStep < CREATE_JOB_STEPS - 1 ? (
+            <Button size="sm" variant="primary" onPress={onCreateNext}>
+              {t("bizCompare.next")}
+            </Button>
+          ) : (
+            <Button size="sm" variant="primary" isDisabled={busy} onPress={() => void createJob()}>
+              {t("bizCompare.createCompare")}
+            </Button>
+          )}
         </Modal.Footer>
       </AppModalShell>
 
@@ -2343,7 +2645,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
           </div>
 
           {jobDetailTab === "config" ? (
-            renderJobForm(false)
+            renderJobForm()
           ) : (
             <div
               ref={boardRef}
@@ -2375,13 +2677,20 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                     );
                     const bl = sideDeviceName(before);
                     const al = sideDeviceName(after);
+                    const when = formatSystemTime((r as any).created_at) || "";
                     return (
                       <option key={r.id} value={r.id}>
+                        {when ? `${when} · ` : ""}
                         {bl} {sideCollectTime(before)} → {al} {sideCollectTime(after)}
                       </option>
                     );
                   })}
                 </select>
+                {runs.length ? (
+                  <span className="muted bs-cmp-board__run-count">
+                    {t("bizCompare.runCount", { n: String(runs.length) })}
+                  </span>
+                ) : null}
                 {runDetail ? (
                   <div className="bs-cmp-sides" aria-label={t("bizCompare.sidesTitle")}>
                     {(() => {
@@ -2437,6 +2746,14 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                     onPress={() => void downloadRunTables()}
                   >
                     {t("bizCompare.exportTables")}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="danger"
+                    isDisabled={busy || !runDetail?.id}
+                    onPress={() => void removeRun(String(runDetail?.id || ""))}
+                  >
+                    {t("bizCompare.deleteRun")}
                   </Button>
                   <Button
                     size="sm"
@@ -2782,6 +3099,11 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
               <Button size="sm" variant="primary" isDisabled={busy} onPress={() => void runNow()}>
                 {t("bizCompare.runNow")}
               </Button>
+              {jobId ? (
+                <Button size="sm" variant="danger" isDisabled={busy} onPress={() => void removeJob(jobId)}>
+                  {t("bizCompare.deleteJob")}
+                </Button>
+              ) : null}
             </>
           ) : (
             <>
@@ -2793,6 +3115,14 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
               >
                 {t("bizCompare.exportTables")}
               </Button>
+              <Button
+                size="sm"
+                variant="danger"
+                isDisabled={busy || !runDetail?.id}
+                onPress={() => void removeRun(String(runDetail?.id || ""))}
+              >
+                {t("bizCompare.deleteRun")}
+              </Button>
               <Button size="sm" variant="primary" isDisabled={busy} onPress={() => void runNow()}>
                 {t("bizCompare.runNow")}
               </Button>
@@ -2801,11 +3131,6 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
           <Button size="sm" variant="ghost" onPress={closeJob}>
             {t("bizState.cancel")}
           </Button>
-          {jobId ? (
-            <Button size="sm" variant="danger" isDisabled={busy} onPress={() => void removeJob(jobId)}>
-              {t("bizCompare.delete")}
-            </Button>
-          ) : null}
         </Modal.Footer>
       </AppModalShell>
     </section>

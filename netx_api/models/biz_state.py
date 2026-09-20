@@ -293,6 +293,8 @@ class BizCompareJob(Base):
     # manual: fixed after_batch; auto: after_batch_id empty → use latest after task batch
     mode: Mapped[str] = mapped_column(String(16), default="manual", index=True)
     status: Mapped[str] = mapped_column(String(32), default="draft", index=True)  # draft|ready|auto
+    # Empty = all template sheets; non-empty = only these sheet_id values
+    enabled_sheet_ids: Mapped[list] = mapped_column(_JsonType, default=list)
     note: Mapped[str] = mapped_column(String(512), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)

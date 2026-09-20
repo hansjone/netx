@@ -22,6 +22,7 @@ def apply_biz_state_schema(conn: Connection) -> None:
         "CREATE INDEX IF NOT EXISTS ix_biz_state_batch_task_id ON biz_state_batch (task_id)",
         "CREATE INDEX IF NOT EXISTS ix_biz_state_batch_command_batch_id ON biz_state_batch_command (batch_id)",
         "CREATE INDEX IF NOT EXISTS ix_biz_state_lldp_neighbor_batch_id ON biz_state_lldp_neighbor (batch_id)",
+        "ALTER TABLE biz_compare_job ADD COLUMN IF NOT EXISTS enabled_sheet_ids JSON DEFAULT '[]'",
         "CREATE INDEX IF NOT EXISTS ix_biz_compare_job_status ON biz_compare_job (status)",
         "CREATE INDEX IF NOT EXISTS ix_biz_compare_run_job_id ON biz_compare_run (job_id)",
         "CREATE INDEX IF NOT EXISTS ix_biz_state_vrf_route_batch_id ON biz_state_vrf_route_summary (batch_id)",

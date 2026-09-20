@@ -174,6 +174,18 @@ def api_patch_task(
     return svc.update_task(db, task_id, body.model_dump(exclude_unset=True))
 
 
+@router.post("/tasks/{task_id}/pause")
+def api_pause_task(task_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Pause periodic schedule; manual collect remains allowed."""
+    return svc.set_task_status(db, task_id, "paused")
+
+
+@router.post("/tasks/{task_id}/start")
+def api_start_task(task_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Enable periodic schedule (requires bindings for non–cutover-HF tasks)."""
+    return svc.set_task_status(db, task_id, "running")
+
+
 @router.delete("/tasks/{task_id}")
 def api_delete_task(task_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
     svc.delete_task(db, task_id)
@@ -374,6 +386,8 @@ class CompareJobIn(BaseModel):
     before_batch_id: str = ""
     after_batch_id: str = ""
     mode: str = "manual"
+    # Empty = all template sheets; non-empty = only these sheet_id values
+    enabled_sheet_ids: list[str] = Field(default_factory=list)
     note: str = ""
 
 
@@ -476,6 +490,11 @@ def api_list_runs(job_id: str, limit: int = 20, db: Session = Depends(get_db)) -
 @router.get("/compare/runs/{run_id}")
 def api_get_run(run_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
     return cmp_svc.get_run(db, run_id)
+
+
+@router.delete("/compare/runs/{run_id}")
+def api_delete_run(run_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    return cmp_svc.delete_run(db, run_id)
 
 
 @router.get("/compare/runs/{run_id}/diffs")
