@@ -26,7 +26,7 @@ from ..models import (
     ManagedNE,
 )
 from ..timeutil import utcnow_naive
-from .command_match import preview_task_item
+from .command_match import normalize_command, preview_task_item
 from .profiles import (
     all_profiles,
     get_profile,
@@ -583,18 +583,25 @@ def get_batch(db: Session, batch_id: str) -> dict[str, Any]:
     cmd_payload: list[dict[str, Any]] = []
     sheets_order: list[str] = []
     sheet_cmds: dict[str, list[dict[str, Any]]] = {}
+    sheet_titles: dict[str, str] = {}
 
-    def _push_sheet(mid: str, cmd_info: dict[str, Any] | None = None) -> None:
+    def _push_sheet(mid: str, cmd_info: dict[str, Any] | None = None, title: str = "") -> None:
         id_ = str(mid or "").strip()
         if not id_ or id_ in ("vrf_list", "commands"):
             return
         if id_ not in sheets_order:
             sheets_order.append(id_)
             sheet_cmds.setdefault(id_, [])
+            if title:
+                sheet_titles[id_] = title
         if cmd_info is not None:
+            # Prefer primary collect rows over aux / aux_cached for the same CLI
             sheet_cmds[id_].append(cmd_info)
 
+    primary_cmds_by_cli: dict[str, dict[str, Any]] = {}
     for c in cmds:
+        status = str(c.parse_status or "").strip().lower()
+        is_aux = status.startswith("aux")
         info = {
             "id": c.id,
             "profile_id": c.profile_id,
@@ -606,10 +613,28 @@ def get_batch(db: Session, batch_id: str) -> dict[str, Any]:
             "row_count": c.row_count,
             "message": c.message,
             "has_raw": bool(str(c.raw_text or "").strip()),
+            "is_aux": is_aux,
         }
+        cmd_n = normalize_command(str(c.raw_command or ""))
+        if not is_aux and cmd_n:
+            primary_cmds_by_cli.setdefault(cmd_n, info)
+        # Commands sheet: hide aux when the same CLI already has a primary row
+        if is_aux and cmd_n and cmd_n in primary_cmds_by_cli:
+            continue
+        if is_aux and cmd_n:
+            # aux may appear before primary in list — defer; second pass below
+            continue
         cmd_payload.append(info)
         mid = str(c.metric_id or "").strip()
-        if mid and mid not in ("", "vrf_list"):
+        title = ""
+        pid = str(c.profile_id or "").strip()
+        if pid:
+            prof = get_profile(pid)
+            if prof:
+                title = str(prof.title or "")
+                if not mid:
+                    mid = str(prof.metric_id or "").strip()
+        if mid and mid not in ("", "vrf_list") and not is_aux:
             _push_sheet(
                 mid,
                 {
@@ -621,17 +646,49 @@ def get_batch(db: Session, batch_id: str) -> dict[str, Any]:
                     "has_raw": info["has_raw"],
                     "profile_id": c.profile_id,
                 },
+                title=title,
             )
-        # Aux command rows may have empty metric_id — still attach by profile if needed later
+
+    # Include aux-only CLIs that had no primary counterpart
+    for c in cmds:
+        status = str(c.parse_status or "").strip().lower()
+        if not status.startswith("aux"):
+            continue
+        cmd_n = normalize_command(str(c.raw_command or ""))
+        if cmd_n and cmd_n in primary_cmds_by_cli:
+            continue
+        cmd_payload.append(
+            {
+                "id": c.id,
+                "profile_id": c.profile_id,
+                "parser_id": c.parser_id,
+                "metric_id": c.metric_id,
+                "raw_command": c.raw_command,
+                "params": c.params_json or {},
+                "parse_status": c.parse_status,
+                "row_count": c.row_count,
+                "message": c.message,
+                "has_raw": bool(str(c.raw_text or "").strip()),
+                "is_aux": True,
+            }
+        )
 
     for mid in metric_counts:
         if mid not in sheets_order:
             sheets_order.append(mid)
             sheet_cmds.setdefault(mid, [])
+        if mid not in sheet_titles:
+            # Best-effort title from any profile with this metric_id
+            for p in all_profiles():
+                if p.metric_id == mid and p.enabled:
+                    sheet_titles[mid] = str(p.title or mid)
+                    break
+            sheet_titles.setdefault(mid, mid)
 
     sheets = [
         {
             "metric_id": mid,
+            "title": sheet_titles.get(mid) or mid,
             "row_count": int(metric_counts.get(mid) or 0),
             "commands": list(sheet_cmds.get(mid) or []),
         }

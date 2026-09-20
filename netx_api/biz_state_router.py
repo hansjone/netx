@@ -193,10 +193,11 @@ def api_collect_now(
         raise HTTPException(status_code=404, detail="task not found")
     if bool(task.collect_running):
         return {"ok": True, "started": False, "reason": "already_collecting", "task_id": task_id}
-    # Allow one-shot from draft/paused
+    # Allow one-shot even when schedule is enabled (idle only).
     task.last_collect_ended_at = None
     db.commit()
-    background_tasks.add_task(dispatch_collect, task_id)
+    tid = task_id
+    background_tasks.add_task(lambda: dispatch_collect(tid, manual=True))
     return {"ok": True, "started": True, "task_id": task_id}
 
 

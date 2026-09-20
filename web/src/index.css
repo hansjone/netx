@@ -10051,6 +10051,25 @@ html.login-page--paused .login-page__flare {
   flex: 1 1 auto;
   min-height: 240px;
   max-height: min(48vh, 520px);
+  overflow: auto;
+  border-collapse: separate;
+}
+
+.bs-workbook-modal .bs-sheet-table {
+  overflow: auto;
+}
+
+.bs-workbook-modal .bs-sheet-table table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.bs-workbook-modal .bs-sheet-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: rgba(15, 23, 42, 0.98) !important;
+  box-shadow: 0 1px 0 rgba(148, 163, 184, 0.22);
 }
 
 .bs-cmp-result-table.bs-sheet-table {

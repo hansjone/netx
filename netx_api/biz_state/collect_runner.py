@@ -77,6 +77,25 @@ def _bindings_for_item(db, item_id: str) -> list[dict[str, str]]:
     ]
 
 
+def _resolve_collect_profile(profile_id: str):
+    """Resolve task-item profile; remap disabled if_intf → config_interface."""
+    pid = str(profile_id or "").strip()
+    if not pid:
+        return None
+    profile = get_profile(pid)
+    if profile is None:
+        return None
+    if profile.enabled:
+        return profile
+    # Legacy IF VRF check merged into Config Interface Intent — VRF is a subset.
+    if profile.metric_id == "if_intf" or pid.endswith(".if_intf"):
+        vk = str(profile.vendor_key or "zte").strip() or "zte"
+        remapped = get_profile(f"{vk}.config_interface") or get_profile("zte.config_interface")
+        if remapped and remapped.enabled:
+            return remapped
+    return None
+
+
 def _persist_lldp_rows(
     db,
     *,
@@ -199,8 +218,12 @@ def _finish_task(task_id: str, *, error: str = "") -> None:
         db.close()
 
 
-def dispatch_collect(task_id: str) -> None:
-    """Claim and run one collect round."""
+def dispatch_collect(task_id: str, *, manual: bool = False) -> None:
+    """Claim and run one collect round.
+
+    Scheduler calls with ``manual=False`` (only when task status is ``running``).
+    Collect-now calls with ``manual=True`` (any status, as long as not already collecting).
+    """
     db = SessionLocal()
     batch_id = ""
     try:
@@ -209,8 +232,14 @@ def dispatch_collect(task_id: str) -> None:
             return
         if task.collect_running:
             return
-        if str(task.status or "") not in ("running", "draft", "paused"):
-            return
+        st = str(task.status or "").strip()
+        if manual:
+            # Idle manual trigger: allow scheduled / paused / draft / stopped
+            if st in ("", "deleted"):
+                return
+        else:
+            if st != "running":
+                return
 
         items = (
             db.query(BizStateTaskItem)
@@ -338,19 +367,25 @@ def _run_collect_session(
         # Build work list before opening session
         work: list[tuple[str, dict[str, str], str, str, str]] = []
         # concrete, params, profile_id, item_id, mode
+        # Dedupe same CLI → same metric (e.g. legacy if_intf + config_interface).
+        seen_work: set[tuple[str, str]] = set()
         for item in items:
             if item.kind == "custom_raw":
                 cmd = normalize_command(item.command_override)
                 if cmd:
+                    key = (cmd, "__custom__")
+                    if key in seen_work:
+                        continue
+                    seen_work.add(key)
                     work.append((cmd, {}, "", item.id, "custom"))
                 continue
-            profile = get_profile(item.source_profile_id)
+            profile = _resolve_collect_profile(item.source_profile_id)
             if profile is None:
                 _append_event(
                     db,
                     task_id=task_id,
-                    message=f"unknown profile {item.source_profile_id}",
-                    level="error",
+                    message=f"skip profile {item.source_profile_id} (missing or disabled)",
+                    level="info",
                 )
                 continue
             binds = _bindings_for_item(db, item.id)
@@ -364,7 +399,16 @@ def _run_collect_session(
                 _append_event(db, task_id=task_id, message=str(exc), level="error")
                 continue
             for concrete, params in pairs:
-                work.append((concrete, params, profile.profile_id, item.id, "normal"))
+                cmd = normalize_command(concrete)
+                # Prefer match_command metric so remapped if_intf shares key with config_interface
+                hit = match_command(vendor_key=vendor_key, command=cmd)
+                mid = str((hit.profile.metric_id if hit else profile.metric_id) or "").strip()
+                pid = str((hit.profile.profile_id if hit else profile.profile_id) or "").strip()
+                key = (cmd, mid or pid)
+                if key in seen_work:
+                    continue
+                seen_work.add(key)
+                work.append((cmd, params, pid or profile.profile_id, item.id, "normal"))
 
         if not work:
             batch.status = "failed"
@@ -424,9 +468,15 @@ def _run_collect_session(
                             params_json=dict(params or {}),
                             created_at=_utcnow(),
                         )
+                        cache_hit_primary = False
                         try:
-                            raw = send_show_command(conn, concrete, read_timeout=per_cmd)
-                            cmd_row.raw_text = str(raw or "")
+                            cached = session.get_cached(concrete)
+                            if cached is not None and str(cached.raw or "").strip():
+                                cmd_row.raw_text = str(cached.raw or "")
+                                cache_hit_primary = True
+                            else:
+                                raw = send_show_command(conn, concrete, read_timeout=per_cmd)
+                                cmd_row.raw_text = str(raw or "")
                         except Exception as exc:
                             any_fail = True
                             cmd_row.parse_status = "failed"
@@ -466,12 +516,16 @@ def _run_collect_session(
                             sdb.commit()
                             continue
 
-                        session.remember(
-                            concrete,
-                            raw=cmd_row.raw_text or "",
-                            ok=True,
-                            cmd_row_id=cmd_row.id,
-                        )
+                        if cache_hit_primary:
+                            # Keep existing cache entry; primary will re-parse from shared raw.
+                            pass
+                        else:
+                            session.remember(
+                                concrete,
+                                raw=cmd_row.raw_text or "",
+                                ok=True,
+                                cmd_row_id=cmd_row.id,
+                            )
 
                         resolved_aux = []
                         aux_results: dict[str, Any] = {}
@@ -684,5 +738,6 @@ def trigger_collect_now(task_id: str) -> dict[str, Any]:
             raise HTTPException(status_code=409, detail="collect already running")
     finally:
         db.close()
-    dispatch_collect(task_id)
+    # Manual: allow even when schedule is on (status=running) or paused/stopped.
+    dispatch_collect(task_id, manual=True)
     return {"ok": True, "task_id": task_id}

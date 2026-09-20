@@ -68,6 +68,7 @@ class BatchWorkbookApiTests(unittest.TestCase):
         self.assertEqual(out["sheets"][0]["metric_id"], "arp")
         self.assertEqual(out["sheets"][0]["row_count"], 2)
         self.assertEqual(out["sheets"][0]["commands"][0]["raw_command"], "show arp | one-line")
+        self.assertTrue(out["sheets"][0].get("title"))
 
     def test_list_metric_rows_rejects_commands_sheet(self) -> None:
         db = MagicMock()

@@ -166,29 +166,13 @@ function columnsFromRows(rows: Record<string, unknown>[]): SheetCol[] {
   return keys.map((k) => ({ key: k, header: k }));
 }
 
-function metricSheetTitle(metricId: string, t: (k: string) => string): string {
-  const map: Record<string, string> = {
-    lldp_neighbor: t("bizState.sheetLldp"),
-    isis_adjacency: t("bizState.sheetIsis"),
-    interface_brief: t("bizState.sheetIfaceBrief"),
-    interface_detail: t("bizState.sheetIfaceBrief"),
-    arp: t("bizState.sheetArp"),
-    nd6_cache: t("bizState.sheetNd6"),
-    bgp_peer: t("bizState.sheetBgpPeer"),
-    config_interface: t("bizState.sheetConfigIface"),
-    config_vrf: t("bizState.sheetConfigVrf"),
-    config_bgp_peer: t("bizState.sheetConfigBgp"),
-  };
-  return map[metricId] || metricId;
-}
-
 function buildSheetTabs(batch: any, t: (k: string) => string): SheetTab[] {
   const tabs: SheetTab[] = [];
   const cmds = (batch?.commands || []) as SheetCmd[];
   if (cmds.length) {
     tabs.push({
       id: "commands",
-      title: t("bizState.sheetCommands"),
+      title: "Commands",
       rowCount: cmds.length,
       commands: cmds,
     });
@@ -196,9 +180,10 @@ function buildSheetTabs(batch: any, t: (k: string) => string): SheetTab[] {
   for (const s of (batch?.sheets || []) as any[]) {
     const mid = String(s?.metric_id || "").trim();
     if (!mid || mid === "vrf_list") continue;
+    const title = String(s?.title || "").trim() || mid;
     tabs.push({
       id: mid,
-      title: metricSheetTitle(mid, t),
+      title,
       rowCount: Number(s?.row_count || 0),
       commands: Array.isArray(s?.commands) ? (s.commands as SheetCmd[]) : [],
     });
@@ -1451,7 +1436,12 @@ export function BizStatePage() {
           )}
         </Modal.Body>
         <Modal.Footer>
-          <Button size="sm" variant="primary" isDisabled={busy} onPress={() => void collectNow()}>
+          <Button
+            size="sm"
+            variant="primary"
+            isDisabled={busy || Boolean(detail?.collect_running)}
+            onPress={() => void collectNow()}
+          >
             {t("bizState.collectNow")}
           </Button>
           <Button size="sm" variant="danger" isDisabled={busy} onPress={() => void removeTask(taskId)}>
