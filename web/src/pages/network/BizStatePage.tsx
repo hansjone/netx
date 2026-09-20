@@ -270,6 +270,27 @@ export function BizStatePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- refresh when purpose filter / refreshTasks changes
   }, [refreshTasks]);
 
+  // While a collect is running, refresh batch counters so cmd/row progress is visible.
+  useEffect(() => {
+    if (!taskId || !detail?.collect_running) return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        if (cancelled) return;
+        await loadTask(taskId);
+      } catch {
+        /* ignore transient poll errors */
+      }
+    };
+    const timer = window.setInterval(() => void tick(), 3000);
+    void tick();
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- poll while collect_running
+  }, [taskId, detail?.collect_running]);
+
   useEffect(() => {
     if (!createOpen) return;
     let cancelled = false;
@@ -640,13 +661,18 @@ export function BizStatePage() {
     try {
       await bizStateCollectNow(id);
       showOk(t("bizState.collecting"));
-      for (let i = 0; i < 20; i++) {
-        await new Promise((r) => setTimeout(r, 1500));
+      if (fromModal && taskId === id) {
+        setTaskTab("batches");
+      }
+      // Heavy show-interface can take ~20 minutes; poll long enough and refresh batches.
+      const deadline = Date.now() + 32 * 60 * 1000;
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 3000));
         if (fromModal && taskId === id) {
           try {
+            await loadTask(id);
             const task = await bizStateGetTask(id);
             setDetail(task);
-            await refreshTasks();
             if (!task.collect_running) break;
           } catch {
             break;
@@ -660,7 +686,6 @@ export function BizStatePage() {
       await refreshTasks();
       if (fromModal && taskId === id) {
         await loadTask(id);
-        setTaskTab("batches");
       }
     } catch (e) {
       showError(formatErr(e));

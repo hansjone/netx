@@ -407,6 +407,7 @@ def _run_collect_lane(
                     if holder.get("timed_out"):
                         raise TimeoutError(f"{label}_aborted")
                     cmd_count += 1
+                    # Persist "running" before CLI so UI shows cmd progress during long reads.
                     cmd_row = BizStateBatchCommand(
                         id=uuid4().hex,
                         batch_id=batch_id,
@@ -414,8 +415,14 @@ def _run_collect_lane(
                         profile_id=profile_id,
                         raw_command=concrete[:512],
                         params_json=dict(params or {}),
+                        parse_status="running",
+                        message="collecting",
                         created_at=_utcnow(),
                     )
+                    sdb.add(cmd_row)
+                    sdb.commit()
+                    _bump_batch_progress(batch_id, add_cmds=1)
+
                     cache_hit_primary = False
                     try:
                         cached = session.get_cached(concrete)
@@ -494,6 +501,7 @@ def _run_collect_lane(
                             cmd_count += 1
                             sdb.add(aux_row)
                             sdb.commit()
+                            _bump_batch_progress(batch_id, add_cmds=1)
                             continue
                         resolved_aux.append(ra)
                         aux_row = BizStateBatchCommand(
@@ -505,9 +513,14 @@ def _run_collect_lane(
                             metric_id="",
                             raw_command=ra.command[:512],
                             params_json={},
+                            parse_status="running",
+                            message=f"aux_for={cmd_row.id};collecting"[:1020],
                             created_at=_utcnow(),
                         )
                         cmd_count += 1
+                        sdb.add(aux_row)
+                        sdb.commit()
+                        _bump_batch_progress(batch_id, add_cmds=1)
                         entry, cache_hit = session.fetch_and_parse(
                             ra.command,
                             parser_id=ra.parser_id,
@@ -610,6 +623,8 @@ def _run_collect_lane(
                     any_ok = True
                     sdb.add(cmd_row)
                     sdb.commit()
+                    if n:
+                        _bump_batch_progress(batch_id, add_rows=n)
             finally:
                 sdb.close()
             return total_rows, cmd_count, any_fail, any_ok
@@ -648,6 +663,37 @@ def _absorb_lane_result(
         any_fail or bool(fail),
         any_ok or bool(ok),
     )
+
+
+def _bump_batch_progress(batch_id: str, *, add_cmds: int = 0, add_rows: int = 0) -> None:
+    """Atomically bump batch counters so UI can show progress while lanes still run."""
+    cmds = int(add_cmds or 0)
+    rows = int(add_rows or 0)
+    if not batch_id or (cmds <= 0 and rows <= 0):
+        return
+    db = SessionLocal()
+    try:
+        batch = (
+            db.query(BizStateBatch)
+            .filter(BizStateBatch.id == batch_id)
+            .with_for_update()
+            .one_or_none()
+        )
+        if not batch:
+            return
+        if cmds > 0:
+            batch.command_count = int(batch.command_count or 0) + cmds
+        if rows > 0:
+            batch.row_count = int(batch.row_count or 0) + rows
+        db.commit()
+    except Exception:
+        _log.exception("biz_state bump batch progress failed batch=%s", batch_id)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+    finally:
+        db.close()
 
 
 def _run_collect_session(
@@ -844,12 +890,17 @@ def _run_collect_session(
                 )
 
         if lane_errors and not any_ok and cmd_count == 0:
-            raise RuntimeError("; ".join(lane_errors)[:1020])
+            # Progressive bumps may already have cmds; only hard-fail if nothing landed.
+            live = db.get(BizStateBatch, batch_id)
+            if not live or (int(live.command_count or 0) == 0 and int(live.row_count or 0) == 0):
+                raise RuntimeError("; ".join(lane_errors)[:1020])
+            any_fail = True
 
         batch = db.get(BizStateBatch, batch_id)
         if batch:
-            batch.command_count = cmd_count
-            batch.row_count = total_rows
+            # Prefer progressive counters (survive lane timeout) over in-memory lane totals.
+            batch.command_count = max(int(batch.command_count or 0), int(cmd_count or 0))
+            batch.row_count = max(int(batch.row_count or 0), int(total_rows or 0))
             batch.ended_at = _utcnow()
             if any_fail and any_ok:
                 batch.status = "partial"

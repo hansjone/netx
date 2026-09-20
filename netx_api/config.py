@@ -108,8 +108,9 @@ class Settings(BaseSettings):
     biz_state_scheduler_tick_sec: int = 15
     biz_state_dispatch_workers: int = 2
     # Heavy CLI lane (interface detail / routes / MAC): own SSH + longer timeouts.
-    biz_state_heavy_read_timeout_sec: int = 300
-    biz_state_heavy_run_timeout_cap_sec: int = 900
+    # show interface on large boxes can take ~20 minutes for a single command.
+    biz_state_heavy_read_timeout_sec: int = 1500
+    biz_state_heavy_run_timeout_cap_sec: int = 2400
     biz_state_heavy_workers: int = 4
     # Managed NE exec: max CLI commands per request (lab can raise; hard-capped in ne_exec).
     ne_exec_max_commands: int = 5
