@@ -197,6 +197,7 @@ export function BizStatePage() {
 
   const [tasks, setTasks] = useState<TaskRow[]>([]);
   const [busy, setBusy] = useState(false);
+  const [collectingIds, setCollectingIds] = useState<Record<string, true>>({});
   const [listKeyword, setListKeyword] = useState("");
   const debouncedListKw = useDebouncedValue(listKeyword, 250);
   const [purposeFilter, setPurposeFilter] = useState<"all" | "portrait" | "cutover_hf">("all");
@@ -253,7 +254,9 @@ export function BizStatePage() {
     const purpose =
       purposeFilter === "all" ? "" : purposeFilter === "portrait" ? "portrait" : "cutover_hf";
     const res = await bizStateListTasks(purpose);
-    setTasks((res.items || []) as TaskRow[]);
+    const items = (res.items || []) as TaskRow[];
+    setTasks(items);
+    return items;
   }, [purposeFilter]);
 
   useEffect(() => {
@@ -619,25 +622,56 @@ export function BizStatePage() {
     }
   };
 
-  const collectNow = async () => {
-    if (!taskId) return;
-    setBusy(true);
+  const setTaskCollecting = (id: string, on: boolean) => {
+    setCollectingIds((prev) => {
+      if (on) {
+        if (prev[id]) return prev;
+        return { ...prev, [id]: true };
+      }
+      if (!prev[id]) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  };
+
+  const collectNowForTask = async (id: string, fromModal = false) => {
+    setTaskCollecting(id, true);
     try {
-      await bizStateCollectNow(taskId);
+      await bizStateCollectNow(id);
+      showOk(t("bizState.collecting"));
       for (let i = 0; i < 20; i++) {
         await new Promise((r) => setTimeout(r, 1500));
-        const task = await bizStateGetTask(taskId);
-        setDetail(task);
-        if (!task.collect_running) break;
+        if (fromModal && taskId === id) {
+          try {
+            const task = await bizStateGetTask(id);
+            setDetail(task);
+            await refreshTasks();
+            if (!task.collect_running) break;
+          } catch {
+            break;
+          }
+          continue;
+        }
+        const items = await refreshTasks();
+        const latest = items.find((x) => x.id === id);
+        if (!latest?.collect_running) break;
       }
-      await loadTask(taskId);
       await refreshTasks();
-      setTaskTab("batches");
+      if (fromModal && taskId === id) {
+        await loadTask(id);
+        setTaskTab("batches");
+      }
     } catch (e) {
       showError(formatErr(e));
     } finally {
-      setBusy(false);
+      setTaskCollecting(id, false);
     }
+  };
+
+  const collectNow = async () => {
+    if (!taskId) return;
+    await collectNowForTask(taskId, true);
   };
 
   const removeTask = async (id: string) => {
@@ -939,27 +973,8 @@ export function BizStatePage() {
                       <Button
                         size="sm"
                         variant="secondary"
-                        isDisabled={busy || row.collect_running}
-                        onPress={async () => {
-                          setBusy(true);
-                          try {
-                            await bizStateCollectNow(row.id);
-                            showOk(t("bizState.collecting"));
-                            for (let i = 0; i < 20; i++) {
-                              await new Promise((r) => setTimeout(r, 1500));
-                              await refreshTasks();
-                              const cur = (await bizStateListTasks(purposeFilter === "all" ? "" : purposeFilter)).items?.find(
-                                (x: any) => x.id === row.id,
-                              );
-                              if (!cur?.collect_running) break;
-                            }
-                            await refreshTasks();
-                          } catch (e) {
-                            showError(formatErr(e));
-                          } finally {
-                            setBusy(false);
-                          }
-                        }}
+                        isDisabled={Boolean(row.collect_running || collectingIds[row.id])}
+                        onPress={() => void collectNowForTask(row.id, false)}
                       >
                         {t("bizState.collectNow")}
                       </Button>
@@ -1439,7 +1454,7 @@ export function BizStatePage() {
           <Button
             size="sm"
             variant="primary"
-            isDisabled={busy || Boolean(detail?.collect_running)}
+            isDisabled={Boolean(detail?.collect_running || (taskId && collectingIds[taskId]))}
             onPress={() => void collectNow()}
           >
             {t("bizState.collectNow")}

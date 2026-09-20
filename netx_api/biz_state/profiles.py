@@ -64,6 +64,8 @@ class ParseProfile:
     kind: str = "collect"  # collect | discover
     aux_commands: list[AuxCommand] = field(default_factory=list)
     enrich_joins: list[EnrichJoin] = field(default_factory=list)
+    # light: default shared SSH lane; heavy: dedicated long-timeout connection
+    collect_lane: str = "light"
 
 
 _LLDP_FIELDS: list[FieldDef] = [
@@ -1270,11 +1272,32 @@ def _zte_status_profiles() -> list[ParseProfile]:
 
 _PROFILES: list[ParseProfile] | None = None
 
+# Huge CLI dumps: dedicated heavy lane (longer read_timeout / own SSH).
+_HEAVY_LANE_METRICS = frozenset(
+    {
+        "interface_detail",
+        "ip_route",
+        "ipv6_route",
+        "bgp_route",
+        "l2vpn_mac",
+        "evpn_mac",
+    }
+)
+
+
+def _apply_collect_lanes(profiles: list[ParseProfile]) -> list[ParseProfile]:
+    for p in profiles:
+        if str(p.metric_id or "").strip() in _HEAVY_LANE_METRICS:
+            p.collect_lane = "heavy"
+    return profiles
+
 
 def all_profiles() -> list[ParseProfile]:
     global _PROFILES
     if _PROFILES is None:
-        _PROFILES = _lldp_profiles() + _vrf_profiles() + _zte_status_profiles()
+        _PROFILES = _apply_collect_lanes(
+            _lldp_profiles() + _vrf_profiles() + _zte_status_profiles()
+        )
     return list(_PROFILES)
 
 
@@ -1357,6 +1380,7 @@ def profile_to_public_dict(p: ParseProfile, *, overrides: dict[str, Any] | None 
         "tags": list(p.tags),
         "sort_order": p.sort_order,
         "enabled": bool(ov.get("enabled")) if "enabled" in ov else p.enabled,
+        "collect_lane": str(p.collect_lane or "light"),
         "kind": p.kind,
         "match": p.match,
         "textfsm_command": p.textfsm_command or p.command_template,
