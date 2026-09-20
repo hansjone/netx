@@ -10,8 +10,21 @@ _ND6_ROW_RE = re.compile(
     r"(?P<iface>\S+)\s+(?P<type>\S+)\s*$",
     re.I,
 )
+# CLI banner / wall-clock line (e.g. "14:06:53 Beijing Sun Sep 20 2026")
+_CLOCK_LINE_RE = re.compile(r"^\d{1,2}:\d{2}:\d{2}\b")
+_TIME_OF_DAY_RE = re.compile(r"^\d{1,2}:\d{2}:\d{2}$")
 
 RULE_KEYS: tuple[str, ...] = ()
+
+
+def _looks_like_ipv6(addr: str) -> bool:
+    a = str(addr or "").strip()
+    if not a or ":" not in a:
+        return False
+    # HH:MM:SS is not an IPv6 address
+    if _TIME_OF_DAY_RE.match(a):
+        return False
+    return bool(re.search(r"[0-9a-fA-F]", a))
 
 
 def normalize_nd6_cache(
@@ -30,6 +43,8 @@ def normalize_nd6_cache(
         line = raw.strip()
         if not line:
             continue
+        if _CLOCK_LINE_RE.match(line):
+            continue
         low = line.lower()
         if low.startswith("s-static") or low.startswith("total cache") or low.startswith("only current"):
             continue
@@ -39,6 +54,8 @@ def normalize_nd6_cache(
         if not m:
             continue
         addr = m.group("addr")
+        if not _looks_like_ipv6(addr):
+            continue
         iface = m.group("iface")
         key = (addr, iface)
         if key in seen:
@@ -55,5 +72,6 @@ def normalize_nd6_cache(
             }
         )
     return out
+
 
 normalize_nd6_cache.RULE_KEYS = RULE_KEYS

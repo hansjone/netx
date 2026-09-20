@@ -5,6 +5,7 @@ Display fields may be overridden at runtime via biz_state_command_override (hot 
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -88,10 +89,9 @@ def _lldp_profiles() -> list[ParseProfile]:
             # Still register so UI can show; parse may return empty until templates exist.
             pass
         cmd = vp.lldp_command
-        # Escape for regex: match exact command ignoring extra whitespace flexibility
-        escaped = r"\s+".join(
-            __import__("re").escape(p) for p in cmd.split() if p
-        )
+        # Escape for regex; ZTE (and others) may append "| one-line" on the template.
+        base_cmd = re.sub(r"\s*\|\s*one-line\s*$", "", cmd, flags=re.I).strip() or cmd
+        escaped = r"\s+".join(re.escape(p) for p in base_cmd.split() if p)
         out.append(
             ParseProfile(
                 profile_id=f"{key}.lldp_neighbors",
@@ -100,8 +100,8 @@ def _lldp_profiles() -> list[ParseProfile]:
                 parser_id="lldp_neighbors",
                 title="LLDP Neighbors",
                 command_template=cmd,
-                match=rf"(?i)^\s*{escaped}\s*$",
-                textfsm_command=cmd,
+                match=rf"(?i)^\s*{escaped}(?:\s*\|\s*one-line)?\s*$",
+                textfsm_command=base_cmd,
                 description=vp.notes or "LLDP neighbor table snapshot for cutover compare.",
                 sample_output="",
                 placeholders=[],
@@ -318,8 +318,10 @@ _OPTICAL_FIELDS: list[FieldDef] = [
     FieldDef("optic_type", length=64, role="meta", display_name="Type"),
     FieldDef("wavelength", length=32, role="meta", display_name="Wavelength"),
     # Optical power jitters — display only; compare status for cutover.
-    FieldDef("rx_power", length=64, role="counter", display_name="RxPower"),
-    FieldDef("tx_power", length=64, role="counter", display_name="TxPower"),
+    FieldDef("rx_power", length=128, role="counter", display_name="RxPower"),
+    FieldDef("rx_threshold", length=128, role="meta", display_name="Rx Threshold"),
+    FieldDef("tx_power", length=128, role="counter", display_name="TxPower"),
+    FieldDef("tx_threshold", length=128, role="meta", display_name="Tx Threshold"),
     FieldDef("status", length=32, role="state", display_name="Status"),
 ]
 
@@ -405,7 +407,9 @@ _CONFIG_IFACE_FIELDS: list[FieldDef] = [
     FieldDef("vrf", length=128, indexed=True, is_key=True, display_name="VRF"),
     FieldDef("admin", length=16, role="state", display_name="Admin"),
     FieldDef("ip_address", length=256, role="state", display_name="IPv4"),
+    FieldDef("secondary_tag", length=64, role="state", display_name="IPv4 M/S"),
     FieldDef("ipv6_address", length=256, role="state", display_name="IPv6"),
+    FieldDef("ipv6_secondary_tag", length=64, role="state", display_name="IPv6 M/S"),
     FieldDef("mtu", length=16, role="meta", display_name="MTU"),
     FieldDef("description", length=256, role="meta", display_name="描述"),
 ]
@@ -510,8 +514,8 @@ def _zte_status_profiles() -> list[ParseProfile]:
             metric_id="interface_brief",
             parser_id="interface_brief",
             title="Interface Brief",
-            command_template="show interface brief",
-            match=r"(?i)^\s*show\s+interface\s+brief\s*$",
+            command_template="show interface brief | one-line",
+            match=r"(?i)^\s*show\s+interface\s+brief(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show interface brief",
             description="Interface admin/phy/prot status brief.",
             fields=list(_IFACE_BRIEF_FIELDS),
@@ -570,7 +574,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             metric_id="if_intf",
             parser_id="if_intf",
             title="IF VRF (if-intf)",
-            command_template="show running-config if-intf",
+            command_template="show running-config if-intf | one-line",
             match=r"(?i)^\s*show\s+running-config\s+if-intf\s*$",
             textfsm_command="show running-config if-intf",
             description=(
@@ -605,7 +609,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             metric_id="bgp_peer",
             parser_id="bgp_peer",
             title="BGP VPNv4 Summary",
-            command_template="show bgp vpnv4 unicast summary",
+            command_template="show bgp vpnv4 unicast summary | one-line",
             match=r"(?i)^\s*show\s+bgp\s+vpnv4\s+unicast\s+summary(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show bgp vpnv4 unicast summary",
             description="BGP VPNv4 peer summary (afi=vpnv4).",
@@ -621,7 +625,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             metric_id="bgp_peer",
             parser_id="bgp_peer",
             title="BGP IPv4 Summary",
-            command_template="show bgp ipv4 unicast summary",
+            command_template="show bgp ipv4 unicast summary | one-line",
             match=r"(?i)^\s*show\s+bgp\s+ipv4\s+unicast\s+summary(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show bgp ipv4 unicast summary",
             description="BGP IPv4 unicast peer summary (afi=ipv4).",
@@ -637,7 +641,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             metric_id="bgp_peer",
             parser_id="bgp_peer",
             title="BGP VPNv6 Summary",
-            command_template="show bgp vpnv6 unicast summary",
+            command_template="show bgp vpnv6 unicast summary | one-line",
             match=r"(?i)^\s*show\s+bgp\s+vpnv6\s+unicast\s+summary(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show bgp vpnv6 unicast summary",
             description="BGP VPNv6 peer summary (afi=vpnv6).",
@@ -653,7 +657,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             metric_id="bgp_peer",
             parser_id="bgp_peer",
             title="BGP IPv6 Summary",
-            command_template="show bgp ipv6 unicast summary",
+            command_template="show bgp ipv6 unicast summary | one-line",
             match=r"(?i)^\s*show\s+bgp\s+ipv6\s+unicast\s+summary(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show bgp ipv6 unicast summary",
             description="BGP IPv6 unicast peer summary (afi=ipv6).",
@@ -669,7 +673,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             metric_id="bgp_peer",
             parser_id="bgp_peer",
             title="BGP VPNv4 VRF Summary",
-            command_template="show bgp vpnv4 unicast vrf <vrf> summary",
+            command_template="show bgp vpnv4 unicast vrf <vrf> summary | one-line",
             match=r"(?i)^\s*show\s+bgp\s+vpnv4\s+unicast\s+vrf\s+(?P<vrf>\S+)\s+summary(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show bgp vpnv4 unicast summary",
             description="Per-VRF BGP VPNv4 peer summary.",
@@ -686,7 +690,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             metric_id="bgp_peer",
             parser_id="bgp_peer",
             title="BGP VPNv6 VRF Summary",
-            command_template="show bgp vpnv6 unicast vrf <vrf> summary",
+            command_template="show bgp vpnv6 unicast vrf <vrf> summary | one-line",
             match=r"(?i)^\s*show\s+bgp\s+vpnv6\s+unicast\s+vrf\s+(?P<vrf>\S+)\s+summary(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show bgp vpnv6 unicast summary",
             description="Per-VRF BGP VPNv6 peer summary.",
@@ -703,7 +707,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             metric_id="bgp_peer",
             parser_id="bgp_peer",
             title="BGP L2VPN EVPN Summary",
-            command_template="show bgp l2vpn evpn summary",
+            command_template="show bgp l2vpn evpn summary | one-line",
             match=r"(?i)^\s*show\s+bgp\s+l2vpn\s+evpn\s+summary(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show bgp l2vpn evpn summary",
             description="BGP L2VPN EVPN peer summary (afi=evpn).",
@@ -719,7 +723,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             metric_id="bgp_peer",
             parser_id="bgp_peer",
             title="BGP L2VPN VPLS Summary",
-            command_template="show bgp l2vpn vpls summary",
+            command_template="show bgp l2vpn vpls summary | one-line",
             match=r"(?i)^\s*show\s+bgp\s+l2vpn\s+vpls\s+summary(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show bgp l2vpn vpls summary",
             description="BGP L2VPN VPLS peer summary (afi=vpls).",
@@ -801,7 +805,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             metric_id="bgp_route",
             parser_id="bgp_route",
             title="BGP VPNv4 Neighbor In",
-            command_template="show bgp vpnv4 unicast neighbor in <neighbor>",
+            command_template="show bgp vpnv4 unicast neighbor in <neighbor> | one-line",
             match=r"(?i)^\s*show\s+bgp\s+vpnv4\s+unicast\s+neighbor\s+in\s+(?P<neighbor>\S+)(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show bgp vpnv4 unicast neighbor in",
             description="Routes learned from VPNv4 neighbor; summary aux for peer state.",
@@ -826,7 +830,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             metric_id="bgp_route",
             parser_id="bgp_route",
             title="BGP VPNv4 Neighbor Out",
-            command_template="show bgp vpnv4 unicast neighbor out <neighbor>",
+            command_template="show bgp vpnv4 unicast neighbor out <neighbor> | one-line",
             match=r"(?i)^\s*show\s+bgp\s+vpnv4\s+unicast\s+neighbor\s+out\s+(?P<neighbor>\S+)(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show bgp vpnv4 unicast neighbor out",
             description="Routes advertised to VPNv4 neighbor (large; bind neighbor).",
@@ -851,7 +855,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             metric_id="bgp_route",
             parser_id="bgp_route",
             title="BGP VPNv6 Neighbor In",
-            command_template="show bgp vpnv6 unicast neighbor in <neighbor>",
+            command_template="show bgp vpnv6 unicast neighbor in <neighbor> | one-line",
             match=r"(?i)^\s*show\s+bgp\s+vpnv6\s+unicast\s+neighbor\s+in\s+(?P<neighbor>\S+)(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show bgp vpnv6 unicast neighbor in",
             description="Routes learned from VPNv6 neighbor; summary aux for peer state.",
@@ -876,7 +880,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             metric_id="bgp_route",
             parser_id="bgp_route",
             title="BGP VPNv6 Neighbor Out",
-            command_template="show bgp vpnv6 unicast neighbor out <neighbor>",
+            command_template="show bgp vpnv6 unicast neighbor out <neighbor> | one-line",
             match=r"(?i)^\s*show\s+bgp\s+vpnv6\s+unicast\s+neighbor\s+out\s+(?P<neighbor>\S+)(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show bgp vpnv6 unicast neighbor out",
             description="Routes advertised to VPNv6 neighbor (large; bind neighbor).",
@@ -901,7 +905,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             metric_id="bgp_route",
             parser_id="bgp_route",
             title="BGP VPNv4 VRF Neighbor In",
-            command_template="show bgp vpnv4 unicast vrf <vrf> neighbor in <neighbor>",
+            command_template="show bgp vpnv4 unicast vrf <vrf> neighbor in <neighbor> | one-line",
             match=(
                 r"(?i)^\s*show\s+bgp\s+vpnv4\s+unicast\s+vrf\s+(?P<vrf>\S+)\s+"
                 r"neighbor\s+in\s+(?P<neighbor>\S+)(?:\s*\|\s*one-line)?\s*$"
@@ -929,7 +933,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             metric_id="bgp_route",
             parser_id="bgp_route",
             title="BGP VPNv4 VRF Neighbor Out",
-            command_template="show bgp vpnv4 unicast vrf <vrf> neighbor out <neighbor>",
+            command_template="show bgp vpnv4 unicast vrf <vrf> neighbor out <neighbor> | one-line",
             match=(
                 r"(?i)^\s*show\s+bgp\s+vpnv4\s+unicast\s+vrf\s+(?P<vrf>\S+)\s+"
                 r"neighbor\s+out\s+(?P<neighbor>\S+)(?:\s*\|\s*one-line)?\s*$"
@@ -957,7 +961,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             metric_id="bgp_route",
             parser_id="bgp_route",
             title="BGP VPNv6 VRF Neighbor In",
-            command_template="show bgp vpnv6 unicast vrf <vrf> neighbor in <neighbor>",
+            command_template="show bgp vpnv6 unicast vrf <vrf> neighbor in <neighbor> | one-line",
             match=(
                 r"(?i)^\s*show\s+bgp\s+vpnv6\s+unicast\s+vrf\s+(?P<vrf>\S+)\s+"
                 r"neighbor\s+in\s+(?P<neighbor>\S+)(?:\s*\|\s*one-line)?\s*$"
@@ -985,7 +989,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             metric_id="bgp_route",
             parser_id="bgp_route",
             title="BGP VPNv6 VRF Neighbor Out",
-            command_template="show bgp vpnv6 unicast vrf <vrf> neighbor out <neighbor>",
+            command_template="show bgp vpnv6 unicast vrf <vrf> neighbor out <neighbor> | one-line",
             match=(
                 r"(?i)^\s*show\s+bgp\s+vpnv6\s+unicast\s+vrf\s+(?P<vrf>\S+)\s+"
                 r"neighbor\s+out\s+(?P<neighbor>\S+)(?:\s*\|\s*one-line)?\s*$"
@@ -1014,7 +1018,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             metric_id="ip_route",
             parser_id="ip_route",
             title="IPv4 Forwarding VRF",
-            command_template="show ip forwarding route vrf <vrf>",
+            command_template="show ip forwarding route vrf <vrf> | one-line",
             match=r"(?i)^\s*show\s+ip\s+forwarding\s+route\s+vrf\s+(?P<vrf>\S+)(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show ip forwarding route",
             description="IPv4 FIB for one VRF.",
@@ -1031,7 +1035,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             metric_id="ip_route",
             parser_id="ip_route",
             title="IPv4 Forwarding Global",
-            command_template="show ip forwarding route",
+            command_template="show ip forwarding route | one-line",
             match=r"(?i)^\s*show\s+ip\s+forwarding\s+route(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show ip forwarding route",
             description="Global IPv4 FIB (large; disabled by default).",
@@ -1047,7 +1051,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             metric_id="ipv6_route",
             parser_id="ipv6_route",
             title="IPv6 Forwarding VRF",
-            command_template="show ipv6 forwarding route vrf <vrf>",
+            command_template="show ipv6 forwarding route vrf <vrf> | one-line",
             match=r"(?i)^\s*show\s+ipv6\s+forwarding\s+route\s+vrf\s+(?P<vrf>\S+)(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show ipv6 forwarding route",
             description="IPv6 FIB for one VRF.",
@@ -1064,7 +1068,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             metric_id="ipv6_route",
             parser_id="ipv6_route",
             title="IPv6 Forwarding Global",
-            command_template="show ipv6 forwarding route",
+            command_template="show ipv6 forwarding route | one-line",
             match=r"(?i)^\s*show\s+ipv6\s+forwarding\s+route(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show ipv6 forwarding route",
             description="Global IPv6 FIB (large; disabled by default).",
@@ -1129,7 +1133,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             metric_id="config_vrf",
             parser_id="config_vrf",
             title="Config VRF Intent",
-            command_template="show running-config vrf",
+            command_template="show running-config vrf | one-line",
             match=r"(?i)^\s*show\s+running-config\s+vrf(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show running-config vrf",
             description="VRF RD/RT/AF intent from running-config vrf (no secrets).",
@@ -1145,7 +1149,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             metric_id="config_interface",
             parser_id="config_interface",
             title="Config Interface Intent",
-            command_template="show running-config if-intf",
+            command_template="show running-config if-intf | one-line",
             match=r"(?i)^\s*show\s+running-config\s+if-intf(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show running-config if-intf",
             description=(
@@ -1164,7 +1168,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             metric_id="config_bgp_peer",
             parser_id="config_bgp_peer",
             title="Config BGP Peer Intent",
-            command_template="show running-config bgp",
+            command_template="show running-config bgp | one-line",
             match=r"(?i)^\s*show\s+running-config\s+bgp(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show running-config bgp",
             description="BGP neighbor AF activate / remote-as intent (passwords skipped).",
@@ -1180,7 +1184,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             metric_id="config_l2vpn_pw",
             parser_id="config_l2vpn_pw",
             title="Config L2VPN PW Intent",
-            command_template="show running-config l2vpn",
+            command_template="show running-config l2vpn | one-line",
             match=r"(?i)^\s*show\s+running-config\s+l2vpn(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show running-config l2vpn",
             description="VPWS/VPLS pseudo-wire peer/vcid intent.",
@@ -1196,7 +1200,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             metric_id="config_static_route",
             parser_id="config_static_route",
             title="Config Static Route (IPv4)",
-            command_template="show running-config static",
+            command_template="show running-config static | one-line",
             match=r"(?i)^\s*show\s+running-config\s+static(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show running-config static",
             description="IPv4 static route intent from running-config static.",
@@ -1212,7 +1216,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             metric_id="config_static_route",
             parser_id="config_static_route",
             title="Config Static Route (IPv6)",
-            command_template="show running-config ipv6-static-route",
+            command_template="show running-config ipv6-static-route | one-line",
             match=r"(?i)^\s*show\s+running-config\s+ipv6-static-route(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show running-config ipv6-static-route",
             description="IPv6 static route intent from running-config ipv6-static-route.",
@@ -1228,7 +1232,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             metric_id="config_ospf",
             parser_id="config_ospf",
             title="Config OSPF Intent (v2)",
-            command_template="show running-config ospfv2",
+            command_template="show running-config ospfv2 | one-line",
             match=r"(?i)^\s*show\s+running-config\s+ospfv2(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show running-config ospfv2",
             description="OSPFv2 process/area/interface intent (auth secrets skipped).",
@@ -1244,7 +1248,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             metric_id="config_ospf",
             parser_id="config_ospf",
             title="Config OSPF Intent (v3)",
-            command_template="show running-config ospfv3",
+            command_template="show running-config ospfv3 | one-line",
             match=r"(?i)^\s*show\s+running-config\s+ospfv3(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show running-config ospfv3",
             description="OSPFv3 process/area/interface intent.",
@@ -1260,7 +1264,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             metric_id="config_isis",
             parser_id="config_isis",
             title="Config ISIS Intent",
-            command_template="show running-config isis",
+            command_template="show running-config isis | one-line",
             match=r"(?i)^\s*show\s+running-config\s+isis(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show running-config isis",
             description="IS-IS process/interface intent (auth secrets skipped).",

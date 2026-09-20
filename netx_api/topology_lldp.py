@@ -84,7 +84,7 @@ VENDOR_LLDP_PROFILES: dict[str, VendorLldpProfile] = {
     ),
     "zte": VendorLldpProfile(
         key="zte",
-        lldp_command="show lldp neighbor brief",
+        lldp_command="show lldp neighbor brief | one-line",
         notes="device_type zte_*; NetX custom TextFSM.",
     ),
     "juniper": VendorLldpProfile(

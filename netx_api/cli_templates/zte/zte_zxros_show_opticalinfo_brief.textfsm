@@ -1,6 +1,6 @@
-Value INTERFACE (\S+)
-Value OPTIC_TYPE (\S+)
-Value WAVELENGTH (\S+)
+Value Filldown INTERFACE (\S+)
+Value Filldown OPTIC_TYPE (\S+)
+Value Filldown WAVELENGTH (\S+)
 Value RX_POWER (\S+)
 Value TX_POWER (\S+)
 Value STATUS (\S+)
@@ -11,7 +11,9 @@ Start
   ^.* -> Start
 
 Entries
+  ^${INTERFACE}\s+offline\s*$$ -> Record
   ^${INTERFACE}\s+${OPTIC_TYPE}\s+${WAVELENGTH}\s+${RX_POWER}\s+${TX_POWER}\s+${STATUS}(?:\s+\S+)?\s*$$ -> Record
+  ^\s+${RX_POWER}\s+${TX_POWER}\s+${STATUS}(?:\s+\S+)?\s*$$ -> Record
   ^\s*$$
   ^\S+\s*#\s*$$ -> End
   ^.*#\s*$$ -> End

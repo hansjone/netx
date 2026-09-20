@@ -66,7 +66,12 @@ smartgroup1.5     5    110 1000     P   Init   0.0.0.0         10.0.2.1
 _OPTICAL_SAMPLE = """
 Interface         Type              Wavelength  RxPower(dBm)          TxPower(dBm)          Status    Intensity(Rx)
 gei-0/0/0/1       1G-10km-SFP       1310nm      -6.0/[-20.0,-3.0]     -5.9/[-9.0,-3.0]      Normal    Normal
-cgei-0/1/0/1      100G-LR4          1310nm      -2.1/[-8.0,2.0]       -1.5/[-4.0,2.0]       Normal    Normal
+cgei-0/1/0/1      100G-10km-QSFP28  1310nm      1.5/[-10.6,4.5]       0.9/[-4.3,5.5]        Normal    Normal
+                                                2.1/[-10.6,4.5]       1.5/[-4.3,5.5]        Normal    Normal
+                                                1.6/[-10.6,4.5]       2.1/[-4.3,5.5]        Normal    Normal
+                                                0.9/[-10.6,4.5]       2.2/[-4.3,5.5]        Normal    Normal
+                                                7.5                   7.7
+gei-0/0/0/11      offline
 """
 
 _BGP_ROUTE_IN = """
@@ -162,9 +167,24 @@ class ZteExtendedParserTests(unittest.TestCase):
         states = {r["state"] for r in vrrp}
         self.assertIn("Master", states)
 
-        opt = normalize_optical_brief(raw_text=_OPTICAL_SAMPLE, command="show opticalinfo brief")
-        self.assertEqual(len(opt), 2)
-        self.assertEqual(opt[0]["status"], "Normal")
+        opt = normalize_optical_brief(
+            raw_text=_OPTICAL_SAMPLE,
+            vendor="zte",
+            device_type="zte_zxros",
+            command="show opticalinfo brief",
+        )
+        self.assertEqual(len(opt), 3)
+        by = {r["interface"]: r for r in opt}
+        self.assertEqual(by["gei-0/0/0/1"]["rx_power"], "-6.0")
+        self.assertEqual(by["gei-0/0/0/1"]["rx_threshold"], "[-20.0,-3.0]")
+        self.assertEqual(by["gei-0/0/0/1"]["tx_power"], "-5.9")
+        self.assertEqual(by["gei-0/0/0/1"]["tx_threshold"], "[-9.0,-3.0]")
+        self.assertEqual(by["gei-0/0/0/1"]["status"], "Normal")
+        self.assertEqual(by["cgei-0/1/0/1"]["rx_power"], "1.5,2.1,1.6,0.9")
+        self.assertEqual(by["cgei-0/1/0/1"]["tx_power"], "0.9,1.5,2.1,2.2")
+        self.assertEqual(by["cgei-0/1/0/1"]["rx_threshold"], "[-10.6,4.5]")
+        self.assertEqual(by["cgei-0/1/0/1"]["tx_threshold"], "[-4.3,5.5]")
+        self.assertEqual(by["gei-0/0/0/11"]["optic_type"], "offline")
 
     def test_bgp_route_and_aux_render(self) -> None:
         routes = normalize_bgp_route(
@@ -193,7 +213,7 @@ class ZteExtendedParserTests(unittest.TestCase):
             AuxCommand(key="bgp_summary", profile_id="zte.bgp_vpnv4_vrf_summary"),
             params={"vrf": "CUST_A"},
         )
-        self.assertEqual(ra.command, "show bgp vpnv4 unicast vrf CUST_A summary")
+        self.assertEqual(ra.command, "show bgp vpnv4 unicast vrf CUST_A summary | one-line")
 
     def test_ip_ipv6_route_and_pw(self) -> None:
         ip = normalize_ip_route(

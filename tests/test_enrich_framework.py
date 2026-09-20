@@ -60,7 +60,7 @@ class AuxResolveTests(unittest.TestCase):
 
     def test_resolve_from_profile_id(self) -> None:
         ra = resolve_aux_command(AuxCommand(key="if_intf", profile_id="zte.config_interface"))
-        self.assertEqual(ra.command, "show running-config if-intf")
+        self.assertEqual(ra.command, "show running-config if-intf | one-line")
         self.assertEqual(ra.parser_id, "config_interface")
 
     def test_arp_profile_slim(self) -> None:

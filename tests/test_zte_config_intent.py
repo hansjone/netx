@@ -48,7 +48,9 @@ interface gei-0/0/0/1
  description uplink
  ip vrf forwarding CUST_A
  ip address 10.0.0.1 255.255.255.0
+ ip address 10.0.0.2 255.255.255.0 secondary
  ipv6 address 2001:db8::1/64
+ ipv6 address 2001:db8::2/64 secondary
  mtu 9000
 $
 interface gei-0/0/0/2
@@ -116,6 +118,9 @@ ip route vrf CUST_A 10.1.1.0 255.255.255.0 bvi12.100 10.1.1.1
 ip route vrf CUST_A 10.2.2.0 255.255.255.0 gei-0/0/0/1.10 10.2.2.1 bfd enable
 ip route vrf CUST_B 10.3.3.0 255.255.255.0 null1 metric 255
 ip route vrf CUST_A 10.4.4.0 255.255.255.0 smartgroup1.1 10.4.4.1 track LINK_A
+ip route 10.5.5.0 255.255.255.0 xxvgei-0/2/0/1
+ip route 10.6.6.0 255.255.255.0 te_tunnel36
+ip route 10.7.7.0 255.255.255.0 10.7.7.1 xxvgei-0/2/0/2 name nh_then_if
 !</static>
 """
 
@@ -256,10 +261,20 @@ class ZteConfigIntentTests(unittest.TestCase):
         by = {r["interface"]: r for r in rows}
         self.assertEqual(by["gei-0/0/0/1"]["vrf"], "CUST_A")
         self.assertEqual(by["gei-0/0/0/1"]["admin"], "up")
-        self.assertIn("10.0.0.1", by["gei-0/0/0/1"]["ip_address"])
-        self.assertIn("2001:db8::1/64", by["gei-0/0/0/1"]["ipv6_address"])
+        self.assertEqual(
+            by["gei-0/0/0/1"]["ip_address"],
+            "10.0.0.1/255.255.255.0,10.0.0.2/255.255.255.0",
+        )
+        self.assertEqual(by["gei-0/0/0/1"]["secondary_tag"], "M,S")
+        self.assertEqual(
+            by["gei-0/0/0/1"]["ipv6_address"],
+            "2001:db8::1/64,2001:db8::2/64",
+        )
+        self.assertEqual(by["gei-0/0/0/1"]["ipv6_secondary_tag"], "M,S")
         self.assertEqual(by["gei-0/0/0/1"]["mtu"], "9000")
         self.assertEqual(by["gei-0/0/0/2"]["admin"], "down")
+        self.assertEqual(by["gei-0/0/0/2"]["secondary_tag"], "M")
+        self.assertEqual(by["gei-0/0/0/2"]["ipv6_secondary_tag"], "")
 
     def test_config_bgp_peer_skips_password(self) -> None:
         rows = normalize_config_bgp_peer(
@@ -355,6 +370,13 @@ $
         self.assertEqual(by[("CUST_A", "10.2.2.0", "gei-0/0/0/1.10", "10.2.2.1")]["bfd"], "enable")
         self.assertEqual(by[("CUST_B", "10.3.3.0", "null1", "")]["metric"], "255")
         self.assertEqual(by[("CUST_A", "10.4.4.0", "smartgroup1.1", "10.4.4.1")]["track"], "LINK_A")
+        # Interface-only (no next-hop address) — including xxvgei / te_tunnel.
+        self.assertEqual(by[("", "10.5.5.0", "xxvgei-0/2/0/1", "")]["mask"], "255.255.255.0")
+        self.assertEqual(by[("", "10.6.6.0", "te_tunnel36", "")]["interface"], "te_tunnel36")
+        # next-hop then interface
+        self.assertEqual(
+            by[("", "10.7.7.0", "xxvgei-0/2/0/2", "10.7.7.1")]["route_name"], "nh_then_if"
+        )
 
     def test_config_static_route_v6(self) -> None:
         rows = normalize_config_static_route(

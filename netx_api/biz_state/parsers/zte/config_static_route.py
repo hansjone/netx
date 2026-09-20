@@ -27,9 +27,18 @@ _V6_HEAD = re.compile(
 )
 
 _IPV4_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
+# Broad ZTE if-name match: whitelist prefixes + generic if-like tokens.
 _IFACE_RE = re.compile(
-    r"(?i)^(null\d*|gei-\S+|xgei-\S+|cgei-\S+|bvi\S*|vlan\S*|smartgroup\S*|"
-    r"loopback\S*|mgmt\S*|pos\S*|eth\S*|tunnel\S*|irb\S*|ve\S*)$"
+    r"(?i)^(?:"
+    r"null\d*"
+    r"|(?:xxv|xl|x|c|v6|q|fe)?gei-\S+"
+    r"|bvi\S*|vlan\S*|smartgroup\S*|loopback\S*|mgmt_?\S*"
+    r"|pos\S*|(?:fast)?eth\S*"
+    r"|(?:te_|gre_|ip_|v6)?tunnel\S*"
+    r"|irb\S*|ve\S*|dialer\S*|serial\S*|ppp\S*|bundle\S*"
+    r"|fei-\S*|qi-\S*"
+    r"|[a-z][a-z0-9]*[-_][a-z0-9_./:-]+"  # e.g. te_tunnel36, gre_tunnel1
+    r")$"
 )
 _KW = frozenset(
     {
@@ -52,8 +61,21 @@ def _is_ipv4(tok: str) -> bool:
     return bool(_IPV4_RE.match(tok or ""))
 
 
+def _is_ipv6_tok(tok: str) -> bool:
+    t = str(tok or "")
+    return ":" in t and not _is_iface(t)
+
+
 def _is_iface(tok: str) -> bool:
-    return bool(_IFACE_RE.match(tok or ""))
+    t = str(tok or "").strip()
+    if not t or t.lower() in _KW:
+        return False
+    if _is_ipv4(t):
+        return False
+    # IPv6 next-hop (has colon) is not an interface name.
+    if ":" in t and re.match(r"(?i)^[0-9a-f:]+(/\d+)?$", t):
+        return False
+    return bool(_IFACE_RE.match(t))
 
 
 def _take_kw(tokens: list[str], i: int, row: dict[str, str]) -> int:
@@ -112,14 +134,19 @@ def _parse_v4_rest(rest: str) -> dict[str, str]:
         _take_kw(tokens, 2, row)
         return row
     if _is_iface(tokens[0]):
+        # interface [next-hop]
         row["interface"] = tokens[0]
         i = 1
-        if i < len(tokens) and _is_ipv4(tokens[i]) and tokens[i].lower() not in _KW:
+        if i < len(tokens) and _is_ipv4(tokens[i]):
             row["next_hop"] = tokens[i]
             i += 1
     elif _is_ipv4(tokens[0]):
+        # next-hop [interface]
         row["next_hop"] = tokens[0]
         i = 1
+        if i < len(tokens) and _is_iface(tokens[i]):
+            row["interface"] = tokens[i]
+            i += 1
     _take_kw(tokens, i, row)
     return row
 
@@ -147,12 +174,15 @@ def _parse_v6_rest(rest: str) -> dict[str, str]:
     if _is_iface(tokens[0]):
         row["interface"] = tokens[0]
         i = 1
-        if i < len(tokens) and ":" in tokens[i] and tokens[i].lower() not in _KW:
+        if i < len(tokens) and _is_ipv6_tok(tokens[i]):
             row["next_hop"] = tokens[i]
             i += 1
-    elif ":" in tokens[0]:
+    elif _is_ipv6_tok(tokens[0]):
         row["next_hop"] = tokens[0]
         i = 1
+        if i < len(tokens) and _is_iface(tokens[i]):
+            row["interface"] = tokens[i]
+            i += 1
     _take_kw(tokens, i, row)
     return row
 

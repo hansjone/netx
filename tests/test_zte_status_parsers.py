@@ -169,6 +169,25 @@ smartgroup11      MDN-SGI-P-ZM8SP  UP        L2      24          PPP            
         addrs = {r["address"] for r in rows}
         self.assertTrue(any("fe80::" in a for a in addrs))
 
+    def test_nd6_skips_clock_banner(self) -> None:
+        text = """
+14:06:53 Beijing Sun Sep 20 2026
+S-static  NP-near packet  RP-remote packet  B-bgp  HB-hotback  D-dhcp
+Total Cache Number Is:5398
+Only Current Valid Items Are Shown Below:
+Address                                  Link-Address    Age          Status      Interface                        Type
+10:460::2                                (incomplete)    1s           Incomplete  smartgroup2345.1120              NP   
+10:794::2                                (incomplete)    1s           Incomplete  smartgroup2345.1940              NP   
+fe80::1                                  aaaa.bbbb.cccc  03:22:07     Reachable   gei-0/0/0/1                      S
+"""
+        rows = normalize_nd6_cache(raw_text=text)
+        self.assertEqual(len(rows), 3)
+        self.assertNotIn("14:06:53", {r["address"] for r in rows})
+        self.assertEqual(rows[0]["address"], "10:460::2")
+        self.assertEqual(rows[0]["status"], "Incomplete")
+        self.assertEqual(rows[0]["type"], "NP")
+        self.assertEqual(rows[2]["age"], "03:22:07")
+
     def test_bgp_peers(self) -> None:
         v4 = _section(self.log, "show bgp vpnv4 unicast summary", ("show bgp ipv4",))
         rows = normalize_bgp_peer(raw_text=v4, command="show bgp vpnv4 unicast summary")

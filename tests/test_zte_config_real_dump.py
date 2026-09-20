@@ -107,12 +107,17 @@ class ZteConfigRealDumpTests(unittest.TestCase):
             if m:
                 block_vrf = m.group(1)
                 continue
-            m = re.match(r"(?i)^\s*ip\s+address\s+(\S+)(?:\s+(\S+))?\s*$", line)
+            m = re.match(
+                r"(?i)^\s*ip\s+address\s+(\S+)(?:\s+(\S+))?(?:\s+secondary)?\s*$",
+                line,
+            )
             if m:
                 a, mask = m.group(1), m.group(2) or ""
+                if mask.lower() == "secondary":
+                    mask = ""
                 block_ips.append(f"{a}/{mask}" if mask else a)
                 continue
-            m = re.match(r"(?i)^\s*ipv6\s+address\s+(\S+)\s*$", line)
+            m = re.match(r"(?i)^\s*ipv6\s+address\s+(\S+)(?:\s+secondary)?\s*$", line)
             if m:
                 block_ip6s.append(m.group(1))
                 continue

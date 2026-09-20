@@ -2,6 +2,10 @@
 
 Duplicate ``interface`` blocks (common for tunnels) are merged: later values
 override empty ones; ``admin`` always takes the last explicit setting.
+
+IPv4/IPv6 addresses (including ``secondary``) are collected in order into
+``ip_address`` / ``ipv6_address``; ``secondary_tag`` / ``ipv6_secondary_tag``
+mark the first as ``M`` and later ones as ``S``.
 """
 
 from __future__ import annotations
@@ -15,10 +19,27 @@ RULE_KEYS: tuple[str, ...] = ()
 
 _IFACE_RE = re.compile(r"^\s*interface\s+(\S+)\s*$", re.I)
 _VRF_RE = re.compile(r"^\s*ip\s+vrf\s+forwarding\s+(\S+)\s*$", re.I)
-_IP_RE = re.compile(r"^\s*ip\s+address\s+(\S+)(?:\s+(\S+))?\s*$", re.I)
-_IP6_RE = re.compile(r"^\s*ipv6\s+address\s+(\S+)\s*$", re.I)
+_IP_RE = re.compile(
+    r"^\s*ip\s+address\s+(\S+)(?:\s+(\S+))?(?:\s+secondary)?\s*$",
+    re.I,
+)
+_IP6_RE = re.compile(r"^\s*ipv6\s+address\s+(\S+)(?:\s+secondary)?\s*$", re.I)
 _DESC_RE = re.compile(r"^\s*description\s+(.*?)\s*$", re.I)
 _MTU_RE = re.compile(r"^\s*mtu\s+(\d+)\s*$", re.I)
+
+
+def _ms_tags(count: int) -> str:
+    if count <= 0:
+        return ""
+    return ",".join("M" if i == 0 else "S" for i in range(count))
+
+
+def _merge_addr_list(prev: str, new: str, *, limit: int = 256) -> str:
+    existing = [x for x in (prev or "").split(",") if x]
+    for ip in (new or "").split(","):
+        if ip and ip not in existing:
+            existing.append(ip)
+    return ",".join(existing)[:limit]
 
 
 def _row_from_cur(cur: dict[str, Any]) -> dict[str, Any]:
@@ -30,7 +51,9 @@ def _row_from_cur(cur: dict[str, Any]) -> dict[str, Any]:
         "description": str(cur.get("description") or "")[:256],
         "admin": str(cur.get("admin") or "up")[:16],
         "ip_address": ",".join(ips)[:256],
+        "secondary_tag": _ms_tags(len(ips))[:64],
         "ipv6_address": ",".join(ip6s)[:256],
+        "ipv6_secondary_tag": _ms_tags(len(ip6s))[:64],
         "mtu": str(cur.get("mtu") or "")[:16],
         "_admin_set": bool(cur.get("_admin_set")),
     }
@@ -57,17 +80,15 @@ def _flush(
             if row[key]:
                 prev[key] = row[key]
         if row["ip_address"]:
-            existing = [x for x in (prev["ip_address"] or "").split(",") if x]
-            for ip in row["ip_address"].split(","):
-                if ip and ip not in existing:
-                    existing.append(ip)
-            prev["ip_address"] = ",".join(existing)[:256]
+            merged = _merge_addr_list(prev["ip_address"], row["ip_address"])
+            prev["ip_address"] = merged
+            prev["secondary_tag"] = _ms_tags(len([x for x in merged.split(",") if x]))[:64]
         if row["ipv6_address"]:
-            existing = [x for x in (prev["ipv6_address"] or "").split(",") if x]
-            for ip in row["ipv6_address"].split(","):
-                if ip and ip not in existing:
-                    existing.append(ip)
-            prev["ipv6_address"] = ",".join(existing)[:256]
+            merged = _merge_addr_list(prev["ipv6_address"], row["ipv6_address"])
+            prev["ipv6_address"] = merged
+            prev["ipv6_secondary_tag"] = _ms_tags(
+                len([x for x in merged.split(",") if x])
+            )[:64]
         return
     by_iface[iface] = len(out)
     out.append(row)
@@ -132,6 +153,9 @@ def normalize_config_interface(
         if m:
             addr = m.group(1).strip()
             mask = (m.group(2) or "").strip()
+            # Avoid treating the literal word "secondary" as a mask when only one token follows.
+            if mask.lower() == "secondary":
+                mask = ""
             cur["_ips"].append(f"{addr}/{mask}" if mask else addr)
             continue
         m = _IP6_RE.match(line)

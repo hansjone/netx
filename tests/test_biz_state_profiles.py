@@ -36,7 +36,7 @@ class BizStateProfileTests(unittest.TestCase):
         assert p is not None
         pairs = expand_from_bindings(profile=p)
         self.assertEqual(len(pairs), 1)
-        self.assertEqual(pairs[0][0], "show lldp neighbor brief")
+        self.assertEqual(pairs[0][0], "show lldp neighbor brief | one-line")
 
     def test_preview_custom_raw(self) -> None:
         prev = preview_task_item(
