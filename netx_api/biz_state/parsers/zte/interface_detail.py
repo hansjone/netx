@@ -18,6 +18,9 @@ _IF_HDR_RE = re.compile(
 )
 _DESC_RE = re.compile(r"^\s*Description:\s*(?P<desc>.*?)\s*$", re.I)
 _BW_RE = re.compile(r"^\s*BW\s+(?P<bw>.+?)\s*$", re.I)
+_IP_MTU_RE = re.compile(r"^\s*IP\s+MTU\s+(?P<mtu>\d+)\s+bytes", re.I)
+_IPV6_MTU_RE = re.compile(r"^\s*IPv6\s+MTU\s+(?P<mtu>\d+)\s+bytes", re.I)
+_MPLS_MTU_RE = re.compile(r"^\s*MPLS\s+MTU\s+(?P<mtu>\d+)\s+bytes", re.I)
 _MTU_RE = re.compile(r"^\s*MTU\s+(?P<mtu>\d+)\s+bytes", re.I)
 _MEDIA_RE = re.compile(r"^\s*The\s+port\s+is\s+(?P<media>\S+)", re.I)
 _NEG_RE = re.compile(r"^\s*Negotiation\s+(?P<neg>\S+)", re.I)
@@ -39,7 +42,10 @@ def _empty_row(iface: str) -> dict[str, Any]:
         "port_media": "",
         "negotiation": "",
         "bw": "",
+        "ip_mtu": "",
         "mtu": "",
+        "mpls_mtu": "",
+        "ipv6_mtu": "",
         "rate_period": "",
         "input_bps": "",
         "output_bps": "",
@@ -82,7 +88,10 @@ def _map_fsm_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "port_media": row_get(r, "PORT_MEDIA", "port_media")[:32],
                 "negotiation": row_get(r, "NEGOTIATION", "negotiation")[:32],
                 "bw": row_get(r, "BW_RAW", "bw")[:64],
+                "ip_mtu": row_get(r, "IP_MTU", "ip_mtu")[:16],
                 "mtu": row_get(r, "MTU", "mtu")[:16],
+                "mpls_mtu": row_get(r, "MPLS_MTU", "mpls_mtu")[:16],
+                "ipv6_mtu": row_get(r, "IPV6_MTU", "ipv6_mtu")[:16],
                 "rate_period": row_get(r, "RATE_PERIOD", "rate_period")[:16],
                 "input_bps": row_get(r, "INPUT_BPS", "input_bps")[:32],
                 "output_bps": row_get(r, "OUTPUT_BPS", "output_bps")[:32],
@@ -135,6 +144,18 @@ def _hand_parse(*, raw_text: str, **_kw: Any) -> list[dict[str, Any]]:
         m = _BW_RE.match(line)
         if m:
             cur["bw"] = m.group("bw").strip()[:64]
+            continue
+        m = _IP_MTU_RE.match(line)
+        if m:
+            cur["ip_mtu"] = m.group("mtu")[:16]
+            continue
+        m = _IPV6_MTU_RE.match(line)
+        if m:
+            cur["ipv6_mtu"] = m.group("mtu")[:16]
+            continue
+        m = _MPLS_MTU_RE.match(line)
+        if m:
+            cur["mpls_mtu"] = m.group("mtu")[:16]
             continue
         m = _MTU_RE.match(line)
         if m:

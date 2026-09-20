@@ -265,7 +265,9 @@ gei-0/0/0/1 is up, ifindex: 100
   The port is optical
   Negotiation force
   BW 1 Gbit/s
+  IP MTU 1500 bytes
   MTU 1600 bytes
+  MPLS MTU 1550 bytes
   Rate period     : 120 s
    Input          : 100 bit/s              1 packet/s
    Output         : 200 bit/s              2 packet/s
@@ -276,7 +278,10 @@ gei-0/0/0/1 is up, ifindex: 100
 gei-0/0/0/2 is administratively down, ifindex: 101
   Description: spare
   BW 1 Gbit/s
-  MTU 1500 bytes
+  IP MTU 8978 bytes
+  MTU 9000 bytes
+  IPv6 MTU 8978 bytes
+  MPLS MTU 8978 bytes
   Rate period     : 120 s
    Input          : 0 bit/s              0 packet/s
    Output         : 0 bit/s              0 packet/s
@@ -292,7 +297,47 @@ gei-0/0/0/2 is administratively down, ifindex: 101
         self.assertEqual(rows[0]["admin"], "up")
         self.assertEqual(rows[0]["input_bps"], "100")
         self.assertEqual(rows[0]["out_util"], "2")
+        self.assertEqual(rows[0]["ip_mtu"], "1500")
+        self.assertEqual(rows[0]["mtu"], "1600")
+        self.assertEqual(rows[0]["mpls_mtu"], "1550")
+        self.assertEqual(rows[0]["ipv6_mtu"], "")
         self.assertEqual(rows[1]["admin"], "admin-down")
+        self.assertEqual(rows[1]["ip_mtu"], "8978")
+        self.assertEqual(rows[1]["mtu"], "9000")
+        self.assertEqual(rows[1]["ipv6_mtu"], "8978")
+        self.assertEqual(rows[1]["mpls_mtu"], "8978")
+
+        # No IPv6 MTU on second iface — must not inherit from previous Filldown.
+        leak_sample = """
+gei-0/0/0/1 is up, ifindex: 1
+  IP MTU 1500 bytes
+  MTU 1600 bytes
+  IPv6 MTU 8978 bytes
+  MPLS MTU 1550 bytes
+  Rate period     : 120 s
+   Input          : 1 bit/s
+   Output         : 2 bit/s
+  Intf utilization: input 1%             output 2%
+gei-0/0/0/2 is up, ifindex: 2
+  IP MTU 1500 bytes
+  MTU 1600 bytes
+  MPLS MTU 1550 bytes
+  Rate period     : 120 s
+   Input          : 0 bit/s
+   Output         : 0 bit/s
+  Intf utilization: input 0%             output 0%
+"""
+        leak_rows = normalize_interface_detail(
+            raw_text=leak_sample,
+            vendor="zte",
+            device_type="zte_zxros",
+            command="show interface",
+        )
+        self.assertEqual(len(leak_rows), 2)
+        self.assertEqual(leak_rows[0]["ipv6_mtu"], "8978")
+        self.assertEqual(leak_rows[1]["ipv6_mtu"], "")
+        self.assertEqual(leak_rows[1]["ip_mtu"], "1500")
+        self.assertEqual(leak_rows[1]["mpls_mtu"], "1550")
 
         cmd = (
             "show interface | include ifindex|BW|The port is|MTU|Negotiation|"
@@ -302,6 +347,8 @@ gei-0/0/0/2 is administratively down, ifindex: 101
         self.assertIsNotNone(hit)
         assert hit is not None
         self.assertEqual(hit.profile.profile_id, "zte.interface_detail")
+        field_names = {f.name for f in hit.profile.fields}
+        self.assertTrue({"ip_mtu", "mtu", "mpls_mtu", "ipv6_mtu"} <= field_names)
 
         hit6 = match_command(
             vendor_key="zte",
