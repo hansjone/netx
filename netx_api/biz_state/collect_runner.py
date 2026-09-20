@@ -24,7 +24,6 @@ from ..models import (
     BizStateTask,
     BizStateTaskItem,
     BizStateTaskItemBinding,
-    BizStateVrfRouteSummary,
 )
 from ..ne_netmiko import disable_target_paging, send_show_command
 from ..ne_session_factory import close_netmiko_connection, open_netmiko_connection
@@ -109,45 +108,6 @@ def _persist_lldp_rows(
                 remote_if=remote_if,
                 remote_ip=str(rec.get("remote_ip") or "")[:128],
                 protocol=str(rec.get("protocol") or "lldp")[:32],
-                collected_at=_utcnow(),
-            )
-        )
-        n += 1
-    return n
-
-
-def _persist_vrf_route_summary(
-    db,
-    *,
-    batch: BizStateBatch,
-    cmd_row: BizStateBatchCommand,
-    records: list[dict[str, Any]],
-) -> int:
-    n = 0
-    seen: set[tuple[str, str]] = set()
-    for rec in records:
-        vrf = str(rec.get("vrf") or "").strip()[:128]
-        source = str(rec.get("source") or "").strip()[:64]
-        if not vrf and not source:
-            continue
-        key = (vrf, source)
-        if key in seen:
-            continue
-        seen.add(key)
-        try:
-            networks = int(rec.get("networks") or 0)
-        except (TypeError, ValueError):
-            networks = 0
-        db.add(
-            BizStateVrfRouteSummary(
-                id=uuid4().hex,
-                batch_id=batch.id,
-                batch_command_id=cmd_row.id,
-                task_id=batch.task_id,
-                ne_id=batch.ne_id,
-                vrf=vrf,
-                source=source,
-                networks=networks,
                 collected_at=_utcnow(),
             )
         )
@@ -634,10 +594,6 @@ def _run_collect_session(
                         n = 0
                         if hit.profile.metric_id == "lldp_neighbor":
                             n = _persist_lldp_rows(
-                                sdb, batch=batch_row, cmd_row=cmd_row, records=records
-                            )
-                        elif hit.profile.metric_id == "vrf_route_summary":
-                            n = _persist_vrf_route_summary(
                                 sdb, batch=batch_row, cmd_row=cmd_row, records=records
                             )
                         elif hit.profile.metric_id in _GENERIC_METRICS:

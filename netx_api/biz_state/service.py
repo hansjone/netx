@@ -22,7 +22,6 @@ from ..models import (
     BizStateTask,
     BizStateTaskItem,
     BizStateTaskItemBinding,
-    BizStateVrfRouteSummary,
     ManagedNE,
 )
 from ..timeutil import utcnow_naive
@@ -557,13 +556,6 @@ def get_batch(db: Session, batch_id: str) -> dict[str, Any]:
         .limit(5000)
         .all()
     )
-    vrf_rows = (
-        db.query(BizStateVrfRouteSummary)
-        .filter(BizStateVrfRouteSummary.batch_id == batch_id)
-        .order_by(BizStateVrfRouteSummary.vrf.asc(), BizStateVrfRouteSummary.source.asc())
-        .limit(5000)
-        .all()
-    )
     metric_rows = (
         db.query(BizStateMetricRow)
         .filter(BizStateMetricRow.batch_id == batch_id)
@@ -619,9 +611,6 @@ def get_batch(db: Session, batch_id: str) -> dict[str, Any]:
                 "protocol": n.protocol,
             }
             for n in neighbors
-        ],
-        "vrf_route_summary": [
-            {"vrf": r.vrf, "source": r.source, "networks": r.networks} for r in vrf_rows
         ],
         "metrics": metrics_by_id,
     }
@@ -706,13 +695,6 @@ def export_batch_zip(db: Session, batch_id: str) -> bytes:
                 )
             )
         zf.writestr("tables/lldp_neighbor.csv", "\n".join(csv_lines) + "\n")
-
-        vrf_csv = ["vrf,source,networks"]
-        for r in detail.get("vrf_route_summary") or []:
-            vrf_csv.append(
-                ",".join([_csv(r["vrf"]), _csv(r["source"]), _csv(str(r["networks"]))])
-            )
-        zf.writestr("tables/vrf_route_summary.csv", "\n".join(vrf_csv) + "\n")
 
         for mid, rows in sorted((detail.get("metrics") or {}).items()):
             if not rows:

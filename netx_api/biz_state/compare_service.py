@@ -371,21 +371,6 @@ def _default_lldp_sheet() -> dict[str, Any]:
     )
 
 
-def _default_vrf_sheet() -> dict[str, Any]:
-    fields = metric_field_map().get("vrf_route_summary") or []
-    keys = [f.name for f in fields if f.is_key] or ["vrf", "source"]
-    ifaces = [f.name for f in fields if f.is_interface]
-    compare = [f.name for f in fields if not f.is_key and f.role in ("state", "meta", "identity")]
-    if not compare:
-        compare = [n for n in ("networks",) if n not in keys]
-    return _sheet_def(
-        metric_id="vrf_route_summary",
-        key_fields=keys,
-        iface_fields=ifaces,
-        compare_fields=compare,
-    )
-
-
 def _default_sheet_for_metric(metric_id: str, *, compare_roles: tuple[str, ...] = ("state",)) -> dict[str, Any]:
     fields = metric_field_map().get(metric_id) or []
     keys = [f.name for f in fields if f.is_key]
@@ -724,20 +709,22 @@ def ensure_default_cutover_template(db: Session) -> BizCompareTemplate:
         .one_or_none()
     )
     if row:
-        # Upgrade legacy single-sheet cutover if needed
         sheets = template_metrics(row)
-        if len(sheets) < 2:
-            _apply_sheets_to_row(row, [_default_lldp_sheet(), _default_vrf_sheet()])
-            row.note = "Built-in multi-metric cutover template (LLDP + VRF)"
+        cleaned = [s for s in sheets if str(s.get("metric_id") or "") != "vrf_route_summary"]
+        if not cleaned:
+            cleaned = [_default_lldp_sheet()]
+        if cleaned != sheets:
+            _apply_sheets_to_row(row, cleaned)
+            row.note = "Built-in cutover template (LLDP)"
             row.updated_at = _utcnow()
             db.commit()
             db.refresh(row)
         return row
-    sheets = [_default_lldp_sheet(), _default_vrf_sheet()]
+    sheets = [_default_lldp_sheet()]
     row = BizCompareTemplate(
         id=uuid4().hex,
         name="Cutover default",
-        note="Built-in multi-metric cutover template (LLDP + VRF)",
+        note="Built-in cutover template (LLDP)",
         created_at=_utcnow(),
         updated_at=_utcnow(),
     )
@@ -769,33 +756,6 @@ def ensure_default_lldp_template(db: Session) -> BizCompareTemplate:
         updated_at=_utcnow(),
     )
     _apply_sheets_to_row(row, [_default_lldp_sheet()])
-    db.add(row)
-    db.commit()
-    db.refresh(row)
-    return row
-
-
-def ensure_default_vrf_template(db: Session) -> BizCompareTemplate:
-    row = (
-        db.query(BizCompareTemplate)
-        .filter(BizCompareTemplate.name == "VRF route summary default")
-        .one_or_none()
-    )
-    if row:
-        if not template_metrics(row):
-            _apply_sheets_to_row(row, [_default_vrf_sheet()])
-            row.updated_at = _utcnow()
-            db.commit()
-            db.refresh(row)
-        return row
-    row = BizCompareTemplate(
-        id=uuid4().hex,
-        name="VRF route summary default",
-        note="Built-in template for per-VRF route summary cutover compare",
-        created_at=_utcnow(),
-        updated_at=_utcnow(),
-    )
-    _apply_sheets_to_row(row, [_default_vrf_sheet()])
     db.add(row)
     db.commit()
     db.refresh(row)
@@ -1201,30 +1161,6 @@ def _load_metric_rows(db: Session, *, batch_id: str, metric_id: str) -> list[dic
                 },
             }
             for n in rows
-        ]
-    if metric_id == "vrf_route_summary":
-        from ..models import BizStateVrfRouteSummary
-
-        rows = (
-            db.query(BizStateVrfRouteSummary)
-            .filter(BizStateVrfRouteSummary.batch_id == batch_id)
-            .all()
-        )
-        return [
-            {
-                "vrf": r.vrf,
-                "source": r.source,
-                "networks": r.networks,
-                "_netx": {
-                    "batch_id": batch_id,
-                    "batch_command_id": r.batch_command_id or "",
-                    "task_id": r.task_id or "",
-                    "ne_id": r.ne_id or "",
-                    "collected_at": r.collected_at.isoformat() + "Z" if r.collected_at else None,
-                    "row_id": r.id,
-                },
-            }
-            for r in rows
         ]
     # Generic tabular metrics (ISIS / interface / ARP / ND6 / BGP …)
     from ..models import BizStateMetricRow

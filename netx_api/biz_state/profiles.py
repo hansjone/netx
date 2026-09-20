@@ -133,15 +133,8 @@ def _lldp_profiles() -> list[ParseProfile]:
     return out
 
 
-_VRF_ROUTE_FIELDS: list[FieldDef] = [
-    FieldDef("vrf", length=128, indexed=True, is_key=True, display_name="VRF", from_command_param=True),
-    FieldDef("source", length=64, indexed=True, is_key=True, display_name="路由来源"),
-    FieldDef("networks", dtype="int", role="state", display_name="路由条数"),
-]
-
-
 def _vrf_profiles() -> list[ParseProfile]:
-    """Discover VRF list + parameterized route-summary collect (Phase3)."""
+    """Discover VRF list for parameterized collect bindings (e.g. BGP VRF)."""
     discover_cmds: dict[str, tuple[str, str, str]] = {
         # vendor_key: (command, match, textfsm_command)
         "cisco": ("show vrf", r"(?i)^\s*show\s+vrf\s*$", "show vrf"),
@@ -159,24 +152,6 @@ def _vrf_profiles() -> list[ParseProfile]:
             "show ip vrf | one-line",
             r"(?i)^\s*show\s+ip\s+vrf(?:\s*\|\s*one-line)?\s*$",
             "show ip vrf",
-        ),
-    }
-    collect_cmds: dict[str, tuple[str, str]] = {
-        "cisco": (
-            "show ip route vrf <vrf> summary",
-            r"(?i)^\s*show\s+ip\s+route\s+vrf\s+(?P<vrf>\S+)\s+summary\s*$",
-        ),
-        "huawei": (
-            "display ip routing-table vpn-instance <vrf> statistics",
-            r"(?i)^\s*display\s+ip\s+routing-table\s+vpn-instance\s+(?P<vrf>\S+)\s+statistics\s*$",
-        ),
-        "h3c": (
-            "display ip routing-table vpn-instance <vrf> statistics",
-            r"(?i)^\s*display\s+ip\s+routing-table\s+vpn-instance\s+(?P<vrf>\S+)\s+statistics\s*$",
-        ),
-        "zte": (
-            "show ip route vrf <vrf> summary",
-            r"(?i)^\s*show\s+ip\s+route\s+vrf\s+(?P<vrf>\S+)\s+summary\s*$",
         ),
     }
     out: list[ParseProfile] = []
@@ -204,40 +179,6 @@ def _vrf_profiles() -> list[ParseProfile]:
                 sort_order=order,
                 enabled=True,
                 kind="discover",
-            )
-        )
-        order += 5
-
-    order = 220
-    for key, (tmpl, match) in collect_cmds.items():
-        disc_id = f"{key}.vrf_list"
-        out.append(
-            ParseProfile(
-                profile_id=f"{key}.route_vrf_summary",
-                vendor_key=key,
-                metric_id="vrf_route_summary",
-                parser_id="vrf_route_summary",
-                title="VRF Route Summary",
-                command_template=tmpl,
-                match=match,
-                textfsm_command="",
-                description="Per-VRF route source counts (discover VRF → select bindings → collect).",
-                placeholders=[
-                    PlaceholderDef(
-                        name="vrf",
-                        schema_field="vrf",
-                        required=True,
-                        bind_mode="discover_select",
-                        discover_profile_id=disc_id,
-                        discover_value_field="vrf_name",
-                        discover_label_field="vrf_name",
-                    )
-                ],
-                fields=list(_VRF_ROUTE_FIELDS),
-                tags=["vrf", "route", "l3"],
-                sort_order=order,
-                enabled=True,
-                kind="collect",
             )
         )
         order += 5

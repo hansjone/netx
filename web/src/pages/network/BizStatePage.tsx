@@ -154,7 +154,6 @@ function columnsFromRows(rows: Record<string, unknown>[]): SheetCol[] {
 function metricSheetTitle(metricId: string, t: (k: string) => string): string {
   const map: Record<string, string> = {
     lldp_neighbor: t("bizState.sheetLldp"),
-    vrf_route_summary: t("bizState.sheetVrfRoute"),
     isis_adjacency: t("bizState.sheetIsis"),
     interface_brief: t("bizState.sheetIfaceBrief"),
     arp: t("bizState.sheetArp"),
@@ -173,9 +172,6 @@ function rowsForMetric(batch: any, metricId: string): Record<string, unknown>[] 
   }
   if (mid === "lldp_neighbor") {
     return ((batch?.lldp_neighbors || []) as Record<string, unknown>[]) || [];
-  }
-  if (mid === "vrf_route_summary") {
-    return ((batch?.vrf_route_summary || []) as Record<string, unknown>[]) || [];
   }
   return Array.isArray(fromGeneric) ? (fromGeneric as Record<string, unknown>[]) : [];
 }
@@ -215,7 +211,6 @@ function buildBatchSheets(batch: any, t: (k: string) => string): SheetDef[] {
   for (const c of cmds) pushMid(String(c.metric_id || ""));
   for (const mid of Object.keys(batch?.metrics || {})) pushMid(mid);
   if ((batch?.lldp_neighbors || []).length) pushMid("lldp_neighbor");
-  if ((batch?.vrf_route_summary || []).length) pushMid("vrf_route_summary");
 
   for (const mid of metricOrder) {
     const rows = rowsForMetric(batch, mid);

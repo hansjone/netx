@@ -41,7 +41,6 @@ from ...ntc_parse import apply_rules, resolve_cli_platform, rules_for_command
 from .cisco import PARSERS as _CISCO_PARSERS
 from .common.lldp_neighbors import normalize_lldp_neighbors
 from .common.vrf_list import normalize_vrf_list
-from .common.vrf_route_summary import normalize_vrf_route_summary
 from .ericsson import PARSERS as _ERICSSON_PARSERS
 from .h3c import PARSERS as _H3C_PARSERS
 from .huawei import PARSERS as _HUAWEI_PARSERS
@@ -64,7 +63,6 @@ _VENDOR_PARSERS: list[dict[str, NormalizeFn]] = [
 _REGISTRY: dict[str, NormalizeFn] = {
     "lldp_neighbors": normalize_lldp_neighbors,
     "vrf_list": normalize_vrf_list,
-    "vrf_route_summary": normalize_vrf_route_summary,
 }
 for _pack in _VENDOR_PARSERS:
     _REGISTRY.update(_pack)
