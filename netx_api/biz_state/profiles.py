@@ -216,7 +216,7 @@ _IFACE_BRIEF_FIELDS: list[FieldDef] = [
 
 _IFACE_DETAIL_FIELDS: list[FieldDef] = [
     FieldDef("interface", length=128, indexed=True, is_key=True, is_interface=True, display_name="接口"),
-    FieldDef("admin", length=32, role="state", display_name="Admin"),
+    FieldDef("port_status", length=32, role="state", display_name="Port Status"),
     # Rates churn between collects — display only, never default-compare.
     FieldDef("input_bps", length=32, role="counter", display_name="Input bps"),
     FieldDef("output_bps", length=32, role="counter", display_name="Output bps"),

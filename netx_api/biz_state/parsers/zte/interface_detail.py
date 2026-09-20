@@ -36,7 +36,7 @@ _UTIL_RE = re.compile(
 def _empty_row(iface: str) -> dict[str, Any]:
     return {
         "interface": iface[:128],
-        "admin": "",
+        "port_status": "",
         "ifindex": "",
         "description": "",
         "port_media": "",
@@ -54,7 +54,7 @@ def _empty_row(iface: str) -> dict[str, Any]:
     }
 
 
-def _normalize_admin(state: str) -> str:
+def _normalize_port_status(state: str) -> str:
     s = str(state or "").strip().lower()
     # Guard against FSM greedily eating ", ifindex:"
     if "," in s:
@@ -78,11 +78,11 @@ def _map_fsm_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not iface or not in_util or iface in seen:
             continue
         seen.add(iface)
-        admin_raw = row_get(r, "ADMIN_STATE", "ADMIN_OPER", "admin")
+        status_raw = row_get(r, "ADMIN_STATE", "ADMIN_OPER", "port_status", "admin")
         out.append(
             {
                 "interface": iface[:128],
-                "admin": _normalize_admin(admin_raw)[:32],
+                "port_status": _normalize_port_status(status_raw)[:32],
                 "ifindex": row_get(r, "IFINDEX", "ifindex")[:32],
                 "description": row_get(r, "DESCRIPTION", "description")[:256],
                 "port_media": row_get(r, "PORT_MEDIA", "port_media")[:32],
@@ -122,7 +122,7 @@ def _hand_parse(*, raw_text: str, **_kw: Any) -> list[dict[str, Any]]:
         if m:
             _flush()
             cur = _empty_row(m.group("iface"))
-            cur["admin"] = _normalize_admin(m.group("state"))
+            cur["port_status"] = _normalize_port_status(m.group("state"))
             cur["ifindex"] = (m.group("ifindex") or "")[:32]
             in_rates = False
             saw_input = False

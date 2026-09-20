@@ -359,7 +359,7 @@ class CompareSheetDefaultsTests(unittest.TestCase):
         self.assertIn("vrrp.ipv4", ids)
         self.assertIn("lldp_neighbor", ids)
         detail = next(s for s in sheets if sheet_key(s) == "interface_detail")
-        self.assertEqual(detail["compare_fields"], ["admin"])
+        self.assertEqual(detail["compare_fields"], ["port_status"])
         self.assertIn("input_bps", detail["display_fields"])
         optical = next(s for s in sheets if sheet_key(s) == "optical_brief")
         self.assertEqual(optical["compare_fields"], ["status"])
