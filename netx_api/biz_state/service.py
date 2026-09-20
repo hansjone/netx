@@ -742,7 +742,7 @@ def list_batch_metric_rows(
     columns = [
         {
             "key": f.name,
-            "header": f.display_name or f.name,
+            "header": f.name,  # strict original field name (no display_name localization)
             "role": f.role,
             "is_key": bool(f.is_key),
         }

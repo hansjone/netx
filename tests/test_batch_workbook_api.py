@@ -77,6 +77,27 @@ class BatchWorkbookApiTests(unittest.TestCase):
             list_batch_metric_rows(db, "b1", "commands")
         self.assertEqual(ctx.exception.status_code, 400)
 
+    def test_metric_columns_use_original_field_names(self) -> None:
+        batch = BizStateBatch(id="b1", task_id="t1", status="ok")
+        db = MagicMock()
+        db.get.return_value = batch
+        q = MagicMock()
+        q.filter.return_value = q
+        q.count.return_value = 0
+        q.order_by.return_value.offset.return_value.limit.return_value.all.return_value = []
+        db.query.return_value = q
+
+        out = list_batch_metric_rows(db, "b1", "interface_detail", page=1, page_size=10)
+        self.assertTrue(out["columns"])
+        for col in out["columns"]:
+            self.assertEqual(col["key"], col["header"])
+            # Must not surface Chinese display_name as header
+            self.assertNotIn("接口", col["header"])
+            self.assertNotIn("描述", col["header"])
+        keys = {c["key"] for c in out["columns"]}
+        self.assertIn("interface", keys)
+        self.assertIn("description", keys)
+
 
 if __name__ == "__main__":
     unittest.main()

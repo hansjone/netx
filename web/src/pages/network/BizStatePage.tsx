@@ -422,7 +422,8 @@ export function BizStatePage() {
         setSheetTotal(Number(res.total || 0));
         const cols = (res.columns || []).map((c) => ({
           key: c.key,
-          header: c.header || c.key,
+          // Always show original field key; never localized display_name.
+          header: c.key || c.header || "",
         }));
         setSheetColumns(cols.length ? cols : columnsFromRows(res.items || []));
       } catch (e) {
