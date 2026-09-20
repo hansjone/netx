@@ -754,6 +754,11 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
   const { showOk, showError } = useToast();
 
   const [pageTab, setPageTab] = useState<PageTab>(pageMode === "templates" ? "templates" : "jobs");
+  // Route-bound modes must follow pageMode; internal tabs only when pageMode === "all".
+  // Without this, React reuses the same component instance across
+  // /biz-compare ↔ /compare-templates and pageTab stays stuck.
+  const activeTab: PageTab =
+    pageMode === "templates" ? "templates" : pageMode === "jobs" ? "jobs" : pageTab;
   const showTabSwitch = pageMode === "all";
   const [busy, setBusy] = useState(false);
 
@@ -837,6 +842,20 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refresh]);
+
+  // Keep local tab + dismiss overlays when route mode flips (component may be reused).
+  useEffect(() => {
+    if (pageMode === "templates") setPageTab("templates");
+    else if (pageMode === "jobs") setPageTab("jobs");
+    setTplOpen(false);
+    setJobCreateOpen(false);
+    setCreateStep(0);
+    setJobId("");
+    setRuns([]);
+    setRunDetail(null);
+    setResultSheetId("");
+    setBoardFs(false);
+  }, [pageMode]);
 
   useEffect(() => {
     void (async () => {
@@ -1046,12 +1065,12 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     let display = (activeRunSheet?.display_fields || []).filter(Boolean);
     if (!display.length) {
       display = [...keys, ...compare];
-    } else {
-      // keys first, then rest of display order
-      const rest = display.filter((f) => !keySet.has(f));
-      display = [...keys, ...rest];
     }
-    let extras = display.filter((f) => !keySet.has(f));
+    // Column order: Key → Compare → Display-only (context)
+    // Compare fields always appear (even if display unticked), matching backend.
+    const compareCols = [...compare];
+    const displayOnly = display.filter((f) => !keySet.has(f) && !compareSet.has(f));
+    let extras = [...compareCols, ...displayOnly];
     // Presence / sparse display: if no value columns, pull fields from sample
     // added/removed rows so 缺失/多余 still show side data.
     if (!extras.length && pagedDiffs.length) {
@@ -1066,7 +1085,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     }
     return {
       keys,
-      compare,
+      compare: compareCols,
       extras,
       compareSet,
       presence: !(activeRunSheet?.compare_fields || []).length,
@@ -1922,7 +1941,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
           {pageMode === "templates" ? t("bizCompare.templates") : t("bizCompare.title")}
         </h2>
         <div className="btn-row">
-          {pageTab === "templates" ? (
+          {activeTab === "templates" ? (
             <>
               <input
                 ref={tplImportRef}
@@ -1959,16 +1978,16 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
           <div className="btn-row nm-config-modal__tabs" role="tablist">
             <Button
               size="sm"
-              variant={pageTab === "jobs" ? "primary" : "secondary"}
-              className={pageTab === "jobs" ? "is-active" : undefined}
+              variant={activeTab === "jobs" ? "primary" : "secondary"}
+              className={activeTab === "jobs" ? "is-active" : undefined}
               onPress={() => setPageTab("jobs")}
             >
               {t("bizCompare.jobList")}
             </Button>
             <Button
               size="sm"
-              variant={pageTab === "templates" ? "primary" : "secondary"}
-              className={pageTab === "templates" ? "is-active" : undefined}
+              variant={activeTab === "templates" ? "primary" : "secondary"}
+              className={activeTab === "templates" ? "is-active" : undefined}
               onPress={() => setPageTab("templates")}
             >
               {t("bizCompare.templates")}
@@ -1980,13 +1999,13 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
           <Input
             value={listKw}
             placeholder={
-              pageTab === "jobs" ? t("bizCompare.jobFilterPh") : t("bizCompare.templateFilterPh")
+              activeTab === "jobs" ? t("bizCompare.jobFilterPh") : t("bizCompare.templateFilterPh")
             }
             onChange={(e) => setListKw(e.target.value)}
           />
         </div>
 
-        {pageTab === "templates" ? (
+        {activeTab === "templates" ? (
           <div className="pt-list-table-wrap">
             <p className="muted" style={{ margin: "0 0 8px" }}>
               {t("bizCompare.templateImportHint")}

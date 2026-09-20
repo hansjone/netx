@@ -144,11 +144,14 @@ function ProtectedApp() {
               element={<Navigate to="/network/cutover/biz-migration" replace />}
             />
             <Route path="cutover/biz-state" element={<BizStatePage />} />
-            <Route path="cutover/biz-compare" element={<BizComparePage pageMode="jobs" />} />
+            <Route
+              path="cutover/biz-compare"
+              element={<BizComparePage key="biz-compare-jobs" pageMode="jobs" />}
+            />
             <Route path="cutover/biz-migration" element={<BizMigrationPage />} />
             <Route
               path="cutover/compare-templates"
-              element={<BizComparePage pageMode="templates" />}
+              element={<BizComparePage key="biz-compare-templates" pageMode="templates" />}
             />
             <Route path="cutover/monitor-templates" element={<BizMonitorTemplatesPage />} />
           </Route>

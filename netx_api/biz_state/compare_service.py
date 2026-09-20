@@ -1560,14 +1560,14 @@ def _csv_cell(v: Any) -> str:
 def _sheet_csv(sheet: dict[str, Any]) -> str:
     keys = list(sheet.get("key_fields") or [])
     key_set = set(keys)
-    compare = list(sheet.get("compare_fields") or [])
+    compare = [f for f in list(sheet.get("compare_fields") or []) if f not in key_set]
     compare_set = set(compare)
     display = effective_display_fields(
         key_fields=keys,
         compare_fields=compare,
         display_fields=list(sheet.get("display_fields") or []) or None,
     )
-    # Non-key display columns: compare fields get pre/post; display-only get single value col
+    # Non-key columns already ordered Key→Compare→Display by effective_display_fields
     extra = [f for f in display if f not in key_set]
     headers = ["kind", *keys]
     for f in extra:

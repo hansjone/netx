@@ -157,31 +157,32 @@ def effective_display_fields(
     compare_fields: Sequence[str],
     display_fields: Sequence[str] | None = None,
 ) -> list[str]:
-    """Result-table columns: explicit display, else key+compare (legacy).
+    """Result-table columns in Key → Compare → Display-only order.
 
-    Keys always lead; remaining display/compare fields follow in given order
-    without duplicates.
+    Keys always lead; compare fields follow in template order; remaining
+    display (context) fields come last. Compare fields are included even if
+    the UI forgot to tick display.
     """
     keys = [str(x).strip() for x in (key_fields or []) if str(x).strip()]
     key_set = set(keys)
-    compare = [str(x).strip() for x in (compare_fields or []) if str(x).strip()]
-    raw_disp = display_fields
-    if raw_disp is None:
-        # Legacy templates: show key + compare only
-        extra = [f for f in compare if f not in key_set]
-        return keys + extra
-    disp = [str(x).strip() for x in raw_disp if str(x).strip()]
-    # Force keys first (always visible)
+    compare = [
+        str(x).strip()
+        for x in (compare_fields or [])
+        if str(x).strip() and str(x).strip() not in key_set
+    ]
+    if display_fields is None:
+        return keys + compare
+    disp = [str(x).strip() for x in display_fields if str(x).strip()]
+    compare_set = set(compare)
     out: list[str] = list(keys)
     seen = set(keys)
-    for f in disp:
+    for f in compare:
         if f in seen:
             continue
         out.append(f)
         seen.add(f)
-    # Ensure compare fields appear even if UI forgot to tick display
-    for f in compare:
-        if f in seen or f in key_set:
+    for f in disp:
+        if f in seen or f in key_set or f in compare_set:
             continue
         out.append(f)
         seen.add(f)

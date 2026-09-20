@@ -289,8 +289,8 @@ class CompareRulesTests(unittest.TestCase):
             compare_fields=["mac"],
             display_fields=["vrf", "age", "ip"],
         )
-        # keys first, then display order extras, compare forced if missing
-        self.assertEqual(explicit, ["ip", "iface", "vrf", "age", "mac"])
+        # Key → Compare → Display-only (compare forced even if not ticked)
+        self.assertEqual(explicit, ["ip", "iface", "mac", "vrf", "age"])
 
     def test_display_only_field_does_not_change(self) -> None:
         """Context column in display but not compare → value drift ignored."""
