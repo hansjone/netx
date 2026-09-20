@@ -2,20 +2,22 @@
 name: netx-biz-monitor
 description: >-
   Overnight cutover / biz_state monitor analysis via netxops host tools
-  (netx__getBizMonitor*). Given a project_id or task_id, read definitions,
-  board, reds/diffs with evidence (device-raw A/B, show commands), and judge
-  tool false-positive vs real business fault. Does not create templates/tasks.
+  (netx__listBizMonitors / netx__getBizMonitor*). List projects/tasks first
+  when no id is given; then read definitions, board, reds/diffs with evidence
+  (device-raw A/B, show commands), and judge tool false-positive vs real
+  business fault. Does not create templates/tasks.
 ---
 
 # netx-biz-monitor（割接 / 业务监控只读分析）
 
-人配好监控与任务；AI 当晚用 **project_id**（或 task_id）做归因。  
+人配好监控与任务；AI 当晚做归因。  
 工具在 **netxops**（`netx__*`），直连 netx REST，**不是** netx-mcp。
 
 ## 工具（能力组 `bizMonitor`）
 
 | 工具 | 用途 |
 |------|------|
+| `netx__listBizMonitors` | **入口目录**：列出割接/监控对比项目 + 业务监控任务（**无需** project_id） |
 | `netx__getBizMonitorContext` | 任务定义：项目、监控/对比模板、归一化规则、端口映射、关联任务与命令项 |
 | `netx__getBizMonitorBoard` | 批次进度、evaluate run、sheet 卡、verdict 统计 |
 | `netx__listBizMonitorReds` | 红单 + **evidence** |
@@ -25,7 +27,7 @@ description: >-
 
 交叉验证真障时再用 ops：`netx__execManagedNe` / 拓扑路径。
 
-## 关键约定（必守）
+## 字段约定（必守）
 
 - **`old_key` / `new_key`**：设备采集原文 **A/B**（大屏与结论用这个）
 - **`match_*` / evidence.iface.normalized|map_***：内部配对，**不要**把映射后的 BB 说成两侧端口
@@ -34,12 +36,13 @@ description: >-
 
 ## 推荐顺序
 
-1. `getBizMonitorContext(project_id)` — 弄清盯什么  
-2. `getBizMonitorBoard(batch_id)` — 进度 / missing / skipped  
-3. `listBizMonitorReds` 或 `getBizMonitorDiffs(color=red)`  
-4. 看 evidence：parse 失败？current_missing？映射 miss？归一化误伤？  
-5. 需要原文 → `getBizCollectCommandRaw`  
-6. 像真障 → `execManagedNe` 现场核对  
+1. 无 id → `listBizMonitors`（`kind=projects|tasks|all`，可加 `q` / `purpose`）  
+2. `getBizMonitorContext(project_id)` — 弄清盯什么  
+3. `getBizMonitorBoard(batch_id)` — 进度 / missing / skipped  
+4. `listBizMonitorReds` 或 `getBizMonitorDiffs(color=red)`  
+5. 看 evidence：parse 失败？current_missing？映射 miss？归一化误伤？  
+6. 需要原文 → `getBizCollectCommandRaw`  
+7. 像真障 → `execManagedNe` 现场核对  
 
 ## Verdict 速查（skill 解释，工具不硬编码）
 

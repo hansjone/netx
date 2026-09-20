@@ -140,7 +140,7 @@ pip install "git+https://github.com/hansjone/netx.git#subdirectory=packages/netx
 
 参数优先 `nms_ne_id` / `nms_ne_ids`（保留 `ume_*` 别名）。拓扑 Fabric / 画布工具在 **[`netx-topology-mcp`](./MCP_TOPOLOGY.md)**。oclaw 中名称带前缀：`mcp__netx__<toolName>`；DSH：`netx__<toolName>`。
 
-**业务监控 / 割接分析**：不走 netx-mcp。DSH **netxops** 宿主工具组 `bizMonitor`（`netx__getBizMonitorContext` 等）直连 netx REST（`/v1/biz-migration/*`、`/v1/biz-state/*`，需 token scope `biz-monitor:read`）。
+**业务监控 / 割接分析**：不走 netx-mcp。DSH **netxops** 宿主工具组 `bizMonitor`（`netx__listBizMonitors` / `netx__getBizMonitorContext` 等）直连 netx REST（`/v1/biz-migration/*`、`/v1/biz-state/*`，需 token scope `biz-monitor:read`）。
 
 ---
 
