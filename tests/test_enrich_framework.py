@@ -59,18 +59,20 @@ class AuxResolveTests(unittest.TestCase):
         reload_profiles()
 
     def test_resolve_from_profile_id(self) -> None:
-        ra = resolve_aux_command(AuxCommand(key="if_intf", profile_id="zte.if_intf"))
+        ra = resolve_aux_command(AuxCommand(key="if_intf", profile_id="zte.config_interface"))
         self.assertEqual(ra.command, "show running-config if-intf")
-        self.assertEqual(ra.parser_id, "if_intf")
-        self.assertIn("zte_zxros_show_running_config_if_intf", ra.rule_keys)
+        self.assertEqual(ra.parser_id, "config_interface")
 
     def test_arp_profile_slim(self) -> None:
         p = get_profile("zte.arp")
         assert p is not None
         self.assertEqual(p.aux_commands[0].key, "if_intf")
-        self.assertEqual(p.aux_commands[0].profile_id, "zte.if_intf")
+        self.assertEqual(p.aux_commands[0].profile_id, "zte.config_interface")
         self.assertEqual(len(p.enrich_joins), 1)
         self.assertEqual(p.enrich_joins[0].take, ("vrf",))
+        ii = get_profile("zte.if_intf")
+        assert ii is not None
+        self.assertFalse(ii.enabled)
 
 
 class CollectSessionCacheTests(unittest.TestCase):
@@ -98,13 +100,13 @@ class ArpEnrichPipelineTests(unittest.TestCase):
 
     def test_run_primary_with_enrich(self) -> None:
         if_recs, if_fsm, _ = run_parser(
-            "if_intf",
+            "config_interface",
             raw_text=IF_INTF_SAMPLE,
             vendor="zte",
             device_type="zte_zxros",
             command="show running-config if-intf",
         )
-        ra = resolve_aux_command(AuxCommand(key="if_intf", profile_id="zte.if_intf"))
+        ra = resolve_aux_command(AuxCommand(key="if_intf", profile_id="zte.config_interface"))
         bundle = build_parse_bundle(
             primary_raw=ARP_MATCHING,
             primary_parser_id="arp",

@@ -54,7 +54,12 @@ class ZteStatusParserTests(unittest.TestCase):
         for mid in ("isis_adjacency", "interface_brief", "arp", "nd6_cache", "bgp_peer", "if_intf"):
             self.assertIn(mid, metric_field_map())
         self.assertIsNotNone(get_profile("zte.isis_adjacency"))
-        self.assertIsNotNone(get_profile("zte.if_intf"))
+        ii = get_profile("zte.if_intf")
+        self.assertIsNotNone(ii)
+        assert ii is not None
+        self.assertFalse(ii.enabled)
+        self.assertNotIn("zte.if_intf", zte)
+        self.assertIn("zte.config_interface", zte)
 
     def test_isis_adjacency(self) -> None:
         text = _section(

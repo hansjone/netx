@@ -21,7 +21,7 @@ Cross-command (multi aux)
 1. Implement each aux as a normal status profile (steps 1–4)
 2. On the primary profile::
 
-       aux_commands=[AuxCommand(key="if_intf", profile_id="zte.if_intf")]
+       aux_commands=[AuxCommand(key="if_intf", profile_id="zte.config_interface")]
        enrich_joins=[EnrichJoin(from_aux="if_intf", on="interface", take=("vrf",))]
 
 3. CollectSession caches identical concrete CLI in one batch; enrich runs after

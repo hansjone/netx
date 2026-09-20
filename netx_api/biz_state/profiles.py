@@ -605,14 +605,14 @@ def _zte_status_profiles() -> list[ParseProfile]:
             command_template="show arp | one-line",
             match=r"(?i)^\s*show\s+arp(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show arp",
-            description="ARP entries (IP/MAC/interface); VRF from if-intf aux.",
+            description="ARP entries (IP/MAC/interface); VRF from config_interface aux.",
             fields=list(_ARP_FIELDS),
             tags=["arp", "l3", "status"],
             sort_order=320,
             enabled=True,
             kind="collect",
             aux_commands=[
-                AuxCommand(key="if_intf", profile_id="zte.if_intf"),
+                AuxCommand(key="if_intf", profile_id="zte.config_interface"),
             ],
             enrich_joins=[
                 EnrichJoin(from_aux="if_intf", on="interface", take=("vrf",)),
@@ -628,13 +628,13 @@ def _zte_status_profiles() -> list[ParseProfile]:
             match=r"(?i)^\s*show\s+running-config\s+if-intf\s*$",
             textfsm_command="show running-config if-intf",
             description=(
-                "Interface VRF map for ARP enrich (aux). "
-                "Free-form CLI match prefers zte.config_interface (longer regex)."
+                "Compat/aux-only interface→VRF map (disabled in catalog). "
+                "Use Config Interface Intent (zte.config_interface) instead."
             ),
             fields=list(_IF_INTF_FIELDS),
             tags=["interface", "vrf", "config", "status", "aux"],
             sort_order=325,
-            enabled=True,
+            enabled=False,
             kind="collect",
         ),
         ParseProfile(
@@ -1202,7 +1202,10 @@ def _zte_status_profiles() -> list[ParseProfile]:
             command_template="show running-config if-intf",
             match=r"(?i)^\s*show\s+running-config\s+if-intf(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show running-config if-intf",
-            description="Interface VRF/IP/admin intent (richer than if_intf aux map).",
+            description=(
+                "Interface VRF/IP/admin intent; also ARP VRF enrich source "
+                "(replaces standalone IF VRF / if_intf check)."
+            ),
             fields=list(_CONFIG_IFACE_FIELDS),
             tags=["config", "interface", "intent"],
             sort_order=510,

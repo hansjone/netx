@@ -1,7 +1,7 @@
 """ZTE: show arp [| one-line].
 
 Pipeline: TextFSM ``zte_zxros_show_arp`` → map → hand fallback.
-Cross-command VRF comes from profile ``enrich_joins`` (if_intf), not here.
+Cross-command VRF comes from profile ``enrich_joins`` (config_interface aux), not here.
 """
 
 from __future__ import annotations

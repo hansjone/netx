@@ -97,7 +97,10 @@ class ArpMultiCommandTests(unittest.TestCase):
         assert p is not None
         self.assertEqual(len(p.aux_commands), 1)
         self.assertEqual(p.aux_commands[0].key, "if_intf")
-        self.assertEqual(p.aux_commands[0].profile_id, "zte.if_intf")
+        self.assertEqual(p.aux_commands[0].profile_id, "zte.config_interface")
+        ii = get_profile("zte.if_intf")
+        assert ii is not None
+        self.assertFalse(ii.enabled)
         self.assertEqual(get_parser_meta("if_intf")["rule_keys"], ("zte_zxros_show_running_config_if_intf",))
 
     def test_arp_enriches_vrf_via_aux_records(self) -> None:
@@ -110,13 +113,13 @@ class ArpMultiCommandTests(unittest.TestCase):
         from netx_api.biz_state.profiles import AuxCommand
 
         if_recs, if_fsm, _ = run_parser(
-            "if_intf",
+            "config_interface",
             raw_text=IF_INTF_SAMPLE,
             vendor="zte",
             device_type="zte_zxros",
             command="show running-config if-intf",
         )
-        ra = resolve_aux_command(AuxCommand(key="if_intf", profile_id="zte.if_intf"))
+        ra = resolve_aux_command(AuxCommand(key="if_intf", profile_id="zte.config_interface"))
         bundle = build_parse_bundle(
             primary_raw=ARP_MATCHING,
             primary_parser_id="arp",

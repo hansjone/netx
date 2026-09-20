@@ -233,6 +233,9 @@ class ZteConfigIntentTests(unittest.TestCase):
         self.assertIsNotNone(hit)
         assert hit is not None
         self.assertEqual(hit.profile.profile_id, "zte.config_interface")
+        ii = get_profile("zte.if_intf")
+        assert ii is not None
+        self.assertFalse(ii.enabled)
 
     def test_config_vrf(self) -> None:
         rows = normalize_config_vrf(raw_text=_CFG_VRF, command="show running-config vrf")

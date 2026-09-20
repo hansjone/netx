@@ -36,7 +36,7 @@ ParseProfile (命令 + schema + aux + enrich)
 | `netx_api/biz_state/enrich.py` | 声明式等值 join |
 | `netx_api/biz_state/collect_runner.py` | 任务会话采集落库 |
 
-样板：`zte/interface_brief`（单命令）、`zte/if_intf`（可复用辅表）、`zte.arp`（主+辅+enrich）。
+样板：`zte/interface_brief`（单命令）、`zte.config_interface`（可复用辅表）、`zte.arp`（主+辅+enrich）。
 
 ---
 
@@ -98,7 +98,7 @@ ParseProfile (命令 + schema + aux + enrich)
 
 ```python
 aux_commands=[
-    AuxCommand(key="if_intf", profile_id="zte.if_intf"),
+    AuxCommand(key="if_intf", profile_id="zte.config_interface"),
     # 多辅：再 append；key 唯一
 ],
 enrich_joins=[
@@ -159,5 +159,5 @@ Sheet（`metrics_json[]`）能力：
 - Enrich：`biz_state/enrich.py`  
 - Session：`biz_state/collect_session.py`  
 - Compare：`biz_state/compare_rules.py`、`compare_engine.py`、`compare_service.py`  
-- ARP+VRF：`profiles.py` → `zte.arp`；`parsers/zte/arp.py`；`parsers/zte/if_intf.py`  
+- ARP+VRF：`profiles.py` → `zte.arp`；`parsers/zte/arp.py`；辅表 `zte.config_interface`（`zte.if_intf` 已禁用仅兼容）  
 - 模板：`cli_templates/zte/zte_zxros_show_arp.textfsm`、`..._if_intf.textfsm`
