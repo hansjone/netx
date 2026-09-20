@@ -74,6 +74,30 @@ cgei-0/1/0/1      100G-10km-QSFP28  1310nm      1.5/[-10.6,4.5]       0.9/[-4.3,
 gei-0/0/0/11      offline
 """
 
+# 400G QSFP-DD inserts lane-count token "8X" between Type and Wavelength.
+_OPTICAL_QSFP_DD_SAMPLE = """
+Interface         Type              Wavelength  RxPower(dBm)          TxPower(dBm)          Status    Intensity(Rx)
+cdgei-0/1/0/1     400G-10km-QSFP-DD 8X  1310nm  N/A/[-9.0,6.1]        0.9/[-2.7,6.1]        Unknown   Unknown
+                                                N/A/[-9.0,6.1]        1.0/[-2.7,6.1]        Unknown   Unknown
+                                                N/A/[-9.0,6.1]        1.2/[-2.7,6.1]        Unknown   Unknown
+                                                N/A/[-9.0,6.1]        1.2/[-2.7,6.1]        Unknown   Unknown
+                                                                      7.1
+cdgei-0/1/0/3     400G-10km-QSFP-DD 8X  1310nm  1.3/[-9.0,5.1]        2.2/[-2.7,6.1]        Normal    Normal
+                                                1.0/[-9.0,5.1]        2.1/[-2.7,6.1]        Normal    Normal
+                                                1.0/[-9.0,5.1]        2.2/[-2.7,6.1]        Normal    Normal
+                                                0.3/[-9.0,5.1]        1.7/[-2.7,6.1]        Normal    Normal
+                                                6.9                   8.1
+cdgei-0/1/0/5     400G-80km-QSFP-DD 8X  1547.715nm  -8.8/[-20.0,3.0]  -8.3/[-11.0,2.0]      Normal    Normal
+                                                -8.8                  -8.3
+cdgei-0/1/0/6     offline
+cgei-0/1/0/2:1    400G-500m-QSFP-DD 8X  1310nm  N/A/[-5.9,5.0]        2.3/[-2.9,5.0]        Unknown   Unknown
+                                                N/A/[-5.9,5.0]        2.4/[-2.9,5.0]        Unknown   Unknown
+                                                N/A/[-5.9,5.0]        2.3/[-2.9,5.0]        Unknown   Unknown
+                                                N/A/[-5.9,5.0]        2.2/[-2.9,5.0]        Unknown   Unknown
+                                                                      8.3
+xgei-0/2/0/1      10G-10km-SFP+     1310nm      -2.4/[-14.4,0.5]      -1.8/[-8.2,1.5]       Normal    Normal
+"""
+
 _BGP_ROUTE_IN = """
 Routes Learned From This Neighbor:
      Network             Next Hop        Metric     LocPrf     RtPrf   Path
@@ -185,6 +209,28 @@ class ZteExtendedParserTests(unittest.TestCase):
         self.assertEqual(by["cgei-0/1/0/1"]["rx_threshold"], "[-10.6,4.5]")
         self.assertEqual(by["cgei-0/1/0/1"]["tx_threshold"], "[-4.3,5.5]")
         self.assertEqual(by["gei-0/0/0/11"]["optic_type"], "offline")
+
+    def test_optical_qsfp_dd_lane_count_8x(self) -> None:
+        """400G QSFP-DD prints '8X' between Type and Wavelength — must not shift Rx/Tx."""
+        opt = normalize_optical_brief(
+            raw_text=_OPTICAL_QSFP_DD_SAMPLE,
+            vendor="zte",
+            device_type="zte_zxros",
+            command="show opticalinfo brief | one-line",
+        )
+        by = {r["interface"]: r for r in opt}
+        self.assertIn("cdgei-0/1/0/1", by)
+        self.assertEqual(by["cdgei-0/1/0/1"]["rx_power"], "N/A,N/A,N/A,N/A")
+        self.assertEqual(by["cdgei-0/1/0/1"]["tx_power"], "0.9,1.0,1.2,1.2")
+        self.assertTrue(str(by["cdgei-0/1/0/1"]["wavelength"]).startswith("8X"))
+        self.assertEqual(by["cdgei-0/1/0/3"]["rx_power"], "1.3,1.0,1.0,0.3")
+        self.assertEqual(by["cdgei-0/1/0/3"]["tx_power"], "2.2,2.1,2.2,1.7")
+        # Summary-only continuation (bare numbers / tx-only) must not add lanes
+        self.assertEqual(by["cdgei-0/1/0/5"]["rx_power"], "-8.8")
+        self.assertEqual(by["cdgei-0/1/0/5"]["tx_power"], "-8.3")
+        self.assertEqual(by["cdgei-0/1/0/6"]["status"], "offline")
+        self.assertEqual(by["cgei-0/1/0/2:1"]["tx_power"], "2.3,2.4,2.3,2.2")
+        self.assertEqual(by["xgei-0/2/0/1"]["rx_power"], "-2.4")
 
     def test_bgp_route_and_aux_render(self) -> None:
         routes = normalize_bgp_route(

@@ -3,6 +3,8 @@
 Power cells look like ``-6.0/[-20.0,-3.0]`` (value / [low,high] threshold).
 50G+ (QSFP) modules print one lane per line; continuation lines are merged
 into comma-separated ``rx_power`` / ``tx_power`` (and matching thresholds).
+400G QSFP-DD may insert a lane-count token (``8X``) between Type and Wavelength;
+that token is absorbed into ``wavelength`` so Rx/Tx columns stay aligned.
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ _CELL_RE = re.compile(
 )
 _HDR_RE = re.compile(
     r"^(?P<iface>\S+)\s+(?P<otype>offline)\s*$|"
-    r"^(?P<iface2>\S+)\s+(?P<otype2>\S+)\s+(?P<wave>\S+)\s+"
+    r"^(?P<iface2>\S+)\s+(?P<otype2>\S+)\s+(?:(?P<lanes>\d+X)\s+)?(?P<wave>\S+)\s+"
     r"(?P<rx>\S+)\s+(?P<tx>\S+)\s+(?P<status>\S+)(?:\s+(?P<intensity>\S+))?\s*$",
     re.I,
 )
@@ -62,7 +64,7 @@ def _empty_row(iface: str, optic_type: str = "", wavelength: str = "") -> dict[s
     return {
         "interface": iface[:128],
         "optic_type": optic_type[:64],
-        "wavelength": wavelength[:32],
+        "wavelength": re.sub(r"\s+", " ", str(wavelength or "").strip())[:32],
         "rx_power": "",
         "rx_threshold": "",
         "tx_power": "",
@@ -172,7 +174,11 @@ def _hand_parse(*, raw_text: str, **_kw: Any) -> list[dict[str, Any]]:
                 _flush()
                 continue
             iface = m.group("iface2") or ""
-            cur = _empty_row(iface, m.group("otype2") or "", m.group("wave") or "")
+            wave = m.group("wave") or ""
+            lanes = m.group("lanes") or ""
+            if lanes:
+                wave = f"{lanes} {wave}".strip()
+            cur = _empty_row(iface, m.group("otype2") or "", wave)
             _append_lane(cur, m.group("rx") or "", m.group("tx") or "", m.group("status") or "")
             continue
         if cur is None:
