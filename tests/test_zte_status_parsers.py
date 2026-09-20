@@ -75,6 +75,34 @@ class ZteStatusParserTests(unittest.TestCase):
         up = [r for r in rows if r["state"].upper() == "UP"]
         self.assertEqual(len(up), len(rows))
 
+    def test_isis_adjacency_empty_mt_ipv4(self) -> None:
+        """IPv4 rows often leave MT blank; must still parse NSF/AF."""
+        text = """
+Process ID: 0
+
+Process ID: 1
+Interface         System id        State     Lev     Holds       SNPA(802.2)    Pri     MT   NSF       AF       
+smartgroup107     PAG7_6120HS      UP        L1      26          PPP            -            Disable   IPv4
+smartgroup32766.1 AG4              UP/UP     L1L2    27/27       PPP            -/-          Disable   IPv4
+smartgroup4501    C3               UP/UP     L1L2    30/30       PPP            -/-          Disable   IPv4
+smartgroup11      MDN-SGI-P-ZM8SP  UP        L2      24          PPP            -       M    Disable   IPv6
+"""
+        rows = normalize_isis_adjacency(raw_text=text)
+        self.assertEqual(len(rows), 4)
+        self.assertTrue(all(r["process_id"] == "1" for r in rows))
+        v4 = [r for r in rows if r["af"] == "IPv4"]
+        self.assertEqual(len(v4), 3)
+        self.assertTrue(all(r["mt"] == "" for r in v4))
+        self.assertEqual(v4[0]["interface"], "smartgroup107")
+        self.assertEqual(v4[0]["system_id"], "PAG7_6120HS")
+        self.assertEqual(v4[0]["state"], "UP")
+        self.assertEqual(v4[0]["nsf"], "Disable")
+        self.assertEqual(v4[1]["state"], "UP/UP")
+        self.assertEqual(v4[1]["pri"], "-/-")
+        v6 = next(r for r in rows if r["af"] == "IPv6")
+        self.assertEqual(v6["mt"], "M")
+        self.assertEqual(v6["nsf"], "Disable")
+
     def test_interface_brief(self) -> None:
         text = _section(
             self.log,

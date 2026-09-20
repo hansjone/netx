@@ -5,10 +5,11 @@ from __future__ import annotations
 import re
 from typing import Any
 
+# MT may be blank (common on IPv4 adjacencies); NSF/AF still follow.
 _ISIS_ROW_RE = re.compile(
     r"^(?P<iface>\S+)\s+(?P<sys>\S+)\s+(?P<state>\S+)\s+(?P<lev>\S+)\s+"
-    r"(?P<holds>\S+)\s+(?P<snpa>\S+)\s+(?P<pri>\S+)\s+(?P<mt>\S+)\s+"
-    r"(?P<nsf>\S+)\s+(?P<af>\S+)\s*$",
+    r"(?P<holds>\S+)\s+(?P<snpa>\S+)\s+(?P<pri>\S+)\s+"
+    r"(?:(?P<mt>\S+)\s+)?(?P<nsf>\S+)\s+(?P<af>\S+)\s*$",
     re.I,
 )
 _PROCESS_RE = re.compile(r"(?i)^\s*Process\s+ID\s*:\s*(\d+)\s*$")
@@ -51,11 +52,12 @@ def normalize_isis_adjacency(
                 "holds": m.group("holds")[:32],
                 "snpa": m.group("snpa")[:64],
                 "pri": m.group("pri")[:16],
-                "mt": m.group("mt")[:16],
+                "mt": (m.group("mt") or "")[:16],
                 "nsf": m.group("nsf")[:32],
                 "af": m.group("af")[:64],
             }
         )
     return out
+
 
 normalize_isis_adjacency.RULE_KEYS = RULE_KEYS
