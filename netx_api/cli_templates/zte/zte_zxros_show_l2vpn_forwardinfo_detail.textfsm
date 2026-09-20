@@ -1,0 +1,50 @@
+Value Required,Filldown SERVICE_INSTANCE (.+?)
+Value Filldown PEER (\S+)
+Value Filldown VCID (\S+)
+Value Filldown CONN_MODE (\S+)
+Value Filldown VCID_EXT (\S+)
+Value Filldown SIGNALING (\S+)
+Value Filldown VC_TYPE (\S+)
+Value Filldown LAST_CHANGE (\S+)
+Value Filldown CREATE_TIME (.+?)
+Value Filldown LOCAL_LABEL (\S+)
+Value Filldown REMOTE_LABEL (\S+)
+Value Filldown PW_NAME (\S+)
+Value Filldown CONTROL_WORD (\S+)
+Value Filldown ACTIVATION (\S+)
+Value Filldown BANDWIDTH (.+?)
+Value Filldown TUNNEL_DEST (\S+)
+Value Filldown RELATED_IF (\S+)
+Value Filldown FRR_TYPE (\S+)
+Value Filldown VC_STATUS (\S+)
+Value Filldown REMOTE_STATUS (\S+)
+Value Filldown MC_SELECTION (\S+)
+Value Filldown VCCV_CC (\S+)
+Value VCCV_CV (\S+)
+
+Start
+  ^Service type and instance name:\[${SERVICE_INSTANCE}\]
+  ^\s+Peer IP address\s+:\s+${PEER}\s+VCID\s+:\s+${VCID}\s*$$
+  ^\s+Connection mode\s+:\s+${CONN_MODE}\s+VCID Extend\s+:\s+${VCID_EXT}\s*$$
+  ^\s+Signaling protocol\s+:\s+${SIGNALING}\s+VC type\s+:\s+${VC_TYPE}\s*$$
+  ^\s+Last status change time\s+:\s+${LAST_CHANGE}\s+Create time\s+:\s+${CREATE_TIME}\s*$$
+  ^\s+MPLS VC local label\s+:\s+${LOCAL_LABEL}\s+Remote label\s+:\s+${REMOTE_LABEL}\s*$$
+  ^\s+PW name\s+:\s+${PW_NAME}\s+Control Word\s+:\s+${CONTROL_WORD}\s*$$
+  ^\s+Activation status\s+:\s+${ACTIVATION}\s*$$
+  ^\s+Band Width\s+:\s+${BANDWIDTH}\s*$$
+  ^\s+Tunnel destination\s+:\s+${TUNNEL_DEST}\s*$$
+  ^\s+Related interface name\s+:\s+${RELATED_IF}\s*$$
+  ^\s+FRR type\s+:\s+${FRR_TYPE}\s*$$
+  ^\s+VC status\s+:\s+${VC_STATUS}\s*$$
+  ^\s+Remote status\s+:\s+${REMOTE_STATUS}\s*$$
+  ^\s+MC selection\s+:\s+${MC_SELECTION}\s*$$
+  ^\s+VCCV CC type\s+:\s+${VCCV_CC}\s*$$
+  ^\s+VCCV CV type\s+:\s+${VCCV_CV}\s*$$ -> Record
+  ^Headers:
+  ^Codes
+  ^PW count
+  ^-+
+  ^\s*$$
+  ^\S+\s*#\s*$$ -> End
+  ^.*#\s*$$ -> End
+  ^.* -> Start

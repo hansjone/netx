@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 
 from netx_api.biz_state.collect_session import resolve_aux_command
 from netx_api.biz_state.command_match import expand_from_bindings, match_command
@@ -14,6 +15,7 @@ from netx_api.biz_state.parsers.zte import (
     normalize_ip_route,
     normalize_ipv6_route,
     normalize_l2vpn_pw,
+    normalize_l2vpn_pw_detail,
     normalize_optical_brief,
     normalize_ospf_neighbor,
     normalize_vrrp,
@@ -126,6 +128,48 @@ pw1      10.0.0.1        128    Ethernet  H UP    100     200     L:VPN_A
 pw2      10.0.0.2        128    Ethernet  S DOWN  -       -       L:VPN_B
 pw3      10.0.0.3        128    Ethernet    UP    101     201     W:100
 """
+
+_L2VPN_PW_DETAIL = """
+Service type and instance name:[VPLS qualified demo-vpls-1]
+  Peer IP address         : 10.0.0.6                  VCID         : 19001
+  Connection mode         : HUB                       VCID Extend  : 0
+  Signaling protocol      : LDP                       VC type      : VLAN
+  Last status change time : 09:46:46                  Create time  : 3d 07:08:42
+  MPLS VC local label     : 165840                    Remote label : 167978
+  PW name                 : pw19001                   Control Word : ENABLE
+  Activation status       : ENABLE
+  Band Width              : 0 kbps
+  Tunnel destination      : 10.0.0.6
+  Related interface name  : -
+  FRR type                : NULL
+  VC status               : UP
+  Remote status           : ALLOK
+  MC selection            : -
+  VCCV CC type            : CWORD
+  VCCV CV type            : LSP
+
+Service type and instance name:[VPLS demo-vpls-2]
+  Peer IP address         : 10.0.0.6                  VCID         : 19011
+  Connection mode         : HUB                       VCID Extend  : 0
+  Signaling protocol      : LDP                       VC type      : Ethernet
+  Last status change time : 09:46:48                  Create time  : 1d 01:00:00
+  MPLS VC local label     : 165841                    Remote label : 167981
+  PW name                 : pw19011                   Control Word : DISABLE
+  Activation status       : ENABLE
+  Band Width              : 0 kbps
+  Tunnel destination      : 10.0.0.6
+  Related interface name  : -
+  FRR type                : NULL
+  VC status               : DOWN
+  Remote status           : PWSA
+  MC selection            : -
+  VCCV CC type            : ALERT_LABEL
+  VCCV CV type            : LSP|BFD_BASIC_HEAD
+"""
+
+_L2VPN_PW_DETAIL_SAMPLE = (
+    Path(__file__).resolve().parents[2] / "test" / "show-zte" / "show-l2vpn-forwarding-detail"
+)
 
 
 class ZteExtendedParserTests(unittest.TestCase):
@@ -284,6 +328,58 @@ class ZteExtendedParserTests(unittest.TestCase):
         self.assertEqual(pw[0]["state"].upper(), "UP")
         self.assertEqual(pw[1]["state"].upper(), "DOWN")
 
+    def test_l2vpn_pw_detail(self) -> None:
+        rows = normalize_l2vpn_pw_detail(
+            raw_text=_L2VPN_PW_DETAIL,
+            vendor="zte",
+            device_type="zte_zxros",
+            command="show l2vpn forwardinfo detail",
+        )
+        self.assertEqual(len(rows), 2)
+        by = {r["pw_name"]: r for r in rows}
+        self.assertEqual(by["pw19001"]["vc_status"].upper(), "UP")
+        self.assertEqual(by["pw19001"]["remote_status"], "ALLOK")
+        self.assertEqual(by["pw19001"]["vcid"], "19001")
+        self.assertEqual(by["pw19001"]["peer"], "10.0.0.6")
+        self.assertIn("demo-vpls-1", by["pw19001"]["service_instance"])
+        self.assertEqual(by["pw19011"]["vc_status"].upper(), "DOWN")
+        self.assertEqual(by["pw19011"]["vccv_cv"], "LSP|BFD_BASIC_HEAD")
+
+        fsm_rows = apply_rule(
+            platform="zte_zxros",
+            rule_key="zte_zxros_show_l2vpn_forwardinfo_detail",
+            text=_L2VPN_PW_DETAIL,
+        )
+        self.assertGreaterEqual(len(fsm_rows), 2)
+
+        brief = match_command(
+            vendor_key="zte", command="show l2vpn forwardinfo detail | exclude Tunnel"
+        )
+        self.assertIsNotNone(brief)
+        assert brief is not None
+        self.assertEqual(brief.profile.profile_id, "zte.l2vpn_pw_detail")
+        no_detail = match_command(vendor_key="zte", command="show l2vpn forwardinfo | one-line")
+        self.assertIsNotNone(no_detail)
+        assert no_detail is not None
+        self.assertEqual(no_detail.profile.profile_id, "zte.l2vpn_pw")
+
+    @unittest.skipUnless(
+        _L2VPN_PW_DETAIL_SAMPLE.is_file(),
+        "test/show-zte/show-l2vpn-forwarding-detail not present",
+    )
+    def test_l2vpn_pw_detail_real_sample(self) -> None:
+        raw = _L2VPN_PW_DETAIL_SAMPLE.read_text(encoding="utf-8", errors="replace")
+        rows = normalize_l2vpn_pw_detail(
+            raw_text=raw,
+            vendor="zte",
+            device_type="zte_zxros",
+            command="show l2vpn forwardinfo detail",
+        )
+        self.assertEqual(len(rows), 6)
+        self.assertTrue(all(r["vc_status"].upper() == "UP" for r in rows))
+        self.assertEqual(rows[0]["pw_name"], "pw19001")
+        self.assertEqual(rows[-1]["pw_name"], "pw1230002")
+
     def test_profiles_and_expand(self) -> None:
         for mid in (
             "ospf_neighbor",
@@ -293,6 +389,7 @@ class ZteExtendedParserTests(unittest.TestCase):
             "ip_route",
             "ipv6_route",
             "l2vpn_pw",
+            "l2vpn_pw_detail",
             "l2vpn_mac",
             "evpn_mac",
             "interface_detail",
@@ -303,6 +400,7 @@ class ZteExtendedParserTests(unittest.TestCase):
         self.assertIsNotNone(get_profile("zte.bgp_vpnv4_vrf_summary"))
         self.assertIsNotNone(get_profile("zte.ospf_neighbor"))
         self.assertIsNotNone(get_profile("zte.interface_detail"))
+        self.assertIsNotNone(get_profile("zte.l2vpn_pw_detail"))
         self.assertIsNotNone(get_profile("zte.bgp_vpnv6_neighbor_in"))
         self.assertIsNotNone(get_profile("zte.bgp_vpnv6_neighbor_out"))
 

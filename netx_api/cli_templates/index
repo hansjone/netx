@@ -16,6 +16,7 @@ zte/zte_zxros_show_opticalinfo_brief.textfsm, .*, zte_zxros, sh[[ow]] opticalinf
 zte/zte_zxros_show_bgp_neighbor_routes.textfsm, .*, zte_zxros, sh[[ow]] bgp .+ nei[[ghbor]] (in|out)
 zte/zte_zxros_show_ip_forwarding_route.textfsm, .*, zte_zxros, sh[[ow]] ip forw[[arding]] rou[[te]]
 zte/zte_zxros_show_ipv6_forwarding_route.textfsm, .*, zte_zxros, sh[[ow]] ipv6 forw[[arding]] rou[[te]]
+zte/zte_zxros_show_l2vpn_forwardinfo_detail.textfsm, .*, zte_zxros, sh[[ow]] l2vpn forw[[ardinfo]] det[[ail]]
 zte/zte_zxros_show_l2vpn_forwardinfo.textfsm, .*, zte_zxros, sh[[ow]] l2vpn forw[[ardinfo]]
 zte/zte_zxros_show_mac_l2vpn.textfsm, .*, zte_zxros, sh[[ow]] mac l2vpn
 zte/zte_zxros_show_bgp_evpn_mac.textfsm, .*, zte_zxros, sh[[ow]] bgp evpn mac

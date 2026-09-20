@@ -499,6 +499,7 @@ def _default_zte_status_sheets() -> list[dict[str, Any]]:
         _default_sheet_for_metric("optical_brief", compare_roles=("state",)),
         *_bgp_afi_sheets(),
         _default_sheet_for_metric("l2vpn_pw", compare_roles=("state",)),
+        _default_sheet_for_metric("l2vpn_pw_detail", compare_roles=("state",)),
         _default_lldp_sheet(),
     ]
 

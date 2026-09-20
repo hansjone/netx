@@ -27,6 +27,7 @@ from .ipv6_route import normalize_ipv6_route
 from .isis_adjacency import normalize_isis_adjacency
 from .l2vpn_mac import normalize_l2vpn_mac
 from .l2vpn_pw import normalize_l2vpn_pw
+from .l2vpn_pw_detail import normalize_l2vpn_pw_detail
 from .nd6_cache import normalize_nd6_cache
 from .optical_brief import normalize_optical_brief
 from .ospf_neighbor import normalize_ospf_neighbor
@@ -49,6 +50,7 @@ PARSERS: dict[str, NormalizeFn] = {
     "ip_route": normalize_ip_route,
     "ipv6_route": normalize_ipv6_route,
     "l2vpn_pw": normalize_l2vpn_pw,
+    "l2vpn_pw_detail": normalize_l2vpn_pw_detail,
     "l2vpn_mac": normalize_l2vpn_mac,
     "evpn_mac": normalize_evpn_mac,
     "config_vrf": normalize_config_vrf,
@@ -82,6 +84,7 @@ __all__ = [
     "normalize_isis_adjacency",
     "normalize_l2vpn_mac",
     "normalize_l2vpn_pw",
+    "normalize_l2vpn_pw_detail",
     "normalize_nd6_cache",
     "normalize_optical_brief",
     "normalize_ospf_neighbor",

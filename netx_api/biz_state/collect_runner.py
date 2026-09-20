@@ -187,6 +187,7 @@ _GENERIC_METRICS = {
     "ip_route",
     "ipv6_route",
     "l2vpn_pw",
+    "l2vpn_pw_detail",
     "l2vpn_mac",
     "evpn_mac",
     "config_vrf",
