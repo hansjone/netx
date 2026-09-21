@@ -492,11 +492,8 @@ class ZteExtendedParserTests(unittest.TestCase):
         self.assertEqual(hit.params.get("vrf"), "CUST_A")
         self.assertEqual(hit.params.get("neighbor"), "10.0.0.1")
 
-        # BGP VRF summary / Forwarding VRF: optional bind + config_vrf aux
-        from netx_api.biz_state.command_match import (
-            EXPAND_ALL_COMMAND,
-            expand_bindings_from_discover_records,
-        )
+        # BGP VRF summary / Forwarding VRF: required bind + config_vrf aux
+        from netx_api.biz_state.command_match import expand_bindings_from_discover_records
         from netx_api.biz_state.collect_session import resolve_aux_command
 
         for pid in (
@@ -508,15 +505,15 @@ class ZteExtendedParserTests(unittest.TestCase):
             prof = get_profile(pid)
             assert prof is not None
             self.assertTrue(prof.placeholders)
-            self.assertFalse(prof.placeholders[0].required)
+            self.assertTrue(prof.placeholders[0].required)
             self.assertEqual(prof.placeholders[0].discover_profile_id, "zte.config_vrf")
             self.assertTrue(any(a.profile_id == "zte.config_vrf" for a in prof.aux_commands))
 
         v4 = get_profile("zte.bgp_vpnv4_vrf_summary")
         assert v4 is not None
         self.assertTrue(any(a.key == "ip_route" for a in v4.aux_commands))
-        sentinel = expand_from_bindings(profile=v4, bindings=[])
-        self.assertEqual(sentinel[0][0], EXPAND_ALL_COMMAND)
+        with self.assertRaises(ValueError):
+            expand_from_bindings(profile=v4, bindings=[])
         bound = expand_from_bindings(profile=v4, bindings=[{"vrf": "CUST_A"}])
         self.assertEqual(bound[0][0], "show bgp vpnv4 unicast vrf CUST_A summary | one-line")
         ra_ip = resolve_aux_command(

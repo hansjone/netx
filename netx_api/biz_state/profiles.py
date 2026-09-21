@@ -35,7 +35,7 @@ class PlaceholderDef:
     discover_profile_id: str = ""
     discover_value_field: str = ""
     discover_label_field: str = ""
-    # When required=False and no bindings: collect expands all discover values.
+    # When required=False and no bindings: collect may expand all discover values.
     discover_filter_field: str = ""
     discover_filter_contains: str = ""
 
@@ -291,21 +291,10 @@ _BGP_VRF_PLACEHOLDER = PlaceholderDef(
     discover_label_field="vrf_name",
 )
 
-# Single-VRF collect: bind selected VRFs, or leave empty → all (from config_vrf).
-_VRF_PLACEHOLDER_ALL = PlaceholderDef(
-    name="vrf",
-    schema_field="vrf",
-    required=False,
-    bind_mode="discover_select",
-    discover_profile_id="zte.config_vrf",
-    discover_value_field="vrf_name",
-    discover_label_field="vrf_name",
-)
-
 _VRF_PLACEHOLDER_IPV4 = PlaceholderDef(
     name="vrf",
     schema_field="vrf",
-    required=False,
+    required=True,
     bind_mode="discover_select",
     discover_profile_id="zte.config_vrf",
     discover_value_field="vrf_name",
@@ -317,7 +306,7 @@ _VRF_PLACEHOLDER_IPV4 = PlaceholderDef(
 _VRF_PLACEHOLDER_IPV6 = PlaceholderDef(
     name="vrf",
     schema_field="vrf",
-    required=False,
+    required=True,
     bind_mode="discover_select",
     discover_profile_id="zte.config_vrf",
     discover_value_field="vrf_name",
@@ -754,8 +743,8 @@ def _zte_status_profiles() -> list[ParseProfile]:
             match=r"(?i)^\s*show\s+bgp\s+vpnv4\s+unicast\s+vrf\s+(?P<vrf>\S+)\s+summary(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show bgp vpnv4 unicast summary",
             description=(
-                "Per-VRF BGP VPNv4 peer summary. Bind VRFs or leave empty for all "
-                "(from config VRF intent); aux: IPv4 FIB + config_vrf."
+                "Per-VRF BGP VPNv4 peer summary. Bind one or more VRFs; "
+                "aux: IPv4 FIB + config_vrf."
             ),
             placeholders=[_VRF_PLACEHOLDER_IPV4],
             fields=list(_BGP_PEER_FIELDS),
@@ -786,8 +775,8 @@ def _zte_status_profiles() -> list[ParseProfile]:
             match=r"(?i)^\s*show\s+bgp\s+vpnv6\s+unicast\s+vrf\s+(?P<vrf>\S+)\s+summary(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show bgp vpnv6 unicast summary",
             description=(
-                "Per-VRF BGP VPNv6 peer summary. Bind VRFs or leave empty for all "
-                "(from config VRF intent); aux: IPv6 FIB + config_vrf."
+                "Per-VRF BGP VPNv6 peer summary. Bind one or more VRFs; "
+                "aux: IPv6 FIB + config_vrf."
             ),
             placeholders=[_VRF_PLACEHOLDER_IPV6],
             fields=list(_BGP_PEER_FIELDS),
@@ -1128,10 +1117,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             command_template="show ip forwarding route vrf <vrf> | one-line",
             match=r"(?i)^\s*show\s+ip\s+forwarding\s+route\s+vrf\s+(?P<vrf>\S+)(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show ip forwarding route",
-            description=(
-                "IPv4 FIB per VRF. Bind VRFs or leave empty for all ipv4 VRFs "
-                "(config VRF intent aux)."
-            ),
+            description="IPv4 FIB per VRF. Bind one or more VRFs (config VRF intent aux).",
             placeholders=[_VRF_PLACEHOLDER_IPV4],
             fields=list(_IP_ROUTE_FIELDS),
             tags=["route", "ipv4", "vrf"],
@@ -1173,10 +1159,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             command_template="show ipv6 forwarding route vrf <vrf> | one-line",
             match=r"(?i)^\s*show\s+ipv6\s+forwarding\s+route\s+vrf\s+(?P<vrf>\S+)(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show ipv6 forwarding route",
-            description=(
-                "IPv6 FIB per VRF. Bind VRFs or leave empty for all ipv6 VRFs "
-                "(config VRF intent aux)."
-            ),
+            description="IPv6 FIB per VRF. Bind one or more VRFs (config VRF intent aux).",
             placeholders=[_VRF_PLACEHOLDER_IPV6],
             fields=list(_IPV6_ROUTE_FIELDS),
             tags=["route", "ipv6", "vrf"],

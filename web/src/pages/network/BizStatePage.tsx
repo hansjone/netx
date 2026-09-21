@@ -800,7 +800,9 @@ export function BizStatePage() {
       const existing = (item.bindings || [])
         .filter((b: any) => b.placeholder === ph.name)
         .map((b: any) => String(b.value));
-      setSelectedVrfs(existing.length ? existing : cand.map((c) => c.value));
+      // Keep prior bindings if still in candidates; otherwise start with none selected.
+      const keep = existing.filter((v: string) => cand.some((c) => c.value === v));
+      setSelectedVrfs(keep);
       if (!cand.length) {
         setDiscoverError(t("bizState.discoverEmpty"));
       }
@@ -819,9 +821,8 @@ export function BizStatePage() {
     const item = (detail?.items || []).find((it: any) => it.id === bindItemId);
     const prof = profiles.find((p) => p.profile_id === item?.source_profile_id);
     const phName = (prof?.placeholders || [])[0]?.name || "vrf";
-    const bindOptional = (prof?.placeholders || []).every((ph) => ph.required === false);
     const picked = values !== undefined ? values : selectedVrfs;
-    if (!picked.length && !bindOptional) return;
+    if (!picked.length) return;
     setBusy(true);
     try {
       await bizStateSetBindings(
@@ -1352,15 +1353,10 @@ export function BizStatePage() {
                       const enabled = Boolean(it?.enabled);
                       const binds = it?.bindings || [];
                       const needsBind = (prof.placeholders || []).length > 0;
-                      const bindOptional = (prof.placeholders || []).every(
-                        (ph) => ph.required === false,
-                      );
                       const bindHint = needsBind
                         ? binds.length
                           ? binds.map((b: any) => b.value).join(", ")
-                          : bindOptional
-                            ? t("bizState.allVrfsDefault")
-                            : t("bizState.unbound")
+                          : t("bizState.unbound")
                         : "—";
                       return (
                         <tr key={prof.profile_id}>
@@ -1376,22 +1372,12 @@ export function BizStatePage() {
                             <div className="pt-list-task-name">{prof.title}</div>
                             {prof.description ? <div className="muted">{prof.description}</div> : null}
                             {needsBind ? (
-                              <div className="bs-bind-hint muted">
-                                {bindOptional
-                                  ? t("bizState.bindHintOptional")
-                                  : t("bizState.bindHintRequired")}
-                              </div>
+                              <div className="bs-bind-hint muted">{t("bizState.bindHintRequired")}</div>
                             ) : null}
                           </td>
                           <td className="bs-params-cell">
                             {needsBind ? (
-                              <span
-                                className={
-                                  !binds.length && !bindOptional
-                                    ? "bs-params-warn"
-                                    : undefined
-                                }
-                              >
+                              <span className={!binds.length ? "bs-params-warn" : undefined}>
                                 {bindHint}
                               </span>
                             ) : (
@@ -1577,17 +1563,17 @@ export function BizStatePage() {
                   size="sm"
                   variant="ghost"
                   isDisabled={busy}
-                  onPress={() => setSelectedVrfs(candidates.map((c) => c.value))}
+                  onPress={() => {
+                    const allSelected =
+                      candidates.length > 0 &&
+                      candidates.every((c) => selectedVrfs.includes(c.value));
+                    setSelectedVrfs(allSelected ? [] : candidates.map((c) => c.value));
+                  }}
                 >
-                  {t("bizState.selectAllVrfs")}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  isDisabled={busy}
-                  onPress={() => setSelectedVrfs([])}
-                >
-                  {t("bizState.clearVrfs")}
+                  {candidates.length > 0 &&
+                  candidates.every((c) => selectedVrfs.includes(c.value))
+                    ? t("bizState.deselectAllVrfs")
+                    : t("bizState.selectAllVrfs")}
                 </Button>
               </div>
               <div className="bs-bind-list bs-bind-list--modal">
@@ -1614,43 +1600,22 @@ export function BizStatePage() {
           ) : null}
         </Modal.Body>
         <Modal.Footer>
-          {(() => {
-            const item = (detail?.items || []).find((it: any) => it.id === bindItemId);
-            const prof = profiles.find((p) => p.profile_id === item?.source_profile_id);
-            const bindOptional = (prof?.placeholders || []).every((ph) => ph.required === false);
-            return (
-              <>
-                <Button
-                  size="sm"
-                  variant="primary"
-                  isDisabled={
-                    busy || discoverLoading || (!selectedVrfs.length && !bindOptional)
-                  }
-                  onPress={() => void saveBindings()}
-                >
-                  {t("bizState.saveBindings")}
-                </Button>
-                {bindOptional ? (
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    isDisabled={busy || discoverLoading}
-                    onPress={() => void saveBindings([])}
-                  >
-                    {t("bizState.allVrfsDefault")}
-                  </Button>
-                ) : null}
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  isDisabled={discoverLoading}
-                  onPress={closeBindModal}
-                >
-                  {t("bizState.cancel")}
-                </Button>
-              </>
-            );
-          })()}
+          <Button
+            size="sm"
+            variant="primary"
+            isDisabled={busy || discoverLoading || !selectedVrfs.length}
+            onPress={() => void saveBindings()}
+          >
+            {t("bizState.saveBindings")}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            isDisabled={discoverLoading}
+            onPress={closeBindModal}
+          >
+            {t("bizState.cancel")}
+          </Button>
         </Modal.Footer>
       </AppModalShell>
 

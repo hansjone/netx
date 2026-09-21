@@ -88,14 +88,16 @@ def normalize_binding_dicts(
     return converted
 
 
-def _optional_discover_placeholders(profile: ParseProfile) -> list[PlaceholderDef]:
+def _discover_placeholders(profile: ParseProfile) -> list[PlaceholderDef]:
     return [
         ph
         for ph in (profile.placeholders or [])
-        if (not ph.required)
-        and ph.bind_mode == "discover_select"
-        and str(ph.discover_profile_id or "").strip()
+        if ph.bind_mode == "discover_select" and str(ph.discover_profile_id or "").strip()
     ]
+
+
+def _optional_discover_placeholders(profile: ParseProfile) -> list[PlaceholderDef]:
+    return [ph for ph in _discover_placeholders(profile) if not ph.required]
 
 
 def filter_discover_records(
@@ -175,12 +177,12 @@ def expand_bindings_from_discover_records(
     records: list[dict[str, Any]] | None,
 ) -> list[tuple[str, dict[str, str]]]:
     """Build concrete commands from discover/parser records (e.g. config_vrf)."""
-    optional = _optional_discover_placeholders(profile)
-    if not optional:
-        raise ValueError(f"profile {profile.profile_id} has no optional discover placeholders")
-    if len(optional) != 1 or len(profile.placeholders) != 1:
-        raise ValueError(f"expand-all only supports a single optional placeholder: {profile.profile_id}")
-    ph = optional[0]
+    discover_phs = _discover_placeholders(profile)
+    if not discover_phs:
+        raise ValueError(f"profile {profile.profile_id} has no discover placeholders")
+    if len(discover_phs) != 1 or len(profile.placeholders) != 1:
+        raise ValueError(f"expand-from-discover only supports a single placeholder: {profile.profile_id}")
+    ph = discover_phs[0]
     values = filter_discover_records(records, ph)
     if not values:
         raise ValueError(f"no discover values for {profile.profile_id} ({ph.discover_profile_id})")
