@@ -1,5 +1,5 @@
 import { Button, Input, Modal } from "@heroui/react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ListPager } from "../../components/ListPager";
 import { AppModalShell } from "../../components/ui/AppModalShell";
 import { FieldSelect } from "../../components/ui/FieldSelect";
@@ -829,6 +829,8 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
   const [pagedDiffs, setPagedDiffs] = useState<DiffRow[]>([]);
   const [diffsLoading, setDiffsLoading] = useState(false);
   const boardRef = useRef<HTMLDivElement | null>(null);
+  const tableScrollRef = useRef<HTMLDivElement | null>(null);
+  const tableScrollPosRef = useRef({ top: 0, left: 0 });
   const [boardFs, setBoardFs] = useState(false);
   const [navCollapsed, setNavCollapsed] = useState(false);
   const tplImportRef = useRef<HTMLInputElement | null>(null);
@@ -1207,24 +1209,38 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     (showFailCol ? 1 : 0) +
     resultColumns.keys.length +
     Math.max(resultColumns.extras.length, 0);
-  useEffect(() => {
-    const syncFs = () => {
-      const el = boardRef.current;
-      setBoardFs(Boolean(el && document.fullscreenElement === el));
-    };
-    document.addEventListener("fullscreenchange", syncFs);
-    return () => document.removeEventListener("fullscreenchange", syncFs);
+
+  const rememberTableScroll = useCallback(() => {
+    const wrap = tableScrollRef.current;
+    if (!wrap) return;
+    tableScrollPosRef.current = { top: wrap.scrollTop, left: wrap.scrollLeft };
   }, []);
 
-  const toggleBoardFullscreen = async () => {
-    const el = boardRef.current;
-    if (!el) return;
-    try {
-      if (document.fullscreenElement === el) await document.exitFullscreen();
-      else await el.requestFullscreen();
-    } catch (e) {
-      showError(formatErr(e));
-    }
+  useEffect(() => {
+    if (!boardFs) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      rememberTableScroll();
+      setBoardFs(false);
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [boardFs, rememberTableScroll]);
+
+  // Keep table scroll across fullscreen enter/exit (layout swap otherwise jumps to top).
+  useLayoutEffect(() => {
+    const wrap = tableScrollRef.current;
+    if (!wrap) return;
+    const { top, left } = tableScrollPosRef.current;
+    wrap.scrollTop = top;
+    wrap.scrollLeft = left;
+  }, [boardFs]);
+
+  const toggleBoardFullscreen = () => {
+    rememberTableScroll();
+    setBoardFs((v) => !v);
   };
 
   const downloadRunTables = async () => {
@@ -1689,6 +1705,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
   };
 
   const closeJob = () => {
+    setBoardFs(false);
     setJobId("");
     setRuns([]);
     setRunDetail(null);
@@ -2657,6 +2674,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
       <AppModalShell
         open={Boolean(jobId)}
         onClose={closeJob}
+        dismissible={!boardFs}
         size={jobDetailTab === "result" ? "cover" : "lg"}
         className={`app-heroui-modal--xl${jobDetailTab === "result" ? " bs-cmp-board-modal" : ""}`}
       >
@@ -2811,7 +2829,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                     size="sm"
                     variant="secondary"
                     isDisabled={!runDetail}
-                    onPress={() => void toggleBoardFullscreen()}
+                    onPress={() => toggleBoardFullscreen()}
                   >
                     {boardFs ? t("bizCompare.exitFullscreen") : t("bizCompare.fullscreen")}
                   </Button>
@@ -3020,76 +3038,98 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                     </div>
 
                     <div
+                      ref={tableScrollRef}
+                      onScroll={rememberTableScroll}
                       className={`pt-list-table-wrap bs-sheet-table bs-cmp-result-table${
                         diffsLoading ? " is-loading" : ""
                       }`}
                     >
                       <table className="data-table pt-list-table bs-cmp-diff-table">
                         <thead>
-                          <tr>
-                            <th className="bs-cmp-col-kind bs-cmp-sticky-kind">
-                              {t("bizCompare.colKind")}
-                            </th>
-                            {showFailCol ? (
-                              <th className="bs-cmp-col-fail">{t("bizCompare.colFailFields")}</th>
-                            ) : null}
-                            {resultColumns.keys.map((k, ki) => (
-                              <th key={k} className="bs-cmp-col-key">
-                                <span className="bs-cmp-th">
-                                  {ki === 0 ? (
-                                    <span className="bs-cmp-th__role bs-cmp-th__role--key">
-                                      {t("bizCompare.keyFields")}
-                                    </span>
-                                  ) : (
-                                    <span className="bs-cmp-th__role bs-cmp-th__role--spacer" aria-hidden>
-                                      &nbsp;
-                                    </span>
-                                  )}
-                                  <span className="bs-cmp-th__name">{k}</span>
-                                </span>
-                              </th>
-                            ))}
-                            {resultColumns.extras.map((f, fi) => {
-                              const isCmp = resultColumns.compareSet.has(f);
-                              const prev = resultColumns.extras[fi - 1];
-                              const prevCmp = prev
-                                ? resultColumns.compareSet.has(prev)
-                                : null;
-                              const showRole = fi === 0 || prevCmp !== isCmp;
-                              return (
-                                <th
-                                  key={f}
-                                  className={
-                                    isCmp ? "bs-cmp-col-compare" : "bs-cmp-col-display"
-                                  }
-                                >
-                                  <span className="bs-cmp-th">
-                                    {showRole ? (
-                                      <span
-                                        className={`bs-cmp-th__role ${
-                                          isCmp
-                                            ? "bs-cmp-th__role--compare"
-                                            : "bs-cmp-th__role--display"
-                                        }`}
+                          {(() => {
+                            const keyCols = resultColumns.keys;
+                            const compareCols = resultColumns.extras.filter((f) =>
+                              resultColumns.compareSet.has(f),
+                            );
+                            const displayCols = resultColumns.extras.filter(
+                              (f) => !resultColumns.compareSet.has(f),
+                            );
+                            const hasGroups =
+                              keyCols.length + compareCols.length + displayCols.length > 0;
+                            return (
+                              <>
+                                {hasGroups ? (
+                                  <tr className="bs-cmp-group-row">
+                                    <th
+                                      rowSpan={2}
+                                      className="bs-cmp-col-kind bs-cmp-sticky-kind"
+                                    >
+                                      {t("bizCompare.colKind")}
+                                    </th>
+                                    {showFailCol ? (
+                                      <th rowSpan={2} className="bs-cmp-col-fail">
+                                        {t("bizCompare.colFailFields")}
+                                      </th>
+                                    ) : null}
+                                    {keyCols.length ? (
+                                      <th
+                                        colSpan={keyCols.length}
+                                        className="bs-cmp-group bs-cmp-group--key"
                                       >
-                                        {isCmp
-                                          ? t("bizCompare.compareFields")
-                                          : t("bizCompare.displayField")}
-                                      </span>
-                                    ) : (
-                                      <span
-                                        className="bs-cmp-th__role bs-cmp-th__role--spacer"
-                                        aria-hidden
+                                        {t("bizCompare.keyFields")}
+                                      </th>
+                                    ) : null}
+                                    {compareCols.length ? (
+                                      <th
+                                        colSpan={compareCols.length}
+                                        className="bs-cmp-group bs-cmp-group--compare"
                                       >
-                                        &nbsp;
-                                      </span>
-                                    )}
-                                    <span className="bs-cmp-th__name">{f}</span>
-                                  </span>
-                                </th>
-                              );
-                            })}
-                          </tr>
+                                        {t("bizCompare.compareFields")}
+                                      </th>
+                                    ) : null}
+                                    {displayCols.length ? (
+                                      <th
+                                        colSpan={displayCols.length}
+                                        className="bs-cmp-group bs-cmp-group--display"
+                                      >
+                                        {t("bizCompare.displayField")}
+                                      </th>
+                                    ) : null}
+                                  </tr>
+                                ) : (
+                                  <tr>
+                                    <th className="bs-cmp-col-kind bs-cmp-sticky-kind">
+                                      {t("bizCompare.colKind")}
+                                    </th>
+                                    {showFailCol ? (
+                                      <th className="bs-cmp-col-fail">
+                                        {t("bizCompare.colFailFields")}
+                                      </th>
+                                    ) : null}
+                                  </tr>
+                                )}
+                                {hasGroups ? (
+                                  <tr className="bs-cmp-field-row">
+                                    {keyCols.map((k) => (
+                                      <th key={k} className="bs-cmp-col-key">
+                                        <span className="bs-cmp-th__name">{k}</span>
+                                      </th>
+                                    ))}
+                                    {compareCols.map((f) => (
+                                      <th key={f} className="bs-cmp-col-compare">
+                                        <span className="bs-cmp-th__name">{f}</span>
+                                      </th>
+                                    ))}
+                                    {displayCols.map((f) => (
+                                      <th key={f} className="bs-cmp-col-display">
+                                        <span className="bs-cmp-th__name">{f}</span>
+                                      </th>
+                                    ))}
+                                  </tr>
+                                ) : null}
+                              </>
+                            );
+                          })()}
                         </thead>
                         <tbody>
                           {pagedDiffs.map((d, i) => {
