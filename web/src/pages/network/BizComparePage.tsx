@@ -166,36 +166,12 @@ function PairCell(props: {
   reason?: string;
   beforeLabel: string;
   afterLabel: string;
-  zoneClass?: string;
-  zoneStart?: boolean;
 }) {
-  const {
-    beforeText,
-    afterText,
-    kind,
-    mismatch,
-    reason,
-    beforeLabel,
-    afterLabel,
-    zoneClass = "",
-    zoneStart = false,
-  } = props;
+  const { beforeText, afterText, kind, mismatch, reason, beforeLabel, afterLabel } = props;
   const pre = beforeText || "—";
   const post = afterText || "—";
   const isAdded = kind === "added";
   const isRemoved = kind === "removed";
-  const isDiff = mismatch || isAdded || isRemoved;
-  const zone = `${zoneClass}${zoneStart ? " bs-cmp-zone-start" : ""}`.trim();
-
-  // Matched values: single line (no 前/后 stack) — cuts density on pass-heavy sheets.
-  if (!isDiff) {
-    return (
-      <td className={`bs-cmp-val-cell bs-cmp-val-cell--same ${zone}`.trim()}>
-        <span className={`bs-cmp-val${beforeText ? "" : " is-empty"}`}>{pre}</span>
-      </td>
-    );
-  }
-
   // Whole-row missing/extra: emphasize the present side; do not strike it out.
   const preClass = [
     "bs-cmp-val",
@@ -215,21 +191,17 @@ function PairCell(props: {
     .join(" ");
   return (
     <td
-      className={`bs-cmp-val-cell bs-cmp-val-cell--pair bs-cmp-val-cell--diff${
-        isAdded ? " is-added" : ""
-      }${isRemoved ? " is-removed" : ""}${zone ? ` ${zone}` : ""}`}
+      className={`bs-cmp-val-cell bs-cmp-val-cell--pair${
+        mismatch || isAdded || isRemoved ? " bs-cmp-val-cell--diff" : ""
+      }${isAdded ? " is-added" : ""}${isRemoved ? " is-removed" : ""}`}
     >
       <div className="bs-cmp-pair">
         <div className="bs-cmp-pair__row">
-          <span className="bs-cmp-pair__tag" aria-label={beforeLabel}>
-            {beforeLabel}
-          </span>
+          <span className="bs-cmp-pair__tag">{beforeLabel}</span>
           <span className={preClass}>{isAdded ? "—" : pre}</span>
         </div>
         <div className="bs-cmp-pair__row">
-          <span className="bs-cmp-pair__tag" aria-label={afterLabel}>
-            {afterLabel}
-          </span>
+          <span className="bs-cmp-pair__tag">{afterLabel}</span>
           <span className={postClass}>{isRemoved ? "—" : post}</span>
         </div>
       </div>
@@ -3214,26 +3186,16 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                                       : failFieldsLabel(d)}
                                   </td>
                                 ) : null}
-                                {resultColumns.keys.map((k, ki) => (
-                                  <td
-                                    key={k}
-                                    className={`bs-cmp-key-cell bs-cmp-col-key${
-                                      ki === 0 ? " bs-cmp-zone-start" : ""
-                                    }`}
-                                  >
+                                {resultColumns.keys.map((k) => (
+                                  <td key={k} className="bs-cmp-key-cell">
                                     {cellText(d.key?.[k] ?? pre[k] ?? post[k]) || "—"}
                                   </td>
                                 ))}
-                                {resultColumns.extras.map((f, fi) => {
+                                {resultColumns.extras.map((f) => {
                                   const pv = cellText(pre[f]);
                                   const av = cellText(post[f]);
                                   const ch = d.changes?.[f];
                                   const isCmp = resultColumns.compareSet.has(f);
-                                  const prev = resultColumns.extras[fi - 1];
-                                  const prevCmp = prev
-                                    ? resultColumns.compareSet.has(prev)
-                                    : null;
-                                  const zoneStart = fi === 0 || prevCmp !== isCmp;
                                   const mismatch =
                                     d.kind === "added" || d.kind === "removed"
                                       ? Boolean(pv || av)
@@ -3250,10 +3212,6 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                                       reason={ch?.reason}
                                       beforeLabel={t("bizCompare.pairBefore")}
                                       afterLabel={t("bizCompare.pairAfter")}
-                                      zoneClass={
-                                        isCmp ? "bs-cmp-col-compare" : "bs-cmp-col-display"
-                                      }
-                                      zoneStart={zoneStart}
                                     />
                                   );
                                 })}

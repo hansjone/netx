@@ -12251,21 +12251,23 @@ body:has(.bs-cmp-board:fullscreen) {
 }
 
 .bs-cmp-group--key {
-  background: rgba(37, 99, 235, 0.28) !important;
-  color: #bfdbfe !important;
-  border-bottom: 2px solid #3b82f6;
+  background: rgba(15, 23, 42, 0.98) !important;
+  color: #93c5fd !important;
+  border-bottom: 1px solid rgba(59, 130, 246, 0.45);
 }
 
 .bs-cmp-group--compare {
-  background: rgba(245, 158, 11, 0.26) !important;
-  color: #fde68a !important;
-  border-bottom: 2px solid #f59e0b;
+  background: rgba(15, 23, 42, 0.98) !important;
+  color: #fbbf24 !important;
+  border-bottom: 1px solid rgba(245, 158, 11, 0.45);
+  box-shadow: inset 1px 0 0 rgba(148, 163, 184, 0.35);
 }
 
 .bs-cmp-group--display {
-  background: rgba(100, 116, 139, 0.28) !important;
-  color: #e2e8f0 !important;
-  border-bottom: 2px solid #94a3b8;
+  background: rgba(15, 23, 42, 0.98) !important;
+  color: #cbd5e1 !important;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.35);
+  box-shadow: inset 1px 0 0 rgba(148, 163, 184, 0.35);
 }
 
 .bs-cmp-diff-table tbody td {
@@ -12315,76 +12317,30 @@ body:has(.bs-cmp-board:fullscreen) {
   font-weight: 600;
 }
 
-.bs-cmp-diff-table thead tr.bs-cmp-field-row th.bs-cmp-col-key {
-  background: rgba(30, 58, 110, 0.95);
-  color: #bfdbfe;
-}
-
-.bs-cmp-diff-table thead tr.bs-cmp-field-row th.bs-cmp-col-compare {
-  background: rgba(78, 52, 12, 0.95);
-  color: #fde68a;
-}
-
+/* Header-only zone dividers (body cells stay neutral) */
+.bs-cmp-diff-table thead tr.bs-cmp-field-row th.bs-cmp-col-key,
+.bs-cmp-diff-table thead tr.bs-cmp-field-row th.bs-cmp-col-compare,
 .bs-cmp-diff-table thead tr.bs-cmp-field-row th.bs-cmp-col-display {
-  background: rgba(40, 48, 64, 0.98);
-  color: #cbd5e1;
+  background: rgba(15, 23, 42, 0.98);
+  color: #e2e8f0;
 }
 
-/* Zone banding: tint body cells so Key / Compare / Display stay distinct while scrolling */
-.bs-cmp-col-key {
-  --bs-cmp-zone: #3b82f6;
-  background: rgba(59, 130, 246, 0.08);
+.bs-cmp-diff-table thead th.bs-cmp-zone-start.bs-cmp-col-key {
+  box-shadow: inset 2px 0 0 #3b82f6;
 }
 
-.bs-cmp-col-compare {
-  --bs-cmp-zone: #f59e0b;
-  background: rgba(245, 158, 11, 0.07);
+.bs-cmp-diff-table thead th.bs-cmp-zone-start.bs-cmp-col-compare {
+  box-shadow: inset 2px 0 0 #f59e0b;
 }
 
+.bs-cmp-diff-table thead th.bs-cmp-zone-start.bs-cmp-col-display {
+  box-shadow: inset 2px 0 0 #94a3b8;
+}
+
+.bs-cmp-col-key,
+.bs-cmp-col-compare,
 .bs-cmp-col-display {
-  --bs-cmp-zone: #94a3b8;
-  background: rgba(148, 163, 184, 0.04);
-}
-
-.bs-cmp-zone-start {
-  box-shadow: inset 3px 0 0 var(--bs-cmp-zone, #64748b);
-}
-
-.bs-cmp-diff-table tbody tr:nth-child(even) td.bs-cmp-col-key {
-  background: rgba(59, 130, 246, 0.12);
-}
-
-.bs-cmp-diff-table tbody tr:nth-child(even) td.bs-cmp-col-compare {
-  background: rgba(245, 158, 11, 0.1);
-}
-
-.bs-cmp-diff-table tbody tr:nth-child(even) td.bs-cmp-col-display {
-  background: rgba(148, 163, 184, 0.07);
-}
-
-.bs-cmp-diff-table tbody tr:hover td.bs-cmp-col-key {
-  background: rgba(59, 130, 246, 0.16);
-}
-
-.bs-cmp-diff-table tbody tr:hover td.bs-cmp-col-compare {
-  background: rgba(245, 158, 11, 0.14);
-}
-
-.bs-cmp-diff-table tbody tr:hover td.bs-cmp-col-display {
-  background: rgba(148, 163, 184, 0.1);
-}
-
-/* Diff highlight still wins inside compare/display cells */
-.bs-cmp-diff-table tbody td.bs-cmp-val-cell--diff {
-  background: rgba(245, 158, 11, 0.14) !important;
-}
-
-.bs-cmp-diff-table tbody td.bs-cmp-val-cell--pair.is-removed {
-  background: rgba(239, 68, 68, 0.12) !important;
-}
-
-.bs-cmp-diff-table tbody td.bs-cmp-val-cell--pair.is-added {
-  background: rgba(34, 197, 94, 0.12) !important;
+  background: transparent;
 }
 
 .bs-cmp-overview__verdict {
@@ -12476,30 +12432,20 @@ body:has(.bs-cmp-board:fullscreen) {
   vertical-align: middle;
 }
 
-.bs-cmp-val-cell--same {
-  color: #cbd5e1;
-}
-
-.bs-cmp-val-cell--same .bs-cmp-val {
-  color: #cbd5e1;
-}
-
 .bs-cmp-val-cell--diff {
-  background: rgba(245, 158, 11, 0.1) !important;
-  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.18);
+  background: rgba(245, 158, 11, 0.08);
 }
 
 .bs-cmp-pair {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
   min-width: 4.5rem;
-  padding: 1px 0;
 }
 
 .bs-cmp-pair__row {
   display: grid;
-  grid-template-columns: 1.4em minmax(0, 1fr);
+  grid-template-columns: 1.6em minmax(0, 1fr);
   gap: 6px;
   align-items: baseline;
 }
@@ -12510,20 +12456,15 @@ body:has(.bs-cmp-board:fullscreen) {
   font-weight: 700;
   letter-spacing: 0.02em;
   color: #64748b;
-  line-height: 1.35;
-  text-align: center;
-  border-radius: 3px;
-  background: rgba(148, 163, 184, 0.12);
+  line-height: 1.3;
 }
 
 .bs-cmp-val-cell--diff .bs-cmp-pair__row:first-child .bs-cmp-pair__tag {
-  color: #fecaca;
-  background: rgba(239, 68, 68, 0.18);
+  color: #fca5a5;
 }
 
 .bs-cmp-val-cell--diff .bs-cmp-pair__row:last-child .bs-cmp-pair__tag {
-  color: #bbf7d0;
-  background: rgba(34, 197, 94, 0.18);
+  color: #86efac;
 }
 
 .bs-cmp-val {
@@ -12562,13 +12503,11 @@ body:has(.bs-cmp-board:fullscreen) {
 }
 
 .bs-cmp-val-cell--pair.is-removed {
-  background: rgba(239, 68, 68, 0.1) !important;
-  box-shadow: inset 0 0 0 1px rgba(248, 113, 113, 0.2);
+  background: rgba(239, 68, 68, 0.08);
 }
 
 .bs-cmp-val-cell--pair.is-added {
-  background: rgba(34, 197, 94, 0.1) !important;
-  box-shadow: inset 0 0 0 1px rgba(74, 222, 128, 0.2);
+  background: rgba(34, 197, 94, 0.08);
 }
 
 .bs-cmp-val-arrow {
@@ -12578,12 +12517,12 @@ body:has(.bs-cmp-board:fullscreen) {
   color: #94a3b8;
 }
 
-.bs-cmp-row--added td {
-  background: rgba(34, 197, 94, 0.05);
+.bs-cmp-row--added {
+  background: rgba(34, 197, 94, 0.06);
 }
 
-.bs-cmp-row--removed td {
-  background: rgba(239, 68, 68, 0.05);
+.bs-cmp-row--removed {
+  background: rgba(239, 68, 68, 0.06);
 }
 
 .bs-cmp-row--changed {
@@ -12591,7 +12530,7 @@ body:has(.bs-cmp-board:fullscreen) {
 }
 
 .bs-cmp-row--unchanged {
-  opacity: 1;
+  opacity: 0.78;
 }
 
 .bs-cmp-cell--pre {
