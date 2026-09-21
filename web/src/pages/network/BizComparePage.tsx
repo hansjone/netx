@@ -166,8 +166,20 @@ function PairCell(props: {
   reason?: string;
   beforeLabel: string;
   afterLabel: string;
+  zoneStart?: boolean;
+  zoneKind?: "compare" | "display";
 }) {
-  const { beforeText, afterText, kind, mismatch, reason, beforeLabel, afterLabel } = props;
+  const {
+    beforeText,
+    afterText,
+    kind,
+    mismatch,
+    reason,
+    beforeLabel,
+    afterLabel,
+    zoneStart = false,
+    zoneKind = "compare",
+  } = props;
   const pre = beforeText || "—";
   const post = afterText || "—";
   const isAdded = kind === "added";
@@ -193,7 +205,9 @@ function PairCell(props: {
     <td
       className={`bs-cmp-val-cell bs-cmp-val-cell--pair${
         mismatch || isAdded || isRemoved ? " bs-cmp-val-cell--diff" : ""
-      }${isAdded ? " is-added" : ""}${isRemoved ? " is-removed" : ""}`}
+      }${isAdded ? " is-added" : ""}${isRemoved ? " is-removed" : ""}${
+        zoneStart ? ` bs-cmp-zone-start bs-cmp-zone-start--${zoneKind}` : ""
+      }`}
     >
       <div className="bs-cmp-pair">
         <div className="bs-cmp-pair__row">
@@ -3129,7 +3143,9 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                                     {keyCols.map((k, ki) => (
                                       <th
                                         key={k}
-                                        className={`bs-cmp-col-key${ki === 0 ? " bs-cmp-zone-start" : ""}`}
+                                        className={`bs-cmp-col-key${
+                                          ki === 0 ? " bs-cmp-zone-start" : ""
+                                        }${ki === keyCols.length - 1 ? " bs-cmp-zone-end" : ""}`}
                                       >
                                         <span className="bs-cmp-th__name">{k}</span>
                                       </th>
@@ -3137,7 +3153,11 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                                     {compareCols.map((f, fi) => (
                                       <th
                                         key={f}
-                                        className={`bs-cmp-col-compare${fi === 0 ? " bs-cmp-zone-start" : ""}`}
+                                        className={`bs-cmp-col-compare${
+                                          fi === 0 ? " bs-cmp-zone-start" : ""
+                                        }${
+                                          fi === compareCols.length - 1 ? " bs-cmp-zone-end" : ""
+                                        }`}
                                       >
                                         <span className="bs-cmp-th__name">{f}</span>
                                       </th>
@@ -3145,7 +3165,11 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                                     {displayCols.map((f, fi) => (
                                       <th
                                         key={f}
-                                        className={`bs-cmp-col-display${fi === 0 ? " bs-cmp-zone-start" : ""}`}
+                                        className={`bs-cmp-col-display${
+                                          fi === 0 ? " bs-cmp-zone-start" : ""
+                                        }${
+                                          fi === displayCols.length - 1 ? " bs-cmp-zone-end" : ""
+                                        }`}
                                       >
                                         <span className="bs-cmp-th__name">{f}</span>
                                       </th>
@@ -3170,11 +3194,11 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                             return (
                               <tr key={i} className={`bs-cmp-row bs-cmp-row--${d.kind}`}>
                                 <td className="bs-cmp-col-kind bs-cmp-sticky-kind">
-                                  <span className={`bs-cmp-badge bs-cmp-badge--${verdict.tone}`}>
+                                  <span className={`bs-cmp-verdict bs-cmp-verdict--${verdict.tone}`}>
                                     {verdict.label}
                                   </span>
                                   {isFail ? (
-                                    <span className={`bs-cmp-badge bs-cmp-badge--${d.kind}`}>
+                                    <span className="bs-cmp-verdict__sub">
                                       {kindLabel(d.kind)}
                                     </span>
                                   ) : null}
@@ -3186,16 +3210,26 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                                       : failFieldsLabel(d)}
                                   </td>
                                 ) : null}
-                                {resultColumns.keys.map((k) => (
-                                  <td key={k} className="bs-cmp-key-cell">
+                                {resultColumns.keys.map((k, ki) => (
+                                  <td
+                                    key={k}
+                                    className={`bs-cmp-key-cell${
+                                      ki === 0 ? " bs-cmp-zone-start bs-cmp-zone-start--key" : ""
+                                    }`}
+                                  >
                                     {cellText(d.key?.[k] ?? pre[k] ?? post[k]) || "—"}
                                   </td>
                                 ))}
-                                {resultColumns.extras.map((f) => {
+                                {resultColumns.extras.map((f, fi) => {
                                   const pv = cellText(pre[f]);
                                   const av = cellText(post[f]);
                                   const ch = d.changes?.[f];
                                   const isCmp = resultColumns.compareSet.has(f);
+                                  const prev = resultColumns.extras[fi - 1];
+                                  const prevCmp = prev
+                                    ? resultColumns.compareSet.has(prev)
+                                    : null;
+                                  const zoneStart = fi === 0 || prevCmp !== isCmp;
                                   const mismatch =
                                     d.kind === "added" || d.kind === "removed"
                                       ? Boolean(pv || av)
@@ -3212,6 +3246,8 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                                       reason={ch?.reason}
                                       beforeLabel={t("bizCompare.pairBefore")}
                                       afterLabel={t("bizCompare.pairAfter")}
+                                      zoneStart={zoneStart}
+                                      zoneKind={isCmp ? "compare" : "display"}
                                     />
                                   );
                                 })}
