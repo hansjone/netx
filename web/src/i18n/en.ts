@@ -506,6 +506,8 @@ const en = {
     colMode: "Mode",
     colStatus: "Status",
     colKind: "Verdict",
+    colResult: "Result",
+    colDetail: "Detail",
     colFailFields: "Failed fields",
     colActions: "Actions",
     colKey: "Identity",

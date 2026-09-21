@@ -12214,10 +12214,7 @@ body:has(.bs-cmp-board:fullscreen) {
   border-collapse: separate;
   border-spacing: 0;
   --bs-cmp-group-h: 30px;
-  --bs-cmp-zone-line: rgba(148, 163, 184, 0.42);
-  --bs-cmp-zone-key: #3b82f6;
-  --bs-cmp-zone-compare: #f59e0b;
-  --bs-cmp-zone-display: #94a3b8;
+  --bs-cmp-line: rgba(148, 163, 184, 0.22);
 }
 
 .bs-cmp-diff-table thead th {
@@ -12229,6 +12226,8 @@ body:has(.bs-cmp-board:fullscreen) {
   white-space: nowrap;
   vertical-align: middle;
   padding: 7px 10px;
+  border-bottom: 1px solid var(--bs-cmp-line);
+  border-right: 1px solid var(--bs-cmp-line);
 }
 
 .bs-cmp-diff-table thead tr.bs-cmp-group-row th {
@@ -12237,34 +12236,12 @@ body:has(.bs-cmp-board:fullscreen) {
   text-align: center;
   font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.04em;
   padding: 6px 12px;
   height: var(--bs-cmp-group-h);
-}
-
-/* Merged-cell style group headers */
-.bs-cmp-group {
-  border-top: 1px solid var(--bs-cmp-zone-line) !important;
-  border-bottom: 1px solid var(--bs-cmp-zone-line) !important;
-  border-right: 1px solid var(--bs-cmp-zone-line) !important;
-}
-
-.bs-cmp-group--key {
-  background: rgba(37, 99, 235, 0.16) !important;
-  color: #93c5fd !important;
-  border-left: 2px solid var(--bs-cmp-zone-key) !important;
-}
-
-.bs-cmp-group--compare {
-  background: rgba(245, 158, 11, 0.12) !important;
-  color: #fbbf24 !important;
-  border-left: 2px solid var(--bs-cmp-zone-compare) !important;
-}
-
-.bs-cmp-group--display {
-  background: rgba(148, 163, 184, 0.1) !important;
-  color: #e2e8f0 !important;
-  border-left: 2px solid var(--bs-cmp-zone-display) !important;
+  color: #cbd5e1;
+  background: rgba(15, 23, 42, 0.98);
+  border-top: 1px solid var(--bs-cmp-line);
 }
 
 .bs-cmp-diff-table thead tr.bs-cmp-field-row th {
@@ -12273,40 +12250,13 @@ body:has(.bs-cmp-board:fullscreen) {
   vertical-align: middle;
   padding-top: 6px;
   padding-bottom: 7px;
-  border-bottom: 1px solid var(--bs-cmp-zone-line);
   background: rgba(15, 23, 42, 0.98);
   color: #e2e8f0;
 }
 
-.bs-cmp-diff-table thead tr.bs-cmp-field-row th.bs-cmp-col-key {
-  background: rgba(30, 41, 70, 0.92);
-}
-
-.bs-cmp-diff-table thead tr.bs-cmp-field-row th.bs-cmp-col-compare {
-  background: rgba(42, 34, 18, 0.92);
-}
-
-.bs-cmp-diff-table thead tr.bs-cmp-field-row th.bs-cmp-col-display {
-  background: rgba(30, 36, 48, 0.95);
-}
-
-.bs-cmp-diff-table thead th.bs-cmp-zone-start.bs-cmp-col-key,
-.bs-cmp-diff-table tbody td.bs-cmp-zone-start--key {
-  border-left: 2px solid var(--bs-cmp-zone-key);
-}
-
-.bs-cmp-diff-table thead th.bs-cmp-zone-start.bs-cmp-col-compare,
-.bs-cmp-diff-table tbody td.bs-cmp-zone-start--compare {
-  border-left: 2px solid var(--bs-cmp-zone-compare);
-}
-
-.bs-cmp-diff-table thead th.bs-cmp-zone-start.bs-cmp-col-display,
-.bs-cmp-diff-table tbody td.bs-cmp-zone-start--display {
-  border-left: 2px solid var(--bs-cmp-zone-display);
-}
-
-.bs-cmp-diff-table thead th.bs-cmp-zone-end {
-  border-right: 1px solid var(--bs-cmp-zone-line);
+.bs-cmp-diff-table thead th.bs-cmp-zone-start,
+.bs-cmp-diff-table tbody td.bs-cmp-zone-start {
+  border-left: 1px solid var(--bs-cmp-line);
 }
 
 .bs-cmp-diff-table tbody td {
@@ -12322,33 +12272,24 @@ body:has(.bs-cmp-board:fullscreen) {
   background: rgba(37, 99, 235, 0.1);
 }
 
-/* 结论 column */
+/* 结果 column sticky */
 .bs-cmp-sticky-kind {
   position: sticky;
   left: 0;
   z-index: 1;
   background: rgba(15, 23, 42, 0.96);
-  border-right: 1px solid var(--bs-cmp-zone-line, rgba(148, 163, 184, 0.42));
 }
 
 .bs-cmp-diff-table thead th.bs-cmp-sticky-kind {
   z-index: 4;
   background: rgba(15, 23, 42, 0.98);
-  vertical-align: middle;
   text-align: center;
-  font-weight: 700;
-  color: #cbd5e1;
-  letter-spacing: 0.04em;
-  border-bottom: 1px solid var(--bs-cmp-zone-line);
-  box-shadow: 1px 0 0 rgba(148, 163, 184, 0.16);
+  box-shadow: 1px 0 0 var(--bs-cmp-line);
 }
 
 .bs-cmp-diff-table thead th.bs-cmp-col-fail {
   z-index: 3;
   text-align: center;
-  vertical-align: middle;
-  border-right: 1px solid var(--bs-cmp-zone-line);
-  border-bottom: 1px solid var(--bs-cmp-zone-line);
 }
 
 .bs-cmp-diff-table tbody tr:nth-child(even) td.bs-cmp-sticky-kind {

@@ -503,6 +503,8 @@ const zh = {
     colMode: "模式",
     colStatus: "状态",
     colKind: "结论",
+    colResult: "结果",
+    colDetail: "明细",
     colFailFields: "失败项",
     colActions: "操作",
     colKey: "身份",

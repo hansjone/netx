@@ -167,7 +167,6 @@ function PairCell(props: {
   beforeLabel: string;
   afterLabel: string;
   zoneStart?: boolean;
-  zoneKind?: "compare" | "display";
 }) {
   const {
     beforeText,
@@ -178,7 +177,6 @@ function PairCell(props: {
     beforeLabel,
     afterLabel,
     zoneStart = false,
-    zoneKind = "compare",
   } = props;
   const pre = beforeText || "—";
   const post = afterText || "—";
@@ -206,7 +204,7 @@ function PairCell(props: {
       className={`bs-cmp-val-cell bs-cmp-val-cell--pair${
         mismatch || isAdded || isRemoved ? " bs-cmp-val-cell--diff" : ""
       }${isAdded ? " is-added" : ""}${isRemoved ? " is-removed" : ""}${
-        zoneStart ? ` bs-cmp-zone-start bs-cmp-zone-start--${zoneKind}` : ""
+        zoneStart ? " bs-cmp-zone-start" : ""
       }`}
     >
       <div className="bs-cmp-pair">
@@ -3084,98 +3082,93 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                             const displayCols = resultColumns.extras.filter(
                               (f) => !resultColumns.compareSet.has(f),
                             );
+                            const verdictColSpan = showFailCol ? 2 : 1;
                             const hasGroups =
                               keyCols.length + compareCols.length + displayCols.length > 0;
                             return (
                               <>
-                                {hasGroups ? (
-                                  <tr className="bs-cmp-group-row">
+                                <tr className="bs-cmp-group-row">
+                                  <th
+                                    colSpan={verdictColSpan}
+                                    className="bs-cmp-group bs-cmp-group--verdict"
+                                  >
+                                    {t("bizCompare.colKind")}
+                                  </th>
+                                  {keyCols.length ? (
                                     <th
-                                      rowSpan={2}
-                                      className="bs-cmp-col-kind bs-cmp-sticky-kind"
+                                      colSpan={keyCols.length}
+                                      className="bs-cmp-group bs-cmp-group--key"
                                     >
-                                      {t("bizCompare.colKind")}
+                                      {t("bizCompare.keyFields")}
                                     </th>
-                                    {showFailCol ? (
-                                      <th rowSpan={2} className="bs-cmp-col-fail">
-                                        {t("bizCompare.colFailFields")}
-                                      </th>
-                                    ) : null}
-                                    {keyCols.length ? (
-                                      <th
-                                        colSpan={keyCols.length}
-                                        className="bs-cmp-group bs-cmp-group--key"
-                                      >
-                                        {t("bizCompare.keyFields")}
-                                      </th>
-                                    ) : null}
-                                    {compareCols.length ? (
-                                      <th
-                                        colSpan={compareCols.length}
-                                        className="bs-cmp-group bs-cmp-group--compare"
-                                      >
-                                        {t("bizCompare.compareFields")}
-                                      </th>
-                                    ) : null}
-                                    {displayCols.length ? (
-                                      <th
-                                        colSpan={displayCols.length}
-                                        className="bs-cmp-group bs-cmp-group--display"
-                                      >
-                                        {t("bizCompare.displayField")}
-                                      </th>
-                                    ) : null}
-                                  </tr>
-                                ) : (
-                                  <tr>
-                                    <th className="bs-cmp-col-kind bs-cmp-sticky-kind">
-                                      {t("bizCompare.colKind")}
+                                  ) : null}
+                                  {compareCols.length ? (
+                                    <th
+                                      colSpan={compareCols.length}
+                                      className="bs-cmp-group bs-cmp-group--compare"
+                                    >
+                                      {t("bizCompare.compareFields")}
                                     </th>
-                                    {showFailCol ? (
-                                      <th className="bs-cmp-col-fail">
-                                        {t("bizCompare.colFailFields")}
-                                      </th>
-                                    ) : null}
-                                  </tr>
-                                )}
-                                {hasGroups ? (
-                                  <tr className="bs-cmp-field-row">
-                                    {keyCols.map((k, ki) => (
-                                      <th
-                                        key={k}
-                                        className={`bs-cmp-col-key${
-                                          ki === 0 ? " bs-cmp-zone-start" : ""
-                                        }${ki === keyCols.length - 1 ? " bs-cmp-zone-end" : ""}`}
-                                      >
-                                        <span className="bs-cmp-th__name">{k}</span>
-                                      </th>
-                                    ))}
-                                    {compareCols.map((f, fi) => (
-                                      <th
-                                        key={f}
-                                        className={`bs-cmp-col-compare${
-                                          fi === 0 ? " bs-cmp-zone-start" : ""
-                                        }${
-                                          fi === compareCols.length - 1 ? " bs-cmp-zone-end" : ""
-                                        }`}
-                                      >
-                                        <span className="bs-cmp-th__name">{f}</span>
-                                      </th>
-                                    ))}
-                                    {displayCols.map((f, fi) => (
-                                      <th
-                                        key={f}
-                                        className={`bs-cmp-col-display${
-                                          fi === 0 ? " bs-cmp-zone-start" : ""
-                                        }${
-                                          fi === displayCols.length - 1 ? " bs-cmp-zone-end" : ""
-                                        }`}
-                                      >
-                                        <span className="bs-cmp-th__name">{f}</span>
-                                      </th>
-                                    ))}
-                                  </tr>
-                                ) : null}
+                                  ) : null}
+                                  {displayCols.length ? (
+                                    <th
+                                      colSpan={displayCols.length}
+                                      className="bs-cmp-group bs-cmp-group--display"
+                                    >
+                                      {t("bizCompare.displayField")}
+                                    </th>
+                                  ) : null}
+                                </tr>
+                                <tr className="bs-cmp-field-row">
+                                  <th className="bs-cmp-col-kind bs-cmp-sticky-kind bs-cmp-zone-start">
+                                    <span className="bs-cmp-th__name">
+                                      {t("bizCompare.colResult")}
+                                    </span>
+                                  </th>
+                                  {showFailCol ? (
+                                    <th className="bs-cmp-col-fail">
+                                      <span className="bs-cmp-th__name">
+                                        {t("bizCompare.colDetail")}
+                                      </span>
+                                    </th>
+                                  ) : null}
+                                  {hasGroups
+                                    ? keyCols.map((k, ki) => (
+                                        <th
+                                          key={k}
+                                          className={`bs-cmp-col-key${
+                                            ki === 0 ? " bs-cmp-zone-start" : ""
+                                          }`}
+                                        >
+                                          <span className="bs-cmp-th__name">{k}</span>
+                                        </th>
+                                      ))
+                                    : null}
+                                  {hasGroups
+                                    ? compareCols.map((f, fi) => (
+                                        <th
+                                          key={f}
+                                          className={`bs-cmp-col-compare${
+                                            fi === 0 ? " bs-cmp-zone-start" : ""
+                                          }`}
+                                        >
+                                          <span className="bs-cmp-th__name">{f}</span>
+                                        </th>
+                                      ))
+                                    : null}
+                                  {hasGroups
+                                    ? displayCols.map((f, fi) => (
+                                        <th
+                                          key={f}
+                                          className={`bs-cmp-col-display${
+                                            fi === 0 ? " bs-cmp-zone-start" : ""
+                                          }`}
+                                        >
+                                          <span className="bs-cmp-th__name">{f}</span>
+                                        </th>
+                                      ))
+                                    : null}
+                                </tr>
                               </>
                             );
                           })()}
@@ -3214,7 +3207,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                                   <td
                                     key={k}
                                     className={`bs-cmp-key-cell${
-                                      ki === 0 ? " bs-cmp-zone-start bs-cmp-zone-start--key" : ""
+                                      ki === 0 ? " bs-cmp-zone-start" : ""
                                     }`}
                                   >
                                     {cellText(d.key?.[k] ?? pre[k] ?? post[k]) || "—"}
@@ -3247,7 +3240,6 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                                       beforeLabel={t("bizCompare.pairBefore")}
                                       afterLabel={t("bizCompare.pairAfter")}
                                       zoneStart={zoneStart}
-                                      zoneKind={isCmp ? "compare" : "display"}
                                     />
                                   );
                                 })}
