@@ -404,7 +404,13 @@ _L2VPN_MAC_FIELDS: list[FieldDef] = [
     FieldDef("mac", length=64, indexed=True, is_key=True, display_name="MAC"),
     FieldDef("vpn", length=128, indexed=True, is_key=True, display_name="VPN"),
     FieldDef("vlan", length=32, role="meta", display_name="VLAN"),
-    FieldDef("outgoing", length=256, role="state", display_name="Outgoing"),
+    FieldDef("pw", length=128, role="state", display_name="PW"),
+    FieldDef("neighbor", length=128, role="state", display_name="Neighbor"),
+    FieldDef("ac_port", length=128, role="state", display_name="AC Port"),
+    FieldDef("exter_vlan", length=32, role="state", display_name="Exter VLAN"),
+    FieldDef("vpn_sid", length=128, role="state", display_name="VPN SID"),
+    FieldDef("neighbor_sid", length=128, role="state", display_name="Neighbor SID"),
+    FieldDef("outgoing", length=256, role="meta", display_name="Outgoing"),
     FieldDef("attribute", length=64, role="meta", display_name="Attribute"),
 ]
 

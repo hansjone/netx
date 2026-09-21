@@ -14,6 +14,7 @@ from netx_api.biz_state.parsers.zte import (
     normalize_bgp_route,
     normalize_ip_route,
     normalize_ipv6_route,
+    normalize_l2vpn_mac,
     normalize_l2vpn_pw,
     normalize_l2vpn_pw_detail,
     normalize_optical_brief,
@@ -127,6 +128,23 @@ PWName   PeerIP          FEC    PWType      State Llabel  Rlabel  VPNOwner
 pw1      10.0.0.1        128    Ethernet  H UP    100     200     L:VPN_A
 pw2      10.0.0.2        128    Ethernet  S DOWN  -       -       L:VPN_B
 pw3      10.0.0.3        128    Ethernet    UP    101     201     W:100
+"""
+
+_L2VPN_MAC = """
+Total MAC Entries:  502
+
+Headers: Src--Source filter, Dst--Destination filter
+         E--Exter-VLAN ID  I--Inter-VLAN ID
+
+MAC            VPN            VLAN Outgoing Information             Attribute
+-------------- -------------- ---- -------------------------------- ------------
+0000.9999.0002 EVPNvpls501    0    SID fc00:a000:1005::567b:0, 2400:9800:7000:1005::  Static
+0011.2232.42e3 mxy-bvi-ag4-ag3  0  SID fc00:a000:1002::3469:0, 2400:9800:7000:1002::  Dynamic
+0099.2232.7788 css-irb-ag3-1  0    ESI:0:109501000010000001         Static
+004b.0100.0001 css-irb-ag3-1  0    smartgroup11.31, E:31            Dynamic
+0011.2232.42e4 mxy-kompella-2 0    auto_pw3, 24.11.100.5            Dynamic
+0011.2232.42e4 mxy-kompella-1 0    PW1,1.1.1.1                      Dynamic
+0000.2200.0001 EVPNvpls501    0    smartgroup2345.2501, E:2501      Dynamic
 """
 
 _L2VPN_PW_DETAIL = """
@@ -275,6 +293,54 @@ class ZteExtendedParserTests(unittest.TestCase):
         self.assertEqual(by["cdgei-0/1/0/6"]["status"], "offline")
         self.assertEqual(by["cgei-0/1/0/2:1"]["tx_power"], "2.3,2.4,2.3,2.2")
         self.assertEqual(by["xgei-0/2/0/1"]["rx_power"], "-2.4")
+
+    def test_l2vpn_mac_outgoing_split(self) -> None:
+        fsm_rows = apply_rule(
+            platform="zte_zxros",
+            rule_key="zte_zxros_show_mac_l2vpn",
+            text=_L2VPN_MAC,
+            command="show mac l2vpn",
+        )
+        self.assertEqual(len(fsm_rows), 7)
+        self.assertTrue(all("----" not in r.get("MAC", "") for r in fsm_rows))
+
+        rows = normalize_l2vpn_mac(
+            raw_text=_L2VPN_MAC,
+            vendor="zte",
+            device_type="zte_zxros",
+            command="show mac l2vpn | one-line",
+        )
+        self.assertEqual(len(rows), 7)
+        by = {(r["mac"], r["vpn"]): r for r in rows}
+
+        sid = by[("0000.9999.0002", "EVPNvpls501")]
+        self.assertEqual(sid["vpn_sid"], "fc00:a000:1005::567b:0")
+        self.assertEqual(sid["neighbor_sid"], "2400:9800:7000:1005::")
+        self.assertEqual(sid["pw"], "")
+        self.assertEqual(sid["ac_port"], "")
+        self.assertTrue(sid["outgoing"].startswith("SID "))
+
+        ac = by[("004b.0100.0001", "css-irb-ag3-1")]
+        self.assertEqual(ac["ac_port"], "smartgroup11.31")
+        self.assertEqual(ac["exter_vlan"], "31")
+        self.assertEqual(ac["pw"], "")
+
+        pw = by[("0011.2232.42e4", "mxy-kompella-2")]
+        self.assertEqual(pw["pw"], "auto_pw3")
+        self.assertEqual(pw["neighbor"], "24.11.100.5")
+        self.assertEqual(pw["ac_port"], "")
+
+        pw2 = by[("0011.2232.42e4", "mxy-kompella-1")]
+        self.assertEqual(pw2["pw"], "PW1")
+        self.assertEqual(pw2["neighbor"], "1.1.1.1")
+
+        esi = by[("0099.2232.7788", "css-irb-ag3-1")]
+        self.assertEqual(esi["outgoing"], "ESI:0:109501000010000001")
+        self.assertEqual(esi["pw"], "")
+        self.assertEqual(esi["vpn_sid"], "")
+
+        fields = {f.name for f in metric_field_map()["l2vpn_mac"]}
+        self.assertTrue({"pw", "neighbor", "ac_port", "exter_vlan", "vpn_sid", "neighbor_sid"} <= fields)
 
     def test_bgp_route_and_aux_render(self) -> None:
         routes = normalize_bgp_route(

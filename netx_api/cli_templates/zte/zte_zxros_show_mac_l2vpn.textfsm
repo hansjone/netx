@@ -1,4 +1,4 @@
-Value MAC (\S+)
+Value MAC ([0-9A-Fa-f]{4}\.[0-9A-Fa-f]{4}\.[0-9A-Fa-f]{4})
 Value VPN (\S+)
 Value VLAN (\S+)
 Value OUTGOING (.*)
@@ -13,6 +13,7 @@ Start
 
 Entries
   ^${MAC}\s+${VPN}\s+${VLAN}\s+${OUTGOING}\s+${ATTRIBUTE}\s*$$ -> Record
+  ^-+(\s+-+)*\s*$$
   ^\s*$$
   ^\S+\s*#\s*$$ -> End
   ^.*#\s*$$ -> End
