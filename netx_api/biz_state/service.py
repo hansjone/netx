@@ -290,6 +290,9 @@ def _assert_bindings_ready(db: Session, task_id: str) -> None:
         profile = get_profile(it.source_profile_id)
         if not profile or not profile.placeholders:
             continue
+        # Optional discover placeholders: empty bindings → expand all at collect.
+        if all(not ph.required for ph in profile.placeholders):
+            continue
         binds = (
             db.query(BizStateTaskItemBinding)
             .filter(BizStateTaskItemBinding.item_id == it.id)

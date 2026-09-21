@@ -51,7 +51,12 @@ type TaskRow = {
   interval_sec?: number;
 };
 
-type Placeholder = { name: string };
+type Placeholder = {
+  name: string;
+  required?: boolean;
+  bind_mode?: string;
+  discover_profile_id?: string;
+};
 type Profile = {
   profile_id: string;
   title: string;
@@ -786,17 +791,20 @@ export function BizStatePage() {
     }
   };
 
-  const saveBindings = async () => {
+  const saveBindings = async (values?: string[]) => {
     if (!taskId || !bindItemId) return;
     const item = (detail?.items || []).find((it: any) => it.id === bindItemId);
     const prof = profiles.find((p) => p.profile_id === item?.source_profile_id);
     const phName = (prof?.placeholders || [])[0]?.name || "vrf";
+    const bindOptional = (prof?.placeholders || []).every((ph) => ph.required === false);
+    const picked = values !== undefined ? values : selectedVrfs;
+    if (!picked.length && !bindOptional) return;
     setBusy(true);
     try {
       await bizStateSetBindings(
         taskId,
         bindItemId,
-        selectedVrfs.map((v) => ({ placeholder: phName, value: v })),
+        picked.map((v) => ({ placeholder: phName, value: v })),
       );
       showOk(t("bizState.bindingsSaved"));
       await loadTask(taskId);
@@ -1322,6 +1330,9 @@ export function BizStatePage() {
                       const enabled = Boolean(it?.enabled);
                       const binds = it?.bindings || [];
                       const needsBind = (prof.placeholders || []).length > 0;
+                      const bindOptional = (prof.placeholders || []).every(
+                        (ph) => ph.required === false,
+                      );
                       return (
                         <tr key={prof.profile_id}>
                           <td>
@@ -1343,7 +1354,9 @@ export function BizStatePage() {
                             {needsBind
                               ? binds.length
                                 ? binds.map((b: any) => b.value).join(", ")
-                                : t("bizState.unbound")
+                                : bindOptional
+                                  ? t("bizState.allVrfsDefault")
+                                  : t("bizState.unbound")
                               : "—"}
                           </td>
                           <td>
@@ -1394,10 +1407,31 @@ export function BizStatePage() {
                     <Button
                       size="sm"
                       variant="primary"
-                      isDisabled={busy || !selectedVrfs.length}
+                      isDisabled={
+                        busy ||
+                        (!selectedVrfs.length &&
+                          !(
+                            profiles
+                              .find(
+                                (p) =>
+                                  p.profile_id ===
+                                  (detail?.items || []).find((it: any) => it.id === bindItemId)
+                                    ?.source_profile_id,
+                              )
+                              ?.placeholders || []
+                          ).every((ph) => ph.required === false))
+                      }
                       onPress={() => void saveBindings()}
                     >
                       {t("bizState.saveBindings")}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      isDisabled={busy}
+                      onPress={() => void saveBindings([])}
+                    >
+                      {t("bizState.allVrfsDefault")}
                     </Button>
                     <Button
                       size="sm"

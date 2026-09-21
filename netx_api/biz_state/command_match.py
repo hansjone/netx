@@ -6,7 +6,10 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from .profiles import ParseProfile, all_profiles, get_profile
+from .profiles import ParseProfile, PlaceholderDef, all_profiles, get_profile
+
+# Sentinel concrete command: collect expands all discover values at runtime.
+EXPAND_ALL_COMMAND = "__expand_all__"
 
 
 @dataclass(frozen=True)
@@ -85,13 +88,52 @@ def normalize_binding_dicts(
     return converted
 
 
+def _optional_discover_placeholders(profile: ParseProfile) -> list[PlaceholderDef]:
+    return [
+        ph
+        for ph in (profile.placeholders or [])
+        if (not ph.required)
+        and ph.bind_mode == "discover_select"
+        and str(ph.discover_profile_id or "").strip()
+    ]
+
+
+def filter_discover_records(
+    records: list[dict[str, Any]] | None,
+    ph: PlaceholderDef,
+) -> list[str]:
+    """Apply placeholder discover filter; return unique values for ``ph``."""
+    value_field = str(ph.discover_value_field or ph.name or "").strip() or "vrf_name"
+    filt_field = str(ph.discover_filter_field or "").strip()
+    filt_contains = str(ph.discover_filter_contains or "").strip().lower()
+    out: list[str] = []
+    seen: set[str] = set()
+    for rec in records or []:
+        if not isinstance(rec, dict):
+            continue
+        if filt_field and filt_contains:
+            hay = str(rec.get(filt_field) or "").strip().lower()
+            if filt_contains not in hay:
+                continue
+        val = str(rec.get(value_field) or "").strip()
+        if not val or val in seen:
+            continue
+        seen.add(val)
+        out.append(val)
+    return out
+
+
 def expand_from_bindings(
     *,
     profile: ParseProfile,
     bindings: list[dict[str, str]] | None = None,
     command_override: str = "",
 ) -> list[tuple[str, dict[str, str]]]:
-    """Return list of (concrete_command, params). Reject leftover placeholders."""
+    """Return list of (concrete_command, params). Reject leftover placeholders.
+
+    When all placeholders are optional discover_select and bindings are empty,
+    returns a single ``(EXPAND_ALL_COMMAND, {})`` sentinel for collect-time expansion.
+    """
     override = normalize_command(command_override)
     if override:
         if "<" in override and ">" in override:
@@ -107,6 +149,9 @@ def expand_from_bindings(
 
     binds = normalize_binding_dicts(bindings, placeholders=profile.placeholders)
     if not binds:
+        optional = _optional_discover_placeholders(profile)
+        if optional and len(optional) == len(profile.placeholders):
+            return [(EXPAND_ALL_COMMAND, {"__expand_all__": "1"})]
         raise ValueError(f"profile {profile.profile_id} requires parameter bindings")
 
     out: list[tuple[str, dict[str, str]]] = []
@@ -122,6 +167,25 @@ def expand_from_bindings(
             raise ValueError(f"unresolved placeholders in: {concrete}")
         out.append((concrete, dict(params)))
     return out
+
+
+def expand_bindings_from_discover_records(
+    *,
+    profile: ParseProfile,
+    records: list[dict[str, Any]] | None,
+) -> list[tuple[str, dict[str, str]]]:
+    """Build concrete commands from discover/parser records (e.g. config_vrf)."""
+    optional = _optional_discover_placeholders(profile)
+    if not optional:
+        raise ValueError(f"profile {profile.profile_id} has no optional discover placeholders")
+    if len(optional) != 1 or len(profile.placeholders) != 1:
+        raise ValueError(f"expand-all only supports a single optional placeholder: {profile.profile_id}")
+    ph = optional[0]
+    values = filter_discover_records(records, ph)
+    if not values:
+        raise ValueError(f"no discover values for {profile.profile_id} ({ph.discover_profile_id})")
+    bindings = [{ph.name: v} for v in values]
+    return expand_from_bindings(profile=profile, bindings=bindings)
 
 
 def preview_task_item(
@@ -171,6 +235,16 @@ def preview_task_item(
             "commands": [],
             "parse": "invalid",
             "message": str(exc),
+        }
+
+    if pairs and pairs[0][0] == EXPAND_ALL_COMMAND:
+        return {
+            "ok": True,
+            "kind": kind,
+            "profile_id": profile.profile_id,
+            "commands": [],
+            "parse": "expand_all",
+            "message": "no bindings: collect will expand all discover VRFs",
         }
 
     previews = []

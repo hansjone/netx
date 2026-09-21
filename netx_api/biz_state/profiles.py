@@ -35,6 +35,9 @@ class PlaceholderDef:
     discover_profile_id: str = ""
     discover_value_field: str = ""
     discover_label_field: str = ""
+    # When required=False and no bindings: collect expands all discover values.
+    discover_filter_field: str = ""
+    discover_filter_contains: str = ""
 
 
 @dataclass(frozen=True)
@@ -272,16 +275,55 @@ _BGP_PEER_FIELDS: list[FieldDef] = [
     FieldDef("msg_rcvd", length=32, role="meta", display_name="MsgRcvd"),
     FieldDef("msg_send", length=32, role="meta", display_name="MsgSend"),
     FieldDef("up_down", length=32, role="meta", display_name="Up/Down"),
+    # From config_vrf enrich (VRF summary aux).
+    FieldDef("rd", length=64, role="meta", display_name="RD"),
+    FieldDef("address_families", length=64, role="meta", display_name="AF"),
 ]
 
+# Neighbor / dual-placeholder profiles still require an explicit VRF bind.
 _BGP_VRF_PLACEHOLDER = PlaceholderDef(
     name="vrf",
     schema_field="vrf",
     required=True,
     bind_mode="discover_select",
-    discover_profile_id="zte.vrf_list",
+    discover_profile_id="zte.config_vrf",
     discover_value_field="vrf_name",
     discover_label_field="vrf_name",
+)
+
+# Single-VRF collect: bind selected VRFs, or leave empty → all (from config_vrf).
+_VRF_PLACEHOLDER_ALL = PlaceholderDef(
+    name="vrf",
+    schema_field="vrf",
+    required=False,
+    bind_mode="discover_select",
+    discover_profile_id="zte.config_vrf",
+    discover_value_field="vrf_name",
+    discover_label_field="vrf_name",
+)
+
+_VRF_PLACEHOLDER_IPV4 = PlaceholderDef(
+    name="vrf",
+    schema_field="vrf",
+    required=False,
+    bind_mode="discover_select",
+    discover_profile_id="zte.config_vrf",
+    discover_value_field="vrf_name",
+    discover_label_field="vrf_name",
+    discover_filter_field="address_families",
+    discover_filter_contains="ipv4",
+)
+
+_VRF_PLACEHOLDER_IPV6 = PlaceholderDef(
+    name="vrf",
+    schema_field="vrf",
+    required=False,
+    bind_mode="discover_select",
+    discover_profile_id="zte.config_vrf",
+    discover_value_field="vrf_name",
+    discover_label_field="vrf_name",
+    discover_filter_field="address_families",
+    discover_filter_contains="ipv6",
 )
 
 _BGP_NEIGHBOR_PLACEHOLDER = PlaceholderDef(
@@ -351,6 +393,8 @@ _IP_ROUTE_FIELDS: list[FieldDef] = [
     FieldDef("pri", length=16, role="meta", display_name="Pri"),
     FieldDef("metric", length=32, role="meta", display_name="Metric"),
     FieldDef("flags", length=16, role="meta", display_name="Flags"),
+    FieldDef("rd", length=64, role="meta", display_name="RD"),
+    FieldDef("address_families", length=64, role="meta", display_name="AF"),
 ]
 
 _IPV6_ROUTE_FIELDS: list[FieldDef] = [
@@ -362,6 +406,8 @@ _IPV6_ROUTE_FIELDS: list[FieldDef] = [
     FieldDef("pri", length=16, role="meta", display_name="Pri"),
     FieldDef("metric", length=32, role="meta", display_name="Metric"),
     FieldDef("flags", length=16, role="meta", display_name="Flags"),
+    FieldDef("rd", length=64, role="meta", display_name="RD"),
+    FieldDef("address_families", length=64, role="meta", display_name="AF"),
 ]
 
 _L2VPN_PW_FIELDS: list[FieldDef] = [
@@ -707,13 +753,28 @@ def _zte_status_profiles() -> list[ParseProfile]:
             command_template="show bgp vpnv4 unicast vrf <vrf> summary | one-line",
             match=r"(?i)^\s*show\s+bgp\s+vpnv4\s+unicast\s+vrf\s+(?P<vrf>\S+)\s+summary(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show bgp vpnv4 unicast summary",
-            description="Per-VRF BGP VPNv4 peer summary.",
-            placeholders=[_BGP_VRF_PLACEHOLDER],
+            description=(
+                "Per-VRF BGP VPNv4 peer summary. Bind VRFs or leave empty for all "
+                "(from config VRF intent); aux: IPv4 FIB + config_vrf."
+            ),
+            placeholders=[_VRF_PLACEHOLDER_IPV4],
             fields=list(_BGP_PEER_FIELDS),
             tags=["bgp", "vpnv4", "vrf", "status"],
             sort_order=370,
             enabled=True,
             kind="collect",
+            aux_commands=[
+                AuxCommand(key="config_vrf", profile_id="zte.config_vrf"),
+                AuxCommand(key="ip_route", profile_id="zte.ip_route_vrf"),
+            ],
+            enrich_joins=[
+                EnrichJoin(
+                    from_aux="config_vrf",
+                    left_on="vrf",
+                    right_on="vrf_name",
+                    take=("rd", "address_families"),
+                ),
+            ],
         ),
         ParseProfile(
             profile_id="zte.bgp_vpnv6_vrf_summary",
@@ -724,13 +785,28 @@ def _zte_status_profiles() -> list[ParseProfile]:
             command_template="show bgp vpnv6 unicast vrf <vrf> summary | one-line",
             match=r"(?i)^\s*show\s+bgp\s+vpnv6\s+unicast\s+vrf\s+(?P<vrf>\S+)\s+summary(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show bgp vpnv6 unicast summary",
-            description="Per-VRF BGP VPNv6 peer summary.",
-            placeholders=[_BGP_VRF_PLACEHOLDER],
+            description=(
+                "Per-VRF BGP VPNv6 peer summary. Bind VRFs or leave empty for all "
+                "(from config VRF intent); aux: IPv6 FIB + config_vrf."
+            ),
+            placeholders=[_VRF_PLACEHOLDER_IPV6],
             fields=list(_BGP_PEER_FIELDS),
             tags=["bgp", "vpnv6", "vrf", "status"],
             sort_order=375,
             enabled=True,
             kind="collect",
+            aux_commands=[
+                AuxCommand(key="config_vrf", profile_id="zte.config_vrf"),
+                AuxCommand(key="ipv6_route", profile_id="zte.ipv6_route_vrf"),
+            ],
+            enrich_joins=[
+                EnrichJoin(
+                    from_aux="config_vrf",
+                    left_on="vrf",
+                    right_on="vrf_name",
+                    take=("rd", "address_families"),
+                ),
+            ],
         ),
         ParseProfile(
             profile_id="zte.bgp_evpn_summary",
@@ -1052,13 +1128,25 @@ def _zte_status_profiles() -> list[ParseProfile]:
             command_template="show ip forwarding route vrf <vrf> | one-line",
             match=r"(?i)^\s*show\s+ip\s+forwarding\s+route\s+vrf\s+(?P<vrf>\S+)(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show ip forwarding route",
-            description="IPv4 FIB for one VRF.",
-            placeholders=[_BGP_VRF_PLACEHOLDER],
+            description=(
+                "IPv4 FIB per VRF. Bind VRFs or leave empty for all ipv4 VRFs "
+                "(config VRF intent aux)."
+            ),
+            placeholders=[_VRF_PLACEHOLDER_IPV4],
             fields=list(_IP_ROUTE_FIELDS),
             tags=["route", "ipv4", "vrf"],
             sort_order=450,
             enabled=True,
             kind="collect",
+            aux_commands=[AuxCommand(key="config_vrf", profile_id="zte.config_vrf")],
+            enrich_joins=[
+                EnrichJoin(
+                    from_aux="config_vrf",
+                    left_on="vrf",
+                    right_on="vrf_name",
+                    take=("rd", "address_families"),
+                ),
+            ],
         ),
         ParseProfile(
             profile_id="zte.ip_route",
@@ -1085,13 +1173,25 @@ def _zte_status_profiles() -> list[ParseProfile]:
             command_template="show ipv6 forwarding route vrf <vrf> | one-line",
             match=r"(?i)^\s*show\s+ipv6\s+forwarding\s+route\s+vrf\s+(?P<vrf>\S+)(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show ipv6 forwarding route",
-            description="IPv6 FIB for one VRF.",
-            placeholders=[_BGP_VRF_PLACEHOLDER],
+            description=(
+                "IPv6 FIB per VRF. Bind VRFs or leave empty for all ipv6 VRFs "
+                "(config VRF intent aux)."
+            ),
+            placeholders=[_VRF_PLACEHOLDER_IPV6],
             fields=list(_IPV6_ROUTE_FIELDS),
             tags=["route", "ipv6", "vrf"],
             sort_order=460,
             enabled=True,
             kind="collect",
+            aux_commands=[AuxCommand(key="config_vrf", profile_id="zte.config_vrf")],
+            enrich_joins=[
+                EnrichJoin(
+                    from_aux="config_vrf",
+                    left_on="vrf",
+                    right_on="vrf_name",
+                    take=("rd", "address_families"),
+                ),
+            ],
         ),
         ParseProfile(
             profile_id="zte.ipv6_route",
@@ -1416,6 +1516,8 @@ def profile_to_public_dict(p: ParseProfile, *, overrides: dict[str, Any] | None 
                 "discover_profile_id": ph.discover_profile_id,
                 "discover_value_field": ph.discover_value_field,
                 "discover_label_field": ph.discover_label_field,
+                "discover_filter_field": ph.discover_filter_field,
+                "discover_filter_contains": ph.discover_filter_contains,
             }
             for ph in p.placeholders
         ],

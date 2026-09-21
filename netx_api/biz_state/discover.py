@@ -148,10 +148,25 @@ def discover_params(
 
     candidates = []
     seen: set[str] = set()
+    filt_field = ""
+    filt_contains = ""
+    if collect_profile_id:
+        collect = get_profile(collect_profile_id)
+        if collect:
+            for ph in collect.placeholders:
+                if placeholder and ph.name != placeholder:
+                    continue
+                filt_field = str(ph.discover_filter_field or "").strip()
+                filt_contains = str(ph.discover_filter_contains or "").strip().lower()
+                break
     for rec in records:
         val = str(rec.get(value_field) or "").strip()
         if not val or val in seen:
             continue
+        if filt_field and filt_contains:
+            hay = str(rec.get(filt_field) or "").strip().lower()
+            if filt_contains not in hay:
+                continue
         seen.add(val)
         label = str(rec.get(label_field) or val).strip() or val
         candidates.append(
@@ -159,7 +174,7 @@ def discover_params(
                 "value": val,
                 "label": label,
                 "rd": str(rec.get("rd") or ""),
-                "protocols": str(rec.get("protocols") or ""),
+                "protocols": str(rec.get("protocols") or rec.get("address_families") or ""),
                 "extra": rec,
             }
         )

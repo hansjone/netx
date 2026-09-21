@@ -492,6 +492,53 @@ class ZteExtendedParserTests(unittest.TestCase):
         self.assertEqual(hit.params.get("vrf"), "CUST_A")
         self.assertEqual(hit.params.get("neighbor"), "10.0.0.1")
 
+        # BGP VRF summary / Forwarding VRF: optional bind + config_vrf aux
+        from netx_api.biz_state.command_match import (
+            EXPAND_ALL_COMMAND,
+            expand_bindings_from_discover_records,
+        )
+        from netx_api.biz_state.collect_session import resolve_aux_command
+
+        for pid in (
+            "zte.bgp_vpnv4_vrf_summary",
+            "zte.bgp_vpnv6_vrf_summary",
+            "zte.ip_route_vrf",
+            "zte.ipv6_route_vrf",
+        ):
+            prof = get_profile(pid)
+            assert prof is not None
+            self.assertTrue(prof.placeholders)
+            self.assertFalse(prof.placeholders[0].required)
+            self.assertEqual(prof.placeholders[0].discover_profile_id, "zte.config_vrf")
+            self.assertTrue(any(a.profile_id == "zte.config_vrf" for a in prof.aux_commands))
+
+        v4 = get_profile("zte.bgp_vpnv4_vrf_summary")
+        assert v4 is not None
+        self.assertTrue(any(a.key == "ip_route" for a in v4.aux_commands))
+        sentinel = expand_from_bindings(profile=v4, bindings=[])
+        self.assertEqual(sentinel[0][0], EXPAND_ALL_COMMAND)
+        bound = expand_from_bindings(profile=v4, bindings=[{"vrf": "CUST_A"}])
+        self.assertEqual(bound[0][0], "show bgp vpnv4 unicast vrf CUST_A summary | one-line")
+        ra_ip = resolve_aux_command(
+            next(a for a in v4.aux_commands if a.key == "ip_route"),
+            params={"vrf": "CUST_A"},
+        )
+        self.assertEqual(ra_ip.command, "show ip forwarding route vrf CUST_A | one-line")
+
+        v6 = get_profile("zte.bgp_vpnv6_vrf_summary")
+        assert v6 is not None
+        self.assertTrue(any(a.key == "ipv6_route" for a in v6.aux_commands))
+
+        records = [
+            {"vrf_name": "CUST_A", "address_families": "ipv4,ipv6", "rd": "100:1"},
+            {"vrf_name": "CUST_B", "address_families": "ipv4", "rd": "100:2"},
+            {"vrf_name": "CUST_C", "address_families": "ipv6", "rd": "100:3"},
+        ]
+        ipv4_pairs = expand_bindings_from_discover_records(profile=v4, records=records)
+        self.assertEqual({p[1]["vrf"] for p in ipv4_pairs}, {"CUST_A", "CUST_B"})
+        ipv6_pairs = expand_bindings_from_discover_records(profile=v6, records=records)
+        self.assertEqual({p[1]["vrf"] for p in ipv6_pairs}, {"CUST_A", "CUST_C"})
+
     def test_interface_detail_and_vpnv6_neighbor(self) -> None:
         from netx_api.biz_state.parsers.zte import normalize_interface_detail
 

@@ -237,6 +237,7 @@ const en = {
     cancel: "Close",
     bindTitle: "Select VRF bindings",
     unbound: "Not bound",
+    allVrfsDefault: "All VRFs (default)",
     batches: "Batches",
     viewBatch: "Open",
     export: "Export",

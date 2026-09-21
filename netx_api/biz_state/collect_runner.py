@@ -35,7 +35,13 @@ from .collect_session import (
     resolve_aux_command,
     run_primary_with_bundle,
 )
-from .command_match import expand_from_bindings, match_command, normalize_command
+from .command_match import (
+    EXPAND_ALL_COMMAND,
+    expand_bindings_from_discover_records,
+    expand_from_bindings,
+    match_command,
+    normalize_command,
+)
 from .parsers import get_parser
 from .profiles import get_profile
 
@@ -404,7 +410,69 @@ def _run_collect_lane(
                 batch_row = sdb.get(BizStateBatch, batch_id)
                 if not batch_row:
                     return 0, 0, True, False
+
+                # Resolve expand_all → concrete per-VRF commands via discover profile.
+                flat_work: list[WorkItem] = []
+                aux_persisted: set[tuple[str, str]] = set()
                 for concrete, params, profile_id, item_id, mode in work:
+                    if mode != "expand_all":
+                        flat_work.append((concrete, params, profile_id, item_id, mode))
+                        continue
+                    profile = get_profile(profile_id)
+                    if profile is None or not profile.placeholders:
+                        any_fail = True
+                        _append_event(
+                            sdb,
+                            task_id=str(batch_row.task_id or ""),
+                            message=f"expand_all missing profile {profile_id}",
+                            level="error",
+                        )
+                        continue
+                    ph = profile.placeholders[0]
+                    disc = get_profile(str(ph.discover_profile_id or "").strip())
+                    if disc is None:
+                        any_fail = True
+                        _append_event(
+                            sdb,
+                            task_id=str(batch_row.task_id or ""),
+                            message=f"expand_all discover profile missing for {profile_id}",
+                            level="error",
+                        )
+                        continue
+                    disc_cmd = normalize_command(disc.command_template)
+                    entry, _ = session.fetch_and_parse(
+                        disc_cmd,
+                        parser_id=disc.parser_id,
+                        textfsm_command=disc.textfsm_command or disc_cmd,
+                        params={},
+                    )
+                    if not entry.ok:
+                        any_fail = True
+                        _append_event(
+                            sdb,
+                            task_id=str(batch_row.task_id or ""),
+                            message=f"expand_all discover failed: {entry.error}",
+                            level="error",
+                        )
+                        continue
+                    try:
+                        pairs = expand_bindings_from_discover_records(
+                            profile=profile,
+                            records=entry.records,
+                        )
+                    except ValueError as exc:
+                        any_fail = True
+                        _append_event(
+                            sdb,
+                            task_id=str(batch_row.task_id or ""),
+                            message=str(exc),
+                            level="error",
+                        )
+                        continue
+                    for cmd, p in pairs:
+                        flat_work.append((cmd, p, profile_id, item_id, "normal"))
+
+                for concrete, params, profile_id, item_id, mode in flat_work:
                     if holder.get("timed_out"):
                         raise TimeoutError(f"{label}_aborted")
                     cmd_count += 1
@@ -530,6 +598,9 @@ def _run_collect_lane(
                             cmd_row_id=aux_row.id,
                         )
                         aux_results[ra.key] = entry
+                        aux_mid = str(getattr(ra.profile, "metric_id", "") or "").strip()
+                        if aux_mid:
+                            aux_row.metric_id = aux_mid
                         if cache_hit:
                             aux_row.parse_status = "aux_cached"
                             aux_row.message = (
@@ -549,6 +620,26 @@ def _run_collect_lane(
                             aux_row.raw_text = entry.raw
                             aux_row.row_count = len(entry.records or [])
                             entry.cmd_row_id = aux_row.id
+                        # Persist aux metrics once per CLI (config_vrf / FIB shared across VRFs).
+                        if (
+                            entry.ok
+                            and entry.records
+                            and aux_mid in _GENERIC_METRICS
+                        ):
+                            persist_key = (normalize_command(ra.command), aux_mid)
+                            if persist_key not in aux_persisted:
+                                n_aux = _persist_metric_rows(
+                                    sdb,
+                                    batch=batch_row,
+                                    cmd_row=aux_row,
+                                    metric_id=aux_mid,
+                                    records=entry.records,
+                                )
+                                aux_row.row_count = n_aux
+                                total_rows += n_aux
+                                aux_persisted.add(persist_key)
+                                if n_aux:
+                                    _bump_batch_progress(batch_id, add_rows=n_aux)
                         sdb.add(aux_row)
                         sdb.commit()
 
@@ -786,6 +877,10 @@ def _run_collect_session(
                 _append_event(db, task_id=task_id, message=str(exc), level="error")
                 continue
             for concrete, params in pairs:
+                if concrete == EXPAND_ALL_COMMAND:
+                    # Defer VRF list expansion until CollectSession is open.
+                    work.append(("", dict(params or {}), profile.profile_id, item.id, "expand_all"))
+                    continue
                 cmd = normalize_command(concrete)
                 # Prefer match_command metric so remapped if_intf shares key with config_interface
                 hit = match_command(vendor_key=vendor_key, command=cmd)

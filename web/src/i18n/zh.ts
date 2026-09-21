@@ -237,6 +237,7 @@ const zh = {
     cancel: "关闭",
     bindTitle: "选择 VRF 绑定",
     unbound: "未关联",
+    allVrfsDefault: "默认全部 VRF",
     batches: "采集批次",
     viewBatch: "查看",
     export: "导出",
