@@ -37,6 +37,7 @@ def _map_fsm_rows(rows: list[dict[str, Any]], *, vrf: str) -> list[dict[str, Any
                 "pri": row_get(r, "PRI", "pri")[:16],
                 "metric": row_get(r, "METRIC", "metric")[:32],
                 "flags": row_get(r, "FLAGS", "flags")[:16],
+                "address_families": "ipv6",
             }
             if gw or iface:
                 cur["gateway"] = gw[:128]
@@ -77,6 +78,7 @@ def _hand_parse(*, raw_text: str, vrf: str = "", **_kw: Any) -> list[dict[str, A
                 "pri": m.group("pri")[:16],
                 "metric": m.group("metric")[:32],
                 "flags": (m.group("flags") or "")[:16],
+                "address_families": "ipv6",
             }
             continue
         m2 = _NH_RE.match(line)

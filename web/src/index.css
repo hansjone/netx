@@ -11274,24 +11274,74 @@ html.login-page--paused .login-page__flare {
 }
 
 .bs-profiles-table-wrap {
-  overflow-x: auto !important;
+  overflow-x: scroll !important;
   overflow-y: auto;
   max-height: min(58vh, 560px);
+  /* Keep horizontal scrollbar visible (WebKit). */
+  scrollbar-gutter: stable both-edges;
+}
+
+.bs-profiles-table-wrap::-webkit-scrollbar {
+  height: 10px;
+  width: 10px;
+}
+
+.bs-profiles-table-wrap::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.45);
+  border-radius: 6px;
 }
 
 .bs-profiles-table {
-  min-width: 960px;
+  min-width: 1100px;
+  table-layout: fixed;
+}
+
+.bs-profiles-table th:nth-child(1),
+.bs-profiles-table td:nth-child(1) {
+  width: 56px;
+}
+
+.bs-profiles-table th:nth-child(2),
+.bs-profiles-table td:nth-child(2) {
+  width: 28%;
+}
+
+.bs-profiles-table th:nth-child(3),
+.bs-profiles-table td:nth-child(3) {
+  width: 180px;
+}
+
+.bs-profiles-table th:nth-child(4),
+.bs-profiles-table td:nth-child(4) {
+  width: 110px;
 }
 
 .bs-profiles-table .bs-cmd-cell {
+  display: block;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: 12px;
+  max-width: 100%;
 }
 
 .bs-profiles-table .bs-params-cell {
-  min-width: 140px;
-  max-width: 280px;
+  vertical-align: top;
+}
+
+.bs-profiles-table .bs-params-scroll {
+  max-width: 100%;
+  max-height: 4.5em;
+  overflow: auto;
+  white-space: normal;
   word-break: break-word;
+  line-height: 1.35;
+  font-size: 12px;
+}
+
+.bs-profiles-table .bs-actions-cell {
+  white-space: nowrap;
+  vertical-align: middle;
 }
 
 .bs-bind-hint {

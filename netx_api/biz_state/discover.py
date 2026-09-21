@@ -14,6 +14,10 @@ from ..lldp_shared import resolve_vendor_key
 from ..models import BizStateTask
 from ..ne_netmiko import disable_target_paging, send_show_command
 from ..ne_session_factory import close_netmiko_connection, open_netmiko_connection
+from .command_match import (
+    _record_passes_discover_filter,
+    shared_discover_placeholders,
+)
 from .parsers import get_parser, run_parser
 from .profiles import get_profile
 
@@ -71,17 +75,24 @@ def discover_params(
     )
     value_field = "vrf_name"
     label_field = "vrf_name"
-    if collect_profile_id:
-        collect = get_profile(collect_profile_id)
-        if collect:
-            for ph in collect.placeholders:
-                if placeholder and ph.name != placeholder:
-                    continue
-                if ph.discover_value_field:
-                    value_field = ph.discover_value_field
-                if ph.discover_label_field:
-                    label_field = ph.discover_label_field
-                break
+    collect = get_profile(collect_profile_id) if collect_profile_id else None
+    pair_phs = shared_discover_placeholders(collect) if collect else []
+    active_ph = None
+    if collect:
+        for ph in collect.placeholders:
+            if placeholder and ph.name != placeholder:
+                continue
+            if ph.discover_value_field:
+                value_field = ph.discover_value_field
+            if ph.discover_label_field:
+                label_field = ph.discover_label_field
+            active_ph = ph
+            break
+        # Pair discover: filter with the first shared placeholder's AF rules.
+        if pair_phs and not placeholder:
+            active_ph = pair_phs[0]
+            value_field = str(active_ph.discover_value_field or active_ph.name or value_field)
+            label_field = str(active_ph.discover_label_field or label_field)
 
     try:
         if src == "managed":
@@ -148,36 +159,78 @@ def discover_params(
 
     candidates = []
     seen: set[str] = set()
-    filt_field = ""
-    filt_contains = ""
-    if collect_profile_id:
-        collect = get_profile(collect_profile_id)
-        if collect:
-            for ph in collect.placeholders:
-                if placeholder and ph.name != placeholder:
-                    continue
-                filt_field = str(ph.discover_filter_field or "").strip()
-                filt_contains = str(ph.discover_filter_contains or "").strip().lower()
-                break
-    for rec in records:
-        val = str(rec.get(value_field) or "").strip()
-        if not val or val in seen:
-            continue
-        if filt_field and filt_contains:
-            hay = str(rec.get(filt_field) or "").strip().lower()
-            if filt_contains not in hay:
+    # Shared discover profile → one candidate per (placeholder fields) tuple.
+    if pair_phs and len(pair_phs) >= 2:
+        filter_ph = pair_phs[0]
+        for rec in records:
+            if not _record_passes_discover_filter(rec, filter_ph):
+                # Also require every paired field non-empty.
                 continue
-        seen.add(val)
-        label = str(rec.get(label_field) or val).strip() or val
-        candidates.append(
-            {
-                "value": val,
-                "label": label,
-                "rd": str(rec.get("rd") or ""),
-                "protocols": str(rec.get("protocols") or rec.get("address_families") or ""),
-                "extra": rec,
-            }
-        )
+            bind: dict[str, str] = {}
+            ok = True
+            for ph in pair_phs:
+                if not _record_passes_discover_filter(rec, ph):
+                    ok = False
+                    break
+                vf = str(ph.discover_value_field or ph.name or "").strip()
+                val = str(rec.get(vf) or "").strip()
+                if not val:
+                    ok = False
+                    break
+                bind[ph.name] = val
+            if not ok:
+                continue
+            key = "|".join(f"{k}={bind[k]}" for k in sorted(bind))
+            if key in seen:
+                continue
+            seen.add(key)
+            as_num = str(rec.get("remote_as") or "").strip()
+            label_parts = [bind.get(ph.name, "") for ph in pair_phs]
+            label = " / ".join(p for p in label_parts if p)
+            if as_num:
+                label = f"{label} (AS {as_num})"
+            candidates.append(
+                {
+                    "value": key,
+                    "label": label,
+                    "rd": str(rec.get("rd") or ""),
+                    "protocols": str(
+                        rec.get("protocols")
+                        or rec.get("address_families")
+                        or rec.get("afi")
+                        or ""
+                    ),
+                    "bindings": bind,
+                    "extra": rec,
+                }
+            )
+    else:
+        for rec in records:
+            if active_ph and not _record_passes_discover_filter(rec, active_ph):
+                continue
+            val = str(rec.get(value_field) or "").strip()
+            if not val or val in seen:
+                continue
+            seen.add(val)
+            label = str(rec.get(label_field) or val).strip() or val
+            as_num = str(rec.get("remote_as") or "").strip()
+            if as_num and value_field == "neighbor":
+                label = f"{label} (AS {as_num})"
+            candidates.append(
+                {
+                    "value": val,
+                    "label": label,
+                    "rd": str(rec.get("rd") or ""),
+                    "protocols": str(
+                        rec.get("protocols")
+                        or rec.get("address_families")
+                        or rec.get("afi")
+                        or ""
+                    ),
+                    "bindings": {str(active_ph.name if active_ph else value_field): val},
+                    "extra": rec,
+                }
+            )
 
     return {
         "ok": True,
@@ -186,6 +239,7 @@ def discover_params(
         "command": command,
         "vendor_key": resolve_vendor_key(vendor, device_type),
         "value_field": value_field,
+        "pair_mode": bool(pair_phs and len(pair_phs) >= 2),
         "candidates": candidates,
         "raw_preview": str(raw or "")[:4000],
     }

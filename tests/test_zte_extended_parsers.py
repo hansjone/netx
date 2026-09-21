@@ -380,6 +380,7 @@ class ZteExtendedParserTests(unittest.TestCase):
         self.assertEqual(len(ip), 2)
         self.assertEqual(ip[0]["dest"], "0.0.0.0/0")
         self.assertEqual(ip[0]["vrf"], "CUST_A")
+        self.assertEqual(ip[0]["address_families"], "ipv4")
 
         v6 = normalize_ipv6_route(
             raw_text=_IPV6_ROUTE,
@@ -388,6 +389,7 @@ class ZteExtendedParserTests(unittest.TestCase):
         )
         self.assertGreaterEqual(len(v6), 1)
         self.assertTrue(any(r["dest"].startswith("2001:db8") for r in v6))
+        self.assertTrue(all(r.get("address_families") == "ipv6" for r in v6))
 
         pw = normalize_l2vpn_pw(raw_text=_L2VPN_PW, command="show l2vpn forwardinfo")
         self.assertEqual(len(pw), 3)
@@ -535,6 +537,71 @@ class ZteExtendedParserTests(unittest.TestCase):
         self.assertEqual({p[1]["vrf"] for p in ipv4_pairs}, {"CUST_A", "CUST_B"})
         ipv6_pairs = expand_bindings_from_discover_records(profile=v6, records=records)
         self.assertEqual({p[1]["vrf"] for p in ipv6_pairs}, {"CUST_A", "CUST_C"})
+
+        # BGP neighbor in/out: discover from config_bgp_peer with AF filters
+        from netx_api.biz_state.command_match import (
+            filter_discover_records,
+            normalize_binding_dicts,
+            shared_discover_placeholders,
+        )
+
+        glob_v4 = get_profile("zte.bgp_vpnv4_neighbor_in")
+        assert glob_v4 is not None
+        self.assertEqual(glob_v4.placeholders[0].discover_profile_id, "zte.config_bgp_peer")
+        self.assertEqual(glob_v4.placeholders[0].discover_filter_contains, "vpnv4")
+        self.assertEqual(glob_v4.placeholders[0].bind_mode, "discover_select")
+
+        glob_v6 = get_profile("zte.bgp_vpnv6_neighbor_in")
+        assert glob_v6 is not None
+        self.assertEqual(glob_v6.placeholders[0].discover_filter_contains, "vpnv6")
+
+        peer_recs = [
+            {"afi": "vpnv4", "vrf": "", "neighbor": "10.0.0.1", "remote_as": "65001"},
+            {"afi": "vpnv4", "vrf": "", "neighbor": "", "peer_group": "CORE_RR", "remote_as": "65009"},
+            {"afi": "vpnv6", "vrf": "", "neighbor": "FC00::1", "remote_as": "65002"},
+            {"afi": "ipv4", "vrf": "CUST_A", "neighbor": "10.0.0.2", "remote_as": "65003"},
+            {"afi": "ipv4", "vrf": "", "neighbor": "10.0.0.9", "remote_as": "65004"},
+            {"afi": "ipv6", "vrf": "CUST_B", "neighbor": "FC00::2", "remote_as": "65005"},
+        ]
+        self.assertEqual(
+            filter_discover_records(peer_recs, glob_v4.placeholders[0]),
+            ["10.0.0.1"],
+        )
+        self.assertEqual(
+            filter_discover_records(peer_recs, glob_v6.placeholders[0]),
+            ["FC00::1"],
+        )
+
+        vrf_nei = get_profile("zte.bgp_vpnv4_vrf_neighbor_in")
+        assert vrf_nei is not None
+        shared = shared_discover_placeholders(vrf_nei)
+        self.assertEqual(len(shared), 2)
+        self.assertTrue(all(ph.discover_profile_id == "zte.config_bgp_peer" for ph in shared))
+        pair_cmds = expand_bindings_from_discover_records(profile=vrf_nei, records=peer_recs)
+        self.assertEqual(len(pair_cmds), 1)
+        self.assertEqual(pair_cmds[0][1], {"vrf": "CUST_A", "neighbor": "10.0.0.2"})
+        self.assertIn("vrf CUST_A", pair_cmds[0][0])
+        self.assertIn("10.0.0.2", pair_cmds[0][0])
+
+        # Interleaved placeholder/value rows zip into combined bindings
+        zipped = normalize_binding_dicts(
+            [
+                {"placeholder": "vrf", "value": "CUST_A"},
+                {"placeholder": "neighbor", "value": "10.0.0.2"},
+                {"placeholder": "vrf", "value": "CUST_B"},
+                {"placeholder": "neighbor", "value": "10.0.0.3"},
+            ],
+            placeholders=vrf_nei.placeholders,
+        )
+        self.assertEqual(
+            zipped,
+            [
+                {"vrf": "CUST_A", "neighbor": "10.0.0.2"},
+                {"vrf": "CUST_B", "neighbor": "10.0.0.3"},
+            ],
+        )
+        expanded = expand_from_bindings(profile=vrf_nei, bindings=zipped)
+        self.assertEqual(len(expanded), 2)
 
     def test_interface_detail_and_vpnv6_neighbor(self) -> None:
         from netx_api.biz_state.parsers.zte import normalize_interface_detail

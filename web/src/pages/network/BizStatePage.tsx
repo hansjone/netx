@@ -78,7 +78,12 @@ type BatchRow = {
   protect_reasons?: string[];
 };
 
-type Candidate = { value: string; label: string; rd?: string };
+type Candidate = {
+  value: string;
+  label: string;
+  rd?: string;
+  bindings?: Record<string, string>;
+};
 
 type SheetCol = { key: string; header: string };
 
@@ -770,7 +775,8 @@ export function BizStatePage() {
   const startDiscover = async (item: any) => {
     if (!taskId) return;
     const prof = profiles.find((p) => p.profile_id === item.source_profile_id);
-    const ph = (prof?.placeholders || [])[0];
+    const phs = prof?.placeholders || [];
+    const ph = phs[0];
     if (!ph) {
       showError(t("bizState.noNeedBind"));
       return;
@@ -783,10 +789,12 @@ export function BizStatePage() {
     setDiscoverLoading(true);
     setBusy(true);
     try {
+      // Shared discover_profile_id → omit placeholder so API returns pair candidates.
+      const sharedDisc = phs.length > 1 && phs.every((p) => p.discover_profile_id === ph.discover_profile_id);
       const res = await bizStateDiscover({
         task_id: taskId,
         collect_profile_id: item.source_profile_id,
-        placeholder: ph.name,
+        placeholder: sharedDisc ? "" : ph.name,
       });
       if (!res.ok) {
         const err = res.error || t("bizState.discoverFailed");
@@ -797,11 +805,34 @@ export function BizStatePage() {
       setDiscoverCmd(res.command || "");
       const cand = (res.candidates || []) as Candidate[];
       setCandidates(cand);
-      const existing = (item.bindings || [])
-        .filter((b: any) => b.placeholder === ph.name)
-        .map((b: any) => String(b.value));
-      // Keep prior bindings if still in candidates; otherwise start with none selected.
-      const keep = existing.filter((v: string) => cand.some((c) => c.value === v));
+      const existing = (item.bindings || []) as { placeholder?: string; value?: string }[];
+      let keep: string[] = [];
+      if (res.pair_mode || sharedDisc) {
+        const phNames = phs.map((p) => p.name);
+        const byPh: Record<string, string[]> = {};
+        for (const b of existing) {
+          const name = String(b.placeholder || "");
+          const val = String(b.value || "");
+          if (!name || !val) continue;
+          (byPh[name] ||= []).push(val);
+        }
+        const counts = phNames.map((n) => (byPh[n] || []).length);
+        const n = counts.length ? Math.min(...counts) : 0;
+        const existingKeys = new Set<string>();
+        for (let i = 0; i < n; i++) {
+          const parts = phNames
+            .slice()
+            .sort()
+            .map((name) => `${name}=${(byPh[name] || [])[i] || ""}`);
+          existingKeys.add(parts.join("|"));
+        }
+        keep = cand.filter((c) => existingKeys.has(c.value)).map((c) => c.value);
+      } else {
+        const vals = existing
+          .filter((b) => b.placeholder === ph.name)
+          .map((b) => String(b.value));
+        keep = vals.filter((v) => cand.some((c) => c.value === v));
+      }
       setSelectedVrfs(keep);
       if (!cand.length) {
         setDiscoverError(t("bizState.discoverEmpty"));
@@ -823,13 +854,22 @@ export function BizStatePage() {
     const phName = (prof?.placeholders || [])[0]?.name || "vrf";
     const picked = values !== undefined ? values : selectedVrfs;
     if (!picked.length) return;
+    const candByVal = new Map(candidates.map((c) => [c.value, c]));
+    const rows: { placeholder: string; value: string }[] = [];
+    for (const v of picked) {
+      const c = candByVal.get(v);
+      const binds = c?.bindings;
+      if (binds && Object.keys(binds).length) {
+        for (const [k, val] of Object.entries(binds)) {
+          if (k && val) rows.push({ placeholder: k, value: String(val) });
+        }
+      } else {
+        rows.push({ placeholder: phName, value: v });
+      }
+    }
     setBusy(true);
     try {
-      await bizStateSetBindings(
-        taskId,
-        bindItemId,
-        picked.map((v) => ({ placeholder: phName, value: v })),
-      );
+      await bizStateSetBindings(taskId, bindItemId, rows);
       showOk(t("bizState.bindingsSaved"));
       await loadTask(taskId);
       closeBindModal();
@@ -1341,8 +1381,8 @@ export function BizStatePage() {
                       <th>{t("bizState.enable")}</th>
                       <th>{t("bizState.profiles")}</th>
                       <th>{t("bizState.params")}</th>
+                      <th>{t("bizState.colActions")}</th>
                       <th>{t("bizState.command")}</th>
-                      <th />
                     </tr>
                   </thead>
                   <tbody>
@@ -1377,17 +1417,17 @@ export function BizStatePage() {
                           </td>
                           <td className="bs-params-cell">
                             {needsBind ? (
-                              <span className={!binds.length ? "bs-params-warn" : undefined}>
+                              <div
+                                className={`bs-params-scroll${!binds.length ? " bs-params-warn" : ""}`}
+                                title={bindHint}
+                              >
                                 {bindHint}
-                              </span>
+                              </div>
                             ) : (
                               "—"
                             )}
                           </td>
-                          <td>
-                            <code className="bs-cmd-cell">{prof.command_template}</code>
-                          </td>
-                          <td>
+                          <td className="bs-actions-cell">
                             {needsBind && enabled && it ? (
                               <Button
                                 size="sm"
@@ -1395,9 +1435,16 @@ export function BizStatePage() {
                                 isDisabled={busy || discoverLoading}
                                 onPress={() => void startDiscover(it)}
                               >
-                                {t("bizState.discoverVrf")}
+                                {t("bizState.discoverBind")}
                               </Button>
-                            ) : null}
+                            ) : needsBind ? (
+                              <span className="muted">—</span>
+                            ) : (
+                              "—"
+                            )}
+                          </td>
+                          <td>
+                            <code className="bs-cmd-cell">{prof.command_template}</code>
                           </td>
                         </tr>
                       );

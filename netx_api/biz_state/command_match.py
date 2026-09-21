@@ -62,7 +62,12 @@ def normalize_binding_dicts(
     *,
     placeholders: list | None = None,
 ) -> list[dict[str, str]]:
-    """Accept ``{vrf: X}`` or ``{placeholder, value}`` rows; expand multi-value placeholders."""
+    """Accept ``{vrf: X}`` or ``{placeholder, value}`` rows; expand multi-value placeholders.
+
+    Multi-placeholder rows stored as interleaved ``{placeholder,value}`` pairs are
+    zipped in order (e.g. vrf/neighbor/vrf/neighbor → combined dicts). Already
+    combined dicts (multiple keys) are kept as-is.
+    """
     raw = list(bindings or [])
     converted: list[dict[str, str]] = []
     for b in raw:
@@ -85,6 +90,33 @@ def normalize_binding_dicts(
             if val:
                 out.append({name: val})
         return out
+
+    if len(phs) >= 2:
+        ph_names = [str(getattr(ph, "name", "") or "").strip() for ph in phs]
+        ph_names = [n for n in ph_names if n]
+        combined: list[dict[str, str]] = []
+        singles: list[dict[str, str]] = []
+        for c in converted:
+            if len(c) > 1:
+                combined.append(dict(c))
+            else:
+                singles.append(c)
+        if combined and not singles:
+            return combined
+        if singles and ph_names:
+            from collections import defaultdict
+
+            by_ph: dict[str, list[str]] = defaultdict(list)
+            for c in singles:
+                k, v = next(iter(c.items()))
+                by_ph[k].append(v)
+            lists = [by_ph.get(n, []) for n in ph_names]
+            n0 = len(lists[0]) if lists else 0
+            if n0 and all(len(L) == n0 for L in lists):
+                zipped = [dict(zip(ph_names, vals)) for vals in zip(*lists)]
+                return combined + zipped if combined else zipped
+        if combined:
+            return combined
     return converted
 
 
@@ -100,29 +132,49 @@ def _optional_discover_placeholders(profile: ParseProfile) -> list[PlaceholderDe
     return [ph for ph in _discover_placeholders(profile) if not ph.required]
 
 
+def _record_passes_discover_filter(rec: dict[str, Any], ph: PlaceholderDef) -> bool:
+    filt_field = str(ph.discover_filter_field or "").strip()
+    filt_contains = str(ph.discover_filter_contains or "").strip().lower()
+    if filt_field and filt_contains:
+        hay = str(rec.get(filt_field) or "").strip().lower()
+        if filt_contains not in hay:
+            return False
+    require = str(ph.discover_require_nonempty or "").strip()
+    if require and not str(rec.get(require) or "").strip():
+        return False
+    return True
+
+
 def filter_discover_records(
     records: list[dict[str, Any]] | None,
     ph: PlaceholderDef,
 ) -> list[str]:
     """Apply placeholder discover filter; return unique values for ``ph``."""
     value_field = str(ph.discover_value_field or ph.name or "").strip() or "vrf_name"
-    filt_field = str(ph.discover_filter_field or "").strip()
-    filt_contains = str(ph.discover_filter_contains or "").strip().lower()
     out: list[str] = []
     seen: set[str] = set()
     for rec in records or []:
         if not isinstance(rec, dict):
             continue
-        if filt_field and filt_contains:
-            hay = str(rec.get(filt_field) or "").strip().lower()
-            if filt_contains not in hay:
-                continue
+        if not _record_passes_discover_filter(rec, ph):
+            continue
         val = str(rec.get(value_field) or "").strip()
         if not val or val in seen:
             continue
         seen.add(val)
         out.append(val)
     return out
+
+
+def shared_discover_placeholders(profile: ParseProfile) -> list[PlaceholderDef]:
+    """Placeholders that share one discover_profile_id (pair/tuple bind)."""
+    discover_phs = _discover_placeholders(profile)
+    if len(discover_phs) < 2:
+        return []
+    disc_ids = {str(ph.discover_profile_id or "").strip() for ph in discover_phs}
+    if len(disc_ids) != 1 or not next(iter(disc_ids)):
+        return []
+    return discover_phs
 
 
 def expand_from_bindings(
@@ -176,12 +228,52 @@ def expand_bindings_from_discover_records(
     profile: ParseProfile,
     records: list[dict[str, Any]] | None,
 ) -> list[tuple[str, dict[str, str]]]:
-    """Build concrete commands from discover/parser records (e.g. config_vrf)."""
+    """Build concrete commands from discover/parser records (e.g. config_vrf).
+
+    Supports a single discover placeholder, or multiple placeholders that share
+    the same discover_profile_id (zipped row-wise from each record).
+    """
     discover_phs = _discover_placeholders(profile)
     if not discover_phs:
         raise ValueError(f"profile {profile.profile_id} has no discover placeholders")
+
+    shared = shared_discover_placeholders(profile)
+    if shared and len(shared) == len(profile.placeholders):
+        ph0 = shared[0]
+        bindings: list[dict[str, str]] = []
+        seen: set[tuple[str, ...]] = set()
+        for rec in records or []:
+            if not isinstance(rec, dict):
+                continue
+            if not _record_passes_discover_filter(rec, ph0):
+                continue
+            params: dict[str, str] = {}
+            ok = True
+            for ph in shared:
+                vf = str(ph.discover_value_field or ph.name or "").strip()
+                val = str(rec.get(vf) or "").strip()
+                if not val:
+                    ok = False
+                    break
+                params[ph.name] = val
+            if not ok:
+                continue
+            key = tuple(params.get(ph.name, "") for ph in shared)
+            if key in seen:
+                continue
+            seen.add(key)
+            bindings.append(params)
+        if not bindings:
+            raise ValueError(
+                f"no discover values for {profile.profile_id} ({ph0.discover_profile_id})"
+            )
+        return expand_from_bindings(profile=profile, bindings=bindings)
+
     if len(discover_phs) != 1 or len(profile.placeholders) != 1:
-        raise ValueError(f"expand-from-discover only supports a single placeholder: {profile.profile_id}")
+        raise ValueError(
+            f"expand-from-discover only supports a single placeholder "
+            f"or shared multi-placeholder: {profile.profile_id}"
+        )
     ph = discover_phs[0]
     values = filter_discover_records(records, ph)
     if not values:
