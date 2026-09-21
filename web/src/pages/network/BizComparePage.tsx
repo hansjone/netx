@@ -166,18 +166,31 @@ function PairCell(props: {
   reason?: string;
   beforeLabel: string;
   afterLabel: string;
+  zoneClass?: string;
+  zoneStart?: boolean;
 }) {
-  const { beforeText, afterText, kind, mismatch, reason, beforeLabel, afterLabel } = props;
+  const {
+    beforeText,
+    afterText,
+    kind,
+    mismatch,
+    reason,
+    beforeLabel,
+    afterLabel,
+    zoneClass = "",
+    zoneStart = false,
+  } = props;
   const pre = beforeText || "—";
   const post = afterText || "—";
   const isAdded = kind === "added";
   const isRemoved = kind === "removed";
   const isDiff = mismatch || isAdded || isRemoved;
+  const zone = `${zoneClass}${zoneStart ? " bs-cmp-zone-start" : ""}`.trim();
 
   // Matched values: single line (no 前/后 stack) — cuts density on pass-heavy sheets.
   if (!isDiff) {
     return (
-      <td className="bs-cmp-val-cell bs-cmp-val-cell--same">
+      <td className={`bs-cmp-val-cell bs-cmp-val-cell--same ${zone}`.trim()}>
         <span className={`bs-cmp-val${beforeText ? "" : " is-empty"}`}>{pre}</span>
       </td>
     );
@@ -204,7 +217,7 @@ function PairCell(props: {
     <td
       className={`bs-cmp-val-cell bs-cmp-val-cell--pair bs-cmp-val-cell--diff${
         isAdded ? " is-added" : ""
-      }${isRemoved ? " is-removed" : ""}`}
+      }${isRemoved ? " is-removed" : ""}${zone ? ` ${zone}` : ""}`}
     >
       <div className="bs-cmp-pair">
         <div className="bs-cmp-pair__row">
@@ -872,6 +885,9 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     setRuns([]);
     setRunDetail(null);
     setResultSheetId("");
+    if (document.fullscreenElement === boardRef.current) {
+      void document.exitFullscreen().catch(() => undefined);
+    }
     setBoardFs(false);
   }, [pageMode]);
 
@@ -1216,8 +1232,19 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     tableScrollPosRef.current = { top: wrap.scrollTop, left: wrap.scrollLeft };
   }, []);
 
+  // Native Fullscreen escapes modal transform containing-block (CSS fixed fails inside dialog).
   useEffect(() => {
-    if (!boardFs) return;
+    const syncFs = () => {
+      const el = boardRef.current;
+      setBoardFs(Boolean(el && document.fullscreenElement === el));
+    };
+    document.addEventListener("fullscreenchange", syncFs);
+    return () => document.removeEventListener("fullscreenchange", syncFs);
+  }, []);
+
+  // CSS-fallback immersive: Esc exits without closing the job modal.
+  useEffect(() => {
+    if (!boardFs || document.fullscreenElement) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       e.preventDefault();
@@ -1238,8 +1265,22 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     wrap.scrollLeft = left;
   }, [boardFs]);
 
-  const toggleBoardFullscreen = () => {
+  const toggleBoardFullscreen = async () => {
+    const el = boardRef.current;
+    if (!el) return;
     rememberTableScroll();
+    try {
+      if (document.fullscreenElement === el) {
+        await document.exitFullscreen();
+        return;
+      }
+      if (!document.fullscreenElement) {
+        await el.requestFullscreen();
+        return;
+      }
+    } catch {
+      // Native FS blocked — CSS immersive fallback
+    }
     setBoardFs((v) => !v);
   };
 
@@ -1705,6 +1746,9 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
   };
 
   const closeJob = () => {
+    if (document.fullscreenElement === boardRef.current) {
+      void document.exitFullscreen().catch(() => undefined);
+    }
     setBoardFs(false);
     setJobId("");
     setRuns([]);
@@ -2829,7 +2873,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                     size="sm"
                     variant="secondary"
                     isDisabled={!runDetail}
-                    onPress={() => toggleBoardFullscreen()}
+                    onPress={() => void toggleBoardFullscreen()}
                   >
                     {boardFs ? t("bizCompare.exitFullscreen") : t("bizCompare.fullscreen")}
                   </Button>
@@ -3110,18 +3154,27 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                                 )}
                                 {hasGroups ? (
                                   <tr className="bs-cmp-field-row">
-                                    {keyCols.map((k) => (
-                                      <th key={k} className="bs-cmp-col-key">
+                                    {keyCols.map((k, ki) => (
+                                      <th
+                                        key={k}
+                                        className={`bs-cmp-col-key${ki === 0 ? " bs-cmp-zone-start" : ""}`}
+                                      >
                                         <span className="bs-cmp-th__name">{k}</span>
                                       </th>
                                     ))}
-                                    {compareCols.map((f) => (
-                                      <th key={f} className="bs-cmp-col-compare">
+                                    {compareCols.map((f, fi) => (
+                                      <th
+                                        key={f}
+                                        className={`bs-cmp-col-compare${fi === 0 ? " bs-cmp-zone-start" : ""}`}
+                                      >
                                         <span className="bs-cmp-th__name">{f}</span>
                                       </th>
                                     ))}
-                                    {displayCols.map((f) => (
-                                      <th key={f} className="bs-cmp-col-display">
+                                    {displayCols.map((f, fi) => (
+                                      <th
+                                        key={f}
+                                        className={`bs-cmp-col-display${fi === 0 ? " bs-cmp-zone-start" : ""}`}
+                                      >
                                         <span className="bs-cmp-th__name">{f}</span>
                                       </th>
                                     ))}
@@ -3161,16 +3214,26 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                                       : failFieldsLabel(d)}
                                   </td>
                                 ) : null}
-                                {resultColumns.keys.map((k) => (
-                                  <td key={k} className="bs-cmp-key-cell">
+                                {resultColumns.keys.map((k, ki) => (
+                                  <td
+                                    key={k}
+                                    className={`bs-cmp-key-cell bs-cmp-col-key${
+                                      ki === 0 ? " bs-cmp-zone-start" : ""
+                                    }`}
+                                  >
                                     {cellText(d.key?.[k] ?? pre[k] ?? post[k]) || "—"}
                                   </td>
                                 ))}
-                                {resultColumns.extras.map((f) => {
+                                {resultColumns.extras.map((f, fi) => {
                                   const pv = cellText(pre[f]);
                                   const av = cellText(post[f]);
                                   const ch = d.changes?.[f];
                                   const isCmp = resultColumns.compareSet.has(f);
+                                  const prev = resultColumns.extras[fi - 1];
+                                  const prevCmp = prev
+                                    ? resultColumns.compareSet.has(prev)
+                                    : null;
+                                  const zoneStart = fi === 0 || prevCmp !== isCmp;
                                   const mismatch =
                                     d.kind === "added" || d.kind === "removed"
                                       ? Boolean(pv || av)
@@ -3187,6 +3250,10 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                                       reason={ch?.reason}
                                       beforeLabel={t("bizCompare.pairBefore")}
                                       afterLabel={t("bizCompare.pairAfter")}
+                                      zoneClass={
+                                        isCmp ? "bs-cmp-col-compare" : "bs-cmp-col-display"
+                                      }
+                                      zoneStart={zoneStart}
                                     />
                                   );
                                 })}

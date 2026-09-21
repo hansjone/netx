@@ -11321,27 +11321,43 @@ html.login-page--paused .login-page__flare {
     rgba(8, 13, 24, 0.4);
 }
 
-/* CSS immersive board — avoids native Fullscreen + modal focus-trap breaking clicks */
-.bs-cmp-board.is-fullscreen {
+/* Native :fullscreen + CSS immersive fallback (class only when FS API blocked) */
+.bs-cmp-board.is-fullscreen,
+.bs-cmp-board:fullscreen {
   --bs-cmp-surface: rgba(15, 23, 42, 0.92);
+  background: #0b1220;
+  color: #e2e8f0;
+  padding: 12px 14px;
+  gap: 10px;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.bs-cmp-board:fullscreen {
+  width: 100%;
+  height: 100%;
+  max-height: 100%;
+  min-height: 100%;
+  border-radius: 0;
+  margin: 0;
+}
+
+/* CSS fallback only — used when requestFullscreen is blocked */
+.bs-cmp-board.is-fullscreen:not(:fullscreen) {
   position: fixed;
   inset: 0;
-  z-index: 12000;
+  z-index: 2147483000;
   width: 100vw;
   height: 100vh;
   max-height: 100vh;
   min-height: 100vh;
   margin: 0;
   border-radius: 0;
-  padding: 12px 14px;
-  gap: 10px;
-  overflow: hidden;
-  background: #0b1220;
-  color: #e2e8f0;
   box-shadow: none;
 }
 
-body:has(.bs-cmp-board.is-fullscreen) {
+body:has(.bs-cmp-board.is-fullscreen),
+body:has(.bs-cmp-board:fullscreen) {
   overflow: hidden;
 }
 
@@ -12235,21 +12251,21 @@ body:has(.bs-cmp-board.is-fullscreen) {
 }
 
 .bs-cmp-group--key {
-  background: rgba(37, 99, 235, 0.18) !important;
-  color: #93c5fd !important;
-  border-bottom: 2px solid rgba(59, 130, 246, 0.55);
+  background: rgba(37, 99, 235, 0.28) !important;
+  color: #bfdbfe !important;
+  border-bottom: 2px solid #3b82f6;
 }
 
 .bs-cmp-group--compare {
-  background: rgba(245, 158, 11, 0.16) !important;
-  color: #fcd34d !important;
-  border-bottom: 2px solid rgba(245, 158, 11, 0.55);
+  background: rgba(245, 158, 11, 0.26) !important;
+  color: #fde68a !important;
+  border-bottom: 2px solid #f59e0b;
 }
 
 .bs-cmp-group--display {
-  background: rgba(148, 163, 184, 0.12) !important;
-  color: #cbd5e1 !important;
-  border-bottom: 2px solid rgba(148, 163, 184, 0.35);
+  background: rgba(100, 116, 139, 0.28) !important;
+  color: #e2e8f0 !important;
+  border-bottom: 2px solid #94a3b8;
 }
 
 .bs-cmp-diff-table tbody td {
@@ -12300,27 +12316,75 @@ body:has(.bs-cmp-board.is-fullscreen) {
 }
 
 .bs-cmp-diff-table thead tr.bs-cmp-field-row th.bs-cmp-col-key {
-  background: rgba(22, 36, 66, 0.98);
+  background: rgba(30, 58, 110, 0.95);
+  color: #bfdbfe;
 }
 
 .bs-cmp-diff-table thead tr.bs-cmp-field-row th.bs-cmp-col-compare {
-  background: rgba(42, 32, 16, 0.98);
+  background: rgba(78, 52, 12, 0.95);
+  color: #fde68a;
 }
 
 .bs-cmp-diff-table thead tr.bs-cmp-field-row th.bs-cmp-col-display {
-  background: rgba(15, 23, 42, 0.98);
+  background: rgba(40, 48, 64, 0.98);
+  color: #cbd5e1;
 }
 
+/* Zone banding: tint body cells so Key / Compare / Display stay distinct while scrolling */
 .bs-cmp-col-key {
-  background: rgba(59, 130, 246, 0.05);
+  --bs-cmp-zone: #3b82f6;
+  background: rgba(59, 130, 246, 0.08);
 }
 
 .bs-cmp-col-compare {
-  background: rgba(245, 158, 11, 0.04);
+  --bs-cmp-zone: #f59e0b;
+  background: rgba(245, 158, 11, 0.07);
 }
 
 .bs-cmp-col-display {
-  background: transparent;
+  --bs-cmp-zone: #94a3b8;
+  background: rgba(148, 163, 184, 0.04);
+}
+
+.bs-cmp-zone-start {
+  box-shadow: inset 3px 0 0 var(--bs-cmp-zone, #64748b);
+}
+
+.bs-cmp-diff-table tbody tr:nth-child(even) td.bs-cmp-col-key {
+  background: rgba(59, 130, 246, 0.12);
+}
+
+.bs-cmp-diff-table tbody tr:nth-child(even) td.bs-cmp-col-compare {
+  background: rgba(245, 158, 11, 0.1);
+}
+
+.bs-cmp-diff-table tbody tr:nth-child(even) td.bs-cmp-col-display {
+  background: rgba(148, 163, 184, 0.07);
+}
+
+.bs-cmp-diff-table tbody tr:hover td.bs-cmp-col-key {
+  background: rgba(59, 130, 246, 0.16);
+}
+
+.bs-cmp-diff-table tbody tr:hover td.bs-cmp-col-compare {
+  background: rgba(245, 158, 11, 0.14);
+}
+
+.bs-cmp-diff-table tbody tr:hover td.bs-cmp-col-display {
+  background: rgba(148, 163, 184, 0.1);
+}
+
+/* Diff highlight still wins inside compare/display cells */
+.bs-cmp-diff-table tbody td.bs-cmp-val-cell--diff {
+  background: rgba(245, 158, 11, 0.14) !important;
+}
+
+.bs-cmp-diff-table tbody td.bs-cmp-val-cell--pair.is-removed {
+  background: rgba(239, 68, 68, 0.12) !important;
+}
+
+.bs-cmp-diff-table tbody td.bs-cmp-val-cell--pair.is-added {
+  background: rgba(34, 197, 94, 0.12) !important;
 }
 
 .bs-cmp-overview__verdict {
