@@ -172,6 +172,17 @@ function PairCell(props: {
   const post = afterText || "—";
   const isAdded = kind === "added";
   const isRemoved = kind === "removed";
+  const isDiff = mismatch || isAdded || isRemoved;
+
+  // Matched values: single line (no 前/后 stack) — cuts density on pass-heavy sheets.
+  if (!isDiff) {
+    return (
+      <td className="bs-cmp-val-cell bs-cmp-val-cell--same">
+        <span className={`bs-cmp-val${beforeText ? "" : " is-empty"}`}>{pre}</span>
+      </td>
+    );
+  }
+
   // Whole-row missing/extra: emphasize the present side; do not strike it out.
   const preClass = [
     "bs-cmp-val",
@@ -191,17 +202,21 @@ function PairCell(props: {
     .join(" ");
   return (
     <td
-      className={`bs-cmp-val-cell bs-cmp-val-cell--pair${
-        mismatch || isAdded || isRemoved ? " bs-cmp-val-cell--diff" : ""
-      }${isAdded ? " is-added" : ""}${isRemoved ? " is-removed" : ""}`}
+      className={`bs-cmp-val-cell bs-cmp-val-cell--pair bs-cmp-val-cell--diff${
+        isAdded ? " is-added" : ""
+      }${isRemoved ? " is-removed" : ""}`}
     >
       <div className="bs-cmp-pair">
         <div className="bs-cmp-pair__row">
-          <span className="bs-cmp-pair__tag">{beforeLabel}</span>
+          <span className="bs-cmp-pair__tag" aria-label={beforeLabel}>
+            {beforeLabel}
+          </span>
           <span className={preClass}>{isAdded ? "—" : pre}</span>
         </div>
         <div className="bs-cmp-pair__row">
-          <span className="bs-cmp-pair__tag">{afterLabel}</span>
+          <span className="bs-cmp-pair__tag" aria-label={afterLabel}>
+            {afterLabel}
+          </span>
           <span className={postClass}>{isRemoved ? "—" : post}</span>
         </div>
       </div>
@@ -1184,6 +1199,13 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
   const activeSuccess = sheetSuccessOf(activeSheetCard || {});
   const activePassRate = sheetPassRateOf(activeSheetCard || {});
   const activeAdded = Number(activeSheetCard?.added || 0);
+  const showFailCol =
+    kindFilter === "diff" || kindFilter === "all" || kindFilter === "added";
+  const resultEmptyColSpan =
+    1 +
+    (showFailCol ? 1 : 0) +
+    resultColumns.keys.length +
+    Math.max(resultColumns.extras.length, 0);
   useEffect(() => {
     const syncFs = () => {
       const el = boardRef.current;
@@ -2908,11 +2930,17 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                         </strong>
                         <span className="muted bs-cmp-strip__sheet-mode">
                           {activeFail > 0 ? t("bizCompare.kindFail") : t("bizCompare.kindPass")}
-                          {` · ${t("bizCompare.passRateShort")} ${activePassRate}%`}
                           {activeSheetCard?.mode === "presence"
                             ? ` · ${t("bizCompare.presenceShort")}`
                             : ""}
+                          {` · ${activeSheetCard?.before_count ?? 0}→${activeSheetCard?.after_count ?? 0}`}
                         </span>
+                      </div>
+                      <div className="bs-cmp-strip__pass" title={t("bizCompare.passRate")}>
+                        <span className="bs-cmp-strip__pass-label">
+                          {t("bizCompare.passRate")}
+                        </span>
+                        <span className="bs-cmp-strip__pass-value">{activePassRate}%</span>
                       </div>
                       <div className="bs-cmp-strip__kinds" role="group">
                         {(
@@ -2947,20 +2975,16 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                           </button>
                         ))}
                       </div>
-                      <span className="bs-cmp-strip__range muted">
-                        {activeSheetCard?.before_count ?? 0}→{activeSheetCard?.after_count ?? 0}
-                      </span>
-                    </div>
-
-                    <div className="bs-cmp-filter-bar">
-                      <Input
-                        value={resultKw}
-                        placeholder={t("bizCompare.resultFilterPh")}
-                        onChange={(e) => setResultKw(e.target.value)}
-                      />
-                      <span className="muted bs-sheet-count">
-                        {diffsLoading ? "…" : `${pagedDiffs.length}/${resultTotal}`}
-                      </span>
+                      <div className="bs-cmp-filter-bar">
+                        <Input
+                          value={resultKw}
+                          placeholder={t("bizCompare.resultFilterPh")}
+                          onChange={(e) => setResultKw(e.target.value)}
+                        />
+                        <span className="muted bs-sheet-count">
+                          {diffsLoading ? "…" : `${pagedDiffs.length}/${resultTotal}`}
+                        </span>
+                      </div>
                     </div>
 
                     <div
@@ -2971,20 +2995,35 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                       <table className="data-table pt-list-table bs-cmp-diff-table">
                         <thead>
                           <tr>
-                            <th className="bs-cmp-col-kind">{t("bizCompare.colKind")}</th>
-                            <th className="bs-cmp-col-fail">{t("bizCompare.colFailFields")}</th>
-                            {resultColumns.keys.map((k) => (
+                            <th className="bs-cmp-col-kind bs-cmp-sticky-kind">
+                              {t("bizCompare.colKind")}
+                            </th>
+                            {showFailCol ? (
+                              <th className="bs-cmp-col-fail">{t("bizCompare.colFailFields")}</th>
+                            ) : null}
+                            {resultColumns.keys.map((k, ki) => (
                               <th key={k} className="bs-cmp-col-key">
                                 <span className="bs-cmp-th">
-                                  <span className="bs-cmp-th__role bs-cmp-th__role--key">
-                                    {t("bizCompare.keyFields")}
-                                  </span>
+                                  {ki === 0 ? (
+                                    <span className="bs-cmp-th__role bs-cmp-th__role--key">
+                                      {t("bizCompare.keyFields")}
+                                    </span>
+                                  ) : (
+                                    <span className="bs-cmp-th__role bs-cmp-th__role--spacer" aria-hidden>
+                                      &nbsp;
+                                    </span>
+                                  )}
                                   <span className="bs-cmp-th__name">{k}</span>
                                 </span>
                               </th>
                             ))}
-                            {resultColumns.extras.map((f) => {
+                            {resultColumns.extras.map((f, fi) => {
                               const isCmp = resultColumns.compareSet.has(f);
+                              const prev = resultColumns.extras[fi - 1];
+                              const prevCmp = prev
+                                ? resultColumns.compareSet.has(prev)
+                                : null;
+                              const showRole = fi === 0 || prevCmp !== isCmp;
                               return (
                                 <th
                                   key={f}
@@ -2993,17 +3032,26 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                                   }
                                 >
                                   <span className="bs-cmp-th">
-                                    <span
-                                      className={`bs-cmp-th__role ${
-                                        isCmp
-                                          ? "bs-cmp-th__role--compare"
-                                          : "bs-cmp-th__role--display"
-                                      }`}
-                                    >
-                                      {isCmp
-                                        ? t("bizCompare.compareFields")
-                                        : t("bizCompare.displayField")}
-                                    </span>
+                                    {showRole ? (
+                                      <span
+                                        className={`bs-cmp-th__role ${
+                                          isCmp
+                                            ? "bs-cmp-th__role--compare"
+                                            : "bs-cmp-th__role--display"
+                                        }`}
+                                      >
+                                        {isCmp
+                                          ? t("bizCompare.compareFields")
+                                          : t("bizCompare.displayField")}
+                                      </span>
+                                    ) : (
+                                      <span
+                                        className="bs-cmp-th__role bs-cmp-th__role--spacer"
+                                        aria-hidden
+                                      >
+                                        &nbsp;
+                                      </span>
+                                    )}
                                     <span className="bs-cmp-th__name">{f}</span>
                                   </span>
                                 </th>
@@ -3024,7 +3072,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                             const isFail = verdict.tone === "fail";
                             return (
                               <tr key={i} className={`bs-cmp-row bs-cmp-row--${d.kind}`}>
-                                <td className="bs-cmp-col-kind">
+                                <td className="bs-cmp-col-kind bs-cmp-sticky-kind">
                                   <span className={`bs-cmp-badge bs-cmp-badge--${verdict.tone}`}>
                                     {verdict.label}
                                   </span>
@@ -3034,11 +3082,13 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                                     </span>
                                   ) : null}
                                 </td>
-                                <td className="bs-cmp-fail-cell">
-                                  {verdict.tone === "pass"
-                                    ? t("bizCompare.failFieldsEmpty")
-                                    : failFieldsLabel(d)}
-                                </td>
+                                {showFailCol ? (
+                                  <td className="bs-cmp-fail-cell">
+                                    {verdict.tone === "pass"
+                                      ? t("bizCompare.failFieldsEmpty")
+                                      : failFieldsLabel(d)}
+                                  </td>
+                                ) : null}
                                 {resultColumns.keys.map((k) => (
                                   <td key={k} className="bs-cmp-key-cell">
                                     {cellText(d.key?.[k] ?? pre[k] ?? post[k]) || "—"}
@@ -3073,13 +3123,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                           })}
                           {runDetail && !diffsLoading && !pagedDiffs.length ? (
                             <tr>
-                              <td
-                                colSpan={
-                                  2 +
-                                  resultColumns.keys.length +
-                                  Math.max(resultColumns.extras.length, 0)
-                                }
-                              >
+                              <td colSpan={resultEmptyColSpan}>
                                 <div className="pt-list-empty">{t("bizCompare.resultEmpty")}</div>
                               </td>
                             </tr>

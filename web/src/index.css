@@ -11285,26 +11285,28 @@ html.login-page--paused .login-page__flare {
 }
 
 .bs-cmp-board {
-  --bs-cmp-surface: rgba(15, 23, 42, 0.72);
-  --bs-cmp-border: rgba(148, 163, 184, 0.22);
+  --bs-cmp-surface: rgba(15, 23, 42, 0.78);
+  --bs-cmp-border: rgba(148, 163, 184, 0.2);
   --bs-cmp-ink: #e2e8f0;
   --bs-cmp-muted: #94a3b8;
+  --bs-cmp-row: rgba(15, 23, 42, 0.42);
+  --bs-cmp-row-alt: rgba(30, 41, 59, 0.28);
   display: flex;
   flex-direction: column;
   gap: 8px;
   flex: 1 1 auto;
   min-height: min(62vh, 720px);
-  padding: 6px;
+  padding: 8px;
   border-radius: 12px;
   color: var(--bs-cmp-ink);
   background:
-    radial-gradient(1200px 420px at 10% -10%, rgba(37, 99, 235, 0.1), transparent 55%),
-    rgba(8, 13, 24, 0.35);
+    radial-gradient(1100px 380px at 8% -12%, rgba(37, 99, 235, 0.09), transparent 58%),
+    rgba(8, 13, 24, 0.4);
 }
 
 .bs-cmp-board.is-fullscreen,
 .bs-cmp-board:fullscreen {
-  --bs-cmp-surface: rgba(15, 23, 42, 0.88);
+  --bs-cmp-surface: rgba(15, 23, 42, 0.92);
   background: #0b1220;
   color: #e2e8f0;
   padding: 12px 14px;
@@ -11316,32 +11318,35 @@ html.login-page--paused .login-page__flare {
 
 .bs-cmp-board__toolbar {
   display: flex;
-  flex-wrap: nowrap;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 8px 10px;
   align-items: center;
   justify-content: flex-start;
   flex: 0 0 auto;
   min-height: 36px;
+  padding: 2px 0;
 }
 
 .bs-cmp-board__run-select {
-  flex: 0 1 360px;
-  min-width: 160px;
-  max-width: 420px;
+  flex: 0 1 280px;
+  min-width: 140px;
+  max-width: 360px;
   height: 32px;
   margin: 0;
 }
 
 .bs-cmp-board__run-count {
   flex: 0 0 auto;
-  font-size: 12px;
+  font-size: 11px;
   white-space: nowrap;
+  opacity: 0.75;
 }
 
 .bs-cmp-board__actions {
   margin-left: auto;
   flex: 0 0 auto;
   align-items: center;
+  gap: 6px;
 }
 
 .bs-cmp-sides {
@@ -11350,13 +11355,13 @@ html.login-page--paused .login-page__flare {
   align-items: center;
   gap: 6px 8px;
   min-width: 0;
-  flex: 1 1 auto;
+  flex: 1 1 320px;
   height: 32px;
   padding: 0 8px;
   border-radius: 8px;
   border: 1px solid var(--bs-cmp-border, rgba(148, 163, 184, 0.22));
-  background: rgba(15, 23, 42, 0.45);
-  overflow: visible;
+  background: rgba(15, 23, 42, 0.5);
+  overflow: hidden;
 }
 
 .bs-cmp-sides__side {
@@ -11366,20 +11371,20 @@ html.login-page--paused .login-page__flare {
   gap: 6px;
   min-width: 0;
   max-width: 100%;
-  padding: 0 6px;
+  padding: 0 8px;
   border-radius: 6px;
   height: 24px;
-  flex: 0 1 auto;
+  flex: 1 1 auto;
 }
 
 .bs-cmp-sides__side.is-before {
-  background: rgba(239, 68, 68, 0.08);
-  border: 1px solid rgba(248, 113, 113, 0.25);
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(248, 113, 113, 0.28);
 }
 
 .bs-cmp-sides__side.is-after {
-  background: rgba(34, 197, 94, 0.08);
-  border: 1px solid rgba(74, 222, 128, 0.25);
+  background: rgba(34, 197, 94, 0.1);
+  border: 1px solid rgba(74, 222, 128, 0.28);
 }
 
 .bs-cmp-sides__tag {
@@ -11405,9 +11410,9 @@ html.login-page--paused .login-page__flare {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 8rem;
+  max-width: 12rem;
   min-width: 0;
-  flex: 0 1 auto;
+  flex: 1 1 auto;
   line-height: 1.2;
 }
 
@@ -11431,10 +11436,6 @@ html.login-page--paused .login-page__flare {
 }
 
 @media (max-width: 1100px) {
-  .bs-cmp-board__toolbar {
-    flex-wrap: wrap;
-  }
-
   .bs-cmp-board__actions {
     margin-left: 0;
   }
@@ -11445,12 +11446,17 @@ html.login-page--paused .login-page__flare {
     height: auto;
     min-height: 32px;
     padding: 4px 8px;
+    overflow: visible;
+  }
+
+  .bs-cmp-sides__name {
+    max-width: none;
   }
 }
 
 .bs-cmp-board__body {
   display: grid;
-  grid-template-columns: minmax(200px, 248px) minmax(0, 1fr);
+  grid-template-columns: minmax(220px, 268px) minmax(0, 1fr);
   gap: 10px;
   flex: 1 1 auto;
   min-height: 0;
@@ -11585,9 +11591,10 @@ html.login-page--paused .login-page__flare {
   border-radius: 8px;
   background: transparent;
   color: var(--bs-cmp-ink);
-  padding: 8px;
+  padding: 7px 8px;
   cursor: pointer;
   line-height: 1.25;
+  transition: background 0.12s ease, border-color 0.12s ease;
 }
 
 .bs-cmp-nav__item:hover {
@@ -11595,8 +11602,9 @@ html.login-page--paused .login-page__flare {
 }
 
 .bs-cmp-nav__item.is-active {
-  background: rgba(37, 99, 235, 0.18);
-  border-color: rgba(59, 130, 246, 0.45);
+  background: rgba(37, 99, 235, 0.22);
+  border-color: rgba(59, 130, 246, 0.5);
+  box-shadow: inset 2px 0 0 #3b82f6;
 }
 
 .bs-cmp-nav__dot {
@@ -11606,14 +11614,17 @@ html.login-page--paused .login-page__flare {
   background: #64748b;
   justify-self: center;
   align-self: center;
+  box-shadow: 0 0 0 2px rgba(100, 116, 139, 0.2);
 }
 
 .bs-cmp-nav__item.is-clean .bs-cmp-nav__dot {
   background: #22c55e;
+  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.2);
 }
 
 .bs-cmp-nav__item.has-diff .bs-cmp-nav__dot {
   background: #f59e0b;
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.22);
 }
 
 .bs-cmp-nav__name {
@@ -11624,6 +11635,10 @@ html.login-page--paused .login-page__flare {
   white-space: nowrap;
   color: #e2e8f0;
   min-width: 0;
+}
+
+.bs-cmp-nav__item.is-active .bs-cmp-nav__name {
+  color: #f8fafc;
 }
 
 .bs-cmp-main {
@@ -11706,13 +11721,13 @@ html.login-page--paused .login-page__flare {
   white-space: nowrap;
 }
 
-/* Sheet strip: sheet + kind filters laid out flat (full labels) */
+/* Sheet strip: sheet + pass rate + kind filters + search */
 .bs-cmp-strip {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px 12px;
-  min-height: 48px;
+  gap: 8px 12px;
+  min-height: 44px;
   padding: 8px 12px;
   border-radius: 10px;
   border: 1px solid var(--bs-cmp-border);
@@ -11721,11 +11736,17 @@ html.login-page--paused .login-page__flare {
 }
 
 .bs-cmp-strip.is-ok {
-  border-color: rgba(34, 197, 94, 0.35);
+  border-color: rgba(34, 197, 94, 0.32);
+  background:
+    linear-gradient(90deg, rgba(34, 197, 94, 0.06), transparent 28%),
+    var(--bs-cmp-surface);
 }
 
 .bs-cmp-strip.is-warn {
-  border-color: rgba(245, 158, 11, 0.4);
+  border-color: rgba(245, 158, 11, 0.38);
+  background:
+    linear-gradient(90deg, rgba(245, 158, 11, 0.07), transparent 28%),
+    var(--bs-cmp-surface);
 }
 
 .bs-cmp-strip__sheet {
@@ -11733,7 +11754,7 @@ html.login-page--paused .login-page__flare {
   align-items: center;
   gap: 8px;
   min-width: 0;
-  flex: 1 1 160px;
+  flex: 1 1 180px;
 }
 
 .bs-cmp-strip__sheet-tag {
@@ -11763,23 +11784,29 @@ html.login-page--paused .login-page__flare {
 .bs-cmp-strip__pass {
   display: flex;
   flex-direction: column;
+  justify-content: center;
   gap: 1px;
   min-width: 0;
+  padding: 2px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  background: rgba(8, 13, 24, 0.35);
 }
 
 .bs-cmp-strip__pass-label {
   font-size: 10px;
   color: var(--bs-cmp-muted);
   line-height: 1.2;
+  white-space: nowrap;
 }
 
 .bs-cmp-strip__pass-value {
-  font-size: 20px;
+  font-size: 18px;
   font-weight: 800;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.02em;
   line-height: 1.1;
-  min-width: 4.5ch;
+  min-width: 4.2ch;
 }
 
 .bs-cmp-strip.is-ok .bs-cmp-strip__pass-value {
@@ -11794,24 +11821,28 @@ html.login-page--paused .login-page__flare {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
-  flex: 2 1 360px;
+  gap: 4px;
+  flex: 1 1 280px;
   min-width: 0;
+  padding: 2px;
+  border-radius: 8px;
+  background: rgba(8, 13, 24, 0.28);
 }
 
 .bs-cmp-strip__kind {
   appearance: none;
   flex: 0 0 auto;
-  border: 1px solid rgba(148, 163, 184, 0.28);
+  border: 1px solid transparent;
   border-radius: 6px;
-  background: rgba(15, 23, 42, 0.55);
-  color: #cbd5e1;
+  background: transparent;
+  color: #94a3b8;
   padding: 5px 10px;
   font-size: 12px;
   cursor: pointer;
   line-height: 1.35;
   white-space: nowrap;
   overflow: visible;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
 }
 
 .bs-cmp-strip__kind b {
@@ -11822,13 +11853,21 @@ html.login-page--paused .login-page__flare {
 }
 
 .bs-cmp-strip__kind:hover {
-  background: rgba(30, 41, 59, 0.9);
+  background: rgba(30, 41, 59, 0.85);
+  color: #e2e8f0;
 }
 
 .bs-cmp-strip__kind.is-active {
-  border-color: rgba(59, 130, 246, 0.55);
-  background: rgba(37, 99, 235, 0.2);
+  border-color: rgba(59, 130, 246, 0.45);
+  background: rgba(37, 99, 235, 0.22);
   color: #93c5fd;
+  font-weight: 600;
+}
+
+.bs-cmp-strip__kind--diff.is-active {
+  border-color: rgba(248, 113, 113, 0.4);
+  background: rgba(239, 68, 68, 0.14);
+  color: #fecaca;
 }
 
 .bs-cmp-strip__kind--added b {
@@ -11844,7 +11883,11 @@ html.login-page--paused .login-page__flare {
 }
 
 .bs-cmp-strip__kind--unchanged b {
-  color: #94a3b8;
+  color: #4ade80;
+}
+
+.bs-cmp-strip__kind--diff b {
+  color: #f87171;
 }
 
 .bs-cmp-strip__range {
@@ -11897,11 +11940,28 @@ html.login-page--paused .login-page__flare {
 
 .bs-cmp-filter-bar {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 8px;
   align-items: center;
+  flex: 1 1 200px;
+  min-width: 160px;
+  max-width: 320px;
+  margin-left: auto;
+  min-height: 32px;
+}
+
+.bs-cmp-filter-bar .input,
+.bs-cmp-filter-bar [data-slot="input"],
+.bs-cmp-filter-bar input {
+  min-width: 0;
+  width: 100%;
+}
+
+.bs-cmp-filter-bar .bs-sheet-count {
   flex: 0 0 auto;
-  min-height: 36px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .bs-cmp-kind-pills {
@@ -11939,8 +11999,9 @@ html.login-page--paused .login-page__flare {
   min-height: 240px;
   max-height: none;
   border-color: var(--bs-cmp-border);
-  background: rgba(8, 13, 24, 0.35);
+  background: rgba(8, 13, 24, 0.4);
   transition: opacity 0.15s ease;
+  border-radius: 10px;
 }
 
 .bs-cmp-result-table.is-loading {
@@ -11958,6 +12019,12 @@ html.login-page--paused .login-page__flare {
 @media (max-width: 1100px) {
   .bs-cmp-strip__kinds {
     flex: 1 1 100%;
+  }
+
+  .bs-cmp-filter-bar {
+    flex: 1 1 100%;
+    max-width: none;
+    margin-left: 0;
   }
 
   .bs-cmp-strip__range {
@@ -12001,13 +12068,48 @@ html.login-page--paused .login-page__flare {
 .bs-cmp-diff-table thead th {
   position: sticky;
   top: 0;
-  z-index: 1;
-  background: rgba(15, 23, 42, 0.96);
+  z-index: 2;
+  background: rgba(15, 23, 42, 0.98);
   color: #94a3b8;
   box-shadow: 0 1px 0 rgba(148, 163, 184, 0.22);
   font-size: 12px;
   white-space: nowrap;
   vertical-align: bottom;
+  padding: 8px 10px;
+}
+
+.bs-cmp-diff-table tbody td {
+  padding: 7px 10px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.08);
+}
+
+.bs-cmp-diff-table tbody tr:nth-child(even) td {
+  background: var(--bs-cmp-row-alt, rgba(30, 41, 59, 0.28));
+}
+
+.bs-cmp-diff-table tbody tr:hover td {
+  background: rgba(37, 99, 235, 0.1);
+}
+
+.bs-cmp-sticky-kind {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: rgba(15, 23, 42, 0.96);
+  box-shadow: 1px 0 0 rgba(148, 163, 184, 0.16);
+}
+
+.bs-cmp-diff-table thead th.bs-cmp-sticky-kind {
+  z-index: 3;
+  background: rgba(15, 23, 42, 0.98);
+}
+
+.bs-cmp-diff-table tbody tr:nth-child(even) td.bs-cmp-sticky-kind {
+  background: rgba(22, 32, 51, 0.98);
+}
+
+.bs-cmp-diff-table tbody tr:hover td.bs-cmp-sticky-kind {
+  background: rgba(30, 48, 80, 0.98);
 }
 
 .bs-cmp-th {
@@ -12026,6 +12128,13 @@ html.login-page--paused .login-page__flare {
   font-weight: 700;
   line-height: 1.5;
   letter-spacing: 0.02em;
+  min-height: 1.5em;
+}
+
+.bs-cmp-th__role--spacer {
+  visibility: hidden;
+  padding: 0;
+  background: transparent;
 }
 
 .bs-cmp-th__role--key {
@@ -12049,11 +12158,11 @@ html.login-page--paused .login-page__flare {
 }
 
 .bs-cmp-col-key {
-  background: rgba(59, 130, 246, 0.06);
+  background: rgba(59, 130, 246, 0.05);
 }
 
 .bs-cmp-col-compare {
-  background: rgba(245, 158, 11, 0.05);
+  background: rgba(245, 158, 11, 0.04);
 }
 
 .bs-cmp-col-display {
@@ -12107,9 +12216,6 @@ html.login-page--paused .login-page__flare {
   font-size: 0.75em;
   margin-top: 2px;
 }
-.bs-cmp-strip__kind--diff b {
-  color: #f87171;
-}
 
 .bs-cmp-badge {
   display: inline-block;
@@ -12152,20 +12258,30 @@ html.login-page--paused .login-page__flare {
   vertical-align: middle;
 }
 
+.bs-cmp-val-cell--same {
+  color: #cbd5e1;
+}
+
+.bs-cmp-val-cell--same .bs-cmp-val {
+  color: #cbd5e1;
+}
+
 .bs-cmp-val-cell--diff {
-  background: rgba(245, 158, 11, 0.08);
+  background: rgba(245, 158, 11, 0.1) !important;
+  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.18);
 }
 
 .bs-cmp-pair {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
   min-width: 4.5rem;
+  padding: 1px 0;
 }
 
 .bs-cmp-pair__row {
   display: grid;
-  grid-template-columns: 1.6em minmax(0, 1fr);
+  grid-template-columns: 1.4em minmax(0, 1fr);
   gap: 6px;
   align-items: baseline;
 }
@@ -12176,15 +12292,20 @@ html.login-page--paused .login-page__flare {
   font-weight: 700;
   letter-spacing: 0.02em;
   color: #64748b;
-  line-height: 1.3;
+  line-height: 1.35;
+  text-align: center;
+  border-radius: 3px;
+  background: rgba(148, 163, 184, 0.12);
 }
 
 .bs-cmp-val-cell--diff .bs-cmp-pair__row:first-child .bs-cmp-pair__tag {
-  color: #fca5a5;
+  color: #fecaca;
+  background: rgba(239, 68, 68, 0.18);
 }
 
 .bs-cmp-val-cell--diff .bs-cmp-pair__row:last-child .bs-cmp-pair__tag {
-  color: #86efac;
+  color: #bbf7d0;
+  background: rgba(34, 197, 94, 0.18);
 }
 
 .bs-cmp-val {
@@ -12223,11 +12344,13 @@ html.login-page--paused .login-page__flare {
 }
 
 .bs-cmp-val-cell--pair.is-removed {
-  background: rgba(239, 68, 68, 0.08);
+  background: rgba(239, 68, 68, 0.1) !important;
+  box-shadow: inset 0 0 0 1px rgba(248, 113, 113, 0.2);
 }
 
 .bs-cmp-val-cell--pair.is-added {
-  background: rgba(34, 197, 94, 0.08);
+  background: rgba(34, 197, 94, 0.1) !important;
+  box-shadow: inset 0 0 0 1px rgba(74, 222, 128, 0.2);
 }
 
 .bs-cmp-val-arrow {
@@ -12237,12 +12360,12 @@ html.login-page--paused .login-page__flare {
   color: #94a3b8;
 }
 
-.bs-cmp-row--added {
-  background: rgba(34, 197, 94, 0.06);
+.bs-cmp-row--added td {
+  background: rgba(34, 197, 94, 0.05);
 }
 
-.bs-cmp-row--removed {
-  background: rgba(239, 68, 68, 0.06);
+.bs-cmp-row--removed td {
+  background: rgba(239, 68, 68, 0.05);
 }
 
 .bs-cmp-row--changed {
@@ -12250,7 +12373,7 @@ html.login-page--paused .login-page__flare {
 }
 
 .bs-cmp-row--unchanged {
-  opacity: 0.78;
+  opacity: 1;
 }
 
 .bs-cmp-cell--pre {
