@@ -1144,11 +1144,11 @@ def _zte_status_profiles() -> list[ParseProfile]:
             command_template="show mac l2vpn | one-line",
             match=r"(?i)^\s*show\s+mac\s+l2vpn(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show mac l2vpn",
-            description="L2VPN MAC table (large; disabled by default).",
+            description="L2VPN MAC table (large; heavy collect lane).",
             fields=list(_L2VPN_MAC_FIELDS),
             tags=["l2vpn", "mac"],
             sort_order=480,
-            enabled=False,
+            enabled=True,
             kind="collect",
         ),
         ParseProfile(
