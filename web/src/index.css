@@ -11261,9 +11261,50 @@ html.login-page--paused .login-page__flare {
   overflow: auto;
 }
 
+.bs-bind-list--modal {
+  max-height: min(48vh, 360px);
+  padding: 4px 2px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 8px;
+}
+
 .bs-bind-item {
   display: block;
   margin-bottom: 4px;
+}
+
+.bs-profiles-table-wrap {
+  overflow-x: auto !important;
+  overflow-y: auto;
+  max-height: min(58vh, 560px);
+}
+
+.bs-profiles-table {
+  min-width: 960px;
+}
+
+.bs-profiles-table .bs-cmd-cell {
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.bs-profiles-table .bs-params-cell {
+  min-width: 140px;
+  max-width: 280px;
+  word-break: break-word;
+}
+
+.bs-bind-hint {
+  margin-top: 4px;
+  font-size: 12px;
+}
+
+.bs-params-warn {
+  color: #fbbf24;
+}
+
+.bs-bind-modal.app-heroui-modal {
+  z-index: 80;
 }
 
 /* biz_state compare result workbook / board — dark surfaces (match nm modal) */

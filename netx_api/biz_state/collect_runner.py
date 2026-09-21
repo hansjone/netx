@@ -367,6 +367,10 @@ def _run_collect_lane(
     per_cmd: int,
     cap: int,
     label: str,
+    shared_cache: dict[str, Any] | None = None,
+    cache_lock: Any | None = None,
+    cmd_locks: dict[str, Any] | None = None,
+    aux_persisted: set[tuple[str, str]] | None = None,
 ) -> tuple[int, int, bool, bool]:
     """Run one SSH lane (own connection + CollectSession + timeout budget)."""
     if not work:
@@ -405,6 +409,9 @@ def _run_collect_lane(
                 device_type=device_type_eff,
                 vendor_key=vendor_key,
                 read_timeout=per_cmd,
+                shared_cache=shared_cache,
+                cache_lock=cache_lock,
+                cmd_locks=cmd_locks,
             )
             try:
                 batch_row = sdb.get(BizStateBatch, batch_id)
@@ -413,7 +420,7 @@ def _run_collect_lane(
 
                 # Resolve expand_all → concrete per-VRF commands via discover profile.
                 flat_work: list[WorkItem] = []
-                aux_persisted: set[tuple[str, str]] = set()
+                persisted = aux_persisted if aux_persisted is not None else set()
                 for concrete, params, profile_id, item_id, mode in work:
                     if mode != "expand_all":
                         flat_work.append((concrete, params, profile_id, item_id, mode))
@@ -627,7 +634,16 @@ def _run_collect_lane(
                             and aux_mid in _GENERIC_METRICS
                         ):
                             persist_key = (normalize_command(ra.command), aux_mid)
-                            if persist_key not in aux_persisted:
+                            do_persist = False
+                            if cache_lock is not None:
+                                with cache_lock:
+                                    if persist_key not in persisted:
+                                        persisted.add(persist_key)
+                                        do_persist = True
+                            elif persist_key not in persisted:
+                                persisted.add(persist_key)
+                                do_persist = True
+                            if do_persist:
                                 n_aux = _persist_metric_rows(
                                     sdb,
                                     batch=batch_row,
@@ -637,7 +653,6 @@ def _run_collect_lane(
                                 )
                                 aux_row.row_count = n_aux
                                 total_rows += n_aux
-                                aux_persisted.add(persist_key)
                                 if n_aux:
                                     _bump_batch_progress(batch_id, add_rows=n_aux)
                         sdb.add(aux_row)
@@ -900,12 +915,20 @@ def _run_collect_session(
             raise RuntimeError("no commands to run")
 
         light_work, heavy_work = partition_work(work)
+        shared_cache: dict[str, Any] = {}
+        cache_lock = threading.RLock()
+        cmd_locks: dict[str, Any] = {}
+        aux_persisted: set[tuple[str, str]] = set()
         lane_kwargs = dict(
             batch_id=batch_id,
             creds=creds,
             vendor_eff=vendor_eff,
             device_type_eff=device_type_eff,
             vendor_key=vendor_key,
+            shared_cache=shared_cache,
+            cache_lock=cache_lock,
+            cmd_locks=cmd_locks,
+            aux_persisted=aux_persisted,
         )
 
         def _run_light() -> tuple[int, int, bool, bool]:

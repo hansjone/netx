@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any, Callable
 import re
+import threading
 
 from .command_match import normalize_command
 from .enrich import EnrichJoin, apply_enrich_joins
@@ -88,7 +90,11 @@ class ParseBundle:
 
 
 class CollectSession:
-    """SSH session-scoped command cache + aux fetch/parse."""
+    """SSH session-scoped command cache + aux fetch/parse.
+
+    Optional ``shared_cache`` / ``cache_lock`` / ``cmd_locks`` let light+heavy
+    lanes reuse the same CLI results within one batch (config_vrf / FIB aux).
+    """
 
     def __init__(
         self,
@@ -99,6 +105,9 @@ class CollectSession:
         vendor_key: str = "",
         read_timeout: int = 120,
         send_fn: SendFn | None = None,
+        shared_cache: dict[str, CachedCommand] | None = None,
+        cache_lock: threading.RLock | None = None,
+        cmd_locks: dict[str, threading.Lock] | None = None,
     ) -> None:
         self.conn = conn
         self.vendor = vendor
@@ -106,7 +115,25 @@ class CollectSession:
         self.vendor_key = vendor_key
         self.read_timeout = int(read_timeout or 120)
         self._send = send_fn
-        self.cache: dict[str, CachedCommand] = {}
+        self.cache: dict[str, CachedCommand] = (
+            shared_cache if shared_cache is not None else {}
+        )
+        self._cache_lock = cache_lock
+        self._cmd_locks = cmd_locks if cmd_locks is not None else {}
+
+    def _meta_lock(self):
+        return self._cache_lock if self._cache_lock is not None else nullcontext()
+
+    def _command_lock(self, command: str):
+        ck = normalize_command(command)
+        if self._cache_lock is None:
+            return nullcontext()
+        with self._cache_lock:
+            lock = self._cmd_locks.get(ck)
+            if lock is None:
+                lock = threading.Lock()
+                self._cmd_locks[ck] = lock
+        return lock
 
     def _send_show(self, command: str) -> str:
         if self._send is None:
@@ -135,14 +162,16 @@ class CollectSession:
             error=str(error or ""),
             cmd_row_id=str(cmd_row_id or ""),
         )
-        self.cache[ck] = entry
+        with self._meta_lock():
+            self.cache[ck] = entry
         return entry
 
     def get_cached(self, command: str) -> CachedCommand | None:
         ck = normalize_command(command)
-        hit = self.cache.get(ck)
-        if hit and hit.ok:
-            return hit
+        with self._meta_lock():
+            hit = self.cache.get(ck)
+            if hit and hit.ok:
+                return hit
         return None
 
     def fetch_and_parse(
@@ -154,52 +183,57 @@ class CollectSession:
         params: dict[str, str] | None = None,
         cmd_row_id: str = "",
     ) -> tuple[CachedCommand, bool]:
-        """Return ``(entry, cache_hit)``. On miss: CLI + optional parser."""
-        cached = self.get_cached(command)
-        if cached is not None:
-            return cached, True
-        try:
-            raw = self._send_show(command)
-        except Exception as exc:
-            entry = self.remember(
-                command,
-                raw="",
-                ok=False,
-                error=f"{type(exc).__name__}: {exc}",
-                cmd_row_id=cmd_row_id,
-            )
-            return entry, False
-        records: list[dict[str, Any]] = []
-        fsm_tables: dict[str, list[dict[str, Any]]] = {}
-        if parser_id and get_parser(parser_id):
+        """Return ``(entry, cache_hit)``. On miss: CLI + optional parser.
+
+        Same concrete CLI is serialized across shared-cache lanes so aux of
+        one monitor item can be reused by the next without re-collecting.
+        """
+        with self._command_lock(command):
+            cached = self.get_cached(command)
+            if cached is not None:
+                return cached, True
             try:
-                records, fsm_tables, _keys = run_parser(
-                    parser_id,
-                    raw_text=raw,
-                    vendor=self.vendor,
-                    device_type=self.device_type,
-                    command=textfsm_command or command,
-                    textfsm_command=textfsm_command or "",
-                    params=params or {},
-                )
+                raw = self._send_show(command)
             except Exception as exc:
                 entry = self.remember(
                     command,
-                    raw=raw,
+                    raw="",
                     ok=False,
-                    error=f"parse: {type(exc).__name__}: {exc}",
+                    error=f"{type(exc).__name__}: {exc}",
                     cmd_row_id=cmd_row_id,
                 )
                 return entry, False
-        entry = self.remember(
-            command,
-            raw=raw,
-            fsm_tables=fsm_tables,
-            records=records,
-            ok=True,
-            cmd_row_id=cmd_row_id,
-        )
-        return entry, False
+            records: list[dict[str, Any]] = []
+            fsm_tables: dict[str, list[dict[str, Any]]] = {}
+            if parser_id and get_parser(parser_id):
+                try:
+                    records, fsm_tables, _keys = run_parser(
+                        parser_id,
+                        raw_text=raw,
+                        vendor=self.vendor,
+                        device_type=self.device_type,
+                        command=textfsm_command or command,
+                        textfsm_command=textfsm_command or "",
+                        params=params or {},
+                    )
+                except Exception as exc:
+                    entry = self.remember(
+                        command,
+                        raw=raw,
+                        ok=False,
+                        error=f"parse: {type(exc).__name__}: {exc}",
+                        cmd_row_id=cmd_row_id,
+                    )
+                    return entry, False
+            entry = self.remember(
+                command,
+                raw=raw,
+                fsm_tables=fsm_tables,
+                records=records,
+                ok=True,
+                cmd_row_id=cmd_row_id,
+            )
+            return entry, False
 
 
 def primary_rule_keys(parser_id: str) -> list[str]:
