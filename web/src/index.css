@@ -11327,6 +11327,15 @@ html.login-page--paused .login-page__flare {
   padding: 2px 0;
 }
 
+.bs-cmp-board__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
 .bs-cmp-board__run-select {
   flex: 0 1 280px;
   min-width: 140px;
@@ -11355,7 +11364,7 @@ html.login-page--paused .login-page__flare {
   align-items: center;
   gap: 6px 8px;
   min-width: 0;
-  flex: 1 1 320px;
+  flex: 1 1 280px;
   height: 32px;
   padding: 0 8px;
   border-radius: 8px;
@@ -11440,9 +11449,12 @@ html.login-page--paused .login-page__flare {
     margin-left: 0;
   }
 
+  .bs-cmp-board__meta {
+    flex: 1 1 100%;
+  }
+
   .bs-cmp-sides {
     flex: 1 1 100%;
-    order: 3;
     height: auto;
     min-height: 32px;
     padding: 4px 8px;
@@ -11450,6 +11462,11 @@ html.login-page--paused .login-page__flare {
   }
 
   .bs-cmp-sides__name {
+    max-width: none;
+  }
+
+  .bs-cmp-board__run-select {
+    flex: 1 1 200px;
     max-width: none;
   }
 }
@@ -11461,6 +11478,11 @@ html.login-page--paused .login-page__flare {
   flex: 1 1 auto;
   min-height: 0;
   align-items: stretch;
+  transition: grid-template-columns 0.18s ease;
+}
+
+.bs-cmp-board__body.is-nav-collapsed {
+  grid-template-columns: 44px minmax(0, 1fr);
 }
 
 .bs-cmp-nav {
@@ -11475,13 +11497,42 @@ html.login-page--paused .login-page__flare {
 
 .bs-cmp-nav__head {
   display: grid;
-  grid-template-columns: 8px minmax(0, 1fr) auto;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 0 8px;
-  padding: 8px 10px;
+  gap: 0 6px;
+  padding: 6px 8px;
   border-bottom: 1px solid var(--bs-cmp-border);
   flex: 0 0 auto;
   min-height: 36px;
+}
+
+.bs-cmp-nav.is-collapsed .bs-cmp-nav__head {
+  grid-template-columns: 1fr;
+  justify-items: center;
+  padding: 6px 4px;
+}
+
+.bs-cmp-nav__toggle {
+  appearance: none;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.55);
+  color: #93c5fd;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+
+.bs-cmp-nav__toggle:hover {
+  background: rgba(37, 99, 235, 0.22);
+  border-color: rgba(59, 130, 246, 0.45);
 }
 
 .bs-cmp-nav__dot--spacer {
@@ -11595,6 +11646,34 @@ html.login-page--paused .login-page__flare {
   cursor: pointer;
   line-height: 1.25;
   transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.bs-cmp-nav.is-collapsed .bs-cmp-nav__item {
+  grid-template-columns: 1fr;
+  justify-items: center;
+  padding: 8px 4px;
+  border-radius: 6px;
+}
+
+.bs-cmp-nav.is-collapsed .bs-cmp-nav__name,
+.bs-cmp-nav.is-collapsed .bs-cmp-nav__stats {
+  display: none;
+}
+
+.bs-cmp-nav.is-collapsed .bs-cmp-nav__list {
+  padding: 4px;
+  gap: 2px;
+  align-items: stretch;
+}
+
+.bs-cmp-nav.is-collapsed .bs-cmp-nav__dot {
+  width: 8px;
+  height: 8px;
+}
+
+.bs-cmp-nav.is-collapsed .bs-cmp-nav__item.is-active {
+  box-shadow: none;
+  background: rgba(37, 99, 235, 0.28);
 }
 
 .bs-cmp-nav__item:hover {
@@ -12042,8 +12121,16 @@ html.login-page--paused .login-page__flare {
     grid-template-columns: 1fr;
   }
 
+  .bs-cmp-board__body.is-nav-collapsed {
+    grid-template-columns: 1fr;
+  }
+
   .bs-cmp-nav {
     max-height: 180px;
+  }
+
+  .bs-cmp-nav.is-collapsed {
+    max-height: 52px;
   }
 
   .bs-cmp-nav__list {
@@ -12051,6 +12138,10 @@ html.login-page--paused .login-page__flare {
     flex-wrap: nowrap;
     overflow-x: auto;
     overflow-y: hidden;
+  }
+
+  .bs-cmp-nav.is-collapsed .bs-cmp-nav__list {
+    display: none;
   }
 
   .bs-cmp-nav__item {

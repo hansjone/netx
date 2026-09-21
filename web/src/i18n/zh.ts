@@ -488,6 +488,8 @@ const zh = {
     sheetCount: "监控表",
     sheetNavTitle: "检查项",
     sheetNavHint: "共 {{n}} 项 · 点击切换",
+    collapseSheetNav: "折叠检查项",
+    expandSheetNav: "展开检查项",
     sheetFailCount: "{{n}} 项失败",
     topChangedFields: "失败字段 Top",
     exportTables: "下载表格",

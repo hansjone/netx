@@ -830,6 +830,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
   const [diffsLoading, setDiffsLoading] = useState(false);
   const boardRef = useRef<HTMLDivElement | null>(null);
   const [boardFs, setBoardFs] = useState(false);
+  const [navCollapsed, setNavCollapsed] = useState(false);
   const tplImportRef = useRef<HTMLInputElement | null>(null);
 
   const refresh = useCallback(async () => {
@@ -2693,109 +2694,119 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
               className={`bs-cmp-board${boardFs ? " is-fullscreen" : ""}`}
             >
               <div className="bs-cmp-board__toolbar">
-                <select
-                  className="ui-field__select bs-cmp-board__run-select"
-                  aria-label={t("bizCompare.pickBatchRun")}
-                  value={runDetail?.id || ""}
-                  onChange={(e) => {
-                    const id = e.target.value;
-                    if (id) void loadRun(id);
-                  }}
-                >
-                  <option value="">{t("bizCompare.pickRun")}</option>
-                  {runs.map((r) => {
-                    const before = enrichSide(
-                      (r as any).before,
-                      beforeTaskId,
-                      tasks,
-                      beforeBatches,
-                    );
-                    const after = enrichSide(
-                      (r as any).after,
-                      afterTaskId || beforeTaskId,
-                      tasks,
-                      afterBatches.length ? afterBatches : beforeBatches,
-                    );
-                    const bl = sideDeviceName(before);
-                    const al = sideDeviceName(after);
-                    const when = formatSystemTime((r as any).created_at) || "";
-                    return (
-                      <option key={r.id} value={r.id}>
-                        {when ? `${when} · ` : ""}
-                        {bl} {sideCollectTime(before)} → {al} {sideCollectTime(after)}
-                      </option>
-                    );
-                  })}
-                </select>
-                {runs.length ? (
-                  <span className="muted bs-cmp-board__run-count">
-                    {t("bizCompare.runCount", { n: String(runs.length) })}
-                  </span>
-                ) : null}
-                {runDetail ? (
-                  <div className="bs-cmp-sides" aria-label={t("bizCompare.sidesTitle")}>
-                    {(() => {
-                      const before = enrichSide(
-                        runDetail.before,
-                        beforeTaskId,
-                        tasks,
-                        beforeBatches,
-                      );
-                      const after = enrichSide(
-                        runDetail.after,
-                        afterTaskId || beforeTaskId,
-                        tasks,
-                        afterBatches.length ? afterBatches : beforeBatches,
-                      );
-                      const beforeName = sideDeviceName(before);
-                      const afterName = sideDeviceName(after);
-                      const beforeTime = sideCollectTime(before);
-                      const afterTime = sideCollectTime(after);
-                      return (
-                        <>
-                          <div className="bs-cmp-sides__side is-before">
-                            <span className="bs-cmp-sides__tag">{t("bizCompare.sideBefore")}</span>
-                            <strong className="bs-cmp-sides__name" title={`${beforeName} ${beforeTime}`}>
-                              {beforeName}
-                            </strong>
-                            <span className="bs-cmp-sides__meta" title={beforeTime}>
-                              {beforeTime}
+                <div className="bs-cmp-board__meta">
+                  {runDetail ? (
+                    <div className="bs-cmp-sides" aria-label={t("bizCompare.sidesTitle")}>
+                      {(() => {
+                        const before = enrichSide(
+                          runDetail.before,
+                          beforeTaskId,
+                          tasks,
+                          beforeBatches,
+                        );
+                        const after = enrichSide(
+                          runDetail.after,
+                          afterTaskId || beforeTaskId,
+                          tasks,
+                          afterBatches.length ? afterBatches : beforeBatches,
+                        );
+                        const beforeName = sideDeviceName(before);
+                        const afterName = sideDeviceName(after);
+                        const beforeTime = sideCollectTime(before);
+                        const afterTime = sideCollectTime(after);
+                        return (
+                          <>
+                            <div className="bs-cmp-sides__side is-before">
+                              <span className="bs-cmp-sides__tag">{t("bizCompare.sideBefore")}</span>
+                              <strong className="bs-cmp-sides__name" title={`${beforeName} ${beforeTime}`}>
+                                {beforeName}
+                              </strong>
+                              <span className="bs-cmp-sides__meta" title={beforeTime}>
+                                {beforeTime}
+                              </span>
+                            </div>
+                            <span className="bs-cmp-sides__arrow" aria-hidden>
+                              →
                             </span>
-                          </div>
-                          <span className="bs-cmp-sides__arrow" aria-hidden>
-                            →
-                          </span>
-                          <div className="bs-cmp-sides__side is-after">
-                            <span className="bs-cmp-sides__tag">{t("bizCompare.sideAfter")}</span>
-                            <strong className="bs-cmp-sides__name" title={`${afterName} ${afterTime}`}>
-                              {afterName}
-                            </strong>
-                            <span className="bs-cmp-sides__meta" title={afterTime}>
-                              {afterTime}
-                            </span>
-                          </div>
-                        </>
-                      );
-                    })()}
-                  </div>
-                ) : null}
+                            <div className="bs-cmp-sides__side is-after">
+                              <span className="bs-cmp-sides__tag">{t("bizCompare.sideAfter")}</span>
+                              <strong className="bs-cmp-sides__name" title={`${afterName} ${afterTime}`}>
+                                {afterName}
+                              </strong>
+                              <span className="bs-cmp-sides__meta" title={afterTime}>
+                                {afterTime}
+                              </span>
+                            </div>
+                          </>
+                        );
+                      })()}
+                    </div>
+                  ) : null}
+                  {!boardFs ? (
+                    <>
+                      <select
+                        className="ui-field__select bs-cmp-board__run-select"
+                        aria-label={t("bizCompare.pickBatchRun")}
+                        value={runDetail?.id || ""}
+                        onChange={(e) => {
+                          const id = e.target.value;
+                          if (id) void loadRun(id);
+                        }}
+                      >
+                        <option value="">{t("bizCompare.pickRun")}</option>
+                        {runs.map((r) => {
+                          const before = enrichSide(
+                            (r as any).before,
+                            beforeTaskId,
+                            tasks,
+                            beforeBatches,
+                          );
+                          const after = enrichSide(
+                            (r as any).after,
+                            afterTaskId || beforeTaskId,
+                            tasks,
+                            afterBatches.length ? afterBatches : beforeBatches,
+                          );
+                          const bl = sideDeviceName(before);
+                          const al = sideDeviceName(after);
+                          const when = formatSystemTime((r as any).created_at) || "";
+                          return (
+                            <option key={r.id} value={r.id}>
+                              {when ? `${when} · ` : ""}
+                              {bl} {sideCollectTime(before)} → {al} {sideCollectTime(after)}
+                            </option>
+                          );
+                        })}
+                      </select>
+                      {runs.length ? (
+                        <span className="muted bs-cmp-board__run-count">
+                          {t("bizCompare.runCount", { n: String(runs.length) })}
+                        </span>
+                      ) : null}
+                    </>
+                  ) : null}
+                </div>
                 <div className="btn-row bs-cmp-board__actions">
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    isDisabled={busy || !runDetail?.id}
-                    onPress={() => void downloadRunTables()}
-                  >
-                    {t("bizCompare.exportTables")}
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="danger"
-                    isDisabled={busy || !runDetail?.id}
-                    onPress={() => void removeRun(String(runDetail?.id || ""))}
-                  >
-                    {t("bizCompare.deleteRun")}
-                  </Button>
+                  {!boardFs ? (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        isDisabled={busy || !runDetail?.id}
+                        onPress={() => void downloadRunTables()}
+                      >
+                        {t("bizCompare.exportTables")}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="danger"
+                        isDisabled={busy || !runDetail?.id}
+                        onPress={() => void removeRun(String(runDetail?.id || ""))}
+                      >
+                        {t("bizCompare.deleteRun")}
+                      </Button>
+                    </>
+                  ) : null}
                   <Button
                     size="sm"
                     variant="secondary"
@@ -2808,41 +2819,62 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
               </div>
 
               {runDetail ? (
-                <div className="bs-cmp-board__body">
-                  <aside className="bs-cmp-nav" aria-label={t("bizCompare.sheetNavTitle")}>
+                <div
+                  className={`bs-cmp-board__body${navCollapsed ? " is-nav-collapsed" : ""}`}
+                >
+                  <aside
+                    className={`bs-cmp-nav${navCollapsed ? " is-collapsed" : ""}`}
+                    aria-label={t("bizCompare.sheetNavTitle")}
+                  >
                     <div className="bs-cmp-nav__head">
-                      <span className="bs-cmp-nav__dot bs-cmp-nav__dot--spacer" aria-hidden />
-                      <span className="bs-cmp-nav__head-main">
-                        <span className="bs-cmp-nav__title">{t("bizCompare.sheetNavTitle")}</span>
-                        <span
-                          className="bs-cmp-nav__count"
-                          title={t("bizCompare.sheetNavHint", {
-                            n: String(sheetCards.length || runSheets.length),
-                          })}
-                        >
-                          {sheetCards.length || runSheets.length}
-                        </span>
-                      </span>
-                      <span className="bs-cmp-nav__legend" aria-hidden>
-                        <span
-                          className="bs-cmp-nav__num bs-cmp-nav__num--fail is-hot"
-                          title={t("bizCompare.kindFail")}
-                        >
-                          {t("bizCompare.kindFail")}
-                        </span>
-                        <span
-                          className="bs-cmp-nav__num bs-cmp-nav__num--ok is-hot"
-                          title={t("bizCompare.kindSuccess")}
-                        >
-                          {t("bizCompare.kindSuccess")}
-                        </span>
-                        <span
-                          className="bs-cmp-nav__num bs-cmp-nav__num--rate"
-                          title={t("bizCompare.passRateShort")}
-                        >
-                          %
-                        </span>
-                      </span>
+                      <button
+                        type="button"
+                        className="bs-cmp-nav__toggle"
+                        aria-expanded={!navCollapsed}
+                        title={
+                          navCollapsed
+                            ? t("bizCompare.expandSheetNav")
+                            : t("bizCompare.collapseSheetNav")
+                        }
+                        onClick={() => setNavCollapsed((v) => !v)}
+                      >
+                        {navCollapsed ? "»" : "«"}
+                      </button>
+                      {!navCollapsed ? (
+                        <>
+                          <span className="bs-cmp-nav__head-main">
+                            <span className="bs-cmp-nav__title">{t("bizCompare.sheetNavTitle")}</span>
+                            <span
+                              className="bs-cmp-nav__count"
+                              title={t("bizCompare.sheetNavHint", {
+                                n: String(sheetCards.length || runSheets.length),
+                              })}
+                            >
+                              {sheetCards.length || runSheets.length}
+                            </span>
+                          </span>
+                          <span className="bs-cmp-nav__legend" aria-hidden>
+                            <span
+                              className="bs-cmp-nav__num bs-cmp-nav__num--fail is-hot"
+                              title={t("bizCompare.kindFail")}
+                            >
+                              {t("bizCompare.kindFail")}
+                            </span>
+                            <span
+                              className="bs-cmp-nav__num bs-cmp-nav__num--ok is-hot"
+                              title={t("bizCompare.kindSuccess")}
+                            >
+                              {t("bizCompare.kindSuccess")}
+                            </span>
+                            <span
+                              className="bs-cmp-nav__num bs-cmp-nav__num--rate"
+                              title={t("bizCompare.passRateShort")}
+                            >
+                              %
+                            </span>
+                          </span>
+                        </>
+                      ) : null}
                     </div>
                     <div className="bs-cmp-nav__list" role="tablist">
                       {(sheetCards.length

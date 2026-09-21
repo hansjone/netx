@@ -491,6 +491,8 @@ const en = {
     sheetCount: "Sheets",
     sheetNavTitle: "Checks",
     sheetNavHint: "{{n}} checks · click to switch",
+    collapseSheetNav: "Collapse checks",
+    expandSheetNav: "Expand checks",
     sheetFailCount: "{{n}} failed",
     topChangedFields: "Top failed fields",
     exportTables: "Download tables",
