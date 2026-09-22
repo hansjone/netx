@@ -11305,8 +11305,8 @@ html.login-page--paused .login-page__flare {
 }
 
 .bs-profiles-table {
-  min-width: 1280px;
-  width: max-content;
+  width: 100%;
+  min-width: 960px;
   table-layout: fixed;
   border-collapse: separate;
   border-spacing: 0;
@@ -11322,23 +11322,22 @@ html.login-page--paused .login-page__flare {
 
 .bs-profiles-table th:nth-child(1),
 .bs-profiles-table td:nth-child(1) {
-  width: 52px;
+  width: 48px;
 }
 
 .bs-profiles-table th:nth-child(2),
 .bs-profiles-table td:nth-child(2) {
-  width: 24%;
+  width: 220px;
 }
 
 .bs-profiles-table th:nth-child(3),
 .bs-profiles-table td:nth-child(3) {
-  width: 34%;
-  min-width: 320px;
+  width: 240px;
 }
 
 .bs-profiles-table th:nth-child(4),
 .bs-profiles-table td:nth-child(4) {
-  width: 120px;
+  width: 108px;
 }
 
 .bs-profiles-table th:nth-child(5),
