@@ -258,6 +258,8 @@ const en = {
     batches: "Batches",
     viewBatch: "Open",
     export: "Export",
+    exportCommands: "Export collect commands",
+    exportCommandsOk: "Collect commands exported",
     noBatches: "No batches yet",
     batchDetail: "Batch detail",
     batchWorkbook: "Batch workbook",

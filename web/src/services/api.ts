@@ -1926,6 +1926,44 @@ export const bizStateDownloadExport = async (batchId: string): Promise<void> => 
   }
 };
 
+export const bizStateDownloadTaskCommands = async (
+  taskId: string,
+  opts?: { includeAux?: boolean; enabledOnly?: boolean },
+): Promise<void> => {
+  const q = new URLSearchParams();
+  if (opts?.includeAux === false) q.set("include_aux", "false");
+  if (opts?.enabledOnly === false) q.set("enabled_only", "false");
+  const qs = q.toString();
+  const path =
+    `/v1/biz-state/tasks/${encodeURIComponent(taskId)}/commands/export` +
+    (qs ? `?${qs}` : "");
+  const res = await fetch(path, { method: "GET", credentials: fetchCreds, headers: authHeaders() });
+  if (res.status === 401) {
+    handleUnauthorized(path);
+    throw new Error("unauthorized");
+  }
+  if (!res.ok) {
+    let detail = `${res.status} export commands`;
+    try {
+      const j = (await res.json()) as { detail?: unknown };
+      if (j?.detail != null) detail = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail);
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `biz_state_commands_${taskId}.txt`;
+    a.click();
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+};
+
 /* ---- biz_state compare (Phase2) ---- */
 
 export const bizCompareListTemplates = () =>

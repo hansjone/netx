@@ -258,6 +258,8 @@ const zh = {
     batches: "采集批次",
     viewBatch: "查看",
     export: "导出",
+    exportCommands: "导出采集命令",
+    exportCommandsOk: "已导出采集命令",
     noBatches: "尚无批次",
     batchDetail: "批次详情",
     batchWorkbook: "批次工作簿",

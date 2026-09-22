@@ -14,6 +14,7 @@ import {
   bizStateDeleteTask,
   bizStateDiscover,
   bizStateDownloadExport,
+  bizStateDownloadTaskCommands,
   bizStateGetBatch,
   bizStateGetBatchCommand,
   bizStateGetTask,
@@ -745,6 +746,19 @@ export function BizStatePage() {
   const collectNow = async () => {
     if (!taskId) return;
     await collectNowForTask(taskId, true);
+  };
+
+  const exportTaskCommands = async () => {
+    if (!taskId) return;
+    setBusy(true);
+    try {
+      await bizStateDownloadTaskCommands(taskId);
+      showOk(t("bizState.exportCommandsOk"));
+    } catch (e) {
+      showError(formatErr(e));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const removeTask = async (id: string) => {
@@ -1665,6 +1679,14 @@ export function BizStatePage() {
             onPress={() => void collectNow()}
           >
             {t("bizState.collectNow")}
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            isDisabled={busy || !taskId}
+            onPress={() => void exportTaskCommands()}
+          >
+            {t("bizState.exportCommands")}
           </Button>
           <Button size="sm" variant="danger" isDisabled={busy} onPress={() => void removeTask(taskId)}>
             {t("bizState.delete")}

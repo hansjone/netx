@@ -173,6 +173,40 @@ def api_get_task(task_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
     return svc.get_task(db, task_id)
 
 
+@router.get("/tasks/{task_id}/commands")
+def api_plan_task_commands(
+    task_id: str,
+    enabled_only: bool = Query(True),
+    include_aux: bool = Query(True),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """List planned collect CLIs for a task (bindings expanded; no device login)."""
+    return svc.plan_task_collect_commands(
+        db, task_id, enabled_only=enabled_only, include_aux=include_aux
+    )
+
+
+@router.get("/tasks/{task_id}/commands/export")
+def api_export_task_commands(
+    task_id: str,
+    enabled_only: bool = Query(True),
+    include_aux: bool = Query(True),
+    db: Session = Depends(get_db),
+) -> StreamingResponse:
+    """Download planned collect commands as a .txt file."""
+    text = svc.export_task_commands_text(
+        db, task_id, enabled_only=enabled_only, include_aux=include_aux
+    )
+    safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in task_id)[:40]
+    return StreamingResponse(
+        iter([text.encode("utf-8")]),
+        media_type="text/plain; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="biz_state_commands_{safe}.txt"'
+        },
+    )
+
+
 @router.patch("/tasks/{task_id}")
 def api_patch_task(
     task_id: str, body: TaskPatchIn, db: Session = Depends(get_db)

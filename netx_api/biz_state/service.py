@@ -26,7 +26,14 @@ from ..models import (
     ManagedNE,
 )
 from ..timeutil import utcnow_naive
-from .command_match import normalize_command, preview_task_item
+from .command_match import (
+    EXPAND_ALL_COMMAND,
+    expand_from_bindings,
+    match_command,
+    normalize_command,
+    preview_task_item,
+)
+from .collect_session import resolve_aux_command
 from .profiles import (
     all_profiles,
     get_profile,
@@ -1002,3 +1009,228 @@ def preview_items(db: Session, *, vendor: str, device_type: str, items: list[dic
             )
         )
     return out
+
+
+def _resolve_export_profile(profile_id: str):
+    """Resolve collect profile; remap disabled if_intf → config_interface."""
+    pid = str(profile_id or "").strip()
+    if not pid:
+        return None
+    profile = get_profile(pid)
+    if profile is None:
+        return None
+    if profile.enabled:
+        return profile
+    if profile.metric_id == "if_intf" or pid.endswith(".if_intf"):
+        vk = str(profile.vendor_key or "zte").strip() or "zte"
+        remapped = get_profile(f"{vk}.config_interface") or get_profile("zte.config_interface")
+        if remapped and remapped.enabled:
+            return remapped
+    return None
+
+
+def plan_task_collect_commands(
+    db: Session,
+    task_id: str,
+    *,
+    enabled_only: bool = True,
+    include_aux: bool = True,
+) -> dict[str, Any]:
+    """Plan concrete collect CLIs for a task (no device login).
+
+    expand_all items (unbound optional discover) are listed with a note; aux
+    commands are resolved from primary params when include_aux is True.
+    """
+    task = db.get(BizStateTask, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="task_not_found")
+    vendor_key = resolve_vendor_key(task.vendor or "", task.device_type or "")
+    q = db.query(BizStateTaskItem).filter(BizStateTaskItem.task_id == task_id)
+    if enabled_only:
+        q = q.filter(BizStateTaskItem.enabled.is_(True))
+    items = q.order_by(BizStateTaskItem.sort_order.asc()).all()
+
+    sections: list[dict[str, Any]] = []
+    flat: list[str] = []
+    seen: set[str] = set()
+
+    def _add_cmd(cmd: str) -> bool:
+        c = normalize_command(cmd)
+        if not c or c in seen:
+            return False
+        seen.add(c)
+        flat.append(c)
+        return True
+
+    for item in items:
+        title = str(item.title or "").strip()
+        kind = str(item.kind or "catalog")
+        section: dict[str, Any] = {
+            "item_id": item.id,
+            "kind": kind,
+            "source_profile_id": str(item.source_profile_id or ""),
+            "title": title,
+            "enabled": bool(item.enabled),
+            "commands": [],
+            "notes": [],
+        }
+
+        if kind == "custom_raw":
+            cmd = normalize_command(item.command_override)
+            if cmd and _add_cmd(cmd):
+                section["commands"].append(
+                    {"command": cmd, "role": "primary", "params": {}, "profile_id": ""}
+                )
+            elif not cmd:
+                section["notes"].append("empty custom command")
+            sections.append(section)
+            continue
+
+        profile = _resolve_export_profile(item.source_profile_id)
+        if profile is None:
+            section["notes"].append(
+                f"skip profile {item.source_profile_id} (missing or disabled)"
+            )
+            sections.append(section)
+            continue
+
+        section["title"] = title or str(profile.title or profile.profile_id)
+        section["source_profile_id"] = profile.profile_id
+        binds = (
+            db.query(BizStateTaskItemBinding)
+            .filter(BizStateTaskItemBinding.item_id == item.id)
+            .all()
+        )
+        binding_dicts = [
+            {
+                "placeholder": str(b.placeholder or "").strip(),
+                "value": str(b.value or "").strip(),
+            }
+            for b in binds
+            if str(b.placeholder or "").strip() and str(b.value or "").strip()
+        ]
+
+        try:
+            pairs = expand_from_bindings(
+                profile=profile,
+                bindings=binding_dicts,
+                command_override=item.command_override,
+            )
+        except ValueError as exc:
+            section["notes"].append(str(exc))
+            sections.append(section)
+            continue
+
+        if pairs and pairs[0][0] == EXPAND_ALL_COMMAND:
+            tmpl = normalize_command(profile.command_template)
+            section["notes"].append(
+                "expand_all: no bindings; collect will expand discover values"
+            )
+            section["commands"].append(
+                {
+                    "command": tmpl,
+                    "role": "template",
+                    "params": {"__expand_all__": "1"},
+                    "profile_id": profile.profile_id,
+                }
+            )
+            sections.append(section)
+            continue
+
+        for concrete, params in pairs:
+            cmd = normalize_command(concrete)
+            if not cmd:
+                continue
+            hit = match_command(vendor_key=vendor_key, command=cmd)
+            pid = str(
+                (hit.profile.profile_id if hit else profile.profile_id) or ""
+            ).strip()
+            if _add_cmd(cmd):
+                section["commands"].append(
+                    {
+                        "command": cmd,
+                        "role": "primary",
+                        "params": dict(params or {}),
+                        "profile_id": pid,
+                    }
+                )
+            if not include_aux:
+                continue
+            for aux in list(getattr(hit.profile if hit else profile, "aux_commands", None) or []):
+                try:
+                    ra = resolve_aux_command(aux, params=dict(params or {}))
+                except ValueError as exc:
+                    section["notes"].append(f"aux {getattr(aux, 'key', '')}: {exc}")
+                    continue
+                if _add_cmd(ra.command):
+                    section["commands"].append(
+                        {
+                            "command": ra.command,
+                            "role": "aux",
+                            "aux_key": ra.key,
+                            "params": dict(params or {}),
+                            "profile_id": ra.profile_id,
+                        }
+                    )
+
+        sections.append(section)
+
+    return {
+        "task_id": task.id,
+        "ne_name": task.ne_name or "",
+        "ne_ip": task.ne_ip or "",
+        "vendor": task.vendor or "",
+        "device_type": task.device_type or "",
+        "command_count": len(flat),
+        "commands": flat,
+        "items": sections,
+    }
+
+
+def export_task_commands_text(
+    db: Session,
+    task_id: str,
+    *,
+    enabled_only: bool = True,
+    include_aux: bool = True,
+) -> str:
+    """Plain-text export of planned collect commands (one CLI per line + section headers)."""
+    plan = plan_task_collect_commands(
+        db, task_id, enabled_only=enabled_only, include_aux=include_aux
+    )
+    lines = [
+        "# biz-state collect commands",
+        f"# task_id={plan['task_id']}",
+        f"# ne={plan['ne_name'] or '-'} ({plan['ne_ip'] or '-'})",
+        f"# vendor={plan['vendor'] or '-'} device_type={plan['device_type'] or '-'}",
+        f"# command_count={plan['command_count']}",
+        f"# include_aux={'1' if include_aux else '0'}",
+        f"# enabled_only={'1' if enabled_only else '0'}",
+        "",
+    ]
+    for sec in plan["items"]:
+        title = str(sec.get("title") or sec.get("source_profile_id") or "item").strip()
+        pid = str(sec.get("source_profile_id") or "").strip()
+        header = f"## {title}"
+        if pid and pid not in title:
+            header = f"## {title} · {pid}"
+        lines.append(header)
+        for note in sec.get("notes") or []:
+            lines.append(f"# note: {note}")
+        cmds = list(sec.get("commands") or [])
+        if not cmds and not (sec.get("notes") or []):
+            lines.append("# (no commands)")
+        for c in cmds:
+            role = str(c.get("role") or "primary")
+            if role == "aux":
+                lines.append(f"# aux:{c.get('aux_key') or ''}")
+            elif role == "template":
+                lines.append("# template (expand_all at collect):")
+            lines.append(str(c.get("command") or ""))
+        lines.append("")
+    # Flat unique list at end for easy copy into scripts
+    lines.append("# ---- flat unique commands ----")
+    for cmd in plan["commands"]:
+        lines.append(str(cmd))
+    lines.append("")
+    return "\n".join(lines)
