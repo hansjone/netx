@@ -295,6 +295,8 @@ const zh = {
     colNe: "网元",
     colStatus: "状态",
     colLast: "最近采集",
+    colStarted: "开始时间",
+    colEnded: "结束时间",
     colTime: "时间",
     colRows: "行数",
     colActions: "操作",

@@ -295,6 +295,8 @@ const en = {
     colNe: "NE",
     colStatus: "Status",
     colLast: "Last collect",
+    colStarted: "Started",
+    colEnded: "Ended",
     colTime: "Time",
     colRows: "Rows",
     colActions: "Actions",

@@ -428,6 +428,9 @@ def list_tasks(db: Session, *, purpose: str | None = None) -> list[dict[str, Any
             "interval_sec": t.interval_sec,
             "collect_running": bool(t.collect_running),
             "last_error": t.last_error,
+            "last_collect_started_at": t.last_collect_started_at.isoformat() + "Z"
+            if t.last_collect_started_at
+            else None,
             "last_collect_ended_at": t.last_collect_ended_at.isoformat() + "Z"
             if t.last_collect_ended_at
             else None,

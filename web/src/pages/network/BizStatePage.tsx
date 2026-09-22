@@ -50,6 +50,7 @@ type TaskRow = {
   status: string;
   collect_running: boolean;
   last_error: string;
+  last_collect_started_at?: string | null;
   last_collect_ended_at?: string | null;
   interval_sec?: number;
 };
@@ -82,6 +83,7 @@ type BatchRow = {
   row_count: number;
   command_count: number;
   started_at?: string | null;
+  ended_at?: string | null;
   is_baseline?: boolean;
   protected?: boolean;
   protect_reasons?: string[];
@@ -167,6 +169,21 @@ function convertIntervalValue(
 function fmtTime(v?: string | null) {
   if (!v) return "—";
   return formatSystemTime(v) || v;
+}
+
+function fmtDuration(started?: string | null, ended?: string | null) {
+  if (!started || !ended) return "";
+  const a = Date.parse(started);
+  const b = Date.parse(ended);
+  if (!Number.isFinite(a) || !Number.isFinite(b) || b < a) return "";
+  const sec = Math.round((b - a) / 1000);
+  if (sec < 60) return `${sec}s`;
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  if (m < 60) return s ? `${m}m${s}s` : `${m}m`;
+  const h = Math.floor(m / 60);
+  const rm = m % 60;
+  return rm ? `${h}h${rm}m` : `${h}h`;
 }
 
 function cellText(v: unknown): string {
@@ -1056,7 +1073,8 @@ export function BizStatePage() {
                 <th>{t("bizState.colInterval")}</th>
                 <th>{t("bizState.scheduleEnabled")}</th>
                 <th>{t("bizState.colStatus")}</th>
-                <th>{t("bizState.colLast")}</th>
+                <th>{t("bizState.colStarted")}</th>
+                <th>{t("bizState.colEnded")}</th>
                 <th>{t("bizState.colActions")}</th>
               </tr>
             </thead>
@@ -1119,7 +1137,15 @@ export function BizStatePage() {
                       )}
                     </div>
                   </td>
-                  <td className="pt-list-time">{fmtTime(row.last_collect_ended_at)}</td>
+                  <td className="pt-list-time">{fmtTime(row.last_collect_started_at)}</td>
+                  <td className="pt-list-time">
+                    {fmtTime(row.last_collect_ended_at)}
+                    {fmtDuration(row.last_collect_started_at, row.last_collect_ended_at) ? (
+                      <div className="muted">
+                        {fmtDuration(row.last_collect_started_at, row.last_collect_ended_at)}
+                      </div>
+                    ) : null}
+                  </td>
                   <td>
                     <div className="pt-list-actions">
                       <Button size="sm" variant="primary" onPress={() => void openTask(row.id, "profiles")}>
@@ -1593,7 +1619,8 @@ export function BizStatePage() {
                 <thead>
                   <tr>
                     <th style={{ width: 36 }} />
-                    <th>{t("bizState.colTime")}</th>
+                    <th>{t("bizState.colStarted")}</th>
+                    <th>{t("bizState.colEnded")}</th>
                     <th>{t("bizState.colAlias")}</th>
                     <th>{t("bizState.colStatus")}</th>
                     <th>{t("bizState.colProtect")}</th>
@@ -1615,6 +1642,12 @@ export function BizStatePage() {
                           />
                         </td>
                         <td className="pt-list-time">{fmtTime(b.started_at)}</td>
+                        <td className="pt-list-time">
+                          {fmtTime(b.ended_at)}
+                          {fmtDuration(b.started_at, b.ended_at) ? (
+                            <div className="muted">{fmtDuration(b.started_at, b.ended_at)}</div>
+                          ) : null}
+                        </td>
                         <td>
                           <button
                             type="button"
@@ -1896,7 +1929,11 @@ export function BizStatePage() {
                 })}
                 {" · "}
                 {batchDetail.command_count} cmd · {batchDetail.row_count} rows ·{" "}
-                {fmtTime(batchDetail.started_at)}
+                {t("bizState.colStarted")} {fmtTime(batchDetail.started_at)} ·{" "}
+                {t("bizState.colEnded")} {fmtTime(batchDetail.ended_at)}
+                {fmtDuration(batchDetail.started_at, batchDetail.ended_at)
+                  ? ` · ${fmtDuration(batchDetail.started_at, batchDetail.ended_at)}`
+                  : ""}
               </span>
               <div className="bs-id-row" title={String(batchDetail.id || "")}>
                 <span className="bs-id-row__label">{t("bizState.batchId")}</span>
