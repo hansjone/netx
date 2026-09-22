@@ -144,21 +144,18 @@ def run_api_startup() -> None:
         if pt_cleared:
             _log.info("startup: cleared %s port_traffic stuck collect_running flag(s)", pt_cleared)
         try:
-            from .models import BizStateTask
+            from .biz_state.collect_recovery import recover_interrupted_collects_on_startup
 
-            stuck = (
-                db.query(BizStateTask)
-                .filter(BizStateTask.collect_running.is_(True))
-                .all()
-            )
-            for t in stuck:
-                t.collect_running = False
-                t.last_error = (t.last_error or "")[:900] + " | reset_on_startup"
-            if stuck:
-                db.commit()
-                _log.info("startup: cleared %s biz_state stuck collect_running flag(s)", len(stuck))
+            rec = recover_interrupted_collects_on_startup(db)
+            if rec.get("batches") or rec.get("tasks"):
+                _log.info(
+                    "startup: biz_state interrupted recover batches=%s cmds=%s tasks=%s",
+                    rec.get("batches"),
+                    rec.get("commands"),
+                    rec.get("tasks"),
+                )
         except Exception:
-            _log.exception("startup: biz_state collect_running recovery failed")
+            _log.exception("startup: biz_state collect recovery failed")
         try:
             from .port_traffic_migrate import backfill_port_traffic_series
 
