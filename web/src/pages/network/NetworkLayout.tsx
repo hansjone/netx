@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { NETWORK_NAV, type NetworkNavGroupId } from "../../config/networkNav";
 import { useI18n } from "../../i18n";
+import { prefetchCutoverPages } from "./cutoverPrefetch";
 
 function groupContainsPath(groupId: NetworkNavGroupId, pathname: string): boolean {
   const group = NETWORK_NAV.find((g) => g.id === groupId);
@@ -36,6 +37,13 @@ export function NetworkLayout() {
     });
   }, [pathname]);
 
+  // Warm cutover page chunks as soon as that nav group is open / in use.
+  useEffect(() => {
+    if (pathname.startsWith("/network/cutover") || expandedKeys.has("cutoverCompare")) {
+      prefetchCutoverPages();
+    }
+  }, [pathname, expandedKeys]);
+
   const activeGroupIds = useMemo(() => {
     const ids = new Set<NetworkNavGroupId>();
     for (const g of NETWORK_NAV) {
@@ -54,7 +62,12 @@ export function NetworkLayout() {
             hideSeparator
             allowsMultipleExpanded
             expandedKeys={expandedKeys}
-            onExpandedChange={setExpandedKeys}
+            onExpandedChange={(keys) => {
+              setExpandedKeys(keys as Set<Key>);
+              if ((keys as Set<Key>).has("cutoverCompare")) {
+                prefetchCutoverPages();
+              }
+            }}
           >
             {NETWORK_NAV.map((group) => {
               const activeGroup = activeGroupIds.has(group.id);
@@ -65,7 +78,12 @@ export function NetworkLayout() {
                   className={`network-nav__group${activeGroup ? " is-active-group" : ""}`}
                 >
                   <Accordion.Heading>
-                    <Accordion.Trigger className="network-nav__group-toggle">
+                    <Accordion.Trigger
+                      className="network-nav__group-toggle"
+                      onHoverStart={
+                        group.id === "cutoverCompare" ? () => prefetchCutoverPages() : undefined
+                      }
+                    >
                       <span className="network-nav__group-label">{t(group.labelKey)}</span>
                       <Accordion.Indicator className="network-nav__chevron" />
                     </Accordion.Trigger>
@@ -83,6 +101,11 @@ export function NetworkLayout() {
                               end={
                                 item.path === "/network/devices" ||
                                 item.path === "/network/tasks/port-traffic"
+                              }
+                              onMouseEnter={
+                                group.id === "cutoverCompare"
+                                  ? () => prefetchCutoverPages()
+                                  : undefined
                               }
                             >
                               {t(item.labelKey)}

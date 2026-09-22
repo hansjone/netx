@@ -35,7 +35,9 @@ export function jobChipColor(status: string | null | undefined): NmChipColor {
     .toLowerCase();
   if (!s) return "default";
   if (s === "running" || s === "pending" || s === "collect") return "success";
-  if (s === "paused" || s === "draft" || s === "skipped") return "warning";
+  if (s === "paused" || s === "draft" || s === "skipped" || s === "partial" || s === "cancelled" || s === "queued") {
+    return "warning";
+  }
   if (s === "failed" || s === "fail" || s === "error" || s === "stopped") return "danger";
   if (s === "success" || s === "completed" || s === "ok" || s === "done") return "success";
   return "default";

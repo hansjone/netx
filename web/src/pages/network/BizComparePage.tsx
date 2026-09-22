@@ -31,6 +31,7 @@ import {
   formatErr,
 } from "../../services/api";
 import { formatSystemTime } from "../../utils/time";
+import { cutoverCachedGet, cutoverCachedGetSWR, invalidateCutoverCache } from "./cutoverDataCache";
 import { jobChipColor, NmStatusChip } from "./nmChips";
 
 type PageTab = "templates" | "jobs";
@@ -846,19 +847,36 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
   const [navCollapsed, setNavCollapsed] = useState(false);
   const tplImportRef = useRef<HTMLInputElement | null>(null);
 
-  const refresh = useCallback(async () => {
-    const [taskRes, tpl, maps, j, met] = await Promise.all([
-      bizStateListTasks(),
-      bizCompareListTemplates(),
-      bizCompareListMappings(),
-      bizCompareListJobs(),
-      bizCompareListMetrics(),
-    ]);
-    setTasks((taskRes.items || []) as TaskOpt[]);
-    setTemplates((tpl.items || []) as Template[]);
-    setMappings((maps.items || []) as Mapping[]);
-    setJobs((j.items || []) as Job[]);
-    setMetrics((met.items || []) as MetricSchema[]);
+  const refresh = useCallback(async (opts?: { force?: boolean }) => {
+    type Bundle = {
+      taskRes: Awaited<ReturnType<typeof bizStateListTasks>>;
+      tpl: Awaited<ReturnType<typeof bizCompareListTemplates>>;
+      maps: Awaited<ReturnType<typeof bizCompareListMappings>>;
+      j: Awaited<ReturnType<typeof bizCompareListJobs>>;
+      met: Awaited<ReturnType<typeof bizCompareListMetrics>>;
+    };
+    const fetchBundle = async (): Promise<Bundle> => {
+      const [taskRes, tpl, maps, j, met] = await Promise.all([
+        bizStateListTasks(),
+        bizCompareListTemplates(),
+        bizCompareListMappings(),
+        bizCompareListJobs(),
+        bizCompareListMetrics(),
+      ]);
+      return { taskRes, tpl, maps, j, met };
+    };
+    const apply = (b: Bundle) => {
+      setTasks((b.taskRes.items || []) as TaskOpt[]);
+      setTemplates((b.tpl.items || []) as Template[]);
+      setMappings((b.maps.items || []) as Mapping[]);
+      setJobs((b.j.items || []) as Job[]);
+      setMetrics((b.met.items || []) as MetricSchema[]);
+    };
+    if (opts?.force) {
+      apply(await cutoverCachedGet("bizCompare:lists", fetchBundle, { force: true }));
+      return;
+    }
+    apply(await cutoverCachedGetSWR("bizCompare:lists", fetchBundle, apply));
   }, []);
 
   useEffect(() => {
@@ -1457,7 +1475,9 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
       else await bizCompareCreateTemplate(body);
       showOk(t("bizCompare.templateSaved"));
       setTplOpen(false);
-      await refresh();
+      invalidateCutoverCache("bizMonitor:");
+      invalidateCutoverCache("bizMigration:");
+      await refresh({ force: true });
     } catch (e) {
       showError(formatErr(e));
     } finally {
@@ -1471,7 +1491,9 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     try {
       await bizCompareDeleteTemplate(id);
       showOk(t("bizCompare.templateDeleted"));
-      await refresh();
+      invalidateCutoverCache("bizMonitor:");
+      invalidateCutoverCache("bizMigration:");
+      await refresh({ force: true });
     } catch (e) {
       showError(formatErr(e));
     } finally {
@@ -1519,7 +1541,9 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
         })),
       });
       showOk(t("bizCompare.templateImported"));
-      await refresh();
+      invalidateCutoverCache("bizMonitor:");
+      invalidateCutoverCache("bizMigration:");
+      await refresh({ force: true });
       if (pageMode !== "jobs") setPageTab("templates");
     } catch (e) {
       showError(formatErr(e));
@@ -1536,7 +1560,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
       await bizCompareDeleteJob(id);
       if (jobId === id) closeJob();
       showOk(t("bizCompare.jobDeleted"));
-      await refresh();
+      await refresh({ force: true });
     } catch (e) {
       showError(formatErr(e));
     } finally {
@@ -1577,7 +1601,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
         setMappingId(String(m.id));
       }
       showOk(t("bizCompare.mappingSaved"));
-      await refresh();
+      await refresh({ force: true });
     } catch (e) {
       showError(formatErr(e));
     } finally {
@@ -1712,7 +1736,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
       const j = await bizCompareCreateJob(jobConfigBody());
       showOk(t("bizCompare.created"));
       closeCreateJob();
-      await refresh();
+      await refresh({ force: true });
       await openJob(String(j.id));
     } catch (e) {
       showError(formatErr(e));
@@ -1764,7 +1788,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     try {
       await bizCompareUpdateJob(jobId, jobConfigBody());
       showOk(t("bizCompare.jobSaved"));
-      await refresh();
+      await refresh({ force: true });
     } catch (e) {
       showError(formatErr(e));
     } finally {
@@ -1787,7 +1811,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
       showOk(t("bizCompare.ran"));
       const r = await bizCompareListRuns(jobId);
       setRuns(r.items || []);
-      await refresh();
+      await refresh({ force: true });
     } catch (e) {
       showError(formatErr(e));
     } finally {

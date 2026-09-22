@@ -252,6 +252,19 @@ def api_collect_now(
     return {"ok": True, "started": True, "queued": True, "task_id": task_id}
 
 
+@router.post("/tasks/{task_id}/collect/stop")
+def api_collect_stop(task_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Stop queued or running collect for this task (best-effort mid-command)."""
+    from .biz_state.collect_stop import request_stop_collect
+
+    task = db.get(BizStateTask, task_id)
+    if not task:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=404, detail="task not found")
+    return request_stop_collect(task_id)
+
+
 @router.get("/tasks/{task_id}/batches")
 def api_list_batches(
     task_id: str, limit: int = 50, db: Session = Depends(get_db)

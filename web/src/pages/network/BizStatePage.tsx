@@ -9,6 +9,7 @@ import { useI18n } from "../../i18n";
 import {
   bizStateBulkDeleteBatches,
   bizStateCollectNow,
+  bizStateCollectStop,
   bizStateCreateTask,
   bizStateDeleteBatch,
   bizStateDeleteTask,
@@ -37,6 +38,7 @@ import type { CliTargetItem } from "../../types";
 import { pageCount } from "../../utils/display";
 import { writeClipboardText } from "../../utils/clipboard";
 import { formatSystemTime } from "../../utils/time";
+import { cutoverCachedGet, cutoverCachedGetSWR, invalidateCutoverCache } from "./cutoverDataCache";
 import { jobChipColor, NmStatusChip, sourceChipColor } from "./nmChips";
 
 type TaskRow = {
@@ -68,6 +70,8 @@ type Profile = {
   description: string;
   metric_id: string;
   kind?: string;
+  /** light | heavy — collect dual-lane */
+  collect_lane?: string;
   placeholders?: Placeholder[];
   aux_commands?: Array<{
     key: string;
@@ -305,7 +309,8 @@ export function BizStatePage() {
   const refreshTasks = useCallback(async () => {
     const purpose =
       purposeFilter === "all" ? "" : purposeFilter === "portrait" ? "portrait" : "cutover_hf";
-    const res = await bizStateListTasks(purpose);
+    const key = `bizState:tasks:${purpose || "all"}`;
+    const res = await cutoverCachedGet(key, () => bizStateListTasks(purpose), { force: true });
     const items = (res.items || []) as TaskRow[];
     setTasks(items);
     return items;
@@ -333,13 +338,19 @@ export function BizStatePage() {
   useEffect(() => {
     void (async () => {
       try {
-        await refreshTasks();
+        const purpose =
+          purposeFilter === "all" ? "" : purposeFilter === "portrait" ? "portrait" : "cutover_hf";
+        const key = `bizState:tasks:${purpose || "all"}`;
+        const apply = (res: Awaited<ReturnType<typeof bizStateListTasks>>) => {
+          setTasks((res.items || []) as TaskRow[]);
+        };
+        apply(await cutoverCachedGetSWR(key, () => bizStateListTasks(purpose), apply));
       } catch (e) {
         showError(formatErr(e));
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- refresh when purpose filter / refreshTasks changes
-  }, [refreshTasks]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- refresh when purpose filter changes
+  }, [purposeFilter]);
 
   // Progress poll while any collect is running (list chips and/or open task).
   // Does NOT block navigation; cleans up on unmount / when nothing is collecting.
@@ -625,6 +636,7 @@ export function BizStatePage() {
       });
       showOk(t("bizState.created"));
       closeCreate();
+      invalidateCutoverCache("bizCompare:");
       await refreshTasks();
       await openTask(String(task.id), "profiles");
     } catch (e) {
@@ -815,6 +827,35 @@ export function BizStatePage() {
     await collectNowForTask(taskId, true);
   };
 
+  const stopCollectForTask = async (id: string) => {
+    setBusy(true);
+    try {
+      const out = await bizStateCollectStop(id);
+      if (out.stopped) {
+        showOk(t("bizState.stopCollectOk"));
+      } else {
+        showOk(t("bizState.stopCollectIdle"));
+      }
+      setTaskCollecting(id, false);
+      try {
+        await refreshTasks();
+      } catch {
+        /* ignore */
+      }
+      if (taskId === id) {
+        try {
+          await refreshTaskProgress(id);
+        } catch {
+          /* ignore */
+        }
+      }
+    } catch (e) {
+      showError(formatErr(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const exportTaskCommands = async () => {
     if (!taskId) return;
     setBusy(true);
@@ -835,6 +876,7 @@ export function BizStatePage() {
       await bizStateDeleteTask(id);
       showOk(t("bizState.deleted"));
       if (taskId === id) closeTask();
+      invalidateCutoverCache("bizCompare:");
       await refreshTasks();
     } catch (e) {
       showError(formatErr(e));
@@ -1225,6 +1267,16 @@ export function BizStatePage() {
                       >
                         {t("bizState.collectNow")}
                       </Button>
+                      {row.collect_running || collectingIds[row.id] ? (
+                        <Button
+                          size="sm"
+                          variant="danger"
+                          isDisabled={busy}
+                          onPress={() => void stopCollectForTask(row.id)}
+                        >
+                          {t("bizState.stopCollect")}
+                        </Button>
+                      ) : null}
                       <Button
                         size="sm"
                         variant="danger"
@@ -1502,6 +1554,7 @@ export function BizStatePage() {
                     <tr>
                       <th>{t("bizState.enable")}</th>
                       <th>{t("bizState.profiles")}</th>
+                      <th>{t("bizState.colLane")}</th>
                       <th>{t("bizState.params")}</th>
                       <th>{t("bizState.colActions")}</th>
                       <th>{t("bizState.command")}</th>
@@ -1568,6 +1621,17 @@ export function BizStatePage() {
                             {needsBind ? (
                               <div className="bs-bind-hint muted">{t("bizState.bindHintRequired")}</div>
                             ) : null}
+                          </td>
+                          <td>
+                            {String(prof.collect_lane || "light").toLowerCase() === "heavy" ? (
+                              <span title={t("bizState.laneHeavyHint")}>
+                                <NmStatusChip color="warning">{t("bizState.laneHeavy")}</NmStatusChip>
+                              </span>
+                            ) : (
+                              <span title={t("bizState.laneLightHint")}>
+                                <NmStatusChip color="default">{t("bizState.laneLight")}</NmStatusChip>
+                              </span>
+                            )}
                           </td>
                           <td className="bs-params-cell">
                             {needsBind ? (
@@ -1788,6 +1852,16 @@ export function BizStatePage() {
           >
             {t("bizState.collectNow")}
           </Button>
+          {detail?.collect_running || (taskId && collectingIds[taskId]) ? (
+            <Button
+              size="sm"
+              variant="danger"
+              isDisabled={busy || !taskId}
+              onPress={() => void stopCollectForTask(taskId)}
+            >
+              {t("bizState.stopCollect")}
+            </Button>
+          ) : null}
           <Button
             size="sm"
             variant="secondary"

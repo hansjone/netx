@@ -90,7 +90,7 @@ class BizStateBatch(Base):
     ne_id: Mapped[str] = mapped_column(String(128), default="", index=True)
     ne_name: Mapped[str] = mapped_column(String(256), default="")
     vendor: Mapped[str] = mapped_column(String(64), default="")
-    status: Mapped[str] = mapped_column(String(32), default="running", index=True)  # queued|running|success|partial|failed
+    status: Mapped[str] = mapped_column(String(32), default="running", index=True)  # queued|running|success|partial|failed|cancelled
     command_count: Mapped[int] = mapped_column(Integer, default=0)
     row_count: Mapped[int] = mapped_column(Integer, default=0)
     message: Mapped[str] = mapped_column(String(1024), default="")

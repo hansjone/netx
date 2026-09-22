@@ -40,6 +40,7 @@ import type { CliTargetItem } from "../../types";
 import { writeClipboardText } from "../../utils/clipboard";
 import { pageCount } from "../../utils/display";
 import { formatSystemTime, localDatetimeInputToUtcIso, utcIsoToLocalDatetimeInput } from "../../utils/time";
+import { cutoverCachedGet, cutoverCachedGetSWR, invalidateCutoverCache } from "./cutoverDataCache";
 import { jobChipColor, NmStatusChip, sourceChipColor } from "./nmChips";
 
 type NeSourceFilter = "all" | "managed" | "ume";
@@ -520,12 +521,17 @@ export function BizMigrationPage() {
   }, [expectSheets, expectMetricId, portFilter]);
 
   const reloadProjects = useCallback(async () => {
-    const res = await bizMigrationListProjects();
+    const res = await cutoverCachedGet("bizMigration:projects", () => bizMigrationListProjects(), {
+      force: true,
+    });
     setProjects((res.items || []) as Project[]);
+    invalidateCutoverCache("bizMigration:bootstrap");
   }, []);
 
   const reloadMappings = useCallback(async () => {
-    const mp = await bizCompareListMappings();
+    const mp = await cutoverCachedGet("bizMigration:mappings", () => bizCompareListMappings(), {
+      force: true,
+    });
     setMappings(
       ((mp.items || []) as Record<string, unknown>[]).map((x) => ({
         id: String(x.id || ""),
@@ -538,6 +544,7 @@ export function BizMigrationPage() {
           : [],
       })),
     );
+    invalidateCutoverCache("bizMigration:bootstrap");
   }, []);
 
   const parseMapRows = () => {
@@ -626,45 +633,56 @@ export function BizMigrationPage() {
   useEffect(() => {
     void (async () => {
       try {
-        const [pr, mp, mt] = await Promise.all([
-          bizMigrationListProjects(),
-          bizCompareListMappings(),
-          bizMonitorListTemplates(),
-        ]);
-        setProjects((pr.items || []) as Project[]);
-        setMappings(
-          ((mp.items || []) as Record<string, unknown>[]).map((x) => ({
+        type Bundle = {
+          pr: Awaited<ReturnType<typeof bizMigrationListProjects>>;
+          mp: Awaited<ReturnType<typeof bizCompareListMappings>>;
+          mt: Awaited<ReturnType<typeof bizMonitorListTemplates>>;
+        };
+        const fetchBundle = async (): Promise<Bundle> => {
+          const [pr, mp, mt] = await Promise.all([
+            bizMigrationListProjects(),
+            bizCompareListMappings(),
+            bizMonitorListTemplates(),
+          ]);
+          return { pr, mp, mt };
+        };
+        const apply = (b: Bundle) => {
+          setProjects((b.pr.items || []) as Project[]);
+          setMappings(
+            ((b.mp.items || []) as Record<string, unknown>[]).map((x) => ({
+              id: String(x.id || ""),
+              name: String(x.name || x.id || ""),
+              rows: Array.isArray(x.rows)
+                ? (x.rows as Array<{ before_if?: string; after_if?: string }>).map((r) => ({
+                    before_if: String(r.before_if || ""),
+                    after_if: String(r.after_if || ""),
+                  }))
+                : [],
+            })),
+          );
+          const mts = ((b.mt.items || []) as Record<string, unknown>[]).map((x) => ({
             id: String(x.id || ""),
             name: String(x.name || x.id || ""),
-            rows: Array.isArray(x.rows)
-              ? (x.rows as Array<{ before_if?: string; after_if?: string }>).map((r) => ({
-                  before_if: String(r.before_if || ""),
-                  after_if: String(r.after_if || ""),
-                }))
+            compare_template_id: String(x.compare_template_id || ""),
+            compare_template_name: String(x.compare_template_name || ""),
+            collect_metric_ids: Array.isArray(x.collect_metric_ids)
+              ? (x.collect_metric_ids as string[])
               : [],
-          })),
-        );
-        const mts = ((mt.items || []) as Record<string, unknown>[]).map((x) => ({
-          id: String(x.id || ""),
-          name: String(x.name || x.id || ""),
-          compare_template_id: String(x.compare_template_id || ""),
-          compare_template_name: String(x.compare_template_name || ""),
-          collect_metric_ids: Array.isArray(x.collect_metric_ids)
-            ? (x.collect_metric_ids as string[])
-            : [],
-          collect_metric_ids_effective: Array.isArray(x.collect_metric_ids_effective)
-            ? (x.collect_metric_ids_effective as string[])
-            : [],
-        }));
-        setMonitorTpls(mts);
-        if (!createMonitorTplId && mts.length) {
-          const preferred =
-            mts.find((x) => x.name === "默认割接监控") ||
-            mts.find((x) => /默认|default|状态|status/i.test(x.name)) ||
-            mts[0];
-          setCreateMonitorTplId(preferred.id);
-          setCreateCollectMetricIds(monitorTplMetrics(preferred));
-        }
+            collect_metric_ids_effective: Array.isArray(x.collect_metric_ids_effective)
+              ? (x.collect_metric_ids_effective as string[])
+              : [],
+          }));
+          setMonitorTpls(mts);
+          if (!createMonitorTplId && mts.length) {
+            const preferred =
+              mts.find((x) => x.name === "默认割接监控") ||
+              mts.find((x) => /默认|default|状态|status/i.test(x.name)) ||
+              mts[0];
+            setCreateMonitorTplId(preferred.id);
+            setCreateCollectMetricIds(monitorTplMetrics(preferred));
+          }
+        };
+        apply(await cutoverCachedGetSWR("bizMigration:bootstrap", fetchBundle, apply));
       } catch (e) {
         showError(formatErr(e));
       }

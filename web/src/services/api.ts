@@ -1826,6 +1826,15 @@ export const bizStateDeleteTask = (taskId: string) =>
 export const bizStateCollectNow = (taskId: string) =>
   apiPost<{ ok: boolean }>(`/v1/biz-state/tasks/${encodeURIComponent(taskId)}/collect`, {});
 
+export const bizStateCollectStop = (taskId: string) =>
+  apiPost<{
+    ok: boolean;
+    stopped?: boolean;
+    reason?: string;
+    cancelled_batches?: string[];
+    signaled_batches?: string[];
+  }>(`/v1/biz-state/tasks/${encodeURIComponent(taskId)}/collect/stop`, {});
+
 export const bizStateListBatches = (taskId: string, limit = 50) =>
   apiGet<{ items: Record<string, unknown>[] }>(
     `/v1/biz-state/tasks/${encodeURIComponent(taskId)}/batches?limit=${limit}`,

@@ -15,6 +15,7 @@ import {
   bizMonitorUpdateTemplate,
   formatErr,
 } from "../../services/api";
+import { cutoverCachedGet, cutoverCachedGetSWR, invalidateCutoverCache } from "./cutoverDataCache";
 
 type MetricField = { name: string; display_name?: string };
 type MetricSchema = { metric_id: string; fields: MetricField[] };
@@ -828,29 +829,44 @@ export function BizMonitorTemplatesPage() {
   const [overridesText, setOverridesText] = useState("[]");
   const tplImportRef = useRef<HTMLInputElement>(null);
 
-  const refresh = useCallback(async () => {
-    const [mon, cmp, metrics] = await Promise.all([
-      bizMonitorListTemplates(),
-      bizCompareListTemplates(),
-      bizCompareListMetrics(),
-    ]);
-    setItems((mon.items || []) as MonitorTpl[]);
-    setCompareTpls(
-      ((cmp.items || []) as Record<string, unknown>[]).map((x) => ({
-        id: String(x.id || ""),
-        name: String(x.name || x.id || ""),
-        metrics: Array.isArray(x.metrics) ? (x.metrics as CompareSheet[]) : [],
-      })),
-    );
-    setMetricSchemas(
-      ((metrics.items || []) as MetricSchema[]).map((m) => ({
-        metric_id: m.metric_id,
-        fields: (m.fields || []).map((f) => ({
-          name: f.name,
-          display_name: f.display_name,
+  const refresh = useCallback(async (opts?: { force?: boolean }) => {
+    type Bundle = {
+      mon: Awaited<ReturnType<typeof bizMonitorListTemplates>>;
+      cmp: Awaited<ReturnType<typeof bizCompareListTemplates>>;
+      metrics: Awaited<ReturnType<typeof bizCompareListMetrics>>;
+    };
+    const fetchBundle = async (): Promise<Bundle> => {
+      const [mon, cmp, metrics] = await Promise.all([
+        bizMonitorListTemplates(),
+        bizCompareListTemplates(),
+        bizCompareListMetrics(),
+      ]);
+      return { mon, cmp, metrics };
+    };
+    const apply = (b: Bundle) => {
+      setItems((b.mon.items || []) as MonitorTpl[]);
+      setCompareTpls(
+        ((b.cmp.items || []) as Record<string, unknown>[]).map((x) => ({
+          id: String(x.id || ""),
+          name: String(x.name || x.id || ""),
+          metrics: Array.isArray(x.metrics) ? (x.metrics as CompareSheet[]) : [],
         })),
-      })),
-    );
+      );
+      setMetricSchemas(
+        ((b.metrics.items || []) as MetricSchema[]).map((m) => ({
+          metric_id: m.metric_id,
+          fields: (m.fields || []).map((f) => ({
+            name: f.name,
+            display_name: f.display_name,
+          })),
+        })),
+      );
+    };
+    if (opts?.force) {
+      apply(await cutoverCachedGet("bizMonitor:lists", fetchBundle, { force: true }));
+      return;
+    }
+    apply(await cutoverCachedGetSWR("bizMonitor:lists", fetchBundle, apply));
   }, []);
 
   useEffect(() => {
@@ -1016,7 +1032,8 @@ export function BizMonitorTemplatesPage() {
         showOk(t("bizMonitorTpl.created"));
       }
       closeEdit();
-      await refresh();
+      invalidateCutoverCache("bizMigration:");
+      await refresh({ force: true });
     } catch (e) {
       showError(formatErr(e));
     } finally {
@@ -1030,7 +1047,8 @@ export function BizMonitorTemplatesPage() {
     try {
       await bizMonitorDeleteTemplate(id);
       showOk(t("bizMonitorTpl.deleted"));
-      await refresh();
+      invalidateCutoverCache("bizMigration:");
+      await refresh({ force: true });
     } catch (e) {
       showError(formatErr(e));
     } finally {
@@ -1083,7 +1101,8 @@ export function BizMonitorTemplatesPage() {
         sheet_overrides: body.sheet_overrides,
       });
       showOk(t("bizMonitorTpl.templateImported"));
-      await refresh();
+      invalidateCutoverCache("bizMigration:");
+      await refresh({ force: true });
     } catch (e) {
       showError(formatErr(e));
     } finally {

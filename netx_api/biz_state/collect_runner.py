@@ -45,6 +45,13 @@ from .command_match import (
 )
 from .parsers import get_parser
 from .profiles import get_profile
+from .collect_stop import (
+    STOP_USER_MESSAGE,
+    clear_stop_requested,
+    is_stop_requested,
+    register_lane_holder,
+    unregister_lane_holder,
+)
 
 _log = logging.getLogger("netx.biz_state.runner")
 
@@ -457,17 +464,32 @@ def execute_claimed_batch(
 
     error = ""
     try:
-        _run_collect_session(
-            task_id=task_id,
-            batch_id=batch_id,
-            source=source,
-            ne_id=ne_id,
-            vendor=vendor,
-            device_type=device_type,
-        )
+        if is_stop_requested(batch_id):
+            _finalize_batch_status(
+                batch_id=batch_id,
+                task_id=task_id,
+                cmd_count=0,
+                total_rows=0,
+                any_fail=False,
+                any_ok=False,
+                lane_errors=[],
+                stopped=True,
+            )
+            error = STOP_USER_MESSAGE
+        else:
+            _run_collect_session(
+                task_id=task_id,
+                batch_id=batch_id,
+                source=source,
+                ne_id=ne_id,
+                vendor=vendor,
+                device_type=device_type,
+            )
     except Exception as exc:
         _log.exception("biz_state collect failed task=%s batch=%s", task_id, batch_id)
         error = _format_error(exc)
+        if "_stopped" in error or is_stop_requested(batch_id):
+            error = STOP_USER_MESSAGE
         try:
             _fail_batch_status(batch_id, error)
         except Exception:
@@ -509,9 +531,13 @@ def _run_collect_lane(
     budget = min(int(cap), int(per_cmd) * max(1, len(work)) + 90)
     holder: dict[str, Any] = {}
     flush_every = persist_every_cmds()
+    register_lane_holder(batch_id, holder)
 
     def _session() -> tuple[int, int, bool, bool]:
         from ..ne_netmiko import drain_read_channel
+
+        if is_stop_requested(batch_id):
+            raise TimeoutError(f"{label}_stopped")
 
         conn = open_netmiko_connection(creds, session_timeout=budget)
         holder["conn"] = conn
@@ -636,8 +662,10 @@ def _run_collect_lane(
                     flat_work.append((cmd, p, profile_id, item_id, "normal"))
 
             for concrete, params, profile_id, item_id, mode in flat_work:
-                if holder.get("timed_out"):
-                    raise TimeoutError(f"{label}_aborted")
+                if holder.get("timed_out") or holder.get("stop_requested") or is_stop_requested(
+                    batch_id
+                ):
+                    raise TimeoutError(f"{label}_stopped")
 
                 cmd_id = uuid4().hex
                 raw_text = ""
@@ -923,6 +951,8 @@ def _run_collect_lane(
         )
     except TimeoutError as exc:
         raise RuntimeError(str(exc)[:1020]) from exc
+    finally:
+        unregister_lane_holder(batch_id, holder)
 
 
 def _absorb_lane_result(
@@ -1052,6 +1082,7 @@ def _finalize_batch_status(
     any_fail: bool,
     any_ok: bool,
     lane_errors: list[str],
+    stopped: bool = False,
 ) -> str:
     """Write terminal batch status on a fresh Session (retry once on disconnect)."""
 
@@ -1063,7 +1094,14 @@ def _finalize_batch_status(
         batch.command_count = max(int(batch.command_count or 0), int(cmd_count or 0))
         batch.row_count = max(int(batch.row_count or 0), int(total_rows or 0))
         batch.ended_at = _utcnow()
-        if any_fail and any_ok:
+        if stopped:
+            if any_ok or int(batch.command_count or 0) > 0 or int(batch.row_count or 0) > 0:
+                batch.status = "partial"
+                batch.message = STOP_USER_MESSAGE
+            else:
+                batch.status = "cancelled"
+                batch.message = STOP_USER_MESSAGE
+        elif any_fail and any_ok:
             batch.status = "partial"
             if lane_errors:
                 batch.message = "; ".join(lane_errors)[:1020]
@@ -1077,7 +1115,7 @@ def _finalize_batch_status(
             batch.message = ""
         status = str(batch.status or "")
         db.commit()
-        if status in ("success", "partial"):
+        if status in ("success", "partial") and not stopped:
             try:
                 from .compare_service import try_auto_compare_for_task
 
@@ -1086,28 +1124,40 @@ def _finalize_batch_status(
                 _log.exception("biz_state auto compare hook failed task=%s", task_id)
         return status
 
-    return str(
-        _run_db_with_reconnect(_write, label="biz_state_finalize") or ""
-    )
+    try:
+        return str(
+            _run_db_with_reconnect(_write, label="biz_state_finalize") or ""
+        )
+    finally:
+        clear_stop_requested(batch_id)
 
 
 def _fail_batch_status(batch_id: str, error: str) -> None:
     """Mark batch failed on a fresh Session (retry once on disconnect)."""
     msg = str(error or "")[:1020]
+    stopped = "_stopped" in msg or is_stop_requested(batch_id)
 
     def _write(db) -> None:
         batch = db.get(BizStateBatch, batch_id)
         if not batch:
             return
-        if str(batch.status or "") != "running":
+        st = str(batch.status or "")
+        if st not in ("running", "queued"):
             return
-        batch.status = "failed"
-        batch.message = msg
+        if stopped:
+            has_progress = int(batch.command_count or 0) > 0 or int(batch.row_count or 0) > 0
+            batch.status = "partial" if has_progress else "cancelled"
+            batch.message = STOP_USER_MESSAGE
+        else:
+            batch.status = "failed"
+            batch.message = msg
         batch.ended_at = _utcnow()
         db.commit()
 
-    _run_db_with_reconnect(_write, label="biz_state_fail_batch")
-
+    try:
+        _run_db_with_reconnect(_write, label="biz_state_fail_batch")
+    finally:
+        clear_stop_requested(batch_id)
 
 def _run_collect_session(
     *,
@@ -1340,6 +1390,18 @@ def _run_collect_session(
     if lane_errors and not any_ok and cmd_count == 0:
         # Progressive bumps may already have cmds; only hard-fail if nothing landed.
         if not _batch_has_progress(batch_id):
+            if is_stop_requested(batch_id) or any("_stopped" in e for e in lane_errors):
+                _finalize_batch_status(
+                    batch_id=batch_id,
+                    task_id=task_id,
+                    cmd_count=cmd_count,
+                    total_rows=total_rows,
+                    any_fail=False,
+                    any_ok=False,
+                    lane_errors=lane_errors,
+                    stopped=True,
+                )
+                return
             raise RuntimeError("; ".join(lane_errors)[:1020])
         any_fail = True
 
@@ -1358,6 +1420,7 @@ def _run_collect_session(
     except Exception:
         _log.exception("biz_state persist barrier before finalize failed batch=%s", batch_id)
 
+    stopped = is_stop_requested(batch_id) or any("_stopped" in e for e in lane_errors)
     _finalize_batch_status(
         batch_id=batch_id,
         task_id=task_id,
@@ -1366,6 +1429,7 @@ def _run_collect_session(
         any_fail=any_fail,
         any_ok=any_ok,
         lane_errors=lane_errors,
+        stopped=stopped,
     )
 
     def _purge(db) -> None:
