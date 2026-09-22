@@ -11331,12 +11331,37 @@ html.login-page--paused .login-page__flare {
 
 .bs-profiles-table .bs-params-scroll {
   max-width: 100%;
-  max-height: 4.5em;
-  overflow: auto;
+  max-height: 3.2em;
+  overflow: hidden;
   white-space: normal;
   word-break: break-word;
   line-height: 1.35;
   font-size: 12px;
+}
+
+.bs-profiles-table .bs-params-scroll--clickable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.bs-profiles-table .bs-params-scroll--clickable:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.bs-params-detail-list {
+  max-height: min(50vh, 420px);
+}
+
+.bs-params-detail-item {
+  padding: 4px 0;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.bs-params-detail-item:last-child {
+  border-bottom: none;
 }
 
 .bs-profiles-table .bs-actions-cell {

@@ -997,8 +997,9 @@ def _zte_status_profiles() -> list[ParseProfile]:
             fields=list(_BGP_ROUTE_FIELDS),
             tags=["bgp", "vpnv4", "route"],
             sort_order=425,
-            enabled=False,
+            enabled=True,
             kind="collect",
+            collect_lane="heavy",
             aux_commands=[AuxCommand(key="bgp_summary", profile_id="zte.bgp_vpnv4_summary")],
             enrich_joins=[
                 EnrichJoin(
@@ -1047,8 +1048,9 @@ def _zte_status_profiles() -> list[ParseProfile]:
             fields=list(_BGP_ROUTE_FIELDS),
             tags=["bgp", "vpnv6", "route"],
             sort_order=427,
-            enabled=False,
+            enabled=True,
             kind="collect",
+            collect_lane="heavy",
             aux_commands=[AuxCommand(key="bgp_summary", profile_id="zte.bgp_vpnv6_summary")],
             enrich_joins=[
                 EnrichJoin(
@@ -1103,8 +1105,9 @@ def _zte_status_profiles() -> list[ParseProfile]:
             fields=list(_BGP_ROUTE_FIELDS),
             tags=["bgp", "vpnv4", "vrf", "route"],
             sort_order=435,
-            enabled=False,
+            enabled=True,
             kind="collect",
+            collect_lane="heavy",
             aux_commands=[AuxCommand(key="bgp_summary", profile_id="zte.bgp_vpnv4_vrf_summary")],
             enrich_joins=[
                 EnrichJoin(
@@ -1159,8 +1162,9 @@ def _zte_status_profiles() -> list[ParseProfile]:
             fields=list(_BGP_ROUTE_FIELDS),
             tags=["bgp", "vpnv6", "vrf", "route"],
             sort_order=445,
-            enabled=False,
+            enabled=True,
             kind="collect",
+            collect_lane="heavy",
             aux_commands=[AuxCommand(key="bgp_summary", profile_id="zte.bgp_vpnv6_vrf_summary")],
             enrich_joins=[
                 EnrichJoin(

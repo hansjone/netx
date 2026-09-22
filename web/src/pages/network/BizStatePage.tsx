@@ -247,6 +247,12 @@ export function BizStatePage() {
   const [discoverLoading, setDiscoverLoading] = useState(false);
   const [discoverError, setDiscoverError] = useState("");
 
+  // Bound-params detail modal (double-click params cell)
+  const [paramsDetail, setParamsDetail] = useState<{
+    title: string;
+    lines: string[];
+  } | null>(null);
+
   // batch workbook modal (summary + lazy-paged metric sheets)
   const [batchDetail, setBatchDetail] = useState<any>(null);
   const [sheetId, setSheetId] = useState("");
@@ -1391,11 +1397,41 @@ export function BizStatePage() {
                         (x: any) => x.source_profile_id === prof.profile_id,
                       );
                       const enabled = Boolean(it?.enabled);
-                      const binds = it?.bindings || [];
+                      const binds = (it?.bindings || []) as {
+                        placeholder?: string;
+                        value?: string;
+                      }[];
                       const needsBind = (prof.placeholders || []).length > 0;
+                      const phNames = (prof.placeholders || []).map((p) => p.name);
+                      let bindLines: string[] = [];
+                      if (needsBind && binds.length) {
+                        if (phNames.length >= 2) {
+                          const byPh: Record<string, string[]> = {};
+                          for (const b of binds) {
+                            const name = String(b.placeholder || "");
+                            const val = String(b.value || "");
+                            if (!name || !val) continue;
+                            (byPh[name] ||= []).push(val);
+                          }
+                          const counts = phNames.map((n) => (byPh[n] || []).length);
+                          const n = counts.length ? Math.min(...counts) : 0;
+                          for (let i = 0; i < n; i++) {
+                            bindLines.push(
+                              phNames.map((name) => `${name}=${(byPh[name] || [])[i] || ""}`).join(" · "),
+                            );
+                          }
+                        } else {
+                          const ph = phNames[0] || "value";
+                          bindLines = binds
+                            .filter((b) => String(b.value || "").trim())
+                            .map((b) => `${ph}=${String(b.value)}`);
+                        }
+                      }
                       const bindHint = needsBind
-                        ? binds.length
-                          ? binds.map((b: any) => b.value).join(", ")
+                        ? bindLines.length
+                          ? bindLines.length <= 2
+                            ? bindLines.join("; ")
+                            : `${bindLines.slice(0, 2).join("; ")} … (+${bindLines.length - 2})`
                           : t("bizState.unbound")
                         : "—";
                       return (
@@ -1418,8 +1454,21 @@ export function BizStatePage() {
                           <td className="bs-params-cell">
                             {needsBind ? (
                               <div
-                                className={`bs-params-scroll${!binds.length ? " bs-params-warn" : ""}`}
-                                title={bindHint}
+                                className={`bs-params-scroll${
+                                  !bindLines.length ? " bs-params-warn" : ""
+                                }${bindLines.length ? " bs-params-scroll--clickable" : ""}`}
+                                title={
+                                  bindLines.length
+                                    ? `${bindHint}\n${t("bizState.paramsDblClickHint")}`
+                                    : bindHint
+                                }
+                                onDoubleClick={() => {
+                                  if (!bindLines.length) return;
+                                  setParamsDetail({
+                                    title: prof.title,
+                                    lines: bindLines,
+                                  });
+                                }}
                               >
                                 {bindHint}
                               </div>
@@ -1575,6 +1624,46 @@ export function BizStatePage() {
             {t("bizState.delete")}
           </Button>
           <Button size="sm" variant="ghost" onPress={closeTask}>
+            {t("bizState.cancel")}
+          </Button>
+        </Modal.Footer>
+      </AppModalShell>
+
+      {/* Bound params detail — double-click params cell */}
+      <AppModalShell
+        open={Boolean(paramsDetail)}
+        onClose={() => setParamsDetail(null)}
+        dismissible
+        size="md"
+        className="bs-bind-modal"
+      >
+        <Modal.Header>
+          <Modal.Heading>
+            {t("bizState.paramsDetailTitle")}
+            {paramsDetail?.title ? ` · ${paramsDetail.title}` : ""}
+          </Modal.Heading>
+          <Modal.CloseTrigger />
+        </Modal.Header>
+        <Modal.Body className="flex flex-col gap-2">
+          {paramsDetail?.lines?.length ? (
+            <>
+              <p className="muted">
+                {t("bizState.paramsDetailCount", { n: paramsDetail.lines.length })}
+              </p>
+              <div className="bs-bind-list bs-bind-list--modal bs-params-detail-list">
+                {paramsDetail.lines.map((line, idx) => (
+                  <div key={`${idx}-${line}`} className="bs-params-detail-item">
+                    <code>{line}</code>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <p className="muted">{t("bizState.unbound")}</p>
+          )}
+        </Modal.Body>
+        <Modal.Footer>
+          <Button size="sm" variant="ghost" onPress={() => setParamsDetail(null)}>
             {t("bizState.cancel")}
           </Button>
         </Modal.Footer>
