@@ -82,24 +82,23 @@ class BizStateExportCommandsTests(unittest.TestCase):
         cmds = plan["commands"]
         self.assertTrue(any("lldp" in c.lower() for c in cmds))
         self.assertTrue(any("CUST_A" in c and "summary" in c for c in cmds))
-        # Default export is primary-only (no FIB/config aux under BGP summary)
+        # Default export includes discover-backed aux (config_vrf), not FIB
+        self.assertTrue(any("running-config vrf" in c for c in cmds))
         self.assertFalse(any("forwarding route" in c for c in cmds))
-        self.assertFalse(any("running-config vrf" in c for c in cmds))
         # Disabled item excluded by default
         self.assertFalse(any("isis" in c.lower() for c in cmds))
 
-        with_aux = plan_task_collect_commands(
-            self.db, self.task.id, include_aux=True
+        primary_only = plan_task_collect_commands(
+            self.db, self.task.id, include_aux=False
         )
-        # BGP VRF summary aux is only config_vrf (FIB is a separate monitor item)
-        self.assertTrue(any("running-config vrf" in c for c in with_aux["commands"]))
-        self.assertFalse(any("forwarding route" in c for c in with_aux["commands"]))
+        self.assertFalse(any("running-config vrf" in c for c in primary_only["commands"]))
 
         text = export_task_commands_text(self.db, self.task.id)
         self.assertIn("task_id=t_export", text)
         self.assertIn("show lldp neighbor brief", text)
         self.assertIn("CUST_A", text)
-        self.assertNotIn("# aux:", text)
+        self.assertIn("# aux:", text)
+        self.assertIn("running-config vrf", text)
         self.assertIn("# ---- flat unique commands ----", text)
 
     def test_unbound_required_placeholder_noted(self) -> None:
@@ -119,16 +118,23 @@ class BizStateExportCommandsTests(unittest.TestCase):
         sec = plan["items"][0]
         notes = " ".join(sec.get("notes") or [])
         self.assertIn("requires parameter bindings", notes)
-        self.assertEqual(plan["command_count"], 0)
+        # Primary is template-only; aux (config_vrf) still counts as executable
+        self.assertEqual(plan["command_count"], 1)
+        self.assertTrue(any("running-config vrf" in c for c in plan["commands"]))
         tmpl_cmds = [c for c in sec.get("commands") or [] if c.get("role") == "template"]
         self.assertEqual(len(tmpl_cmds), 1)
         self.assertIn("<vrf>", tmpl_cmds[0]["command"])
+        aux_cmds = [c for c in sec.get("commands") or [] if c.get("role") == "aux"]
+        self.assertEqual(len(aux_cmds), 1)
 
         text = export_task_commands_text(self.db, self.task.id)
         self.assertIn("# show bgp vpnv4 unicast vrf <vrf> summary", text)
+        self.assertIn("# aux:", text)
+        self.assertIn("running-config vrf", text)
         # Template must not appear in the flat executable list
         flat = text.split("# ---- flat unique commands ----", 1)[-1]
         self.assertNotIn("<vrf>", flat)
+        self.assertIn("running-config vrf", flat)
 
 
 if __name__ == "__main__":

@@ -1029,18 +1029,43 @@ def _resolve_export_profile(profile_id: str):
     return None
 
 
+def _append_aux_commands(
+    section: dict[str, Any],
+    profile: Any,
+    *,
+    params: dict[str, str],
+    add_cmd,
+) -> None:
+    """Append resolved aux CLIs onto a plan section (dedupe via add_cmd)."""
+    for aux in list(getattr(profile, "aux_commands", None) or []):
+        try:
+            ra = resolve_aux_command(aux, params=dict(params or {}))
+        except ValueError as exc:
+            section["notes"].append(f"aux {getattr(aux, 'key', '')}: {exc}")
+            continue
+        if add_cmd(ra.command):
+            section["commands"].append(
+                {
+                    "command": ra.command,
+                    "role": "aux",
+                    "aux_key": ra.key,
+                    "params": dict(params or {}),
+                    "profile_id": ra.profile_id,
+                }
+            )
+
+
 def plan_task_collect_commands(
     db: Session,
     task_id: str,
     *,
     enabled_only: bool = True,
-    include_aux: bool = False,
+    include_aux: bool = True,
 ) -> dict[str, Any]:
     """Plan concrete collect CLIs for a task (no device login).
 
-    By default only each monitoring item's primary command is listed.
-    Aux CLIs (parser enrich helpers such as FIB/config under BGP summary)
-    are omitted unless include_aux=True — they are not separate UI items.
+    Includes each item's primary command plus aux enrich CLIs by default
+    (same as live collect). Pass include_aux=False for primary-only lists.
     """
     task = db.get(BizStateTask, task_id)
     if not task:
@@ -1131,6 +1156,8 @@ def plan_task_collect_commands(
                         "profile_id": profile.profile_id,
                     }
                 )
+            if include_aux:
+                _append_aux_commands(section, profile, params={}, add_cmd=_add_cmd)
             sections.append(section)
             continue
 
@@ -1148,6 +1175,8 @@ def plan_task_collect_commands(
                         "profile_id": profile.profile_id,
                     }
                 )
+            if include_aux:
+                _append_aux_commands(section, profile, params={}, add_cmd=_add_cmd)
             sections.append(section)
             continue
 
@@ -1168,24 +1197,13 @@ def plan_task_collect_commands(
                         "profile_id": pid,
                     }
                 )
-            if not include_aux:
-                continue
-            for aux in list(getattr(hit.profile if hit else profile, "aux_commands", None) or []):
-                try:
-                    ra = resolve_aux_command(aux, params=dict(params or {}))
-                except ValueError as exc:
-                    section["notes"].append(f"aux {getattr(aux, 'key', '')}: {exc}")
-                    continue
-                if _add_cmd(ra.command):
-                    section["commands"].append(
-                        {
-                            "command": ra.command,
-                            "role": "aux",
-                            "aux_key": ra.key,
-                            "params": dict(params or {}),
-                            "profile_id": ra.profile_id,
-                        }
-                    )
+            if include_aux:
+                _append_aux_commands(
+                    section,
+                    hit.profile if hit else profile,
+                    params=dict(params or {}),
+                    add_cmd=_add_cmd,
+                )
 
         # No concrete primary cmds → still show template as comment
         if not any(c.get("role") == "primary" for c in section["commands"]):
@@ -1224,7 +1242,7 @@ def export_task_commands_text(
     task_id: str,
     *,
     enabled_only: bool = True,
-    include_aux: bool = False,
+    include_aux: bool = True,
 ) -> str:
     """Plain-text export of planned collect commands (one CLI per line + section headers)."""
     plan = plan_task_collect_commands(

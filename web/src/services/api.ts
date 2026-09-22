@@ -1931,7 +1931,8 @@ export const bizStateDownloadTaskCommands = async (
   opts?: { includeAux?: boolean; enabledOnly?: boolean },
 ): Promise<void> => {
   const q = new URLSearchParams();
-  if (opts?.includeAux === false) q.set("include_aux", "false");
+  // Default includes aux (matches live collect); pass includeAux:false to omit.
+  q.set("include_aux", opts?.includeAux === false ? "false" : "true");
   if (opts?.enabledOnly === false) q.set("enabled_only", "false");
   const qs = q.toString();
   const path =
