@@ -40,6 +40,8 @@ class PlaceholderDef:
     discover_filter_contains: str = ""
     # Skip rows where this field is empty (e.g. CE peers require non-empty vrf).
     discover_require_nonempty: str = ""
+    # Skip rows where this field is non-empty (e.g. global AF peers require empty vrf).
+    discover_require_empty: str = ""
 
 
 @dataclass(frozen=True)
@@ -324,6 +326,7 @@ _BGP_NEIGHBOR_VPNV4 = PlaceholderDef(
     discover_label_field="neighbor",
     discover_filter_field="afi",
     discover_filter_contains="vpnv4",
+    discover_require_empty="vrf",
 )
 
 _BGP_NEIGHBOR_VPNV6 = PlaceholderDef(
@@ -336,6 +339,33 @@ _BGP_NEIGHBOR_VPNV6 = PlaceholderDef(
     discover_label_field="neighbor",
     discover_filter_field="afi",
     discover_filter_contains="vpnv6",
+    discover_require_empty="vrf",
+)
+
+_BGP_NEIGHBOR_IPV4 = PlaceholderDef(
+    name="neighbor",
+    schema_field="neighbor",
+    required=True,
+    bind_mode="discover_select",
+    discover_profile_id="zte.config_bgp_peer",
+    discover_value_field="neighbor",
+    discover_label_field="neighbor",
+    discover_filter_field="afi",
+    discover_filter_contains="ipv4",
+    discover_require_empty="vrf",
+)
+
+_BGP_NEIGHBOR_IPV6 = PlaceholderDef(
+    name="neighbor",
+    schema_field="neighbor",
+    required=True,
+    bind_mode="discover_select",
+    discover_profile_id="zte.config_bgp_peer",
+    discover_value_field="neighbor",
+    discover_label_field="neighbor",
+    discover_filter_field="afi",
+    discover_filter_contains="ipv6",
+    discover_require_empty="vrf",
 )
 
 # Per-VRF CE peers live under address-family ipv4/ipv6 vrf <name>.
@@ -1076,6 +1106,120 @@ def _zte_status_profiles() -> list[ParseProfile]:
             ],
         ),
         ParseProfile(
+            profile_id="zte.bgp_ipv4_neighbor_in",
+            vendor_key="zte",
+            metric_id="bgp_route",
+            parser_id="bgp_route",
+            title="BGP IPv4 Neighbor In",
+            command_template="show bgp ipv4 unicast neighbor in <neighbor> | one-line",
+            match=r"(?i)^\s*show\s+bgp\s+ipv4\s+unicast\s+neighbor\s+(?P<direction>in)\s+(?P<neighbor>\S+)(?:\s*\|\s*one-line)?\s*$",
+            textfsm_command="show bgp ipv4 unicast neighbor in",
+            description=(
+                "Routes learned from IPv4 unicast neighbor; discover from BGP peer intent "
+                "(direct + peer-group members); aux: show running-config bgp."
+            ),
+            placeholders=[_BGP_NEIGHBOR_IPV4],
+            fields=list(_BGP_ROUTE_FIELDS),
+            tags=["bgp", "ipv4", "route"],
+            sort_order=428,
+            enabled=True,
+            kind="collect",
+            enrich_joins=[
+                EnrichJoin(
+                    from_aux="config_bgp_peer",
+                    left_on="afi,neighbor",
+                    right_on="afi,neighbor",
+                    take=("remote_as", "activate", "route_map_in", "route_map_out"),
+                ),
+            ],
+        ),
+        ParseProfile(
+            profile_id="zte.bgp_ipv4_neighbor_out",
+            vendor_key="zte",
+            metric_id="bgp_route",
+            parser_id="bgp_route",
+            title="BGP IPv4 Neighbor Out",
+            command_template="show bgp ipv4 unicast neighbor out <neighbor> | one-line",
+            match=r"(?i)^\s*show\s+bgp\s+ipv4\s+unicast\s+neighbor\s+(?P<direction>out)\s+(?P<neighbor>\S+)(?:\s*\|\s*one-line)?\s*$",
+            textfsm_command="show bgp ipv4 unicast neighbor out",
+            description=(
+                "Routes advertised to IPv4 unicast neighbor; discover from BGP peer intent; "
+                "aux: show running-config bgp."
+            ),
+            placeholders=[_BGP_NEIGHBOR_IPV4],
+            fields=list(_BGP_ROUTE_FIELDS),
+            tags=["bgp", "ipv4", "route"],
+            sort_order=429,
+            enabled=True,
+            kind="collect",
+            collect_lane="heavy",
+            enrich_joins=[
+                EnrichJoin(
+                    from_aux="config_bgp_peer",
+                    left_on="afi,neighbor",
+                    right_on="afi,neighbor",
+                    take=("remote_as", "activate", "route_map_in", "route_map_out"),
+                ),
+            ],
+        ),
+        ParseProfile(
+            profile_id="zte.bgp_ipv6_neighbor_in",
+            vendor_key="zte",
+            metric_id="bgp_route",
+            parser_id="bgp_route",
+            title="BGP IPv6 Neighbor In",
+            command_template="show bgp ipv6 unicast neighbor in <neighbor> | one-line",
+            match=r"(?i)^\s*show\s+bgp\s+ipv6\s+unicast\s+neighbor\s+(?P<direction>in)\s+(?P<neighbor>\S+)(?:\s*\|\s*one-line)?\s*$",
+            textfsm_command="show bgp ipv6 unicast neighbor in",
+            description=(
+                "Routes learned from IPv6 unicast neighbor; discover from BGP peer intent "
+                "(direct + peer-group members); aux: show running-config bgp."
+            ),
+            placeholders=[_BGP_NEIGHBOR_IPV6],
+            fields=list(_BGP_ROUTE_FIELDS),
+            tags=["bgp", "ipv6", "route"],
+            sort_order=430,
+            enabled=True,
+            kind="collect",
+            enrich_joins=[
+                EnrichJoin(
+                    from_aux="config_bgp_peer",
+                    left_on="afi,neighbor",
+                    right_on="afi,neighbor",
+                    take=("remote_as", "activate", "route_map_in", "route_map_out"),
+                ),
+            ],
+        ),
+        ParseProfile(
+            profile_id="zte.bgp_ipv6_neighbor_out",
+            vendor_key="zte",
+            metric_id="bgp_route",
+            parser_id="bgp_route",
+            title="BGP IPv6 Neighbor Out",
+            command_template="show bgp ipv6 unicast neighbor out <neighbor> | one-line",
+            match=r"(?i)^\s*show\s+bgp\s+ipv6\s+unicast\s+neighbor\s+(?P<direction>out)\s+(?P<neighbor>\S+)(?:\s*\|\s*one-line)?\s*$",
+            textfsm_command="show bgp ipv6 unicast neighbor out",
+            description=(
+                "Routes advertised to IPv6 unicast neighbor; discover from BGP peer intent; "
+                "aux: show running-config bgp."
+            ),
+            placeholders=[_BGP_NEIGHBOR_IPV6],
+            fields=list(_BGP_ROUTE_FIELDS),
+            tags=["bgp", "ipv6", "route"],
+            sort_order=431,
+            enabled=True,
+            kind="collect",
+            collect_lane="heavy",
+            enrich_joins=[
+                EnrichJoin(
+                    from_aux="config_bgp_peer",
+                    left_on="afi,neighbor",
+                    right_on="afi,neighbor",
+                    take=("remote_as", "activate", "route_map_in", "route_map_out"),
+                ),
+            ],
+        ),
+        ParseProfile(
             profile_id="zte.bgp_vpnv4_vrf_neighbor_in",
             vendor_key="zte",
             metric_id="bgp_route",
@@ -1094,7 +1238,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             placeholders=[_BGP_VRF_PEER_IPV4, _BGP_NEIGHBOR_IPV4_VRF],
             fields=list(_BGP_ROUTE_FIELDS),
             tags=["bgp", "vpnv4", "vrf", "route"],
-            sort_order=430,
+            sort_order=440,
             enabled=True,
             kind="collect",
             enrich_joins=[
@@ -1125,7 +1269,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             placeholders=[_BGP_VRF_PEER_IPV4, _BGP_NEIGHBOR_IPV4_VRF],
             fields=list(_BGP_ROUTE_FIELDS),
             tags=["bgp", "vpnv4", "vrf", "route"],
-            sort_order=435,
+            sort_order=445,
             enabled=True,
             kind="collect",
             collect_lane="heavy",
@@ -1157,7 +1301,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             placeholders=[_BGP_VRF_PEER_IPV6, _BGP_NEIGHBOR_IPV6_VRF],
             fields=list(_BGP_ROUTE_FIELDS),
             tags=["bgp", "vpnv6", "vrf", "route"],
-            sort_order=440,
+            sort_order=450,
             enabled=True,
             kind="collect",
             enrich_joins=[
@@ -1188,7 +1332,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             placeholders=[_BGP_VRF_PEER_IPV6, _BGP_NEIGHBOR_IPV6_VRF],
             fields=list(_BGP_ROUTE_FIELDS),
             tags=["bgp", "vpnv6", "vrf", "route"],
-            sort_order=445,
+            sort_order=455,
             enabled=True,
             kind="collect",
             collect_lane="heavy",
@@ -1707,6 +1851,7 @@ def profile_to_public_dict(p: ParseProfile, *, overrides: dict[str, Any] | None 
                 "discover_filter_field": ph.discover_filter_field,
                 "discover_filter_contains": ph.discover_filter_contains,
                 "discover_require_nonempty": ph.discover_require_nonempty,
+                "discover_require_empty": ph.discover_require_empty,
             }
             for ph in p.placeholders
         ],

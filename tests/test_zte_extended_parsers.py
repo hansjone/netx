@@ -677,6 +677,10 @@ $
         self.assertIsNotNone(get_profile("zte.l2vpn_pw_detail"))
         self.assertIsNotNone(get_profile("zte.bgp_vpnv6_neighbor_in"))
         self.assertIsNotNone(get_profile("zte.bgp_vpnv6_neighbor_out"))
+        self.assertIsNotNone(get_profile("zte.bgp_ipv4_neighbor_in"))
+        self.assertIsNotNone(get_profile("zte.bgp_ipv4_neighbor_out"))
+        self.assertIsNotNone(get_profile("zte.bgp_ipv6_neighbor_in"))
+        self.assertIsNotNone(get_profile("zte.bgp_ipv6_neighbor_out"))
 
         p = get_profile("zte.bgp_vpnv4_vrf_neighbor_in")
         assert p is not None
@@ -757,13 +761,18 @@ $
         assert glob_v6 is not None
         self.assertEqual(glob_v6.placeholders[0].discover_filter_contains, "vpnv6")
 
+        glob_ipv4 = get_profile("zte.bgp_ipv4_neighbor_in")
+        assert glob_ipv4 is not None
+        self.assertEqual(glob_ipv4.placeholders[0].discover_filter_contains, "ipv4")
+        self.assertEqual(glob_ipv4.placeholders[0].discover_require_empty, "vrf")
+
         peer_recs = [
             {"afi": "vpnv4", "vrf": "", "neighbor": "10.0.0.1", "remote_as": "65001"},
             {"afi": "vpnv4", "vrf": "", "neighbor": "", "peer_group": "CORE_RR", "remote_as": "65009"},
             {"afi": "vpnv4", "vrf": "", "neighbor": "10.0.0.9", "peer_group": "CORE_RR", "remote_as": "65019"},
             {"afi": "vpnv6", "vrf": "", "neighbor": "FC00::1", "remote_as": "65002"},
             {"afi": "ipv4", "vrf": "CUST_A", "neighbor": "10.0.0.2", "remote_as": "65003"},
-            {"afi": "ipv4", "vrf": "", "neighbor": "10.0.0.9", "remote_as": "65004"},
+            {"afi": "ipv4", "vrf": "", "neighbor": "10.0.0.8", "remote_as": "65004"},
             {"afi": "ipv6", "vrf": "CUST_B", "neighbor": "FC00::2", "remote_as": "65005"},
         ]
         self.assertEqual(
@@ -773,6 +782,11 @@ $
         self.assertEqual(
             filter_discover_records(peer_recs, glob_v6.placeholders[0]),
             ["FC00::1"],
+        )
+        # Global ipv4: only empty-vrf peers (not VRF CE)
+        self.assertEqual(
+            filter_discover_records(peer_recs, glob_ipv4.placeholders[0]),
+            ["10.0.0.8"],
         )
         # afi filter is exact: ipv4 must not match vpnv4
         vrf_nei = get_profile("zte.bgp_vpnv4_vrf_neighbor_in")
@@ -925,6 +939,15 @@ gei-0/0/0/2 is up, ifindex: 2
         self.assertGreaterEqual(len(routes), 1)
         self.assertEqual(routes[0]["afi"], "vpnv6")
         self.assertEqual(routes[0]["direction"], "in")
+
+        hit4 = match_command(
+            vendor_key="zte",
+            command="show bgp ipv4 unicast neighbor in 10.0.0.1 | one-line",
+        )
+        self.assertIsNotNone(hit4)
+        assert hit4 is not None
+        self.assertEqual(hit4.profile.profile_id, "zte.bgp_ipv4_neighbor_in")
+        self.assertEqual(hit4.params.get("neighbor"), "10.0.0.1")
 
         # IPv4 neighbor routes: same wrap join as vpnv6
         v4_wrap = normalize_bgp_route(

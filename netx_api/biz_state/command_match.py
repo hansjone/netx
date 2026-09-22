@@ -147,6 +147,9 @@ def _record_passes_discover_filter(rec: dict[str, Any], ph: PlaceholderDef) -> b
     require = str(ph.discover_require_nonempty or "").strip()
     if require and not str(rec.get(require) or "").strip():
         return False
+    require_empty = str(getattr(ph, "discover_require_empty", "") or "").strip()
+    if require_empty and str(rec.get(require_empty) or "").strip():
+        return False
     return True
 
 
