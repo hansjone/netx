@@ -85,6 +85,7 @@ class DiscoverIn(BaseModel):
     discover_profile_id: str = ""
     collect_profile_id: str = ""
     placeholder: str = ""
+    force_refresh: bool = False
 
 
 class BindingsIn(BaseModel):
@@ -139,6 +140,7 @@ def api_discover(body: DiscoverIn, db: Session = Depends(get_db)) -> dict[str, A
         discover_profile_id=body.discover_profile_id,
         collect_profile_id=body.collect_profile_id,
         placeholder=body.placeholder,
+        force_refresh=bool(body.force_refresh),
     )
 
 

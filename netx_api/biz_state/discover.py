@@ -1,7 +1,13 @@
-"""One-shot discover for placeholder candidates (VRF list, etc.)."""
+"""One-shot discover for placeholder candidates (VRF list, etc.).
+
+Same NE + discover profile reuses CLI/parse results within a TTL so binding
+multiple AF monitor items (vpnv4/vpnv6/VRF) does not re-login the device.
+"""
 
 from __future__ import annotations
 
+import threading
+import time
 from typing import Any
 
 from fastapi import HTTPException
@@ -20,6 +26,81 @@ from .command_match import (
 )
 from .parsers import get_parser, run_parser
 from .profiles import get_profile
+
+# Process-local cache: (source, ne_id, discover_profile_id) → parsed rows.
+# Binding UI opens many collect profiles that share config_vrf / config_bgp_peer.
+_CACHE_LOCK = threading.Lock()
+_DISCOVER_CACHE: dict[str, dict[str, Any]] = {}
+_DISCOVER_CACHE_TTL_SEC = 1800  # 30 min — covers a typical bind session
+
+
+def _cache_key(source: str, ne_id: str, discover_profile_id: str) -> str:
+    return f"{source}|{ne_id}|{discover_profile_id}"
+
+
+def clear_discover_cache(
+    *,
+    source: str = "",
+    ne_id: str = "",
+    discover_profile_id: str = "",
+) -> int:
+    """Drop cache entries; empty args clear all. Returns removed count."""
+    src = str(source or "").strip().lower()
+    nid = str(ne_id or "").strip()
+    pid = str(discover_profile_id or "").strip()
+    with _CACHE_LOCK:
+        if not src and not nid and not pid:
+            n = len(_DISCOVER_CACHE)
+            _DISCOVER_CACHE.clear()
+            return n
+        drop = [
+            k
+            for k, v in _DISCOVER_CACHE.items()
+            if (not src or v.get("source") == src)
+            and (not nid or v.get("ne_id") == nid)
+            and (not pid or v.get("discover_profile_id") == pid)
+        ]
+        for k in drop:
+            _DISCOVER_CACHE.pop(k, None)
+        return len(drop)
+
+
+def _cache_get(key: str) -> dict[str, Any] | None:
+    now = time.time()
+    with _CACHE_LOCK:
+        hit = _DISCOVER_CACHE.get(key)
+        if not hit:
+            return None
+        if float(hit.get("expires_at") or 0) <= now:
+            _DISCOVER_CACHE.pop(key, None)
+            return None
+        return dict(hit)
+
+
+def _cache_put(
+    key: str,
+    *,
+    source: str,
+    ne_id: str,
+    discover_profile_id: str,
+    command: str,
+    vendor: str,
+    device_type: str,
+    records: list[dict[str, Any]],
+    raw_preview: str,
+) -> None:
+    with _CACHE_LOCK:
+        _DISCOVER_CACHE[key] = {
+            "source": source,
+            "ne_id": ne_id,
+            "discover_profile_id": discover_profile_id,
+            "command": command,
+            "vendor": vendor,
+            "device_type": device_type,
+            "records": list(records),
+            "raw_preview": raw_preview,
+            "expires_at": time.time() + _DISCOVER_CACHE_TTL_SEC,
+        }
 
 
 def resolve_discover_profile(
@@ -56,6 +137,7 @@ def discover_params(
     discover_profile_id: str = "",
     collect_profile_id: str = "",
     placeholder: str = "",
+    force_refresh: bool = False,
 ) -> dict[str, Any]:
     src = str(source or "managed").strip().lower() or "managed"
     nid = str(ne_id or "").strip()
@@ -94,68 +176,96 @@ def discover_params(
             value_field = str(active_ph.discover_value_field or active_ph.name or value_field)
             label_field = str(active_ph.discover_label_field or label_field)
 
-    try:
-        if src == "managed":
-            creds, info = resolve_cli_target(db, managed_ne_id=nid)
-        elif src == "ume":
-            creds, info = resolve_cli_target(db, ume_ne_id=nid)
-        else:
-            raise HTTPException(status_code=400, detail="invalid_source")
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"resolve_failed: {exc}") from exc
-
-    skip = cli_creds_skip_reason(creds, interactive=False)
-    if skip:
-        raise HTTPException(status_code=400, detail=skip)
-
-    vendor = str(info.get("vendor") or creds.get("vendor") or "")
-    device_type = str(info.get("device_type") or creds.get("device_type") or "")
+    cache_key = _cache_key(src, nid, disc.profile_id)
+    cache_hit = False
+    vendor = ""
+    device_type = ""
     command = str(disc.command_template or "").strip()
-    per_cmd = int(settings.ne_collect_read_timeout_sec or 120)
     raw = ""
-    try:
-        conn = open_netmiko_connection(creds, session_timeout=per_cmd + 60)
-        try:
-            try:
-                disable_target_paging(conn, vendor=vendor, device_type=device_type)
-            except Exception:
-                pass
-            raw = send_show_command(conn, command, read_timeout=per_cmd)
-        finally:
-            close_netmiko_connection(conn)
-    except Exception as exc:
-        return {
-            "ok": False,
-            "error": f"cli_failed: {exc}",
-            "discover_profile_id": disc.profile_id,
-            "command": command,
-            "candidates": [],
-            "raw_preview": str(raw or "")[:4000],
-        }
-
     records: list[dict[str, Any]] = []
-    if get_parser(disc.parser_id):
+
+    cached = None if force_refresh else _cache_get(cache_key)
+    if cached:
+        cache_hit = True
+        records = list(cached.get("records") or [])
+        command = str(cached.get("command") or command)
+        vendor = str(cached.get("vendor") or "")
+        device_type = str(cached.get("device_type") or "")
+        raw = str(cached.get("raw_preview") or "")
+    else:
         try:
-            records, _fsm_tables, _rule_keys = run_parser(
-                disc.parser_id,
-                raw_text=raw,
-                vendor=vendor,
-                device_type=device_type,
-                command=disc.textfsm_command or command,
-                params={},
-                textfsm_command=disc.textfsm_command or "",
-            )
+            if src == "managed":
+                creds, info = resolve_cli_target(db, managed_ne_id=nid)
+            elif src == "ume":
+                creds, info = resolve_cli_target(db, ume_ne_id=nid)
+            else:
+                raise HTTPException(status_code=400, detail="invalid_source")
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"resolve_failed: {exc}") from exc
+
+        skip = cli_creds_skip_reason(creds, interactive=False)
+        if skip:
+            raise HTTPException(status_code=400, detail=skip)
+
+        vendor = str(info.get("vendor") or creds.get("vendor") or "")
+        device_type = str(info.get("device_type") or creds.get("device_type") or "")
+        per_cmd = int(settings.ne_collect_read_timeout_sec or 120)
+        try:
+            conn = open_netmiko_connection(creds, session_timeout=per_cmd + 60)
+            try:
+                try:
+                    disable_target_paging(conn, vendor=vendor, device_type=device_type)
+                except Exception:
+                    pass
+                raw = send_show_command(conn, command, read_timeout=per_cmd)
+            finally:
+                close_netmiko_connection(conn)
         except Exception as exc:
             return {
                 "ok": False,
-                "error": f"parse_failed: {exc}",
+                "error": f"cli_failed: {exc}",
                 "discover_profile_id": disc.profile_id,
                 "command": command,
+                "cache_hit": False,
                 "candidates": [],
                 "raw_preview": str(raw or "")[:4000],
             }
+
+        if get_parser(disc.parser_id):
+            try:
+                records, _fsm_tables, _rule_keys = run_parser(
+                    disc.parser_id,
+                    raw_text=raw,
+                    vendor=vendor,
+                    device_type=device_type,
+                    command=disc.textfsm_command or command,
+                    params={},
+                    textfsm_command=disc.textfsm_command or "",
+                )
+            except Exception as exc:
+                return {
+                    "ok": False,
+                    "error": f"parse_failed: {exc}",
+                    "discover_profile_id": disc.profile_id,
+                    "command": command,
+                    "cache_hit": False,
+                    "candidates": [],
+                    "raw_preview": str(raw or "")[:4000],
+                }
+
+        _cache_put(
+            cache_key,
+            source=src,
+            ne_id=nid,
+            discover_profile_id=disc.profile_id,
+            command=command,
+            vendor=vendor,
+            device_type=device_type,
+            records=records,
+            raw_preview=str(raw or "")[:4000],
+        )
 
     candidates = []
     seen: set[str] = set()
@@ -164,7 +274,6 @@ def discover_params(
         filter_ph = pair_phs[0]
         for rec in records:
             if not _record_passes_discover_filter(rec, filter_ph):
-                # Also require every paired field non-empty.
                 continue
             bind: dict[str, str] = {}
             ok = True
@@ -240,6 +349,7 @@ def discover_params(
         "vendor_key": resolve_vendor_key(vendor, device_type),
         "value_field": value_field,
         "pair_mode": bool(pair_phs and len(pair_phs) >= 2),
+        "cache_hit": cache_hit,
         "candidates": candidates,
         "raw_preview": str(raw or "")[:4000],
     }

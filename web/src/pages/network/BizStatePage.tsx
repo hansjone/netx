@@ -246,6 +246,7 @@ export function BizStatePage() {
   const [discoverCmd, setDiscoverCmd] = useState("");
   const [discoverLoading, setDiscoverLoading] = useState(false);
   const [discoverError, setDiscoverError] = useState("");
+  const [discoverCacheHit, setDiscoverCacheHit] = useState(false);
 
   // Bound-params detail modal (double-click params cell)
   const [paramsDetail, setParamsDetail] = useState<{
@@ -775,10 +776,11 @@ export function BizStatePage() {
     setSelectedVrfs([]);
     setDiscoverCmd("");
     setDiscoverError("");
+    setDiscoverCacheHit(false);
     setDiscoverLoading(false);
   };
 
-  const startDiscover = async (item: any) => {
+  const startDiscover = async (item: any, forceRefresh = false) => {
     if (!taskId) return;
     const prof = profiles.find((p) => p.profile_id === item.source_profile_id);
     const phs = prof?.placeholders || [];
@@ -792,6 +794,7 @@ export function BizStatePage() {
     setSelectedVrfs([]);
     setDiscoverCmd("");
     setDiscoverError("");
+    setDiscoverCacheHit(false);
     setDiscoverLoading(true);
     setBusy(true);
     try {
@@ -801,6 +804,7 @@ export function BizStatePage() {
         task_id: taskId,
         collect_profile_id: item.source_profile_id,
         placeholder: sharedDisc ? "" : ph.name,
+        force_refresh: forceRefresh,
       });
       if (!res.ok) {
         const err = res.error || t("bizState.discoverFailed");
@@ -809,6 +813,7 @@ export function BizStatePage() {
         return;
       }
       setDiscoverCmd(res.command || "");
+      setDiscoverCacheHit(Boolean(res.cache_hit));
       const cand = (res.candidates || []) as Candidate[];
       setCandidates(cand);
       const existing = (item.bindings || []) as { placeholder?: string; value?: string }[];
@@ -1459,10 +1464,10 @@ export function BizStatePage() {
                                 }${bindLines.length ? " bs-params-scroll--clickable" : ""}`}
                                 title={
                                   bindLines.length
-                                    ? `${bindHint}\n${t("bizState.paramsDblClickHint")}`
+                                    ? `${bindHint}\n${t("bizState.paramsClickHint")}`
                                     : bindHint
                                 }
-                                onDoubleClick={() => {
+                                onClick={() => {
                                   if (!bindLines.length) return;
                                   setParamsDetail({
                                     title: prof.title,
@@ -1689,6 +1694,7 @@ export function BizStatePage() {
             <p className="muted">
               <code>{discoverCmd}</code>
               {candidates.length ? ` · ${selectedVrfs.length}/${candidates.length}` : null}
+              {discoverCacheHit ? ` · ${t("bizState.discoverCacheHit")}` : null}
             </p>
           ) : null}
           {discoverError ? <p className="bs-params-warn">{discoverError}</p> : null}
@@ -1711,6 +1717,19 @@ export function BizStatePage() {
                     ? t("bizState.deselectAllVrfs")
                     : t("bizState.selectAllVrfs")}
                 </Button>
+                {bindItemId ? (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    isDisabled={busy || discoverLoading}
+                    onPress={() => {
+                      const item = (detail?.items || []).find((it: any) => it.id === bindItemId);
+                      if (item) void startDiscover(item, true);
+                    }}
+                  >
+                    {t("bizState.discoverRefresh")}
+                  </Button>
+                ) : null}
               </div>
               <div className="bs-bind-list bs-bind-list--modal">
                 {candidates.map((c) => (

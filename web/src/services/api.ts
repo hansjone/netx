@@ -1777,7 +1777,16 @@ export const bizStateDiscover = (body: Record<string, unknown>) =>
     ok: boolean;
     error?: string;
     command?: string;
-    candidates?: Array<{ value: string; label: string; rd?: string; protocols?: string }>;
+    cache_hit?: boolean;
+    pair_mode?: boolean;
+    discover_profile_id?: string;
+    candidates?: Array<{
+      value: string;
+      label: string;
+      rd?: string;
+      protocols?: string;
+      bindings?: Record<string, string>;
+    }>;
     raw_preview?: string;
   }>("/v1/biz-state/discover", body);
 
