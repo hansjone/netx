@@ -807,7 +807,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             textfsm_command="show bgp vpnv4 unicast summary",
             description=(
                 "Per-VRF BGP VPNv4 peer summary. Bind one or more VRFs; "
-                "aux: IPv4 FIB + config_vrf."
+                "aux: config_vrf (RD/AF enrich). IPv4 FIB is a separate monitor item."
             ),
             placeholders=[_VRF_PLACEHOLDER_IPV4],
             fields=list(_BGP_PEER_FIELDS),
@@ -817,7 +817,6 @@ def _zte_status_profiles() -> list[ParseProfile]:
             kind="collect",
             aux_commands=[
                 AuxCommand(key="config_vrf", profile_id="zte.config_vrf"),
-                AuxCommand(key="ip_route", profile_id="zte.ip_route_vrf"),
             ],
             enrich_joins=[
                 EnrichJoin(
@@ -839,7 +838,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             textfsm_command="show bgp vpnv6 unicast summary",
             description=(
                 "Per-VRF BGP VPNv6 peer summary. Bind one or more VRFs; "
-                "aux: IPv6 FIB + config_vrf."
+                "aux: config_vrf (RD/AF enrich). IPv6 FIB is a separate monitor item."
             ),
             placeholders=[_VRF_PLACEHOLDER_IPV6],
             fields=list(_BGP_PEER_FIELDS),
@@ -849,7 +848,6 @@ def _zte_status_profiles() -> list[ParseProfile]:
             kind="collect",
             aux_commands=[
                 AuxCommand(key="config_vrf", profile_id="zte.config_vrf"),
-                AuxCommand(key="ipv6_route", profile_id="zte.ipv6_route_vrf"),
             ],
             enrich_joins=[
                 EnrichJoin(
@@ -1548,6 +1546,17 @@ def metric_field_map() -> dict[str, list[FieldDef]]:
 
 def profile_to_public_dict(p: ParseProfile, *, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
     ov = overrides or {}
+    aux_out: list[dict[str, Any]] = []
+    for a in p.aux_commands or []:
+        ap = get_profile(a.profile_id)
+        aux_out.append(
+            {
+                "key": a.key,
+                "profile_id": a.profile_id,
+                "title": (ap.title if ap else "") or a.profile_id,
+                "command_template": (ap.command_template if ap else "") or "",
+            }
+        )
     return {
         "profile_id": p.profile_id,
         "vendor_key": p.vendor_key,
@@ -1591,13 +1600,7 @@ def profile_to_public_dict(p: ParseProfile, *, overrides: dict[str, Any] | None 
         "kind": p.kind,
         "match": p.match,
         "textfsm_command": p.textfsm_command or p.command_template,
-        "aux_commands": [
-            {
-                "key": a.key,
-                "profile_id": a.profile_id,
-            }
-            for a in (p.aux_commands or [])
-        ],
+        "aux_commands": aux_out,
         "enrich_joins": [
             {
                 "from_aux": j.from_aux,

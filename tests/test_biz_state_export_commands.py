@@ -76,19 +76,30 @@ class BizStateExportCommandsTests(unittest.TestCase):
         )
         self.db.commit()
 
-        plan = plan_task_collect_commands(self.db, self.task.id, include_aux=True)
+        plan = plan_task_collect_commands(self.db, self.task.id)
         self.assertEqual(plan["ne_name"], "PE1")
         self.assertGreaterEqual(plan["command_count"], 2)
         cmds = plan["commands"]
         self.assertTrue(any("lldp" in c.lower() for c in cmds))
-        self.assertTrue(any("CUST_A" in c for c in cmds))
+        self.assertTrue(any("CUST_A" in c and "summary" in c for c in cmds))
+        # Default export is primary-only (no FIB/config aux under BGP summary)
+        self.assertFalse(any("forwarding route" in c for c in cmds))
+        self.assertFalse(any("running-config vrf" in c for c in cmds))
         # Disabled item excluded by default
         self.assertFalse(any("isis" in c.lower() for c in cmds))
+
+        with_aux = plan_task_collect_commands(
+            self.db, self.task.id, include_aux=True
+        )
+        # BGP VRF summary aux is only config_vrf (FIB is a separate monitor item)
+        self.assertTrue(any("running-config vrf" in c for c in with_aux["commands"]))
+        self.assertFalse(any("forwarding route" in c for c in with_aux["commands"]))
 
         text = export_task_commands_text(self.db, self.task.id)
         self.assertIn("task_id=t_export", text)
         self.assertIn("show lldp neighbor brief", text)
         self.assertIn("CUST_A", text)
+        self.assertNotIn("# aux:", text)
         self.assertIn("# ---- flat unique commands ----", text)
 
     def test_unbound_required_placeholder_noted(self) -> None:

@@ -1034,12 +1034,13 @@ def plan_task_collect_commands(
     task_id: str,
     *,
     enabled_only: bool = True,
-    include_aux: bool = True,
+    include_aux: bool = False,
 ) -> dict[str, Any]:
     """Plan concrete collect CLIs for a task (no device login).
 
-    expand_all items (unbound optional discover) are listed with a note; aux
-    commands are resolved from primary params when include_aux is True.
+    By default only each monitoring item's primary command is listed.
+    Aux CLIs (parser enrich helpers such as FIB/config under BGP summary)
+    are omitted unless include_aux=True — they are not separate UI items.
     """
     task = db.get(BizStateTask, task_id)
     if not task:
@@ -1223,7 +1224,7 @@ def export_task_commands_text(
     task_id: str,
     *,
     enabled_only: bool = True,
-    include_aux: bool = True,
+    include_aux: bool = False,
 ) -> str:
     """Plain-text export of planned collect commands (one CLI per line + section headers)."""
     plan = plan_task_collect_commands(

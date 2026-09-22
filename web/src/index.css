@@ -11331,7 +11331,7 @@ html.login-page--paused .login-page__flare {
 
 .bs-profiles-table {
   width: 100%;
-  min-width: 960px;
+  min-width: 1180px;
   table-layout: fixed;
   border-collapse: separate;
   border-spacing: 0;
@@ -11352,21 +11352,26 @@ html.login-page--paused .login-page__flare {
 
 .bs-profiles-table th:nth-child(2),
 .bs-profiles-table td:nth-child(2) {
-  width: 220px;
+  width: 200px;
 }
 
 .bs-profiles-table th:nth-child(3),
 .bs-profiles-table td:nth-child(3) {
-  width: 240px;
+  width: 200px;
 }
 
 .bs-profiles-table th:nth-child(4),
 .bs-profiles-table td:nth-child(4) {
-  width: 108px;
+  width: 100px;
 }
 
 .bs-profiles-table th:nth-child(5),
 .bs-profiles-table td:nth-child(5) {
+  width: 280px;
+}
+
+.bs-profiles-table th:nth-child(6),
+.bs-profiles-table td:nth-child(6) {
   width: auto;
 }
 
@@ -11376,6 +11381,40 @@ html.login-page--paused .login-page__flare {
   overflow: hidden;
   text-overflow: ellipsis;
   font-size: 12px;
+  max-width: 100%;
+}
+
+.bs-profiles-table .bs-aux-cell {
+  vertical-align: top;
+  font-size: 12px;
+}
+
+.bs-profiles-table .bs-aux-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bs-profiles-table .bs-aux-list li {
+  min-width: 0;
+}
+
+.bs-profiles-table .bs-aux-key {
+  font-weight: 600;
+  color: #cbd5e1;
+}
+
+.bs-profiles-table .bs-aux-cmd {
+  display: block;
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  color: #94a3b8;
   max-width: 100%;
 }
 

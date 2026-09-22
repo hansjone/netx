@@ -578,20 +578,20 @@ class ZteExtendedParserTests(unittest.TestCase):
 
         v4 = get_profile("zte.bgp_vpnv4_vrf_summary")
         assert v4 is not None
-        self.assertTrue(any(a.key == "ip_route" for a in v4.aux_commands))
+        self.assertEqual([a.key for a in v4.aux_commands], ["config_vrf"])
         with self.assertRaises(ValueError):
             expand_from_bindings(profile=v4, bindings=[])
         bound = expand_from_bindings(profile=v4, bindings=[{"vrf": "CUST_A"}])
         self.assertEqual(bound[0][0], "show bgp vpnv4 unicast vrf CUST_A summary | one-line")
-        ra_ip = resolve_aux_command(
-            next(a for a in v4.aux_commands if a.key == "ip_route"),
+        ra_cfg = resolve_aux_command(
+            next(a for a in v4.aux_commands if a.key == "config_vrf"),
             params={"vrf": "CUST_A"},
         )
-        self.assertEqual(ra_ip.command, "show ip forwarding route vrf CUST_A | one-line")
+        self.assertEqual(ra_cfg.command, "show running-config vrf | one-line")
 
         v6 = get_profile("zte.bgp_vpnv6_vrf_summary")
         assert v6 is not None
-        self.assertTrue(any(a.key == "ipv6_route" for a in v6.aux_commands))
+        self.assertEqual([a.key for a in v6.aux_commands], ["config_vrf"])
 
         records = [
             {"vrf_name": "CUST_A", "address_families": "ipv4,ipv6", "rd": "100:1"},

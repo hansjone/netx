@@ -237,6 +237,7 @@ const zh = {
     profiles: "监控项",
     enable: "启用",
     command: "命令模板",
+    colAux: "辅命令",
     params: "参数关联",
     discoverVrf: "发现 VRF",
     discoverBind: "发现 / 关联",

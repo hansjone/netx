@@ -68,6 +68,12 @@ type Profile = {
   metric_id: string;
   kind?: string;
   placeholders?: Placeholder[];
+  aux_commands?: Array<{
+    key: string;
+    profile_id: string;
+    title?: string;
+    command_template?: string;
+  }>;
 };
 
 type BatchRow = {
@@ -1429,6 +1435,7 @@ export function BizStatePage() {
                       <th>{t("bizState.params")}</th>
                       <th>{t("bizState.colActions")}</th>
                       <th>{t("bizState.command")}</th>
+                      <th>{t("bizState.colAux")}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1443,6 +1450,7 @@ export function BizStatePage() {
                       }[];
                       const needsBind = (prof.placeholders || []).length > 0;
                       const phNames = (prof.placeholders || []).map((p) => p.name);
+                      const auxList = prof.aux_commands || [];
                       let bindLines: string[] = [];
                       if (needsBind && binds.length) {
                         if (phNames.length >= 2) {
@@ -1533,7 +1541,30 @@ export function BizStatePage() {
                             )}
                           </td>
                           <td>
-                            <code className="bs-cmd-cell">{prof.command_template}</code>
+                            <code className="bs-cmd-cell" title={prof.command_template}>
+                              {prof.command_template}
+                            </code>
+                          </td>
+                          <td className="bs-aux-cell">
+                            {auxList.length ? (
+                              <ul className="bs-aux-list">
+                                {auxList.map((a) => {
+                                  const label = a.title || a.key || a.profile_id;
+                                  const tmpl = String(a.command_template || "").trim();
+                                  return (
+                                    <li key={`${a.key}:${a.profile_id}`} title={tmpl || a.profile_id}>
+                                      <span className="bs-aux-key">{a.key}</span>
+                                      <span className="muted"> · {label}</span>
+                                      {tmpl ? (
+                                        <code className="bs-aux-cmd">{tmpl}</code>
+                                      ) : null}
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                            ) : (
+                              <span className="muted">—</span>
+                            )}
                           </td>
                         </tr>
                       );

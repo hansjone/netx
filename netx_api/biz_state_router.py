@@ -177,7 +177,7 @@ def api_get_task(task_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
 def api_plan_task_commands(
     task_id: str,
     enabled_only: bool = Query(True),
-    include_aux: bool = Query(True),
+    include_aux: bool = Query(False),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """List planned collect CLIs for a task (bindings expanded; no device login)."""
@@ -190,7 +190,7 @@ def api_plan_task_commands(
 def api_export_task_commands(
     task_id: str,
     enabled_only: bool = Query(True),
-    include_aux: bool = Query(True),
+    include_aux: bool = Query(False),
     db: Session = Depends(get_db),
 ) -> StreamingResponse:
     """Download planned collect commands as a .txt file."""

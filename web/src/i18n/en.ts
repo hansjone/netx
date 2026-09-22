@@ -237,6 +237,7 @@ const en = {
     profiles: "Monitor items",
     enable: "On",
     command: "Command template",
+    colAux: "Aux commands",
     params: "Bindings",
     discoverVrf: "Discover VRFs",
     discoverBind: "Discover / Bind",
