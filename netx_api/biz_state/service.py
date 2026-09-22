@@ -1034,25 +1034,49 @@ def _append_aux_commands(
     profile: Any,
     *,
     params: dict[str, str],
-    add_cmd,
 ) -> None:
-    """Append resolved aux CLIs onto a plan section (dedupe via add_cmd)."""
+    """Append resolved aux CLIs onto a plan section (section-local dedupe only)."""
+    existing = {
+        str(c.get("command") or "").strip()
+        for c in section.get("commands") or []
+        if str(c.get("role") or "") == "aux"
+    }
     for aux in list(getattr(profile, "aux_commands", None) or []):
         try:
             ra = resolve_aux_command(aux, params=dict(params or {}))
         except ValueError as exc:
             section["notes"].append(f"aux {getattr(aux, 'key', '')}: {exc}")
             continue
-        if add_cmd(ra.command):
-            section["commands"].append(
-                {
-                    "command": ra.command,
-                    "role": "aux",
-                    "aux_key": ra.key,
-                    "params": dict(params or {}),
-                    "profile_id": ra.profile_id,
-                }
-            )
+        cmd = normalize_command(ra.command)
+        if not cmd or cmd in existing:
+            continue
+        existing.add(cmd)
+        section["commands"].append(
+            {
+                "command": cmd,
+                "role": "aux",
+                "aux_key": ra.key,
+                "params": dict(params or {}),
+                "profile_id": ra.profile_id,
+            }
+        )
+
+
+def _flat_unique_commands(sections: list[dict[str, Any]]) -> list[str]:
+    """Dedupe executable CLIs across items (templates excluded)."""
+    flat: list[str] = []
+    seen: set[str] = set()
+    for sec in sections:
+        for c in sec.get("commands") or []:
+            role = str(c.get("role") or "primary")
+            if role == "template":
+                continue
+            cmd = normalize_command(c.get("command"))
+            if not cmd or cmd in seen:
+                continue
+            seen.add(cmd)
+            flat.append(cmd)
+    return flat
 
 
 def plan_task_collect_commands(
@@ -1064,8 +1088,9 @@ def plan_task_collect_commands(
 ) -> dict[str, Any]:
     """Plan concrete collect CLIs for a task (no device login).
 
-    Includes each item's primary command plus aux enrich CLIs by default
-    (same as live collect). Pass include_aux=False for primary-only lists.
+    Each monitoring item lists its own primary + aux CLIs (aux repeated per
+    item when shared). The top-level ``commands`` list is the deduped union
+    for scripting. Pass include_aux=False for primary-only lists.
     """
     task = db.get(BizStateTask, task_id)
     if not task:
@@ -1077,16 +1102,6 @@ def plan_task_collect_commands(
     items = q.order_by(BizStateTaskItem.sort_order.asc()).all()
 
     sections: list[dict[str, Any]] = []
-    flat: list[str] = []
-    seen: set[str] = set()
-
-    def _add_cmd(cmd: str) -> bool:
-        c = normalize_command(cmd)
-        if not c or c in seen:
-            return False
-        seen.add(c)
-        flat.append(c)
-        return True
 
     for item in items:
         title = str(item.title or "").strip()
@@ -1103,11 +1118,11 @@ def plan_task_collect_commands(
 
         if kind == "custom_raw":
             cmd = normalize_command(item.command_override)
-            if cmd and _add_cmd(cmd):
+            if cmd:
                 section["commands"].append(
                     {"command": cmd, "role": "primary", "params": {}, "profile_id": ""}
                 )
-            elif not cmd:
+            else:
                 section["notes"].append("empty custom command")
             sections.append(section)
             continue
@@ -1157,7 +1172,7 @@ def plan_task_collect_commands(
                     }
                 )
             if include_aux:
-                _append_aux_commands(section, profile, params={}, add_cmd=_add_cmd)
+                _append_aux_commands(section, profile, params={})
             sections.append(section)
             continue
 
@@ -1176,7 +1191,7 @@ def plan_task_collect_commands(
                     }
                 )
             if include_aux:
-                _append_aux_commands(section, profile, params={}, add_cmd=_add_cmd)
+                _append_aux_commands(section, profile, params={})
             sections.append(section)
             continue
 
@@ -1188,21 +1203,19 @@ def plan_task_collect_commands(
             pid = str(
                 (hit.profile.profile_id if hit else profile.profile_id) or ""
             ).strip()
-            if _add_cmd(cmd):
-                section["commands"].append(
-                    {
-                        "command": cmd,
-                        "role": "primary",
-                        "params": dict(params or {}),
-                        "profile_id": pid,
-                    }
-                )
+            section["commands"].append(
+                {
+                    "command": cmd,
+                    "role": "primary",
+                    "params": dict(params or {}),
+                    "profile_id": pid,
+                }
+            )
             if include_aux:
                 _append_aux_commands(
                     section,
                     hit.profile if hit else profile,
                     params=dict(params or {}),
-                    add_cmd=_add_cmd,
                 )
 
         # No concrete primary cmds → still show template as comment
@@ -1225,6 +1238,7 @@ def plan_task_collect_commands(
 
         sections.append(section)
 
+    flat = _flat_unique_commands(sections)
     return {
         "task_id": task.id,
         "ne_name": task.ne_name or "",

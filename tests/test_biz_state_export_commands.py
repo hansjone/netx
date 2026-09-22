@@ -101,6 +101,62 @@ class BizStateExportCommandsTests(unittest.TestCase):
         self.assertIn("running-config vrf", text)
         self.assertIn("# ---- flat unique commands ----", text)
 
+    def test_shared_aux_repeated_per_item_deduped_in_flat(self) -> None:
+        """Each item shows its aux; flat summary dedupes shared CLIs."""
+        in_item = BizStateTaskItem(
+            id="i_in",
+            task_id=self.task.id,
+            source_profile_id="zte.bgp_vpnv4_neighbor_in",
+            kind="catalog",
+            enabled=True,
+            title="Neighbor In",
+            sort_order=1,
+        )
+        out_item = BizStateTaskItem(
+            id="i_out",
+            task_id=self.task.id,
+            source_profile_id="zte.bgp_vpnv4_neighbor_out",
+            kind="catalog",
+            enabled=True,
+            title="Neighbor Out",
+            sort_order=2,
+        )
+        self.db.add_all([in_item, out_item])
+        self.db.add_all(
+            [
+                BizStateTaskItemBinding(
+                    id="b_in",
+                    item_id=in_item.id,
+                    placeholder="neighbor",
+                    value="10.0.0.1",
+                ),
+                BizStateTaskItemBinding(
+                    id="b_out",
+                    item_id=out_item.id,
+                    placeholder="neighbor",
+                    value="10.0.0.1",
+                ),
+            ]
+        )
+        self.db.commit()
+
+        plan = plan_task_collect_commands(self.db, self.task.id)
+        aux_cli = "show running-config bgp | one-line"
+        # Both item sections must list the aux
+        for sec in plan["items"]:
+            aux = [c for c in sec["commands"] if c.get("role") == "aux"]
+            self.assertEqual(len(aux), 1, sec["title"])
+            self.assertEqual(aux[0]["command"], aux_cli)
+
+        # Flat list has the shared aux only once
+        self.assertEqual(sum(1 for c in plan["commands"] if c == aux_cli), 1)
+
+        text = export_task_commands_text(self.db, self.task.id)
+        # Two section aux markers + one flat occurrence
+        self.assertEqual(text.count("# aux:"), 2)
+        flat = text.split("# ---- flat unique commands ----", 1)[-1]
+        self.assertEqual(flat.count(aux_cli), 1)
+
     def test_unbound_required_placeholder_noted(self) -> None:
         item = BizStateTaskItem(
             id="i_exp",
