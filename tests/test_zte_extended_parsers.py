@@ -774,9 +774,16 @@ $
             filter_discover_records(peer_recs, glob_v6.placeholders[0]),
             ["FC00::1"],
         )
-
+        # afi filter is exact: ipv4 must not match vpnv4
         vrf_nei = get_profile("zte.bgp_vpnv4_vrf_neighbor_in")
         assert vrf_nei is not None
+        ipv4_nei_ph = next(ph for ph in vrf_nei.placeholders if ph.name == "neighbor")
+        self.assertEqual(ipv4_nei_ph.discover_filter_contains, "ipv4")
+        self.assertEqual(
+            filter_discover_records(peer_recs, ipv4_nei_ph),
+            ["10.0.0.2"],
+        )
+
         shared = shared_discover_placeholders(vrf_nei)
         self.assertEqual(len(shared), 2)
         self.assertTrue(all(ph.discover_profile_id == "zte.config_bgp_peer" for ph in shared))
@@ -918,6 +925,23 @@ gei-0/0/0/2 is up, ifindex: 2
         self.assertGreaterEqual(len(routes), 1)
         self.assertEqual(routes[0]["afi"], "vpnv6")
         self.assertEqual(routes[0]["direction"], "in")
+
+        # IPv4 neighbor routes: same wrap join as vpnv6
+        v4_wrap = normalize_bgp_route(
+            raw_text="""
+Routes Learned From This Neighbor:
+     Network          Next Hop        Metric     LocPrf     RtPrf   Path
+*    10.1.0.0/24
+                      10.0.0.1
+                                                            20      65001 ?
+""",
+            command="show bgp ipv4 unicast neighbor in 10.0.0.1",
+            params={"neighbor": "10.0.0.1", "direction": "in", "afi": "ipv4"},
+        )
+        self.assertEqual(len(v4_wrap), 1)
+        self.assertEqual(v4_wrap[0]["network"], "10.1.0.0/24")
+        self.assertEqual(v4_wrap[0]["next_hop"], "10.0.0.1")
+        self.assertEqual(v4_wrap[0]["afi"], "ipv4")
 
 
 if __name__ == "__main__":

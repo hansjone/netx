@@ -78,6 +78,9 @@ router bgp 65000
   neighbor 10.0.0.1 route-map RM_OUT out
   neighbor CORE_RR activate
  $
+ address-family ipv4
+  neighbor CORE_RR activate
+ $
  address-family ipv4 vrf CUST_A
   neighbor 10.0.0.2 remote-as 65003
   neighbor 10.0.0.2 activate
@@ -304,6 +307,10 @@ class ZteConfigIntentTests(unittest.TestCase):
         self.assertEqual(by[("vpnv4", "", "10.0.0.9", "CORE_RR")]["remote_as"], "65019")
         self.assertEqual(by[("vpnv4", "", "10.0.0.9", "CORE_RR")]["activate"], "enable")
         self.assertEqual(by[("ipv4", "CUST_A", "10.0.0.2", "")]["remote_as"], "65003")
+        # Global ipv4 AF: same peer-group expand as vpnv4 (not VRF)
+        self.assertIn(("ipv4", "", "", "CORE_RR"), by)
+        self.assertIn(("ipv4", "", "10.0.0.1", "CORE_RR"), by)
+        self.assertIn(("ipv4", "", "10.0.0.9", "CORE_RR"), by)
         # VRF must not pick up global peer-group members
         self.assertNotIn(("ipv4", "CUST_A", "10.0.0.9", "CORE_RR"), by)
         self.assertNotIn(("ipv4", "CUST_A", "10.0.0.1", "CORE_RR"), by)

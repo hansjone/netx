@@ -137,7 +137,12 @@ def _record_passes_discover_filter(rec: dict[str, Any], ph: PlaceholderDef) -> b
     filt_contains = str(ph.discover_filter_contains or "").strip().lower()
     if filt_field and filt_contains:
         hay = str(rec.get(filt_field) or "").strip().lower()
-        if filt_contains not in hay:
+        # ``afi`` must be exact (``ipv4`` must not match ``vpnv4``).
+        # CSV fields like ``address_families`` still use substring/token contains.
+        if filt_field == "afi":
+            if hay != filt_contains:
+                return False
+        elif filt_contains not in hay:
             return False
     require = str(ph.discover_require_nonempty or "").strip()
     if require and not str(rec.get(require) or "").strip():
