@@ -571,6 +571,25 @@ def run_purge_for_task(db: Session, task_id: str) -> dict[str, Any]:
     return purge_task_batches(db, task)
 
 
+# Workbook sheets are keyed by metric_id. Multiple AF-specific collect profiles
+# share one metric (e.g. all BGP summaries → bgp_peer); use a neutral title.
+_METRIC_SHEET_TITLES: dict[str, str] = {
+    "bgp_peer": "BGP Status Summary",
+    "bgp_route": "BGP Neighbor Routes",
+    "vrrp": "VRRP",
+    "ip_route": "IPv4 Forwarding",
+    "ipv6_route": "IPv6 Forwarding",
+}
+
+
+def _metric_sheet_title(metric_id: str, fallback: str = "") -> str:
+    mid = str(metric_id or "").strip()
+    if mid in _METRIC_SHEET_TITLES:
+        return _METRIC_SHEET_TITLES[mid]
+    fb = str(fallback or "").strip()
+    return fb or mid
+
+
 def get_batch(db: Session, batch_id: str) -> dict[str, Any]:
     """Batch workbook summary: meta + commands + sheet catalog (no metric row payload)."""
     b = db.get(BizStateBatch, batch_id)
@@ -617,8 +636,7 @@ def get_batch(db: Session, batch_id: str) -> dict[str, Any]:
         if id_ not in sheets_order:
             sheets_order.append(id_)
             sheet_cmds.setdefault(id_, [])
-            if title:
-                sheet_titles[id_] = title
+            sheet_titles[id_] = _metric_sheet_title(id_, title)
         if cmd_info is not None:
             # Prefer primary collect rows over aux / aux_cached for the same CLI
             sheet_cmds[id_].append(cmd_info)
@@ -704,11 +722,12 @@ def get_batch(db: Session, batch_id: str) -> dict[str, Any]:
             sheet_cmds.setdefault(mid, [])
         if mid not in sheet_titles:
             # Best-effort title from any profile with this metric_id
+            fallback = mid
             for p in all_profiles():
                 if p.metric_id == mid and p.enabled:
-                    sheet_titles[mid] = str(p.title or mid)
+                    fallback = str(p.title or mid)
                     break
-            sheet_titles.setdefault(mid, mid)
+            sheet_titles[mid] = _metric_sheet_title(mid, fallback)
 
     sheets = [
         {
@@ -1013,6 +1032,7 @@ def preview_items(db: Session, *, vendor: str, device_type: str, items: list[dic
 
 def _resolve_export_profile(profile_id: str):
     """Resolve collect profile; remap disabled if_intf → config_interface."""
+
     pid = str(profile_id or "").strip()
     if not pid:
         return None

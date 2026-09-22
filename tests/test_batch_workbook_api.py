@@ -70,6 +70,71 @@ class BatchWorkbookApiTests(unittest.TestCase):
         self.assertEqual(out["sheets"][0]["commands"][0]["raw_command"], "show arp | one-line")
         self.assertTrue(out["sheets"][0].get("title"))
 
+    def test_bgp_peer_sheet_uses_status_summary_title(self) -> None:
+        """Shared metric_id bgp_peer must not inherit first AF profile title."""
+        batch = BizStateBatch(
+            id="b1",
+            task_id="t1",
+            status="ok",
+            command_count=2,
+            row_count=3,
+        )
+        cmds = [
+            BizStateBatchCommand(
+                id="c1",
+                batch_id="b1",
+                profile_id="zte.bgp_vpnv4_summary",
+                parser_id="bgp_peer",
+                metric_id="bgp_peer",
+                raw_command="show bgp vpnv4 unicast summary | one-line",
+                parse_status="ok",
+                row_count=2,
+            ),
+            BizStateBatchCommand(
+                id="c2",
+                batch_id="b1",
+                profile_id="zte.bgp_ipv4_summary",
+                parser_id="bgp_peer",
+                metric_id="bgp_peer",
+                raw_command="show bgp ipv4 unicast summary | one-line",
+                parse_status="ok",
+                row_count=1,
+            ),
+        ]
+        db = MagicMock()
+        db.get.side_effect = lambda model, pk: batch if pk == "b1" else None
+        cmd_q = MagicMock()
+        cmd_q.filter.return_value.order_by.return_value.all.return_value = cmds
+        metric_count_q = MagicMock()
+        metric_count_q.filter.return_value.group_by.return_value.all.return_value = [
+            ("bgp_peer", 3)
+        ]
+        lldp_count_q = MagicMock()
+        lldp_count_q.filter.return_value.scalar.return_value = 0
+
+        def query(*_args, **_kwargs):
+            n = query.n
+            query.n += 1
+            if n == 0:
+                return cmd_q
+            if n == 1:
+                return metric_count_q
+            return lldp_count_q
+
+        query.n = 0
+        db.query.side_effect = query
+
+        with patch(
+            "netx_api.biz_state.service.batch_protect_info",
+            return_value={"protected": False, "reasons": []},
+        ):
+            out = get_batch(db, "b1")
+
+        bgp = next(s for s in out["sheets"] if s["metric_id"] == "bgp_peer")
+        self.assertEqual(bgp["title"], "BGP Status Summary")
+        self.assertEqual(bgp["row_count"], 3)
+        self.assertEqual(len(bgp["commands"]), 2)
+
     def test_list_metric_rows_rejects_commands_sheet(self) -> None:
         db = MagicMock()
         db.get.return_value = BizStateBatch(id="b1", task_id="t1")
