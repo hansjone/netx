@@ -5,6 +5,8 @@ Optional when ``NETX_RUN_INLINE_SCHEDULERS=false`` (API does not start collector
     python -m netx_api.worker
 
 Starts: config_sync, lldp_collect, port_traffic, fabric_reconcile tick loops.
+When ``NETX_BIZ_STATE_DEDICATED_WORKERS=true`` (default), biz_state is NOT started
+here — run ``python -m netx_api.biz_state_worker`` instead (start_netx does both).
 UME WS / keepalive remain in the API process (token + alarm coordination).
 By default the API runs collectors inline — no separate worker needed.
 """

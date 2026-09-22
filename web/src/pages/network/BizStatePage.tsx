@@ -1,5 +1,5 @@
 import { Button, Input, Modal } from "@heroui/react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ListPager } from "../../components/ListPager";
 import { AppModalShell } from "../../components/ui/AppModalShell";
 import { FieldSelect } from "../../components/ui/FieldSelect";
@@ -238,6 +238,9 @@ export function BizStatePage() {
   const [tasks, setTasks] = useState<TaskRow[]>([]);
   const [busy, setBusy] = useState(false);
   const [collectingIds, setCollectingIds] = useState<Record<string, true>>({});
+  /** Track that we observed collect_running=true so we don't clear the chip before enqueue lands. */
+  const seenCollectRunningRef = useRef<Record<string, boolean>>({});
+  const collectStartedAtRef = useRef<Record<string, number>>({});
   const [listKeyword, setListKeyword] = useState("");
   const debouncedListKw = useDebouncedValue(listKeyword, 250);
   const [purposeFilter, setPurposeFilter] = useState<"all" | "portrait" | "cutover_hf">("all");
@@ -308,6 +311,25 @@ export function BizStatePage() {
     return items;
   }, [purposeFilter]);
 
+  /** Lightweight poll: task flags + batch counters only (no profile reload). */
+  const refreshTaskProgress = useCallback(async (id: string) => {
+    const task = await bizStateGetTask(id);
+    setDetail((prev: any) => {
+      if (!prev || prev.id !== id) return prev;
+      return {
+        ...prev,
+        collect_running: Boolean(task.collect_running),
+        last_error: task.last_error,
+        last_collect_started_at: task.last_collect_started_at,
+        last_collect_ended_at: task.last_collect_ended_at,
+        status: task.status,
+      };
+    });
+    const b = await bizStateListBatches(id, 50);
+    setBatches((b.items || []) as BatchRow[]);
+    return task as TaskRow;
+  }, []);
+
   useEffect(() => {
     void (async () => {
       try {
@@ -319,26 +341,55 @@ export function BizStatePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- refresh when purpose filter / refreshTasks changes
   }, [refreshTasks]);
 
-  // While a collect is running, refresh batch counters so cmd/row progress is visible.
+  // Progress poll while any collect is running (list chips and/or open task).
+  // Does NOT block navigation; cleans up on unmount / when nothing is collecting.
   useEffect(() => {
-    if (!taskId || !detail?.collect_running) return;
+    const watching = new Set(Object.keys(collectingIds));
+    if (taskId && detail?.collect_running) watching.add(taskId);
+    if (!watching.size) return;
+
     let cancelled = false;
     const tick = async () => {
+      if (cancelled) return;
       try {
+        const items = await refreshTasks();
         if (cancelled) return;
-        await loadTask(taskId);
+        setCollectingIds((prev) => {
+          let changed = false;
+          const next = { ...prev };
+          const now = Date.now();
+          for (const id of Object.keys(next)) {
+            const row = items.find((x) => x.id === id);
+            if (row?.collect_running) {
+              seenCollectRunningRef.current[id] = true;
+              continue;
+            }
+            const seen = Boolean(seenCollectRunningRef.current[id]);
+            const started = collectStartedAtRef.current[id] || 0;
+            // Clear after we saw running→idle, or enqueue never landed (~20s).
+            if (seen || (started && now - started > 20_000)) {
+              delete next[id];
+              delete seenCollectRunningRef.current[id];
+              delete collectStartedAtRef.current[id];
+              changed = true;
+            }
+          }
+          return changed ? next : prev;
+        });
+        if (taskId && watching.has(taskId)) {
+          await refreshTaskProgress(taskId);
+        }
       } catch {
         /* ignore transient poll errors */
       }
     };
-    const timer = window.setInterval(() => void tick(), 3000);
+    const timer = window.setInterval(() => void tick(), 4000);
     void tick();
     return () => {
       cancelled = true;
       window.clearInterval(timer);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- poll while collect_running
-  }, [taskId, detail?.collect_running]);
+  }, [collectingIds, taskId, detail?.collect_running, refreshTasks, refreshTaskProgress]);
 
   useEffect(() => {
     if (!createOpen) return;
@@ -718,9 +769,13 @@ export function BizStatePage() {
   const setTaskCollecting = (id: string, on: boolean) => {
     setCollectingIds((prev) => {
       if (on) {
+        collectStartedAtRef.current[id] = Date.now();
+        seenCollectRunningRef.current[id] = false;
         if (prev[id]) return prev;
         return { ...prev, [id]: true };
       }
+      delete seenCollectRunningRef.current[id];
+      delete collectStartedAtRef.current[id];
       if (!prev[id]) return prev;
       const next = { ...prev };
       delete next[id];
@@ -735,34 +790,23 @@ export function BizStatePage() {
       showOk(t("bizState.collecting"));
       if (fromModal && taskId === id) {
         setTaskTab("batches");
-      }
-      // Heavy show-interface can take ~20 minutes; poll long enough and refresh batches.
-      const deadline = Date.now() + 32 * 60 * 1000;
-      while (Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 3000));
-        if (fromModal && taskId === id) {
-          try {
-            await loadTask(id);
-            const task = await bizStateGetTask(id);
-            setDetail(task);
-            if (!task.collect_running) break;
-          } catch {
-            break;
-          }
-          continue;
+        try {
+          await refreshTaskProgress(id);
+        } catch {
+          /* progress poll will retry */
         }
-        const items = await refreshTasks();
-        const latest = items.find((x) => x.id === id);
-        if (!latest?.collect_running) break;
+      } else {
+        try {
+          await refreshTasks();
+        } catch {
+          /* list poll will retry */
+        }
       }
-      await refreshTasks();
-      if (fromModal && taskId === id) {
-        await loadTask(id);
-      }
+      // Do NOT block UI for the full collect duration. Progress is driven by
+      // the collectingIds / collect_running effect (cleans up on unmount).
     } catch (e) {
-      showError(formatErr(e));
-    } finally {
       setTaskCollecting(id, false);
+      showError(formatErr(e));
     }
   };
 

@@ -1,4 +1,4 @@
-"""Background scheduler for biz_state collection."""
+"""Background scheduler for biz_state collection (enqueue + claim loop)."""
 
 from __future__ import annotations
 
@@ -6,12 +6,14 @@ import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from typing import Any
 
 from .cli_budget import clamp_cli_workers
 from .config import settings
 from .db import SessionLocal
 from .models import BizStateTask
-from .biz_state.collect_runner import dispatch_collect
+from .biz_state.claim import claim_queued_batches, enqueue_collect, max_concurrent_tasks, open_slots
+from .biz_state.collect_runner import execute_claimed_batch
 
 _log = logging.getLogger("netx.biz_state.scheduler")
 _stop = threading.Event()
@@ -20,6 +22,8 @@ _dispatch_pool: ThreadPoolExecutor | None = None
 _pool_lock = threading.Lock()
 _last_tick_mono: float = 0.0
 _last_purge_mono: float = 0.0
+_in_flight: set[str] = set()
+_in_flight_lock = threading.Lock()
 _PURGE_INTERVAL_SEC = 3600.0
 
 
@@ -57,11 +61,16 @@ def _dispatch_pool_get() -> ThreadPoolExecutor:
     global _dispatch_pool
     with _pool_lock:
         if _dispatch_pool is None:
-            workers = clamp_cli_workers(
-                int(getattr(settings, "biz_state_dispatch_workers", 2) or 2),
+            n = clamp_cli_workers(
+                int(
+                    getattr(settings, "biz_state_worker_collect_threads", None)
+                    or getattr(settings, "biz_state_dispatch_workers", 8)
+                    or 8
+                ),
             )
+            n = max(1, min(n, max_concurrent_tasks()))
             _dispatch_pool = ThreadPoolExecutor(
-                max_workers=workers, thread_name_prefix="biz-dispatch"
+                max_workers=n, thread_name_prefix="biz-collect"
             )
         return _dispatch_pool
 
@@ -75,6 +84,12 @@ def shutdown_biz_state_dispatch_pool(*, wait: bool = False) -> None:
             except TypeError:
                 _dispatch_pool.shutdown(wait=wait)
             _dispatch_pool = None
+    try:
+        from .biz_state.persist_pool import shutdown_persist_pool
+
+        shutdown_persist_pool(wait=wait)
+    except Exception:
+        _log.exception("shutdown persist pool failed")
 
 
 def _sync_cutover_hf_windows() -> None:
@@ -122,17 +137,7 @@ def _sync_cutover_hf_windows() -> None:
         db.close()
 
 
-def try_dispatch_due_tasks() -> int:
-    import time as _time
-
-    global _last_tick_mono
-    _last_tick_mono = _time.monotonic()
-
-    try:
-        _sync_cutover_hf_windows()
-    except Exception:
-        _log.exception("hf window sync tick failed")
-
+def _enqueue_due_tasks() -> int:
     db = SessionLocal()
     try:
         tasks = (
@@ -156,15 +161,108 @@ def try_dispatch_due_tasks() -> int:
     finally:
         db.close()
 
-    if not due_ids:
-        return 0
-    pool = _dispatch_pool_get()
+    n = 0
     for tid in due_ids:
         try:
-            pool.submit(dispatch_collect, tid)
+            r = enqueue_collect(tid, manual=False)
+            if r.get("queued"):
+                n += 1
         except Exception:
-            _log.exception("biz_state submit failed task=%s", tid)
-    return len(due_ids)
+            _log.exception("biz_state enqueue failed task=%s", tid)
+    return n
+
+
+def _run_claimed(job: dict[str, Any]) -> None:
+    bid = str(job.get("batch_id") or "")
+    try:
+        execute_claimed_batch(
+            batch_id=bid,
+            task_id=str(job.get("task_id") or ""),
+            source=str(job.get("source") or ""),
+            ne_id=str(job.get("ne_id") or ""),
+            vendor=str(job.get("vendor") or ""),
+            device_type=str(job.get("device_type") or ""),
+        )
+    finally:
+        with _in_flight_lock:
+            _in_flight.discard(bid)
+
+
+def _claim_and_dispatch() -> int:
+    slots = open_slots()
+    with _in_flight_lock:
+        local_busy = len(_in_flight)
+    # Don't over-submit beyond local pool either.
+    pool = _dispatch_pool_get()
+    local_cap = getattr(pool, "_max_workers", 8) or 8
+    want = min(slots, max(0, int(local_cap) - local_busy))
+    if want <= 0:
+        return 0
+    jobs = claim_queued_batches(want)
+    if not jobs:
+        return 0
+    submitted = 0
+    for job in jobs:
+        bid = str(job.get("batch_id") or "")
+        if not bid:
+            continue
+        with _in_flight_lock:
+            if bid in _in_flight:
+                continue
+            _in_flight.add(bid)
+        try:
+            pool.submit(_run_claimed, job)
+            submitted += 1
+        except Exception:
+            with _in_flight_lock:
+                _in_flight.discard(bid)
+            _log.exception("biz_state submit claimed batch failed batch=%s", bid)
+            # Compensate: claimed batch must not stay running forever.
+            try:
+                from .biz_state.collect_runner import _fail_batch_status, _finish_task
+
+                _fail_batch_status(bid, "RuntimeError: submit_claimed_batch_failed")
+                _finish_task(
+                    str(job.get("task_id") or ""),
+                    error="RuntimeError: submit_claimed_batch_failed",
+                )
+            except Exception:
+                _log.exception("biz_state compensate after submit fail batch=%s", bid)
+    return submitted
+
+
+def try_dispatch_due_tasks() -> int:
+    """Enqueue due tasks, then claim+run up to concurrency ceiling."""
+    import time as _time
+
+    global _last_tick_mono
+    _last_tick_mono = _time.monotonic()
+
+    try:
+        _sync_cutover_hf_windows()
+    except Exception:
+        _log.exception("hf window sync tick failed")
+
+    enq = 0
+    try:
+        enq = _enqueue_due_tasks()
+    except Exception:
+        _log.exception("biz_state enqueue tick failed")
+
+    try:
+        from .biz_state.claim import reclaim_stale_queued
+
+        reclaim_stale_queued(max_age_sec=3600)
+    except Exception:
+        _log.exception("biz_state stale queued reclaim failed")
+
+    claimed = 0
+    try:
+        claimed = _claim_and_dispatch()
+    except Exception:
+        _log.exception("biz_state claim tick failed")
+
+    return enq + claimed
 
 
 def _loop() -> None:
@@ -192,7 +290,10 @@ def start_biz_state_scheduler() -> None:
     _stop.clear()
     _thread = threading.Thread(target=_loop, name="biz-state-scheduler", daemon=True)
     _thread.start()
-    _log.info("biz_state scheduler started")
+    _log.info(
+        "biz_state scheduler started max_concurrent=%s",
+        max_concurrent_tasks(),
+    )
 
 
 def stop_biz_state_scheduler() -> None:
@@ -213,8 +314,15 @@ def biz_state_scheduler_status() -> dict:
     age = None
     if _last_tick_mono:
         age = max(0.0, _time.monotonic() - _last_tick_mono)
+    with _in_flight_lock:
+        inflight = len(_in_flight)
     return {
         "running": alive,
         "enabled": bool(getattr(settings, "biz_state_scheduler_enabled", True)),
         "last_tick_age_sec": age,
+        "in_flight_batches": inflight,
+        "max_concurrent_tasks": max_concurrent_tasks(),
+        "dedicated_workers": bool(
+            getattr(settings, "biz_state_dedicated_workers", True)
+        ),
     }

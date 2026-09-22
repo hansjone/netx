@@ -127,6 +127,14 @@ class Settings(BaseSettings):
     biz_state_persist_every_cmds: int = 8
     # Cap raw_text loaded into Postgres from spool (0 = unlimited).
     biz_state_raw_max_bytes: int = 8 * 1024 * 1024
+    # Dedicated biz_state worker process(es); general worker skips biz_state scheduler.
+    biz_state_dedicated_workers: bool = True
+    # Global ceiling for simultaneous running batches (across all workers).
+    biz_state_max_concurrent_tasks: int = 16
+    biz_state_worker_collect_threads: int = 8
+    biz_state_persist_workers: int = 4
+    # How many biz_state_worker processes start_netx should launch (same host).
+    biz_state_worker_replicas: int = 2
     # Managed NE exec: max CLI commands per request (lab can raise; hard-capped in ne_exec).
     ne_exec_max_commands: int = 5
     # Opt-in: allow per-NE exec_policy (linux_shell/unrestricted). Default off — UI hidden.

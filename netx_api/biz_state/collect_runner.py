@@ -346,6 +346,8 @@ def _finish_task(task_id: str, *, error: str = "") -> None:
         if not task:
             return
         task.collect_running = False
+        if hasattr(task, "collect_queued_at"):
+            task.collect_queued_at = None
         task.last_collect_ended_at = _utcnow()
         task.last_error = str(error or "")[:1020]
         task.updated_at = _utcnow()
@@ -357,70 +359,101 @@ def _finish_task(task_id: str, *, error: str = "") -> None:
 
 
 def dispatch_collect(task_id: str, *, manual: bool = False) -> None:
-    """Claim and run one collect round.
+    """Enqueue a collect round; run inline when this process owns execution.
 
-    Scheduler calls with ``manual=False`` (only when task status is ``running``).
-    Collect-now calls with ``manual=True`` (any status, as long as not already collecting).
+    Dedicated worker mode: only enqueue (claim loop runs the batch).
+    Inline / non-dedicated: enqueue then atomically promote+execute (skip if
+    another worker already claimed the batch).
     """
+    from .claim import enqueue_collect
+
+    result = enqueue_collect(task_id, manual=manual)
+    if not result.get("queued"):
+        return
+    batch_id = str(result.get("batch_id") or "")
+    if not batch_id:
+        return
+    if _should_execute_inline():
+        # Atomic queued→running; if false, scheduler/worker already owns it.
+        if not _try_claim_batch_for_execute(batch_id):
+            return
+        execute_claimed_batch(
+            batch_id=batch_id,
+            task_id=str(result.get("task_id") or task_id),
+            source="",
+            ne_id="",
+            vendor="",
+            device_type="",
+        )
+
+
+def _should_execute_inline() -> bool:
+    """True when this process should run SSH after enqueue (not dedicated workers)."""
+    if bool(getattr(settings, "run_inline_schedulers", True)):
+        return True
+    if not bool(getattr(settings, "biz_state_dedicated_workers", True)):
+        return True
+    return False
+
+
+def _try_claim_batch_for_execute(batch_id: str) -> bool:
+    """Promote queued→running only if still queued. Returns True iff we won the claim."""
     db = SessionLocal()
-    batch_id = ""
     try:
-        task = db.get(BizStateTask, task_id)
-        if not task:
-            return
-        if task.collect_running:
-            return
-        st = str(task.status or "").strip()
-        if manual:
-            # Idle manual trigger: allow scheduled / paused / draft / stopped
-            if st in ("", "deleted"):
-                return
-        else:
-            if st != "running":
-                return
-
-        items = (
-            db.query(BizStateTaskItem)
-            .filter(
-                BizStateTaskItem.task_id == task_id,
-                BizStateTaskItem.enabled.is_(True),
-            )
-            .order_by(BizStateTaskItem.sort_order.asc())
-            .all()
+        batch = (
+            db.query(BizStateBatch)
+            .filter(BizStateBatch.id == batch_id)
+            .with_for_update()
+            .one_or_none()
         )
-        if not items:
-            task.last_error = "no enabled task items"
-            task.updated_at = _utcnow()
-            db.commit()
-            return
-
-        task.collect_running = True
-        task.last_collect_started_at = _utcnow()
-        task.last_error = ""
-        task.updated_at = _utcnow()
-
-        batch = BizStateBatch(
-            id=uuid4().hex,
-            task_id=task.id,
-            source=task.source,
-            ne_id=task.ne_id,
-            ne_name=task.ne_name,
-            vendor=task.vendor,
-            status="running",
-            started_at=_utcnow(),
-        )
-        db.add(batch)
+        if not batch or str(batch.status or "") != "queued":
+            return False
+        batch.status = "running"
+        batch.message = ""
         db.commit()
-        batch_id = batch.id
-        vendor = str(task.vendor or "")
-        device_type = str(task.device_type or "")
-        source = str(task.source or "managed").strip().lower()
-        ne_id = str(task.ne_id or "").strip()
+        return True
+    except Exception:
+        _log.exception("biz_state claim-for-execute failed batch=%s", batch_id)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return False
     finally:
         db.close()
 
-    if not batch_id:
-        return
+
+def _promote_queued_batch(batch_id: str) -> bool:
+    """Backward-compatible alias for atomic claim. """
+    return _try_claim_batch_for_execute(batch_id)
+
+def execute_claimed_batch(
+    *,
+    batch_id: str,
+    task_id: str,
+    source: str = "",
+    ne_id: str = "",
+    vendor: str = "",
+    device_type: str = "",
+) -> None:
+    """Run CLI+persist for an already-claimed (status=running) batch."""
+    db = SessionLocal()
+    try:
+        batch = db.get(BizStateBatch, batch_id)
+        task = db.get(BizStateTask, task_id) if task_id else None
+        if not batch:
+            return
+        if not task_id:
+            task_id = str(batch.task_id or "")
+            task = db.get(BizStateTask, task_id) if task_id else None
+        source = str(source or batch.source or (task.source if task else "") or "managed")
+        ne_id = str(ne_id or batch.ne_id or (task.ne_id if task else "") or "")
+        vendor = str(vendor or batch.vendor or (task.vendor if task else "") or "")
+        device_type = str(device_type or (task.device_type if task else "") or "")
+        if not task_id:
+            return
+    finally:
+        db.close()
 
     error = ""
     try:
@@ -433,12 +466,14 @@ def dispatch_collect(task_id: str, *, manual: bool = False) -> None:
             device_type=device_type,
         )
     except Exception as exc:
-        _log.exception("biz_state collect failed task=%s", task_id)
+        _log.exception("biz_state collect failed task=%s batch=%s", task_id, batch_id)
         error = _format_error(exc)
         try:
             _fail_batch_status(batch_id, error)
         except Exception:
-            _log.exception("biz_state fail-batch after collect error failed batch=%s", batch_id)
+            _log.exception(
+                "biz_state fail-batch after collect error failed batch=%s", batch_id
+            )
     finally:
         _finish_task(task_id, error=error)
 
@@ -486,9 +521,20 @@ def _run_collect_lane(
         any_ok = False
         pending: list[SpooledCommand] = []
         task_id = ""
+        from .persist_pool import get_persist_pool
+
+        persist = get_persist_pool()
+
+        def _submit_pending() -> None:
+            nonlocal pending
+            if not pending:
+                return
+            chunk = list(pending)
+            pending = []
+            persist.submit(batch_id, chunk)
 
         def _queue(item: SpooledCommand, *, records: list[dict[str, Any]] | None = None) -> None:
-            nonlocal cmd_count, total_rows
+            nonlocal cmd_count
             if records is not None and item.persist_kind:
                 item.records_rel_path = write_records(batch_id, item.id, records)
                 item.row_count = len(records)
@@ -499,16 +545,7 @@ def _run_collect_lane(
             pending.append(item)
             cmd_count += 1
             if len(pending) >= flush_every:
-                try:
-                    _c, _r = _flush_spooled_commands(batch_id, pending)
-                    total_rows += int(_r or 0)
-                except Exception:
-                    # Keep collecting to spool; retry flush at lane end.
-                    _log.exception(
-                        "biz_state mid-lane flush failed batch=%s pending=%s",
-                        batch_id,
-                        len(pending),
-                    )
+                _submit_pending()
 
         try:
             try:
@@ -853,22 +890,26 @@ def _run_collect_lane(
                     primary.message = f"parse: {_format_error(exc)}"
                     _queue(primary)
 
-            # Final flush for this lane.
-            if pending:
-                _c, _r = _flush_spooled_commands(batch_id, pending)
-                total_rows += int(_r or 0)
-
+            # Final flush for this lane → persist pool; wait so rows land before return.
+            _submit_pending()
+            if not persist.wait_idle(timeout=max(30.0, float(budget))):
+                _log.warning(
+                    "biz_state persist barrier timed out batch=%s lane=%s",
+                    batch_id,
+                    label,
+                )
+            # Do NOT read batch.row_count here — dual light+heavy lanes would each
+            # see the cumulative DB total and _absorb would double-count.
             return total_rows, cmd_count, any_fail, any_ok
         finally:
-            # Best-effort: persist whatever was collected before timeout/abort.
-            if pending:
-                try:
-                    _c, _r = _flush_spooled_commands(batch_id, pending)
-                    total_rows += int(_r or 0)
-                except Exception:
-                    _log.exception(
-                        "biz_state flush on lane exit failed batch=%s", batch_id
-                    )
+            # Best-effort: enqueue leftover spool before connection teardown.
+            try:
+                _submit_pending()
+                persist.wait_idle(timeout=60.0)
+            except Exception:
+                _log.exception(
+                    "biz_state persist drain on lane exit failed batch=%s", batch_id
+                )
             holder.pop("conn", None)
             close_netmiko_connection(conn)
 
@@ -1097,7 +1138,7 @@ def _run_collect_session(
         task = db.get(BizStateTask, task_id)
         batch = db.get(BizStateBatch, batch_id)
         if not task or not batch:
-            return
+            raise RuntimeError(f"batch_or_task_missing batch={batch_id} task={task_id}")
 
         try:
             if source == "managed":
@@ -1301,6 +1342,21 @@ def _run_collect_session(
         if not _batch_has_progress(batch_id):
             raise RuntimeError("; ".join(lane_errors)[:1020])
         any_fail = True
+
+    # Ensure persist pool drained before terminal status write.
+    try:
+        from .persist_pool import get_persist_pool
+
+        if not get_persist_pool().wait_idle(timeout=120.0):
+            _log.warning(
+                "biz_state persist barrier before finalize timed out batch=%s",
+                batch_id,
+            )
+            any_fail = True
+            if "persist_barrier_timeout" not in lane_errors:
+                lane_errors.append("RuntimeError: persist_barrier_timeout")
+    except Exception:
+        _log.exception("biz_state persist barrier before finalize failed batch=%s", batch_id)
 
     _finalize_batch_status(
         batch_id=batch_id,

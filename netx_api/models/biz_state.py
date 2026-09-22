@@ -42,6 +42,8 @@ class BizStateTask(Base):
     # Legacy column kept for brownfield reads; unused by new purge path
     retention_batches: Mapped[int] = mapped_column(Integer, default=30)
     collect_running: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Set when a collect batch is queued (worker claim picks it up).
+    collect_queued_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_collect_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_collect_ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_error: Mapped[str] = mapped_column(String(1024), default="")
@@ -88,7 +90,7 @@ class BizStateBatch(Base):
     ne_id: Mapped[str] = mapped_column(String(128), default="", index=True)
     ne_name: Mapped[str] = mapped_column(String(256), default="")
     vendor: Mapped[str] = mapped_column(String(64), default="")
-    status: Mapped[str] = mapped_column(String(32), default="running", index=True)  # running|success|partial|failed
+    status: Mapped[str] = mapped_column(String(32), default="running", index=True)  # queued|running|success|partial|failed
     command_count: Mapped[int] = mapped_column(Integer, default=0)
     row_count: Mapped[int] = mapped_column(Integer, default=0)
     message: Mapped[str] = mapped_column(String(1024), default="")

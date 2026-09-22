@@ -55,10 +55,17 @@ def start_device_schedulers() -> None:
     start_lldp_collect_scheduler()
     start_ne_collect_scheduler()
     start_port_traffic_scheduler()
-    start_biz_state_scheduler()
+    # When dedicated biz_state workers are on and we are not the API-inline path,
+    # skip biz_state here so only `python -m netx_api.biz_state_worker` owns it.
+    dedicated = bool(getattr(settings, "biz_state_dedicated_workers", True))
+    inline = bool(getattr(settings, "run_inline_schedulers", True))
+    if dedicated and not inline:
+        _log.info("biz_state scheduler skipped (dedicated workers)")
+    else:
+        start_biz_state_scheduler()
     start_fabric_reconcile_scheduler()
     # Publish status so API /metrics can see collectors when run in a split worker.
-    role = "api_inline" if bool(getattr(settings, "run_inline_schedulers", True)) else "worker"
+    role = "api_inline" if inline else "worker"
     start_scheduler_heartbeat_publisher(role=role)
     _log.info("device schedulers started")
 

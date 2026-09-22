@@ -13,6 +13,7 @@ $runDir = Join-Path $PSScriptRoot ".run"
 $pidFile = Join-Path $runDir "netx.pid"
 $workerPidFile = Join-Path $runDir "worker.pid"
 $webPidFile = Join-Path $runDir "web.pid"
+$bizStateWorkerPidDir = Join-Path $runDir "biz_state_workers"
 
 function Stop-OnePid {
     param([int]$ProcId, [string]$Label)
@@ -62,13 +63,19 @@ function Get-ListenPids {
 function Stop-NetxByCommandLine {
     # Orphan workers often have no worker.pid but still hold worker.out.log.
     $hits = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -match 'netx_api\.(main|worker)' })
+        Where-Object { $_.CommandLine -match 'netx_api\.(main|worker|biz_state_worker)' })
     if ($hits.Count -eq 0) {
-        Write-Host "[INFO] No netx_api.main/worker process by command line"
+        Write-Host "[INFO] No netx_api.main/worker/biz_state_worker process by command line"
         return
     }
     foreach ($p in $hits) {
-        $kind = if ($p.CommandLine -match 'netx_api\.worker') { "worker(cmd)" } else { "api(cmd)" }
+        $kind = if ($p.CommandLine -match 'biz_state_worker') {
+            "biz_state_worker(cmd)"
+        } elseif ($p.CommandLine -match 'netx_api\.worker') {
+            "worker(cmd)"
+        } else {
+            "api(cmd)"
+        }
         Stop-OnePid -ProcId ([int]$p.ProcessId) -Label $kind
     }
 }
@@ -97,6 +104,18 @@ if (Test-Path $workerPidFile) {
     Remove-Item -Path $workerPidFile -Force -ErrorAction SilentlyContinue
 } else {
     Write-Host "[INFO] No worker PID file"
+}
+
+if (Test-Path $bizStateWorkerPidDir) {
+    Get-ChildItem -Path $bizStateWorkerPidDir -Filter "*.pid" -ErrorAction SilentlyContinue | ForEach-Object {
+        $t = (Get-Content -Path $_.FullName -ErrorAction SilentlyContinue | Select-Object -First 1)
+        $id = 0
+        [void][int]::TryParse("$t", [ref]$id)
+        if ($id -gt 0) {
+            Stop-OnePid -ProcId $id -Label "biz_state_worker"
+        }
+        Remove-Item -Path $_.FullName -Force -ErrorAction SilentlyContinue
+    }
 }
 
 if (Test-Path $webPidFile) {

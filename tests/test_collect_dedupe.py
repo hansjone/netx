@@ -53,23 +53,44 @@ class ManualCollectTests(unittest.TestCase):
         dc.assert_called_once_with("t1", manual=True)
 
     def test_dispatch_manual_allows_paused(self) -> None:
-        task = MagicMock()
-        task.collect_running = False
-        task.status = "paused"
-        task.id = "t1"
-        task.source = "managed"
-        task.ne_id = "n1"
-        task.ne_name = "NE"
-        task.vendor = "zte"
-        db = MagicMock()
-        db.get.return_value = task
-        # items query → empty so it returns early after setting error
-        q = MagicMock()
-        q.filter.return_value.order_by.return_value.all.return_value = []
-        db.query.return_value = q
-        with patch("netx_api.biz_state.collect_runner.SessionLocal", return_value=db):
+        with patch(
+            "netx_api.biz_state.claim.enqueue_collect",
+            return_value={
+                "ok": False,
+                "queued": False,
+                "reason": "no_enabled_items",
+                "task_id": "t1",
+            },
+        ) as enq:
             dispatch_collect("t1", manual=True)
-        self.assertEqual(task.last_error, "no enabled task items")
+        enq.assert_called_once_with("t1", manual=True)
+
+    def test_dispatch_inline_skips_if_already_claimed(self) -> None:
+        with (
+            patch(
+                "netx_api.biz_state.claim.enqueue_collect",
+                return_value={
+                    "ok": True,
+                    "queued": True,
+                    "batch_id": "b1",
+                    "task_id": "t1",
+                },
+            ),
+            patch(
+                "netx_api.biz_state.collect_runner._should_execute_inline",
+                return_value=True,
+            ),
+            patch(
+                "netx_api.biz_state.collect_runner._try_claim_batch_for_execute",
+                return_value=False,
+            ) as claim,
+            patch(
+                "netx_api.biz_state.collect_runner.execute_claimed_batch"
+            ) as exe,
+        ):
+            dispatch_collect("t1", manual=True)
+        claim.assert_called_once_with("b1")
+        exe.assert_not_called()
 
 
 if __name__ == "__main__":

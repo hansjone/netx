@@ -34,6 +34,7 @@ $errFile = Join-Path $runDir "netx.err.log"
 $workerPidFile = Join-Path $runDir "worker.pid"
 $workerLogFile = Join-Path $runDir "worker.out.log"
 $workerErrFile = Join-Path $runDir "worker.err.log"
+$bizStateWorkerPidDir = Join-Path $runDir "biz_state_workers"
 $webPidFile = Join-Path $runDir "web.pid"
 $webLogFile = Join-Path $runDir "web.out.log"
 $webErrFile = Join-Path $runDir "web.err.log"
@@ -187,6 +188,41 @@ function Start-NetxWorker {
     }
 }
 
+function Start-BizStateWorkers {
+    if ($InlineSchedulers) {
+        return
+    }
+    $replicas = 2
+    if ($env:NETX_BIZ_STATE_WORKER_REPLICAS) {
+        try { $replicas = [int]$env:NETX_BIZ_STATE_WORKER_REPLICAS } catch { $replicas = 2 }
+    }
+    if ($replicas -lt 1) { $replicas = 1 }
+    if (-not (Test-Path $bizStateWorkerPidDir)) {
+        New-Item -ItemType Directory -Path $bizStateWorkerPidDir | Out-Null
+    }
+    Write-Host "==> Starting biz_state workers (replicas=$replicas)"
+    for ($i = 0; $i -lt $replicas; $i++) {
+        $outLog = Reset-LogFile -Path (Join-Path $bizStateWorkerPidDir "worker$i.out.log")
+        $errLog = Reset-LogFile -Path (Join-Path $bizStateWorkerPidDir "worker$i.err.log")
+        $pidPath = Join-Path $bizStateWorkerPidDir "worker$i.pid"
+        $proc = Start-Process -FilePath $pythonExe `
+            -ArgumentList @("-m", "netx_api.biz_state_worker") `
+            -WorkingDirectory $projectRoot `
+            -WindowStyle Hidden `
+            -RedirectStandardOutput $outLog `
+            -RedirectStandardError $errLog `
+            -PassThru
+        Set-Content -Path $pidPath -Value "$($proc.Id)"
+        Write-Host "biz_state_worker[$i] PID=$($proc.Id)"
+        Start-Sleep -Milliseconds 400
+        if ($proc.HasExited) {
+            Write-Host "[ERR] biz_state_worker[$i] exited immediately." -ForegroundColor Red
+            Show-LogTail -Path $errLog
+            exit 1
+        }
+    }
+}
+
 if ($Background) {
     # Truncate logs so a failed start is not confused with an old run.
     Set-Content -Path $logFile -Value "" -Encoding utf8
@@ -226,6 +262,7 @@ if ($Background) {
     }
     Write-Host "==> netx API ready: http://${BindHost}:${Port}/health" -ForegroundColor Green
     Start-NetxWorker
+    Start-BizStateWorkers
     if ($WithWeb) {
         Write-Host "==> Starting Vite dev server in background"
         $webRoot = Join-Path $projectRoot "web"
@@ -283,5 +320,6 @@ if ($WithWeb) {
 }
 
 Start-NetxWorker
+Start-BizStateWorkers
 Write-Host "==> Starting netx API in foreground"
 & $pythonExe -m netx_api.main

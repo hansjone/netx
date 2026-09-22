@@ -27,7 +27,9 @@ def recover_interrupted_collects_on_startup(db: Session) -> dict[str, Any]:
     task_n = 0
 
     stuck_batches = (
-        db.query(BizStateBatch).filter(BizStateBatch.status == "running").all()
+        db.query(BizStateBatch)
+        .filter(BizStateBatch.status.in_(("running", "queued")))
+        .all()
     )
     for b in stuck_batches:
         b.status = "partial"
@@ -58,6 +60,8 @@ def recover_interrupted_collects_on_startup(db: Session) -> dict[str, Any]:
     )
     for t in stuck_tasks:
         t.collect_running = False
+        if hasattr(t, "collect_queued_at"):
+            t.collect_queued_at = None
         if not t.last_collect_ended_at:
             t.last_collect_ended_at = now
         err = str(t.last_error or "").strip()

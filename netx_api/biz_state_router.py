@@ -245,12 +245,11 @@ def api_collect_now(
         raise HTTPException(status_code=404, detail="task not found")
     if bool(task.collect_running):
         return {"ok": True, "started": False, "reason": "already_collecting", "task_id": task_id}
-    # Allow one-shot even when schedule is enabled (idle only).
-    task.last_collect_ended_at = None
-    db.commit()
     tid = task_id
+    # Enqueue (and run inline only when this process owns collectors).
+    # Dedicated worker mode: BackgroundTasks only creates queued batch; workers claim.
     background_tasks.add_task(lambda: dispatch_collect(tid, manual=True))
-    return {"ok": True, "started": True, "task_id": task_id}
+    return {"ok": True, "started": True, "queued": True, "task_id": task_id}
 
 
 @router.get("/tasks/{task_id}/batches")

@@ -102,6 +102,16 @@ else
   echo "[INFO] No worker PID file: ${WORKER_PID_FILE}"
 fi
 
+BIZ_DIR="${RUN_DIR}/biz_state_workers"
+if [[ -d "${BIZ_DIR}" ]]; then
+  for f in "${BIZ_DIR}"/*.pid; do
+    [[ -f "${f}" ]] || continue
+    BPID="$(head -n 1 "${f}" | tr -d '[:space:]' || true)"
+    kill_pid "${BPID}" "biz_state_worker"
+    rm -f "${f}" || true
+  done
+fi
+
 if [[ -f "${WEB_PID_FILE}" ]]; then
   WEB_PID="$(head -n 1 "${WEB_PID_FILE}" | tr -d '[:space:]' || true)"
   kill_pid "${WEB_PID}" "web"

@@ -88,6 +88,21 @@ class BizStateCollectRecoveryTests(unittest.TestCase):
         assert ok is not None
         self.assertEqual(ok.status, "success")
 
+    def test_queued_batch_also_marked_partial(self) -> None:
+        q = BizStateBatch(
+            id="b_q",
+            task_id="t1",
+            status="queued",
+            message="queued",
+        )
+        self.db.add(q)
+        self.db.commit()
+        out = recover_interrupted_collects_on_startup(self.db)
+        self.assertGreaterEqual(out["batches"], 2)
+        self.db.refresh(q)
+        self.assertEqual(q.status, "partial")
+        self.assertIn("interrupted_by_restart", q.message or "")
+
 
 if __name__ == "__main__":
     unittest.main()

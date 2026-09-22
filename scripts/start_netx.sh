@@ -239,6 +239,21 @@ if [[ "${INLINE_SCHEDULERS}" != "1" ]]; then
   echo "PID        = ${WORKER_PID}"
   echo "Log        = ${WORKER_LOG_FILE}"
   echo "Err        = ${WORKER_ERR_FILE}"
+
+  REPLICAS="${NETX_BIZ_STATE_WORKER_REPLICAS:-2}"
+  if [[ "${REPLICAS}" -lt 1 ]]; then REPLICAS=1; fi
+  BIZ_DIR="${RUN_DIR}/biz_state_workers"
+  mkdir -p "${BIZ_DIR}"
+  echo "==> Starting biz_state workers (replicas=${REPLICAS})"
+  for ((i=0; i<REPLICAS; i++)); do
+    (
+      cd "${ROOT_DIR}"
+      nohup "${PYTHON_CMD}" -m netx_api.biz_state_worker \
+        >"${BIZ_DIR}/worker${i}.out.log" 2>"${BIZ_DIR}/worker${i}.err.log" &
+      echo $! > "${BIZ_DIR}/worker${i}.pid"
+    )
+    echo "biz_state_worker[${i}] PID=$(cat "${BIZ_DIR}/worker${i}.pid")"
+  done
 fi
 
 if [[ "${API_ONLY}" != "1" ]]; then
