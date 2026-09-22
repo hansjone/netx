@@ -122,6 +122,11 @@ class Settings(BaseSettings):
     biz_state_heavy_read_timeout_sec: int = 1500
     biz_state_heavy_run_timeout_cap_sec: int = 2400
     biz_state_heavy_workers: int = 4
+    # Collect spool: CLI/raw + parsed records on disk; flush to DB every N cmds.
+    biz_state_spool_dir: str = "data/biz_state_spool"
+    biz_state_persist_every_cmds: int = 8
+    # Cap raw_text loaded into Postgres from spool (0 = unlimited).
+    biz_state_raw_max_bytes: int = 8 * 1024 * 1024
     # Managed NE exec: max CLI commands per request (lab can raise; hard-capped in ne_exec).
     ne_exec_max_commands: int = 5
     # Opt-in: allow per-NE exec_policy (linux_shell/unrestricted). Default off — UI hidden.

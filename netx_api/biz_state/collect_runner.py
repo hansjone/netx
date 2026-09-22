@@ -10,6 +10,7 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import HTTPException
+from sqlalchemy.exc import DBAPIError, OperationalError
 
 from ..cli_creds import cli_creds_skip_reason
 from ..cli_resolve import resolve_cli_target
@@ -207,6 +208,98 @@ _GENERIC_METRICS = {
 _METRIC_CHUNK = 2000
 
 
+def _emit_task_event(*, task_id: str, message: str, level: str = "error") -> None:
+    """Short-lived session for lane events (no long-held DB during CLI)."""
+    if not task_id or not str(message or "").strip():
+        return
+    db = SessionLocal()
+    try:
+        _append_event(db, task_id=task_id, message=message, level=level)
+        db.commit()
+    except Exception:
+        _log.exception("biz_state emit event failed task=%s", task_id)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+    finally:
+        db.close()
+
+
+def _flush_spooled_commands(
+    batch_id: str,
+    pending: list[Any],
+) -> tuple[int, int]:
+    """Insert SpooledCommand rows (+ metric/lldp) in one transaction. Returns (cmds, rows)."""
+    from .spool import SpooledCommand, raw_max_bytes, read_raw_text, read_records
+
+    if not pending:
+        return 0, 0
+    items: list[SpooledCommand] = list(pending)
+    pending.clear()
+
+    def _write(db) -> tuple[int, int]:
+        batch = db.get(BizStateBatch, batch_id)
+        if not batch:
+            return 0, 0
+        rows_n = 0
+        max_raw = raw_max_bytes()
+        for item in items:
+            raw = ""
+            if item.raw_rel_path:
+                raw = read_raw_text(item.raw_rel_path, max_bytes=max_raw)
+            cmd_row = BizStateBatchCommand(
+                id=item.id,
+                batch_id=batch_id,
+                task_item_id=item.task_item_id,
+                profile_id=item.profile_id,
+                parser_id=item.parser_id,
+                metric_id=item.metric_id,
+                raw_command=str(item.raw_command or "")[:512],
+                params_json=dict(item.params_json or {}),
+                parse_status=item.parse_status,
+                message=str(item.message or "")[:1020],
+                raw_text=raw,
+                row_count=int(item.row_count or 0),
+                created_at=_utcnow(),
+            )
+            db.add(cmd_row)
+            if item.persist_kind == "metric" and item.records_rel_path:
+                records = read_records(item.records_rel_path)
+                mid = str(item.metric_id or "").strip()
+                if mid and records:
+                    n = _persist_metric_rows(
+                        db,
+                        batch=batch,
+                        cmd_row=cmd_row,
+                        metric_id=mid,
+                        records=records,
+                    )
+                    cmd_row.row_count = n
+                    rows_n += n
+            elif item.persist_kind == "lldp" and item.records_rel_path:
+                records = read_records(item.records_rel_path)
+                if records:
+                    n = _persist_lldp_rows(
+                        db, batch=batch, cmd_row=cmd_row, records=records
+                    )
+                    cmd_row.row_count = n
+                    rows_n += n
+        db.commit()
+        return len(items), rows_n
+
+    try:
+        cmds, rows = _run_db_with_reconnect(_write, label="biz_state_flush_spool")
+        if cmds or rows:
+            _bump_batch_progress(batch_id, add_cmds=cmds, add_rows=rows)
+        return int(cmds or 0), int(rows or 0)
+    except Exception:
+        _log.exception("biz_state flush spool failed batch=%s n=%s", batch_id, len(items))
+        # Put back so a later flush / finalize can retry.
+        pending.extend(items)
+        raise
+
+
 def _persist_metric_rows(
     db,
     *,
@@ -342,16 +435,10 @@ def dispatch_collect(task_id: str, *, manual: bool = False) -> None:
     except Exception as exc:
         _log.exception("biz_state collect failed task=%s", task_id)
         error = _format_error(exc)
-        db = SessionLocal()
         try:
-            batch = db.get(BizStateBatch, batch_id)
-            if batch:
-                batch.status = "failed"
-                batch.message = error
-                batch.ended_at = _utcnow()
-                db.commit()
-        finally:
-            db.close()
+            _fail_batch_status(batch_id, error)
+        except Exception:
+            _log.exception("biz_state fail-batch after collect error failed batch=%s", batch_id)
     finally:
         _finish_task(task_id, error=error)
 
@@ -372,12 +459,21 @@ def _run_collect_lane(
     cmd_locks: dict[str, Any] | None = None,
     aux_persisted: set[tuple[str, str]] | None = None,
 ) -> tuple[int, int, bool, bool]:
-    """Run one SSH lane (own connection + CollectSession + timeout budget)."""
+    """Run one SSH lane: collect+parse to spool, flush to DB in batches."""
     if not work:
         return 0, 0, False, False
 
+    from .spool import (
+        SpooledCommand,
+        persist_every_cmds,
+        write_meta,
+        write_raw_text,
+        write_records,
+    )
+
     budget = min(int(cap), int(per_cmd) * max(1, len(work)) + 90)
     holder: dict[str, Any] = {}
+    flush_every = persist_every_cmds()
 
     def _session() -> tuple[int, int, bool, bool]:
         from ..ne_netmiko import drain_read_channel
@@ -388,6 +484,32 @@ def _run_collect_lane(
         cmd_count = 0
         any_fail = False
         any_ok = False
+        pending: list[SpooledCommand] = []
+        task_id = ""
+
+        def _queue(item: SpooledCommand, *, records: list[dict[str, Any]] | None = None) -> None:
+            nonlocal cmd_count, total_rows
+            if records is not None and item.persist_kind:
+                item.records_rel_path = write_records(batch_id, item.id, records)
+                item.row_count = len(records)
+            try:
+                write_meta(batch_id, item.id, item.to_meta())
+            except Exception:
+                _log.exception("biz_state write meta failed cmd=%s", item.id)
+            pending.append(item)
+            cmd_count += 1
+            if len(pending) >= flush_every:
+                try:
+                    _c, _r = _flush_spooled_commands(batch_id, pending)
+                    total_rows += int(_r or 0)
+                except Exception:
+                    # Keep collecting to spool; retry flush at lane end.
+                    _log.exception(
+                        "biz_state mid-lane flush failed batch=%s pending=%s",
+                        batch_id,
+                        len(pending),
+                    )
+
         try:
             try:
                 disable_target_paging(
@@ -402,7 +524,16 @@ def _run_collect_lane(
             except Exception:
                 pass
 
+            # Lightweight lookup for task_id / batch existence (no long hold).
             sdb = SessionLocal()
+            try:
+                batch_row = sdb.get(BizStateBatch, batch_id)
+                if not batch_row:
+                    return 0, 0, True, False
+                task_id = str(batch_row.task_id or "")
+            finally:
+                sdb.close()
+
             session = CollectSession(
                 conn,
                 vendor=vendor_eff,
@@ -413,329 +544,331 @@ def _run_collect_lane(
                 cache_lock=cache_lock,
                 cmd_locks=cmd_locks,
             )
-            try:
-                batch_row = sdb.get(BizStateBatch, batch_id)
-                if not batch_row:
-                    return 0, 0, True, False
 
-                # Resolve expand_all → concrete per-VRF commands via discover profile.
-                flat_work: list[WorkItem] = []
-                persisted = aux_persisted if aux_persisted is not None else set()
-                for concrete, params, profile_id, item_id, mode in work:
-                    if mode != "expand_all":
-                        flat_work.append((concrete, params, profile_id, item_id, mode))
-                        continue
-                    profile = get_profile(profile_id)
-                    if profile is None or not profile.placeholders:
-                        any_fail = True
-                        _append_event(
-                            sdb,
-                            task_id=str(batch_row.task_id or ""),
-                            message=f"expand_all missing profile {profile_id}",
-                            level="error",
-                        )
-                        continue
-                    ph = profile.placeholders[0]
-                    disc = get_profile(str(ph.discover_profile_id or "").strip())
-                    if disc is None:
-                        any_fail = True
-                        _append_event(
-                            sdb,
-                            task_id=str(batch_row.task_id or ""),
-                            message=f"expand_all discover profile missing for {profile_id}",
-                            level="error",
-                        )
-                        continue
-                    disc_cmd = normalize_command(disc.command_template)
-                    entry, _ = session.fetch_and_parse(
-                        disc_cmd,
-                        parser_id=disc.parser_id,
-                        textfsm_command=disc.textfsm_command or disc_cmd,
-                        params={},
+            # Resolve expand_all → concrete per-VRF commands via discover profile.
+            flat_work: list[WorkItem] = []
+            persisted = aux_persisted if aux_persisted is not None else set()
+            for concrete, params, profile_id, item_id, mode in work:
+                if mode != "expand_all":
+                    flat_work.append((concrete, params, profile_id, item_id, mode))
+                    continue
+                profile = get_profile(profile_id)
+                if profile is None or not profile.placeholders:
+                    any_fail = True
+                    _emit_task_event(
+                        task_id=task_id,
+                        message=f"expand_all missing profile {profile_id}",
+                        level="error",
                     )
-                    if not entry.ok:
-                        any_fail = True
-                        _append_event(
-                            sdb,
-                            task_id=str(batch_row.task_id or ""),
-                            message=f"expand_all discover failed: {entry.error}",
-                            level="error",
-                        )
-                        continue
-                    try:
-                        pairs = expand_bindings_from_discover_records(
-                            profile=profile,
-                            records=entry.records,
-                        )
-                    except ValueError as exc:
-                        any_fail = True
-                        _append_event(
-                            sdb,
-                            task_id=str(batch_row.task_id or ""),
-                            message=str(exc),
-                            level="error",
-                        )
-                        continue
-                    for cmd, p in pairs:
-                        flat_work.append((cmd, p, profile_id, item_id, "normal"))
+                    continue
+                ph = profile.placeholders[0]
+                disc = get_profile(str(ph.discover_profile_id or "").strip())
+                if disc is None:
+                    any_fail = True
+                    _emit_task_event(
+                        task_id=task_id,
+                        message=f"expand_all discover profile missing for {profile_id}",
+                        level="error",
+                    )
+                    continue
+                disc_cmd = normalize_command(disc.command_template)
+                entry, _ = session.fetch_and_parse(
+                    disc_cmd,
+                    parser_id=disc.parser_id,
+                    textfsm_command=disc.textfsm_command or disc_cmd,
+                    params={},
+                )
+                if not entry.ok:
+                    any_fail = True
+                    _emit_task_event(
+                        task_id=task_id,
+                        message=f"expand_all discover failed: {entry.error}",
+                        level="error",
+                    )
+                    continue
+                try:
+                    pairs = expand_bindings_from_discover_records(
+                        profile=profile,
+                        records=entry.records,
+                    )
+                except ValueError as exc:
+                    any_fail = True
+                    _emit_task_event(task_id=task_id, message=str(exc), level="error")
+                    continue
+                for cmd, p in pairs:
+                    flat_work.append((cmd, p, profile_id, item_id, "normal"))
 
-                for concrete, params, profile_id, item_id, mode in flat_work:
-                    if holder.get("timed_out"):
-                        raise TimeoutError(f"{label}_aborted")
-                    cmd_count += 1
-                    # Persist "running" before CLI so UI shows cmd progress during long reads.
-                    cmd_row = BizStateBatchCommand(
-                        id=uuid4().hex,
+            for concrete, params, profile_id, item_id, mode in flat_work:
+                if holder.get("timed_out"):
+                    raise TimeoutError(f"{label}_aborted")
+
+                cmd_id = uuid4().hex
+                raw_text = ""
+                cache_hit_primary = False
+                try:
+                    cached = session.get_cached(concrete)
+                    if cached is not None and str(cached.raw or "").strip():
+                        raw_text = str(cached.raw or "")
+                        cache_hit_primary = True
+                    else:
+                        raw_text = str(
+                            send_show_command(conn, concrete, read_timeout=per_cmd) or ""
+                        )
+                except Exception as exc:
+                    any_fail = True
+                    sp = SpooledCommand(
+                        id=cmd_id,
                         batch_id=batch_id,
                         task_item_id=item_id,
                         profile_id=profile_id,
                         raw_command=concrete[:512],
                         params_json=dict(params or {}),
-                        parse_status="running",
-                        message="collecting",
-                        created_at=_utcnow(),
+                        parse_status="failed",
+                        message=_format_error(exc),
                     )
-                    sdb.add(cmd_row)
-                    sdb.commit()
-                    _bump_batch_progress(batch_id, add_cmds=1)
+                    _queue(sp)
+                    continue
 
-                    cache_hit_primary = False
-                    try:
-                        cached = session.get_cached(concrete)
-                        if cached is not None and str(cached.raw or "").strip():
-                            cmd_row.raw_text = str(cached.raw or "")
-                            cache_hit_primary = True
-                        else:
-                            raw = send_show_command(conn, concrete, read_timeout=per_cmd)
-                            cmd_row.raw_text = str(raw or "")
-                    except Exception as exc:
-                        any_fail = True
-                        cmd_row.parse_status = "failed"
-                        cmd_row.message = _format_error(exc)
-                        sdb.add(cmd_row)
-                        sdb.commit()
-                        continue
+                raw_rel = ""
+                try:
+                    raw_rel = write_raw_text(batch_id, cmd_id, raw_text)
+                except Exception:
+                    _log.exception("biz_state spool raw failed cmd=%s", cmd_id)
 
-                    if mode == "custom":
-                        cmd_row.parse_status = "skipped_custom"
-                        cmd_row.message = "custom_raw"
-                        sdb.add(cmd_row)
-                        sdb.commit()
-                        any_ok = True
-                        continue
-
-                    hit = match_command(vendor_key=vendor_key, command=concrete)
-                    if not hit:
-                        any_fail = True
-                        cmd_row.parse_status = "unmatched"
-                        cmd_row.message = "no profile matched concrete command"
-                        sdb.add(cmd_row)
-                        sdb.commit()
-                        continue
-
-                    cmd_row.profile_id = hit.profile.profile_id
-                    cmd_row.parser_id = hit.profile.parser_id
-                    cmd_row.metric_id = hit.profile.metric_id
-                    merged = {**params, **hit.params}
-                    cmd_row.params_json = merged
-
-                    if not get_parser(hit.profile.parser_id):
-                        any_fail = True
-                        cmd_row.parse_status = "failed"
-                        cmd_row.message = f"unknown parser {hit.profile.parser_id}"
-                        sdb.add(cmd_row)
-                        sdb.commit()
-                        continue
-
-                    if cache_hit_primary:
-                        pass
-                    else:
-                        session.remember(
-                            concrete,
-                            raw=cmd_row.raw_text or "",
-                            ok=True,
-                            cmd_row_id=cmd_row.id,
+                if mode == "custom":
+                    any_ok = True
+                    _queue(
+                        SpooledCommand(
+                            id=cmd_id,
+                            batch_id=batch_id,
+                            task_item_id=item_id,
+                            profile_id=profile_id,
+                            raw_command=concrete[:512],
+                            params_json=dict(params or {}),
+                            parse_status="skipped_custom",
+                            message="custom_raw",
+                            raw_rel_path=raw_rel,
                         )
+                    )
+                    continue
 
-                    resolved_aux = []
-                    aux_results: dict[str, Any] = {}
-                    for aux in list(hit.profile.aux_commands or []):
-                        try:
-                            ra = resolve_aux_command(aux, params=merged)
-                        except ValueError as exc:
-                            aux_row = BizStateBatchCommand(
+                hit = match_command(vendor_key=vendor_key, command=concrete)
+                if not hit:
+                    any_fail = True
+                    _queue(
+                        SpooledCommand(
+                            id=cmd_id,
+                            batch_id=batch_id,
+                            task_item_id=item_id,
+                            profile_id=profile_id,
+                            raw_command=concrete[:512],
+                            params_json=dict(params or {}),
+                            parse_status="unmatched",
+                            message="no profile matched concrete command",
+                            raw_rel_path=raw_rel,
+                        )
+                    )
+                    continue
+
+                merged = {**params, **hit.params}
+                if not get_parser(hit.profile.parser_id):
+                    any_fail = True
+                    _queue(
+                        SpooledCommand(
+                            id=cmd_id,
+                            batch_id=batch_id,
+                            task_item_id=item_id,
+                            profile_id=hit.profile.profile_id,
+                            parser_id=hit.profile.parser_id,
+                            metric_id=hit.profile.metric_id,
+                            raw_command=concrete[:512],
+                            params_json=merged,
+                            parse_status="failed",
+                            message=f"unknown parser {hit.profile.parser_id}",
+                            raw_rel_path=raw_rel,
+                        )
+                    )
+                    continue
+
+                if not cache_hit_primary:
+                    session.remember(
+                        concrete,
+                        raw=raw_text,
+                        ok=True,
+                        cmd_row_id=cmd_id,
+                    )
+
+                resolved_aux = []
+                aux_results: dict[str, Any] = {}
+                for aux in list(hit.profile.aux_commands or []):
+                    try:
+                        ra = resolve_aux_command(aux, params=merged)
+                    except ValueError as exc:
+                        _queue(
+                            SpooledCommand(
                                 id=uuid4().hex,
                                 batch_id=batch_id,
                                 task_item_id=item_id,
                                 profile_id=str(aux.profile_id or "")[:128],
                                 raw_command=str(aux.key or "")[:512],
-                                params_json={},
                                 parse_status="aux_failed",
-                                message=f"aux_for={cmd_row.id};resolve:{exc}"[:1020],
-                                created_at=_utcnow(),
+                                message=f"aux_for={cmd_id};resolve:{exc}"[:1020],
                             )
-                            cmd_count += 1
-                            sdb.add(aux_row)
-                            sdb.commit()
-                            _bump_batch_progress(batch_id, add_cmds=1)
-                            continue
-                        resolved_aux.append(ra)
-                        aux_row = BizStateBatchCommand(
-                            id=uuid4().hex,
-                            batch_id=batch_id,
-                            task_item_id=item_id,
-                            profile_id=ra.profile_id,
-                            parser_id=ra.parser_id,
-                            metric_id="",
-                            raw_command=ra.command[:512],
-                            params_json={},
-                            parse_status="running",
-                            message=f"aux_for={cmd_row.id};collecting"[:1020],
-                            created_at=_utcnow(),
                         )
-                        cmd_count += 1
-                        sdb.add(aux_row)
-                        sdb.commit()
-                        _bump_batch_progress(batch_id, add_cmds=1)
-                        entry, cache_hit = session.fetch_and_parse(
-                            ra.command,
-                            parser_id=ra.parser_id,
-                            textfsm_command=ra.textfsm_command,
-                            params=merged,
-                            cmd_row_id=aux_row.id,
-                        )
-                        aux_results[ra.key] = entry
-                        aux_mid = str(getattr(ra.profile, "metric_id", "") or "").strip()
-                        if aux_mid:
-                            aux_row.metric_id = aux_mid
-                        if cache_hit:
-                            aux_row.parse_status = "aux_cached"
-                            aux_row.message = (
-                                f"aux_for={cmd_row.id};cache_hit;src={entry.cmd_row_id}"
-                            )[:1020]
-                            aux_row.raw_text = ""
-                            aux_row.row_count = len(entry.records or [])
-                        elif not entry.ok:
-                            aux_row.parse_status = "aux_failed"
-                            aux_row.message = (
-                                f"aux_for={cmd_row.id};{entry.error}"
-                            )[:1020]
-                            aux_row.raw_text = entry.raw
-                        else:
-                            aux_row.parse_status = "aux"
-                            aux_row.message = f"aux_for={cmd_row.id}"[:1020]
-                            aux_row.raw_text = entry.raw
-                            aux_row.row_count = len(entry.records or [])
-                            entry.cmd_row_id = aux_row.id
-                        # Persist aux metrics once per CLI (config_vrf / FIB shared across VRFs).
-                        if (
-                            entry.ok
-                            and entry.records
-                            and aux_mid in _GENERIC_METRICS
-                        ):
-                            persist_key = (normalize_command(ra.command), aux_mid)
-                            do_persist = False
-                            if cache_lock is not None:
-                                with cache_lock:
-                                    if persist_key not in persisted:
-                                        persisted.add(persist_key)
-                                        do_persist = True
-                            elif persist_key not in persisted:
-                                persisted.add(persist_key)
-                                do_persist = True
-                            if do_persist:
-                                n_aux = _persist_metric_rows(
-                                    sdb,
-                                    batch=batch_row,
-                                    cmd_row=aux_row,
-                                    metric_id=aux_mid,
-                                    records=entry.records,
-                                )
-                                aux_row.row_count = n_aux
-                                total_rows += n_aux
-                                if n_aux:
-                                    _bump_batch_progress(batch_id, add_rows=n_aux)
-                        sdb.add(aux_row)
-                        sdb.commit()
-
-                    bundle = build_parse_bundle(
-                        primary_raw=cmd_row.raw_text or "",
-                        primary_parser_id=hit.profile.parser_id,
-                        aux_results=aux_results,
-                        resolved_aux=resolved_aux,
-                    )
-                    try:
-                        records, fsm_tables, rule_keys = run_primary_with_bundle(
-                            hit.profile.parser_id,
-                            bundle=bundle,
-                            vendor=vendor_eff,
-                            device_type=device_type_eff,
-                            command=hit.profile.textfsm_command or concrete,
-                            textfsm_command=hit.profile.textfsm_command or "",
-                            params=merged,
-                            enrich_joins=list(hit.profile.enrich_joins or []),
-                        )
-                        session.remember(
-                            concrete,
-                            raw=cmd_row.raw_text or "",
-                            fsm_tables=fsm_tables,
-                            records=records,
-                            ok=True,
-                            cmd_row_id=cmd_row.id,
-                        )
-                        hints = []
-                        if rule_keys:
-                            nonempty = [k for k in rule_keys if fsm_tables.get(k)]
-                            hints.append(
-                                f"fsm_keys={','.join(rule_keys)};hit={','.join(nonempty)}"
-                            )
-                        if bundle.aux_records:
-                            hints.append(
-                                "aux="
-                                + ",".join(
-                                    f"{k}:{len(v)}" for k, v in bundle.aux_records.items()
-                                )
-                            )
-                        if hit.profile.enrich_joins:
-                            hints.append(
-                                "enrich="
-                                + ",".join(j.from_aux for j in hit.profile.enrich_joins)
-                            )
-                        if hints:
-                            cmd_row.message = ";".join(hints)[:1020]
-                    except Exception as exc:
-                        any_fail = True
-                        cmd_row.parse_status = "failed"
-                        cmd_row.message = f"parse: {_format_error(exc)}"
-                        sdb.add(cmd_row)
-                        sdb.commit()
                         continue
+                    resolved_aux.append(ra)
+                    aux_id = uuid4().hex
+                    entry, cache_hit = session.fetch_and_parse(
+                        ra.command,
+                        parser_id=ra.parser_id,
+                        textfsm_command=ra.textfsm_command,
+                        params=merged,
+                        cmd_row_id=aux_id,
+                    )
+                    aux_results[ra.key] = entry
+                    aux_mid = str(getattr(ra.profile, "metric_id", "") or "").strip()
+                    aux_sp = SpooledCommand(
+                        id=aux_id,
+                        batch_id=batch_id,
+                        task_item_id=item_id,
+                        profile_id=ra.profile_id,
+                        parser_id=ra.parser_id,
+                        metric_id=aux_mid,
+                        raw_command=ra.command[:512],
+                        params_json={},
+                    )
+                    if cache_hit:
+                        aux_sp.parse_status = "aux_cached"
+                        aux_sp.message = (
+                            f"aux_for={cmd_id};cache_hit;src={entry.cmd_row_id}"
+                        )[:1020]
+                        aux_sp.row_count = len(entry.records or [])
+                    elif not entry.ok:
+                        aux_sp.parse_status = "aux_failed"
+                        aux_sp.message = f"aux_for={cmd_id};{entry.error}"[:1020]
+                        try:
+                            aux_sp.raw_rel_path = write_raw_text(
+                                batch_id, aux_id, entry.raw or ""
+                            )
+                        except Exception:
+                            pass
+                    else:
+                        aux_sp.parse_status = "aux"
+                        aux_sp.message = f"aux_for={cmd_id}"[:1020]
+                        try:
+                            aux_sp.raw_rel_path = write_raw_text(
+                                batch_id, aux_id, entry.raw or ""
+                            )
+                        except Exception:
+                            pass
+                        aux_sp.row_count = len(entry.records or [])
+                        entry.cmd_row_id = aux_id
 
-                    n = 0
-                    if hit.profile.metric_id == "lldp_neighbor":
-                        n = _persist_lldp_rows(
-                            sdb, batch=batch_row, cmd_row=cmd_row, records=records
+                    persist_recs: list[dict[str, Any]] | None = None
+                    if entry.ok and entry.records and aux_mid in _GENERIC_METRICS:
+                        persist_key = (normalize_command(ra.command), aux_mid)
+                        do_persist = False
+                        if cache_lock is not None:
+                            with cache_lock:
+                                if persist_key not in persisted:
+                                    persisted.add(persist_key)
+                                    do_persist = True
+                        elif persist_key not in persisted:
+                            persisted.add(persist_key)
+                            do_persist = True
+                        if do_persist:
+                            aux_sp.persist_kind = "metric"
+                            persist_recs = list(entry.records)
+                    _queue(aux_sp, records=persist_recs)
+
+                bundle = build_parse_bundle(
+                    primary_raw=raw_text,
+                    primary_parser_id=hit.profile.parser_id,
+                    aux_results=aux_results,
+                    resolved_aux=resolved_aux,
+                )
+                primary = SpooledCommand(
+                    id=cmd_id,
+                    batch_id=batch_id,
+                    task_item_id=item_id,
+                    profile_id=hit.profile.profile_id,
+                    parser_id=hit.profile.parser_id,
+                    metric_id=hit.profile.metric_id,
+                    raw_command=concrete[:512],
+                    params_json=merged,
+                    raw_rel_path=raw_rel,
+                )
+                try:
+                    records, fsm_tables, rule_keys = run_primary_with_bundle(
+                        hit.profile.parser_id,
+                        bundle=bundle,
+                        vendor=vendor_eff,
+                        device_type=device_type_eff,
+                        command=hit.profile.textfsm_command or concrete,
+                        textfsm_command=hit.profile.textfsm_command or "",
+                        params=merged,
+                        enrich_joins=list(hit.profile.enrich_joins or []),
+                    )
+                    session.remember(
+                        concrete,
+                        raw=raw_text,
+                        fsm_tables=fsm_tables,
+                        records=records,
+                        ok=True,
+                        cmd_row_id=cmd_id,
+                    )
+                    hints = []
+                    if rule_keys:
+                        nonempty = [k for k in rule_keys if fsm_tables.get(k)]
+                        hints.append(
+                            f"fsm_keys={','.join(rule_keys)};hit={','.join(nonempty)}"
                         )
-                    elif hit.profile.metric_id in _GENERIC_METRICS:
-                        n = _persist_metric_rows(
-                            sdb,
-                            batch=batch_row,
-                            cmd_row=cmd_row,
-                            metric_id=hit.profile.metric_id,
-                            records=records,
+                    if bundle.aux_records:
+                        hints.append(
+                            "aux="
+                            + ",".join(
+                                f"{k}:{len(v)}" for k, v in bundle.aux_records.items()
+                            )
                         )
-                    cmd_row.row_count = n
-                    cmd_row.parse_status = "ok"
-                    total_rows += n
+                    if hit.profile.enrich_joins:
+                        hints.append(
+                            "enrich="
+                            + ",".join(j.from_aux for j in hit.profile.enrich_joins)
+                        )
+                    if hints:
+                        primary.message = ";".join(hints)[:1020]
+                    primary.parse_status = "ok"
                     any_ok = True
-                    sdb.add(cmd_row)
-                    sdb.commit()
-                    if n:
-                        _bump_batch_progress(batch_id, add_rows=n)
-            finally:
-                sdb.close()
+                    persist_recs = None
+                    if hit.profile.metric_id == "lldp_neighbor":
+                        primary.persist_kind = "lldp"
+                        persist_recs = list(records or [])
+                    elif hit.profile.metric_id in _GENERIC_METRICS:
+                        primary.persist_kind = "metric"
+                        persist_recs = list(records or [])
+                    _queue(primary, records=persist_recs)
+                except Exception as exc:
+                    any_fail = True
+                    primary.parse_status = "failed"
+                    primary.message = f"parse: {_format_error(exc)}"
+                    _queue(primary)
+
+            # Final flush for this lane.
+            if pending:
+                _c, _r = _flush_spooled_commands(batch_id, pending)
+                total_rows += int(_r or 0)
+
             return total_rows, cmd_count, any_fail, any_ok
         finally:
+            # Best-effort: persist whatever was collected before timeout/abort.
+            if pending:
+                try:
+                    _c, _r = _flush_spooled_commands(batch_id, pending)
+                    total_rows += int(_r or 0)
+                except Exception:
+                    _log.exception(
+                        "biz_state flush on lane exit failed batch=%s", batch_id
+                    )
             holder.pop("conn", None)
             close_netmiko_connection(conn)
 
@@ -803,6 +936,138 @@ def _bump_batch_progress(batch_id: str, *, add_cmds: int = 0, add_rows: int = 0)
         db.close()
 
 
+def _is_stale_db_connection(exc: BaseException) -> bool:
+    """True when PG/middleware closed an idle connection mid-collect."""
+    if isinstance(exc, OperationalError):
+        return True
+    if isinstance(exc, DBAPIError) and bool(getattr(exc, "connection_invalidated", False)):
+        return True
+    msg = str(exc or "").lower()
+    return (
+        "server closed the connection" in msg
+        or "connection not open" in msg
+        or "connection already closed" in msg
+        or "ssl connection has been closed" in msg
+    )
+
+
+def _invalidate_session(db) -> None:
+    try:
+        conn = db.connection()
+        conn.invalidate()
+    except Exception:
+        pass
+    try:
+        db.close()
+    except Exception:
+        pass
+
+
+def _run_db_with_reconnect(fn, *, label: str = "biz_state_db"):
+    """Run ``fn(db)`` on a fresh Session; retry once after disconnect/OperationalError."""
+    last: BaseException | None = None
+    for attempt in range(2):
+        db = SessionLocal()
+        try:
+            result = fn(db)
+            try:
+                db.close()
+            except Exception:
+                pass
+            return result
+        except Exception as exc:
+            last = exc
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            _invalidate_session(db)
+            if attempt == 0 and _is_stale_db_connection(exc):
+                _log.warning("%s reconnect after stale connection: %s", label, exc)
+                continue
+            raise
+    assert last is not None
+    raise last
+
+
+def _batch_has_progress(batch_id: str) -> bool:
+    """Whether progressive bumps already persisted cmds/rows for this batch."""
+
+    def _read(db) -> bool:
+        live = db.get(BizStateBatch, batch_id)
+        if not live:
+            return False
+        return int(live.command_count or 0) > 0 or int(live.row_count or 0) > 0
+
+    return bool(_run_db_with_reconnect(_read, label="biz_state_batch_progress"))
+
+
+def _finalize_batch_status(
+    *,
+    batch_id: str,
+    task_id: str,
+    cmd_count: int,
+    total_rows: int,
+    any_fail: bool,
+    any_ok: bool,
+    lane_errors: list[str],
+) -> str:
+    """Write terminal batch status on a fresh Session (retry once on disconnect)."""
+
+    def _write(db) -> str:
+        batch = db.get(BizStateBatch, batch_id)
+        if not batch:
+            return ""
+        # Prefer progressive counters (survive lane timeout) over in-memory lane totals.
+        batch.command_count = max(int(batch.command_count or 0), int(cmd_count or 0))
+        batch.row_count = max(int(batch.row_count or 0), int(total_rows or 0))
+        batch.ended_at = _utcnow()
+        if any_fail and any_ok:
+            batch.status = "partial"
+            if lane_errors:
+                batch.message = "; ".join(lane_errors)[:1020]
+        elif any_fail and not any_ok:
+            batch.status = "failed"
+            batch.message = (
+                "; ".join(lane_errors)[:1020] if lane_errors else "all commands failed"
+            )
+        else:
+            batch.status = "success"
+            batch.message = ""
+        status = str(batch.status or "")
+        db.commit()
+        if status in ("success", "partial"):
+            try:
+                from .compare_service import try_auto_compare_for_task
+
+                try_auto_compare_for_task(db, task_id, batch_id)
+            except Exception:
+                _log.exception("biz_state auto compare hook failed task=%s", task_id)
+        return status
+
+    return str(
+        _run_db_with_reconnect(_write, label="biz_state_finalize") or ""
+    )
+
+
+def _fail_batch_status(batch_id: str, error: str) -> None:
+    """Mark batch failed on a fresh Session (retry once on disconnect)."""
+    msg = str(error or "")[:1020]
+
+    def _write(db) -> None:
+        batch = db.get(BizStateBatch, batch_id)
+        if not batch:
+            return
+        if str(batch.status or "") != "running":
+            return
+        batch.status = "failed"
+        batch.message = msg
+        batch.ended_at = _utcnow()
+        db.commit()
+
+    _run_db_with_reconnect(_write, label="biz_state_fail_batch")
+
+
 def _run_collect_session(
     *,
     task_id: str,
@@ -816,6 +1081,16 @@ def _run_collect_session(
     light_cap = int(settings.ne_collect_run_timeout_cap_sec or 600)
     heavy_per = int(getattr(settings, "biz_state_heavy_read_timeout_sec", 300) or 300)
     heavy_cap = int(getattr(settings, "biz_state_heavy_run_timeout_cap_sec", 900) or 900)
+
+    # Phase 1: resolve target + build work list, then release the DB connection.
+    # Holding one Session across heavy CLI (up to ~2400s) lets PG/middleware close
+    # the idle connection; finalize would then hit OperationalError.
+    creds: dict[str, Any]
+    vendor_eff: str
+    device_type_eff: str
+    vendor_key: str
+    light_work: list[WorkItem]
+    heavy_work: list[WorkItem]
 
     db = SessionLocal()
     try:
@@ -915,136 +1190,135 @@ def _run_collect_session(
             raise RuntimeError("no commands to run")
 
         light_work, heavy_work = partition_work(work)
-        shared_cache: dict[str, Any] = {}
-        cache_lock = threading.RLock()
-        cmd_locks: dict[str, Any] = {}
-        aux_persisted: set[tuple[str, str]] = set()
-        lane_kwargs = dict(
-            batch_id=batch_id,
-            creds=creds,
-            vendor_eff=vendor_eff,
-            device_type_eff=device_type_eff,
-            vendor_key=vendor_key,
-            shared_cache=shared_cache,
-            cache_lock=cache_lock,
-            cmd_locks=cmd_locks,
-            aux_persisted=aux_persisted,
-        )
-
-        def _run_light() -> tuple[int, int, bool, bool]:
-            return _run_collect_lane(
-                work=light_work,
-                per_cmd=light_per,
-                cap=light_cap,
-                label="biz_state_light",
-                **lane_kwargs,
-            )
-
-        def _run_heavy() -> tuple[int, int, bool, bool]:
-            return _run_collect_lane(
-                work=heavy_work,
-                per_cmd=heavy_per,
-                cap=heavy_cap,
-                label="biz_state_heavy",
-                **lane_kwargs,
-            )
-
-        total_rows = 0
-        cmd_count = 0
-        any_fail = False
-        any_ok = False
-        lane_errors: list[str] = []
-
-        if light_work and heavy_work:
-            heavy_fut = _heavy_cli_pool().submit(_run_heavy)
-            light_res: tuple[int, int, bool, bool] | BaseException
-            try:
-                light_res = _run_light()
-            except Exception as exc:
-                light_res = exc
-            heavy_res: tuple[int, int, bool, bool] | BaseException
-            try:
-                heavy_res = heavy_fut.result()
-            except Exception as exc:
-                heavy_res = exc
-            total_rows, cmd_count, any_fail, any_ok = _absorb_lane_result(
-                light_res,
-                total_rows=total_rows,
-                cmd_count=cmd_count,
-                any_fail=any_fail,
-                any_ok=any_ok,
-                lane_errors=lane_errors,
-            )
-            total_rows, cmd_count, any_fail, any_ok = _absorb_lane_result(
-                heavy_res,
-                total_rows=total_rows,
-                cmd_count=cmd_count,
-                any_fail=any_fail,
-                any_ok=any_ok,
-                lane_errors=lane_errors,
-            )
-        elif heavy_work:
-            try:
-                total_rows, cmd_count, any_fail, any_ok = _run_heavy()
-            except Exception as exc:
-                total_rows, cmd_count, any_fail, any_ok = _absorb_lane_result(
-                    exc,
-                    total_rows=0,
-                    cmd_count=0,
-                    any_fail=False,
-                    any_ok=False,
-                    lane_errors=lane_errors,
-                )
-        else:
-            try:
-                total_rows, cmd_count, any_fail, any_ok = _run_light()
-            except Exception as exc:
-                total_rows, cmd_count, any_fail, any_ok = _absorb_lane_result(
-                    exc,
-                    total_rows=0,
-                    cmd_count=0,
-                    any_fail=False,
-                    any_ok=False,
-                    lane_errors=lane_errors,
-                )
-
-        if lane_errors and not any_ok and cmd_count == 0:
-            # Progressive bumps may already have cmds; only hard-fail if nothing landed.
-            live = db.get(BizStateBatch, batch_id)
-            if not live or (int(live.command_count or 0) == 0 and int(live.row_count or 0) == 0):
-                raise RuntimeError("; ".join(lane_errors)[:1020])
-            any_fail = True
-
-        batch = db.get(BizStateBatch, batch_id)
-        if batch:
-            # Prefer progressive counters (survive lane timeout) over in-memory lane totals.
-            batch.command_count = max(int(batch.command_count or 0), int(cmd_count or 0))
-            batch.row_count = max(int(batch.row_count or 0), int(total_rows or 0))
-            batch.ended_at = _utcnow()
-            if any_fail and any_ok:
-                batch.status = "partial"
-                if lane_errors:
-                    batch.message = "; ".join(lane_errors)[:1020]
-            elif any_fail and not any_ok:
-                batch.status = "failed"
-                batch.message = (
-                    "; ".join(lane_errors)[:1020] if lane_errors else "all commands failed"
-                )
-            else:
-                batch.status = "success"
-                batch.message = ""
-            db.commit()
-            if batch.status in ("success", "partial"):
-                try:
-                    from .compare_service import try_auto_compare_for_task
-
-                    try_auto_compare_for_task(db, task_id, batch_id)
-                except Exception:
-                    _log.exception("biz_state auto compare hook failed task=%s", task_id)
-
-        _purge_task_retention(db, task_id=task_id)
+        db.commit()
     finally:
         db.close()
+
+    # Fresh spool dir for this batch (collect → disk, then flush to DB).
+    try:
+        from .spool import clear_batch_spool
+
+        clear_batch_spool(batch_id)
+    except Exception:
+        _log.exception("biz_state clear spool failed batch=%s", batch_id)
+
+    # Phase 2: CLI lanes — no outer Session held across long timeouts.
+    shared_cache: dict[str, Any] = {}
+    cache_lock = threading.RLock()
+    cmd_locks: dict[str, Any] = {}
+    aux_persisted: set[tuple[str, str]] = set()
+    lane_kwargs = dict(
+        batch_id=batch_id,
+        creds=creds,
+        vendor_eff=vendor_eff,
+        device_type_eff=device_type_eff,
+        vendor_key=vendor_key,
+        shared_cache=shared_cache,
+        cache_lock=cache_lock,
+        cmd_locks=cmd_locks,
+        aux_persisted=aux_persisted,
+    )
+
+    def _run_light() -> tuple[int, int, bool, bool]:
+        return _run_collect_lane(
+            work=light_work,
+            per_cmd=light_per,
+            cap=light_cap,
+            label="biz_state_light",
+            **lane_kwargs,
+        )
+
+    def _run_heavy() -> tuple[int, int, bool, bool]:
+        return _run_collect_lane(
+            work=heavy_work,
+            per_cmd=heavy_per,
+            cap=heavy_cap,
+            label="biz_state_heavy",
+            **lane_kwargs,
+        )
+
+    total_rows = 0
+    cmd_count = 0
+    any_fail = False
+    any_ok = False
+    lane_errors: list[str] = []
+
+    if light_work and heavy_work:
+        heavy_fut = _heavy_cli_pool().submit(_run_heavy)
+        light_res: tuple[int, int, bool, bool] | BaseException
+        try:
+            light_res = _run_light()
+        except Exception as exc:
+            light_res = exc
+        heavy_res: tuple[int, int, bool, bool] | BaseException
+        try:
+            heavy_res = heavy_fut.result()
+        except Exception as exc:
+            heavy_res = exc
+        total_rows, cmd_count, any_fail, any_ok = _absorb_lane_result(
+            light_res,
+            total_rows=total_rows,
+            cmd_count=cmd_count,
+            any_fail=any_fail,
+            any_ok=any_ok,
+            lane_errors=lane_errors,
+        )
+        total_rows, cmd_count, any_fail, any_ok = _absorb_lane_result(
+            heavy_res,
+            total_rows=total_rows,
+            cmd_count=cmd_count,
+            any_fail=any_fail,
+            any_ok=any_ok,
+            lane_errors=lane_errors,
+        )
+    elif heavy_work:
+        try:
+            total_rows, cmd_count, any_fail, any_ok = _run_heavy()
+        except Exception as exc:
+            total_rows, cmd_count, any_fail, any_ok = _absorb_lane_result(
+                exc,
+                total_rows=0,
+                cmd_count=0,
+                any_fail=False,
+                any_ok=False,
+                lane_errors=lane_errors,
+            )
+    else:
+        try:
+            total_rows, cmd_count, any_fail, any_ok = _run_light()
+        except Exception as exc:
+            total_rows, cmd_count, any_fail, any_ok = _absorb_lane_result(
+                exc,
+                total_rows=0,
+                cmd_count=0,
+                any_fail=False,
+                any_ok=False,
+                lane_errors=lane_errors,
+            )
+
+    if lane_errors and not any_ok and cmd_count == 0:
+        # Progressive bumps may already have cmds; only hard-fail if nothing landed.
+        if not _batch_has_progress(batch_id):
+            raise RuntimeError("; ".join(lane_errors)[:1020])
+        any_fail = True
+
+    _finalize_batch_status(
+        batch_id=batch_id,
+        task_id=task_id,
+        cmd_count=cmd_count,
+        total_rows=total_rows,
+        any_fail=any_fail,
+        any_ok=any_ok,
+        lane_errors=lane_errors,
+    )
+
+    def _purge(db) -> None:
+        _purge_task_retention(db, task_id=task_id)
+
+    try:
+        _run_db_with_reconnect(_purge, label="biz_state_purge")
+    except Exception:
+        _log.exception("biz_state retention purge wrapper failed task=%s", task_id)
 
 
 def _purge_task_retention(db, *, task_id: str) -> None:
