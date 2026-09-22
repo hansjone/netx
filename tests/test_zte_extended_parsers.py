@@ -375,24 +375,43 @@ class ZteExtendedParserTests(unittest.TestCase):
         self.assertEqual(routes[0]["network"], "10.1.0.0/24")
         self.assertEqual(routes[0]["direction"], "in")
 
-        peers = normalize_bgp_peer(
-            raw_text=_BGP_V4_SUMMARY, command="show bgp vpnv4 unicast vrf CUST_A summary"
-        )
         from netx_api.biz_state.enrich import EnrichJoin
+        from netx_api.biz_state.parsers.zte.config_bgp_peer import normalize_config_bgp_peer
 
+        intent = normalize_config_bgp_peer(
+            raw_text="""
+!<bgp>
+  neighbor 10.0.0.1 remote-as 65001
+  address-family ipv4 vrf CUST_A
+    neighbor 10.0.0.1 activate
+    neighbor 10.0.0.1 route-map RM_IN in
+  $
+$
+""",
+            command="show running-config bgp",
+        )
         apply_enrich_joins(
             routes,
-            {"bgp_summary": peers},
-            [EnrichJoin(from_aux="bgp_summary", on="neighbor", take=("as_num", "state", "pfx_rcd"))],
+            {"config_bgp_peer": intent},
+            [
+                EnrichJoin(
+                    from_aux="config_bgp_peer",
+                    on="neighbor",
+                    take=("remote_as", "activate", "route_map_in", "route_map_out"),
+                )
+            ],
         )
-        self.assertEqual(routes[0]["as_num"], "65001")
-        self.assertEqual(routes[0]["state"], "Established")
+        self.assertEqual(routes[0]["remote_as"], "65001")
+        self.assertEqual(routes[0]["activate"], "enable")
 
         ra = resolve_aux_command(
-            AuxCommand(key="bgp_summary", profile_id="zte.bgp_vpnv4_vrf_summary"),
-            params={"vrf": "CUST_A"},
+            AuxCommand(key="config_bgp_peer", profile_id="zte.config_bgp_peer"),
+            params={"vrf": "CUST_A", "neighbor": "10.0.0.1"},
         )
-        self.assertEqual(ra.command, "show bgp vpnv4 unicast vrf CUST_A summary | one-line")
+        self.assertEqual(ra.command, "show running-config bgp | one-line")
+        # Aux has no placeholders — params must not leak into the CLI
+        self.assertNotIn("<", ra.command)
+        self.assertNotIn("CUST_A", ra.command)
 
     def test_bgp_route_empty_total_skips_header(self) -> None:
         empty_in = normalize_bgp_route(
@@ -545,6 +564,8 @@ class ZteExtendedParserTests(unittest.TestCase):
 
         p = get_profile("zte.bgp_vpnv4_vrf_neighbor_in")
         assert p is not None
+        self.assertEqual([a.key for a in p.aux_commands], ["config_bgp_peer"])
+        self.assertEqual(p.aux_commands[0].profile_id, "zte.config_bgp_peer")
         pairs = expand_from_bindings(
             profile=p,
             bindings=[{"vrf": "CUST_A", "neighbor": "10.0.0.1"}],

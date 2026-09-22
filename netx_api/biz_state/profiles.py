@@ -434,6 +434,11 @@ _BGP_ROUTE_FIELDS: list[FieldDef] = [
     FieldDef("as_num", length=16, role="state", display_name="AS"),
     FieldDef("state", length=64, role="state", display_name="PeerState"),
     FieldDef("pfx_rcd", length=32, role="meta", display_name="PfxRcd"),
+    # Intent enrich from config_bgp_peer (VRF neighbor in/out aux)
+    FieldDef("remote_as", length=16, role="state", display_name="Remote AS"),
+    FieldDef("activate", length=16, role="state", display_name="Activate"),
+    FieldDef("route_map_in", length=128, role="meta", display_name="RM In"),
+    FieldDef("route_map_out", length=128, role="meta", display_name="RM Out"),
 ]
 
 _IP_ROUTE_FIELDS: list[FieldDef] = [
@@ -1070,19 +1075,23 @@ def _zte_status_profiles() -> list[ParseProfile]:
                 r"neighbor\s+(?P<direction>in)\s+(?P<neighbor>\S+)(?:\s*\|\s*one-line)?\s*$"
             ),
             textfsm_command="show bgp vpnv4 unicast neighbor in",
-            description="Per-VRF CE peer routes; discover (vrf,neighbor) from BGP peer intent.",
+            description=(
+                "Per-VRF CE peer routes; discover (vrf,neighbor) from BGP peer intent; "
+                "aux: show running-config bgp (no placeholders)."
+            ),
             placeholders=[_BGP_VRF_PEER_IPV4, _BGP_NEIGHBOR_IPV4_VRF],
             fields=list(_BGP_ROUTE_FIELDS),
             tags=["bgp", "vpnv4", "vrf", "route"],
             sort_order=430,
             enabled=True,
             kind="collect",
-            aux_commands=[AuxCommand(key="bgp_summary", profile_id="zte.bgp_vpnv4_vrf_summary")],
+            aux_commands=[AuxCommand(key="config_bgp_peer", profile_id="zte.config_bgp_peer")],
             enrich_joins=[
                 EnrichJoin(
-                    from_aux="bgp_summary",
-                    on="neighbor",
-                    take=("as_num", "state", "pfx_rcd"),
+                    from_aux="config_bgp_peer",
+                    left_on="neighbor",
+                    right_on="neighbor",
+                    take=("remote_as", "activate", "route_map_in", "route_map_out"),
                 ),
             ],
         ),
@@ -1098,7 +1107,10 @@ def _zte_status_profiles() -> list[ParseProfile]:
                 r"neighbor\s+(?P<direction>out)\s+(?P<neighbor>\S+)(?:\s*\|\s*one-line)?\s*$"
             ),
             textfsm_command="show bgp vpnv4 unicast neighbor out",
-            description="Per-VRF CE peer advertised routes; discover pairs from BGP peer intent.",
+            description=(
+                "Per-VRF CE advertised routes; discover pairs from BGP peer intent; "
+                "aux: show running-config bgp."
+            ),
             placeholders=[_BGP_VRF_PEER_IPV4, _BGP_NEIGHBOR_IPV4_VRF],
             fields=list(_BGP_ROUTE_FIELDS),
             tags=["bgp", "vpnv4", "vrf", "route"],
@@ -1106,12 +1118,13 @@ def _zte_status_profiles() -> list[ParseProfile]:
             enabled=True,
             kind="collect",
             collect_lane="heavy",
-            aux_commands=[AuxCommand(key="bgp_summary", profile_id="zte.bgp_vpnv4_vrf_summary")],
+            aux_commands=[AuxCommand(key="config_bgp_peer", profile_id="zte.config_bgp_peer")],
             enrich_joins=[
                 EnrichJoin(
-                    from_aux="bgp_summary",
-                    on="neighbor",
-                    take=("as_num", "state", "pfx_rcd"),
+                    from_aux="config_bgp_peer",
+                    left_on="neighbor",
+                    right_on="neighbor",
+                    take=("remote_as", "activate", "route_map_in", "route_map_out"),
                 ),
             ],
         ),
@@ -1127,19 +1140,23 @@ def _zte_status_profiles() -> list[ParseProfile]:
                 r"neighbor\s+(?P<direction>in)\s+(?P<neighbor>\S+)(?:\s*\|\s*one-line)?\s*$"
             ),
             textfsm_command="show bgp vpnv6 unicast neighbor in",
-            description="Per-VRF IPv6 CE peer routes; discover pairs from BGP peer intent.",
+            description=(
+                "Per-VRF IPv6 CE peer routes; discover pairs from BGP peer intent; "
+                "aux: show running-config bgp."
+            ),
             placeholders=[_BGP_VRF_PEER_IPV6, _BGP_NEIGHBOR_IPV6_VRF],
             fields=list(_BGP_ROUTE_FIELDS),
             tags=["bgp", "vpnv6", "vrf", "route"],
             sort_order=440,
             enabled=True,
             kind="collect",
-            aux_commands=[AuxCommand(key="bgp_summary", profile_id="zte.bgp_vpnv6_vrf_summary")],
+            aux_commands=[AuxCommand(key="config_bgp_peer", profile_id="zte.config_bgp_peer")],
             enrich_joins=[
                 EnrichJoin(
-                    from_aux="bgp_summary",
-                    on="neighbor",
-                    take=("as_num", "state", "pfx_rcd"),
+                    from_aux="config_bgp_peer",
+                    left_on="neighbor",
+                    right_on="neighbor",
+                    take=("remote_as", "activate", "route_map_in", "route_map_out"),
                 ),
             ],
         ),
@@ -1155,7 +1172,10 @@ def _zte_status_profiles() -> list[ParseProfile]:
                 r"neighbor\s+(?P<direction>out)\s+(?P<neighbor>\S+)(?:\s*\|\s*one-line)?\s*$"
             ),
             textfsm_command="show bgp vpnv6 unicast neighbor out",
-            description="Per-VRF IPv6 CE advertised routes; discover pairs from BGP peer intent.",
+            description=(
+                "Per-VRF IPv6 CE advertised routes; discover pairs from BGP peer intent; "
+                "aux: show running-config bgp."
+            ),
             placeholders=[_BGP_VRF_PEER_IPV6, _BGP_NEIGHBOR_IPV6_VRF],
             fields=list(_BGP_ROUTE_FIELDS),
             tags=["bgp", "vpnv6", "vrf", "route"],
@@ -1163,12 +1183,13 @@ def _zte_status_profiles() -> list[ParseProfile]:
             enabled=True,
             kind="collect",
             collect_lane="heavy",
-            aux_commands=[AuxCommand(key="bgp_summary", profile_id="zte.bgp_vpnv6_vrf_summary")],
+            aux_commands=[AuxCommand(key="config_bgp_peer", profile_id="zte.config_bgp_peer")],
             enrich_joins=[
                 EnrichJoin(
-                    from_aux="bgp_summary",
-                    on="neighbor",
-                    take=("as_num", "state", "pfx_rcd"),
+                    from_aux="config_bgp_peer",
+                    left_on="neighbor",
+                    right_on="neighbor",
+                    take=("remote_as", "activate", "route_map_in", "route_map_out"),
                 ),
             ],
         ),
