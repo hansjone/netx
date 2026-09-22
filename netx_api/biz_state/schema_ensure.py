@@ -44,6 +44,7 @@ def apply_biz_state_schema(conn: Connection) -> None:
         "ALTER TABLE biz_state_task ADD COLUMN IF NOT EXISTS daily_keep_count INTEGER DEFAULT 10",
         "ALTER TABLE biz_state_batch ADD COLUMN IF NOT EXISTS is_baseline BOOLEAN DEFAULT FALSE",
         "ALTER TABLE biz_state_batch ADD COLUMN IF NOT EXISTS baseline_marked_at TIMESTAMP",
+        "ALTER TABLE biz_state_batch ADD COLUMN IF NOT EXISTS alias VARCHAR(128) DEFAULT ''",
         "CREATE INDEX IF NOT EXISTS ix_biz_state_batch_is_baseline ON biz_state_batch (is_baseline)",
         "ALTER TABLE biz_migration_batch ADD COLUMN IF NOT EXISTS accept_status VARCHAR(32) DEFAULT 'none'",
         "ALTER TABLE biz_migration_batch ADD COLUMN IF NOT EXISTS accept_run_id VARCHAR(64) DEFAULT ''",

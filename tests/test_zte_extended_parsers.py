@@ -108,6 +108,29 @@ Routes Learned From This Neighbor:
 *    10.2.0.0/24         10.0.0.1                          20      65001 65009 ?
 """
 
+_BGP_ROUTE_EMPTY_DEST = """
+Current AS: 100. Other AS: 24208, 3.45420
+
+Routes Learned From This Neighbor:
+Status codes: * valid, < last valid, i - internal, s - stale
+Origin codes: i - IGP, e - EGP, ? - incomplete
+Local router ID 1.11.1.1, Local AS 100, Local port 0
+Remote router ID 0.0.0.0, Remote AS 100, Remote port 0
+Total number of routes: 0
+  Valid routes        : 0
+  Invalid routes      : 0
+     Dest                Next Hop        Metric     LocPrf     InTag   Path
+"""
+
+_BGP_ROUTE_EMPTY_OUT = """
+Current AS: 100. Other AS: 24208, 3.45420
+
+Routes Sent To This Neighbor:
+Origin codes: i - IGP, e - EGP, ? - incomplete
+Total number of routes: 0
+Network          Next Hop        From            Metric LocPrf Tag     Path
+"""
+
 _IP_ROUTE = """
     Dest               Gw              Interface          Owner       Pri Metric
 *>  0.0.0.0/0          10.0.0.1        smartgroup1        BGP         200 1
@@ -370,6 +393,48 @@ class ZteExtendedParserTests(unittest.TestCase):
             params={"vrf": "CUST_A"},
         )
         self.assertEqual(ra.command, "show bgp vpnv4 unicast vrf CUST_A summary | one-line")
+
+    def test_bgp_route_empty_total_skips_header(self) -> None:
+        empty_in = normalize_bgp_route(
+            raw_text=_BGP_ROUTE_EMPTY_DEST,
+            command="show bgp vpnv4 unicast neighbor in 10.22.9.2 | one-line",
+            params={"neighbor": "10.22.9.2", "direction": "in"},
+        )
+        self.assertEqual(empty_in, [])
+
+        empty_out = normalize_bgp_route(
+            raw_text=_BGP_ROUTE_EMPTY_OUT,
+            command="show bgp vpnv4 unicast neighbor out 10.22.9.2 | one-line",
+        )
+        self.assertEqual(empty_out, [])
+
+        hit_in = match_command(
+            vendor_key="zte",
+            command="show bgp vpnv4 unicast neighbor in 10.22.9.2 | one-line",
+        )
+        self.assertIsNotNone(hit_in)
+        assert hit_in is not None
+        self.assertEqual(hit_in.profile.profile_id, "zte.bgp_vpnv4_neighbor_in")
+        self.assertEqual(hit_in.params.get("direction"), "in")
+        self.assertEqual(hit_in.params.get("neighbor"), "10.22.9.2")
+
+        hit_out = match_command(
+            vendor_key="zte",
+            command="show bgp vpnv4 unicast neighbor out 10.22.9.2 | one-line",
+        )
+        self.assertIsNotNone(hit_out)
+        assert hit_out is not None
+        self.assertEqual(hit_out.profile.profile_id, "zte.bgp_vpnv4_neighbor_out")
+        self.assertEqual(hit_out.params.get("direction"), "out")
+        self.assertEqual(hit_out.params.get("neighbor"), "10.22.9.2")
+
+        # Direction detected from command when params omit it
+        parsed = normalize_bgp_route(
+            raw_text=_BGP_ROUTE_IN,
+            command="show bgp vpnv4 unicast neighbor out 10.0.0.1",
+        )
+        self.assertEqual(parsed[0]["direction"], "out")
+        self.assertEqual(parsed[0]["neighbor"], "10.0.0.1")
 
     def test_ip_ipv6_route_and_pw(self) -> None:
         ip = normalize_ip_route(
@@ -705,6 +770,7 @@ gei-0/0/0/2 is up, ifindex: 2
         assert hit6 is not None
         self.assertEqual(hit6.profile.profile_id, "zte.bgp_vpnv6_neighbor_in")
         self.assertEqual(hit6.params.get("neighbor"), "FC00:1::1")
+        self.assertEqual(hit6.params.get("direction"), "in")
 
         routes = normalize_bgp_route(
             raw_text=_BGP_ROUTE_IN,

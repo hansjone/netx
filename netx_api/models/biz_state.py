@@ -97,6 +97,8 @@ class BizStateBatch(Base):
     # Manual pin: excluded from auto-purge until revoked
     is_baseline: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     baseline_marked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Optional display name for compare / cutover pickers
+    alias: Mapped[str] = mapped_column(String(128), default="")
 
 
 class BizStateBatchCommand(Base):

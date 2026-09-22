@@ -382,8 +382,12 @@ export function BizMigrationPage() {
   const [createHfEndAt, setCreateHfEndAt] = useState("");
   const [createOldBaselineId, setCreateOldBaselineId] = useState("");
   const [createNewBaselineId, setCreateNewBaselineId] = useState("");
-  const [createOldBatches, setCreateOldBatches] = useState<{ id: string; started_at?: string | null }[]>([]);
-  const [createNewBatches, setCreateNewBatches] = useState<{ id: string; started_at?: string | null }[]>([]);
+  const [createOldBatches, setCreateOldBatches] = useState<
+    { id: string; started_at?: string | null; alias?: string }[]
+  >([]);
+  const [createNewBatches, setCreateNewBatches] = useState<
+    { id: string; started_at?: string | null; alias?: string }[]
+  >([]);
   const [createOldHasPortrait, setCreateOldHasPortrait] = useState(false);
   const [createNewHasPortrait, setCreateNewHasPortrait] = useState(false);
   const [monitorTpls, setMonitorTpls] = useState<MonitorTplOpt[]>([]);
@@ -402,10 +406,10 @@ export function BizMigrationPage() {
   const [hfEndAt, setHfEndAt] = useState("");
   const [oldBaselineId, setOldBaselineId] = useState("");
   const [newBaselineId, setNewBaselineId] = useState("");
-  const [oldBatches, setOldBatches] = useState<{ id: string; started_at?: string | null }[]>([]);
-  const [newBatches, setNewBatches] = useState<{ id: string; started_at?: string | null }[]>([]);
-  const [hfOldBatches, setHfOldBatches] = useState<{ id: string; started_at?: string | null }[]>([]);
-  const [hfNewBatches, setHfNewBatches] = useState<{ id: string; started_at?: string | null }[]>([]);
+  const [oldBatches, setOldBatches] = useState<{ id: string; started_at?: string | null; alias?: string }[]>([]);
+  const [newBatches, setNewBatches] = useState<{ id: string; started_at?: string | null; alias?: string }[]>([]);
+  const [hfOldBatches, setHfOldBatches] = useState<{ id: string; started_at?: string | null; alias?: string }[]>([]);
+  const [hfNewBatches, setHfNewBatches] = useState<{ id: string; started_at?: string | null; alias?: string }[]>([]);
   const [batches, setBatches] = useState<MigBatch[]>([]);
   const [batchId, setBatchId] = useState("");
   const [board, setBoard] = useState<{
@@ -751,6 +755,7 @@ export function BizMigrationPage() {
         (r.batches || []).map((x) => ({
           id: String(x.id || ""),
           started_at: x.started_at || null,
+          alias: String(x.alias || ""),
         })),
       );
     });
@@ -773,6 +778,7 @@ export function BizMigrationPage() {
         (r.batches || []).map((x) => ({
           id: String(x.id || ""),
           started_at: x.started_at || null,
+          alias: String(x.alias || ""),
         })),
       );
     });
@@ -788,6 +794,7 @@ export function BizMigrationPage() {
         ((r.items || []) as Record<string, unknown>[]).map((x) => ({
           id: String(x.id || ""),
           started_at: (x.started_at as string) || null,
+          alias: String(x.alias || ""),
         })),
       );
     });
@@ -803,6 +810,7 @@ export function BizMigrationPage() {
         ((r.items || []) as Record<string, unknown>[]).map((x) => ({
           id: String(x.id || ""),
           started_at: (x.started_at as string) || null,
+          alias: String(x.alias || ""),
         })),
       );
     });
@@ -820,13 +828,17 @@ export function BizMigrationPage() {
     }
     void Promise.all(uniq.map((tid) => bizStateListBatches(tid, 30))).then((results) => {
       const seen = new Set<string>();
-      const items: { id: string; started_at?: string | null }[] = [];
+      const items: { id: string; started_at?: string | null; alias?: string }[] = [];
       for (const r of results) {
         for (const x of (r.items || []) as Record<string, unknown>[]) {
           const id = String(x.id || "");
           if (!id || seen.has(id)) continue;
           seen.add(id);
-          items.push({ id, started_at: (x.started_at as string) || null });
+          items.push({
+            id,
+            started_at: (x.started_at as string) || null,
+            alias: String(x.alias || ""),
+          });
         }
       }
       setHfOldBatches(items);
@@ -845,13 +857,17 @@ export function BizMigrationPage() {
     }
     void Promise.all(uniq.map((tid) => bizStateListBatches(tid, 30))).then((results) => {
       const seen = new Set<string>();
-      const items: { id: string; started_at?: string | null }[] = [];
+      const items: { id: string; started_at?: string | null; alias?: string }[] = [];
       for (const r of results) {
         for (const x of (r.items || []) as Record<string, unknown>[]) {
           const id = String(x.id || "");
           if (!id || seen.has(id)) continue;
           seen.add(id);
-          items.push({ id, started_at: (x.started_at as string) || null });
+          items.push({
+            id,
+            started_at: (x.started_at as string) || null,
+            alias: String(x.alias || ""),
+          });
         }
       }
       setHfNewBatches(items);
@@ -1424,12 +1440,19 @@ export function BizMigrationPage() {
     return [...set];
   }, [monitorTpls, createMonitorTplId, createCollectMetricIds]);
 
-  const batchOptions = (items: { id: string; started_at?: string | null }[]) => (
+  const batchOptions = (items: { id: string; started_at?: string | null; alias?: string }[]) => (
     <>
       <option value="">—</option>
       {items.map((x) => {
+        const alias = String(x.alias || "").trim();
         const when = fmtTime(x.started_at);
-        const label = when !== "—" ? `${when} · ${x.id}` : x.id;
+        const label = alias
+          ? when !== "—"
+            ? `${alias} · ${when}`
+            : alias
+          : when !== "—"
+            ? `${when} · ${x.id}`
+            : x.id;
         return (
           <option key={x.id} value={x.id} title={x.id}>
             {label}

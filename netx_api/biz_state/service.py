@@ -466,6 +466,7 @@ def _batch_list_item(b: BizStateBatch, protect: dict[str, Any]) -> dict[str, Any
         "message": b.message,
         "ne_name": b.ne_name or "",
         "ne_id": b.ne_id or "",
+        "alias": str(getattr(b, "alias", "") or ""),
         "started_at": b.started_at.isoformat() + "Z" if b.started_at else None,
         "ended_at": b.ended_at.isoformat() + "Z" if b.ended_at else None,
         "is_baseline": bool(getattr(b, "is_baseline", False)),
@@ -506,6 +507,15 @@ def set_batch_baseline(db: Session, batch_id: str, *, marked: bool) -> dict[str,
         raise HTTPException(status_code=404, detail="batch_not_found")
     b.is_baseline = bool(marked)
     b.baseline_marked_at = _utcnow() if marked else None
+    db.commit()
+    return _batch_list_item(b, batch_protect_info(db, batch_id))
+
+
+def set_batch_alias(db: Session, batch_id: str, *, alias: str) -> dict[str, Any]:
+    b = db.get(BizStateBatch, batch_id)
+    if not b:
+        raise HTTPException(status_code=404, detail="batch_not_found")
+    b.alias = str(alias or "").strip()[:128]
     db.commit()
     return _batch_list_item(b, batch_protect_info(db, batch_id))
 
@@ -702,6 +712,8 @@ def get_batch(db: Session, batch_id: str) -> dict[str, Any]:
         }
         for mid in sheets_order
     ]
+    sheet_count = len(sheets)
+    sheets_with_data = sum(1 for s in sheets if int(s.get("row_count") or 0) > 0)
 
     return {
         "id": b.id,
@@ -710,6 +722,7 @@ def get_batch(db: Session, batch_id: str) -> dict[str, Any]:
         "command_count": b.command_count,
         "row_count": b.row_count,
         "message": b.message,
+        "alias": str(getattr(b, "alias", "") or ""),
         "started_at": b.started_at.isoformat() + "Z" if b.started_at else None,
         "ended_at": b.ended_at.isoformat() + "Z" if b.ended_at else None,
         "is_baseline": bool(getattr(b, "is_baseline", False)),
@@ -718,6 +731,10 @@ def get_batch(db: Session, batch_id: str) -> dict[str, Any]:
         else None,
         "protected": bool(protect.get("protected")),
         "protect_reasons": list(protect.get("reasons") or []),
+        # Workbook header: 对比项 / 有数据 / 表格
+        "compare_item_count": sheet_count,
+        "sheets_with_data": sheets_with_data,
+        "sheet_count": sheet_count,
         "commands": cmd_payload,
         "sheets": sheets,
     }

@@ -1837,6 +1837,12 @@ export const bizStateSetBatchBaseline = (batchId: string, marked: boolean) =>
     { marked },
   );
 
+export const bizStateSetBatchAlias = (batchId: string, alias: string) =>
+  apiPatch<Record<string, unknown>>(
+    `/v1/biz-state/batches/${encodeURIComponent(batchId)}/alias`,
+    { alias },
+  );
+
 export const bizStateDeleteBatch = (batchId: string) =>
   apiDelete<{ ok: boolean }>(`/v1/biz-state/batches/${encodeURIComponent(batchId)}`);
 
@@ -2063,7 +2069,13 @@ export const bizMigrationNePortrait = (params: { source: string; ne_id: string; 
     source: string;
     ne_id: string;
     task: Record<string, unknown> | null;
-    batches: Array<{ id: string; started_at?: string | null; status?: string; row_count?: number }>;
+    batches: Array<{
+      id: string;
+      started_at?: string | null;
+      status?: string;
+      row_count?: number;
+      alias?: string;
+    }>;
     hint?: string;
   }>(`/v1/biz-migration/ne-portrait?${q.toString()}`);
 };

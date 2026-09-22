@@ -68,6 +68,10 @@ class BatchBaselineIn(BaseModel):
     marked: bool = True
 
 
+class BatchAliasIn(BaseModel):
+    alias: str = ""
+
+
 class BatchBulkDeleteIn(BaseModel):
     batch_ids: list[str] = Field(default_factory=list)
 
@@ -240,6 +244,13 @@ def api_set_batch_baseline(
     batch_id: str, body: BatchBaselineIn, db: Session = Depends(get_db)
 ) -> dict[str, Any]:
     return svc.set_batch_baseline(db, batch_id, marked=bool(body.marked))
+
+
+@router.patch("/batches/{batch_id}/alias")
+def api_set_batch_alias(
+    batch_id: str, body: BatchAliasIn, db: Session = Depends(get_db)
+) -> dict[str, Any]:
+    return svc.set_batch_alias(db, batch_id, alias=str(body.alias or ""))
 
 
 @router.delete("/batches/{batch_id}")

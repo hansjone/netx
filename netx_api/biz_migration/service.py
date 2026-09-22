@@ -347,12 +347,13 @@ def _task_brief(db: Session, task_id: str) -> dict[str, Any]:
 def _batch_brief(db: Session, batch_id: str) -> dict[str, Any]:
     b = db.get(BizStateBatch, batch_id) if batch_id else None
     if not b:
-        return {"id": batch_id or "", "status": "", "started_at": None}
+        return {"id": batch_id or "", "status": "", "started_at": None, "alias": ""}
     return {
         "id": b.id,
         "status": b.status,
         "started_at": b.started_at.isoformat() if b.started_at else None,
         "row_count": b.row_count,
+        "alias": str(getattr(b, "alias", "") or ""),
     }
 
 

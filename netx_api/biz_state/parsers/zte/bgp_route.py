@@ -20,6 +20,24 @@ _ROUTE_RE = re.compile(
 )
 _DIR_RE = re.compile(r"(?i)\bneighbor\s+(in|out)\s+")
 _NEI_RE = re.compile(r"(?i)\bneighbor\s+(?:in|out)\s+(\S+)")
+_TOTAL_RE = re.compile(r"(?i)total\s+number\s+of\s+routes\s*:\s*(\d+)")
+_HEADER_NETS = frozenset(
+    {
+        "network",
+        "dest",
+        "destination",
+        "next",
+        "hop",
+        "metric",
+        "locprf",
+        "loc_prf",
+        "intag",
+        "rtprf",
+        "tag",
+        "path",
+        "from",
+    }
+)
 
 
 def _detect_direction(command: str, params: dict[str, str] | None) -> str:
@@ -36,15 +54,24 @@ def _detect_neighbor(command: str, params: dict[str, str] | None) -> str:
     return m.group(1).strip() if m else ""
 
 
+def _looks_like_prefix(net: str) -> bool:
+    tok = str(net or "").strip()
+    if not tok or tok.lower() in _HEADER_NETS:
+        return False
+    if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}/\d{1,2}", tok):
+        return True
+    # IPv6 prefix / bare address
+    if ":" in tok and re.search(r"[0-9A-Fa-f]:", tok):
+        return True
+    return False
+
+
 def _split_rest(rest: str) -> tuple[str, str, str, str]:
     """Parse trailing Metric LocPrf Tag/RtPrf Path columns (some may be blank)."""
     parts = str(rest or "").split()
     if not parts:
         return "", "", "", ""
-    # Last token(s) are AS path + origin; path ends with i|e|?
-    path = " ".join(parts)
     metric = loc = tag = ""
-    # Heuristic: numeric-only leading fields are metric/loc/tag when present
     nums: list[str] = []
     path_parts: list[str] = []
     for p in parts:
@@ -62,6 +89,12 @@ def _split_rest(rest: str) -> tuple[str, str, str, str]:
     return metric, loc, tag, path
 
 
+def _empty_if_total_zero(raw_text: str) -> bool:
+    """True when device reports Total number of routes: 0."""
+    m = _TOTAL_RE.search(str(raw_text or ""))
+    return bool(m and int(m.group(1)) == 0)
+
+
 def _map_fsm_rows(
     rows: list[dict[str, Any]],
     *,
@@ -74,7 +107,10 @@ def _map_fsm_rows(
     seen: set[str] = set()
     for r in rows:
         net = row_get(r, "NETWORK", "network")
-        if not net or net.lower() == "network" or net in seen:
+        if not _looks_like_prefix(net) or net in seen:
+            continue
+        nh = row_get(r, "NEXT_HOP", "next_hop")
+        if str(nh or "").strip().lower() in _HEADER_NETS:
             continue
         seen.add(net)
         path = row_get(r, "PATH", "path")
@@ -85,7 +121,7 @@ def _map_fsm_rows(
                 "neighbor": neighbor[:128],
                 "direction": direction[:8],
                 "network": net[:128],
-                "next_hop": row_get(r, "NEXT_HOP", "next_hop")[:128],
+                "next_hop": nh[:128],
                 "metric": row_get(r, "METRIC", "metric")[:32],
                 "loc_prf": row_get(r, "LOC_PRF", "loc_prf")[:32],
                 "tag": row_get(r, "TAG", "RT_PRF", "tag")[:32],
@@ -115,19 +151,21 @@ def _hand_parse(
         if not line.strip():
             continue
         low = line.strip().lower()
-        if low.startswith("network") or "next hop" in low:
+        if low.startswith(("network", "dest ", "destination")):
             continue
-        if low.startswith("status") or low.startswith("origin") or low.startswith("routes "):
+        if "next hop" in low or low.startswith("status") or low.startswith("origin"):
+            continue
+        if low.startswith("routes ") or low.startswith("current as"):
             continue
         if low.startswith("local ") or low.startswith("remote ") or low.startswith("total "):
             continue
-        if low.startswith("route distinguisher"):
+        if low.startswith("route distinguisher") or low.startswith("valid ") or low.startswith("invalid "):
             continue
         m = _ROUTE_RE.match(line)
         if not m:
             continue
         net = m.group("net")
-        if net in seen:
+        if not _looks_like_prefix(net) or net in seen:
             continue
         seen.add(net)
         metric, loc, tag, path = _split_rest(m.group("rest"))
@@ -165,6 +203,9 @@ def normalize_bgp_route(
     vrf = _detect_vrf(command, params)
     neighbor = _detect_neighbor(command, params)
     direction = _detect_direction(command, params)
+    if _empty_if_total_zero(raw_text):
+        return []
+
     tables = dict(fsm_tables or {})
     if not any(tables.get(k) for k in RULE_KEYS):
         platform = resolve_cli_platform(

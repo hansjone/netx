@@ -40,7 +40,13 @@ type CreateJobStep = 0 | 1 | 2 | 3;
 const CREATE_JOB_STEPS = 4;
 
 type TaskOpt = { id: string; ne_name: string; ne_ip: string; vendor: string };
-type BatchOpt = { id: string; status: string; row_count: number; started_at?: string | null };
+type BatchOpt = {
+  id: string;
+  status: string;
+  row_count: number;
+  started_at?: string | null;
+  alias?: string;
+};
 type MetricField = {
   name: string;
   display_name: string;
@@ -304,6 +310,14 @@ function enrichSide(
 
 function taskLabel(row: TaskOpt) {
   return `${row.ne_name || row.ne_ip || row.id} (${row.vendor || "-"})`;
+}
+
+function batchOptLabel(b: BatchOpt) {
+  const alias = String(b.alias || "").trim();
+  const when = fmtTime(b.started_at);
+  const tail = `${b.status} · rows=${b.row_count}`;
+  if (alias) return `${alias} · ${when} · ${tail}`;
+  return `${when} · ${tail}`;
 }
 
 function sheetIdentity(s: { sheet_id?: string; metric_id?: string } | null | undefined): string {
@@ -1929,7 +1943,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
         <option value="">{t("bizCompare.pick")}</option>
         {beforeBatches.map((b) => (
           <option key={b.id} value={b.id}>
-            {fmtTime(b.started_at)} · {b.status} · rows={b.row_count}
+            {batchOptLabel(b)}
           </option>
         ))}
       </FieldSelect>
@@ -1956,7 +1970,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
           <option value="">{t("bizCompare.pick")}</option>
           {afterBatches.map((b) => (
             <option key={b.id} value={b.id}>
-              {fmtTime(b.started_at)} · {b.status} · rows={b.row_count}
+              {batchOptLabel(b)}
             </option>
           ))}
         </FieldSelect>

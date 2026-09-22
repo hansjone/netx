@@ -25,11 +25,13 @@ import {
   bizStatePauseTask,
   bizStatePurgeTask,
   bizStateSetBatchBaseline,
+  bizStateSetBatchAlias,
   bizStateSetBindings,
   bizStateStartTask,
   fetchCliTargets,
   formatErr,
 } from "../../services/api";
+
 import type { CliTargetItem } from "../../types";
 import { pageCount } from "../../utils/display";
 import { writeClipboardText } from "../../utils/clipboard";
@@ -76,6 +78,7 @@ type BatchRow = {
   is_baseline?: boolean;
   protected?: boolean;
   protect_reasons?: string[];
+  alias?: string;
 };
 
 type Candidate = {
@@ -610,6 +613,24 @@ export function BizStatePage() {
     try {
       await bizStateSetBatchBaseline(batchId, marked);
       if (taskId) await loadTask(taskId);
+    } catch (e) {
+      showError(formatErr(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const editBatchAlias = async (batchId: string, current?: string) => {
+    const next = window.prompt(t("bizState.aliasPrompt"), String(current || ""));
+    if (next === null) return;
+    setBusy(true);
+    try {
+      await bizStateSetBatchAlias(batchId, next.trim());
+      showOk(t("bizState.aliasSaved"));
+      if (taskId) await loadTask(taskId);
+      if (batchDetail?.id === batchId) {
+        setBatchDetail((prev: any) => (prev ? { ...prev, alias: next.trim() } : prev));
+      }
     } catch (e) {
       showError(formatErr(e));
     } finally {
@@ -1528,6 +1549,7 @@ export function BizStatePage() {
                   <tr>
                     <th style={{ width: 36 }} />
                     <th>{t("bizState.colTime")}</th>
+                    <th>{t("bizState.colAlias")}</th>
                     <th>{t("bizState.colStatus")}</th>
                     <th>{t("bizState.colProtect")}</th>
                     <th>{t("bizState.colRows")}</th>
@@ -1548,6 +1570,17 @@ export function BizStatePage() {
                           />
                         </td>
                         <td className="pt-list-time">{fmtTime(b.started_at)}</td>
+                        <td>
+                          <button
+                            type="button"
+                            className="bs-alias-link"
+                            disabled={busy}
+                            title={t("bizState.setAlias")}
+                            onClick={() => void editBatchAlias(b.id, b.alias)}
+                          >
+                            {b.alias?.trim() ? b.alias : t("bizState.aliasEmpty")}
+                          </button>
+                        </td>
                         <td>
                           <NmStatusChip color={jobChipColor(b.status)}>{b.status}</NmStatusChip>
                         </td>
@@ -1571,6 +1604,14 @@ export function BizStatePage() {
                             </Button>
                             <Button size="sm" variant="ghost" onPress={() => void bizStateDownloadExport(b.id)}>
                               {t("bizState.export")}
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              isDisabled={busy}
+                              onPress={() => void editBatchAlias(b.id, b.alias)}
+                            >
+                              {t("bizState.setAlias")}
                             </Button>
                             {b.is_baseline ? (
                               <Button
@@ -1606,7 +1647,7 @@ export function BizStatePage() {
                   })}
                   {!batches.length ? (
                     <tr>
-                      <td colSpan={6}>
+                      <td colSpan={7}>
                         <div className="pt-list-empty">{t("bizState.noBatches")}</div>
                       </td>
                     </tr>
@@ -1791,7 +1832,16 @@ export function BizStatePage() {
               <NmStatusChip color={jobChipColor(String(batchDetail.status || ""))}>
                 {String(batchDetail.status || "—")}
               </NmStatusChip>
+              {batchDetail.alias ? (
+                <NmStatusChip color="accent">{String(batchDetail.alias)}</NmStatusChip>
+              ) : null}
               <span className="muted">
+                {t("bizState.workbookStats", {
+                  compare: Number(batchDetail.compare_item_count ?? batchDetail.sheet_count ?? 0),
+                  withData: Number(batchDetail.sheets_with_data ?? 0),
+                  sheets: Number(batchDetail.sheet_count ?? 0),
+                })}
+                {" · "}
                 {batchDetail.command_count} cmd · {batchDetail.row_count} rows ·{" "}
                 {fmtTime(batchDetail.started_at)}
               </span>
@@ -1811,6 +1861,14 @@ export function BizStatePage() {
                   }}
                 >
                   {t("bizState.copyBatchId")}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  isDisabled={busy}
+                  onPress={() => void editBatchAlias(String(batchDetail.id || ""), String(batchDetail.alias || ""))}
+                >
+                  {t("bizState.setAlias")}
                 </Button>
               </div>
             </div>

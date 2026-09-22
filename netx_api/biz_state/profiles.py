@@ -965,7 +965,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             parser_id="bgp_route",
             title="BGP VPNv4 Neighbor In",
             command_template="show bgp vpnv4 unicast neighbor in <neighbor> | one-line",
-            match=r"(?i)^\s*show\s+bgp\s+vpnv4\s+unicast\s+neighbor\s+in\s+(?P<neighbor>\S+)(?:\s*\|\s*one-line)?\s*$",
+            match=r"(?i)^\s*show\s+bgp\s+vpnv4\s+unicast\s+neighbor\s+(?P<direction>in)\s+(?P<neighbor>\S+)(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show bgp vpnv4 unicast neighbor in",
             description="Routes learned from VPNv4 neighbor; summary aux for peer state.",
             placeholders=[_BGP_NEIGHBOR_VPNV4],
@@ -990,7 +990,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             parser_id="bgp_route",
             title="BGP VPNv4 Neighbor Out",
             command_template="show bgp vpnv4 unicast neighbor out <neighbor> | one-line",
-            match=r"(?i)^\s*show\s+bgp\s+vpnv4\s+unicast\s+neighbor\s+out\s+(?P<neighbor>\S+)(?:\s*\|\s*one-line)?\s*$",
+            match=r"(?i)^\s*show\s+bgp\s+vpnv4\s+unicast\s+neighbor\s+(?P<direction>out)\s+(?P<neighbor>\S+)(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show bgp vpnv4 unicast neighbor out",
             description="Routes advertised to VPNv4 neighbor (large; bind neighbor).",
             placeholders=[_BGP_NEIGHBOR_VPNV4],
@@ -1016,7 +1016,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             parser_id="bgp_route",
             title="BGP VPNv6 Neighbor In",
             command_template="show bgp vpnv6 unicast neighbor in <neighbor> | one-line",
-            match=r"(?i)^\s*show\s+bgp\s+vpnv6\s+unicast\s+neighbor\s+in\s+(?P<neighbor>\S+)(?:\s*\|\s*one-line)?\s*$",
+            match=r"(?i)^\s*show\s+bgp\s+vpnv6\s+unicast\s+neighbor\s+(?P<direction>in)\s+(?P<neighbor>\S+)(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show bgp vpnv6 unicast neighbor in",
             description="Routes learned from VPNv6 neighbor; summary aux for peer state.",
             placeholders=[_BGP_NEIGHBOR_VPNV6],
@@ -1041,7 +1041,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             parser_id="bgp_route",
             title="BGP VPNv6 Neighbor Out",
             command_template="show bgp vpnv6 unicast neighbor out <neighbor> | one-line",
-            match=r"(?i)^\s*show\s+bgp\s+vpnv6\s+unicast\s+neighbor\s+out\s+(?P<neighbor>\S+)(?:\s*\|\s*one-line)?\s*$",
+            match=r"(?i)^\s*show\s+bgp\s+vpnv6\s+unicast\s+neighbor\s+(?P<direction>out)\s+(?P<neighbor>\S+)(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show bgp vpnv6 unicast neighbor out",
             description="Routes advertised to VPNv6 neighbor (large; bind neighbor).",
             placeholders=[_BGP_NEIGHBOR_VPNV6],
@@ -1069,7 +1069,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             command_template="show bgp vpnv4 unicast vrf <vrf> neighbor in <neighbor> | one-line",
             match=(
                 r"(?i)^\s*show\s+bgp\s+vpnv4\s+unicast\s+vrf\s+(?P<vrf>\S+)\s+"
-                r"neighbor\s+in\s+(?P<neighbor>\S+)(?:\s*\|\s*one-line)?\s*$"
+                r"neighbor\s+(?P<direction>in)\s+(?P<neighbor>\S+)(?:\s*\|\s*one-line)?\s*$"
             ),
             textfsm_command="show bgp vpnv4 unicast neighbor in",
             description="Per-VRF CE peer routes; discover (vrf,neighbor) from BGP peer intent.",
@@ -1097,7 +1097,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             command_template="show bgp vpnv4 unicast vrf <vrf> neighbor out <neighbor> | one-line",
             match=(
                 r"(?i)^\s*show\s+bgp\s+vpnv4\s+unicast\s+vrf\s+(?P<vrf>\S+)\s+"
-                r"neighbor\s+out\s+(?P<neighbor>\S+)(?:\s*\|\s*one-line)?\s*$"
+                r"neighbor\s+(?P<direction>out)\s+(?P<neighbor>\S+)(?:\s*\|\s*one-line)?\s*$"
             ),
             textfsm_command="show bgp vpnv4 unicast neighbor out",
             description="Per-VRF CE peer advertised routes; discover pairs from BGP peer intent.",
@@ -1126,7 +1126,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             command_template="show bgp vpnv6 unicast vrf <vrf> neighbor in <neighbor> | one-line",
             match=(
                 r"(?i)^\s*show\s+bgp\s+vpnv6\s+unicast\s+vrf\s+(?P<vrf>\S+)\s+"
-                r"neighbor\s+in\s+(?P<neighbor>\S+)(?:\s*\|\s*one-line)?\s*$"
+                r"neighbor\s+(?P<direction>in)\s+(?P<neighbor>\S+)(?:\s*\|\s*one-line)?\s*$"
             ),
             textfsm_command="show bgp vpnv6 unicast neighbor in",
             description="Per-VRF IPv6 CE peer routes; discover pairs from BGP peer intent.",
@@ -1154,7 +1154,7 @@ def _zte_status_profiles() -> list[ParseProfile]:
             command_template="show bgp vpnv6 unicast vrf <vrf> neighbor out <neighbor> | one-line",
             match=(
                 r"(?i)^\s*show\s+bgp\s+vpnv6\s+unicast\s+vrf\s+(?P<vrf>\S+)\s+"
-                r"neighbor\s+out\s+(?P<neighbor>\S+)(?:\s*\|\s*one-line)?\s*$"
+                r"neighbor\s+(?P<direction>out)\s+(?P<neighbor>\S+)(?:\s*\|\s*one-line)?\s*$"
             ),
             textfsm_command="show bgp vpnv6 unicast neighbor out",
             description="Per-VRF IPv6 CE advertised routes; discover pairs from BGP peer intent.",

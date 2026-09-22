@@ -7,8 +7,9 @@ Value PATH (.*)
 
 Start
   ^Routes\s+(Learned|Sent) -> Routes
-  ^\s*\*?\s*Network -> Routes
-  ^Network\s+ -> Routes
+  ^\s*\*?\s*Network\s+Next -> Routes
+  ^Network\s+Next -> Routes
+  ^\s*Dest\s+Next -> Routes
   ^\s*$$
   ^.* -> Start
 
@@ -16,11 +17,15 @@ Routes
   ^Route\s+Distinguisher
   ^Status\s+codes
   ^Origin\s+codes
+  ^Current\s+AS
   ^Total\s+number
   ^\s+Valid
   ^\s+Invalid
   ^Local\s+router
   ^Remote\s+router
+  ^\s*\*?\s*Network\s+Next
+  ^Network\s+Next
+  ^\s*Dest\s+Next
   ^\s*\*?\s*>?\s*${NETWORK}\s+${NEXT_HOP}\s+${METRIC}\s+${LOC_PRF}\s+${TAG}\s+${PATH}\s*$$ -> Record
   ^\s*\*?\s*>?\s*${NETWORK}\s+${NEXT_HOP}\s+${PATH}\s*$$ -> Record
   ^\s*$$
