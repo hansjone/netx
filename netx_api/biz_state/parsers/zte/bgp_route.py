@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from typing import Any, Mapping
 
@@ -12,13 +13,19 @@ from .bgp_peer import _detect_bgp_afi, _detect_vrf
 
 RULE_KEYS = ("zte_zxros_show_bgp_neighbor_routes",)
 
-_ROUTE_RE = re.compile(
+# Single-line IPv4-style: * 10.1.0.0/24  10.0.0.1  … path
+_ROUTE_ONE_LINE_RE = re.compile(
     r"^\s*(?P<flags>[*<>isd]*)\s*"
-    r"(?P<net>\d{1,3}(?:\.\d{1,3}){3}/\d+|[0-9A-Fa-f:]+(?:/\d+)?)\s+"
+    r"(?P<net>\S+)\s+"
     r"(?P<nh>\S+)\s+"
     r"(?P<rest>.*)$"
 )
+# Network alone (often IPv6 wrap): * 2407::1/128   or bare prefix for "out"
+_NET_ONLY_RE = re.compile(
+    r"^\s*(?P<flags>[*<>isd]*)\s*(?P<net>\S+)\s*$"
+)
 _DIR_RE = re.compile(r"(?i)\bneighbor\s+(in|out)\s+")
+# Neighbor may be IPv4 or IPv6 (consume until EOL / pipe)
 _NEI_RE = re.compile(r"(?i)\bneighbor\s+(?:in|out)\s+(\S+)")
 _TOTAL_RE = re.compile(r"(?i)total\s+number\s+of\s+routes\s*:\s*(\d+)")
 _HEADER_NETS = frozenset(
@@ -54,23 +61,43 @@ def _detect_neighbor(command: str, params: dict[str, str] | None) -> str:
     return m.group(1).strip() if m else ""
 
 
-def _looks_like_prefix(net: str) -> bool:
-    tok = str(net or "").strip()
-    if not tok or tok.lower() in _HEADER_NETS:
+def _looks_like_ip_or_prefix(tok: str) -> bool:
+    """True for IPv4/IPv6 address or prefix; rejects times like 09:50:02."""
+    s = str(tok or "").strip()
+    if not s or s.lower() in _HEADER_NETS:
         return False
-    if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}/\d{1,2}", tok):
+    try:
+        if "/" in s:
+            ipaddress.ip_network(s, strict=False)
+        else:
+            ipaddress.ip_address(s)
         return True
-    # IPv6 prefix / bare address
-    if ":" in tok and re.search(r"[0-9A-Fa-f]:", tok):
-        return True
-    return False
+    except ValueError:
+        return False
 
 
-def _split_rest(rest: str) -> tuple[str, str, str, str]:
-    """Parse trailing Metric LocPrf Tag/RtPrf Path columns (some may be blank)."""
+def _looks_like_prefix(net: str) -> bool:
+    return _looks_like_ip_or_prefix(net)
+
+
+def _split_rest(rest: str, *, path_continuation: bool = False) -> tuple[str, str, str, str]:
+    """Parse trailing Metric LocPrf Tag/RtPrf Path columns (some may be blank).
+
+    ``path_continuation``: indented wrap line after next-hop (often ``20 65254 ?``
+    or ``4761 ?``) — prefer path/tag over inventing a metric.
+    """
     parts = str(rest or "").split()
     if not parts:
         return "", "", "", ""
+    if path_continuation and parts[-1] in ("?", "i", "e", "incomplete"):
+        if len(parts) == 1:
+            return "", "", "", parts[0]
+        if len(parts) == 2 and parts[0].isdigit():
+            # ``4761 ?`` → path
+            return "", "", "", " ".join(parts)
+        if len(parts) >= 3 and parts[0].isdigit():
+            # ``20 65254 ?`` → rtprf + path
+            return "", "", parts[0], " ".join(parts[1:])
     metric = loc = tag = ""
     nums: list[str] = []
     path_parts: list[str] = []
@@ -95,6 +122,74 @@ def _empty_if_total_zero(raw_text: str) -> bool:
     return bool(m and int(m.group(1)) == 0)
 
 
+def _skip_noise_line(line: str) -> bool:
+    low = line.strip().lower()
+    if not low:
+        return True
+    if low.startswith(("network", "dest ", "destination")):
+        return True
+    if "next hop" in low or low.startswith("status") or low.startswith("origin"):
+        return True
+    if low.startswith("routes ") or low.startswith("current as"):
+        return True
+    if low.startswith("local ") or low.startswith("remote ") or low.startswith("total "):
+        return True
+    if low.startswith("route distinguisher") or low.startswith("valid ") or low.startswith(
+        "invalid "
+    ):
+        return True
+    # Banner / clock lines (e.g. "09:50:02 Indonesia Sat Sep 19 2026")
+    if re.match(r"^\d{1,2}:\d{2}:\d{2}\b", low):
+        return True
+    if low.endswith("#") or "#'" in low:
+        return True
+    if re.search(r"\S+\s*#\s*$", line):
+        return True
+    return False
+
+
+def _emit_route(
+    out: list[dict[str, Any]],
+    seen: set[str],
+    *,
+    afi: str,
+    vrf: str,
+    neighbor: str,
+    direction: str,
+    net: str,
+    nh: str,
+    rest: str,
+    flags: str,
+    path_continuation: bool = False,
+) -> None:
+    if not _looks_like_prefix(net) or net in seen:
+        return
+    if nh and not _looks_like_ip_or_prefix(nh):
+        # Path/metric-only continuation without a real next-hop — keep empty nh
+        if re.search(r"[A-Za-z]", nh):
+            return
+    seen.add(net)
+    metric, loc, tag, path = _split_rest(rest, path_continuation=path_continuation)
+    out.append(
+        {
+            "afi": afi[:32],
+            "vrf": vrf[:128],
+            "neighbor": neighbor[:128],
+            "direction": direction[:8],
+            "network": net[:128],
+            "next_hop": (nh or "")[:128],
+            "metric": metric[:32],
+            "loc_prf": loc[:32],
+            "tag": tag[:32],
+            "path": path[:256],
+            "status_codes": (flags or "").strip()[:16],
+            "as_num": "",
+            "state": "",
+            "pfx_rcd": "",
+        }
+    )
+
+
 def _map_fsm_rows(
     rows: list[dict[str, Any]],
     *,
@@ -111,6 +206,9 @@ def _map_fsm_rows(
             continue
         nh = row_get(r, "NEXT_HOP", "next_hop")
         if str(nh or "").strip().lower() in _HEADER_NETS:
+            continue
+        if nh and not _looks_like_ip_or_prefix(nh):
+            # Reject FSM false hits like NETWORK=20 NEXT_HOP=65254
             continue
         seen.add(net)
         path = row_get(r, "PATH", "path")
@@ -144,49 +242,85 @@ def _hand_parse(
     direction: str = "",
     **_kw: Any,
 ) -> list[dict[str, Any]]:
+    """Parse neighbor in/out tables; join IPv6 network / next-hop / path wraps."""
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
+    pending_net = ""
+    pending_flags = ""
+    pending_nh = ""
+
+    def _flush_pending(*, rest: str = "", path_continuation: bool = False) -> None:
+        nonlocal pending_net, pending_flags, pending_nh
+        if not pending_net:
+            return
+        _emit_route(
+            out,
+            seen,
+            afi=afi,
+            vrf=vrf,
+            neighbor=neighbor,
+            direction=direction,
+            net=pending_net,
+            nh=pending_nh,
+            rest=rest,
+            flags=pending_flags,
+            path_continuation=path_continuation,
+        )
+        pending_net = ""
+        pending_flags = ""
+        pending_nh = ""
+
     for raw in str(raw_text or "").splitlines():
         line = raw.rstrip()
-        if not line.strip():
+        if _skip_noise_line(line):
             continue
-        low = line.strip().lower()
-        if low.startswith(("network", "dest ", "destination")):
+
+        # Continuation: indented next-hop after network-only line
+        if pending_net and not pending_nh and line[:1].isspace():
+            tok = line.strip()
+            if _looks_like_ip_or_prefix(tok) and "/" not in tok:
+                pending_nh = tok
+                continue
+            # Metrics/path without explicit next-hop (rare)
+            if tok and not _looks_like_prefix(tok.split()[0] if tok.split() else ""):
+                _flush_pending(rest=tok, path_continuation=True)
+                continue
+
+        # Continuation: indented path/metric after network+nh
+        if pending_net and pending_nh and line[:1].isspace():
+            tok = line.strip()
+            if tok:
+                _flush_pending(rest=tok, path_continuation=True)
+                continue
+
+        # Full one-liner (typical IPv4)
+        m = _ROUTE_ONE_LINE_RE.match(line)
+        if m and _looks_like_prefix(m.group("net")) and _looks_like_ip_or_prefix(m.group("nh")):
+            _flush_pending()
+            _emit_route(
+                out,
+                seen,
+                afi=afi,
+                vrf=vrf,
+                neighbor=neighbor,
+                direction=direction,
+                net=m.group("net"),
+                nh=m.group("nh"),
+                rest=m.group("rest"),
+                flags=m.group("flags") or "",
+            )
             continue
-        if "next hop" in low or low.startswith("status") or low.startswith("origin"):
+
+        # Network alone → wait for next-hop / path wraps (IPv6)
+        m_net = _NET_ONLY_RE.match(line)
+        if m_net and _looks_like_prefix(m_net.group("net")):
+            _flush_pending()
+            pending_net = m_net.group("net")
+            pending_flags = m_net.group("flags") or ""
+            pending_nh = ""
             continue
-        if low.startswith("routes ") or low.startswith("current as"):
-            continue
-        if low.startswith("local ") or low.startswith("remote ") or low.startswith("total "):
-            continue
-        if low.startswith("route distinguisher") or low.startswith("valid ") or low.startswith("invalid "):
-            continue
-        m = _ROUTE_RE.match(line)
-        if not m:
-            continue
-        net = m.group("net")
-        if not _looks_like_prefix(net) or net in seen:
-            continue
-        seen.add(net)
-        metric, loc, tag, path = _split_rest(m.group("rest"))
-        out.append(
-            {
-                "afi": afi[:32],
-                "vrf": vrf[:128],
-                "neighbor": neighbor[:128],
-                "direction": direction[:8],
-                "network": net[:128],
-                "next_hop": m.group("nh")[:128],
-                "metric": metric[:32],
-                "loc_prf": loc[:32],
-                "tag": tag[:32],
-                "path": path[:256],
-                "status_codes": (m.group("flags") or "").strip()[:16],
-                "as_num": "",
-                "state": "",
-                "pfx_rcd": "",
-            }
-        )
+
+    _flush_pending()
     return out
 
 

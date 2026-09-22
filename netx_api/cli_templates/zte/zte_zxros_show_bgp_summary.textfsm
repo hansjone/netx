@@ -1,4 +1,4 @@
-Value NEIGHBOR (\S+)
+Value NEIGHBOR ([0-9]{1,3}(?:\.[0-9]{1,3}){3}|[0-9A-Fa-f]*:[0-9A-Fa-f:]+)
 Value VER (\d+)
 Value ASN (\S+)
 Value MSG_RCVD (\d+)
@@ -12,7 +12,11 @@ Start
   ^.* -> Start
 
 Peers
+  # Single-line IPv4 (or short IPv6) peer
   ^${NEIGHBOR}\s+${VER}\s+${ASN}\s+${MSG_RCVD}\s+${MSG_SEND}\s+${UP_DOWN}\s+${STATE_PFX}\s*$$ -> Record
+  # IPv6 / long neighbor alone; stats on the next indented line
+  ^${NEIGHBOR}\s*$$
+  ^\s+${VER}\s+${ASN}\s+${MSG_RCVD}\s+${MSG_SEND}\s+${UP_DOWN}\s+${STATE_PFX}\s*$$ -> Record
   ^All\s+
   ^BGP\s+
   ^Local\s+

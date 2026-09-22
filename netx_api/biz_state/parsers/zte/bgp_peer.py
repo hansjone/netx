@@ -17,7 +17,11 @@ _PEER_LINE_RE = re.compile(
     r"(?P<rx>\d+)\s+(?P<tx>\d+)\s+(?P<up>\S+)\s+(?P<state>\S+)\s*$",
     re.I,
 )
-_NEI_ONLY_RE = re.compile(r"^(?P<nei>[0-9A-Fa-f:]+)\s*$", re.I)
+# Wrapped neighbor may be IPv4 or IPv6 on its own line
+_NEI_ONLY_RE = re.compile(
+    r"^(?P<nei>\d{1,3}(?:\.\d{1,3}){3}|[0-9A-Fa-f:]+)\s*$",
+    re.I,
+)
 _CONT_RE = re.compile(
     r"^\s+(?P<ver>\d+)\s+(?P<asn>\S+)\s+"
     r"(?P<rx>\d+)\s+(?P<tx>\d+)\s+(?P<up>\S+)\s+(?P<state>\S+)\s*$",
@@ -106,6 +110,12 @@ def _map_fsm_rows(
             nei = pending
             pending = ""
         if not nei or not ver:
+            continue
+        if "#" in nei or not re.match(
+            r"^(?:\d{1,3}(?:\.\d{1,3}){3}|[0-9A-Fa-f]*:[0-9A-Fa-f:]+)$",
+            nei,
+            re.I,
+        ):
             continue
         if nei in seen:
             continue

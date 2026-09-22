@@ -255,6 +255,50 @@ class ZteExtendedParserTests(unittest.TestCase):
         )
         self.assertTrue(all(r["vrf"] == "CUST_A" for r in vrf))
 
+        # Real wrapped vpnv6 summary + IPv6 neighbor in/out routes
+        sample_dir = Path(__file__).resolve().parents[2] / "test" / "show-zte"
+        v6_sum = (sample_dir / "show-bgp-vpnv6").read_text(encoding="utf-8", errors="replace")
+        v6_real = normalize_bgp_peer(
+            raw_text=v6_sum, command="show bgp vpnv6 unicast summary | one-line"
+        )
+        self.assertEqual(len(v6_real), 2)
+        self.assertTrue(all(":" in r["neighbor"] for r in v6_real))
+        self.assertTrue(all(r["afi"] == "vpnv6" for r in v6_real))
+
+        v6_in = (sample_dir / "show-bgp-vpnv6-neighbor-router-in-vrf").read_text(
+            encoding="utf-8", errors="replace"
+        )
+        routes_in = normalize_bgp_route(
+            raw_text=v6_in,
+            command="show bgp vpnv6 unicast vrf vpn.giims neighbor in 2407::45:0:0:5:1",
+            params={
+                "vrf": "vpn.giims",
+                "neighbor": "2407::45:0:0:5:1",
+                "direction": "in",
+                "afi": "vpnv6",
+            },
+        )
+        self.assertEqual(len(routes_in), 9)
+        self.assertTrue(all(r["network"].startswith("2407::") for r in routes_in))
+        self.assertTrue(all(r["next_hop"].startswith("2407::") for r in routes_in))
+        self.assertFalse(any(r["network"].startswith("09:") for r in routes_in))
+
+        v6_out = (sample_dir / "show-bgp-vpnv6-neighbor-router-out-vrf").read_text(
+            encoding="utf-8", errors="replace"
+        )
+        routes_out = normalize_bgp_route(
+            raw_text=v6_out,
+            command="show bgp vpnv6 unicast vrf vpn.giims neighbor out 2407::45:0:0:5:1",
+            params={
+                "vrf": "vpn.giims",
+                "neighbor": "2407::45:0:0:5:1",
+                "direction": "out",
+            },
+        )
+        self.assertEqual(len(routes_out), 1)
+        self.assertEqual(routes_out[0]["network"], "2407::45:0:0:5:0/127")
+        self.assertIn("4761", routes_out[0]["path"])
+
     def test_bgp_summary_fsm(self) -> None:
         rows = apply_rule(
             platform="zte_zxros",
@@ -716,6 +760,7 @@ $
         peer_recs = [
             {"afi": "vpnv4", "vrf": "", "neighbor": "10.0.0.1", "remote_as": "65001"},
             {"afi": "vpnv4", "vrf": "", "neighbor": "", "peer_group": "CORE_RR", "remote_as": "65009"},
+            {"afi": "vpnv4", "vrf": "", "neighbor": "10.0.0.9", "peer_group": "CORE_RR", "remote_as": "65019"},
             {"afi": "vpnv6", "vrf": "", "neighbor": "FC00::1", "remote_as": "65002"},
             {"afi": "ipv4", "vrf": "CUST_A", "neighbor": "10.0.0.2", "remote_as": "65003"},
             {"afi": "ipv4", "vrf": "", "neighbor": "10.0.0.9", "remote_as": "65004"},
@@ -723,7 +768,7 @@ $
         ]
         self.assertEqual(
             filter_discover_records(peer_recs, glob_v4.placeholders[0]),
-            ["10.0.0.1"],
+            ["10.0.0.1", "10.0.0.9"],
         )
         self.assertEqual(
             filter_discover_records(peer_recs, glob_v6.placeholders[0]),

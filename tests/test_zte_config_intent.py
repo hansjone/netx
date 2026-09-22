@@ -68,6 +68,8 @@ router bgp 65000
  neighbor 10.0.0.1 password cipher SKIPME
  neighbor 10.0.0.1 route-map RM_IN in
  neighbor 10.0.0.1 peer-group CORE_RR
+ neighbor 10.0.0.9 peer-group CORE_RR
+ neighbor 10.0.0.9 remote-as 65019
  neighbor CORE_RR peer-group
  neighbor CORE_RR remote-as 65009
  neighbor FC00:1::1 remote-as 65002
@@ -297,7 +299,14 @@ class ZteConfigIntentTests(unittest.TestCase):
         # peer-group name is not an IP → neighbor empty, peer_group set
         self.assertIn(("vpnv4", "", "", "CORE_RR"), by)
         self.assertEqual(by[("vpnv4", "", "", "CORE_RR")]["remote_as"], "65009")
+        # Global AF expands peer-group members (10.0.0.9 only via group activate)
+        self.assertIn(("vpnv4", "", "10.0.0.9", "CORE_RR"), by)
+        self.assertEqual(by[("vpnv4", "", "10.0.0.9", "CORE_RR")]["remote_as"], "65019")
+        self.assertEqual(by[("vpnv4", "", "10.0.0.9", "CORE_RR")]["activate"], "enable")
         self.assertEqual(by[("ipv4", "CUST_A", "10.0.0.2", "")]["remote_as"], "65003")
+        # VRF must not pick up global peer-group members
+        self.assertNotIn(("ipv4", "CUST_A", "10.0.0.9", "CORE_RR"), by)
+        self.assertNotIn(("ipv4", "CUST_A", "10.0.0.1", "CORE_RR"), by)
         self.assertIn(("l2vpn-evpn", "", "10.0.0.1", "CORE_RR"), by)
         # global IPv6 neighbor without AF activate
         self.assertIn(("global", "", "FC00:1::1", ""), by)

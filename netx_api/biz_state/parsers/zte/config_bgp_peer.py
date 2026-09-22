@@ -4,6 +4,11 @@ Emits one row per ``(afi, vrf, neighbor|peer_group)`` activation under
 address-family. IP literals go in ``neighbor``; non-IP names (peer-groups)
 go in ``peer_group``. Never captures password / secret lines.
 
+For **global** (non-VRF) address-families, a peer-group ``activate`` is also
+expanded into one row per global member ``neighbor <ip> peer-group <name>``
+so discover/bind sees the real Neighbor IPs (direct activates ∪ group
+members). VRF address-families do **not** expand from global membership.
+
 Route-maps under an address-family are scoped to that ``(afi, vrf)``;
 global (top-level) route-maps apply to all AF rows for that neighbor and
 are overlaid by AF-specific maps when both exist.
@@ -189,14 +194,39 @@ def normalize_config_bgp_peer(
 
     out: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str, str]] = set()
+
+    def _append(row: dict[str, Any]) -> None:
+        key = (row["afi"], row["vrf"], row["neighbor"], row["peer_group"])
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(row)
+
     for afi_s, vrf_s, token, act in activations:
         info = _merge_info(token, afi=afi_s, vrf=vrf_s, meta=meta, af_rm=af_rm)
         row = _row(afi=afi_s, vrf=vrf_s, token=token, act=act, info=info)
-        key = (row["afi"], row["vrf"], row["neighbor"], row["peer_group"])
-        if key in seen:
+        _append(row)
+
+        # Global AF: peer-group activate → expand to member Neighbor IPs.
+        # VRF AF: do not expand from global peer-group membership.
+        if vrf_s:
             continue
-        seen.add(key)
-        out.append(row)
+        pg = str(row.get("peer_group") or "").strip()
+        if row.get("neighbor") or not pg:
+            continue
+        for member, minfo in meta.items():
+            if not _is_ip_neighbor(member):
+                continue
+            if str(minfo.get("peer_group") or "").strip() != pg:
+                continue
+            m_info = _merge_info(
+                member, afi=afi_s, vrf=vrf_s, meta=meta, af_rm=af_rm
+            )
+            m_row = _row(
+                afi=afi_s, vrf=vrf_s, token=member, act=act, info=m_info
+            )
+            m_row["peer_group"] = pg[:64]
+            _append(m_row)
 
     # Global peers with remote-as but no AF activate
     for token, info in meta.items():
@@ -205,11 +235,7 @@ def normalize_config_bgp_peer(
         if any(n == token for _, _, n, _ in activations):
             continue
         row = _row(afi="global", vrf="", token=token, act="", info=info)
-        key = (row["afi"], row["vrf"], row["neighbor"], row["peer_group"])
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(row)
+        _append(row)
     return out
 
 
