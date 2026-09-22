@@ -109,6 +109,15 @@ class BizStateExportCommandsTests(unittest.TestCase):
         notes = " ".join(sec.get("notes") or [])
         self.assertIn("requires parameter bindings", notes)
         self.assertEqual(plan["command_count"], 0)
+        tmpl_cmds = [c for c in sec.get("commands") or [] if c.get("role") == "template"]
+        self.assertEqual(len(tmpl_cmds), 1)
+        self.assertIn("<vrf>", tmpl_cmds[0]["command"])
+
+        text = export_task_commands_text(self.db, self.task.id)
+        self.assertIn("# show bgp vpnv4 unicast vrf <vrf> summary", text)
+        # Template must not appear in the flat executable list
+        flat = text.split("# ---- flat unique commands ----", 1)[-1]
+        self.assertNotIn("<vrf>", flat)
 
 
 if __name__ == "__main__":

@@ -1118,6 +1118,18 @@ def plan_task_collect_commands(
             )
         except ValueError as exc:
             section["notes"].append(str(exc))
+            tmpl = normalize_command(
+                item.command_override or profile.command_template or ""
+            )
+            if tmpl:
+                section["commands"].append(
+                    {
+                        "command": tmpl,
+                        "role": "template",
+                        "params": {},
+                        "profile_id": profile.profile_id,
+                    }
+                )
             sections.append(section)
             continue
 
@@ -1126,14 +1138,15 @@ def plan_task_collect_commands(
             section["notes"].append(
                 "expand_all: no bindings; collect will expand discover values"
             )
-            section["commands"].append(
-                {
-                    "command": tmpl,
-                    "role": "template",
-                    "params": {"__expand_all__": "1"},
-                    "profile_id": profile.profile_id,
-                }
-            )
+            if tmpl:
+                section["commands"].append(
+                    {
+                        "command": tmpl,
+                        "role": "template",
+                        "params": {"__expand_all__": "1"},
+                        "profile_id": profile.profile_id,
+                    }
+                )
             sections.append(section)
             continue
 
@@ -1172,6 +1185,24 @@ def plan_task_collect_commands(
                             "profile_id": ra.profile_id,
                         }
                     )
+
+        # No concrete primary cmds → still show template as comment
+        if not any(c.get("role") == "primary" for c in section["commands"]):
+            tmpl = normalize_command(
+                item.command_override or profile.command_template or ""
+            )
+            if tmpl and not any(
+                c.get("role") == "template" and c.get("command") == tmpl
+                for c in section["commands"]
+            ):
+                section["commands"].append(
+                    {
+                        "command": tmpl,
+                        "role": "template",
+                        "params": {},
+                        "profile_id": profile.profile_id,
+                    }
+                )
 
         sections.append(section)
 
@@ -1222,11 +1253,17 @@ def export_task_commands_text(
             lines.append("# (no commands)")
         for c in cmds:
             role = str(c.get("role") or "primary")
+            cmd = str(c.get("command") or "").strip()
+            if not cmd:
+                continue
             if role == "aux":
                 lines.append(f"# aux:{c.get('aux_key') or ''}")
+                lines.append(cmd)
             elif role == "template":
-                lines.append("# template (expand_all at collect):")
-            lines.append(str(c.get("command") or ""))
+                # No concrete CLI — keep template as a # comment line
+                lines.append(f"# {cmd}")
+            else:
+                lines.append(cmd)
         lines.append("")
     # Flat unique list at end for easy copy into scripts
     lines.append("# ---- flat unique commands ----")
