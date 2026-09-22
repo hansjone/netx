@@ -38,6 +38,11 @@ class PlaceholderDef:
     # When required=False and no bindings: collect may expand all discover values.
     discover_filter_field: str = ""
     discover_filter_contains: str = ""
+    # Extra exact matches: ``activate=enable`` or ``activate=enable,foo=bar``.
+    discover_equals: str = ""
+    # When afi=global is allowed: only keep activate=enable neighbors whose IP
+    # matches this family (``ipv4`` / ``ipv6``). AF rows are unchanged.
+    discover_global_ip_family: str = ""
     # Skip rows where this field is empty (e.g. CE peers require non-empty vrf).
     discover_require_nonempty: str = ""
     # Skip rows where this field is non-empty (e.g. global AF peers require empty vrf).
@@ -329,6 +334,12 @@ _BGP_LOCAL_AS = PlaceholderDef(
 
 # BGP neighbor in/out: discover peers from Config BGP Peer Intent, filtered by AF.
 # required=False with local_as → unbound collect expands all (local_as, neighbor) pairs.
+#
+# vpnv4 / vpnv6: filter that AF only. Peer-group activate under the AF is expanded
+# into member Neighbor IPs (membership configured at global).
+#
+# ipv4 / ipv6: own AF rows + top-level/global activate=enable, split by neighbor
+# address family (IPv4 literals → ipv4 discover, IPv6 literals → ipv6 discover).
 _BGP_NEIGHBOR_VPNV4 = PlaceholderDef(
     name="neighbor",
     schema_field="neighbor",
@@ -366,7 +377,9 @@ _BGP_NEIGHBOR_IPV4 = PlaceholderDef(
     discover_value_field="neighbor",
     discover_label_field="neighbor",
     discover_filter_field="afi",
-    discover_filter_contains="ipv4",
+    discover_filter_contains="ipv4,global",
+    discover_equals="activate=enable",
+    discover_global_ip_family="ipv4",
     discover_require_empty="vrf",
     discover_require_nonempty="neighbor",
 )
@@ -380,7 +393,8 @@ _BGP_NEIGHBOR_IPV6 = PlaceholderDef(
     discover_value_field="neighbor",
     discover_label_field="neighbor",
     discover_filter_field="afi",
-    discover_filter_contains="ipv6",
+    discover_filter_contains="ipv6,global",
+    discover_global_ip_family="ipv6",
     discover_require_empty="vrf",
     discover_require_nonempty="neighbor",
 )
@@ -1140,8 +1154,9 @@ def _zte_status_profiles() -> list[ParseProfile]:
             match=r"(?i)^\s*show\s+bgp\s+ipv4\s+unicast\s+neighbor\s+(?P<direction>in)\s+(?P<neighbor>\S+)(?:\s+as\s+(?P<local_as>\S+))?(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show bgp ipv4 unicast neighbor in",
             description=(
-                "Routes learned from IPv4 unicast neighbor; discover from BGP peer intent "
-                "(direct + peer-group members); aux: show running-config bgp."
+                "Routes learned from IPv4 unicast neighbor; discover ipv4 AF "
+                "activate plus top-level/global activate for IPv4 neighbors; "
+                "aux: show running-config bgp."
             ),
             placeholders=[_BGP_NEIGHBOR_IPV4, _BGP_LOCAL_AS],
             fields=list(_BGP_ROUTE_FIELDS),
@@ -1161,7 +1176,8 @@ def _zte_status_profiles() -> list[ParseProfile]:
             match=r"(?i)^\s*show\s+bgp\s+ipv4\s+unicast\s+neighbor\s+(?P<direction>out)\s+(?P<neighbor>\S+)(?:\s+as\s+(?P<local_as>\S+))?(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show bgp ipv4 unicast neighbor out",
             description=(
-                "Routes advertised to IPv4 unicast neighbor; discover from BGP peer intent; "
+                "Routes advertised to IPv4 unicast neighbor; discover ipv4 AF "
+                "activate plus top-level/global activate for IPv4 neighbors; "
                 "aux: show running-config bgp."
             ),
             placeholders=[_BGP_NEIGHBOR_IPV4, _BGP_LOCAL_AS],
@@ -1183,8 +1199,9 @@ def _zte_status_profiles() -> list[ParseProfile]:
             match=r"(?i)^\s*show\s+bgp\s+ipv6\s+unicast\s+neighbor\s+(?P<direction>in)\s+(?P<neighbor>\S+)(?:\s+as\s+(?P<local_as>\S+))?(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show bgp ipv6 unicast neighbor in",
             description=(
-                "Routes learned from IPv6 unicast neighbor; discover from BGP peer intent "
-                "(direct + peer-group members); aux: show running-config bgp."
+                "Routes learned from IPv6 unicast neighbor; discover ipv6 AF "
+                "activate (incl. peer-group members) plus top-level/global "
+                "activate for IPv6 neighbors; aux: show running-config bgp."
             ),
             placeholders=[_BGP_NEIGHBOR_IPV6, _BGP_LOCAL_AS],
             fields=list(_BGP_ROUTE_FIELDS),
@@ -1204,7 +1221,8 @@ def _zte_status_profiles() -> list[ParseProfile]:
             match=r"(?i)^\s*show\s+bgp\s+ipv6\s+unicast\s+neighbor\s+(?P<direction>out)\s+(?P<neighbor>\S+)(?:\s+as\s+(?P<local_as>\S+))?(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show bgp ipv6 unicast neighbor out",
             description=(
-                "Routes advertised to IPv6 unicast neighbor; discover from BGP peer intent; "
+                "Routes advertised to IPv6 unicast neighbor; discover ipv6 AF "
+                "activate plus top-level/global activate for IPv6 neighbors; "
                 "aux: show running-config bgp."
             ),
             placeholders=[_BGP_NEIGHBOR_IPV6, _BGP_LOCAL_AS],
@@ -1824,6 +1842,8 @@ def profile_to_public_dict(p: ParseProfile, *, overrides: dict[str, Any] | None 
                 "discover_label_field": ph.discover_label_field,
                 "discover_filter_field": ph.discover_filter_field,
                 "discover_filter_contains": ph.discover_filter_contains,
+                "discover_equals": ph.discover_equals,
+                "discover_global_ip_family": ph.discover_global_ip_family,
                 "discover_require_nonempty": ph.discover_require_nonempty,
                 "discover_require_empty": ph.discover_require_empty,
             }

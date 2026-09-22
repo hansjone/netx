@@ -132,17 +132,59 @@ def _optional_discover_placeholders(profile: ParseProfile) -> list[PlaceholderDe
     return [ph for ph in _discover_placeholders(profile) if not ph.required]
 
 
+def _neighbor_ip_family(addr: str) -> str:
+    """Return ``ipv4`` / ``ipv6`` / ```` for a neighbor literal."""
+    s = str(addr or "").strip()
+    if not s:
+        return ""
+    if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", s):
+        return "ipv4"
+    if ":" not in s:
+        return ""
+    try:
+        import ipaddress
+
+        ipaddress.ip_address(s.split("%", 1)[0])
+        return "ipv6"
+    except ValueError:
+        return ""
+
+
 def _record_passes_discover_filter(rec: dict[str, Any], ph: PlaceholderDef) -> bool:
     filt_field = str(ph.discover_filter_field or "").strip()
     filt_contains = str(ph.discover_filter_contains or "").strip().lower()
+    hay = ""
     if filt_field and filt_contains:
         hay = str(rec.get(filt_field) or "").strip().lower()
         # ``afi`` must be exact (``ipv4`` must not match ``vpnv4``).
         # CSV fields like ``address_families`` still use substring/token contains.
         if filt_field == "afi":
-            if hay != filt_contains:
+            # Comma-separated exact OR (e.g. ``ipv4,global``).
+            allowed = {x.strip() for x in filt_contains.split(",") if x.strip()}
+            if hay not in allowed:
                 return False
         elif filt_contains not in hay:
+            return False
+    equals_raw = str(getattr(ph, "discover_equals", "") or "").strip()
+    if equals_raw:
+        for part in equals_raw.split(","):
+            part = part.strip()
+            if not part or "=" not in part:
+                continue
+            field, expected = part.split("=", 1)
+            field = field.strip()
+            expected = expected.strip().lower()
+            if not field:
+                continue
+            actual = str(rec.get(field) or "").strip().lower()
+            if actual != expected:
+                return False
+    # Top-level/global activate: split by neighbor IP family (legacy global≈AF).
+    gfam = str(getattr(ph, "discover_global_ip_family", "") or "").strip().lower()
+    if gfam and (hay == "global" or str(rec.get("afi") or "").strip().lower() == "global"):
+        if str(rec.get("activate") or "").strip().lower() != "enable":
+            return False
+        if _neighbor_ip_family(str(rec.get("neighbor") or "")) != gfam:
             return False
     require = str(ph.discover_require_nonempty or "").strip()
     if require and not str(rec.get(require) or "").strip():

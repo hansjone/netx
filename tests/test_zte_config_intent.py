@@ -438,26 +438,28 @@ class ZteConfigIntentTests(unittest.TestCase):
             "loopback400",
         )
         self.assertNotIn(("64900", "l2vpn-evpn", "", "444::2", ""), by)
-        # AS 64580: top-level activate only → global row
+        # AS 64580: top-level activate only → global row with activate=enable
         self.assertIn(("64580", "global", "", "22:22:22::22", ""), by)
         self.assertEqual(
             by[("64580", "global", "", "22:22:22::22", "")]["update_source"],
             "loopback0",
         )
-        # AS 100: peer-group expand on EVPN
-        self.assertIn(("100", "l2vpn-evpn", "", "", "MAR_GROUP_V6_1"), by)
-        self.assertIn(
-            ("100", "l2vpn-evpn", "", "2408:8121:8400:1:1000::4:0", "MAR_GROUP_V6_1"),
-            by,
-        )
         self.assertEqual(
-            by[
-                ("100", "l2vpn-evpn", "", "2408:8121:8400:1:1000::4:0", "MAR_GROUP_V6_1")
-            ]["route_map_out"],
-            "TO_MAR_EVPN_SRV6_GROUP_1",
+            by[("64580", "global", "", "22:22:22::22", "")]["activate"], "enable"
+        )
+        # AS 100: top-level activate → global (legacy ≈ ipv4) plus vpnv4 AF row
+        self.assertEqual(
+            by[("100", "global", "", "100.0.0.2", "")]["activate"], "enable"
         )
         self.assertEqual(
             by[("100", "vpnv4", "", "100.0.0.2", "")]["remote_as"], "100"
+        )
+        # Top-level activate disable must not look like enable
+        self.assertEqual(
+            by[("100", "global", "", "2408:8121:8400:1:1000::4:0", "MAR_GROUP_V6_1")][
+                "activate"
+            ],
+            "disable",
         )
         # Peer-group members must not leak across local AS
         self.assertNotIn(

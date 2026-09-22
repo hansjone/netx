@@ -233,6 +233,14 @@ def normalize_config_bgp_peer(
             act = "disable" if m.group(2) else "enable"
             activations.append((local_as, afi, vrf, nei, act))
             continue
+        # Top-level activate (outside address-family): older ZTE builds treat
+        # global context as IPv4 unicast — record as afi=global.
+        m = _NEI_ACT_RE.match(line)
+        if m and not afi:
+            nei = m.group(1).strip()
+            act = "disable" if m.group(2) else "enable"
+            activations.append((local_as, "global", "", nei, act))
+            continue
         m = _NEI_RM_RE.match(line)
         if m and afi:
             nei = m.group(1).strip()
@@ -266,8 +274,10 @@ def normalize_config_bgp_peer(
         )
         _append(row)
 
-        # Global AF: peer-group activate → expand to member Neighbor IPs.
-        # VRF AF: do not expand from global peer-group membership.
+        # Global AF: peer-group activate → expand to member Neighbor IPs
+        # configured at global (``neighbor <ip> peer-group <name>``). Discover
+        # for vpnv4/vpnv6/ipv6 then only filters this AF and still sees those
+        # global members. VRF AF: do not expand from global peer-group membership.
         if vrf_s:
             continue
         pg = str(row.get("peer_group") or "").strip()

@@ -812,8 +812,10 @@ $
 
         glob_ipv4 = get_profile("zte.bgp_ipv4_neighbor_in")
         assert glob_ipv4 is not None
-        self.assertEqual(glob_ipv4.placeholders[0].discover_filter_contains, "ipv4")
+        self.assertEqual(glob_ipv4.placeholders[0].discover_filter_contains, "ipv4,global")
         self.assertEqual(glob_ipv4.placeholders[0].discover_require_empty, "vrf")
+        self.assertEqual(glob_ipv4.placeholders[0].discover_equals, "activate=enable")
+        self.assertEqual(glob_ipv4.placeholders[0].discover_global_ip_family, "ipv4")
 
         peer_recs = [
             {
@@ -822,6 +824,7 @@ $
                 "vrf": "",
                 "neighbor": "10.0.0.1",
                 "remote_as": "65001",
+                "activate": "enable",
             },
             {
                 "local_as": "64900",
@@ -830,6 +833,7 @@ $
                 "neighbor": "",
                 "peer_group": "CORE_RR",
                 "remote_as": "65009",
+                "activate": "enable",
             },
             {
                 "local_as": "64900",
@@ -838,6 +842,7 @@ $
                 "neighbor": "10.0.0.9",
                 "peer_group": "CORE_RR",
                 "remote_as": "65019",
+                "activate": "enable",
             },
             {
                 "local_as": "64900",
@@ -845,6 +850,7 @@ $
                 "vrf": "",
                 "neighbor": "FC00::1",
                 "remote_as": "65002",
+                "activate": "enable",
             },
             {
                 "local_as": "64900",
@@ -852,6 +858,7 @@ $
                 "vrf": "CUST_A",
                 "neighbor": "10.0.0.2",
                 "remote_as": "65003",
+                "activate": "enable",
             },
             {
                 "local_as": "64900",
@@ -859,6 +866,39 @@ $
                 "vrf": "",
                 "neighbor": "10.0.0.8",
                 "remote_as": "65004",
+                "activate": "enable",
+            },
+            {
+                "local_as": "64900",
+                "afi": "global",
+                "vrf": "",
+                "neighbor": "10.0.0.7",
+                "remote_as": "65007",
+                "activate": "enable",
+            },
+            {
+                "local_as": "64900",
+                "afi": "global",
+                "vrf": "",
+                "neighbor": "FC00::7",
+                "remote_as": "65017",
+                "activate": "enable",
+            },
+            {
+                "local_as": "64900",
+                "afi": "ipv4",
+                "vrf": "",
+                "neighbor": "10.0.0.88",
+                "remote_as": "65088",
+                "activate": "disable",
+            },
+            {
+                "local_as": "64900",
+                "afi": "ipv4",
+                "vrf": "",
+                "neighbor": "10.0.0.99",
+                "remote_as": "65099",
+                "activate": "",
             },
             {
                 "local_as": "64900",
@@ -866,20 +906,48 @@ $
                 "vrf": "CUST_B",
                 "neighbor": "FC00::2",
                 "remote_as": "65005",
+                "activate": "enable",
+            },
+            {
+                "local_as": "64900",
+                "afi": "ipv6",
+                "vrf": "",
+                "neighbor": "FC00::8",
+                "remote_as": "65006",
+                "activate": "enable",
+            },
+            {
+                "local_as": "64900",
+                "afi": "ipv6",
+                "vrf": "",
+                "neighbor": "172.16.0.8",
+                "remote_as": "65018",
+                "activate": "enable",
             },
         ]
         self.assertEqual(
             filter_discover_records(peer_recs, glob_v4.placeholders[0]),
             ["10.0.0.1", "10.0.0.9"],
         )
+        # vpnv4: direct AF neighbor + peer-group member (membership at global,
+        # already expanded onto afi=vpnv4 by config_bgp_peer).
         self.assertEqual(
             filter_discover_records(peer_recs, glob_v6.placeholders[0]),
             ["FC00::1"],
         )
-        # Global ipv4: only empty-vrf peers (not VRF CE)
+        # IPv4: ipv4 AF + global activate only for IPv4 literals
         self.assertEqual(
             filter_discover_records(peer_recs, glob_ipv4.placeholders[0]),
-            ["10.0.0.8"],
+            ["10.0.0.8", "10.0.0.7"],
+        )
+        glob_ipv6 = get_profile("zte.bgp_ipv6_neighbor_in")
+        assert glob_ipv6 is not None
+        self.assertEqual(glob_ipv6.placeholders[0].discover_filter_contains, "ipv6,global")
+        self.assertEqual(glob_ipv6.placeholders[0].discover_global_ip_family, "ipv6")
+        # IPv6 AF (any IP under AF) + global activate only for IPv6 literals
+        self.assertEqual(
+            set(filter_discover_records(peer_recs, glob_ipv6.placeholders[0])),
+            {"FC00::8", "172.16.0.8", "FC00::7"},
         )
         # afi filter is exact: ipv4 must not match vpnv4
         vrf_nei = get_profile("zte.bgp_vpnv4_vrf_neighbor_in")
