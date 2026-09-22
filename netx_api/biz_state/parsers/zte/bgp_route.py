@@ -9,7 +9,7 @@ from typing import Any, Mapping
 from ....lldp_shared import resolve_vendor_key
 from ....ntc_parse import apply_rules, resolve_cli_platform, row_get
 from ..common.pipeline import prefer_fsm
-from .bgp_peer import _detect_bgp_afi, _detect_vrf
+from .bgp_peer import _detect_bgp_afi, _detect_local_as, _detect_vrf
 
 RULE_KEYS = ("zte_zxros_show_bgp_neighbor_routes",)
 
@@ -152,6 +152,7 @@ def _emit_route(
     out: list[dict[str, Any]],
     seen: set[str],
     *,
+    local_as: str,
     afi: str,
     vrf: str,
     neighbor: str,
@@ -172,6 +173,7 @@ def _emit_route(
     metric, loc, tag, path = _split_rest(rest, path_continuation=path_continuation)
     out.append(
         {
+            "local_as": local_as[:16],
             "afi": afi[:32],
             "vrf": vrf[:128],
             "neighbor": neighbor[:128],
@@ -193,6 +195,7 @@ def _emit_route(
 def _map_fsm_rows(
     rows: list[dict[str, Any]],
     *,
+    local_as: str,
     afi: str,
     vrf: str,
     neighbor: str,
@@ -214,6 +217,7 @@ def _map_fsm_rows(
         path = row_get(r, "PATH", "path")
         out.append(
             {
+                "local_as": local_as[:16],
                 "afi": afi[:32],
                 "vrf": vrf[:128],
                 "neighbor": neighbor[:128],
@@ -236,6 +240,7 @@ def _map_fsm_rows(
 def _hand_parse(
     *,
     raw_text: str,
+    local_as: str = "",
     afi: str = "unknown",
     vrf: str = "",
     neighbor: str = "",
@@ -256,6 +261,7 @@ def _hand_parse(
         _emit_route(
             out,
             seen,
+            local_as=local_as,
             afi=afi,
             vrf=vrf,
             neighbor=neighbor,
@@ -300,6 +306,7 @@ def _hand_parse(
             _emit_route(
                 out,
                 seen,
+                local_as=local_as,
                 afi=afi,
                 vrf=vrf,
                 neighbor=neighbor,
@@ -333,6 +340,7 @@ def normalize_bgp_route(
     command: str = "",
     params: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
+    local_as = _detect_local_as(command, params)
     afi = _detect_bgp_afi(command, params)
     vrf = _detect_vrf(command, params)
     neighbor = _detect_neighbor(command, params)
@@ -355,12 +363,18 @@ def normalize_bgp_route(
 
     def _map(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return _map_fsm_rows(
-            rows, afi=afi, vrf=vrf, neighbor=neighbor, direction=direction
+            rows,
+            local_as=local_as,
+            afi=afi,
+            vrf=vrf,
+            neighbor=neighbor,
+            direction=direction,
         )
 
     def _hand(*, raw_text: str, **kw: Any) -> list[dict[str, Any]]:
         return _hand_parse(
             raw_text=raw_text,
+            local_as=local_as,
             afi=afi,
             vrf=vrf,
             neighbor=neighbor,

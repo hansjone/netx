@@ -28,6 +28,8 @@ _CONT_RE = re.compile(
     re.I,
 )
 _VRF_IN_CMD_RE = re.compile(r"(?i)\bvrf\s+(\S+)")
+# ``as <local_as>`` sits before ``| one-line`` (optional for legacy cmds).
+_LOCAL_AS_IN_CMD_RE = re.compile(r"(?i)(?:^|\s)as\s+(\S+)(?:\s*\||\s*$)")
 
 
 def _detect_bgp_afi(command: str, params: dict[str, str] | None) -> str:
@@ -56,6 +58,13 @@ def _detect_vrf(command: str, params: dict[str, str] | None) -> str:
     return m.group(1).strip() if m else ""
 
 
+def _detect_local_as(command: str, params: dict[str, str] | None) -> str:
+    if params and params.get("local_as"):
+        return str(params.get("local_as") or "").strip()
+    m = _LOCAL_AS_IN_CMD_RE.search(str(command or ""))
+    return m.group(1).strip() if m else ""
+
+
 def _state_and_pfx(state_raw: str) -> tuple[str, str]:
     raw = str(state_raw or "").strip()
     if raw.isdigit():
@@ -66,6 +75,7 @@ def _state_and_pfx(state_raw: str) -> tuple[str, str]:
 
 def _peer_row(
     *,
+    local_as: str,
     afi: str,
     vrf: str,
     nei: str,
@@ -78,6 +88,7 @@ def _peer_row(
 ) -> dict[str, Any]:
     state, pfx = _state_and_pfx(state_raw)
     return {
+        "local_as": local_as[:16],
         "afi": afi[:32],
         "vrf": vrf[:128],
         "neighbor": nei[:128],
@@ -94,6 +105,7 @@ def _peer_row(
 def _map_fsm_rows(
     rows: list[dict[str, Any]],
     *,
+    local_as: str,
     afi: str,
     vrf: str,
 ) -> list[dict[str, Any]]:
@@ -123,6 +135,7 @@ def _map_fsm_rows(
         state_raw = row_get(r, "STATE_PFX", "STATE", "state", "pfx_rcd")
         out.append(
             _peer_row(
+                local_as=local_as,
                 afi=afi,
                 vrf=vrf,
                 nei=nei,
@@ -140,6 +153,7 @@ def _map_fsm_rows(
 def _hand_parse(
     *,
     raw_text: str,
+    local_as: str = "",
     afi: str = "unknown",
     vrf: str = "",
     **_kw: Any,
@@ -165,6 +179,7 @@ def _hand_parse(
             pending = ""
             out.append(
                 _peer_row(
+                    local_as=local_as,
                     afi=afi,
                     vrf=vrf,
                     nei=nei,
@@ -190,6 +205,7 @@ def _hand_parse(
             seen.add(nei)
             out.append(
                 _peer_row(
+                    local_as=local_as,
                     afi=afi,
                     vrf=vrf,
                     nei=nei,
@@ -213,6 +229,7 @@ def normalize_bgp_peer(
     command: str = "",
     params: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
+    local_as = _detect_local_as(command, params)
     afi = _detect_bgp_afi(command, params)
     vrf = _detect_vrf(command, params)
     tables = dict(fsm_tables or {})
@@ -229,10 +246,10 @@ def normalize_bgp_peer(
             )
 
     def _map(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return _map_fsm_rows(rows, afi=afi, vrf=vrf)
+        return _map_fsm_rows(rows, local_as=local_as, afi=afi, vrf=vrf)
 
     def _hand(*, raw_text: str, **kw: Any) -> list[dict[str, Any]]:
-        return _hand_parse(raw_text=raw_text, afi=afi, vrf=vrf, **kw)
+        return _hand_parse(raw_text=raw_text, local_as=local_as, afi=afi, vrf=vrf, **kw)
 
     return prefer_fsm(tables, RULE_KEYS, _map, _hand, raw_text=raw_text)
 

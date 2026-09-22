@@ -8,6 +8,7 @@ from typing import Any, Mapping
 from ....lldp_shared import resolve_vendor_key
 from ....ntc_parse import apply_rules, resolve_cli_platform, row_get
 from ..common.pipeline import prefer_fsm
+from .bgp_peer import _detect_local_as
 
 RULE_KEYS = ("zte_zxros_show_bgp_evpn_mac",)
 
@@ -17,7 +18,11 @@ _ROUTE_RE = re.compile(
 )
 
 
-def _map_fsm_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _map_fsm_rows(
+    rows: list[dict[str, Any]],
+    *,
+    local_as: str,
+) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
     for r in rows:
@@ -27,6 +32,7 @@ def _map_fsm_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         seen.add(net)
         out.append(
             {
+                "local_as": local_as[:16],
                 "network": net[:256],
                 "next_hop": row_get(r, "NEXT_HOP", "next_hop")[:128],
                 "metric": row_get(r, "METRIC", "metric")[:32],
@@ -39,7 +45,7 @@ def _map_fsm_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-def _hand_parse(*, raw_text: str, **_kw: Any) -> list[dict[str, Any]]:
+def _hand_parse(*, raw_text: str, local_as: str = "", **_kw: Any) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
     for raw in str(raw_text or "").splitlines():
@@ -79,6 +85,7 @@ def _hand_parse(*, raw_text: str, **_kw: Any) -> list[dict[str, Any]]:
                 path_parts.append(p)
         out.append(
             {
+                "local_as": local_as[:16],
                 "network": net[:256],
                 "next_hop": m.group("nh")[:128],
                 "metric": metric[:32],
@@ -100,7 +107,7 @@ def normalize_evpn_mac(
     command: str = "",
     params: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
-    _ = params
+    local_as = _detect_local_as(command, params)
     tables = dict(fsm_tables or {})
     if not any(tables.get(k) for k in RULE_KEYS):
         platform = resolve_cli_platform(
@@ -113,7 +120,14 @@ def normalize_evpn_mac(
             tables = apply_rules(
                 platform=platform, text=raw_text, rule_keys=RULE_KEYS, command=cmd
             )
-    return prefer_fsm(tables, RULE_KEYS, _map_fsm_rows, _hand_parse, raw_text=raw_text)
+
+    def _map(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return _map_fsm_rows(rows, local_as=local_as)
+
+    def _hand(*, raw_text: str, **kw: Any) -> list[dict[str, Any]]:
+        return _hand_parse(raw_text=raw_text, local_as=local_as, **kw)
+
+    return prefer_fsm(tables, RULE_KEYS, _map, _hand, raw_text=raw_text)
 
 
 normalize_evpn_mac.RULE_KEYS = RULE_KEYS

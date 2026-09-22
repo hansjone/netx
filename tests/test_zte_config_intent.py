@@ -92,6 +92,74 @@ $
 !</bgp>
 """
 
+# Multi local-AS (trimmed from MER1 show running-config bgp)
+_CFG_BGP_MULTI_AS = """
+!<bgp>
+bgp as-notation plain
+router bgp 64900
+  neighbor 2c0f:f7c0:0:500::50:2 remote-as 64900
+  neighbor 2c0f:f7c0:0:500::50:2 update-source loopback130
+  neighbor 172.16.0.131 remote-as 64900
+  neighbor 172.16.0.131 update-source loopback130
+  neighbor 10.229.147.93 remote-as 64900
+  neighbor 10.229.147.93 update-source loopback130
+  address-family link-state
+    neighbor 10.229.147.93 activate
+    neighbor 10.229.147.93 route-reflector-client
+  $
+  address-family vpnv4
+    neighbor 172.16.0.131 activate
+    neighbor 172.16.0.131 route-reflector-client
+  $
+  address-family ipv6
+    neighbor 2c0f:f7c0:0:500::50:2 activate
+  $
+  address-family ipv6 sr-policy
+    neighbor 10.229.147.93 activate
+  $
+  address-family vpnv6
+    neighbor 2c0f:f7c0:0:500::50:2 activate
+  $
+$
+router bgp 64600
+  neighbor 444::2 remote-as 64600
+  neighbor 444::2 activate disable
+  neighbor 444::2 update-source loopback400
+  address-family l2vpn evpn
+    neighbor 444::2 activate
+    neighbor 444::2 announce-sid
+  $
+$
+router bgp 64580
+  neighbor 22:22:22::22 remote-as 64580
+  neighbor 22:22:22::22 activate
+  neighbor 22:22:22::22 update-source loopback0
+$
+router bgp 100
+  neighbor MAR_GROUP_V6_1 peer-group
+  neighbor MAR_GROUP_V6_1 remote-as 100
+  neighbor MAR_GROUP_V6_1 activate disable
+  neighbor MAR_GROUP_V6_1 update-source loopback1001
+  neighbor 2408:8121:8400:1:1000::4:0 remote-as 100
+  neighbor 2408:8121:8400:1:1000::4:0 peer-group MAR_GROUP_V6_1
+  neighbor 2408:8121:8400:1:1000::4:0 activate disable
+  neighbor 100.0.0.2 remote-as 100
+  neighbor 100.0.0.2 activate
+  address-family l2vpn evpn
+    neighbor MAR_GROUP_V6_1 activate
+    neighbor MAR_GROUP_V6_1 route-map TO_MAR_EVPN_SRV6_GROUP_1 out
+  $
+  address-family vpnv4
+    neighbor 100.0.0.2 activate
+  $
+  address-family ipv6 vrf SRv6
+    neighbor 2000::1 remote-as 100
+    neighbor 2000::1 activate
+  $
+$
+!</bgp>
+"""
+
 _CFG_L2VPN = """
 !<l2vpn>
 vpws VPN_A
@@ -289,36 +357,116 @@ class ZteConfigIntentTests(unittest.TestCase):
         self.assertNotIn("SKIPME", blob)
         self.assertNotIn("password", blob.lower())
 
-        by = {(r["afi"], r["vrf"], r["neighbor"], r["peer_group"]): r for r in rows}
-        self.assertIn(("vpnv4", "", "10.0.0.1", "CORE_RR"), by)
-        self.assertEqual(by[("vpnv4", "", "10.0.0.1", "CORE_RR")]["remote_as"], "65001")
-        self.assertEqual(by[("vpnv4", "", "10.0.0.1", "CORE_RR")]["activate"], "enable")
-        self.assertEqual(by[("vpnv4", "", "10.0.0.1", "CORE_RR")]["update_source"], "loopback1")
-        self.assertEqual(by[("vpnv4", "", "10.0.0.1", "CORE_RR")]["route_map_in"], "RM_IN")
-        self.assertEqual(by[("vpnv4", "", "10.0.0.1", "CORE_RR")]["route_map_out"], "RM_OUT")
+        by = {
+            (r["local_as"], r["afi"], r["vrf"], r["neighbor"], r["peer_group"]): r
+            for r in rows
+        }
+        self.assertIn(("65000", "vpnv4", "", "10.0.0.1", "CORE_RR"), by)
+        self.assertEqual(by[("65000", "vpnv4", "", "10.0.0.1", "CORE_RR")]["remote_as"], "65001")
+        self.assertEqual(by[("65000", "vpnv4", "", "10.0.0.1", "CORE_RR")]["activate"], "enable")
+        self.assertEqual(by[("65000", "vpnv4", "", "10.0.0.1", "CORE_RR")]["update_source"], "loopback1")
+        self.assertEqual(by[("65000", "vpnv4", "", "10.0.0.1", "CORE_RR")]["route_map_in"], "RM_IN")
+        self.assertEqual(by[("65000", "vpnv4", "", "10.0.0.1", "CORE_RR")]["route_map_out"], "RM_OUT")
         # AF-scoped RM must not bleed into other address-families
-        self.assertEqual(by[("l2vpn-evpn", "", "10.0.0.1", "CORE_RR")]["route_map_in"], "RM_IN")
-        self.assertEqual(by[("l2vpn-evpn", "", "10.0.0.1", "CORE_RR")]["route_map_out"], "")
+        self.assertEqual(by[("65000", "l2vpn-evpn", "", "10.0.0.1", "CORE_RR")]["route_map_in"], "RM_IN")
+        self.assertEqual(by[("65000", "l2vpn-evpn", "", "10.0.0.1", "CORE_RR")]["route_map_out"], "")
         # peer-group name is not an IP → neighbor empty, peer_group set
-        self.assertIn(("vpnv4", "", "", "CORE_RR"), by)
-        self.assertEqual(by[("vpnv4", "", "", "CORE_RR")]["remote_as"], "65009")
+        self.assertIn(("65000", "vpnv4", "", "", "CORE_RR"), by)
+        self.assertEqual(by[("65000", "vpnv4", "", "", "CORE_RR")]["remote_as"], "65009")
         # Global AF expands peer-group members (10.0.0.9 only via group activate)
-        self.assertIn(("vpnv4", "", "10.0.0.9", "CORE_RR"), by)
-        self.assertEqual(by[("vpnv4", "", "10.0.0.9", "CORE_RR")]["remote_as"], "65019")
-        self.assertEqual(by[("vpnv4", "", "10.0.0.9", "CORE_RR")]["activate"], "enable")
-        self.assertEqual(by[("ipv4", "CUST_A", "10.0.0.2", "")]["remote_as"], "65003")
+        self.assertIn(("65000", "vpnv4", "", "10.0.0.9", "CORE_RR"), by)
+        self.assertEqual(by[("65000", "vpnv4", "", "10.0.0.9", "CORE_RR")]["remote_as"], "65019")
+        self.assertEqual(by[("65000", "vpnv4", "", "10.0.0.9", "CORE_RR")]["activate"], "enable")
+        self.assertEqual(by[("65000", "ipv4", "CUST_A", "10.0.0.2", "")]["remote_as"], "65003")
         # Global ipv4 AF: same peer-group expand as vpnv4 (not VRF)
-        self.assertIn(("ipv4", "", "", "CORE_RR"), by)
-        self.assertIn(("ipv4", "", "10.0.0.1", "CORE_RR"), by)
-        self.assertIn(("ipv4", "", "10.0.0.9", "CORE_RR"), by)
+        self.assertIn(("65000", "ipv4", "", "", "CORE_RR"), by)
+        self.assertIn(("65000", "ipv4", "", "10.0.0.1", "CORE_RR"), by)
+        self.assertIn(("65000", "ipv4", "", "10.0.0.9", "CORE_RR"), by)
         # VRF must not pick up global peer-group members
-        self.assertNotIn(("ipv4", "CUST_A", "10.0.0.9", "CORE_RR"), by)
-        self.assertNotIn(("ipv4", "CUST_A", "10.0.0.1", "CORE_RR"), by)
-        self.assertIn(("l2vpn-evpn", "", "10.0.0.1", "CORE_RR"), by)
+        self.assertNotIn(("65000", "ipv4", "CUST_A", "10.0.0.9", "CORE_RR"), by)
+        self.assertNotIn(("65000", "ipv4", "CUST_A", "10.0.0.1", "CORE_RR"), by)
+        self.assertIn(("65000", "l2vpn-evpn", "", "10.0.0.1", "CORE_RR"), by)
         # global IPv6 neighbor without AF activate
-        self.assertIn(("global", "", "FC00:1::1", ""), by)
+        self.assertIn(("65000", "global", "", "FC00:1::1", ""), by)
         # no name left in neighbor column
         self.assertTrue(all((not r["neighbor"]) or _is_ip_neighbor(r["neighbor"]) for r in rows))
+        self.assertTrue(all(r["local_as"] == "65000" for r in rows))
+
+    def test_config_bgp_peer_multi_local_as(self) -> None:
+        rows = normalize_config_bgp_peer(
+            raw_text=_CFG_BGP_MULTI_AS, command="show running-config bgp"
+        )
+        local_ases = {r["local_as"] for r in rows}
+        self.assertEqual(local_ases, {"64900", "64600", "64580", "100"})
+
+        by = {
+            (r["local_as"], r["afi"], r["vrf"], r["neighbor"], r["peer_group"]): r
+            for r in rows
+        }
+        # AS 64900 AF activates
+        self.assertEqual(
+            by[("64900", "vpnv4", "", "172.16.0.131", "")]["remote_as"], "64900"
+        )
+        self.assertEqual(
+            by[("64900", "vpnv4", "", "172.16.0.131", "")]["update_source"],
+            "loopback130",
+        )
+        self.assertEqual(
+            by[("64900", "ipv6", "", "2c0f:f7c0:0:500::50:2", "")]["activate"], "enable"
+        )
+        self.assertEqual(
+            by[("64900", "vpnv6", "", "2c0f:f7c0:0:500::50:2", "")]["activate"], "enable"
+        )
+        self.assertIn(("64900", "link-state", "", "10.229.147.93", ""), by)
+        # Multi-word AF must not collapse into plain ipv6
+        self.assertIn(("64900", "ipv6-sr-policy", "", "10.229.147.93", ""), by)
+        self.assertNotEqual(
+            by[("64900", "ipv6-sr-policy", "", "10.229.147.93", "")]["afi"],
+            "ipv6",
+        )
+        # VRF CE under AS 100 (not 64900)
+        self.assertEqual(
+            by[("100", "ipv6", "SRv6", "2000::1", "")]["remote_as"], "100"
+        )
+        self.assertNotIn(("64900", "ipv6", "SRv6", "2000::1", ""), by)
+        # AS 64600 EVPN peer (not mixed into 64900)
+        self.assertEqual(
+            by[("64600", "l2vpn-evpn", "", "444::2", "")]["remote_as"], "64600"
+        )
+        self.assertEqual(
+            by[("64600", "l2vpn-evpn", "", "444::2", "")]["update_source"],
+            "loopback400",
+        )
+        self.assertNotIn(("64900", "l2vpn-evpn", "", "444::2", ""), by)
+        # AS 64580: top-level activate only → global row
+        self.assertIn(("64580", "global", "", "22:22:22::22", ""), by)
+        self.assertEqual(
+            by[("64580", "global", "", "22:22:22::22", "")]["update_source"],
+            "loopback0",
+        )
+        # AS 100: peer-group expand on EVPN
+        self.assertIn(("100", "l2vpn-evpn", "", "", "MAR_GROUP_V6_1"), by)
+        self.assertIn(
+            ("100", "l2vpn-evpn", "", "2408:8121:8400:1:1000::4:0", "MAR_GROUP_V6_1"),
+            by,
+        )
+        self.assertEqual(
+            by[
+                ("100", "l2vpn-evpn", "", "2408:8121:8400:1:1000::4:0", "MAR_GROUP_V6_1")
+            ]["route_map_out"],
+            "TO_MAR_EVPN_SRV6_GROUP_1",
+        )
+        self.assertEqual(
+            by[("100", "vpnv4", "", "100.0.0.2", "")]["remote_as"], "100"
+        )
+        # Peer-group members must not leak across local AS
+        self.assertNotIn(
+            ("64900", "l2vpn-evpn", "", "2408:8121:8400:1:1000::4:0", "MAR_GROUP_V6_1"),
+            by,
+        )
+        self.assertTrue(
+            all((not r["neighbor"]) or _is_ip_neighbor(r["neighbor"]) for r in rows)
+        )
 
     def test_config_l2vpn_pw(self) -> None:
         rows = normalize_config_l2vpn_pw(

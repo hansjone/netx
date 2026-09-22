@@ -223,7 +223,13 @@ def expand_from_bindings(
             val = params.get(ph.name) or params.get(ph.schema_field) or ""
             if ph.required and not val:
                 raise ValueError(f"missing placeholder {ph.name} for {profile.profile_id}")
-            rendered = rendered.replace(f"<{ph.name}>", val)
+            if not val:
+                # Optional empty: drop `` as <local_as>`` (or bare `` <name>``) so
+                # legacy single-AS binds still render a valid show command.
+                rendered = rendered.replace(f" as <{ph.name}>", "")
+                rendered = rendered.replace(f"<{ph.name}>", "")
+            else:
+                rendered = rendered.replace(f"<{ph.name}>", val)
         concrete = normalize_command(rendered)
         if re.search(r"<[^>]+>", concrete):
             raise ValueError(f"unresolved placeholders in: {concrete}")

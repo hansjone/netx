@@ -25,8 +25,20 @@ class DiscoverCacheTests(unittest.TestCase):
         self.assertEqual(v6.placeholders[0].discover_profile_id, "zte.config_bgp_peer")
 
         records = [
-            {"afi": "vpnv4", "vrf": "", "neighbor": "10.0.0.1", "remote_as": "65001"},
-            {"afi": "vpnv6", "vrf": "", "neighbor": "FC00::1", "remote_as": "65002"},
+            {
+                "local_as": "64900",
+                "afi": "vpnv4",
+                "vrf": "",
+                "neighbor": "10.0.0.1",
+                "remote_as": "65001",
+            },
+            {
+                "local_as": "64900",
+                "afi": "vpnv6",
+                "vrf": "",
+                "neighbor": "FC00::1",
+                "remote_as": "65002",
+            },
         ]
         db = MagicMock()
 
@@ -53,7 +65,12 @@ class DiscoverCacheTests(unittest.TestCase):
             )
             self.assertTrue(first["ok"])
             self.assertFalse(first.get("cache_hit"))
-            self.assertEqual([c["value"] for c in first["candidates"]], ["10.0.0.1"])
+            self.assertTrue(first.get("pair_mode"))
+            self.assertEqual(len(first["candidates"]), 1)
+            self.assertEqual(
+                first["candidates"][0]["bindings"],
+                {"neighbor": "10.0.0.1", "local_as": "64900"},
+            )
             self.assertEqual(open_conn.call_count, 1)
             self.assertEqual(send_cmd.call_count, 1)
             self.assertEqual(run_parser.call_count, 1)
@@ -67,7 +84,11 @@ class DiscoverCacheTests(unittest.TestCase):
             )
             self.assertTrue(second["ok"])
             self.assertTrue(second.get("cache_hit"))
-            self.assertEqual([c["value"] for c in second["candidates"]], ["FC00::1"])
+            self.assertEqual(len(second["candidates"]), 1)
+            self.assertEqual(
+                second["candidates"][0]["bindings"],
+                {"neighbor": "FC00::1", "local_as": "64900"},
+            )
             # Same discover profile → no second SSH/parse
             self.assertEqual(open_conn.call_count, 1)
             self.assertEqual(send_cmd.call_count, 1)
