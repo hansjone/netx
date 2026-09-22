@@ -135,6 +135,11 @@ src/
 - API 补充：`GET /v1/biz-state/compare/metrics`；模板 `metrics[]` 多表结构
 - Phase3：VRF 发现（`*.vrf_list`）供带参采集绑定；`PUT …/items/{id}/bindings`
 - 调度：`NETX_BIZ_STATE_SCHEDULER_ENABLED`（默认开），tick `NETX_BIZ_STATE_SCHEDULER_TICK_SEC`
+- **双车道采集**：监控项 `collect_lane=light|heavy`（UI「采集车道」列）。轻/重各一条 SSH；整轮墙钟上限 = `RUN_TIMEOUT_CAP`（命令多时易顶满）。
+  - 轻车道：`NETX_NE_COLLECT_READ_TIMEOUT_SEC`（单条，默认 120）· `NETX_NE_COLLECT_RUN_TIMEOUT_CAP_SEC`（整轮，默认 **600≈10min**）
+  - 重车道：`NETX_BIZ_STATE_HEAVY_READ_TIMEOUT_SEC`（单条，默认 1500）· `NETX_BIZ_STATE_HEAVY_RUN_TIMEOUT_CAP_SEC`（整轮，默认 **2400≈40min**）
+  - 批次约 40 分钟以 `*_timeout (2400s)` / `partial` 结束时，优先加大 `NETX_BIZ_STATE_HEAVY_RUN_TIMEOUT_CAP_SEC`（见 `.env.example`）
+- 停止采集：`POST /v1/biz-state/tasks/{id}/collect/stop`（排队直接取消；执行中命令间隙中止）
 - 前端：`/network/tasks/biz-state`（勾选监控项 / 发现 VRF / 批次 / 导出 zip）
 
 ## 拓扑管理（Fabric + 站点目录，对齐厂商）
