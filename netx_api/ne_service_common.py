@@ -20,6 +20,7 @@ from .ne_crypto import CredentialCryptoError, credentials_configured, decrypt_se
 from .ne_schemas import ManagedNeCreate, ManagedNeOut, ManagedNeUpdate
 from .ne_hop_templates import expand_bastion_hop_fields, normalize_hop_host
 from .ne_session_factory import default_bastion_username_template, default_hop_command_template
+from .ne_exec_guard import normalize_exec_policy
 from .timeutil import utcnow_naive
 
 IMPORT_COLUMNS = (
@@ -241,6 +242,7 @@ def row_to_out(row: ManagedNE) -> ManagedNeOut:
         remark=str(row.remark or ""),
         source=str(row.source or ""),
         source_ref=str(row.source_ref or ""),
+        exec_policy=normalize_exec_policy(getattr(row, "exec_policy", None)),  # type: ignore[arg-type]
         hop_enabled=bool(row.hop_enabled),
         hop_vendor=str(row.hop_vendor or "zte"),
         hop_host=str(row.hop_host or ""),
@@ -273,6 +275,7 @@ def get_device_credentials(row: ManagedNE) -> dict[str, Any]:
         "password": decrypt_secret(row.password_enc),
         "enable_secret": decrypt_secret(row.enable_secret_enc),
         "name": str(row.name or ""),
+        "exec_policy": normalize_exec_policy(getattr(row, "exec_policy", None)),
         "hop_enabled": hop_enabled,
         "hop_vendor": str(row.hop_vendor or "zte"),
         "hop_host": str(row.hop_host or ""),

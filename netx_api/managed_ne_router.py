@@ -75,9 +75,14 @@ def api_list_managed_ne(
 @router.get("/meta/device-types")
 def api_device_types():
     # Include generic/linux so LLDP/WebCRT placeholders can be edited without a bogus select value.
+    from .config import settings
     from .device_types import WEBCRT_DEVICE_TYPES
 
-    return {"device_types": list(WEBCRT_DEVICE_TYPES), "vendors": list(SUPPORTED_VENDORS)}
+    return {
+        "device_types": list(WEBCRT_DEVICE_TYPES),
+        "vendors": list(SUPPORTED_VENDORS),
+        "exec_policy_enabled": bool(getattr(settings, "ne_exec_policy_enabled", False)),
+    }
 
 
 @router.get("/meta/credentials-configured")
@@ -150,7 +155,7 @@ def api_exec_managed_ne(
     ctx: Annotated[AuthContext, Depends(require_user)],
     db: Session = Depends(get_db),
 ):
-    """Login to a managed NE or UME inventory NE and run read-only CLI (show/display/ping/traceroute)."""
+    """Login to a managed NE or UME inventory NE and run CLI (policy from managed NE exec_policy)."""
     uid, uname = _actor(ctx)
     out = execute_managed_ne_commands(
         db,

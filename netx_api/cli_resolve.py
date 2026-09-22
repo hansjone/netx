@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from .device_types import SUPPORTED_DEVICE_TYPES
 from .models import CliConnectProfile, ManagedNE, UmeCliOverride, UmeInventoryNE
 from .ne_crypto import decrypt_secret
+from .ne_exec_guard import EXEC_POLICY_READONLY, normalize_exec_policy
 from .ne_service import get_device_credentials, row_to_out
 
 _BUILTIN_NE_TYPE_RULES: list[tuple[re.Pattern[str], str, str]] = [
@@ -141,6 +142,7 @@ def resolve_cli_target(
             "port": meta["port"],
             "protocol": meta["protocol"],
             "connect_status": meta["connect_status"],
+            "exec_policy": normalize_exec_policy(meta.get("exec_policy")),
             "hop_enabled": meta["hop_enabled"],
             "hop_vendor": meta["hop_vendor"],
         }
@@ -198,6 +200,7 @@ def resolve_cli_target(
         "port": int(profile.port or 22),
         "protocol": str(profile.protocol or "ssh"),
         "connect_status": connect_status,
+        "exec_policy": EXEC_POLICY_READONLY,
         "hop_enabled": bool(profile.hop_enabled),
         "hop_vendor": str(profile.hop_vendor or ""),
         "cli_profile_id": str(profile.id),

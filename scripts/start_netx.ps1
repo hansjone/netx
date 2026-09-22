@@ -3,13 +3,22 @@ param(
     [int]$Port = 8890,
     [int]$WebPort = 5173,
     [switch]$SkipInstall = $false,
+    [Alias("Bg")]
     [switch]$Background = $false,
+    # Common typo for -Background (otherwise PowerShell ignores intent / or fails).
+    [Parameter(DontShow)]
+    [switch]$Backgtound = $false,
     [switch]$WithWeb = $false,
     # Keep collectors inside the API process (legacy). Default: split API + worker.
     [switch]$InlineSchedulers = $false
 )
 
 $ErrorActionPreference = "Stop"
+
+if ($Backgtound -and -not $Background) {
+    Write-Host "[WARN] -Backgtound is a typo; treating as -Background." -ForegroundColor Yellow
+    $Background = $true
+}
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $projectRoot
@@ -234,8 +243,26 @@ if ($Background) {
         Write-Host "Err = $webErrFile"
     }
     Write-Host ""
-    Write-Host "==> Background services started; this script exits (API/worker/web keep running)." -ForegroundColor Cyan
+    Write-Host "==> Background services started; this script will exit now." -ForegroundColor Cyan
+    Write-Host "    API/worker/web keep running in the background — you can close this terminal." -ForegroundColor Cyan
+    Write-Host "    API log:  $logFile" -ForegroundColor DarkGray
+    Write-Host "    Err log:  $errFile" -ForegroundColor DarkGray
+    if (-not $InlineSchedulers) {
+        Write-Host "    Worker:   $workerLogFile" -ForegroundColor DarkGray
+    }
+    if ($WithWeb) {
+        Write-Host "    Web log:  $webLogFile" -ForegroundColor DarkGray
+        Write-Host "    UI:       $webUrl/" -ForegroundColor Green
+    }
+    Write-Host "    Stop:     .\scripts\stop_netx.ps1" -ForegroundColor DarkGray
     exit 0
+}
+
+if (-not $Background) {
+    Write-Host "==> Foreground mode (no -Background): this terminal stays attached to the API." -ForegroundColor Yellow
+    Write-Host "    Schedule/UME logs will keep printing here until you Ctrl+C." -ForegroundColor Yellow
+    Write-Host "    For detach:  .\scripts\start_netx.ps1 -Background -WithWeb" -ForegroundColor Yellow
+    Write-Host ""
 }
 
 if ($WithWeb) {

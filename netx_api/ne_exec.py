@@ -14,7 +14,12 @@ from .config import settings
 from .db import SessionLocal
 from .ne_collect_runner import _collect_on_device
 from .ne_crypto import credentials_configured
-from .ne_exec_guard import _validate_command, validate_ne_exec_command
+from .ne_exec_guard import (
+    _validate_command,
+    effective_exec_policy,
+    normalize_exec_policy,
+    validate_ne_exec_command,
+)
 
 _EXEC_MAX_COMMANDS_CAP = 50
 _EXEC_MAX_OUTPUT = 32_000
@@ -28,6 +33,8 @@ __all__ = [
     "_validate_command",
     "execute_managed_ne_commands",
     "execute_managed_ne_commands_batch",
+    "effective_exec_policy",
+    "normalize_exec_policy",
     "validate_ne_exec_command",
 ]
 
@@ -62,10 +69,16 @@ def execute_managed_ne_commands(
     max_cmds = _exec_max_commands()
     if len(cmds) > max_cmds:
         raise HTTPException(status_code=400, detail=f"too_many_commands (max {max_cmds})")
-    for c in cmds:
-        validate_ne_exec_command(c)
 
     creds, device = resolve_cli_target(db, managed_ne_id=mid or None, ume_ne_id=uid or None)
+    exec_policy = effective_exec_policy(
+        (device or {}).get("exec_policy") or (creds or {}).get("exec_policy"),
+        device_type=(device or {}).get("device_type") or (creds or {}).get("device_type"),
+    )
+    if isinstance(device, dict):
+        device["exec_policy"] = exec_policy
+    for c in cmds:
+        validate_ne_exec_command(c, policy=exec_policy)
     skip = cli_creds_skip_reason(creds, interactive=False)
     if skip:
         return {

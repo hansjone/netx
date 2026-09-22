@@ -27,6 +27,7 @@ export type ManagedNeFormState = {
   hop_vrf: string;
   hop_target_auth_mode: "bastion_managed" | "manual";
   hop_enter_system_view: boolean;
+  exec_policy: "readonly" | "linux_shell" | "unrestricted";
 };
 
 export function deviceTypeForVendor(vendor: string): string {
@@ -36,6 +37,13 @@ export function deviceTypeForVendor(vendor: string): string {
   if (vendor === "Juniper") return "juniper_junos";
   if (vendor === "Nokia") return "nokia_sros";
   return "generic";
+}
+
+export function isLinuxDeviceType(deviceType: string | undefined | null): boolean {
+  const low = String(deviceType || "")
+    .trim()
+    .toLowerCase();
+  return low === "linux" || low === "linux_ssh" || low === "linux_telnet" || low.startsWith("linux_");
 }
 
 export function emptyManagedNeForm(): ManagedNeFormState {
@@ -61,6 +69,7 @@ export function emptyManagedNeForm(): ManagedNeFormState {
     hop_vrf: "",
     hop_target_auth_mode: "bastion_managed",
     hop_enter_system_view: false,
+    exec_policy: "readonly",
   };
 }
 
@@ -112,6 +121,10 @@ export function formFromManagedNe(row: ManagedNeItem): ManagedNeFormState {
     hop_vrf: row.hop_vrf,
     hop_target_auth_mode: row.hop_target_auth_mode === "manual" ? "manual" : "bastion_managed",
     hop_enter_system_view: Boolean(row.hop_enter_system_view),
+    exec_policy:
+      row.exec_policy === "linux_shell" || row.exec_policy === "unrestricted"
+        ? row.exec_policy
+        : "readonly",
   };
 }
 
@@ -127,7 +140,14 @@ export function managedSourceKey(
 /** Build API body + hop validation. Throws Error with message key text already translated by caller. */
 export function buildManagedNeSaveBody(
   form: ManagedNeFormState,
-  opts: { editing: boolean; hopHostRequired: string; hopUserRequired: string; hopPasswordRequired: string },
+  opts: {
+    editing: boolean;
+    hopHostRequired: string;
+    hopUserRequired: string;
+    hopPasswordRequired: string;
+    /** When false, omit exec_policy so lab-open cannot be persisted accidentally. */
+    execPolicyEnabled?: boolean;
+  },
 ): Record<string, unknown> {
   const body: Record<string, unknown> = {
     name: form.name,
@@ -152,6 +172,9 @@ export function buildManagedNeSaveBody(
     ...(form.password ? { password: form.password } : {}),
     ...(form.hop_password ? { hop_password: form.hop_password } : {}),
   };
+  if (opts.execPolicyEnabled) {
+    body.exec_policy = isLinuxDeviceType(form.device_type) ? form.exec_policy : "readonly";
+  }
   if (form.hop_enabled) {
     if (!form.hop_host.trim()) throw new Error(opts.hopHostRequired);
     if (!form.hop_username.trim()) throw new Error(opts.hopUserRequired);

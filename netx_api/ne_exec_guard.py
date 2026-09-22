@@ -1,10 +1,24 @@
-"""NE CLI command allow/deny gates (read-only exec for ops tools)."""
+"""NE CLI command allow/deny gates (execManagedNe / ops tools).
+
+Policies (per managed NE ``exec_policy``):
+
+- ``readonly`` (default): network CLI only — show/display/ping/traceroute.
+- ``linux_shell``: single-line shell; no network prefix/pipe rules; no write-deny list.
+- ``unrestricted``: same as linux_shell (lab open); kept distinct for audit/UI.
+"""
 
 from __future__ import annotations
 
 import re
 
 from fastapi import HTTPException
+
+EXEC_POLICY_READONLY = "readonly"
+EXEC_POLICY_LINUX_SHELL = "linux_shell"
+EXEC_POLICY_UNRESTRICTED = "unrestricted"
+EXEC_POLICIES = frozenset(
+    {EXEC_POLICY_READONLY, EXEC_POLICY_LINUX_SHELL, EXEC_POLICY_UNRESTRICTED}
+)
 
 # Block obvious config-change / destructive patterns (case-insensitive).
 _BLOCKED_RE = re.compile(
@@ -39,6 +53,49 @@ _ALLOWED_PIPE_SEGMENT_RE = re.compile(
 _BLOCKED_PIPE_SEGMENT_RE = re.compile(r"(?i)\b(redirect|append|tee|send)\b")
 
 
+def normalize_exec_policy(raw: str | None) -> str:
+    p = str(raw or "").strip().lower()
+    return p if p in EXEC_POLICIES else EXEC_POLICY_READONLY
+
+
+def is_linux_device_type(device_type: str | None) -> bool:
+    low = str(device_type or "").strip().lower()
+    return low in ("linux", "linux_ssh", "linux_telnet") or low.startswith("linux_")
+
+
+def exec_policy_feature_enabled() -> bool:
+    """Global kill-switch: off → always readonly (UI hidden, API rejects open policies)."""
+    from .config import settings
+
+    return bool(getattr(settings, "ne_exec_policy_enabled", False))
+
+
+def effective_exec_policy(raw: str | None, *, device_type: str | None = None) -> str:
+    """Policy used at exec time (forces readonly when feature off or non-linux)."""
+    if not exec_policy_feature_enabled():
+        return EXEC_POLICY_READONLY
+    pol = normalize_exec_policy(raw)
+    if pol != EXEC_POLICY_READONLY and not is_linux_device_type(device_type):
+        return EXEC_POLICY_READONLY
+    return pol
+
+
+def require_exec_policy_writable(
+    raw: str | None,
+    *,
+    device_type: str | None = None,
+) -> str:
+    """Normalize for create/update; reject open policies when feature off or non-linux."""
+    pol = normalize_exec_policy(raw)
+    if pol == EXEC_POLICY_READONLY:
+        return pol
+    if not exec_policy_feature_enabled():
+        raise HTTPException(status_code=400, detail="exec_policy_feature_disabled")
+    if not is_linux_device_type(device_type):
+        raise HTTPException(status_code=400, detail="exec_policy_requires_linux_device_type")
+    return pol
+
+
 def _validate_pipe_segments(cmd: str) -> None:
     if "|" not in cmd:
         return
@@ -52,13 +109,14 @@ def _validate_pipe_segments(cmd: str) -> None:
             raise HTTPException(status_code=400, detail="command_pipe_not_allowed")
 
 
-def validate_ne_exec_command(command: str) -> None:
-    """Raise HTTPException if command is empty, smuggled, blocked, or not allowlisted."""
-    cmd = str(command or "").strip()
-    if not cmd:
-        raise HTTPException(status_code=400, detail="empty_command")
-    if len(cmd) > 500:
-        raise HTTPException(status_code=400, detail="command_too_long")
+def _validate_single_line(cmd: str) -> None:
+    if any(ch in cmd for ch in ("\n", "\r")):
+        raise HTTPException(status_code=400, detail="command_chars_not_allowed")
+    if any(sep in cmd for sep in _FORBIDDEN_LINE_SEPARATORS):
+        raise HTTPException(status_code=400, detail="command_chars_not_allowed")
+
+
+def _validate_readonly_command(cmd: str) -> None:
     if any(ch in cmd for ch in (";", "\n", "\r", "`")):
         raise HTTPException(status_code=400, detail="command_chars_not_allowed")
     if any(sep in cmd for sep in _FORBIDDEN_LINE_SEPARATORS):
@@ -68,6 +126,21 @@ def validate_ne_exec_command(command: str) -> None:
     if not _ALLOWED_PREFIX_RE.match(cmd):
         raise HTTPException(status_code=400, detail="command_not_allowed_prefix")
     _validate_pipe_segments(cmd)
+
+
+def validate_ne_exec_command(command: str, *, policy: str = EXEC_POLICY_READONLY) -> None:
+    """Raise HTTPException if command is empty, smuggled, blocked, or not allowlisted."""
+    cmd = str(command or "").strip()
+    if not cmd:
+        raise HTTPException(status_code=400, detail="empty_command")
+    if len(cmd) > 500:
+        raise HTTPException(status_code=400, detail="command_too_long")
+    pol = normalize_exec_policy(policy)
+    if pol in (EXEC_POLICY_LINUX_SHELL, EXEC_POLICY_UNRESTRICTED):
+        # One command string per slot; shell metacharacters (|;&&`$) allowed.
+        _validate_single_line(cmd)
+        return
+    _validate_readonly_command(cmd)
 
 
 # Back-compat alias used by tests / callers.

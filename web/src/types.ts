@@ -211,6 +211,8 @@ export type ManagedNeItem = {
   hop_vrf: string;
   hop_target_auth_mode: string;
   hop_enter_system_view?: boolean;
+  /** MCP/API CLI gate: readonly | linux_shell | unrestricted */
+  exec_policy?: "readonly" | "linux_shell" | "unrestricted";
   created_at: string;
   updated_at: string;
 };
@@ -225,6 +227,8 @@ export type ManagedNeListResponse = {
 export type ManagedNeMeta = {
   device_types: string[];
   vendors: string[];
+  /** When false (default), exec_policy UI/API open policies are disabled. */
+  exec_policy_enabled?: boolean;
 };
 
 export type ManagedNeImportResult = {

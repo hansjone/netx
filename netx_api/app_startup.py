@@ -43,6 +43,10 @@ def run_api_startup() -> None:
     """Full API boot sequence previously inlined in ``main.on_startup``."""
     assert_secure_defaults_or_exit()
     _configure_ume_diag_logging()
+    _log.info(
+        "startup: ne_exec_policy_enabled=%s",
+        bool(getattr(settings, "ne_exec_policy_enabled", False)),
+    )
     Base.metadata.create_all(bind=engine)
 
     alembic_ok = True

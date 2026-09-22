@@ -200,7 +200,7 @@ def apply_collection_schema_safety_net(conn: Connection) -> None:
 
 
 def apply_hop_schema_safety_net(conn: Connection) -> None:
-    """Always-on hop columns (Alembic head stamp skips legacy domain patches)."""
+    """Always-on hop / exec_policy columns (Alembic head stamp skips legacy domain patches)."""
     _run_sql(
         conn,
         "ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS hop_enter_system_view BOOLEAN DEFAULT FALSE",
@@ -208,6 +208,10 @@ def apply_hop_schema_safety_net(conn: Connection) -> None:
     _run_sql(
         conn,
         "ALTER TABLE cli_connect_profile ADD COLUMN IF NOT EXISTS hop_enter_system_view BOOLEAN DEFAULT FALSE",
+    )
+    _run_sql(
+        conn,
+        "ALTER TABLE managed_ne ADD COLUMN IF NOT EXISTS exec_policy VARCHAR(32) DEFAULT 'readonly'",
     )
 
 
@@ -539,14 +543,48 @@ def apply_all_legacy_startup_ddl(engine: Engine) -> None:
 
 
 def run_alembic_upgrade_to_head() -> None:
-    """Programmatic ``alembic upgrade head`` (optional on API start)."""
+    """Programmatic ``alembic upgrade head`` (optional on API start).
+
+    Skip the full Alembic command when already at head — avoids noisy
+    ``Context impl`` logs and lock waits when nothing to apply.
+    """
+    import time
     from pathlib import Path
 
     from alembic import command
     from alembic.config import Config
+    from alembic.script import ScriptDirectory
+    from sqlalchemy import create_engine, text
 
+    from .config import settings
+
+    t0 = time.monotonic()
     root = Path(__file__).resolve().parents[1]
     cfg = Config(str(root / "alembic.ini"))
-    # env.py reads settings.database_url; keep ini placeholder overwritten there.
+    cfg.set_main_option("sqlalchemy.url", settings.database_url)
+
+    script = ScriptDirectory.from_config(cfg)
+    head = script.get_current_head()
+    engine = create_engine(settings.database_url, pool_pre_ping=True)
+    current: str | None = None
+    try:
+        with engine.connect() as conn:
+            try:
+                row = conn.execute(text("SELECT version_num FROM alembic_version")).fetchone()
+                current = str(row[0]) if row and row[0] is not None else None
+            except Exception:
+                current = None
+    finally:
+        engine.dispose()
+
+    if head and current == head:
+        _log.info(
+            "alembic already at head (%s), skip upgrade (%.2fs)",
+            head,
+            time.monotonic() - t0,
+        )
+        return
+
+    _log.info("alembic upgrading %s -> %s …", current, head)
     command.upgrade(cfg, "head")
-    _log.info("alembic upgrade head completed")
+    _log.info("alembic upgrade head completed (%.2fs)", time.monotonic() - t0)

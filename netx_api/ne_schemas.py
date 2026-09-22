@@ -6,8 +6,10 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 from .device_types import SUPPORTED_VENDORS
+from .ne_exec_guard import EXEC_POLICIES, EXEC_POLICY_READONLY
 
 ConnectStatus = Literal["unknown", "testing", "pass", "fail"]
+ExecPolicy = Literal["readonly", "linux_shell", "unrestricted"]
 
 
 class ManagedNeCreate(BaseModel):
@@ -21,6 +23,7 @@ class ManagedNeCreate(BaseModel):
     password: str = ""
     tags: str = ""
     remark: str = ""
+    exec_policy: ExecPolicy = "readonly"
     hop_enabled: bool = False
     hop_vendor: str = "zte"
     hop_host: str = ""
@@ -44,6 +47,16 @@ class ManagedNeCreate(BaseModel):
                 return item
         return "Other"
 
+    @field_validator("exec_policy", mode="before")
+    @classmethod
+    def normalize_exec_policy_create(cls, v: object) -> str:
+        if v is None or str(v).strip() == "":
+            return EXEC_POLICY_READONLY
+        raw = str(v).strip().lower()
+        if raw not in EXEC_POLICIES:
+            raise ValueError("unsupported_exec_policy")
+        return raw
+
 
 class ManagedNeUpdate(BaseModel):
     name: str | None = None
@@ -56,6 +69,7 @@ class ManagedNeUpdate(BaseModel):
     password: str | None = None
     tags: str | None = None
     remark: str | None = None
+    exec_policy: ExecPolicy | None = None
     hop_enabled: bool | None = None
     hop_vendor: str | None = None
     hop_host: str | None = None
@@ -81,6 +95,18 @@ class ManagedNeUpdate(BaseModel):
                 return item
         return "Other"
 
+    @field_validator("exec_policy", mode="before")
+    @classmethod
+    def normalize_exec_policy_update(cls, v: object) -> str | None:
+        if v is None:
+            return None
+        raw = str(v).strip().lower()
+        if not raw:
+            return EXEC_POLICY_READONLY
+        if raw not in EXEC_POLICIES:
+            raise ValueError("unsupported_exec_policy")
+        return raw
+
 
 class ManagedNeOut(BaseModel):
     id: str
@@ -102,6 +128,7 @@ class ManagedNeOut(BaseModel):
     # Provenance: "" | ume_sync | webcrt | lldp | …
     source: str = ""
     source_ref: str = ""
+    exec_policy: ExecPolicy = "readonly"
     hop_enabled: bool = False
     hop_vendor: str = "zte"
     hop_host: str = ""
@@ -121,7 +148,7 @@ class ConnectTestRequest(BaseModel):
 
 
 class ManagedNeExecRequest(BaseModel):
-    """Run read-only show/display CLI on a managed NE or UME inventory NE (oclaw ops integration)."""
+    """Run CLI on a managed NE or UME inventory NE (gates follow managed NE exec_policy)."""
 
     ne_id: str | None = None
     ume_ne_id: str | None = None

@@ -33,6 +33,11 @@ from .ne_service_common import (
     _validate_hop_on_create,
     row_to_out,
 )
+from .ne_exec_guard import (
+    EXEC_POLICY_READONLY,
+    is_linux_device_type,
+    require_exec_policy_writable,
+)
 
 # Inventory create stays strict; updates must also accept WebCRT/LLDP placeholder types
 # (generic/linux) so operators can open the form and promote them to zte_zxros etc.
@@ -116,6 +121,10 @@ def create_managed_ne(db: Session, body: ManagedNeCreate) -> ManagedNeOut:
         remark=str(body.remark or "").strip(),
         source="",
         source_ref="",
+        exec_policy=require_exec_policy_writable(
+            getattr(body, "exec_policy", None),
+            device_type=body.device_type,
+        ),
         created_at=now,
         updated_at=now,
     )
@@ -159,6 +168,14 @@ def update_managed_ne(db: Session, ne_id: str, body: ManagedNeUpdate) -> Managed
         row.tags = str(data["tags"]).strip()
     if "remark" in data and data["remark"] is not None:
         row.remark = str(data["remark"]).strip()
+    if "exec_policy" in data and data["exec_policy"] is not None:
+        row.exec_policy = require_exec_policy_writable(
+            str(data["exec_policy"]),
+            device_type=row.device_type,
+        )
+    elif "device_type" in data and not is_linux_device_type(row.device_type):
+        # Leaving linux clears any previously open policy.
+        row.exec_policy = EXEC_POLICY_READONLY
     if "password" in data and data["password"]:
         _require_crypto()
         row.password_enc = encrypt_secret(str(data["password"]))

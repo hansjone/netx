@@ -98,6 +98,64 @@ class NeExecValidationTests(unittest.TestCase):
             _validate_command("interface GigabitEthernet0/0")
         self.assertEqual(ctx.exception.detail, "command_not_allowed_prefix")
 
+    def test_linux_shell_allows_shell_commands(self) -> None:
+        for cmd in (
+            "ls -la /var/log",
+            "ip addr | grep eth0",
+            "systemctl status sshd",
+            "cat /etc/os-release && uname -a",
+            "df -h; free -m",
+        ):
+            with self.subTest(cmd=cmd):
+                _validate_command(cmd, policy="linux_shell")
+                _validate_command(cmd, policy="unrestricted")
+
+    def test_effective_policy_forces_readonly_when_feature_off(self) -> None:
+        from netx_api.ne_exec_guard import effective_exec_policy
+
+        with patch("netx_api.ne_exec_guard.exec_policy_feature_enabled", return_value=False):
+            self.assertEqual(effective_exec_policy("linux_shell", device_type="linux"), "readonly")
+            self.assertEqual(effective_exec_policy("unrestricted", device_type="linux"), "readonly")
+
+    def test_effective_policy_forces_readonly_for_non_linux(self) -> None:
+        from netx_api.ne_exec_guard import effective_exec_policy
+
+        with patch("netx_api.ne_exec_guard.exec_policy_feature_enabled", return_value=True):
+            self.assertEqual(effective_exec_policy("linux_shell", device_type="zte_zxros"), "readonly")
+            self.assertEqual(effective_exec_policy("linux_shell", device_type="linux"), "linux_shell")
+            self.assertEqual(effective_exec_policy("unrestricted", device_type="linux_ssh"), "unrestricted")
+
+    def test_require_writable_rejects_when_feature_off(self) -> None:
+        from netx_api.ne_exec_guard import require_exec_policy_writable
+
+        with patch("netx_api.ne_exec_guard.exec_policy_feature_enabled", return_value=False):
+            self.assertEqual(require_exec_policy_writable("readonly"), "readonly")
+            with self.assertRaises(HTTPException) as ctx:
+                require_exec_policy_writable("linux_shell", device_type="linux")
+            self.assertEqual(ctx.exception.detail, "exec_policy_feature_disabled")
+
+    def test_require_writable_rejects_non_linux(self) -> None:
+        from netx_api.ne_exec_guard import require_exec_policy_writable
+
+        with patch("netx_api.ne_exec_guard.exec_policy_feature_enabled", return_value=True):
+            self.assertEqual(
+                require_exec_policy_writable("linux_shell", device_type="linux"),
+                "linux_shell",
+            )
+            with self.assertRaises(HTTPException) as ctx:
+                require_exec_policy_writable("linux_shell", device_type="cisco_ios")
+            self.assertEqual(ctx.exception.detail, "exec_policy_requires_linux_device_type")
+
+    def test_linux_shell_blocks_newline(self) -> None:
+        with self.assertRaises(HTTPException) as ctx:
+            _validate_command("ls\nrm -rf /", policy="linux_shell")
+        self.assertEqual(ctx.exception.detail, "command_chars_not_allowed")
+
+    def test_readonly_still_blocks_linux_cmds(self) -> None:
+        with self.assertRaises(HTTPException) as ctx:
+            _validate_command("ls -la", policy="readonly")
+        self.assertEqual(ctx.exception.detail, "command_not_allowed_prefix")
+
     def test_blocks_newline_chained_show_and_configure(self) -> None:
         with self.assertRaises(HTTPException) as ctx:
             _validate_command("show interface\nconfigure terminal")
@@ -182,6 +240,16 @@ class NeExecRunTests(unittest.TestCase):
     @patch("netx_api.ne_exec._collect_on_device", return_value="ok-output")
     @patch("netx_api.ne_exec.resolve_cli_target")
     def test_execute_skips_device_when_any_command_invalid(self, resolve, collect, _configured) -> None:
+        resolve.return_value = (
+            _ready_creds(),
+            {
+                "source": "managed",
+                "id": "ne-1",
+                "exec_policy": "readonly",
+                "name": "R2",
+                "ip_address": "192.168.0.128",
+            },
+        )
         db = MagicMock()
         with self.assertRaises(HTTPException) as ctx:
             execute_managed_ne_commands(
@@ -191,7 +259,54 @@ class NeExecRunTests(unittest.TestCase):
             )
         self.assertEqual(ctx.exception.detail, "command_blocked")
         collect.assert_not_called()
-        resolve.assert_not_called()
+        resolve.assert_called_once()
+
+    @patch("netx_api.ne_exec.credentials_configured", return_value=True)
+    @patch("netx_api.ne_exec._collect_on_device", return_value="shell-ok")
+    @patch("netx_api.ne_exec.resolve_cli_target")
+    def test_execute_linux_shell_policy_allows_shell(self, resolve, collect, _configured) -> None:
+        resolve.return_value = (
+            _ready_creds(),
+            {
+                "source": "managed",
+                "id": "linux-1",
+                "exec_policy": "linux_shell",
+                "name": "lab",
+                "device_type": "linux",
+                "ip_address": "10.0.0.9",
+            },
+        )
+        db = MagicMock()
+        with patch("netx_api.config.settings") as mock_settings:
+            mock_settings.ne_exec_policy_enabled = True
+            out = execute_managed_ne_commands(db, ["ls -la /tmp"], ne_id="linux-1")
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["output"], "shell-ok")
+        self.assertEqual(out["device"]["exec_policy"], "linux_shell")
+        collect.assert_called_once()
+
+    @patch("netx_api.ne_exec.credentials_configured", return_value=True)
+    @patch("netx_api.ne_exec._collect_on_device", return_value="ok-output")
+    @patch("netx_api.ne_exec.resolve_cli_target")
+    def test_execute_ignores_db_policy_when_feature_off(self, resolve, collect, _configured) -> None:
+        resolve.return_value = (
+            _ready_creds(),
+            {
+                "source": "managed",
+                "id": "linux-1",
+                "exec_policy": "linux_shell",
+                "name": "lab",
+                "device_type": "linux",
+                "ip_address": "10.0.0.9",
+            },
+        )
+        db = MagicMock()
+        with patch("netx_api.config.settings") as mock_settings:
+            mock_settings.ne_exec_policy_enabled = False
+            with self.assertRaises(HTTPException) as ctx:
+                execute_managed_ne_commands(db, ["ls -la /tmp"], ne_id="linux-1")
+            self.assertEqual(ctx.exception.detail, "command_not_allowed_prefix")
+        collect.assert_not_called()
 
     @patch("netx_api.ne_exec.credentials_configured", return_value=True)
     @patch("netx_api.ne_exec._collect_on_device", return_value="ok-output")

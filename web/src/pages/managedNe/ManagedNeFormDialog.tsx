@@ -14,6 +14,7 @@ import {
   buildManagedNeSaveBody,
   emptyManagedNeForm,
   formFromManagedNe,
+  isLinuxDeviceType,
   type ManagedNeFormState,
 } from "./formState";
 
@@ -56,6 +57,7 @@ export function ManagedNeFormDialog({
   }, [open, editingId]);
 
   const vendors = metaQuery.data?.vendors ?? [];
+  const execPolicyEnabled = Boolean(metaQuery.data?.exec_policy_enabled);
   const deviceTypes = useMemo(() => {
     const base = metaQuery.data?.device_types ?? [];
     const cur = String(form.device_type || "").trim();
@@ -70,6 +72,7 @@ export function ManagedNeFormDialog({
         hopHostRequired: t("managedNe.hop.hostRequired"),
         hopUserRequired: t("managedNe.hop.userRequired"),
         hopPasswordRequired: t("managedNe.hop.passwordRequired"),
+        execPolicyEnabled: Boolean(metaQuery.data?.exec_policy_enabled),
       });
       if (editing) {
         return updateManagedNe(editing.id, body);
@@ -131,7 +134,14 @@ export function ManagedNeFormDialog({
             label={t("managedNe.col.deviceType")}
             required
             value={form.device_type}
-            onChange={(e) => setForm({ ...form, device_type: e.target.value })}
+            onChange={(e) => {
+              const device_type = e.target.value;
+              setForm((prev) => ({
+                ...prev,
+                device_type,
+                exec_policy: isLinuxDeviceType(device_type) ? prev.exec_policy : "readonly",
+              }));
+            }}
           >
             {deviceTypes.map((dt) => (
               <option key={dt} value={dt}>
@@ -139,6 +149,29 @@ export function ManagedNeFormDialog({
               </option>
             ))}
           </FieldSelect>
+          {execPolicyEnabled ? (
+            <>
+              <FieldSelect
+                label={t("managedNe.col.execPolicy")}
+                value={form.exec_policy}
+                onChange={(e) =>
+                  setForm({
+                    ...form,
+                    exec_policy: e.target.value as ManagedNeFormState["exec_policy"],
+                  })
+                }
+              >
+                <option value="readonly">{t("managedNe.execPolicy.readonly")}</option>
+                {isLinuxDeviceType(form.device_type) ? (
+                  <>
+                    <option value="linux_shell">{t("managedNe.execPolicy.linuxShell")}</option>
+                    <option value="unrestricted">{t("managedNe.execPolicy.unrestricted")}</option>
+                  </>
+                ) : null}
+              </FieldSelect>
+              <p className="form-field-hint form-grid__full">{t("managedNe.execPolicy.hint")}</p>
+            </>
+          ) : null}
           <TextField
             fullWidth
             isRequired

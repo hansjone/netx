@@ -19,6 +19,8 @@ class ManagedNE(Base):
     name: Mapped[str] = mapped_column(String(256), default="", index=True)
     vendor: Mapped[str] = mapped_column(String(64), default="Other", index=True)
     device_type: Mapped[str] = mapped_column(String(128), default="")
+    # MCP/API execManagedNe command gate: readonly | linux_shell | unrestricted
+    exec_policy: Mapped[str] = mapped_column(String(32), default="readonly")
     # Not unique: WebCRT sessions may share a host IP with distinct session names.
     # Inventory create/update still enforces uniqueness in ne_service.
     ip_address: Mapped[str] = mapped_column(String(128), index=True)

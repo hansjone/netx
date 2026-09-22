@@ -495,6 +495,7 @@ export const fetchManagedNeMeta = () =>
     device_types: types.device_types,
     vendors: types.vendors,
     credentials_configured: creds.configured,
+    exec_policy_enabled: Boolean(types.exec_policy_enabled),
   }));
 
 export type ManagedNeStats = {

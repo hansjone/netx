@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Always load repo-root `.env` (cwd-independent). Optional cwd `.env` overrides last.
+_NETX_ROOT = Path(__file__).resolve().parents[1]
+_ENV_FILES = (str(_NETX_ROOT / ".env"), ".env")
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_prefix="NETX_", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=_ENV_FILES,
+        env_prefix="NETX_",
+        extra="ignore",
+    )
 
     database_url: str = "postgresql+psycopg://netx:netx@127.0.0.1:5432/netx"
     host: str = "127.0.0.1"
@@ -114,6 +124,8 @@ class Settings(BaseSettings):
     biz_state_heavy_workers: int = 4
     # Managed NE exec: max CLI commands per request (lab can raise; hard-capped in ne_exec).
     ne_exec_max_commands: int = 5
+    # Opt-in: allow per-NE exec_policy (linux_shell/unrestricted). Default off — UI hidden.
+    ne_exec_policy_enabled: bool = False
     # WebCRT interactive terminal sessions (multi-operator concurrent terminals).
     webcrt_max_sessions: int = 40
     # Per-user cap (0 = unlimited beyond global max).

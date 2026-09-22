@@ -684,8 +684,10 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
     {
         "name": "execManagedNe",
         "description": (
-            f"Run read-only CLI via netx (show/display/ping/traceroute; "
+            f"Run CLI via netx (default read-only: show/display/ping/traceroute; "
             f"max {exec_max_commands()} commands per NE, NETX_NE_EXEC_MAX_COMMANDS). "
+            "Managed NE exec_policy=linux_shell|unrestricted allows single-line shell on that host "
+            "(check getManagedNe / listManagedNe). "
             "Single NE: ne_id OR nms_ne_id (+ alias ume_ne_id) + commands. "
             "Many NEs (batch-first, server concurrency default 4, max 20): "
             "(1) same CLI on all → ne_ids[]/nms_ne_ids[] + shared commands; "
