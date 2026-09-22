@@ -44,7 +44,13 @@ class PlaceholderDef:
 
 @dataclass(frozen=True)
 class AuxCommand:
-    """Secondary collect: only key + profile_id (rest from that profile)."""
+    """Secondary collect: only key + profile_id (rest from that profile).
+
+    When the primary profile uses ``discover_select`` placeholders, aux is
+    **framework-derived** from those ``discover_profile_id`` values at load
+    time (explicit ``aux_commands`` for that case are overwritten). Profiles
+    without discover (e.g. ARP → config_interface) keep explicit aux.
+    """
 
     key: str
     profile_id: str
@@ -820,9 +826,6 @@ def _zte_status_profiles() -> list[ParseProfile]:
             sort_order=370,
             enabled=True,
             kind="collect",
-            aux_commands=[
-                AuxCommand(key="config_vrf", profile_id="zte.config_vrf"),
-            ],
             enrich_joins=[
                 EnrichJoin(
                     from_aux="config_vrf",
@@ -851,9 +854,6 @@ def _zte_status_profiles() -> list[ParseProfile]:
             sort_order=375,
             enabled=True,
             kind="collect",
-            aux_commands=[
-                AuxCommand(key="config_vrf", profile_id="zte.config_vrf"),
-            ],
             enrich_joins=[
                 EnrichJoin(
                     from_aux="config_vrf",
@@ -970,19 +970,22 @@ def _zte_status_profiles() -> list[ParseProfile]:
             command_template="show bgp vpnv4 unicast neighbor in <neighbor> | one-line",
             match=r"(?i)^\s*show\s+bgp\s+vpnv4\s+unicast\s+neighbor\s+(?P<direction>in)\s+(?P<neighbor>\S+)(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show bgp vpnv4 unicast neighbor in",
-            description="Routes learned from VPNv4 neighbor; summary aux for peer state.",
+            description=(
+                "Routes learned from VPNv4 neighbor; discover neighbor from BGP peer intent; "
+                "aux: show running-config bgp."
+            ),
             placeholders=[_BGP_NEIGHBOR_VPNV4],
             fields=list(_BGP_ROUTE_FIELDS),
             tags=["bgp", "vpnv4", "route"],
             sort_order=420,
             enabled=True,
             kind="collect",
-            aux_commands=[AuxCommand(key="bgp_summary", profile_id="zte.bgp_vpnv4_summary")],
             enrich_joins=[
                 EnrichJoin(
-                    from_aux="bgp_summary",
-                    on="neighbor",
-                    take=("as_num", "state", "pfx_rcd"),
+                    from_aux="config_bgp_peer",
+                    left_on="afi,neighbor",
+                    right_on="afi,neighbor",
+                    take=("remote_as", "activate", "route_map_in", "route_map_out"),
                 ),
             ],
         ),
@@ -995,7 +998,10 @@ def _zte_status_profiles() -> list[ParseProfile]:
             command_template="show bgp vpnv4 unicast neighbor out <neighbor> | one-line",
             match=r"(?i)^\s*show\s+bgp\s+vpnv4\s+unicast\s+neighbor\s+(?P<direction>out)\s+(?P<neighbor>\S+)(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show bgp vpnv4 unicast neighbor out",
-            description="Routes advertised to VPNv4 neighbor (large; bind neighbor).",
+            description=(
+                "Routes advertised to VPNv4 neighbor; discover from BGP peer intent; "
+                "aux: show running-config bgp."
+            ),
             placeholders=[_BGP_NEIGHBOR_VPNV4],
             fields=list(_BGP_ROUTE_FIELDS),
             tags=["bgp", "vpnv4", "route"],
@@ -1003,12 +1009,12 @@ def _zte_status_profiles() -> list[ParseProfile]:
             enabled=True,
             kind="collect",
             collect_lane="heavy",
-            aux_commands=[AuxCommand(key="bgp_summary", profile_id="zte.bgp_vpnv4_summary")],
             enrich_joins=[
                 EnrichJoin(
-                    from_aux="bgp_summary",
-                    on="neighbor",
-                    take=("as_num", "state", "pfx_rcd"),
+                    from_aux="config_bgp_peer",
+                    left_on="afi,neighbor",
+                    right_on="afi,neighbor",
+                    take=("remote_as", "activate", "route_map_in", "route_map_out"),
                 ),
             ],
         ),
@@ -1021,19 +1027,22 @@ def _zte_status_profiles() -> list[ParseProfile]:
             command_template="show bgp vpnv6 unicast neighbor in <neighbor> | one-line",
             match=r"(?i)^\s*show\s+bgp\s+vpnv6\s+unicast\s+neighbor\s+(?P<direction>in)\s+(?P<neighbor>\S+)(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show bgp vpnv6 unicast neighbor in",
-            description="Routes learned from VPNv6 neighbor; summary aux for peer state.",
+            description=(
+                "Routes learned from VPNv6 neighbor; discover from BGP peer intent; "
+                "aux: show running-config bgp."
+            ),
             placeholders=[_BGP_NEIGHBOR_VPNV6],
             fields=list(_BGP_ROUTE_FIELDS),
             tags=["bgp", "vpnv6", "route"],
             sort_order=426,
             enabled=True,
             kind="collect",
-            aux_commands=[AuxCommand(key="bgp_summary", profile_id="zte.bgp_vpnv6_summary")],
             enrich_joins=[
                 EnrichJoin(
-                    from_aux="bgp_summary",
-                    on="neighbor",
-                    take=("as_num", "state", "pfx_rcd"),
+                    from_aux="config_bgp_peer",
+                    left_on="afi,neighbor",
+                    right_on="afi,neighbor",
+                    take=("remote_as", "activate", "route_map_in", "route_map_out"),
                 ),
             ],
         ),
@@ -1046,7 +1055,10 @@ def _zte_status_profiles() -> list[ParseProfile]:
             command_template="show bgp vpnv6 unicast neighbor out <neighbor> | one-line",
             match=r"(?i)^\s*show\s+bgp\s+vpnv6\s+unicast\s+neighbor\s+(?P<direction>out)\s+(?P<neighbor>\S+)(?:\s*\|\s*one-line)?\s*$",
             textfsm_command="show bgp vpnv6 unicast neighbor out",
-            description="Routes advertised to VPNv6 neighbor (large; bind neighbor).",
+            description=(
+                "Routes advertised to VPNv6 neighbor; discover from BGP peer intent; "
+                "aux: show running-config bgp."
+            ),
             placeholders=[_BGP_NEIGHBOR_VPNV6],
             fields=list(_BGP_ROUTE_FIELDS),
             tags=["bgp", "vpnv6", "route"],
@@ -1054,12 +1066,12 @@ def _zte_status_profiles() -> list[ParseProfile]:
             enabled=True,
             kind="collect",
             collect_lane="heavy",
-            aux_commands=[AuxCommand(key="bgp_summary", profile_id="zte.bgp_vpnv6_summary")],
             enrich_joins=[
                 EnrichJoin(
-                    from_aux="bgp_summary",
-                    on="neighbor",
-                    take=("as_num", "state", "pfx_rcd"),
+                    from_aux="config_bgp_peer",
+                    left_on="afi,neighbor",
+                    right_on="afi,neighbor",
+                    take=("remote_as", "activate", "route_map_in", "route_map_out"),
                 ),
             ],
         ),
@@ -1085,12 +1097,11 @@ def _zte_status_profiles() -> list[ParseProfile]:
             sort_order=430,
             enabled=True,
             kind="collect",
-            aux_commands=[AuxCommand(key="config_bgp_peer", profile_id="zte.config_bgp_peer")],
             enrich_joins=[
                 EnrichJoin(
                     from_aux="config_bgp_peer",
-                    left_on="neighbor",
-                    right_on="neighbor",
+                    left_on="vrf,neighbor",
+                    right_on="vrf,neighbor",
                     take=("remote_as", "activate", "route_map_in", "route_map_out"),
                 ),
             ],
@@ -1118,12 +1129,11 @@ def _zte_status_profiles() -> list[ParseProfile]:
             enabled=True,
             kind="collect",
             collect_lane="heavy",
-            aux_commands=[AuxCommand(key="config_bgp_peer", profile_id="zte.config_bgp_peer")],
             enrich_joins=[
                 EnrichJoin(
                     from_aux="config_bgp_peer",
-                    left_on="neighbor",
-                    right_on="neighbor",
+                    left_on="vrf,neighbor",
+                    right_on="vrf,neighbor",
                     take=("remote_as", "activate", "route_map_in", "route_map_out"),
                 ),
             ],
@@ -1150,12 +1160,11 @@ def _zte_status_profiles() -> list[ParseProfile]:
             sort_order=440,
             enabled=True,
             kind="collect",
-            aux_commands=[AuxCommand(key="config_bgp_peer", profile_id="zte.config_bgp_peer")],
             enrich_joins=[
                 EnrichJoin(
                     from_aux="config_bgp_peer",
-                    left_on="neighbor",
-                    right_on="neighbor",
+                    left_on="vrf,neighbor",
+                    right_on="vrf,neighbor",
                     take=("remote_as", "activate", "route_map_in", "route_map_out"),
                 ),
             ],
@@ -1183,12 +1192,11 @@ def _zte_status_profiles() -> list[ParseProfile]:
             enabled=True,
             kind="collect",
             collect_lane="heavy",
-            aux_commands=[AuxCommand(key="config_bgp_peer", profile_id="zte.config_bgp_peer")],
             enrich_joins=[
                 EnrichJoin(
                     from_aux="config_bgp_peer",
-                    left_on="neighbor",
-                    right_on="neighbor",
+                    left_on="vrf,neighbor",
+                    right_on="vrf,neighbor",
                     take=("remote_as", "activate", "route_map_in", "route_map_out"),
                 ),
             ],
@@ -1210,7 +1218,6 @@ def _zte_status_profiles() -> list[ParseProfile]:
             sort_order=450,
             enabled=True,
             kind="collect",
-            aux_commands=[AuxCommand(key="config_vrf", profile_id="zte.config_vrf")],
             enrich_joins=[
                 EnrichJoin(
                     from_aux="config_vrf",
@@ -1252,7 +1259,6 @@ def _zte_status_profiles() -> list[ParseProfile]:
             sort_order=460,
             enabled=True,
             kind="collect",
-            aux_commands=[AuxCommand(key="config_vrf", profile_id="zte.config_vrf")],
             enrich_joins=[
                 EnrichJoin(
                     from_aux="config_vrf",
@@ -1515,10 +1521,112 @@ def _apply_collect_lanes(profiles: list[ParseProfile]) -> list[ParseProfile]:
     return profiles
 
 
+_AUX_PLACEHOLDER_RE = re.compile(r"<([^>]+)>")
+
+
+def _discover_profile_ids(p: ParseProfile) -> list[str]:
+    """Ordered unique discover_profile_id from discover_select placeholders."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for ph in p.placeholders or []:
+        if str(ph.bind_mode or "").strip() != "discover_select":
+            continue
+        dpi = str(ph.discover_profile_id or "").strip()
+        if not dpi or dpi in seen:
+            continue
+        seen.add(dpi)
+        out.append(dpi)
+    return out
+
+
+def _aux_key_for_profile_id(profile_id: str) -> str:
+    pid = str(profile_id or "").strip()
+    return pid.rsplit(".", 1)[-1] if pid else "aux"
+
+
+def _normalize_discover_aux(p: ParseProfile) -> None:
+    """If profile discovers params, aux_commands MUST be those discover profiles.
+
+    Prevents drift (e.g. discover=config_bgp_peer but aux=bgp summary).
+    Explicit aux is still used when there is no discover_select (ARP pattern).
+    """
+    disc = _discover_profile_ids(p)
+    if not disc:
+        return
+    p.aux_commands = [
+        AuxCommand(key=_aux_key_for_profile_id(dpi), profile_id=dpi) for dpi in disc
+    ]
+
+
+def _validate_profiles(profiles: list[ParseProfile]) -> None:
+    by_id = {p.profile_id: p for p in profiles}
+    errors: list[str] = []
+    for p in profiles:
+        if not p.enabled:
+            continue
+        primary_ph = {ph.name for ph in (p.placeholders or [])}
+        aux_keys = {a.key for a in (p.aux_commands or [])}
+        disc = _discover_profile_ids(p)
+        if disc:
+            aux_pids = [a.profile_id for a in (p.aux_commands or [])]
+            if aux_pids != disc:
+                errors.append(
+                    f"{p.profile_id}: aux_commands {aux_pids} must equal "
+                    f"discover_profile_ids {disc} (framework normalize failed)"
+                )
+        for a in p.aux_commands or []:
+            ap = by_id.get(a.profile_id)
+            if ap is None:
+                errors.append(
+                    f"{p.profile_id}: aux {a.key!r} profile not found: {a.profile_id}"
+                )
+                continue
+            tmpl = str(ap.command_template or "")
+            extra = set(_AUX_PLACEHOLDER_RE.findall(tmpl)) - primary_ph
+            if extra:
+                errors.append(
+                    f"{p.profile_id}: aux {a.key!r} ({a.profile_id}) has "
+                    f"placeholders {sorted(extra)} not in primary {sorted(primary_ph)}"
+                )
+        for j in p.enrich_joins or []:
+            fk = str(j.from_aux or "").strip()
+            if fk and fk not in aux_keys:
+                errors.append(
+                    f"{p.profile_id}: enrich_joins from_aux={fk!r} not in "
+                    f"aux keys {sorted(aux_keys)}"
+                )
+        for ph in p.placeholders or []:
+            if str(ph.bind_mode or "").strip() != "discover_select":
+                continue
+            dpi = str(ph.discover_profile_id or "").strip()
+            if not dpi:
+                errors.append(
+                    f"{p.profile_id}: placeholder {ph.name!r} discover_select "
+                    f"missing discover_profile_id"
+                )
+            elif dpi not in by_id:
+                errors.append(
+                    f"{p.profile_id}: placeholder {ph.name!r} discover_profile_id "
+                    f"not found: {dpi}"
+                )
+    if errors:
+        raise RuntimeError(
+            "biz_state profile validation failed:\n- " + "\n- ".join(errors)
+        )
+
+
+def _finalize_profiles(profiles: list[ParseProfile]) -> list[ParseProfile]:
+    """Normalize discover→aux, validate, apply collect lanes."""
+    for p in profiles:
+        _normalize_discover_aux(p)
+    _validate_profiles(profiles)
+    return _apply_collect_lanes(profiles)
+
+
 def all_profiles() -> list[ParseProfile]:
     global _PROFILES
     if _PROFILES is None:
-        _PROFILES = _apply_collect_lanes(
+        _PROFILES = _finalize_profiles(
             _lldp_profiles() + _vrf_profiles() + _zte_status_profiles()
         )
     return list(_PROFILES)

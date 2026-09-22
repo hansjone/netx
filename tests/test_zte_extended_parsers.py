@@ -396,13 +396,85 @@ $
             [
                 EnrichJoin(
                     from_aux="config_bgp_peer",
-                    on="neighbor",
+                    left_on="vrf,neighbor",
+                    right_on="vrf,neighbor",
                     take=("remote_as", "activate", "route_map_in", "route_map_out"),
                 )
             ],
         )
         self.assertEqual(routes[0]["remote_as"], "65001")
         self.assertEqual(routes[0]["activate"], "enable")
+        self.assertEqual(routes[0]["route_map_in"], "RM_IN")
+
+        # Same neighbor in two VRFs must not collide
+        routes_b = [
+            {"vrf": "CUST_A", "neighbor": "10.0.0.1", "afi": "vpnv4"},
+            {"vrf": "CUST_B", "neighbor": "10.0.0.1", "afi": "vpnv4"},
+        ]
+        intent2 = normalize_config_bgp_peer(
+            raw_text="""
+!<bgp>
+  neighbor 10.0.0.1 remote-as 65001
+  address-family ipv4 vrf CUST_A
+    neighbor 10.0.0.1 activate
+    neighbor 10.0.0.1 route-map RM_A in
+  $
+  address-family ipv4 vrf CUST_B
+    neighbor 10.0.0.1 activate
+    neighbor 10.0.0.1 route-map RM_B in
+  $
+$
+""",
+            command="show running-config bgp",
+        )
+        apply_enrich_joins(
+            routes_b,
+            {"config_bgp_peer": intent2},
+            [
+                EnrichJoin(
+                    from_aux="config_bgp_peer",
+                    left_on="vrf,neighbor",
+                    right_on="vrf,neighbor",
+                    take=("route_map_in",),
+                )
+            ],
+        )
+        self.assertEqual(routes_b[0]["route_map_in"], "RM_A")
+        self.assertEqual(routes_b[1]["route_map_in"], "RM_B")
+
+        # Global VPNv4 must not pick ipv4-unicast AF row for same neighbor
+        global_routes = [
+            {"afi": "vpnv4", "vrf": "", "neighbor": "10.0.0.1", "network": "1.0.0.0/24"},
+        ]
+        intent3 = normalize_config_bgp_peer(
+            raw_text="""
+!<bgp>
+  neighbor 10.0.0.1 remote-as 65001
+  address-family ipv4
+    neighbor 10.0.0.1 activate
+    neighbor 10.0.0.1 route-map RM_IPV4 in
+  $
+  address-family vpnv4
+    neighbor 10.0.0.1 activate
+    neighbor 10.0.0.1 route-map RM_VPNV4 in
+  $
+$
+""",
+            command="show running-config bgp",
+        )
+        apply_enrich_joins(
+            global_routes,
+            {"config_bgp_peer": intent3},
+            [
+                EnrichJoin(
+                    from_aux="config_bgp_peer",
+                    left_on="afi,neighbor",
+                    right_on="afi,neighbor",
+                    take=("route_map_in",),
+                )
+            ],
+        )
+        self.assertEqual(global_routes[0]["route_map_in"], "RM_VPNV4")
 
         ra = resolve_aux_command(
             AuxCommand(key="config_bgp_peer", profile_id="zte.config_bgp_peer"),

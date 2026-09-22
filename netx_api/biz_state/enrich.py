@@ -13,6 +13,15 @@ class EnrichJoin:
     Example (ARP ← if_intf)::
 
         EnrichJoin(from_aux="if_intf", on="interface", take=("vrf",))
+
+    Composite keys (VRF CE peer ← config_bgp_peer)::
+
+        EnrichJoin(
+            from_aux="config_bgp_peer",
+            left_on="vrf,neighbor",
+            right_on="vrf,neighbor",
+            take=("remote_as", "activate"),
+        )
     """
 
     from_aux: str
@@ -23,12 +32,29 @@ class EnrichJoin:
     fill_missing: bool = True  # on miss, set take fields to ""
 
 
-def _sides(join: EnrichJoin) -> tuple[str, str]:
+def _field_list(spec: str) -> list[str]:
+    return [p.strip() for p in str(spec or "").split(",") if p.strip()]
+
+
+def _sides(join: EnrichJoin) -> tuple[list[str], list[str]]:
     left = str(join.left_on or join.on or "").strip()
     right = str(join.right_on or join.on or "").strip()
-    if not left or not right:
+    lf = _field_list(left)
+    rf = _field_list(right)
+    if not lf or not rf:
         raise ValueError(f"EnrichJoin {join.from_aux!r} needs on= or left_on/right_on")
-    return left, right
+    if len(lf) != len(rf):
+        raise ValueError(
+            f"EnrichJoin {join.from_aux!r} left/right field count mismatch: {lf} vs {rf}"
+        )
+    return lf, rf
+
+
+def _row_key(row: Mapping[str, Any], fields: list[str]) -> str:
+    parts = [str(row.get(f) or "").strip() for f in fields]
+    if not any(parts):
+        return ""
+    return "\0".join(parts)
 
 
 def apply_enrich_joins(
@@ -41,7 +67,7 @@ def apply_enrich_joins(
         return records
     aux_map = aux_records or {}
     for join in joins:
-        left, right = _sides(join)
+        left_fields, right_fields = _sides(join)
         take = [str(t).strip() for t in (join.take or ()) if str(t).strip()]
         if not take:
             continue
@@ -49,13 +75,13 @@ def apply_enrich_joins(
         for row in aux_map.get(str(join.from_aux or "").strip()) or []:
             if not isinstance(row, dict):
                 continue
-            key = str(row.get(right) or "").strip()
+            key = _row_key(row, right_fields)
             if key and key not in index:
                 index[key] = row
         for rec in records:
             if not isinstance(rec, dict):
                 continue
-            hit = index.get(str(rec.get(left) or "").strip())
+            hit = index.get(_row_key(rec, left_fields))
             for field in take:
                 if hit is not None:
                     rec[field] = str(hit.get(field) or "").strip()
