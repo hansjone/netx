@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import threading
+from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any
@@ -152,16 +154,23 @@ def _resolve_collect_profile(profile_id: str):
     return None
 
 
+_METRIC_CHUNK = 2000
+
+
 def _persist_lldp_rows(
     db,
     *,
     batch: BizStateBatch,
     cmd_row: BizStateBatchCommand,
-    records: list[dict[str, Any]],
+    records: Iterable[dict[str, Any]],
 ) -> int:
+    """Insert LLDP rows from an iterable (chunk-friendly)."""
     n = 0
     seen: set[tuple[str, str, str]] = set()
+    buf: list[BizStateLldpNeighbor] = []
     for rec in records:
+        if not isinstance(rec, dict):
+            continue
         local_if = str(rec.get("local_if") or "").strip()[:128]
         remote_sys = str(rec.get("remote_sys") or "").strip()[:256]
         remote_if = str(rec.get("remote_if") or "").strip()[:128]
@@ -171,7 +180,7 @@ def _persist_lldp_rows(
         if key in seen:
             continue
         seen.add(key)
-        db.add(
+        buf.append(
             BizStateLldpNeighbor(
                 id=uuid4().hex,
                 batch_id=batch.id,
@@ -187,6 +196,190 @@ def _persist_lldp_rows(
             )
         )
         n += 1
+        if len(buf) >= _METRIC_CHUNK:
+            db.add_all(buf)
+            db.flush()
+            buf.clear()
+    if buf:
+        db.add_all(buf)
+        db.flush()
+    return n
+
+
+def _db_is_postgres(db) -> bool:
+    try:
+        bind = db.get_bind() if hasattr(db, "get_bind") else getattr(db, "bind", None)
+        name = str(getattr(getattr(bind, "dialect", None), "name", "") or "").lower()
+        return name in ("postgresql", "postgres")
+    except Exception:
+        return False
+
+
+def _persist_metric_chunk_bulk(
+    db,
+    *,
+    batch: BizStateBatch,
+    cmd_row: BizStateBatchCommand,
+    metric_id: str,
+    chunk: list[dict[str, Any]],
+    seq_start: int,
+) -> int:
+    if not chunk:
+        return 0
+    now = _utcnow()
+    buf = [
+        {
+            "id": uuid4().hex,
+            "batch_id": batch.id,
+            "batch_command_id": cmd_row.id,
+            "task_id": batch.task_id,
+            "ne_id": batch.ne_id,
+            "metric_id": metric_id,
+            "seq": seq_start + i,
+            "data_json": dict(rec),
+            "collected_at": now,
+        }
+        for i, rec in enumerate(chunk)
+        if isinstance(rec, dict) and rec
+    ]
+    if not buf:
+        return 0
+    db.bulk_insert_mappings(BizStateMetricRow, buf)
+    db.flush()
+    return len(buf)
+
+
+def _persist_metric_chunk_copy(
+    db,
+    *,
+    batch: BizStateBatch,
+    cmd_row: BizStateBatchCommand,
+    metric_id: str,
+    chunk: list[dict[str, Any]],
+    seq_start: int,
+) -> int:
+    """Postgres fast path via execute_values; falls back to bulk on error."""
+    if not chunk:
+        return 0
+    now = _utcnow()
+    rows: list[tuple[Any, ...]] = []
+    for i, rec in enumerate(chunk):
+        if not isinstance(rec, dict) or not rec:
+            continue
+        rows.append(
+            (
+                uuid4().hex,
+                batch.id,
+                cmd_row.id,
+                batch.task_id or "",
+                batch.ne_id or "",
+                metric_id,
+                seq_start + i,
+                json.dumps(rec, ensure_ascii=False, default=str, separators=(",", ":")),
+                now,
+            )
+        )
+    if not rows:
+        return 0
+    try:
+        from psycopg2.extras import execute_values  # type: ignore
+    except ImportError:
+        return _persist_metric_chunk_bulk(
+            db,
+            batch=batch,
+            cmd_row=cmd_row,
+            metric_id=metric_id,
+            chunk=chunk,
+            seq_start=seq_start,
+        )
+    # Unwrap SQLAlchemy connection → DBAPI (psycopg2) connection
+    sa_conn = db.connection()
+    dbapi = sa_conn.connection
+    driver = getattr(dbapi, "dbapi_connection", None) or getattr(
+        dbapi, "driver_connection", None
+    ) or dbapi
+    sql = (
+        "INSERT INTO biz_state_metric_row "
+        "(id,batch_id,batch_command_id,task_id,ne_id,metric_id,seq,data_json,collected_at) "
+        "VALUES %s"
+    )
+    with driver.cursor() as cur:
+        execute_values(
+            cur,
+            sql,
+            rows,
+            template="(%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s)",
+            page_size=len(rows),
+        )
+    db.flush()
+    return len(rows)
+
+
+def _persist_metric_rows_from_spool(
+    db,
+    *,
+    batch: BizStateBatch,
+    cmd_row: BizStateBatchCommand,
+    metric_id: str,
+    records_rel_path: str,
+) -> int:
+    """Stream JSONL → DB in chunks (never loads full table into memory)."""
+    from .spool import iter_record_chunks
+
+    mid = str(metric_id or "").strip()
+    if not mid or not records_rel_path:
+        return 0
+    use_copy = _db_is_postgres(db)
+    n = 0
+    for chunk in iter_record_chunks(records_rel_path, chunk_size=_METRIC_CHUNK):
+        if use_copy:
+            try:
+                added = _persist_metric_chunk_copy(
+                    db,
+                    batch=batch,
+                    cmd_row=cmd_row,
+                    metric_id=mid,
+                    chunk=chunk,
+                    seq_start=n,
+                )
+            except Exception:
+                _log.exception("biz_state COPY failed; falling back to bulk")
+                use_copy = False
+                added = _persist_metric_chunk_bulk(
+                    db,
+                    batch=batch,
+                    cmd_row=cmd_row,
+                    metric_id=mid,
+                    chunk=chunk,
+                    seq_start=n,
+                )
+        else:
+            added = _persist_metric_chunk_bulk(
+                db,
+                batch=batch,
+                cmd_row=cmd_row,
+                metric_id=mid,
+                chunk=chunk,
+                seq_start=n,
+            )
+        n += added
+    return n
+
+
+def _persist_lldp_rows_from_spool(
+    db,
+    *,
+    batch: BizStateBatch,
+    cmd_row: BizStateBatchCommand,
+    records_rel_path: str,
+) -> int:
+    from .spool import iter_record_chunks
+
+    if not records_rel_path:
+        return 0
+    n = 0
+    for chunk in iter_record_chunks(records_rel_path, chunk_size=_METRIC_CHUNK):
+        n += _persist_lldp_rows(db, batch=batch, cmd_row=cmd_row, records=chunk)
     return n
 
 
@@ -216,7 +409,6 @@ _GENERIC_METRICS = {
     "config_ospf",
     "config_isis",
 }
-_METRIC_CHUNK = 2000
 
 
 def _run_primary_parse_job(job: Any) -> tuple[bool, bool]:
@@ -239,10 +431,11 @@ def _run_primary_parse_job(job: Any) -> tuple[bool, bool]:
         m = re.search(r"(?i)total\s+number\s+of\s+routes\s*:\s*(\d+)", text)
         return int(m.group(1)) if m else 0
 
-    def _flush_item(item: SpooledCommand, *, records: list[dict[str, Any]] | None = None) -> None:
+    def _flush_item(item: SpooledCommand, *, records: Any = None) -> None:
         if records is not None and item.persist_kind:
-            item.records_rel_path = write_records(batch_id, item.id, records)
-            item.row_count = len(records)
+            rel, n = write_records(batch_id, item.id, records)
+            item.records_rel_path = rel
+            item.row_count = int(n or 0)
         try:
             write_meta(batch_id, item.id, item.to_meta())
         except Exception:
@@ -400,21 +593,25 @@ def _run_primary_parse_job(job: Any) -> tuple[bool, bool]:
                 "enrich=" + ",".join(getattr(j, "from_aux", "") for j in job.enrich_joins)
             )
         declared = int(primary.declared_total or 0)
-        nrec = len(records or [])
-        if declared > 0:
-            hints.append(f"declared={declared};parsed={nrec}")
-        if hints:
-            primary.message = ";".join(hints)[:1020]
         primary.parse_status = "ok"
         any_ok = True
         persist_recs = None
         if job.metric_id == "lldp_neighbor":
             primary.persist_kind = "lldp"
-            persist_recs = list(records or [])
+            persist_recs = records
         elif job.metric_id in _GENERIC_METRICS:
             primary.persist_kind = "metric"
-            persist_recs = list(records or [])
+            persist_recs = records
         _flush_item(primary, records=persist_recs)
+        nrec = int(primary.row_count or 0)
+        if declared > 0:
+            hints.append(f"declared={declared};parsed={nrec}")
+        if hints:
+            primary.message = ";".join(hints)[:1020]
+            try:
+                write_meta(batch_id, primary.id, primary.to_meta())
+            except Exception:
+                pass
         _ = fsm_tables  # kept for hints above
     except Exception as exc:
         any_fail = True
@@ -450,7 +647,7 @@ def _flush_spooled_commands(
     pending: list[Any],
 ) -> tuple[int, int]:
     """Insert SpooledCommand rows (+ metric/lldp) in one transaction. Returns (cmds, rows)."""
-    from .spool import SpooledCommand, raw_max_bytes, read_raw_text, read_records
+    from .spool import SpooledCommand, raw_max_bytes, read_raw_text, spool_file_size
 
     if not pending:
         return 0, 0
@@ -467,25 +664,38 @@ def _flush_spooled_commands(
             raw = ""
             truncated = False
             line_count = int(getattr(item, "raw_line_count", 0) or 0)
+            raw_size = 0
             if item.raw_rel_path:
                 from .spool import count_file_lines
 
+                raw_size = spool_file_size(item.raw_rel_path)
                 if line_count <= 0:
                     try:
                         line_count = count_file_lines(item.raw_rel_path)
                     except Exception:
                         line_count = 0
-                raw = read_raw_text(item.raw_rel_path, max_bytes=max_raw)
-                if max_raw > 0 and "[truncated" in raw:
+                # Mega outputs stay on spool only — do not load full CLI into Postgres.
+                if max_raw > 0 and raw_size > max_raw:
                     truncated = True
-            # Prefer full-file line count; fall back to stored text.
-            if line_count <= 0 and raw:
+                    raw = (
+                        f"[raw_on_spool={item.raw_rel_path}; size={raw_size}B; "
+                        f"cap={max_raw}B; omitted_from_db]\n"
+                    )
+                else:
+                    raw = read_raw_text(item.raw_rel_path, max_bytes=max_raw)
+                    if max_raw > 0 and "[truncated" in raw:
+                        truncated = True
+            if line_count <= 0 and raw and not truncated:
                 from .spool import count_text_lines
 
                 line_count = count_text_lines(raw)
             msg = str(item.message or "").strip()
             if truncated:
-                note = f"raw_truncated@{max_raw}B"
+                note = (
+                    f"raw_on_spool@{raw_size}B"
+                    if raw_size > max_raw > 0
+                    else f"raw_truncated@{max_raw}B"
+                )
                 msg = f"{msg}; {note}" if msg else note
             cmd_row = BizStateBatchCommand(
                 id=item.id,
@@ -506,26 +716,26 @@ def _flush_spooled_commands(
             )
             db.add(cmd_row)
             if item.persist_kind == "metric" and item.records_rel_path:
-                records = read_records(item.records_rel_path)
                 mid = str(item.metric_id or "").strip()
-                if mid and records:
-                    n = _persist_metric_rows(
+                if mid:
+                    n = _persist_metric_rows_from_spool(
                         db,
                         batch=batch,
                         cmd_row=cmd_row,
                         metric_id=mid,
-                        records=records,
+                        records_rel_path=item.records_rel_path,
                     )
                     cmd_row.row_count = n
                     rows_n += n
             elif item.persist_kind == "lldp" and item.records_rel_path:
-                records = read_records(item.records_rel_path)
-                if records:
-                    n = _persist_lldp_rows(
-                        db, batch=batch, cmd_row=cmd_row, records=records
-                    )
-                    cmd_row.row_count = n
-                    rows_n += n
+                n = _persist_lldp_rows_from_spool(
+                    db,
+                    batch=batch,
+                    cmd_row=cmd_row,
+                    records_rel_path=item.records_rel_path,
+                )
+                cmd_row.row_count = n
+                rows_n += n
         db.commit()
         return len(items), rows_n
 
@@ -539,45 +749,6 @@ def _flush_spooled_commands(
         # Put back so a later flush / finalize can retry.
         pending.extend(items)
         raise
-
-
-def _persist_metric_rows(
-    db,
-    *,
-    batch: BizStateBatch,
-    cmd_row: BizStateBatchCommand,
-    metric_id: str,
-    records: list[dict[str, Any]],
-) -> int:
-    """Bulk-insert generic metric rows (JSON payload per row)."""
-    mid = str(metric_id or "").strip()
-    if not mid or not records:
-        return 0
-    buf: list[dict[str, Any]] = []
-    n = 0
-    for i, rec in enumerate(records):
-        if not isinstance(rec, dict) or not rec:
-            continue
-        buf.append(
-            {
-                "id": uuid4().hex,
-                "batch_id": batch.id,
-                "batch_command_id": cmd_row.id,
-                "task_id": batch.task_id,
-                "ne_id": batch.ne_id,
-                "metric_id": mid,
-                "seq": i,
-                "data_json": dict(rec),
-                "collected_at": _utcnow(),
-            }
-        )
-        n += 1
-        if len(buf) >= _METRIC_CHUNK:
-            db.bulk_insert_mappings(BizStateMetricRow, buf)
-            buf.clear()
-    if buf:
-        db.bulk_insert_mappings(BizStateMetricRow, buf)
-    return n
 
 
 def _finish_task(task_id: str, *, error: str = "") -> None:
@@ -825,11 +996,12 @@ def _run_collect_lane(
             pending = []
             persist.submit(batch_id, chunk)
 
-        def _queue(item: SpooledCommand, *, records: list[dict[str, Any]] | None = None) -> None:
+        def _queue(item: SpooledCommand, *, records: Any = None) -> None:
             nonlocal cmd_count
             if records is not None and item.persist_kind:
-                item.records_rel_path = write_records(batch_id, item.id, records)
-                item.row_count = len(records)
+                rel, n = write_records(batch_id, item.id, records)
+                item.records_rel_path = rel
+                item.row_count = int(n or 0)
             try:
                 write_meta(batch_id, item.id, item.to_meta())
             except Exception:

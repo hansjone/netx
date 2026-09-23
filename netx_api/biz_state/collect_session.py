@@ -341,7 +341,7 @@ def run_primary_with_bundle(
     textfsm_command: str = "",
     params: dict[str, str] | None = None,
     enrich_joins: list[EnrichJoin] | None = None,
-) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]], list[str]]:
+) -> tuple[Any, dict[str, list[dict[str, Any]]], list[str]]:
     records, fsm_tables, keys = run_parser(
         parser_id,
         raw_text=bundle.raws.get("primary") or "",
@@ -356,5 +356,8 @@ def run_primary_with_bundle(
         fsm_tables_extra=bundle.fsm_extra,
     )
     if enrich_joins:
+        # Enrich needs random access — materialize only when joins are declared.
+        if not isinstance(records, list):
+            records = list(records or [])
         apply_enrich_joins(records, bundle.aux_records, enrich_joins)
     return records, fsm_tables, keys

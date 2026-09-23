@@ -34,6 +34,7 @@ Complex joins that cannot be expressed as equal-field copy still go in
 from __future__ import annotations
 
 import inspect
+from collections.abc import Iterable
 from typing import Any, Callable, Mapping, Sequence
 
 from ...lldp_shared import resolve_vendor_key
@@ -231,6 +232,11 @@ def run_parser(
             "params": params or {},
         }
     records = fn(**filtered)
-    if not isinstance(records, list):
+    # Allow list or streaming Iterable (generator); reject bare str/bytes.
+    if records is None:
+        records = []
+    elif isinstance(records, (str, bytes)):
+        records = []
+    elif not isinstance(records, list) and not isinstance(records, Iterable):
         records = []
     return records, fsm_tables, used_keys

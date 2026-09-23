@@ -205,7 +205,6 @@ def _skip_noise_line(line: str) -> bool:
 
 
 def _emit_route(
-    out: list[dict[str, Any]],
     seen: set[str],
     *,
     local_as: str,
@@ -219,38 +218,36 @@ def _emit_route(
     rest: str,
     flags: str,
     path_continuation: bool = False,
-) -> None:
+) -> dict[str, Any] | None:
     if not _looks_like_prefix(net):
-        return
+        return None
     if nh and not _looks_like_ip_or_prefix(nh):
         if re.search(r"[A-Za-z]", nh):
-            return
+            return None
         nh = ""
     key = _route_dedupe_key(rd=rd, net=net, nh=nh or "")
     if key in seen:
-        return
+        return None
     seen.add(key)
     metric, loc, tag, path = _split_rest(rest, path_continuation=path_continuation)
-    out.append(
-        {
-            "local_as": local_as[:16],
-            "afi": afi[:32],
-            "vrf": vrf[:128],
-            "neighbor": neighbor[:128],
-            "direction": direction[:8],
-            "rd": (rd or "")[:64],
-            "network": net[:128],
-            "next_hop": (nh or "")[:128],
-            "metric": metric[:32],
-            "loc_prf": loc[:32],
-            "tag": tag[:32],
-            "path": path[:256],
-            "status_codes": re.sub(r"\s+", "", (flags or "").strip())[:16],
-            "as_num": "",
-            "state": "",
-            "pfx_rcd": "",
-        }
-    )
+    return {
+        "local_as": local_as[:16],
+        "afi": afi[:32],
+        "vrf": vrf[:128],
+        "neighbor": neighbor[:128],
+        "direction": direction[:8],
+        "rd": (rd or "")[:64],
+        "network": net[:128],
+        "next_hop": (nh or "")[:128],
+        "metric": metric[:32],
+        "loc_prf": loc[:32],
+        "tag": tag[:32],
+        "path": path[:256],
+        "status_codes": re.sub(r"\s+", "", (flags or "").strip())[:16],
+        "as_num": "",
+        "state": "",
+        "pfx_rcd": "",
+    }
 
 
 def _hand_parse(
@@ -262,9 +259,8 @@ def _hand_parse(
     neighbor: str = "",
     direction: str = "",
     **_kw: Any,
-) -> list[dict[str, Any]]:
-    """Parse neighbor in/out tables; join heavy IPv6 / From / metric wraps."""
-    out: list[dict[str, Any]] = []
+):
+    """Yield neighbor in/out route rows (streaming; joins heavy IPv6 / From wraps)."""
     seen: set[str] = set()
     pending_net = ""
     pending_flags = ""
@@ -273,13 +269,12 @@ def _hand_parse(
     current_rd = ""
     current_vrf = vrf
 
-    def _flush_pending(*, rest: str = "", path_continuation: bool = False) -> None:
+    def _flush_pending(*, rest: str = "", path_continuation: bool = False) -> dict[str, Any] | None:
         nonlocal pending_net, pending_flags, pending_nh, pending_rest
         if not pending_net:
-            return
+            return None
         merged = " ".join(x for x in (pending_rest, rest) if x).strip()
-        _emit_route(
-            out,
+        row = _emit_route(
             seen,
             local_as=local_as,
             afi=afi,
@@ -297,20 +292,24 @@ def _hand_parse(
         pending_flags = ""
         pending_nh = ""
         pending_rest = ""
+        return row
 
-    def _start_pending(*, net: str, nh: str, flags: str, rest: str) -> None:
+    def _start_pending(*, net: str, nh: str, flags: str, rest: str):
         nonlocal pending_net, pending_flags, pending_nh, pending_rest
-        _flush_pending()
+        flushed = _flush_pending()
         pending_net = net
         pending_flags = flags
         pending_nh = nh
         pending_rest = rest
+        return flushed
 
     for raw in _normalize_cli_text(raw_text).splitlines():
         line = raw.rstrip()
         rd_m = _RD_RE.match(line.strip())
         if rd_m:
-            _flush_pending()
+            row = _flush_pending()
+            if row:
+                yield row
             current_rd = (rd_m.group("rd") or "").strip()
             vrf_from_rd = (rd_m.group("vrf") or "").strip()
             if vrf_from_rd:
@@ -331,15 +330,21 @@ def _hand_parse(
                     pending_nh = first
                     more = " ".join(parts[1:])
                     if more and _rest_looks_complete(more):
-                        _flush_pending(rest=more, path_continuation=True)
+                        row = _flush_pending(rest=more, path_continuation=True)
+                        if row:
+                            yield row
                     elif more:
                         pending_rest = " ".join(x for x in (pending_rest, more) if x)
                     continue
                 if not _looks_like_prefix(first):
-                    _flush_pending(rest=tok, path_continuation=True)
+                    row = _flush_pending(rest=tok, path_continuation=True)
+                    if row:
+                        yield row
                     continue
             else:
-                _flush_pending(rest=tok, path_continuation=True)
+                row = _flush_pending(rest=tok, path_continuation=True)
+                if row:
+                    yield row
                 continue
 
         # Peel optional status codes (* i / *i / > …)
@@ -355,9 +360,10 @@ def _hand_parse(
         if m and _looks_like_prefix(m.group("net")) and _looks_like_ip_or_prefix(m.group("nh")):
             rest = (m.group("rest") or "").strip()
             if _rest_looks_complete(rest):
-                _flush_pending()
-                _emit_route(
-                    out,
+                row = _flush_pending()
+                if row:
+                    yield row
+                row = _emit_route(
                     seen,
                     local_as=local_as,
                     afi=afi,
@@ -370,19 +376,27 @@ def _hand_parse(
                     rest=rest,
                     flags=flags,
                 )
+                if row:
+                    yield row
             else:
-                # Empty rest or From-only → wait for metric/path wrap
-                _start_pending(net=m.group("net"), nh=m.group("nh"), flags=flags, rest=rest)
+                row = _start_pending(
+                    net=m.group("net"), nh=m.group("nh"), flags=flags, rest=rest
+                )
+                if row:
+                    yield row
             continue
 
         # Network alone → wait for next-hop wrap
         m_net = _NET_ONLY_RE.match(body)
         if m_net and _looks_like_prefix(m_net.group("net")):
-            _start_pending(net=m_net.group("net"), nh="", flags=flags, rest="")
+            row = _start_pending(net=m_net.group("net"), nh="", flags=flags, rest="")
+            if row:
+                yield row
             continue
 
-    _flush_pending()
-    return out
+    row = _flush_pending()
+    if row:
+        yield row
 
 
 def normalize_bgp_route(
@@ -391,8 +405,8 @@ def normalize_bgp_route(
     command: str = "",
     params: dict[str, str] | None = None,
     **_kw: Any,
-) -> list[dict[str, Any]]:
-    """Hand-only normalize (see module docstring)."""
+):
+    """Hand-only normalize; returns [] or a streaming iterator of route dicts."""
     raw_text = _normalize_cli_text(raw_text)
     if _empty_if_total_zero(raw_text):
         return []

@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import shutil
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -78,15 +79,23 @@ def count_text_lines(text: str | None) -> int:
     return s.count("\n") + (0 if s.endswith("\n") else 1)
 
 
-def write_records(batch_id: str, cmd_id: str, records: list[dict[str, Any]]) -> str:
-    """Write parsed records as JSONL; return relative path."""
+def write_records(
+    batch_id: str,
+    cmd_id: str,
+    records: Iterable[Mapping[str, Any]] | None,
+) -> tuple[str, int]:
+    """Stream parsed records as JSONL; return (relative path, row count)."""
     _, _, rec_path = _cmd_paths(batch_id, cmd_id)
+    n = 0
     with rec_path.open("w", encoding="utf-8", errors="replace") as fh:
-        for rec in records or []:
-            fh.write(json.dumps(rec, ensure_ascii=False, default=str))
+        for rec in records or ():
+            if not isinstance(rec, Mapping):
+                continue
+            fh.write(json.dumps(dict(rec), ensure_ascii=False, default=str, separators=(",", ":")))
             fh.write("\n")
+            n += 1
     rel = rec_path.resolve().relative_to(spool_root())
-    return str(rel).replace("\\", "/")
+    return str(rel).replace("\\", "/"), n
 
 
 def write_meta(batch_id: str, cmd_id: str, meta: dict[str, Any]) -> str:
@@ -114,13 +123,26 @@ def read_raw_text(rel_path: str, *, max_bytes: int = 0) -> str:
     return data.decode("utf-8", errors="replace")
 
 
-def read_records(rel_path: str) -> list[dict[str, Any]]:
+def spool_file_size(rel_path: str) -> int:
+    """Byte size of a spool file; 0 if missing."""
     if not rel_path:
-        return []
+        return 0
     path = (spool_root() / str(rel_path)).resolve()
     if not str(path).startswith(str(spool_root())) or not path.is_file():
-        return []
-    out: list[dict[str, Any]] = []
+        return 0
+    try:
+        return int(path.stat().st_size)
+    except OSError:
+        return 0
+
+
+def iter_records(rel_path: str) -> Iterator[dict[str, Any]]:
+    """Yield one record dict at a time from JSONL (never loads full file)."""
+    if not rel_path:
+        return
+    path = (spool_root() / str(rel_path)).resolve()
+    if not str(path).startswith(str(spool_root())) or not path.is_file():
+        return
     with path.open("r", encoding="utf-8", errors="replace") as fh:
         for line in fh:
             line = line.strip()
@@ -131,8 +153,27 @@ def read_records(rel_path: str) -> list[dict[str, Any]]:
             except json.JSONDecodeError:
                 continue
             if isinstance(rec, dict):
-                out.append(rec)
-    return out
+                yield rec
+
+
+def iter_record_chunks(
+    rel_path: str, *, chunk_size: int = 2000
+) -> Iterator[list[dict[str, Any]]]:
+    """Yield lists of up to ``chunk_size`` records from JSONL."""
+    size = max(1, int(chunk_size or 2000))
+    buf: list[dict[str, Any]] = []
+    for rec in iter_records(rel_path):
+        buf.append(rec)
+        if len(buf) >= size:
+            yield buf
+            buf = []
+    if buf:
+        yield buf
+
+
+def read_records(rel_path: str) -> list[dict[str, Any]]:
+    """Load all records (tests / small payloads only — prefer iter_record_chunks)."""
+    return list(iter_records(rel_path))
 
 
 @dataclass

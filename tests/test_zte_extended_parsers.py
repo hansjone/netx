@@ -12,7 +12,7 @@ from netx_api.biz_state.enrich import apply_enrich_joins
 from netx_api.biz_state.parsers.common.vrf_list import normalize_vrf_list
 from netx_api.biz_state.parsers.zte import (
     normalize_bgp_peer,
-    normalize_bgp_route,
+    normalize_bgp_route as _normalize_bgp_route_stream,
     normalize_ip_route,
     normalize_ipv6_route,
     normalize_l2vpn_mac,
@@ -24,6 +24,12 @@ from netx_api.biz_state.parsers.zte import (
 )
 from netx_api.biz_state.profiles import AuxCommand, get_profile, metric_field_map, reload_profiles
 from netx_api.ntc_parse import apply_rule
+
+
+def normalize_bgp_route(**kwargs):
+    """Materialize streaming parser for assertions / enrich joins."""
+    out = _normalize_bgp_route_stream(**kwargs)
+    return out if isinstance(out, list) else list(out)
 
 
 _VRF_SAMPLE = """

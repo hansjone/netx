@@ -17,6 +17,7 @@ from netx_api.biz_state import spool as spool_mod
 from netx_api.biz_state.spool import (
     SpooledCommand,
     clear_batch_spool,
+    iter_record_chunks,
     read_raw_text,
     read_records,
     write_raw_text,
@@ -43,10 +44,22 @@ class BizStateSpoolIoTests(unittest.TestCase):
         rel = write_raw_text(bid, cid, "show arp\nA B C")
         self.assertTrue(rel.endswith("cmd1.raw.txt"))
         self.assertEqual(read_raw_text(rel), "show arp\nA B C")
-        rrel = write_records(bid, cid, [{"ip": "1.1.1.1"}, {"ip": "2.2.2.2"}])
+        rrel, n = write_records(bid, cid, [{"ip": "1.1.1.1"}, {"ip": "2.2.2.2"}])
+        self.assertEqual(n, 2)
         recs = read_records(rrel)
         self.assertEqual(len(recs), 2)
         self.assertEqual(recs[0]["ip"], "1.1.1.1")
+
+    def test_write_records_streams_generator(self) -> None:
+        def _gen():
+            for i in range(5):
+                yield {"i": i}
+
+        rrel, n = write_records("batch-g", "cmd-g", _gen())
+        self.assertEqual(n, 5)
+        chunks = list(iter_record_chunks(rrel, chunk_size=2))
+        self.assertEqual([len(c) for c in chunks], [2, 2, 1])
+        self.assertEqual(chunks[0][0]["i"], 0)
 
     def test_raw_max_bytes_truncate(self) -> None:
         bid = "b2"
@@ -116,11 +129,12 @@ class BizStateFlushSpoolTests(unittest.TestCase):
     def test_flush_inserts_command_and_metric_rows(self) -> None:
         cid = uuid4().hex
         raw_rel = write_raw_text("b-spool", cid, "ARP OUTPUT")
-        rec_rel = write_records(
+        rec_rel, rec_n = write_records(
             "b-spool",
             cid,
             [{"ip": "10.0.0.1", "mac": "aaaa"}, {"ip": "10.0.0.2", "mac": "bbbb"}],
         )
+        self.assertEqual(rec_n, 2)
         pending = [
             SpooledCommand(
                 id=cid,
@@ -134,6 +148,7 @@ class BizStateFlushSpoolTests(unittest.TestCase):
                 message="spooled",
                 raw_rel_path=raw_rel,
                 records_rel_path=rec_rel,
+                row_count=rec_n,
                 persist_kind="metric",
             )
         ]
@@ -157,6 +172,36 @@ class BizStateFlushSpoolTests(unittest.TestCase):
         assert batch is not None
         self.assertEqual(batch.command_count, 1)
         self.assertEqual(batch.row_count, 2)
+
+    def test_flush_skips_mega_raw_into_db(self) -> None:
+        cid = uuid4().hex
+        big = "X" * (9 * 1024 * 1024)
+        raw_rel = write_raw_text("b-spool", cid, big)
+        rec_rel, rec_n = write_records("b-spool", cid, [{"k": 1}])
+        pending = [
+            SpooledCommand(
+                id=cid,
+                batch_id="b-spool",
+                metric_id="arp",
+                raw_command="show arp",
+                parse_status="ok",
+                message="ok",
+                raw_rel_path=raw_rel,
+                records_rel_path=rec_rel,
+                row_count=rec_n,
+                persist_kind="metric",
+            )
+        ]
+        with patch.object(spool_mod.settings, "biz_state_raw_max_bytes", 8 * 1024 * 1024):
+            cmds, rows = runner._flush_spooled_commands("b-spool", pending)
+        self.assertEqual(cmds, 1)
+        self.assertEqual(rows, 1)
+        self.db.expire_all()
+        cmd = self.db.get(BizStateBatchCommand, cid)
+        assert cmd is not None
+        self.assertIn("raw_on_spool", cmd.raw_text)
+        self.assertNotIn("XXXX", cmd.raw_text)
+        self.assertLess(len(cmd.raw_text or ""), 500)
 
     def test_flush_batches_multiple_without_per_cmd_sessions(self) -> None:
         pending: list[SpooledCommand] = []
