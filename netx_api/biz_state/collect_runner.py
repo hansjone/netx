@@ -563,33 +563,48 @@ def _finish_task(task_id: str, *, error: str = "") -> None:
         db.close()
 
 
-def dispatch_collect(task_id: str, *, manual: bool = False) -> None:
+def dispatch_collect(task_id: str, *, manual: bool = False) -> dict[str, Any]:
     """Enqueue a collect round; run inline when this process owns execution.
 
     Dedicated worker mode: only enqueue (claim loop runs the batch).
     Inline / non-dedicated: enqueue then atomically promote+execute (skip if
     another worker already claimed the batch).
+
+    Returns the enqueue result dict (ok / queued / reason / batch_id / …).
     """
     from .claim import enqueue_collect
 
     result = enqueue_collect(task_id, manual=manual)
     if not result.get("queued"):
-        return
+        return result
     batch_id = str(result.get("batch_id") or "")
     if not batch_id:
+        return result
+    execute_enqueued_batch(
+        batch_id=batch_id,
+        task_id=str(result.get("task_id") or task_id),
+    )
+    return result
+
+
+def execute_enqueued_batch(*, batch_id: str, task_id: str) -> None:
+    """Promote+run a queued batch when this process owns inline execution."""
+    bid = str(batch_id or "").strip()
+    if not bid:
         return
-    if _should_execute_inline():
-        # Atomic queued→running; if false, scheduler/worker already owns it.
-        if not _try_claim_batch_for_execute(batch_id):
-            return
-        execute_claimed_batch(
-            batch_id=batch_id,
-            task_id=str(result.get("task_id") or task_id),
-            source="",
-            ne_id="",
-            vendor="",
-            device_type="",
-        )
+    if not _should_execute_inline():
+        return
+    # Atomic queued→running; if false, scheduler/worker already owns it.
+    if not _try_claim_batch_for_execute(bid):
+        return
+    execute_claimed_batch(
+        batch_id=bid,
+        task_id=str(task_id or ""),
+        source="",
+        ne_id="",
+        vendor="",
+        device_type="",
+    )
 
 
 def _should_execute_inline() -> bool:

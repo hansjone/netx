@@ -1824,7 +1824,14 @@ export const bizStateDeleteTask = (taskId: string) =>
   apiDelete<{ ok: boolean }>(`/v1/biz-state/tasks/${encodeURIComponent(taskId)}`);
 
 export const bizStateCollectNow = (taskId: string) =>
-  apiPost<{ ok: boolean }>(`/v1/biz-state/tasks/${encodeURIComponent(taskId)}/collect`, {});
+  apiPost<{
+    ok: boolean;
+    started?: boolean;
+    queued?: boolean;
+    reason?: string;
+    batch_id?: string;
+    collect_running?: boolean;
+  }>(`/v1/biz-state/tasks/${encodeURIComponent(taskId)}/collect`, {});
 
 export const bizStateCollectStop = (taskId: string) =>
   apiPost<{

@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from .db import get_db
 from .biz_state import service as svc
-from .biz_state.collect_runner import dispatch_collect
+from .biz_state.collect_runner import execute_enqueued_batch
 from .lldp_shared import resolve_vendor_key
 from .models import BizStateTask
 
@@ -246,10 +246,32 @@ def api_collect_now(
     if bool(task.collect_running):
         return {"ok": True, "started": False, "reason": "already_collecting", "task_id": task_id}
     tid = task_id
-    # Enqueue (and run inline only when this process owns collectors).
-    # Dedicated worker mode: BackgroundTasks only creates queued batch; workers claim.
-    background_tasks.add_task(lambda: dispatch_collect(tid, manual=True))
-    return {"ok": True, "started": True, "queued": True, "task_id": task_id}
+    # Enqueue synchronously so collect_running flips before the HTTP response
+    # (schedule may stay paused; manual collect is still allowed).
+    from .biz_state.claim import enqueue_collect
+
+    result = enqueue_collect(tid, manual=True)
+    if not result.get("queued"):
+        return {
+            "ok": bool(result.get("ok", False)),
+            "started": False,
+            "queued": False,
+            "reason": result.get("reason") or "enqueue_failed",
+            "task_id": tid,
+        }
+    batch_id = str(result.get("batch_id") or "")
+    if batch_id:
+        background_tasks.add_task(
+            lambda bid=batch_id, t=tid: execute_enqueued_batch(batch_id=bid, task_id=t)
+        )
+    return {
+        "ok": True,
+        "started": True,
+        "queued": True,
+        "batch_id": batch_id,
+        "task_id": tid,
+        "collect_running": True,
+    }
 
 
 @router.post("/tasks/{task_id}/collect/stop")
