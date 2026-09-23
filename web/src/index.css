@@ -10085,6 +10085,71 @@ html.login-page--paused .login-page__flare {
   min-height: min(50vh, 480px);
 }
 
+.bs-rawlog-stats {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.bs-batch-message {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: rgba(15, 23, 42, 0.55);
+}
+
+.bs-batch-message__label {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #94a3b8;
+}
+
+.bs-batch-message__body {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #e2e8f0;
+}
+
+.bs-batch-message--alert {
+  border-color: rgba(248, 113, 113, 0.28);
+  background: rgba(127, 29, 29, 0.22);
+}
+
+.bs-batch-message--alert .bs-batch-message__label {
+  color: #fca5a5;
+}
+
+.bs-batch-message--alert .bs-batch-message__body {
+  color: #fecaca;
+}
+
+.bs-msg-cell {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.bs-cmd-stat {
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.bs-collect-detail-modal .bs-sheet-table {
+  max-height: min(48vh, 480px);
+}
+
 .bs-rawlog-pre {
   flex: 1 1 auto;
   margin: 0;

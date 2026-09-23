@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import io
 import json
+import logging
+import threading
 import zipfile
 from datetime import datetime
 from typing import Any
@@ -20,6 +22,7 @@ from ..models import (
     BizPortMapping,
     BizPortMappingRow,
     BizStateBatch,
+    BizStateBatchCommand,
     BizStateLldpNeighbor,
     BizStateTask,
 )
@@ -39,10 +42,68 @@ from .iface_normalize import (
 )
 from .profiles import metric_field_map
 
+_log = logging.getLogger("netx.biz_state.compare")
+
+# Per-job mutex so auto + manual run_compare do not dual-write the same job.
+_auto_compare_locks: dict[str, threading.Lock] = {}
+_auto_compare_locks_guard = threading.Lock()
+
+
+def _job_compare_lock(job_id: str) -> threading.Lock:
+    jid = str(job_id or "").strip()
+    with _auto_compare_locks_guard:
+        lock = _auto_compare_locks.get(jid)
+        if lock is None:
+            lock = threading.Lock()
+            _auto_compare_locks[jid] = lock
+        return lock
+
 
 def _utcnow() -> datetime:
     return utcnow_naive()
 
+
+# parse_status values that mean the command produced usable (possibly empty) rows
+_METRIC_OK_STATUSES = frozenset(
+    {"ok", "unmatched", "skipped_custom", "ok_aux", "unmatched_aux"}
+)
+_METRIC_FAIL_STATUSES = frozenset({"failed", "failed_aux"})
+
+
+def batch_metric_collect_ok(db: Session, batch_id: str, metric_id: str) -> bool:
+    """True when this metric is safe to use from the batch.
+
+    - Batch ``success``: OK (all commands finished).
+    - Batch ``partial``/other: require at least one non-failed command for the metric.
+    - No command row for the metric on a non-success batch → incomplete.
+    """
+    bid = str(batch_id or "").strip()
+    mid = str(metric_id or "").strip()
+    if not bid or not mid:
+        return False
+    batch = db.get(BizStateBatch, bid)
+    if not batch:
+        return False
+    status = str(batch.status or "")
+    if status == "success":
+        return True
+    cmds = (
+        db.query(BizStateBatchCommand)
+        .filter(
+            BizStateBatchCommand.batch_id == bid,
+            BizStateBatchCommand.metric_id == mid,
+        )
+        .all()
+    )
+    if not cmds:
+        return False
+    statuses = [str(c.parse_status or "").strip().lower() for c in cmds]
+    if any(s in _METRIC_OK_STATUSES or s.startswith("ok") for s in statuses):
+        return True
+    if all(s in _METRIC_FAIL_STATUSES or s.startswith("failed") for s in statuses):
+        return False
+    # Unknown status with rows still present — allow; empty unknown on partial — deny
+    return any(int(c.row_count or 0) > 0 for c in cmds)
 
 def _compare_side(
     db: Session,
@@ -314,6 +375,7 @@ def _sheet_def(
     display_fields: list[str] | None = None,
     row_filters: list[dict[str, Any]] | None = None,
     field_rules: list[dict[str, Any]] | None = None,
+    ignore_port_changes: bool | None = None,
 ) -> dict[str, Any]:
     mid = str(metric_id or "").strip()
     sid = str(sheet_id or "").strip() or mid
@@ -352,6 +414,8 @@ def _sheet_def(
         "row_filters": _normalize_row_filters(row_filters),
         "field_rules": rules,
     }
+    if ignore_port_changes is not None:
+        sheet["ignore_port_changes"] = bool(ignore_port_changes)
     return sheet
 
 
@@ -553,6 +617,9 @@ def _normalize_sheet(raw: Any) -> dict[str, Any] | None:
         disp_arg = _str_list(raw.get("display_fields"))
     else:
         disp_arg = None
+    ignore_ports: bool | None = None
+    if "ignore_port_changes" in raw and raw.get("ignore_port_changes") is not None:
+        ignore_ports = bool(raw.get("ignore_port_changes"))
     return _sheet_def(
         metric_id=mid,
         sheet_id=str(raw.get("sheet_id") or "").strip() or mid,
@@ -563,6 +630,7 @@ def _normalize_sheet(raw: Any) -> dict[str, Any] | None:
         display_fields=disp_arg,
         row_filters=_normalize_row_filters(raw.get("row_filters")),
         field_rules=rules,
+        ignore_port_changes=ignore_ports,
     )
 
 
@@ -1368,7 +1436,7 @@ def _resolve_after_batch(db: Session, job: BizCompareJob) -> str:
         db.query(BizStateBatch)
         .filter(
             BizStateBatch.task_id == task_id,
-            BizStateBatch.status.in_(("success", "partial")),
+            BizStateBatch.status == "success",
         )
         .order_by(BizStateBatch.started_at.desc())
         .first()
@@ -1401,6 +1469,9 @@ def _run_sheet(
     )
     row_filters = list(sheet.get("row_filters") or [])
     mode = "presence" if not compare_fields else "fields"
+    ignore_ports = sheet.get("ignore_port_changes")
+    if ignore_ports is not None:
+        ignore_ports = bool(ignore_ports)
     before_raw = _load_metric_rows(db, batch_id=before_batch_id, metric_id=sheet["metric_id"])
     after_raw = _load_metric_rows(db, batch_id=after_batch_id, metric_id=sheet["metric_id"])
     before_rows = apply_row_filters(before_raw, row_filters)
@@ -1414,6 +1485,7 @@ def _run_sheet(
         port_map=port_map,
         field_rules=field_rules,
         iface_normalize_rules=iface_normalize_rules,
+        ignore_port_changes=ignore_ports,
     )
     summary = dict(result["summary"])
     summary["before_raw_count"] = len(before_raw)
@@ -1429,6 +1501,7 @@ def _run_sheet(
         "display_fields": display_fields,
         "row_filters": row_filters,
         "field_rules": field_rules,
+        "ignore_port_changes": ignore_ports,
         "mode": mode,
         "summary": summary,
         "diffs": result["diffs"],
@@ -1437,6 +1510,18 @@ def _run_sheet(
 
 
 def run_compare(db: Session, job_id: str, *, force_after_batch_id: str = "") -> dict[str, Any]:
+    lock = _job_compare_lock(job_id)
+    if not lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="compare_already_running")
+    try:
+        return _run_compare_unlocked(db, job_id, force_after_batch_id=force_after_batch_id)
+    finally:
+        lock.release()
+
+
+def _run_compare_unlocked(
+    db: Session, job_id: str, *, force_after_batch_id: str = ""
+) -> dict[str, Any]:
     j = db.get(BizCompareJob, job_id)
     if not j:
         raise HTTPException(status_code=404, detail="job_not_found")
@@ -1467,6 +1552,7 @@ def run_compare(db: Session, job_id: str, *, force_after_batch_id: str = "") -> 
         "removed": 0,
         "changed": 0,
         "unchanged": 0,
+        "duplicate": 0,
     }
     mapping_by_metric: dict[str, Any] = {}
     for sheet in sheets_cfg:
@@ -1513,6 +1599,7 @@ def run_compare(db: Session, job_id: str, *, force_after_batch_id: str = "") -> 
                 "compare_fields": s["compare_fields"],
                 "display_fields": s.get("display_fields") or [],
                 "field_rules": s.get("field_rules") or [],
+                "ignore_port_changes": s.get("ignore_port_changes"),
                 "mode": s["mode"],
                 "summary": s["summary"],
             }
@@ -1957,7 +2044,14 @@ def list_runs(db: Session, job_id: str, *, limit: int = 20) -> list[dict[str, An
 
 
 def try_auto_compare_for_task(db: Session, task_id: str, batch_id: str) -> int:
-    """When a new after batch lands, run auto jobs pinned to that after task."""
+    """When a new *success* after batch lands, run auto jobs pinned to that task.
+
+    Skips jobs already being compared (non-blocking lock). Call from a background
+    thread so the collect finalize path is not blocked.
+    """
+    batch = db.get(BizStateBatch, batch_id)
+    if not batch or str(batch.status or "") != "success":
+        return 0
     jobs = (
         db.query(BizCompareJob)
         .filter(BizCompareJob.mode == "auto", BizCompareJob.after_task_id == task_id)
@@ -1970,6 +2064,34 @@ def try_auto_compare_for_task(db: Session, task_id: str, batch_id: str) -> int:
         try:
             run_compare(db, j.id, force_after_batch_id=batch_id)
             n += 1
+        except HTTPException as exc:
+            if int(getattr(exc, "status_code", 0) or 0) == 409:
+                _log.info("auto compare skipped (busy) job=%s", j.id)
+            continue
         except Exception:
+            _log.exception("auto compare failed job=%s task=%s", j.id, task_id)
             continue
     return n
+
+
+def schedule_auto_compare_for_task(task_id: str, batch_id: str) -> None:
+    """Fire-and-forget auto compare on a daemon thread (own DB session)."""
+
+    def _run() -> None:
+        from ..db import SessionLocal
+
+        db = SessionLocal()
+        try:
+            try_auto_compare_for_task(db, task_id, batch_id)
+        except Exception:
+            _log.exception(
+                "bg auto compare failed task=%s batch=%s", task_id, batch_id
+            )
+        finally:
+            db.close()
+
+    threading.Thread(
+        target=_run,
+        name=f"biz-auto-cmp-{str(batch_id)[:8]}",
+        daemon=True,
+    ).start()

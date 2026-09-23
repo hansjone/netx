@@ -391,6 +391,33 @@ class CompareSheetDefaultsTests(unittest.TestCase):
         )
         self.assertEqual(out["summary"]["duplicate_keys_before"], 1)
         self.assertEqual(out["summary"]["duplicate_keys_after"], 1)
+        self.assertEqual(out["summary"]["duplicate"], 2)
+        self.assertIn("a|X|1", out["summary"]["duplicate_key_list"])
+        kinds = [d["kind"] for d in out["diffs"]]
+        self.assertEqual(kinds.count("duplicate"), 2)
+        # First before wins → matches first after → unchanged (same remote_ip)
+        self.assertEqual(out["summary"]["unchanged"], 1)
+        self.assertEqual(out["summary"]["changed"], 0)
+
+    def test_ignore_port_changes_false_keeps_iface(self) -> None:
+        before = [
+            {"local_if": "old-1", "remote_sys": "Peer", "remote_if": "p1", "remote_ip": "1.1.1.1"},
+        ]
+        after = [
+            {"local_if": "new-1", "remote_sys": "Peer", "remote_if": "p1", "remote_ip": "1.1.1.1"},
+        ]
+        out = compare_rows(
+            before_rows=before,
+            after_rows=after,
+            key_fields=["local_if", "remote_sys", "remote_if"],
+            iface_fields=["local_if"],
+            compare_fields=["remote_ip"],
+            port_map={},
+            ignore_port_changes=False,
+        )
+        self.assertEqual(out["summary"]["removed"], 1)
+        self.assertEqual(out["summary"]["added"], 1)
+        self.assertFalse(out["mapping_stats"].get("ignore_port_changes"))
 
     def test_normalize_allows_duplicate_metric_with_distinct_sheet_id(self) -> None:
         from netx_api.biz_state.compare_service import _normalize_sheet, sheet_key

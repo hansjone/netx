@@ -14,6 +14,7 @@ import {
   bizStateDeleteBatch,
   bizStateDeleteTask,
   bizStateDiscover,
+  bizStateDownloadCommandRaw,
   bizStateDownloadExport,
   bizStateDownloadTaskCommands,
   bizStateGetBatch,
@@ -86,6 +87,7 @@ type BatchRow = {
   status: string;
   row_count: number;
   command_count: number;
+  message?: string;
   started_at?: string | null;
   ended_at?: string | null;
   is_baseline?: boolean;
@@ -108,6 +110,7 @@ type SheetCmd = {
   raw_command: string;
   parse_status?: string;
   row_count?: number;
+  raw_line_count?: number;
   message?: string;
   has_raw?: boolean;
   profile_id?: string;
@@ -305,6 +308,13 @@ export function BizStatePage() {
   const [rawLogCmd, setRawLogCmd] = useState("");
   const [rawLogText, setRawLogText] = useState("");
   const [rawLogMeta, setRawLogMeta] = useState("");
+  const [rawLogCommandId, setRawLogCommandId] = useState("");
+  const [rawLogLines, setRawLogLines] = useState(0);
+  const [rawLogRows, setRawLogRows] = useState(0);
+  const [rawLogMessage, setRawLogMessage] = useState("");
+  /** Collect status / errors detail (lighter than workbook). */
+  const [collectDetail, setCollectDetail] = useState<any>(null);
+  const [collectDetailLoading, setCollectDetailLoading] = useState(false);
 
   const refreshTasks = useCallback(async () => {
     const purpose =
@@ -460,6 +470,7 @@ export function BizStatePage() {
       { key: "raw_command", header: t("bizState.colCommand") },
       { key: "metric_id", header: "metric" },
       { key: "parse_status", header: t("bizState.colStatus") },
+      { key: "raw_line_count", header: t("bizState.colRawLines") },
       { key: "row_count", header: t("bizState.colRows") },
       { key: "message", header: t("bizState.colMessage") },
       { key: "_actions", header: t("bizState.colActions") },
@@ -483,7 +494,7 @@ export function BizStatePage() {
         : cmds.filter((row) => {
             const keys = sheetColumn
               ? [sheetColumn]
-              : ["raw_command", "metric_id", "parse_status", "row_count", "message"];
+              : ["raw_command", "metric_id", "parse_status", "raw_line_count", "row_count", "message"];
             return keys.some((k) => cellText(row[k]).toLowerCase().includes(kw));
           });
       const start = (sheetPage - 1) * sheetPageSize;
@@ -509,12 +520,26 @@ export function BizStatePage() {
       return cmds.filter((row) => {
         const keys = sheetColumn
           ? [sheetColumn]
-          : ["raw_command", "metric_id", "parse_status", "row_count", "message"];
+          : ["raw_command", "metric_id", "parse_status", "raw_line_count", "row_count", "message"];
         return keys.some((k) => cellText(row[k]).toLowerCase().includes(kw));
       }).length;
     }
     return sheetTotal;
   }, [activeSheet, batchDetail, debouncedSheetKw, sheetColumn, sheetTotal]);
+
+  const collectDetailCmdSummary = useMemo(() => {
+    const cmds = (collectDetail?.commands || []) as SheetCmd[];
+    let ok = 0;
+    let fail = 0;
+    let other = 0;
+    for (const c of cmds) {
+      const st = String(c.parse_status || "").toLowerCase();
+      if (st === "ok" || st === "success" || st === "aux" || st === "aux_ok" || st === "aux_cached") ok += 1;
+      else if (st === "failed" || st === "error" || st === "fail") fail += 1;
+      else other += 1;
+    }
+    return { ok, fail, other, total: cmds.length };
+  }, [collectDetail]);
 
   const loadSheetPage = useCallback(
     async (batchId: string, metricId: string, page: number, pageSize: number, kw: string, column: string) => {
@@ -1067,23 +1092,52 @@ export function BizStatePage() {
     setSheetTotal(0);
     setRawLogOpen(false);
     setRawLogText("");
+    setRawLogCommandId("");
   };
 
-  const openRawLog = async (commandId: string) => {
-    if (!batchDetail?.id || !commandId) return;
+  const openCollectDetail = async (batchId: string) => {
+    setCollectDetailLoading(true);
+    setCollectDetail(null);
+    try {
+      const d = await bizStateGetBatch(batchId);
+      setCollectDetail(d);
+    } catch (e) {
+      showError(formatErr(e));
+    } finally {
+      setCollectDetailLoading(false);
+    }
+  };
+
+  const closeCollectDetail = () => {
+    setCollectDetail(null);
+    setCollectDetailLoading(false);
+  };
+
+  const openRawLog = async (commandId: string, fromBatchId?: string) => {
+    const bid = fromBatchId || (batchDetail?.id ? String(batchDetail.id) : "") || (collectDetail?.id ? String(collectDetail.id) : "");
+    if (!bid || !commandId) return;
     setRawLogOpen(true);
     setRawLogLoading(true);
     setRawLogText("");
     setRawLogCmd("");
     setRawLogMeta("");
+    setRawLogCommandId(commandId);
+    setRawLogLines(0);
+    setRawLogRows(0);
+    setRawLogMessage("");
     try {
-      const d = await bizStateGetBatchCommand(String(batchDetail.id), commandId);
+      const d = await bizStateGetBatchCommand(bid, commandId);
       setRawLogCmd(String(d.raw_command || ""));
       setRawLogText(String(d.raw_text || ""));
+      const lines = Number(d.raw_line_count ?? 0);
+      const rows = Number(d.row_count ?? 0);
+      setRawLogLines(lines);
+      setRawLogRows(rows);
+      setRawLogMessage(String(d.message || ""));
       const bits = [
         d.parse_status,
         d.metric_id,
-        d.row_count != null ? `${d.row_count} rows` : "",
+        t("bizState.rawLogStats", { lines, rows }),
         d.collected_at ? fmtTime(d.collected_at) : "",
       ].filter(Boolean);
       setRawLogMeta(bits.join(" · "));
@@ -1092,6 +1146,35 @@ export function BizStatePage() {
       setRawLogOpen(false);
     } finally {
       setRawLogLoading(false);
+    }
+  };
+
+  const exportRawLog = async () => {
+    const bid =
+      (batchDetail?.id && String(batchDetail.id)) ||
+      (collectDetail?.id && String(collectDetail.id)) ||
+      "";
+    if (!bid || !rawLogCommandId) {
+      // Fallback: download already-loaded text
+      if (!rawLogText) return;
+      const safe = (rawLogCmd || "command").replace(/[^\w.-]+/g, "_").slice(0, 80);
+      const blob = new Blob([rawLogText], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      try {
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `${safe || "command"}.txt`;
+        a.click();
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+      return;
+    }
+    try {
+      await bizStateDownloadCommandRaw(bid, rawLogCommandId);
+      showOk(t("bizState.exportRawLogOk"));
+    } catch (e) {
+      showError(formatErr(e));
     }
   };
 
@@ -1785,6 +1868,9 @@ export function BizStatePage() {
                         </td>
                         <td>
                           <div className="pt-list-actions">
+                            <Button size="sm" variant="secondary" onPress={() => void openCollectDetail(b.id)}>
+                              {t("bizState.batchDetail")}
+                            </Button>
                             <Button size="sm" variant="primary" onPress={() => void openBatch(b.id)}>
                               {t("bizState.viewBatch")}
                             </Button>
@@ -2079,6 +2165,21 @@ export function BizStatePage() {
                   {t("bizState.setAlias")}
                 </Button>
               </div>
+              {batchDetail.message ? (
+                <div
+                  className={`bs-batch-message${
+                    ["failed", "partial", "error", "cancelled"].includes(
+                      String(batchDetail.status || "").toLowerCase(),
+                    )
+                      ? " bs-batch-message--alert"
+                      : ""
+                  }`}
+                  role="status"
+                >
+                  <span className="bs-batch-message__label">{t("bizState.colMessage")}</span>
+                  <pre className="bs-batch-message__body">{String(batchDetail.message)}</pre>
+                </div>
+              ) : null}
             </div>
           ) : null}
 
@@ -2111,6 +2212,12 @@ export function BizStatePage() {
                           {c.raw_command || "—"}
                         </code>
                         <div className="bs-sheet-cmd-actions">
+                          <span className="muted bs-cmd-stat">
+                            {t("bizState.rawLogStats", {
+                              lines: Number(c.raw_line_count ?? 0),
+                              rows: Number(c.row_count ?? 0),
+                            })}
+                          </span>
                           {c.parse_status ? (
                             <NmStatusChip color={jobChipColor(String(c.parse_status))}>
                               {c.parse_status}
@@ -2177,14 +2284,29 @@ export function BizStatePage() {
                         {displayColumns.map((c) => (
                           <td key={c.key}>
                             {c.key === "_actions" ? (
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                isDisabled={!row.has_raw}
-                                onPress={() => void openRawLog(String(row.id || ""))}
-                              >
-                                {t("bizState.viewRawLog")}
-                              </Button>
+                              <div className="pt-list-actions">
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  isDisabled={!row.has_raw}
+                                  onPress={() => void openRawLog(String(row.id || ""))}
+                                >
+                                  {t("bizState.viewRawLog")}
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  isDisabled={!row.has_raw || !batchDetail?.id}
+                                  onPress={() =>
+                                    void bizStateDownloadCommandRaw(
+                                      String(batchDetail.id),
+                                      String(row.id || ""),
+                                    ).catch((e) => showError(formatErr(e)))
+                                  }
+                                >
+                                  {t("bizState.exportRawLog")}
+                                </Button>
+                              </div>
                             ) : c.key === "parse_status" ? (
                               <NmStatusChip color={jobChipColor(cellText(row[c.key]))}>
                                 {cellText(row[c.key]) || "—"}
@@ -2259,7 +2381,18 @@ export function BizStatePage() {
         </Modal.Header>
         <Modal.Body className="flex flex-col gap-2 bs-rawlog-body">
           {rawLogCmd ? <code className="bs-sheet-cmd-code bs-sheet-cmd-code--block">{rawLogCmd}</code> : null}
-          {rawLogMeta ? <p className="muted">{rawLogMeta}</p> : null}
+          <div className="bs-rawlog-stats">
+            <NmStatusChip color="accent">
+              {t("bizState.rawLogStats", { lines: rawLogLines, rows: rawLogRows })}
+            </NmStatusChip>
+            {rawLogMeta ? <span className="muted">{rawLogMeta}</span> : null}
+          </div>
+          {rawLogMessage ? (
+            <div className="bs-batch-message bs-batch-message--alert" role="status">
+              <span className="bs-batch-message__label">{t("bizState.colMessage")}</span>
+              <pre className="bs-batch-message__body">{rawLogMessage}</pre>
+            </div>
+          ) : null}
           {rawLogLoading ? (
             <div className="pt-list-empty muted">{t("bizState.sheetLoading")}</div>
           ) : (
@@ -2267,7 +2400,162 @@ export function BizStatePage() {
           )}
         </Modal.Body>
         <Modal.Footer>
+          <Button
+            size="sm"
+            variant="secondary"
+            isDisabled={rawLogLoading || (!rawLogText && !rawLogCommandId)}
+            onPress={() => void exportRawLog()}
+          >
+            {t("bizState.exportRawLog")}
+          </Button>
           <Button size="sm" variant="ghost" onPress={() => setRawLogOpen(false)}>
+            {t("bizState.cancel")}
+          </Button>
+        </Modal.Footer>
+      </AppModalShell>
+
+      {/* Batch collect status / errors detail */}
+      <AppModalShell
+        open={Boolean(collectDetail) || collectDetailLoading}
+        onClose={closeCollectDetail}
+        size="lg"
+        className="app-heroui-modal--lg bs-collect-detail-modal"
+      >
+        <Modal.Header>
+          <Modal.Heading>{t("bizState.batchCollectDetail")}</Modal.Heading>
+          <Modal.CloseTrigger />
+        </Modal.Header>
+        <Modal.Body className="flex flex-col gap-2">
+          {collectDetailLoading ? (
+            <div className="pt-list-empty muted">{t("bizState.sheetLoading")}</div>
+          ) : collectDetail ? (
+            <>
+              <div className="bs-workbook-meta">
+                <NmStatusChip color={jobChipColor(String(collectDetail.status || ""))}>
+                  {String(collectDetail.status || "—")}
+                </NmStatusChip>
+                {collectDetail.alias ? (
+                  <NmStatusChip color="accent">{String(collectDetail.alias)}</NmStatusChip>
+                ) : null}
+                <span className="muted">
+                  {collectDetail.command_count} cmd · {collectDetail.row_count} rows ·{" "}
+                  {t("bizState.colStarted")} {fmtTime(collectDetail.started_at)} ·{" "}
+                  {t("bizState.colEnded")} {fmtTime(collectDetail.ended_at)}
+                  {fmtDuration(collectDetail.started_at, collectDetail.ended_at)
+                    ? ` · ${fmtDuration(collectDetail.started_at, collectDetail.ended_at)}`
+                    : ""}
+                </span>
+              </div>
+              <div
+                className={`bs-batch-message${
+                  ["failed", "partial", "error", "cancelled"].includes(
+                    String(collectDetail.status || "").toLowerCase(),
+                  )
+                    ? " bs-batch-message--alert"
+                    : ""
+                }`}
+                role="status"
+              >
+                <span className="bs-batch-message__label">{t("bizState.colMessage")}</span>
+                <pre className="bs-batch-message__body">
+                  {String(collectDetail.message || "").trim() || t("bizState.batchMessageEmpty")}
+                </pre>
+              </div>
+              <p className="muted">
+                {t("bizState.batchCmdSummary", {
+                  ok: collectDetailCmdSummary.ok,
+                  fail: collectDetailCmdSummary.fail,
+                  other: collectDetailCmdSummary.other,
+                  total: collectDetailCmdSummary.total,
+                })}
+              </p>
+              <div className="pt-list-table-wrap bs-sheet-table">
+                <table className="data-table pt-list-table">
+                  <thead>
+                    <tr>
+                      <th>{t("bizState.colCommand")}</th>
+                      <th>{t("bizState.colStatus")}</th>
+                      <th>{t("bizState.colRawLines")}</th>
+                      <th>{t("bizState.colRows")}</th>
+                      <th>{t("bizState.colMessage")}</th>
+                      <th>{t("bizState.colActions")}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {((collectDetail.commands || []) as SheetCmd[]).map((c) => (
+                      <tr key={c.id}>
+                        <td>
+                          <code className="bs-inline-cmd">{c.raw_command || "—"}</code>
+                        </td>
+                        <td>
+                          <NmStatusChip color={jobChipColor(String(c.parse_status || ""))}>
+                            {c.parse_status || "—"}
+                          </NmStatusChip>
+                        </td>
+                        <td className="pt-list-num">{Number(c.raw_line_count ?? 0)}</td>
+                        <td className="pt-list-num">{Number(c.row_count ?? 0)}</td>
+                        <td className="bs-msg-cell" title={c.message || ""}>
+                          {c.message?.trim() ? c.message : "—"}
+                        </td>
+                        <td>
+                          <div className="pt-list-actions">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              isDisabled={!c.has_raw}
+                              onPress={() => void openRawLog(c.id, String(collectDetail.id))}
+                            >
+                              {t("bizState.viewRawLog")}
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              isDisabled={!c.has_raw}
+                              onPress={() =>
+                                void bizStateDownloadCommandRaw(String(collectDetail.id), c.id).catch((e) =>
+                                  showError(formatErr(e)),
+                                )
+                              }
+                            >
+                              {t("bizState.exportRawLog")}
+                            </Button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                    {!((collectDetail.commands || []) as SheetCmd[]).length ? (
+                      <tr>
+                        <td colSpan={6}>
+                          <div className="pt-list-empty">{t("bizState.sheetEmpty")}</div>
+                        </td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          ) : null}
+        </Modal.Body>
+        <Modal.Footer>
+          {collectDetail?.id ? (
+            <>
+              <Button
+                size="sm"
+                variant="primary"
+                onPress={() => {
+                  const id = String(collectDetail.id);
+                  closeCollectDetail();
+                  void openBatch(id);
+                }}
+              >
+                {t("bizState.openWorkbook")}
+              </Button>
+              <Button size="sm" variant="secondary" onPress={() => void bizStateDownloadExport(String(collectDetail.id))}>
+                {t("bizState.export")}
+              </Button>
+            </>
+          ) : null}
+          <Button size="sm" variant="ghost" onPress={closeCollectDetail}>
             {t("bizState.cancel")}
           </Button>
         </Modal.Footer>

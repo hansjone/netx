@@ -57,9 +57,8 @@ class BizStateCollectFinalizeTests(unittest.TestCase):
     def test_finalize_partial_after_heavy_timeout(self) -> None:
         with patch.object(runner, "SessionLocal", self.Session):
             with patch(
-                "netx_api.biz_state.compare_service.try_auto_compare_for_task",
-                return_value=None,
-            ):
+                "netx_api.biz_state.compare_service.schedule_auto_compare_for_task",
+            ) as sched:
                 status = runner._finalize_batch_status(
                     batch_id="b-finalize",
                     task_id="t-finalize",
@@ -70,6 +69,7 @@ class BizStateCollectFinalizeTests(unittest.TestCase):
                     lane_errors=["RuntimeError: biz_state_heavy_timeout (2400s)"],
                 )
         self.assertEqual(status, "partial")
+        sched.assert_not_called()
         self.db.expire_all()
         batch = self.db.get(BizStateBatch, "b-finalize")
         assert batch is not None
@@ -127,8 +127,7 @@ class BizStateCollectFinalizeTests(unittest.TestCase):
 
         with patch.object(runner, "SessionLocal", session_factory):
             with patch(
-                "netx_api.biz_state.compare_service.try_auto_compare_for_task",
-                return_value=None,
+                "netx_api.biz_state.compare_service.schedule_auto_compare_for_task",
             ):
                 status = runner._finalize_batch_status(
                     batch_id="b-finalize",
@@ -146,6 +145,23 @@ class BizStateCollectFinalizeTests(unittest.TestCase):
         assert batch is not None
         self.assertEqual(batch.status, "partial")
         self.assertIn("biz_state_heavy_timeout", batch.message or "")
+
+    def test_finalize_success_schedules_auto_compare(self) -> None:
+        with patch.object(runner, "SessionLocal", self.Session):
+            with patch(
+                "netx_api.biz_state.compare_service.schedule_auto_compare_for_task",
+            ) as sched:
+                status = runner._finalize_batch_status(
+                    batch_id="b-finalize",
+                    task_id="t-finalize",
+                    cmd_count=55,
+                    total_rows=6606,
+                    any_fail=False,
+                    any_ok=True,
+                    lane_errors=[],
+                )
+        self.assertEqual(status, "success")
+        sched.assert_called_once_with("t-finalize", "b-finalize")
 
     def test_fail_batch_retries_on_stale_connection(self) -> None:
         calls = {"n": 0}

@@ -1134,6 +1134,69 @@ Routes Learned From This Neighbor:
         self.assertEqual(v4_wrap[0]["next_hop"], "10.0.0.1")
         self.assertEqual(v4_wrap[0]["afi"], "ipv4")
 
+    def test_bgp_route_rr_status_i_and_rd(self) -> None:
+        """RR neighbor-in uses '* i  prefix' and Route Distinguisher fill-down."""
+        from pathlib import Path
+
+        from netx_api.biz_state.profiles import metric_field_map
+
+        fixture = Path(__file__).resolve().parents[2] / "test" / "show-zte" / "show-bgp-vpnv4-neighbor-router-in"
+        if not fixture.is_file():
+            # Workspace layout: chatgpt/test/show-zte vs netx/tests
+            fixture = Path(__file__).resolve().parents[3] / "test" / "show-zte" / "show-bgp-vpnv4-neighbor-router-in"
+        raw = fixture.read_text(encoding="utf-8", errors="replace")
+        routes = normalize_bgp_route(
+            raw_text=raw,
+            command="show bgp vpnv4 unicast neighbor in 114.0.24.93 | one-line",
+            vendor="ZTE",
+            device_type="zte_zxros",
+            params={"neighbor": "114.0.24.93", "direction": "in", "afi": "vpnv4"},
+        )
+        self.assertEqual(len(routes), 1905, "must match Total number of routes")
+        self.assertTrue(all("/" in str(r.get("network") or "") for r in routes))
+        self.assertTrue(all(str(r.get("network") or "").lower() != "i" for r in routes))
+        self.assertTrue(all(str(r.get("status_codes") or "") == "*i" for r in routes))
+        self.assertTrue(all(str(r.get("rd") or "").strip() for r in routes))
+        # Known multi-RD prefix must survive under both RDs (not collapsed by uniqueness)
+        multi = [r for r in routes if r.get("network") == "100.127.58.68/30"]
+        self.assertEqual(len(multi), 2)
+        self.assertEqual(
+            {r["rd"] for r in multi},
+            {"114.0.141.200:65013", "114.14.249.211:65013"},
+        )
+        by_key = {(r["rd"], r["network"], r["next_hop"]) for r in routes}
+        self.assertEqual(len(by_key), len(routes))
+        # Profile uniqueness keys must include RD + next_hop for ECMP / multi-RD
+        keys = {f.name for f in metric_field_map().get("bgp_route", []) if f.is_key}
+        self.assertTrue({"rd", "network", "next_hop", "neighbor", "direction"} <= keys)
+
+    def test_bgp_route_ecmp_keeps_distinct_next_hops(self) -> None:
+        """Same RD+prefix with two next-hops must both persist (load-share)."""
+        # Match real ZTE layout: RD only captured after entering Routes state
+        # (via "Routes Learned…" / Network header), same as production fixture.
+        raw = """
+Routes Learned From This Neighbor:
+Status codes: * valid, i - internal
+     Network          Next Hop        Metric     LocPrf     RtPrf   Path
+Route Distinguisher:10.0.0.1:100
+* i  192.0.2.0/24     10.1.1.1        0          100        0       65001 i
+* i  192.0.2.0/24     10.1.1.2        0          100        0       65001 i
+Total number of routes: 2
+"""
+        routes = normalize_bgp_route(
+            raw_text=raw,
+            command="show bgp vpnv4 unicast neighbor in 10.0.0.1 | one-line",
+            vendor="ZTE",
+            device_type="zte_zxros",
+            params={"neighbor": "10.0.0.1", "direction": "in", "afi": "vpnv4"},
+        )
+        self.assertEqual(len(routes), 2)
+        self.assertEqual({r["next_hop"] for r in routes}, {"10.1.1.1", "10.1.1.2"})
+        self.assertEqual({r["rd"] for r in routes}, {"10.0.0.1:100"})
+        self.assertEqual({r["network"] for r in routes}, {"192.0.2.0/24"})
+        self.assertTrue(all(r.get("status_codes") == "*i" for r in routes))
+        by_key = {(r["rd"], r["network"], r["next_hop"]) for r in routes}
+        self.assertEqual(len(by_key), 2)
 
 if __name__ == "__main__":
     unittest.main()

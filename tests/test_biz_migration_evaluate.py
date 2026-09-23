@@ -5,6 +5,7 @@ from __future__ import annotations
 import unittest
 
 from netx_api.biz_migration.evaluate import (
+    KEY_SEP,
     classify_status,
     dual_verdict,
     evaluate_metric_dual,
@@ -90,7 +91,7 @@ class ParseExpectSetTests(unittest.TestCase):
                 ]
             }
         )
-        self.assertEqual(got["bgp_peer"], {"AS1|1.1.1.1"})
+        self.assertEqual(got["bgp_peer"], {KEY_SEP.join(["AS1", "1.1.1.1"])})
         self.assertEqual(got["arp"], {"10.0.0.1"})
 
     def test_multi_select_each_key_is_separate(self):
@@ -111,7 +112,7 @@ class ParseExpectSetTests(unittest.TestCase):
         got = parse_expect_set(
             {"items": [{"metric_id": "bgp_peer", "keys": ["1.1.1.1", "2.2.2.2"]}]}
         )
-        self.assertEqual(got["bgp_peer"], {"1.1.1.1|2.2.2.2"})
+        self.assertEqual(got["bgp_peer"], {KEY_SEP.join(["1.1.1.1", "2.2.2.2"])})
 
     def test_nested_keys_list(self):
         got = parse_expect_set(
@@ -122,8 +123,20 @@ class ParseExpectSetTests(unittest.TestCase):
                 ]
             }
         )
-        self.assertEqual(got["isis_adjacency"], {"p1|gei-1|sys1", "p1|gei-2|sys2"})
-        self.assertEqual(got["arp"], {"10.0.0.1|vrf1"})
+        self.assertEqual(
+            got["isis_adjacency"],
+            {
+                KEY_SEP.join(["p1", "gei-1", "sys1"]),
+                KEY_SEP.join(["p1", "gei-2", "sys2"]),
+            },
+        )
+        self.assertEqual(got["arp"], {KEY_SEP.join(["10.0.0.1", "vrf1"])})
+
+    def test_legacy_pipe_key_normalized(self):
+        got = parse_expect_set(
+            {"items": [{"metric_id": "bgp_peer", "key": "AS1|1.1.1.1"}]}
+        )
+        self.assertEqual(got["bgp_peer"], {KEY_SEP.join(["AS1", "1.1.1.1"])})
 
     def test_ports_only_apply_to_interface_brief(self):
         expect = parse_expect_set({"ports": ["gei-1"]})
@@ -855,12 +868,20 @@ class EvaluateMetricDualTests(unittest.TestCase):
 
     def test_composite_key_port_remap(self):
         mapped = _remap_key_str(
+            KEY_SEP.join(["gei-old", "vrf1"]),
+            key_fields=["interface", "vrf"],
+            iface_fields=["interface"],
+            port_map={"gei-old": "gei-new"},
+        )
+        self.assertEqual(mapped, KEY_SEP.join(["gei-new", "vrf1"]))
+        # Legacy pipe-separated input still remaps
+        mapped2 = _remap_key_str(
             "gei-old|vrf1",
             key_fields=["interface", "vrf"],
             iface_fields=["interface"],
             port_map={"gei-old": "gei-new"},
         )
-        self.assertEqual(mapped, "gei-new|vrf1")
+        self.assertEqual(mapped2, KEY_SEP.join(["gei-new", "vrf1"]))
 
     def test_anomaly_not_gated_by_field_tokens_on_removed(self):
         self.assertEqual(

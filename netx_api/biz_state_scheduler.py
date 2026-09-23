@@ -28,7 +28,9 @@ _PURGE_INTERVAL_SEC = 3600.0
 
 
 def _utcnow() -> datetime:
-    return datetime.utcnow()
+    from .timeutil import utcnow_naive
+
+    return utcnow_naive()
 
 
 def _maybe_purge_retention() -> None:
@@ -86,10 +88,12 @@ def shutdown_biz_state_dispatch_pool(*, wait: bool = False) -> None:
             _dispatch_pool = None
     try:
         from .biz_state.persist_pool import shutdown_persist_pool
+        from .biz_state.parse_pool import shutdown_parse_pool
 
+        shutdown_parse_pool(wait=wait)
         shutdown_persist_pool(wait=wait)
     except Exception:
-        _log.exception("shutdown persist pool failed")
+        _log.exception("shutdown parse/persist pool failed")
 
 
 def _sync_cutover_hf_windows() -> None:
@@ -152,11 +156,15 @@ def _enqueue_due_tasks() -> int:
         now = _utcnow()
         for task in tasks:
             interval = max(60, int(task.interval_sec or 300))
+            # Prefer start-based interval to avoid drift when collect duration
+            # approaches the interval (end-based: 40s collect + 60s → 100s cycle).
+            started = task.last_collect_started_at
             ended = task.last_collect_ended_at
-            if ended is None:
+            anchor = started or ended
+            if anchor is None:
                 due_ids.append(str(task.id))
                 continue
-            if (now - ended).total_seconds() >= interval:
+            if (now - anchor).total_seconds() >= interval:
                 due_ids.append(str(task.id))
     finally:
         db.close()

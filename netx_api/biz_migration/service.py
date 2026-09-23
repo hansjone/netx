@@ -10,7 +10,14 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from ..biz_state.compare_rules import apply_row_filters
-from ..biz_state.compare_service import _load_metric_rows, _port_map_dict, sheet_key, sheet_title, template_metrics
+from ..biz_state.compare_service import (
+    _load_metric_rows,
+    _port_map_dict,
+    batch_metric_collect_ok,
+    sheet_key,
+    sheet_title,
+    template_metrics,
+)
 from ..models import (
     BizCompareTemplate,
     BizMigrationBatch,
@@ -260,8 +267,14 @@ def _current_batch_for_metric(
         pinned = db.get(BizStateBatch, pin)
         # Only honor pin when it belongs to this metric's HF task (multi-interval safe)
         if pinned and (not tid or str(pinned.task_id or "") == tid):
+            # Pinned partial / failed metric → treat as missing (avoid false red)
+            if not batch_metric_collect_ok(db, pinned.id, metric_id):
+                return None
             return pinned
-    return _latest_success_batch(db, tid) if tid else None
+    batch = _latest_success_batch(db, tid) if tid else None
+    if batch and not batch_metric_collect_ok(db, batch.id, metric_id):
+        return None
+    return batch
 
 
 def find_portrait_task_for_ne(db: Session, *, source: str, ne_id: str) -> BizStateTask | None:
@@ -772,11 +785,15 @@ def create_batch(db: Session, project_id: str, body: dict[str, Any]) -> dict[str
 
 
 def _latest_success_batch(db: Session, task_id: str) -> BizStateBatch | None:
+    """Latest fully successful batch only — never use ``partial`` as current.
+
+    Partial batches omit failed-command metrics and cause mass false ``removed``.
+    """
     return (
         db.query(BizStateBatch)
         .filter(
             BizStateBatch.task_id == task_id,
-            BizStateBatch.status.in_(("success", "partial")),
+            BizStateBatch.status == "success",
         )
         .order_by(BizStateBatch.started_at.desc())
         .first()
@@ -903,6 +920,7 @@ def run_evaluate(
                     "new_baseline_mode": "missing_current",
                     "new_baseline_missing": False,
                     "current_missing": True,
+                    "collect_incomplete": True,
                     "collect_skipped": False,
                 }
             )
@@ -972,6 +990,9 @@ def run_evaluate(
                 "collect_skipped": False,
                 "old_batch_id": old_cur_mid,
                 "new_batch_id": new_cur_mid,
+                "duplicate_key_list": list(one.get("duplicate_key_list") or []),
+                "duplicate_keys_before": int(one.get("duplicate_keys_before") or 0),
+                "duplicate_keys_after": int(one.get("duplicate_keys_after") or 0),
             }
         )
         for r in one["rows"]:
@@ -1811,6 +1832,7 @@ def _red_ticket_to_dict(t: BizMigrationRedTicket) -> dict[str, Any]:
         "new_key": new_key,
         "key_str": old_key,
         "new_key_str": new_key,
+        "match_key_str": str(getattr(t, "match_key_str", "") or detail.get("match_old_key") or ""),
         "match_old_key": str(detail.get("match_old_key") or ""),
         "match_new_key": str(detail.get("match_new_key") or ""),
         "verdict": t.verdict,
@@ -1881,45 +1903,99 @@ def _persist_red_tickets_from_run(
     batch_id: str,
     run_id: str,
 ) -> list[BizMigrationRedTicket]:
-    """Create open red tickets from acceptance run red diffs (expect + anomaly)."""
+    """Upsert open/carried red tickets by (project, metric, match_key).
+
+    Same issue across batches / re-acceptance updates one ticket instead of
+    spawning duplicates. ``carried`` tickets are reopened when the key is still red.
+    """
     diffs = (
         db.query(BizMigrationDiff)
         .filter(BizMigrationDiff.run_id == run_id, BizMigrationDiff.color == "red")
         .order_by(BizMigrationDiff.seq.asc())
         .all()
     )
-    created: list[BizMigrationRedTicket] = []
+    existing = (
+        db.query(BizMigrationRedTicket)
+        .filter(
+            BizMigrationRedTicket.project_id == project_id,
+            BizMigrationRedTicket.status.in_(("open", "carried")),
+        )
+        .all()
+    )
+    by_id: dict[tuple[str, str], BizMigrationRedTicket] = {}
+    for t in existing:
+        mk = str(getattr(t, "match_key_str", "") or "").strip()
+        if not mk:
+            detail = t.detail_json if isinstance(t.detail_json, dict) else {}
+            mk = str(detail.get("match_old_key") or t.key_str or "").strip()
+        if mk:
+            by_id[(str(t.metric_id or ""), mk)] = t
+
+    created_or_updated: list[BizMigrationRedTicket] = []
+    seen: set[tuple[str, str]] = set()
     for d in diffs:
         kj = d.key_json if isinstance(d.key_json, dict) else {}
+        mid = str(d.metric_id or "")
+        match_key = str(
+            kj.get("match_old_key") or kj.get("key_str") or kj.get("old_key") or ""
+        ).strip()[:256]
+        if not match_key:
+            match_key = str(kj.get("key_str") or "")[:256]
+        ident = (mid, match_key)
+        detail = {
+            "old_kind": d.old_kind,
+            "new_kind": d.new_kind,
+            "in_expect": d.in_expect,
+            "old": d.old_json,
+            "new": d.new_json,
+            "old_key": kj.get("old_key") or kj.get("key_str") or "",
+            "new_key": kj.get("new_key") or kj.get("new_key_str") or "",
+            "match_old_key": kj.get("match_old_key") or match_key,
+            "match_new_key": kj.get("match_new_key") or "",
+            "evidence": dict(kj.get("evidence") or {}),
+        }
+        prev = by_id.get(ident)
+        if prev is not None:
+            prev.batch_id = batch_id
+            prev.run_id = run_id
+            prev.key_str = str(kj.get("key_str") or "")[:256]
+            prev.new_key_str = str(kj.get("new_key_str") or "")[:256]
+            prev.match_key_str = match_key
+            prev.verdict = d.verdict
+            prev.color = d.color or "red"
+            prev.old_status = str(kj.get("old_status") or "")[:64]
+            prev.new_status = str(kj.get("new_status") or "")[:64]
+            prev.detail_json = detail
+            prev.status = "open"
+            prev.carried_to_batch_id = ""
+            prev.resolved_at = None
+            created_or_updated.append(prev)
+            seen.add(ident)
+            continue
         t = BizMigrationRedTicket(
             id=uuid4().hex,
             project_id=project_id,
             batch_id=batch_id,
             run_id=run_id,
-            metric_id=d.metric_id,
+            metric_id=mid,
             key_str=str(kj.get("key_str") or "")[:256],
             new_key_str=str(kj.get("new_key_str") or "")[:256],
+            match_key_str=match_key,
             verdict=d.verdict,
             color=d.color or "red",
             old_status=str(kj.get("old_status") or "")[:64],
             new_status=str(kj.get("new_status") or "")[:64],
-            detail_json={
-                "old_kind": d.old_kind,
-                "new_kind": d.new_kind,
-                "in_expect": d.in_expect,
-                "old": d.old_json,
-                "new": d.new_json,
-                "old_key": kj.get("old_key") or kj.get("key_str") or "",
-                "new_key": kj.get("new_key") or kj.get("new_key_str") or "",
-                "match_old_key": kj.get("match_old_key") or "",
-                "match_new_key": kj.get("match_new_key") or "",
-                "evidence": dict(kj.get("evidence") or {}),
-            },
+            detail_json=detail,
             status="open",
         )
         db.add(t)
-        created.append(t)
-    return created
+        by_id[ident] = t
+        created_or_updated.append(t)
+        seen.add(ident)
+
+    # Tickets open on this batch but no longer red → leave as open (operator resolves).
+    # Carried tickets for keys not in this run stay carried.
+    return created_or_updated
 
 
 def finish_batch(
@@ -1990,11 +2066,7 @@ def finish_batch(
     mb.accept_summary_json = accept_summary
     mb.updated_at = utcnow_naive()
 
-    # Replace prior open tickets from this batch's previous acceptance (re-finish)
-    db.query(BizMigrationRedTicket).filter(
-        BizMigrationRedTicket.batch_id == batch_id,
-        BizMigrationRedTicket.status == "open",
-    ).delete()
+    # Upsert reds (no wipe — merge by metric+match_key across re-acceptance)
     reds = _persist_red_tickets_from_run(
         db,
         project_id=mb.project_id,

@@ -42,6 +42,9 @@ def mapping_stats(
 
     ``hit_before``: map key appears as a normalized before iface, or as the
     parent of a before subinterface (so main-port-only maps still validate).
+
+    Map keys are matched against **normalized** iface values (same pipeline as
+    compare). Enter mapping keys in normalized form.
     """
     before_ifaces: set[str] = set()
     after_ifaces: set[str] = set()
@@ -58,14 +61,17 @@ def mapping_stats(
     before_bases: set[str] = set()
     for v in before_ifaces:
         before_bases.add(v)
-        if "." in v:
-            before_bases.add(v.rsplit(".", 1)[0])
+        # Multi-level parents: a.b.c → a.b, a
+        parts = v.split(".")
+        for i in range(len(parts) - 1, 0, -1):
+            before_bases.add(".".join(parts[:i]))
 
     after_bases: set[str] = set()
     for v in after_ifaces:
         after_bases.add(v)
-        if "." in v:
-            after_bases.add(v.rsplit(".", 1)[0])
+        parts = v.split(".")
+        for i in range(len(parts) - 1, 0, -1):
+            after_bases.add(".".join(parts[:i]))
 
     mapped_before = set(port_map.keys())
     mapped_after = set(port_map.values())
@@ -84,6 +90,7 @@ def mapping_stats(
         "miss_after": miss_after,
         "unused_before_keys": unused,
         "ok": not miss_before and not miss_after,
+        "hint": "map keys must match normalized iface names (post iface_normalize)",
     }
 
 
@@ -97,17 +104,22 @@ def compare_rows(
     port_map: dict[str, str] | None = None,
     field_rules: Sequence[Mapping[str, Any]] | None = None,
     iface_normalize_rules: Sequence[Mapping[str, str]] | None = None,
+    ignore_port_changes: bool | None = None,
 ) -> dict[str, Any]:
     """Return summary + diffs list.
 
-    Diff kinds: added | removed | changed | unchanged
+    Diff kinds: added | removed | changed | unchanged | duplicate
 
     Pipeline: iface normalize (both sides) → port map (before) → match.
 
-    Empty ``port_map``: try to ignore port renames by dropping ``iface_fields``
-    from the match key (LLDP-style). If that would collapse distinct rows
-    (OSPF/VRRP/config where the same id appears on many interfaces), keep
-    iface columns so identity compare stays correct.
+    ``ignore_port_changes``:
+      - ``None`` (default): auto — drop iface from match key only when remaining
+        keys stay unique on both sides (legacy LLDP-style heuristic).
+      - ``True``: force drop iface from match key when a non-empty candidate exists.
+      - ``False``: never drop iface from match key.
+
+    Duplicate match keys are not silently discarded: extras become ``duplicate``
+    diffs and ``summary.duplicate_key_list`` lists the colliding keys.
 
     ``field_rules`` drives normalize / numeric tolerance / per-field compare mode
     (template-driven; no metric-specific branches here).
@@ -127,20 +139,25 @@ def compare_rows(
         after_rows, iface_fields=iface_list, rules=norm_rules
     )
 
-    ignore_port_changes = False
+    ignore_ports = False
     # No map → optionally ignore port renames by dropping iface from match key.
     if not pmap and iface_set:
         candidate = [k for k in key_fields if k not in iface_set]
         if not candidate:
             match_keys = list(key_fields)
+        elif ignore_port_changes is True:
+            match_keys = candidate
+            ignore_ports = True
+        elif ignore_port_changes is False:
+            match_keys = list(key_fields)
         else:
+            # Auto heuristic (legacy default)
             before_c = [row_key(r, candidate) for r in before_norm]
             after_c = [row_key(r, candidate) for r in after_norm]
             if len(before_c) == len(set(before_c)) and len(after_c) == len(set(after_c)):
                 match_keys = candidate
-                ignore_port_changes = True
+                ignore_ports = True
             else:
-                # Remaining keys are not unique — iface is required for identity.
                 match_keys = list(key_fields)
     else:
         match_keys = list(key_fields)
@@ -151,16 +168,22 @@ def compare_rows(
 
     after_index: dict[tuple[str, ...], dict[str, Any]] = {}
     after_dup = 0
+    after_dup_keys: list[tuple[str, ...]] = []
+    after_dup_rows: list[tuple[tuple[str, ...], dict[str, Any]]] = []
     for r in after_norm:
         k = row_key(r, match_keys)
         if k in after_index:
             after_dup += 1
+            after_dup_keys.append(k)
+            after_dup_rows.append((k, r))
+            continue  # first wins — do not overwrite
         after_index[k] = r
 
     before_keys: set[tuple[str, ...]] = set()
     before_dup = 0
+    before_dup_keys: list[tuple[str, ...]] = []
     diffs: list[dict[str, Any]] = []
-    added = removed = changed = unchanged = 0
+    added = removed = changed = unchanged = duplicate = 0
 
     def _key_obj(row: dict[str, Any]) -> dict[str, Any]:
         return {f: row.get(f, "") for f in key_fields}
@@ -169,6 +192,20 @@ def compare_rows(
         k = row_key(mapped, match_keys)
         if k in before_keys:
             before_dup += 1
+            before_dup_keys.append(k)
+            duplicate += 1
+            diffs.append(
+                {
+                    "kind": "duplicate",
+                    "side": "before",
+                    "key": _key_obj(mapped),
+                    "before": orig,
+                    "after": after_index.get(k),
+                    "mapped_before": mapped,
+                    "changes": {},
+                }
+            )
+            continue  # only first before row participates in match
         before_keys.add(k)
         after = after_index.get(k)
         if after is None:
@@ -237,6 +274,30 @@ def compare_rows(
             }
         )
 
+    for k, after in after_dup_rows:
+        duplicate += 1
+        diffs.append(
+            {
+                "kind": "duplicate",
+                "side": "after",
+                "key": _key_obj(after),
+                "before": None,
+                "after": after,
+                "mapped_before": None,
+                "changes": {},
+            }
+        )
+
+    def _fmt_keys(keys: list[tuple[str, ...]]) -> list[str]:
+        seen: set[str] = set()
+        out: list[str] = []
+        for k in keys:
+            s = "|".join(k)
+            if s not in seen:
+                seen.add(s)
+                out.append(s)
+        return out
+
     stats = mapping_stats(
         before_rows=before_norm,
         after_rows=after_norm,
@@ -244,7 +305,7 @@ def compare_rows(
         port_map=pmap,
     )
     if not pmap:
-        stats = {**stats, "ok": True, "ignore_port_changes": ignore_port_changes}
+        stats = {**stats, "ok": True, "ignore_port_changes": ignore_ports}
     return {
         "summary": {
             "before_count": len(before_rows),
@@ -253,9 +314,11 @@ def compare_rows(
             "removed": removed,
             "changed": changed,
             "unchanged": unchanged,
+            "duplicate": duplicate,
             "match_key_fields": match_keys,
             "duplicate_keys_before": before_dup,
             "duplicate_keys_after": after_dup,
+            "duplicate_key_list": _fmt_keys(before_dup_keys + after_dup_keys),
         },
         "diffs": diffs,
         "mapping_stats": stats,

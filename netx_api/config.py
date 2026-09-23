@@ -133,6 +133,10 @@ class Settings(BaseSettings):
     biz_state_max_concurrent_tasks: int = 16
     biz_state_worker_collect_threads: int = 8
     biz_state_persist_workers: int = 4
+    # TextFSM / normalize workers (off SSH collect threads). Default 8.
+    biz_state_parse_workers: int = 8
+    # When true (default), primary+aux parse runs on parse pool overlapping next CLI.
+    biz_state_parse_async: bool = True
     # How many biz_state_worker processes start_netx should launch (same host).
     biz_state_worker_replicas: int = 2
     # Managed NE exec: max CLI commands per request (lab can raise; hard-capped in ne_exec).

@@ -49,6 +49,19 @@ class PortMapSubifTests(unittest.TestCase):
         self.assertEqual(resolve_mapped_iface("gei-0/0/0/1.100", pmap), "xgei-0/1/0/1.100")
         self.assertEqual(resolve_mapped_iface("gei-0/0/0/2.100", pmap), "gei-0/0/0/2.100")
 
+    def test_qinq_multi_level_parent(self) -> None:
+        """QinQ a.b.c: map parent a.b or a, keep remaining suffix."""
+        pmap = {"gei-0/1/0/1": "xgei-0/2/0/1"}
+        self.assertEqual(
+            resolve_mapped_iface("gei-0/1/0/1.100.200", pmap),
+            "xgei-0/2/0/1.100.200",
+        )
+        pmap2 = {"gei-0/1/0/1.100": "xgei-0/2/0/1.100"}
+        self.assertEqual(
+            resolve_mapped_iface("gei-0/1/0/1.100.200", pmap2),
+            "xgei-0/2/0/1.100.200",
+        )
+
     def test_apply_port_map_row(self) -> None:
         row = apply_port_map(
             {"interface": "gei-0/0/0/1.55", "admin": "up"},

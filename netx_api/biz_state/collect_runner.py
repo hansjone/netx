@@ -30,8 +30,11 @@ from ..models import (
 )
 from ..ne_netmiko import disable_target_paging, send_show_command
 from ..ne_session_factory import close_netmiko_connection, open_netmiko_connection
+from ..timeutil import utcnow_naive
 from .collect_session import (
+    CachedCommand,
     CollectSession,
+    ResolvedAux,
     build_parse_bundle,
     resolve_aux_command,
     run_primary_with_bundle,
@@ -43,7 +46,7 @@ from .command_match import (
     match_command,
     normalize_command,
 )
-from .parsers import get_parser
+from .parsers import get_parser, run_parser
 from .profiles import get_profile
 from .collect_stop import (
     STOP_USER_MESSAGE,
@@ -93,7 +96,7 @@ def partition_work(work: list[WorkItem]) -> tuple[list[WorkItem], list[WorkItem]
 
 
 def _utcnow() -> datetime:
-    return datetime.utcnow()
+    return utcnow_naive()
 
 
 def _format_error(exc: BaseException) -> str:
@@ -213,6 +216,201 @@ _GENERIC_METRICS = {
     "config_isis",
 }
 _METRIC_CHUNK = 2000
+
+
+def _run_primary_parse_job(job: Any) -> tuple[bool, bool]:
+    """Parse primary+aux raws, write spool, submit persist. Returns (any_ok, any_fail)."""
+    from .parse_pool import AuxRawCapture, PrimaryParseJob
+    from .persist_pool import get_persist_pool
+    from .spool import SpooledCommand, write_meta, write_records
+
+    if not isinstance(job, PrimaryParseJob):
+        return False, True
+
+    batch_id = job.batch_id
+    cmd_id = job.cmd_id
+    pending: list[SpooledCommand] = []
+    any_ok = False
+    any_fail = False
+
+    def _flush_item(item: SpooledCommand, *, records: list[dict[str, Any]] | None = None) -> None:
+        if records is not None and item.persist_kind:
+            item.records_rel_path = write_records(batch_id, item.id, records)
+            item.row_count = len(records)
+        try:
+            write_meta(batch_id, item.id, item.to_meta())
+        except Exception:
+            _log.exception("biz_state write meta failed cmd=%s", item.id)
+        pending.append(item)
+
+    aux_results: dict[str, CachedCommand] = {}
+    resolved_aux: list[ResolvedAux] = []
+
+    for cap in list(job.aux_captures or []):
+        if not isinstance(cap, AuxRawCapture):
+            continue
+        from .profiles import get_profile as _gp
+
+        prof = _gp(cap.profile_id)
+        entry = CachedCommand(
+            raw=cap.raw,
+            records=list(cap.records or []),
+            fsm_tables=dict(cap.fsm_tables or {}),
+            ok=bool(cap.ok),
+            error=str(cap.error or ""),
+            cmd_row_id=cap.aux_id,
+        )
+        if entry.ok and not entry.records and cap.parser_id and get_parser(cap.parser_id):
+            try:
+                records, fsm_tables, _keys = run_parser(
+                    cap.parser_id,
+                    raw_text=cap.raw,
+                    vendor=job.vendor,
+                    device_type=job.device_type,
+                    command=cap.textfsm_command or cap.command,
+                    textfsm_command=cap.textfsm_command or "",
+                    params=dict(job.merged_params or {}),
+                )
+                entry.records = list(records or [])
+                entry.fsm_tables = dict(fsm_tables or {})
+            except Exception as exc:
+                entry.ok = False
+                entry.error = f"parse: {type(exc).__name__}: {exc}"
+
+        aux_results[cap.key] = entry
+        if prof is not None:
+            resolved_aux.append(
+                ResolvedAux(
+                    key=cap.key,
+                    profile_id=cap.profile_id,
+                    command=cap.command,
+                    textfsm_command=cap.textfsm_command or cap.command,
+                    parser_id=cap.parser_id,
+                    rule_keys=tuple(cap.rule_keys or ()),
+                    profile=prof,
+                )
+            )
+
+        aux_sp = SpooledCommand(
+            id=cap.aux_id,
+            batch_id=batch_id,
+            task_item_id=job.task_item_id,
+            profile_id=cap.profile_id,
+            parser_id=cap.parser_id,
+            metric_id=cap.metric_id,
+            raw_command=cap.command[:512],
+            params_json={},
+            raw_rel_path=cap.raw_rel_path,
+        )
+        if cap.cache_hit and entry.ok and entry.records:
+            aux_sp.parse_status = "aux_cached"
+            aux_sp.message = (
+                f"aux_for={cmd_id};cache_hit;src={entry.cmd_row_id}"
+            )[:1020]
+            aux_sp.row_count = len(entry.records or [])
+        elif not entry.ok:
+            aux_sp.parse_status = "aux_failed"
+            aux_sp.message = f"aux_for={cmd_id};{entry.error}"[:1020]
+            any_fail = True
+        else:
+            aux_sp.parse_status = "aux"
+            aux_sp.message = f"aux_for={cmd_id}"[:1020]
+            aux_sp.row_count = len(entry.records or [])
+
+        persist_recs: list[dict[str, Any]] | None = None
+        if entry.ok and entry.records and cap.metric_id in _GENERIC_METRICS:
+            persist_key = (normalize_command(cap.command), cap.metric_id)
+            do_persist = False
+            persisted = job.persisted
+            if persisted is not None:
+                if job.cache_lock is not None:
+                    with job.cache_lock:
+                        if persist_key not in persisted:
+                            persisted.add(persist_key)
+                            do_persist = True
+                elif persist_key not in persisted:
+                    persisted.add(persist_key)
+                    do_persist = True
+            if do_persist:
+                aux_sp.persist_kind = "metric"
+                persist_recs = list(entry.records)
+        _flush_item(aux_sp, records=persist_recs)
+
+    bundle = build_parse_bundle(
+        primary_raw=job.raw_text,
+        primary_parser_id=job.parser_id,
+        aux_results=aux_results,
+        resolved_aux=resolved_aux,
+    )
+    # Include aux raws that lacked a profile (still needed for multi-raw parsers).
+    for cap in list(job.aux_captures or []):
+        if not isinstance(cap, AuxRawCapture):
+            continue
+        if cap.key in bundle.raws:
+            continue
+        entry = aux_results.get(cap.key) or CachedCommand(ok=False)
+        bundle.raws[cap.key] = entry.raw
+        bundle.command_rules[cap.key] = list(cap.rule_keys or [])
+        if entry.records:
+            bundle.aux_records[cap.key] = list(entry.records)
+        bundle.fsm_extra.update(entry.fsm_tables or {})
+    primary = SpooledCommand(
+        id=cmd_id,
+        batch_id=batch_id,
+        task_item_id=job.task_item_id,
+        profile_id=job.profile_id,
+        parser_id=job.parser_id,
+        metric_id=job.metric_id,
+        raw_command=job.concrete[:512],
+        params_json=dict(job.merged_params or {}),
+        raw_rel_path=job.raw_rel_path,
+    )
+    try:
+        records, fsm_tables, rule_keys = run_primary_with_bundle(
+            job.parser_id,
+            bundle=bundle,
+            vendor=job.vendor,
+            device_type=job.device_type,
+            command=job.textfsm_command or job.concrete,
+            textfsm_command=job.textfsm_command or "",
+            params=dict(job.merged_params or {}),
+            enrich_joins=list(job.enrich_joins or []),
+        )
+        hints = []
+        if rule_keys:
+            nonempty = [k for k in rule_keys if fsm_tables.get(k)]
+            hints.append(f"fsm_keys={','.join(rule_keys)};hit={','.join(nonempty)}")
+        if bundle.aux_records:
+            hints.append(
+                "aux="
+                + ",".join(f"{k}:{len(v)}" for k, v in bundle.aux_records.items())
+            )
+        if job.enrich_joins:
+            hints.append(
+                "enrich=" + ",".join(getattr(j, "from_aux", "") for j in job.enrich_joins)
+            )
+        if hints:
+            primary.message = ";".join(hints)[:1020]
+        primary.parse_status = "ok"
+        any_ok = True
+        persist_recs = None
+        if job.metric_id == "lldp_neighbor":
+            primary.persist_kind = "lldp"
+            persist_recs = list(records or [])
+        elif job.metric_id in _GENERIC_METRICS:
+            primary.persist_kind = "metric"
+            persist_recs = list(records or [])
+        _flush_item(primary, records=persist_recs)
+        _ = fsm_tables  # kept for hints above
+    except Exception as exc:
+        any_fail = True
+        primary.parse_status = "failed"
+        primary.message = f"parse: {_format_error(exc)}"
+        _flush_item(primary)
+
+    if pending:
+        get_persist_pool().submit(batch_id, pending)
+    return any_ok, any_fail
 
 
 def _emit_task_event(*, task_id: str, message: str, level: str = "error") -> None:
@@ -547,9 +745,26 @@ def _run_collect_lane(
         any_ok = False
         pending: list[SpooledCommand] = []
         task_id = ""
+        from .parse_pool import (
+            AuxRawCapture,
+            PrimaryParseJob,
+            get_parse_pool,
+            parse_async_enabled,
+        )
         from .persist_pool import get_persist_pool
 
         persist = get_persist_pool()
+        parse_pool = get_parse_pool() if parse_async_enabled() else None
+        parse_stats_lock = threading.Lock()
+        parse_stats = {"ok": False, "fail": False, "pending": 0}
+
+        def _on_parse_done(ok: bool, fail: bool) -> None:
+            with parse_stats_lock:
+                if ok:
+                    parse_stats["ok"] = True
+                if fail:
+                    parse_stats["fail"] = True
+                parse_stats["pending"] = max(0, int(parse_stats["pending"]) - 1)
 
         def _submit_pending() -> None:
             nonlocal pending
@@ -763,8 +978,8 @@ def _run_collect_lane(
                         cmd_row_id=cmd_id,
                     )
 
-                resolved_aux = []
-                aux_results: dict[str, Any] = {}
+                # Collect aux raws on the SSH thread (no TextFSM); parse overlaps next CLI.
+                aux_captures: list[AuxRawCapture] = []
                 for aux in list(hit.profile.aux_commands or []):
                     try:
                         ra = resolve_aux_command(aux, params=merged)
@@ -781,145 +996,105 @@ def _run_collect_lane(
                             )
                         )
                         continue
-                    resolved_aux.append(ra)
                     aux_id = uuid4().hex
-                    entry, cache_hit = session.fetch_and_parse(
-                        ra.command,
-                        parser_id=ra.parser_id,
-                        textfsm_command=ra.textfsm_command,
-                        params=merged,
-                        cmd_row_id=aux_id,
-                    )
-                    aux_results[ra.key] = entry
+                    entry, cache_hit = session.fetch_raw(ra.command, cmd_row_id=aux_id)
                     aux_mid = str(getattr(ra.profile, "metric_id", "") or "").strip()
-                    aux_sp = SpooledCommand(
-                        id=aux_id,
-                        batch_id=batch_id,
-                        task_item_id=item_id,
-                        profile_id=ra.profile_id,
-                        parser_id=ra.parser_id,
-                        metric_id=aux_mid,
-                        raw_command=ra.command[:512],
-                        params_json={},
+                    aux_rel = ""
+                    if entry.raw:
+                        try:
+                            aux_rel = write_raw_text(batch_id, aux_id, entry.raw or "")
+                        except Exception:
+                            _log.exception(
+                                "biz_state spool aux raw failed cmd=%s", aux_id
+                            )
+                    if not entry.ok:
+                        any_fail = True
+                        _queue(
+                            SpooledCommand(
+                                id=aux_id,
+                                batch_id=batch_id,
+                                task_item_id=item_id,
+                                profile_id=ra.profile_id,
+                                parser_id=ra.parser_id,
+                                metric_id=aux_mid,
+                                raw_command=ra.command[:512],
+                                parse_status="aux_failed",
+                                message=f"aux_for={cmd_id};{entry.error}"[:1020],
+                                raw_rel_path=aux_rel,
+                            )
+                        )
+                        continue
+                    # If cache already has parsed records, pass them through.
+                    aux_captures.append(
+                        AuxRawCapture(
+                            key=ra.key,
+                            aux_id=aux_id,
+                            profile_id=ra.profile_id,
+                            parser_id=ra.parser_id,
+                            metric_id=aux_mid,
+                            command=ra.command,
+                            textfsm_command=ra.textfsm_command,
+                            rule_keys=tuple(ra.rule_keys or ()),
+                            raw=entry.raw,
+                            raw_rel_path=aux_rel,
+                            cache_hit=bool(cache_hit and entry.records),
+                            records=list(entry.records or []),
+                            fsm_tables=dict(entry.fsm_tables or {}),
+                            ok=True,
+                        )
                     )
-                    if cache_hit:
-                        aux_sp.parse_status = "aux_cached"
-                        aux_sp.message = (
-                            f"aux_for={cmd_id};cache_hit;src={entry.cmd_row_id}"
-                        )[:1020]
-                        aux_sp.row_count = len(entry.records or [])
-                    elif not entry.ok:
-                        aux_sp.parse_status = "aux_failed"
-                        aux_sp.message = f"aux_for={cmd_id};{entry.error}"[:1020]
-                        try:
-                            aux_sp.raw_rel_path = write_raw_text(
-                                batch_id, aux_id, entry.raw or ""
-                            )
-                        except Exception:
-                            pass
-                    else:
-                        aux_sp.parse_status = "aux"
-                        aux_sp.message = f"aux_for={cmd_id}"[:1020]
-                        try:
-                            aux_sp.raw_rel_path = write_raw_text(
-                                batch_id, aux_id, entry.raw or ""
-                            )
-                        except Exception:
-                            pass
-                        aux_sp.row_count = len(entry.records or [])
-                        entry.cmd_row_id = aux_id
 
-                    persist_recs: list[dict[str, Any]] | None = None
-                    if entry.ok and entry.records and aux_mid in _GENERIC_METRICS:
-                        persist_key = (normalize_command(ra.command), aux_mid)
-                        do_persist = False
-                        if cache_lock is not None:
-                            with cache_lock:
-                                if persist_key not in persisted:
-                                    persisted.add(persist_key)
-                                    do_persist = True
-                        elif persist_key not in persisted:
-                            persisted.add(persist_key)
-                            do_persist = True
-                        if do_persist:
-                            aux_sp.persist_kind = "metric"
-                            persist_recs = list(entry.records)
-                    _queue(aux_sp, records=persist_recs)
-
-                bundle = build_parse_bundle(
-                    primary_raw=raw_text,
-                    primary_parser_id=hit.profile.parser_id,
-                    aux_results=aux_results,
-                    resolved_aux=resolved_aux,
-                )
-                primary = SpooledCommand(
-                    id=cmd_id,
+                job = PrimaryParseJob(
                     batch_id=batch_id,
+                    cmd_id=cmd_id,
                     task_item_id=item_id,
                     profile_id=hit.profile.profile_id,
                     parser_id=hit.profile.parser_id,
                     metric_id=hit.profile.metric_id,
-                    raw_command=concrete[:512],
-                    params_json=merged,
+                    concrete=concrete,
+                    merged_params=dict(merged or {}),
+                    raw_text=raw_text,
                     raw_rel_path=raw_rel,
+                    textfsm_command=hit.profile.textfsm_command or concrete,
+                    vendor=vendor_eff,
+                    device_type=device_type_eff,
+                    enrich_joins=list(hit.profile.enrich_joins or []),
+                    aux_captures=aux_captures,
+                    persisted=persisted,
+                    cache_lock=cache_lock,
+                    on_done=_on_parse_done if parse_pool is not None else None,
                 )
-                try:
-                    records, fsm_tables, rule_keys = run_primary_with_bundle(
-                        hit.profile.parser_id,
-                        bundle=bundle,
-                        vendor=vendor_eff,
-                        device_type=device_type_eff,
-                        command=hit.profile.textfsm_command or concrete,
-                        textfsm_command=hit.profile.textfsm_command or "",
-                        params=merged,
-                        enrich_joins=list(hit.profile.enrich_joins or []),
-                    )
-                    session.remember(
-                        concrete,
-                        raw=raw_text,
-                        fsm_tables=fsm_tables,
-                        records=records,
-                        ok=True,
-                        cmd_row_id=cmd_id,
-                    )
-                    hints = []
-                    if rule_keys:
-                        nonempty = [k for k in rule_keys if fsm_tables.get(k)]
-                        hints.append(
-                            f"fsm_keys={','.join(rule_keys)};hit={','.join(nonempty)}"
-                        )
-                    if bundle.aux_records:
-                        hints.append(
-                            "aux="
-                            + ",".join(
-                                f"{k}:{len(v)}" for k, v in bundle.aux_records.items()
-                            )
-                        )
-                    if hit.profile.enrich_joins:
-                        hints.append(
-                            "enrich="
-                            + ",".join(j.from_aux for j in hit.profile.enrich_joins)
-                        )
-                    if hints:
-                        primary.message = ";".join(hints)[:1020]
-                    primary.parse_status = "ok"
-                    any_ok = True
-                    persist_recs = None
-                    if hit.profile.metric_id == "lldp_neighbor":
-                        primary.persist_kind = "lldp"
-                        persist_recs = list(records or [])
-                    elif hit.profile.metric_id in _GENERIC_METRICS:
-                        primary.persist_kind = "metric"
-                        persist_recs = list(records or [])
-                    _queue(primary, records=persist_recs)
-                except Exception as exc:
-                    any_fail = True
-                    primary.parse_status = "failed"
-                    primary.message = f"parse: {_format_error(exc)}"
-                    _queue(primary)
+                if parse_pool is not None:
+                    with parse_stats_lock:
+                        parse_stats["pending"] += 1
+                    parse_pool.submit(job)
+                    # Count primary (+ aux will be counted in parse worker via persist).
+                    # cmd_count: bump for primary + each aux capture so progress is visible.
+                    cmd_count += 1 + len(aux_captures)
+                else:
+                    ok, fail = _run_primary_parse_job(job)
+                    if ok:
+                        any_ok = True
+                    if fail:
+                        any_fail = True
+                    # Sync path: parse job already submitted persist; count cmds.
+                    cmd_count += 1 + len(aux_captures)
 
-            # Final flush for this lane → persist pool; wait so rows land before return.
+            # Drain CLI spool leftovers, then wait parse + persist pools.
             _submit_pending()
+            if parse_pool is not None:
+                if not parse_pool.wait_idle(timeout=max(30.0, float(budget))):
+                    _log.warning(
+                        "biz_state parse barrier timed out batch=%s lane=%s",
+                        batch_id,
+                        label,
+                    )
+                    any_fail = True
+                with parse_stats_lock:
+                    if parse_stats["ok"]:
+                        any_ok = True
+                    if parse_stats["fail"]:
+                        any_fail = True
             if not persist.wait_idle(timeout=max(30.0, float(budget))):
                 _log.warning(
                     "biz_state persist barrier timed out batch=%s lane=%s",
@@ -933,6 +1108,8 @@ def _run_collect_lane(
             # Best-effort: enqueue leftover spool before connection teardown.
             try:
                 _submit_pending()
+                if parse_pool is not None:
+                    parse_pool.wait_idle(timeout=60.0)
                 persist.wait_idle(timeout=60.0)
             except Exception:
                 _log.exception(
@@ -1115,13 +1292,14 @@ def _finalize_batch_status(
             batch.message = ""
         status = str(batch.status or "")
         db.commit()
-        if status in ("success", "partial") and not stopped:
+        # Only full success triggers auto compare; never block the collect thread.
+        if status == "success" and not stopped:
             try:
-                from .compare_service import try_auto_compare_for_task
+                from .compare_service import schedule_auto_compare_for_task
 
-                try_auto_compare_for_task(db, task_id, batch_id)
+                schedule_auto_compare_for_task(task_id, batch_id)
             except Exception:
-                _log.exception("biz_state auto compare hook failed task=%s", task_id)
+                _log.exception("biz_state auto compare schedule failed task=%s", task_id)
         return status
 
     try:
@@ -1405,10 +1583,20 @@ def _run_collect_session(
             raise RuntimeError("; ".join(lane_errors)[:1020])
         any_fail = True
 
-    # Ensure persist pool drained before terminal status write.
+    # Ensure parse + persist pools drained before terminal status write.
     try:
+        from .parse_pool import get_parse_pool, parse_async_enabled
         from .persist_pool import get_persist_pool
 
+        if parse_async_enabled():
+            if not get_parse_pool().wait_idle(timeout=120.0):
+                _log.warning(
+                    "biz_state parse barrier before finalize timed out batch=%s",
+                    batch_id,
+                )
+                any_fail = True
+                if "parse_barrier_timeout" not in lane_errors:
+                    lane_errors.append("RuntimeError: parse_barrier_timeout")
         if not get_persist_pool().wait_idle(timeout=120.0):
             _log.warning(
                 "biz_state persist barrier before finalize timed out batch=%s",
@@ -1418,7 +1606,7 @@ def _run_collect_session(
             if "persist_barrier_timeout" not in lane_errors:
                 lane_errors.append("RuntimeError: persist_barrier_timeout")
     except Exception:
-        _log.exception("biz_state persist barrier before finalize failed batch=%s", batch_id)
+        _log.exception("biz_state parse/persist barrier before finalize failed batch=%s", batch_id)
 
     stopped = is_stop_requested(batch_id) or any("_stopped" in e for e in lane_errors)
     _finalize_batch_status(

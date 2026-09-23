@@ -593,6 +593,14 @@ def _metric_sheet_title(metric_id: str, fallback: str = "") -> str:
     return fb or mid
 
 
+def _raw_line_count(raw: str | None) -> int:
+    """CLI text lines collected (splitlines-compatible, no list materialization)."""
+    s = raw or ""
+    if not s:
+        return 0
+    return s.count("\n") + (0 if s.endswith("\n") else 1)
+
+
 def get_batch(db: Session, batch_id: str) -> dict[str, Any]:
     """Batch workbook summary: meta + commands + sheet catalog (no metric row payload)."""
     b = db.get(BizStateBatch, batch_id)
@@ -648,6 +656,7 @@ def get_batch(db: Session, batch_id: str) -> dict[str, Any]:
     for c in cmds:
         status = str(c.parse_status or "").strip().lower()
         is_aux = status.startswith("aux")
+        raw = c.raw_text or ""
         info = {
             "id": c.id,
             "profile_id": c.profile_id,
@@ -657,8 +666,9 @@ def get_batch(db: Session, batch_id: str) -> dict[str, Any]:
             "params": c.params_json or {},
             "parse_status": c.parse_status,
             "row_count": c.row_count,
+            "raw_line_count": _raw_line_count(raw),
             "message": c.message,
-            "has_raw": bool(str(c.raw_text or "").strip()),
+            "has_raw": bool(str(raw).strip()),
             "is_aux": is_aux,
         }
         cmd_n = normalize_command(str(c.raw_command or ""))
@@ -688,6 +698,7 @@ def get_batch(db: Session, batch_id: str) -> dict[str, Any]:
                     "raw_command": c.raw_command,
                     "parse_status": c.parse_status,
                     "row_count": c.row_count,
+                    "raw_line_count": info["raw_line_count"],
                     "message": c.message,
                     "has_raw": info["has_raw"],
                     "profile_id": c.profile_id,
@@ -713,6 +724,7 @@ def get_batch(db: Session, batch_id: str) -> dict[str, Any]:
                 "params": c.params_json or {},
                 "parse_status": c.parse_status,
                 "row_count": c.row_count,
+                "raw_line_count": _raw_line_count(c.raw_text),
                 "message": c.message,
                 "has_raw": bool(str(c.raw_text or "").strip()),
                 "is_aux": True,
@@ -906,6 +918,7 @@ def get_batch_command(db: Session, batch_id: str, command_id: str) -> dict[str, 
     if not c or c.batch_id != batch_id:
         raise HTTPException(status_code=404, detail="command_not_found")
     task = db.get(BizStateTask, b.task_id) if b.task_id else None
+    raw = c.raw_text or ""
     return {
         "id": c.id,
         "batch_id": batch_id,
@@ -922,8 +935,9 @@ def get_batch_command(db: Session, batch_id: str, command_id: str) -> dict[str, 
         "params": c.params_json or {},
         "parse_status": c.parse_status,
         "row_count": c.row_count,
+        "raw_line_count": _raw_line_count(raw),
         "message": c.message,
-        "raw_text": c.raw_text or "",
+        "raw_text": raw,
         "collected_at": c.created_at.isoformat() + "Z" if c.created_at else None,
         "batch_started_at": b.started_at.isoformat() + "Z" if b.started_at else None,
         "batch_ended_at": b.ended_at.isoformat() + "Z" if b.ended_at else None,

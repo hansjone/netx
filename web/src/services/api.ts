@@ -1907,6 +1907,7 @@ export const bizStateGetBatchCommand = (batchId: string, commandId: string) =>
     metric_id: string;
     parse_status: string;
     row_count: number;
+    raw_line_count?: number;
     message: string;
     raw_text: string;
     collected_at?: string | null;
@@ -1914,6 +1915,31 @@ export const bizStateGetBatchCommand = (batchId: string, commandId: string) =>
   }>(
     `/v1/biz-state/batches/${encodeURIComponent(batchId)}/commands/${encodeURIComponent(commandId)}`,
   );
+
+/** Download one command's raw CLI output as .txt */
+export const bizStateDownloadCommandRaw = async (batchId: string, commandId: string): Promise<void> => {
+  const path =
+    `/v1/biz-state/batches/${encodeURIComponent(batchId)}/commands/${encodeURIComponent(commandId)}/raw.txt`;
+  const res = await fetch(path, { method: "GET", credentials: fetchCreds, headers: authHeaders() });
+  if (res.status === 401) {
+    handleUnauthorized(path);
+    throw new Error("unauthorized");
+  }
+  if (!res.ok) throw new Error(`${res.status} download raw`);
+  const blob = await res.blob();
+  const cd = res.headers.get("Content-Disposition") || "";
+  const m = /filename="?([^";]+)"?/i.exec(cd);
+  const filename = m?.[1] || `biz_state_${commandId}.txt`;
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+};
 
 export const bizStateDownloadExport = async (batchId: string): Promise<void> => {
   const path = `/v1/biz-state/batches/${encodeURIComponent(batchId)}/export`;

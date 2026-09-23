@@ -174,6 +174,40 @@ class CollectSession:
                 return hit
         return None
 
+    def fetch_raw(
+        self,
+        command: str,
+        *,
+        cmd_row_id: str = "",
+    ) -> tuple[CachedCommand, bool]:
+        """CLI-only fetch (no TextFSM). Return ``(entry, cache_hit)``.
+
+        Used so the SSH thread can overlap subsequent commands while a parse
+        pool parses prior raws.
+        """
+        with self._command_lock(command):
+            cached = self.get_cached(command)
+            if cached is not None and str(cached.raw or "").strip():
+                return cached, True
+            try:
+                raw = self._send_show(command)
+            except Exception as exc:
+                entry = self.remember(
+                    command,
+                    raw="",
+                    ok=False,
+                    error=f"{type(exc).__name__}: {exc}",
+                    cmd_row_id=cmd_row_id,
+                )
+                return entry, False
+            entry = self.remember(
+                command,
+                raw=raw,
+                ok=True,
+                cmd_row_id=cmd_row_id,
+            )
+            return entry, False
+
     def fetch_and_parse(
         self,
         command: str,
@@ -187,11 +221,46 @@ class CollectSession:
 
         Same concrete CLI is serialized across shared-cache lanes so aux of
         one monitor item can be reused by the next without re-collecting.
+        Prefer ``fetch_raw`` on the collect hot path when parse can be async.
         """
         with self._command_lock(command):
             cached = self.get_cached(command)
             if cached is not None:
-                return cached, True
+                # Full parse hit (records or explicit prior parse failure with raw).
+                if cached.records or (cached.ok and not parser_id):
+                    return cached, True
+                if cached.ok and str(cached.raw or "").strip() and parser_id and get_parser(parser_id):
+                    # Raw-only cache (async collect): parse now without re-CLI.
+                    try:
+                        records, fsm_tables, _keys = run_parser(
+                            parser_id,
+                            raw_text=cached.raw,
+                            vendor=self.vendor,
+                            device_type=self.device_type,
+                            command=textfsm_command or command,
+                            textfsm_command=textfsm_command or "",
+                            params=params or {},
+                        )
+                    except Exception as exc:
+                        entry = self.remember(
+                            command,
+                            raw=cached.raw,
+                            ok=False,
+                            error=f"parse: {type(exc).__name__}: {exc}",
+                            cmd_row_id=cmd_row_id or cached.cmd_row_id,
+                        )
+                        return entry, True
+                    entry = self.remember(
+                        command,
+                        raw=cached.raw,
+                        fsm_tables=fsm_tables,
+                        records=records,
+                        ok=True,
+                        cmd_row_id=cmd_row_id or cached.cmd_row_id,
+                    )
+                    return entry, True
+                if cached.ok:
+                    return cached, True
             try:
                 raw = self._send_show(command)
             except Exception as exc:

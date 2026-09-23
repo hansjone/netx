@@ -33,7 +33,7 @@ def _out(row: BizMonitorTemplate, compare_name: str = "", *, db: Session | None 
             effective = seen
     if not effective:
         effective = [PORT_METRIC_ID]
-    return {
+    out: dict[str, Any] = {
         "id": row.id,
         "name": row.name,
         "compare_template_id": row.compare_template_id or "",
@@ -46,6 +46,82 @@ def _out(row: BizMonitorTemplate, compare_name: str = "", *, db: Session | None 
         "created_at": row.created_at.isoformat() + "Z" if row.created_at else None,
         "updated_at": row.updated_at.isoformat() + "Z" if row.updated_at else None,
     }
+    if db is not None:
+        warnings = validate_sheet_overrides(
+            db,
+            compare_template_id=str(row.compare_template_id or ""),
+            sheet_overrides=list(row.sheet_overrides_json or []),
+        )
+        if warnings:
+            out["override_warnings"] = warnings
+    return out
+
+
+def validate_sheet_overrides(
+    db: Session,
+    *,
+    compare_template_id: str,
+    sheet_overrides: list[Any] | None,
+) -> list[dict[str, str]]:
+    """Return warnings when overrides no longer match compare template sheets.
+
+    Does not block save — surfaces ``override_warnings`` so UI/ops can fix drift.
+    """
+    warnings: list[dict[str, str]] = []
+    overrides = [o for o in (sheet_overrides or []) if isinstance(o, dict)]
+    if not overrides:
+        return warnings
+    ct = db.get(BizCompareTemplate, compare_template_id) if compare_template_id else None
+    if not ct:
+        for ov in overrides:
+            sid = str(ov.get("sheet_id") or "").strip()
+            mid = str(ov.get("metric_id") or "").strip()
+            warnings.append(
+                {
+                    "sheet_id": sid,
+                    "metric_id": mid,
+                    "reason": "compare_template_missing",
+                }
+            )
+        return warnings
+    sheets = cmp_svc.template_metrics(ct)
+    sheet_ids = {str(s.get("sheet_id") or s.get("metric_id") or "").strip() for s in sheets}
+    metric_ids = {str(s.get("metric_id") or "").strip() for s in sheets}
+    for ov in overrides:
+        sid = str(ov.get("sheet_id") or "").strip()
+        mid = str(ov.get("metric_id") or "").strip()
+        if sid:
+            if sid not in sheet_ids:
+                warnings.append(
+                    {
+                        "sheet_id": sid,
+                        "metric_id": mid,
+                        "reason": "sheet_id_not_in_compare_template",
+                    }
+                )
+        elif mid:
+            if mid not in metric_ids and mid not in sheet_ids:
+                warnings.append(
+                    {
+                        "sheet_id": "",
+                        "metric_id": mid,
+                        "reason": "metric_id_not_in_compare_template",
+                    }
+                )
+            elif mid in metric_ids:
+                # Legacy metric-only override applies to every split of that metric
+                split_count = sum(
+                    1 for s in sheets if str(s.get("metric_id") or "").strip() == mid
+                )
+                if split_count > 1:
+                    warnings.append(
+                        {
+                            "sheet_id": "",
+                            "metric_id": mid,
+                            "reason": "legacy_metric_override_applies_to_all_splits",
+                        }
+                    )
+    return warnings
 
 
 def _compare_name_map(db: Session) -> dict[str, str]:
@@ -395,7 +471,8 @@ def create_monitor_template(db: Session, body: dict[str, Any]) -> dict[str, Any]
     db.commit()
     db.refresh(row)
     names = _compare_name_map(db)
-    return _out(row, names.get(row.compare_template_id or "", ""), db=db)
+    out = _out(row, names.get(row.compare_template_id or "", ""), db=db)
+    return out
 
 
 def update_monitor_template(db: Session, template_id: str, body: dict[str, Any]) -> dict[str, Any]:

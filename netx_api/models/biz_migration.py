@@ -129,6 +129,13 @@ class BizMigrationRedTicket(Base):
     __table_args__ = (
         Index("ix_biz_migration_red_project_status", "project_id", "status"),
         Index("ix_biz_migration_red_batch", "batch_id"),
+        Index(
+            "ix_biz_migration_red_upsert",
+            "project_id",
+            "metric_id",
+            "match_key_str",
+            "status",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid4().hex)
@@ -138,6 +145,8 @@ class BizMigrationRedTicket(Base):
     metric_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     key_str: Mapped[str] = mapped_column(String(256), default="")
     new_key_str: Mapped[str] = mapped_column(String(256), default="")
+    # Stable identity for upsert (match_old_key / normalized expect key)
+    match_key_str: Mapped[str] = mapped_column(String(256), default="", index=True)
     verdict: Mapped[str] = mapped_column(String(32), default="")
     color: Mapped[str] = mapped_column(String(16), default="red")
     old_status: Mapped[str] = mapped_column(String(64), default="")

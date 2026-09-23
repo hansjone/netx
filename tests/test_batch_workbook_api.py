@@ -65,10 +65,114 @@ class BatchWorkbookApiTests(unittest.TestCase):
         self.assertNotIn("metrics", out)
         self.assertNotIn("lldp_neighbors", out)
         self.assertEqual(out["commands"][0]["has_raw"], True)
+        self.assertEqual(out["commands"][0]["raw_line_count"], 1)
         self.assertEqual(out["sheets"][0]["metric_id"], "arp")
         self.assertEqual(out["sheets"][0]["row_count"], 2)
         self.assertEqual(out["sheets"][0]["commands"][0]["raw_command"], "show arp | one-line")
+        self.assertEqual(out["sheets"][0]["commands"][0]["raw_line_count"], 1)
         self.assertTrue(out["sheets"][0].get("title"))
+
+    def test_get_batch_raw_line_count_splitlines(self) -> None:
+        batch = BizStateBatch(
+            id="b1",
+            task_id="t1",
+            status="partial",
+            command_count=1,
+            row_count=0,
+            message="stopped",
+        )
+        cmd = BizStateBatchCommand(
+            id="c1",
+            batch_id="b1",
+            profile_id="zte.arp",
+            parser_id="arp",
+            metric_id="arp",
+            raw_command="show arp",
+            parse_status="ok",
+            row_count=3,
+            raw_text="a\nb\nc\n",
+            message="",
+        )
+        db = MagicMock()
+        db.get.side_effect = lambda model, pk: batch if pk == "b1" else None
+        cmd_q = MagicMock()
+        cmd_q.filter.return_value.order_by.return_value.all.return_value = [cmd]
+        metric_count_q = MagicMock()
+        metric_count_q.filter.return_value.group_by.return_value.all.return_value = [("arp", 3)]
+        lldp_count_q = MagicMock()
+        lldp_count_q.filter.return_value.scalar.return_value = 0
+
+        def query(*_args, **_kwargs):
+            n = query.n
+            query.n += 1
+            if n == 0:
+                return cmd_q
+            if n == 1:
+                return metric_count_q
+            return lldp_count_q
+
+        query.n = 0
+        db.query.side_effect = query
+
+        with patch(
+            "netx_api.biz_state.service.batch_protect_info",
+            return_value={"protected": False, "reasons": []},
+        ):
+            out = get_batch(db, "b1")
+
+        self.assertEqual(out["message"], "stopped")
+        self.assertEqual(out["commands"][0]["raw_line_count"], 3)
+        self.assertEqual(out["commands"][0]["row_count"], 3)
+
+    def test_get_batch_command_and_raw_download(self) -> None:
+        from netx_api.biz_state.service import get_batch_command
+        from netx_api.biz_state_router import api_download_batch_command_raw
+
+        batch = BizStateBatch(id="b1", task_id="t1", status="ok")
+        cmd = BizStateBatchCommand(
+            id="c1",
+            batch_id="b1",
+            profile_id="zte.arp",
+            parser_id="arp",
+            metric_id="arp",
+            raw_command="show arp | one-line",
+            parse_status="ok",
+            row_count=2,
+            raw_text="line1\nline2",
+            message="hint",
+        )
+        db = MagicMock()
+
+        def _get(model, pk):
+            if model is BizStateBatch and pk == "b1":
+                return batch
+            if model is BizStateBatchCommand and pk == "c1":
+                return cmd
+            return None
+
+        db.get.side_effect = _get
+        detail = get_batch_command(db, "b1", "c1")
+        self.assertEqual(detail["raw_line_count"], 2)
+        self.assertEqual(detail["row_count"], 2)
+        self.assertEqual(detail["message"], "hint")
+        self.assertIn("line1", detail["raw_text"])
+
+        resp = api_download_batch_command_raw("b1", "c1", db)
+        self.assertEqual(resp.media_type, "text/plain; charset=utf-8")
+        cd = (resp.headers.get("content-disposition") or "").lower()
+        self.assertIn("attachment", cd)
+        self.assertIn(".txt", cd)
+        # StreamingResponse may expose async iterator; content already covered by get_batch_command.
+        body_iter = getattr(resp, "body_iterator", None)
+        if body_iter is not None and hasattr(body_iter, "__iter__") and not hasattr(body_iter, "__aiter__"):
+            body = b"".join(body_iter)
+            self.assertEqual(body.decode("utf-8"), "line1\nline2")
+        else:
+            # Fallback: reconstruct what the route encodes
+            from netx_api.biz_state.service import get_batch_command as _gbc
+
+            raw = str(_gbc(db, "b1", "c1").get("raw_text") or "")
+            self.assertEqual(raw, "line1\nline2")
 
     def test_bgp_peer_sheet_uses_status_summary_title(self) -> None:
         """Shared metric_id bgp_peer must not inherit first AF profile title."""

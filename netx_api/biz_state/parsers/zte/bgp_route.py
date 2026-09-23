@@ -13,21 +13,22 @@ from .bgp_peer import _detect_bgp_afi, _detect_local_as, _detect_vrf
 
 RULE_KEYS = ("zte_zxros_show_bgp_neighbor_routes",)
 
-# Single-line IPv4-style: * 10.1.0.0/24  10.0.0.1  … path
+# Status codes may be glued or spaced: "*", "* i", "*>i", "* s", "< *"
+_FLAGS = r"(?P<flags>(?:[*<>isd]+(?:\s+[*<>isd]+)*)?)"
+# Single-line IPv4-style: * i  10.1.0.0/24  10.0.0.1  … path
 _ROUTE_ONE_LINE_RE = re.compile(
-    r"^\s*(?P<flags>[*<>isd]*)\s*"
+    rf"^\s*{_FLAGS}\s+"
     r"(?P<net>\S+)\s+"
     r"(?P<nh>\S+)\s+"
     r"(?P<rest>.*)$"
 )
-# Network alone (often IPv6 wrap): * 2407::1/128   or bare prefix for "out"
-_NET_ONLY_RE = re.compile(
-    r"^\s*(?P<flags>[*<>isd]*)\s*(?P<net>\S+)\s*$"
-)
+# Network alone (often IPv6 wrap): * i  2407::1/128
+_NET_ONLY_RE = re.compile(rf"^\s*{_FLAGS}\s*(?P<net>\S+)\s*$")
 _DIR_RE = re.compile(r"(?i)\bneighbor\s+(in|out)\s+")
 # Neighbor may be IPv4 or IPv6 (consume until EOL / pipe)
 _NEI_RE = re.compile(r"(?i)\bneighbor\s+(?:in|out)\s+(\S+)")
 _TOTAL_RE = re.compile(r"(?i)total\s+number\s+of\s+routes\s*:\s*(\d+)")
+_RD_RE = re.compile(r"(?i)^Route\s+Distinguisher\s*:\s*(\S+)")
 _HEADER_NETS = frozenset(
     {
         "network",
@@ -80,6 +81,21 @@ def _looks_like_prefix(net: str) -> bool:
     return _looks_like_ip_or_prefix(net)
 
 
+def _declared_total(raw_text: str) -> int | None:
+    m = _TOTAL_RE.search(str(raw_text or ""))
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except ValueError:
+        return None
+
+
+def _route_dedupe_key(*, rd: str, net: str, nh: str) -> str:
+    """ECMP / multi-RD: same prefix with different RD or next-hop is distinct."""
+    return f"{rd}\0{net}\0{nh}"
+
+
 def _split_rest(rest: str, *, path_continuation: bool = False) -> tuple[str, str, str, str]:
     """Parse trailing Metric LocPrf Tag/RtPrf Path columns (some may be blank).
 
@@ -118,8 +134,8 @@ def _split_rest(rest: str, *, path_continuation: bool = False) -> tuple[str, str
 
 def _empty_if_total_zero(raw_text: str) -> bool:
     """True when device reports Total number of routes: 0."""
-    m = _TOTAL_RE.search(str(raw_text or ""))
-    return bool(m and int(m.group(1)) == 0)
+    total = _declared_total(raw_text)
+    return total == 0
 
 
 def _skip_noise_line(line: str) -> bool:
@@ -134,9 +150,7 @@ def _skip_noise_line(line: str) -> bool:
         return True
     if low.startswith("local ") or low.startswith("remote ") or low.startswith("total "):
         return True
-    if low.startswith("route distinguisher") or low.startswith("valid ") or low.startswith(
-        "invalid "
-    ):
+    if low.startswith("valid ") or low.startswith("invalid "):
         return True
     # Banner / clock lines (e.g. "09:50:02 Indonesia Sat Sep 19 2026")
     if re.match(r"^\d{1,2}:\d{2}:\d{2}\b", low):
@@ -157,19 +171,24 @@ def _emit_route(
     vrf: str,
     neighbor: str,
     direction: str,
+    rd: str,
     net: str,
     nh: str,
     rest: str,
     flags: str,
     path_continuation: bool = False,
 ) -> None:
-    if not _looks_like_prefix(net) or net in seen:
+    if not _looks_like_prefix(net):
         return
     if nh and not _looks_like_ip_or_prefix(nh):
         # Path/metric-only continuation without a real next-hop — keep empty nh
         if re.search(r"[A-Za-z]", nh):
             return
-    seen.add(net)
+        nh = ""
+    key = _route_dedupe_key(rd=rd, net=net, nh=nh or "")
+    if key in seen:
+        return
+    seen.add(key)
     metric, loc, tag, path = _split_rest(rest, path_continuation=path_continuation)
     out.append(
         {
@@ -178,13 +197,14 @@ def _emit_route(
             "vrf": vrf[:128],
             "neighbor": neighbor[:128],
             "direction": direction[:8],
+            "rd": (rd or "")[:64],
             "network": net[:128],
             "next_hop": (nh or "")[:128],
             "metric": metric[:32],
             "loc_prf": loc[:32],
             "tag": tag[:32],
             "path": path[:256],
-            "status_codes": (flags or "").strip()[:16],
+            "status_codes": re.sub(r"\s+", "", (flags or "").strip())[:16],
             "as_num": "",
             "state": "",
             "pfx_rcd": "",
@@ -205,7 +225,7 @@ def _map_fsm_rows(
     seen: set[str] = set()
     for r in rows:
         net = row_get(r, "NETWORK", "network")
-        if not _looks_like_prefix(net) or net in seen:
+        if not _looks_like_prefix(net):
             continue
         nh = row_get(r, "NEXT_HOP", "next_hop")
         if str(nh or "").strip().lower() in _HEADER_NETS:
@@ -213,8 +233,13 @@ def _map_fsm_rows(
         if nh and not _looks_like_ip_or_prefix(nh):
             # Reject FSM false hits like NETWORK=20 NEXT_HOP=65254
             continue
-        seen.add(net)
+        rd = row_get(r, "RD", "rd")
+        key = _route_dedupe_key(rd=rd, net=net, nh=nh or "")
+        if key in seen:
+            continue
+        seen.add(key)
         path = row_get(r, "PATH", "path")
+        flags = row_get(r, "STATUS", "status_codes", "FLAGS")
         out.append(
             {
                 "local_as": local_as[:16],
@@ -222,13 +247,14 @@ def _map_fsm_rows(
                 "vrf": vrf[:128],
                 "neighbor": neighbor[:128],
                 "direction": direction[:8],
+                "rd": (rd or "")[:64],
                 "network": net[:128],
                 "next_hop": nh[:128],
                 "metric": row_get(r, "METRIC", "metric")[:32],
                 "loc_prf": row_get(r, "LOC_PRF", "loc_prf")[:32],
                 "tag": row_get(r, "TAG", "RT_PRF", "tag")[:32],
                 "path": path[:256],
-                "status_codes": "",
+                "status_codes": re.sub(r"\s+", "", (flags or "").strip())[:16],
                 "as_num": "",
                 "state": "",
                 "pfx_rcd": "",
@@ -253,6 +279,7 @@ def _hand_parse(
     pending_net = ""
     pending_flags = ""
     pending_nh = ""
+    current_rd = ""
 
     def _flush_pending(*, rest: str = "", path_continuation: bool = False) -> None:
         nonlocal pending_net, pending_flags, pending_nh
@@ -266,6 +293,7 @@ def _hand_parse(
             vrf=vrf,
             neighbor=neighbor,
             direction=direction,
+            rd=current_rd,
             net=pending_net,
             nh=pending_nh,
             rest=rest,
@@ -278,6 +306,11 @@ def _hand_parse(
 
     for raw in str(raw_text or "").splitlines():
         line = raw.rstrip()
+        rd_m = _RD_RE.match(line.strip())
+        if rd_m:
+            _flush_pending()
+            current_rd = rd_m.group(1).strip()
+            continue
         if _skip_noise_line(line):
             continue
 
@@ -299,7 +332,7 @@ def _hand_parse(
                 _flush_pending(rest=tok, path_continuation=True)
                 continue
 
-        # Full one-liner (typical IPv4)
+        # Full one-liner (typical IPv4 / RR "* i  prefix …")
         m = _ROUTE_ONE_LINE_RE.match(line)
         if m and _looks_like_prefix(m.group("net")) and _looks_like_ip_or_prefix(m.group("nh")):
             _flush_pending()
@@ -311,6 +344,7 @@ def _hand_parse(
                 vrf=vrf,
                 neighbor=neighbor,
                 direction=direction,
+                rd=current_rd,
                 net=m.group("net"),
                 nh=m.group("nh"),
                 rest=m.group("rest"),
@@ -382,7 +416,14 @@ def normalize_bgp_route(
             **kw,
         )
 
-    return prefer_fsm(tables, RULE_KEYS, _map, _hand, raw_text=raw_text)
+    rows = prefer_fsm(tables, RULE_KEYS, _map, _hand, raw_text=raw_text)
+    # If device declared a large table but FSM/hand returned a tiny subset, prefer hand.
+    declared = _declared_total(raw_text)
+    if declared is not None and declared > 0 and len(rows) < max(1, declared // 2):
+        hand_rows = _hand(raw_text=raw_text)
+        if len(hand_rows) > len(rows):
+            return hand_rows
+    return rows
 
 
 normalize_bgp_route.RULE_KEYS = RULE_KEYS

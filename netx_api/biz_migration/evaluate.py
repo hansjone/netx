@@ -9,9 +9,28 @@ from ..biz_state.compare_engine import apply_port_map, compare_rows
 PORT_METRIC_ID = "interface_brief"
 PORT_STATUS_FIELDS = ("admin", "phy", "prot")
 
+# Unit separator — field values may contain "|"; keep "|" accepted when parsing expect.
+KEY_SEP = "\x1f"
+
 
 def _key_str(key: tuple[str, ...] | list[str]) -> str:
-    return "|".join(str(x) for x in key)
+    return KEY_SEP.join(str(x) for x in key)
+
+
+def normalize_expect_key(raw: str) -> str:
+    """Normalize a stored/UI expect key to internal KEY_SEP form.
+
+    Accepts legacy ``a|b`` multi-field keys and already-normalized ``\\x1f`` keys.
+    """
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    if KEY_SEP in s:
+        return s
+    if "|" in s:
+        parts = [p.strip() for p in s.split("|")]
+        return KEY_SEP.join(parts)
+    return s
 
 
 def port_status_label(row: dict[str, Any] | None) -> str:
@@ -69,7 +88,7 @@ def parse_expect_set(raw: dict[str, Any] | None) -> dict[str, set[str]]:
     ports = data.get("ports") or []
     if isinstance(ports, list):
         for p in ports:
-            s = str(p or "").strip()
+            s = normalize_expect_key(str(p or ""))
             if s:
                 out.setdefault(PORT_METRIC_ID, set()).add(s)
                 out.setdefault("_ports", set()).add(s)
@@ -86,11 +105,11 @@ def parse_expect_set(raw: dict[str, Any] | None) -> dict[str, set[str]]:
             if it.get("key") is not None:
                 k = it.get("key")
                 if isinstance(k, (list, tuple)):
-                    joined = "|".join(str(p).strip() for p in k if str(p).strip())
+                    joined = KEY_SEP.join(str(p).strip() for p in k if str(p).strip())
                     if joined:
                         bucket.add(joined)
                 else:
-                    s = str(k or "").strip()
+                    s = normalize_expect_key(str(k or ""))
                     if s:
                         bucket.add(s)
             keys = it.get("keys")
@@ -98,17 +117,17 @@ def parse_expect_set(raw: dict[str, Any] | None) -> dict[str, set[str]]:
                 # Flat list of segments → one composite key; else each entry is a key
                 # (string or nested list/tuple of segments).
                 if keys and all(not isinstance(x, (list, tuple, dict)) for x in keys):
-                    joined = "|".join(str(x).strip() for x in keys if str(x).strip())
+                    joined = KEY_SEP.join(str(x).strip() for x in keys if str(x).strip())
                     if joined:
                         bucket.add(joined)
                 else:
                     for x in keys:
                         if isinstance(x, (list, tuple)):
-                            joined = "|".join(str(p).strip() for p in x if str(p).strip())
+                            joined = KEY_SEP.join(str(p).strip() for p in x if str(p).strip())
                             if joined:
                                 bucket.add(joined)
                         else:
-                            s = str(x or "").strip()
+                            s = normalize_expect_key(str(x or ""))
                             if s:
                                 bucket.add(s)
     return {k: {x for x in v if x} for k, v in out.items() if v}
@@ -718,9 +737,16 @@ def dual_verdict_ex(
 
 
 def build_diff_index_from_compare(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Normalize compare_rows result diffs → key_str → {kind, before, after, key}."""
+    """Normalize compare_rows result diffs → key_str → {kind, before, after, key}.
+
+    ``duplicate`` diffs are skipped for the index (primary match already indexed);
+    callers can still read ``summary.duplicate_key_list``.
+    """
     out: dict[str, dict[str, Any]] = {}
     for d in result.get("diffs") or []:
+        kind = str(d.get("kind") or "")
+        if kind == "duplicate":
+            continue
         key = d.get("key")
         if isinstance(key, dict):
             key_list = [str(v) for v in key.values()]
@@ -731,10 +757,12 @@ def build_diff_index_from_compare(result: dict[str, Any]) -> dict[str, dict[str,
         else:
             ks = str(key or "")
             key_list = [ks] if ks else []
+        if ks in out:
+            continue  # first primary match wins
         before = dict(d.get("before") or {}) if d.get("before") else {}
         after = dict(d.get("after") or {}) if d.get("after") else {}
         out[ks] = {
-            "kind": str(d.get("kind") or ""),
+            "kind": kind,
             "key": key_list,
             "before": before,
             "after": after,
@@ -780,7 +808,11 @@ def _map_defines_iface_expect(metric_id: str, iface_fields: list[str], port_map:
 
 
 def _iface_values(key_str: str, *, key_fields: list[str], iface_fields: list[str]) -> list[str]:
-    parts = str(key_str or "").split("|")
+    raw = str(key_str or "")
+    if KEY_SEP in raw:
+        parts = raw.split(KEY_SEP)
+    else:
+        parts = raw.split("|")
     iface_set = {str(f) for f in iface_fields}
     if key_fields and len(parts) == len(key_fields):
         return [parts[i] for i, f in enumerate(key_fields) if f in iface_set and parts[i]]
@@ -798,7 +830,7 @@ def _key_in_port_map(
 ) -> bool:
     """True when every interface segment of the key is covered by the map.
 
-    Covered = exact map key, or parent (before last ``.``) is a map key.
+    Covered = exact map key, or any parent prefix (multi-level QinQ) is a map key.
     """
     vals = _iface_values(key_str, key_fields=key_fields, iface_fields=iface_fields)
     if not vals:
@@ -806,10 +838,15 @@ def _key_in_port_map(
     for v in vals:
         if v in port_map:
             continue
-        parent = v.rsplit(".", 1)[0] if "." in v else ""
-        if parent and parent in port_map:
-            continue
-        return False
+        parts = v.split(".")
+        covered = False
+        for i in range(len(parts) - 1, 0, -1):
+            parent = ".".join(parts[:i])
+            if parent and parent in port_map:
+                covered = True
+                break
+        if not covered:
+            return False
     return True
 
 
@@ -834,6 +871,13 @@ def _unmapped_same_iface_anomaly(
     return old_bad and new_up
 
 
+def _split_key_parts(key_str: str) -> list[str]:
+    raw = str(key_str or "")
+    if KEY_SEP in raw:
+        return raw.split(KEY_SEP)
+    return raw.split("|")
+
+
 def _remap_key_str(
     key_str: str,
     *,
@@ -849,10 +893,14 @@ def _remap_key_str(
     if not port_map:
         return key_str
     if (not key_fields or len(key_fields) == 1) and (
-        key_str in port_map or ("." in key_str and key_str.rsplit(".", 1)[0] in port_map)
+        key_str in port_map
+        or any(
+            ".".join(key_str.split(".")[:i]) in port_map
+            for i in range(len(key_str.split(".")) - 1, 0, -1)
+        )
     ):
         return resolve_mapped_iface(key_str, port_map)
-    parts = str(key_str).split("|")
+    parts = _split_key_parts(key_str)
     if key_fields and len(parts) == len(key_fields):
         iface_set = {str(f) for f in iface_fields}
         out: list[str] = []
@@ -862,7 +910,7 @@ def _remap_key_str(
                 out.append(resolve_mapped_iface(v, port_map))
             else:
                 out.append(v)
-        return "|".join(out)
+        return KEY_SEP.join(out)
     return resolve_mapped_iface(key_str, port_map)
 
 
@@ -881,10 +929,14 @@ def _reverse_remap_key_str(
     if not rev_map:
         return key_str
     if (not key_fields or len(key_fields) == 1) and (
-        key_str in rev_map or ("." in key_str and key_str.rsplit(".", 1)[0] in rev_map)
+        key_str in rev_map
+        or any(
+            ".".join(key_str.split(".")[:i]) in rev_map
+            for i in range(len(key_str.split(".")) - 1, 0, -1)
+        )
     ):
         return resolve_mapped_iface(key_str, rev_map)
-    parts = str(key_str).split("|")
+    parts = _split_key_parts(key_str)
     if key_fields and len(parts) == len(key_fields):
         iface_set = {str(f) for f in iface_fields}
         out: list[str] = []
@@ -894,7 +946,7 @@ def _reverse_remap_key_str(
                 out.append(resolve_mapped_iface(v, rev_map))
             else:
                 out.append(v)
-        return "|".join(out)
+        return KEY_SEP.join(out)
     return resolve_mapped_iface(key_str, rev_map)
 
 
@@ -957,7 +1009,7 @@ def row_match_key(
     data = strip_netx(row)
     if iface_fields and rules:
         data = apply_iface_normalize(dict(data), iface_fields=iface_fields, rules=rules)
-    return "|".join(str(data.get(k) or "").strip() for k in key_fields)
+    return KEY_SEP.join(str(data.get(k) or "").strip() for k in key_fields)
 
 
 def index_raw_by_match_key(
@@ -1395,12 +1447,22 @@ def evaluate_metric_dual(
         "old_summary": old_cmp.get("summary") or {},
         "new_summary": new_cmp.get("summary") or {},
         "progress_ok": progress_ok,
-        "progress_total": progress_total if progress_total else len(expect_keys),
+        "progress_total": progress_total,
         "anomaly": anomaly,
         "anomaly_in_expect": anomaly_in_expect,
         "rows": rows_out,
         "new_baseline_mode": new_baseline_mode,
         "new_baseline_missing": new_baseline_missing,
+        "duplicate_keys_before": int((old_cmp.get("summary") or {}).get("duplicate_keys_before") or 0)
+        + int((new_cmp.get("summary") or {}).get("duplicate_keys_before") or 0),
+        "duplicate_keys_after": int((old_cmp.get("summary") or {}).get("duplicate_keys_after") or 0)
+        + int((new_cmp.get("summary") or {}).get("duplicate_keys_after") or 0),
+        "duplicate_key_list": list(
+            dict.fromkeys(
+                list((old_cmp.get("summary") or {}).get("duplicate_key_list") or [])
+                + list((new_cmp.get("summary") or {}).get("duplicate_key_list") or [])
+            )
+        ),
     }
 
 

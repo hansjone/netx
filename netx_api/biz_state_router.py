@@ -337,6 +337,23 @@ def api_get_batch_command(
     return svc.get_batch_command(db, batch_id, command_id)
 
 
+@router.get("/batches/{batch_id}/commands/{command_id}/raw.txt")
+def api_download_batch_command_raw(
+    batch_id: str, command_id: str, db: Session = Depends(get_db)
+) -> StreamingResponse:
+    """Download one command's raw CLI output as plain text."""
+    detail = svc.get_batch_command(db, batch_id, command_id)
+    raw = str(detail.get("raw_text") or "")
+    cmd = str(detail.get("raw_command") or "command")
+    safe = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in cmd)[:80] or "command"
+    filename = f"{command_id}_{safe}.txt"
+    return StreamingResponse(
+        iter([raw.encode("utf-8")]),
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/batches/{batch_id}/export")
 def api_export_batch(batch_id: str, db: Session = Depends(get_db)) -> StreamingResponse:
     data = svc.export_batch_zip(db, batch_id)

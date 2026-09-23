@@ -108,7 +108,11 @@ def apply_iface_normalize_rows(
 
 
 def resolve_mapped_iface(name: str, port_map: Mapping[str, str] | None) -> str:
-    """Exact map hit, else parent + ``.suffix`` if parent mapped, else unchanged."""
+    """Exact map hit, else longest mapped parent + remaining suffix (QinQ-safe).
+
+    ``gei-0/1/0/1.100.200`` tries exact, then ``gei-0/1/0/1.100``, then
+    ``gei-0/1/0/1`` — not only the last ``.`` segment.
+    """
     text = str(name or "").strip()
     if not text or not port_map:
         return text
@@ -116,11 +120,14 @@ def resolve_mapped_iface(name: str, port_map: Mapping[str, str] | None) -> str:
         return str(port_map[text])
     if "." not in text:
         return text
-    parent, suffix = text.rsplit(".", 1)
-    if not parent or not suffix:
-        return text
-    if parent in port_map:
-        return f"{port_map[parent]}.{suffix}"
+    parts = text.split(".")
+    for i in range(len(parts) - 1, 0, -1):
+        parent = ".".join(parts[:i])
+        suffix = ".".join(parts[i:])
+        if not parent or not suffix:
+            continue
+        if parent in port_map:
+            return f"{port_map[parent]}.{suffix}"
     return text
 
 
