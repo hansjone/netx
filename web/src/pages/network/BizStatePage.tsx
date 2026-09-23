@@ -455,6 +455,28 @@ export function BizStatePage() {
     [profiles],
   );
 
+  const profileSelectionStats = useMemo(() => {
+    const items = (detail?.items || []) as Array<{
+      source_profile_id?: string;
+      enabled?: boolean;
+      bindings?: unknown[];
+    }>;
+    const byId = new Map(items.map((it) => [String(it.source_profile_id || ""), it]));
+    let enabled = 0;
+    let unbound = 0;
+    for (const prof of collectProfiles) {
+      const it = byId.get(prof.profile_id);
+      if (!it?.enabled) continue;
+      enabled += 1;
+      if ((prof.placeholders || []).length > 0) {
+        const binds = (it.bindings || []) as Array<{ value?: string }>;
+        const hasVal = binds.some((b) => String(b.value || "").trim());
+        if (!hasVal) unbound += 1;
+      }
+    }
+    return { total: collectProfiles.length, enabled, unbound };
+  }, [collectProfiles, detail?.items]);
+
   const sheetTabs = useMemo(
     () => (batchDetail ? buildSheetTabs(batchDetail, t) : []),
     [batchDetail, t],
@@ -944,6 +966,40 @@ export function BizStatePage() {
     try {
       await bizStatePatchTask(taskId, { items });
       await loadTask(taskId);
+    } catch (e) {
+      showError(formatErr(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const setAllProfilesEnabled = async (enable: boolean) => {
+    if (!taskId || !detail || !collectProfiles.length) return;
+    const items = [...(detail.items || [])] as any[];
+    const byId = new Map(items.map((it, i) => [String(it.source_profile_id || ""), i]));
+    for (const prof of collectProfiles) {
+      const idx = byId.get(prof.profile_id);
+      if (idx != null) {
+        items[idx] = { ...items[idx], enabled: enable };
+      } else if (enable) {
+        items.push({
+          source_profile_id: prof.profile_id,
+          kind: "catalog",
+          enabled: true,
+          title: prof.title,
+          bindings: [],
+        });
+      }
+    }
+    setBusy(true);
+    try {
+      await bizStatePatchTask(taskId, { items });
+      await loadTask(taskId);
+      showOk(
+        enable
+          ? t("bizState.profilesSelectAllOk", { n: collectProfiles.length })
+          : t("bizState.profilesDeselectAllOk"),
+      );
     } catch (e) {
       showError(formatErr(e));
     } finally {
@@ -1650,7 +1706,34 @@ export function BizStatePage() {
           </div>
 
           {taskTab === "profiles" ? (
-            <>
+            <div className="bs-profiles-panel">
+              <div className="btn-row bs-profiles-toolbar">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  isDisabled={busy || !collectProfiles.length}
+                  onPress={() => void setAllProfilesEnabled(true)}
+                >
+                  {t("bizState.profilesSelectAll")}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  isDisabled={busy || !profileSelectionStats.enabled}
+                  onPress={() => void setAllProfilesEnabled(false)}
+                >
+                  {t("bizState.profilesDeselectAll")}
+                </Button>
+                <span className="muted bs-profiles-stats">
+                  {t("bizState.profilesSelectionStats", {
+                    enabled: profileSelectionStats.enabled,
+                    total: profileSelectionStats.total,
+                  })}
+                  {profileSelectionStats.unbound
+                    ? ` · ${t("bizState.profilesUnboundStats", { n: profileSelectionStats.unbound })}`
+                    : ""}
+                </span>
+              </div>
               <div className="pt-list-table-wrap bs-profiles-table-wrap">
                 <table className="data-table pt-list-table bs-profiles-table">
                   <thead>
@@ -1658,8 +1741,8 @@ export function BizStatePage() {
                       <th>{t("bizState.enable")}</th>
                       <th>{t("bizState.profiles")}</th>
                       <th>{t("bizState.colLane")}</th>
-                      <th>{t("bizState.params")}</th>
                       <th>{t("bizState.colActions")}</th>
+                      <th>{t("bizState.params")}</th>
                       <th>{t("bizState.command")}</th>
                       <th>{t("bizState.colAux")}</th>
                     </tr>
@@ -1710,7 +1793,7 @@ export function BizStatePage() {
                         : "—";
                       return (
                         <tr key={prof.profile_id}>
-                          <td>
+                          <td className="bs-profiles-sticky-col bs-profiles-sticky-col--1">
                             <input
                               type="checkbox"
                               checked={enabled}
@@ -1718,7 +1801,7 @@ export function BizStatePage() {
                               onChange={(e) => void toggleProfileItem(prof, e.target.checked)}
                             />
                           </td>
-                          <td>
+                          <td className="bs-profiles-sticky-col bs-profiles-sticky-col--2">
                             <div className="pt-list-task-name">{prof.title}</div>
                             {prof.description ? <div className="muted">{prof.description}</div> : null}
                             {needsBind ? (
@@ -1734,6 +1817,22 @@ export function BizStatePage() {
                               <span title={t("bizState.laneLightHint")}>
                                 <NmStatusChip color="default">{t("bizState.laneLight")}</NmStatusChip>
                               </span>
+                            )}
+                          </td>
+                          <td className="bs-actions-cell">
+                            {needsBind && enabled && it ? (
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                isDisabled={busy || discoverLoading}
+                                onPress={() => void startDiscover(it)}
+                              >
+                                {t("bizState.discoverBind")}
+                              </Button>
+                            ) : needsBind ? (
+                              <span className="muted">—</span>
+                            ) : (
+                              "—"
                             )}
                           </td>
                           <td className="bs-params-cell">
@@ -1757,22 +1856,6 @@ export function BizStatePage() {
                               >
                                 {bindHint}
                               </div>
-                            ) : (
-                              "—"
-                            )}
-                          </td>
-                          <td className="bs-actions-cell">
-                            {needsBind && enabled && it ? (
-                              <Button
-                                size="sm"
-                                variant="secondary"
-                                isDisabled={busy || discoverLoading}
-                                onPress={() => void startDiscover(it)}
-                              >
-                                {t("bizState.discoverBind")}
-                              </Button>
-                            ) : needsBind ? (
-                              <span className="muted">—</span>
                             ) : (
                               "—"
                             )}
@@ -1809,7 +1892,7 @@ export function BizStatePage() {
                   </tbody>
                 </table>
               </div>
-            </>
+            </div>
           ) : (
             <div className="pt-list-table-wrap">
               <div className="btn-row" style={{ marginBottom: 8, gap: 8, flexWrap: "wrap" }}>
