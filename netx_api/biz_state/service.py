@@ -251,6 +251,10 @@ def update_task(db: Session, task_id: str, body: dict[str, Any]) -> dict[str, An
     task = db.get(BizStateTask, task_id)
     if not task:
         raise HTTPException(status_code=404, detail="task_not_found")
+    # Offline import tasks have no inventory NE / credentials — keep paused.
+    if str(task.source or "").strip().lower() == "import":
+        if "status" in body and str(body.get("status") or "").strip() == "running":
+            raise HTTPException(status_code=400, detail="import_offline_only")
     if "note" in body:
         task.note = str(body.get("note") or "")[:256]
     if "purpose" in body and body["purpose"] is not None:

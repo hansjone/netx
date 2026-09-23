@@ -1842,6 +1842,71 @@ export const bizStateCollectStop = (taskId: string) =>
     signaled_batches?: string[];
   }>(`/v1/biz-state/tasks/${encodeURIComponent(taskId)}/collect/stop`, {});
 
+type BizStateImportResult = {
+  ok: boolean;
+  started?: boolean;
+  queued?: boolean;
+  reason?: string;
+  batch_id?: string;
+  task_id?: string;
+  vendor_key?: string;
+  filename?: string;
+  ne_name?: string;
+  created_task?: boolean;
+  segments_preview?: Record<string, number>;
+  collect_running?: boolean;
+};
+
+export const bizStateImportLog = async (
+  taskId: string,
+  file: File,
+  opts?: { vendor_key?: string },
+): Promise<BizStateImportResult> => {
+  const form = new FormData();
+  form.append("file", file);
+  if (opts?.vendor_key?.trim()) form.append("vendor_key", opts.vendor_key.trim());
+  const path = `/v1/biz-state/tasks/${encodeURIComponent(taskId)}/import`;
+  const res = await fetch(path, {
+    method: "POST",
+    headers: authHeaders(),
+    body: form,
+    credentials: fetchCreds,
+  });
+  if (res.status === 401) {
+    handleUnauthorized(path);
+    throw new Error("unauthorized");
+  }
+  const data = await parseApiResponse(res);
+  if (!res.ok) throw new ApiRequestError(res.status, data.detail || `${res.status} import`);
+  return data as BizStateImportResult;
+};
+
+/** Standalone offline import: creates source=import task (no inventory NE). */
+export const bizStateImportLogStandalone = async (
+  file: File,
+  opts?: { vendor_key?: string; ne_name?: string; note?: string },
+): Promise<BizStateImportResult> => {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("vendor_key", (opts?.vendor_key || "zte").trim() || "zte");
+  if (opts?.ne_name?.trim()) form.append("ne_name", opts.ne_name.trim());
+  if (opts?.note?.trim()) form.append("note", opts.note.trim());
+  const path = "/v1/biz-state/import";
+  const res = await fetch(path, {
+    method: "POST",
+    headers: authHeaders(),
+    body: form,
+    credentials: fetchCreds,
+  });
+  if (res.status === 401) {
+    handleUnauthorized(path);
+    throw new Error("unauthorized");
+  }
+  const data = await parseApiResponse(res);
+  if (!res.ok) throw new ApiRequestError(res.status, data.detail || `${res.status} import`);
+  return data as BizStateImportResult;
+};
+
 export const bizStateListBatches = (taskId: string, limit = 50) =>
   apiGet<{ items: Record<string, unknown>[] }>(
     `/v1/biz-state/tasks/${encodeURIComponent(taskId)}/batches?limit=${limit}`,

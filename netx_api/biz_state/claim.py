@@ -39,6 +39,13 @@ def enqueue_collect(task_id: str, *, manual: bool = False) -> dict[str, Any]:
         task = db.get(BizStateTask, tid)
         if not task:
             return {"ok": False, "queued": False, "reason": "task_not_found", "task_id": tid}
+        if str(task.source or "").strip().lower() == "import":
+            return {
+                "ok": False,
+                "queued": False,
+                "reason": "import_offline_only",
+                "task_id": tid,
+            }
         if bool(task.collect_running):
             return {
                 "ok": True,

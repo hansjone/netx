@@ -20,6 +20,8 @@ import {
   bizStateGetBatch,
   bizStateGetBatchCommand,
   bizStateGetTask,
+  bizStateImportLog,
+  bizStateImportLogStandalone,
   bizStateListBatches,
   bizStateListBatchMetricRows,
   bizStateListProfiles,
@@ -269,6 +271,7 @@ export function BizStatePage() {
 
   // create-task modal (all valid CLI targets)
   const [createOpen, setCreateOpen] = useState(false);
+  const [createMode, setCreateMode] = useState<"device" | "import">("device");
   const [neKeyword, setNeKeyword] = useState("");
   const debouncedNeKw = useDebouncedValue(neKeyword, 300);
   const [neSource, setNeSource] = useState<NeSourceFilter>("all");
@@ -324,6 +327,16 @@ export function BizStatePage() {
   const [rawLogText, setRawLogText] = useState("");
   const [rawLogMeta, setRawLogMeta] = useState("");
   const [rawLogCommandId, setRawLogCommandId] = useState("");
+
+  // Manual log import into an existing task (append batch)
+  const [importOpen, setImportOpen] = useState(false);
+  const [importTaskId, setImportTaskId] = useState("");
+  const [importVendorKey, setImportVendorKey] = useState("zte");
+  const [importNeName, setImportNeName] = useState("");
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importBusy, setImportBusy] = useState(false);
+  const importFileRef = useRef<HTMLInputElement | null>(null);
+  const createImportFileRef = useRef<HTMLInputElement | null>(null);
   const [rawLogLines, setRawLogLines] = useState(0);
   const [rawLogRows, setRawLogRows] = useState(0);
   const [rawLogDeclared, setRawLogDeclared] = useState(0);
@@ -649,15 +662,23 @@ export function BizStatePage() {
 
   const openCreate = () => {
     setCreateOpen(true);
+    setCreateMode("device");
     setSelectedNe(null);
     setNeKeyword("");
     setNeSource("all");
     setNePage(1);
+    setImportVendorKey("zte");
+    setImportNeName("");
+    setImportFile(null);
+    if (createImportFileRef.current) createImportFileRef.current.value = "";
   };
 
   const closeCreate = () => {
     setCreateOpen(false);
     setSelectedNe(null);
+    setImportFile(null);
+    setImportNeName("");
+    if (createImportFileRef.current) createImportFileRef.current.value = "";
   };
 
   const loadTask = async (id: string) => {
@@ -721,6 +742,42 @@ export function BizStatePage() {
     } catch (e) {
       showError(t("bizState.createFailed") + ": " + formatErr(e));
     } finally {
+      setBusy(false);
+    }
+  };
+
+  /** Create offline import task + first batch (same entry as pick-NE create). */
+  const createImportTask = async () => {
+    if (!importFile) return;
+    setImportBusy(true);
+    setBusy(true);
+    try {
+      const out = await bizStateImportLogStandalone(importFile, {
+        vendor_key: importVendorKey,
+        ne_name: importNeName.trim(),
+      });
+      if (out && out.started === false) {
+        showError(String(out.reason || "") || t("common.opFailed"));
+        return;
+      }
+      const newTaskId = String(out.task_id || "");
+      const n = Number(out.segments_preview?.segments || 0);
+      showOk(
+        n > 0
+          ? t("bizState.importStarted", { count: String(n) })
+          : t("bizState.created"),
+      );
+      closeCreate();
+      invalidateCutoverCache("bizCompare:");
+      await refreshTasks();
+      if (newTaskId) {
+        setTaskCollecting(newTaskId, true);
+        await openTask(newTaskId, "batches");
+      }
+    } catch (e) {
+      showError(t("bizState.createFailed") + ": " + formatErr(e));
+    } finally {
+      setImportBusy(false);
       setBusy(false);
     }
   };
@@ -916,6 +973,75 @@ export function BizStatePage() {
   const collectNow = async () => {
     if (!taskId) return;
     await collectNowForTask(taskId, true);
+  };
+
+  const guessVendorKey = (vendor: string, deviceType = "") => {
+    const v = `${vendor || ""} ${deviceType || ""}`.toLowerCase();
+    if (v.includes("huawei") || v.includes("vrp")) return "huawei";
+    if (v.includes("cisco") || v.includes("ios")) return "cisco";
+    if (v.includes("zte") || v.includes("zxros") || v.includes("zxr")) return "zte";
+    return "zte";
+  };
+
+  const openImportLog = (id: string, vendor = "", deviceType = "") => {
+    setImportTaskId(id);
+    setImportVendorKey(guessVendorKey(vendor, deviceType));
+    setImportNeName("");
+    setImportFile(null);
+    if (importFileRef.current) importFileRef.current.value = "";
+    setImportOpen(true);
+  };
+
+  const submitImportLog = async () => {
+    if (!importTaskId || !importFile) return;
+    setImportBusy(true);
+    setTaskCollecting(importTaskId, true);
+    try {
+      const out = await bizStateImportLog(importTaskId, importFile, {
+        vendor_key: importVendorKey,
+      });
+      if (out && out.started === false) {
+        setTaskCollecting(importTaskId, false);
+        const reason = String(out.reason || "");
+        if (reason === "already_collecting") {
+          setTaskCollecting(importTaskId, true);
+          showOk(t("bizState.collecting"));
+        } else if (reason === "import_offline_only") {
+          showError(t("bizState.importOfflineOnly"));
+          return;
+        } else {
+          showError(reason || t("common.opFailed"));
+          return;
+        }
+      } else {
+        const n = Number(out.segments_preview?.segments || 0);
+        showOk(
+          n > 0
+            ? t("bizState.importStarted", { count: String(n) })
+            : t("bizState.importing"),
+        );
+      }
+      setImportOpen(false);
+      if (taskId === importTaskId) {
+        setTaskTab("batches");
+        try {
+          await refreshTaskProgress(importTaskId);
+        } catch {
+          /* poll will retry */
+        }
+      } else {
+        try {
+          await refreshTasks();
+        } catch {
+          /* ignore */
+        }
+      }
+    } catch (e) {
+      setTaskCollecting(importTaskId, false);
+      showError(formatErr(e));
+    } finally {
+      setImportBusy(false);
+    }
   };
 
   const stopCollectForTask = async (id: string) => {
@@ -1363,7 +1489,9 @@ export function BizStatePage() {
                   </td>
                   <td>
                     <NmStatusChip color={sourceChipColor(row.source)}>
-                      {row.source || "managed"}
+                      {row.source === "import"
+                        ? t("bizState.sourceImport")
+                        : row.source || "managed"}
                     </NmStatusChip>
                   </td>
                   <td>
@@ -1388,11 +1516,15 @@ export function BizStatePage() {
                       <input
                         type="checkbox"
                         checked={row.status === "running"}
-                        disabled={busy}
+                        disabled={busy || row.source === "import"}
                         onChange={(e) => void setScheduleEnabled(row.id, e.target.checked)}
                       />
                       <span>
-                        {row.status === "running" ? t("bizState.scheduleOn") : t("bizState.scheduleOff")}
+                        {row.source === "import"
+                          ? t("bizState.scheduleOff")
+                          : row.status === "running"
+                            ? t("bizState.scheduleOn")
+                            : t("bizState.scheduleOff")}
                       </span>
                     </label>
                   </td>
@@ -1426,32 +1558,46 @@ export function BizStatePage() {
                       <Button size="sm" variant="ghost" onPress={() => void openTask(row.id, "batches")}>
                         {t("bizState.batches")}
                       </Button>
-                      {row.status === "running" ? (
+                      {row.source !== "import" ? (
+                        row.status === "running" ? (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            isDisabled={busy}
+                            onPress={() => void setScheduleEnabled(row.id, false)}
+                          >
+                            {t("bizState.pause")}
+                          </Button>
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            isDisabled={busy}
+                            onPress={() => void setScheduleEnabled(row.id, true)}
+                          >
+                            {t("bizState.start")}
+                          </Button>
+                        )
+                      ) : null}
+                      {row.source !== "import" ? (
                         <Button
                           size="sm"
-                          variant="ghost"
-                          isDisabled={busy}
-                          onPress={() => void setScheduleEnabled(row.id, false)}
+                          variant="secondary"
+                          isDisabled={Boolean(row.collect_running || collectingIds[row.id])}
+                          onPress={() => void collectNowForTask(row.id, false)}
                         >
-                          {t("bizState.pause")}
+                          {t("bizState.collectNow")}
                         </Button>
-                      ) : (
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          isDisabled={busy}
-                          onPress={() => void setScheduleEnabled(row.id, true)}
-                        >
-                          {t("bizState.start")}
-                        </Button>
-                      )}
+                      ) : null}
                       <Button
                         size="sm"
                         variant="secondary"
                         isDisabled={Boolean(row.collect_running || collectingIds[row.id])}
-                        onPress={() => void collectNowForTask(row.id, false)}
+                        onPress={() =>
+                          openImportLog(row.id, String(row.vendor || ""), "")
+                        }
                       >
-                        {t("bizState.collectNow")}
+                        {t("bizState.importLog")}
                       </Button>
                       {row.collect_running || collectingIds[row.id] ? (
                         <Button
@@ -1487,112 +1633,192 @@ export function BizStatePage() {
         </div>
       </div>
 
-      {/* Create task: pick any CLI target with search */}
+      {/* Create task: pick NE or offline import (unified entry) */}
       <AppModalShell open={createOpen} onClose={closeCreate} size="lg">
         <Modal.Header>
           <Modal.Heading>{t("bizState.create")}</Modal.Heading>
           <Modal.CloseTrigger />
         </Modal.Header>
         <Modal.Body className="flex flex-col gap-3">
-          <p className="muted">{t("bizState.createHint")}</p>
-          <div className="filter-inline">
-            <Input
-              value={neKeyword}
-              placeholder={t("bizState.neKeywordPh")}
-              onChange={(e) => {
-                setNeKeyword(e.target.value);
-                setNePage(1);
-              }}
-            />
-            <FieldSelect
-              value={neSource}
-              onChange={(e) => {
-                setNeSource(e.target.value as NeSourceFilter);
-                setNePage(1);
-              }}
-              aria-label={t("bizState.colSource")}
+          <div className="btn-row nm-config-modal__tabs" role="tablist">
+            <Button
+              size="sm"
+              variant={createMode === "device" ? "primary" : "secondary"}
+              className={createMode === "device" ? "is-active" : undefined}
+              aria-selected={createMode === "device"}
+              onPress={() => setCreateMode("device")}
             >
-              <option value="all">{t("bizState.allSource")}</option>
-              <option value="managed">managed</option>
-              <option value="ume">ume</option>
-            </FieldSelect>
-            {selectedNe ? (
-              <span className="muted">
-                {t("bizState.selectedNe")}: {selectedNe.name} ({selectedNe.ip_address}) · {neSourceOf(selectedNe)}
-              </span>
-            ) : null}
+              {t("bizState.createModeDevice")}
+            </Button>
+            <Button
+              size="sm"
+              variant={createMode === "import" ? "primary" : "secondary"}
+              className={createMode === "import" ? "is-active" : undefined}
+              aria-selected={createMode === "import"}
+              onPress={() => setCreateMode("import")}
+            >
+              {t("bizState.createModeImport")}
+            </Button>
           </div>
-          <div className="pt-list-table-wrap">
-            <table className="data-table pt-list-table">
-              <thead>
-                <tr>
-                  <th />
-                  <th>{t("bizState.colSource")}</th>
-                  <th>{t("bizState.colNe")}</th>
-                  <th>IP</th>
-                  <th>{t("bizState.colVendor")}</th>
-                  <th>{t("bizState.colConnect")}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {neItems.map((row) => {
-                  const checked =
-                    selectedNe?.id === row.id && neSourceOf(selectedNe) === neSourceOf(row);
-                  return (
-                    <tr key={`${row.source}:${row.id}`}>
-                      <td>
-                        <input
-                          type="radio"
-                          name="bs-ne"
-                          checked={checked}
-                          onChange={() => setSelectedNe(row)}
-                        />
-                      </td>
-                      <td>
-                        <NmStatusChip color={sourceChipColor(row.source)}>{row.source}</NmStatusChip>
-                      </td>
-                      <td>{row.name || "—"}</td>
-                      <td>{row.ip_address || "—"}</td>
-                      <td>{row.vendor || "—"}</td>
-                      <td>
-                        <NmStatusChip color={jobChipColor(row.connect_status)}>
-                          {row.connect_status || "—"}
-                        </NmStatusChip>
-                      </td>
-                    </tr>
-                  );
-                })}
-                {!neItems.length ? (
-                  <tr>
-                    <td colSpan={6}>
-                      <div className="pt-list-empty">
-                        {neLoading ? t("common.refreshing") : t("bizState.neEmpty")}
-                      </div>
-                    </td>
-                  </tr>
+          {createMode === "device" ? (
+            <>
+              <p className="muted">{t("bizState.createHint")}</p>
+              <div className="filter-inline">
+                <Input
+                  value={neKeyword}
+                  placeholder={t("bizState.neKeywordPh")}
+                  onChange={(e) => {
+                    setNeKeyword(e.target.value);
+                    setNePage(1);
+                  }}
+                />
+                <FieldSelect
+                  value={neSource}
+                  onChange={(e) => {
+                    setNeSource(e.target.value as NeSourceFilter);
+                    setNePage(1);
+                  }}
+                  aria-label={t("bizState.colSource")}
+                >
+                  <option value="all">{t("bizState.allSource")}</option>
+                  <option value="managed">managed</option>
+                  <option value="ume">ume</option>
+                </FieldSelect>
+                {selectedNe ? (
+                  <span className="muted">
+                    {t("bizState.selectedNe")}: {selectedNe.name} ({selectedNe.ip_address}) ·{" "}
+                    {neSourceOf(selectedNe)}
+                  </span>
                 ) : null}
-              </tbody>
-            </table>
-          </div>
-          <ListPager
-            page={nePage}
-            pages={nePages}
-            total={neTotal}
-            pageSize={NE_PAGE_SIZE}
-            onPageChange={setNePage}
-            disabled={neLoading}
-          />
+              </div>
+              <div className="pt-list-table-wrap">
+                <table className="data-table pt-list-table">
+                  <thead>
+                    <tr>
+                      <th />
+                      <th>{t("bizState.colSource")}</th>
+                      <th>{t("bizState.colNe")}</th>
+                      <th>IP</th>
+                      <th>{t("bizState.colVendor")}</th>
+                      <th>{t("bizState.colConnect")}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {neItems.map((row) => {
+                      const checked =
+                        selectedNe?.id === row.id &&
+                        neSourceOf(selectedNe) === neSourceOf(row);
+                      return (
+                        <tr key={`${row.source}:${row.id}`}>
+                          <td>
+                            <input
+                              type="radio"
+                              name="bs-ne"
+                              checked={checked}
+                              onChange={() => setSelectedNe(row)}
+                            />
+                          </td>
+                          <td>
+                            <NmStatusChip color={sourceChipColor(row.source)}>
+                              {row.source}
+                            </NmStatusChip>
+                          </td>
+                          <td>{row.name || "—"}</td>
+                          <td>{row.ip_address || "—"}</td>
+                          <td>{row.vendor || "—"}</td>
+                          <td>
+                            <NmStatusChip color={jobChipColor(row.connect_status)}>
+                              {row.connect_status || "—"}
+                            </NmStatusChip>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {!neItems.length ? (
+                      <tr>
+                        <td colSpan={6}>
+                          <div className="pt-list-empty">
+                            {neLoading ? t("common.refreshing") : t("bizState.neEmpty")}
+                          </div>
+                        </td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+              <ListPager
+                page={nePage}
+                pages={nePages}
+                total={neTotal}
+                pageSize={NE_PAGE_SIZE}
+                onPageChange={setNePage}
+                disabled={neLoading}
+              />
+            </>
+          ) : (
+            <>
+              <p className="muted text-sm">{t("bizState.createImportHint")}</p>
+              <FieldSelect
+                label={t("bizState.importVendor")}
+                value={importVendorKey}
+                onChange={(e) => setImportVendorKey(e.target.value)}
+                fullWidth
+              >
+                <option value="zte">ZTE</option>
+                <option value="huawei">Huawei</option>
+                <option value="cisco">Cisco</option>
+                <option value="generic">{t("bizState.importVendorGeneric")}</option>
+              </FieldSelect>
+              <label className="ui-field ui-field--full">
+                <span className="ui-field__label">{t("bizState.importNeName")}</span>
+                <Input
+                  placeholder={t("bizState.importNeNamePh")}
+                  value={importNeName}
+                  onChange={(e) => setImportNeName(e.target.value)}
+                />
+              </label>
+              <label className="ui-field ui-field--full">
+                <span className="ui-field__label">{t("bizState.importFile")}</span>
+                <input
+                  ref={createImportFileRef}
+                  type="file"
+                  accept=".txt,.log,.ini,.cfg,.zip,.cli,.out"
+                  disabled={importBusy || busy}
+                  onChange={(e) => {
+                    const f = e.target.files?.[0] || null;
+                    setImportFile(f);
+                  }}
+                />
+                {importFile ? (
+                  <span className="ui-field__hint">
+                    {importFile.name} ({Math.round(importFile.size / 1024)} KB)
+                  </span>
+                ) : null}
+              </label>
+            </>
+          )}
         </Modal.Body>
         <Modal.Footer>
-          <Button
-            size="sm"
-            variant="primary"
-            isDisabled={busy || !selectedNe}
-            onPress={() => void createTask()}
-          >
-            {t("bizState.create")}
-          </Button>
-          <Button size="sm" variant="ghost" onPress={closeCreate}>
+          {createMode === "device" ? (
+            <Button
+              size="sm"
+              variant="primary"
+              isDisabled={busy || !selectedNe}
+              onPress={() => void createTask()}
+            >
+              {t("bizState.create")}
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              variant="primary"
+              isDisabled={busy || importBusy || !importFile}
+              onPress={() => void createImportTask()}
+            >
+              {importBusy ? t("bizState.importing") : t("bizState.createImportSubmit")}
+            </Button>
+          )}
+          <Button size="sm" variant="ghost" onPress={closeCreate} isDisabled={busy || importBusy}>
             {t("bizState.cancel")}
           </Button>
         </Modal.Footer>
@@ -1622,29 +1848,33 @@ export function BizStatePage() {
                 <input
                   type="checkbox"
                   checked={detail.status === "running"}
-                  disabled={busy}
+                  disabled={busy || detail.source === "import"}
                   onChange={(e) => void setScheduleEnabled(taskId, e.target.checked)}
                 />
                 <span>{t("bizState.scheduleEnabled")}</span>
               </label>
-              {detail.status === "running" ? (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  isDisabled={busy}
-                  onPress={() => void setScheduleEnabled(taskId, false)}
-                >
-                  {t("bizState.pause")}
-                </Button>
+              {detail.source !== "import" ? (
+                detail.status === "running" ? (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    isDisabled={busy}
+                    onPress={() => void setScheduleEnabled(taskId, false)}
+                  >
+                    {t("bizState.pause")}
+                  </Button>
+                ) : (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    isDisabled={busy}
+                    onPress={() => void setScheduleEnabled(taskId, true)}
+                  >
+                    {t("bizState.start")}
+                  </Button>
+                )
               ) : (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  isDisabled={busy}
-                  onPress={() => void setScheduleEnabled(taskId, true)}
-                >
-                  {t("bizState.start")}
-                </Button>
+                <NmStatusChip color="warning">{t("bizState.sourceImport")}</NmStatusChip>
               )}
               <label className="config-sync-policy-field">
                 <span>{t("bizState.interval")}</span>
@@ -1727,6 +1957,7 @@ export function BizStatePage() {
             <Button
               size="sm"
               variant={taskTab === "profiles" ? "primary" : "secondary"}
+              className={taskTab === "profiles" ? "is-active" : undefined}
               onPress={() => setTaskTab("profiles")}
             >
               {t("bizState.profiles")}
@@ -1734,6 +1965,7 @@ export function BizStatePage() {
             <Button
               size="sm"
               variant={taskTab === "batches" ? "primary" : "secondary"}
+              className={taskTab === "batches" ? "is-active" : undefined}
               onPress={() => setTaskTab("batches")}
             >
               {t("bizState.batches")}
@@ -2068,13 +2300,34 @@ export function BizStatePage() {
           )}
         </Modal.Body>
         <Modal.Footer>
+          {detail?.source !== "import" ? (
+            <Button
+              size="sm"
+              variant="primary"
+              isDisabled={Boolean(detail?.collect_running || (taskId && collectingIds[taskId]))}
+              onPress={() => void collectNow()}
+            >
+              {t("bizState.collectNow")}
+            </Button>
+          ) : null}
           <Button
             size="sm"
-            variant="primary"
-            isDisabled={Boolean(detail?.collect_running || (taskId && collectingIds[taskId]))}
-            onPress={() => void collectNow()}
+            variant="secondary"
+            isDisabled={Boolean(
+              busy ||
+                !taskId ||
+                detail?.collect_running ||
+                (taskId && collectingIds[taskId]),
+            )}
+            onPress={() =>
+              openImportLog(
+                taskId,
+                String(detail?.vendor || ""),
+                String(detail?.device_type || ""),
+              )
+            }
           >
-            {t("bizState.collectNow")}
+            {t("bizState.importLog")}
           </Button>
           {detail?.collect_running || (taskId && collectingIds[taskId]) ? (
             <Button
@@ -2098,6 +2351,70 @@ export function BizStatePage() {
             {t("bizState.delete")}
           </Button>
           <Button size="sm" variant="ghost" onPress={closeTask}>
+            {t("bizState.cancel")}
+          </Button>
+        </Modal.Footer>
+      </AppModalShell>
+
+      {/* Append batch via log import on an existing task */}
+      <AppModalShell
+        open={importOpen}
+        onClose={() => {
+          if (!importBusy) setImportOpen(false);
+        }}
+        dismissible={!importBusy}
+        size="md"
+      >
+        <Modal.Header>
+          <Modal.Heading>{t("bizState.importLog")}</Modal.Heading>
+        </Modal.Header>
+        <Modal.Body className="flex flex-col gap-3">
+          <p className="muted text-sm">{t("bizState.importLogHint")}</p>
+          <FieldSelect
+            label={t("bizState.importVendor")}
+            value={importVendorKey}
+            onChange={(e) => setImportVendorKey(e.target.value)}
+            fullWidth
+          >
+            <option value="zte">ZTE</option>
+            <option value="huawei">Huawei</option>
+            <option value="cisco">Cisco</option>
+            <option value="generic">{t("bizState.importVendorGeneric")}</option>
+          </FieldSelect>
+          <label className="ui-field ui-field--full">
+            <span className="ui-field__label">{t("bizState.importFile")}</span>
+            <input
+              ref={importFileRef}
+              type="file"
+              accept=".txt,.log,.ini,.cfg,.zip,.cli,.out"
+              disabled={importBusy}
+              onChange={(e) => {
+                const f = e.target.files?.[0] || null;
+                setImportFile(f);
+              }}
+            />
+            {importFile ? (
+              <span className="ui-field__hint">
+                {importFile.name} ({Math.round(importFile.size / 1024)} KB)
+              </span>
+            ) : null}
+          </label>
+        </Modal.Body>
+        <Modal.Footer>
+          <Button
+            size="sm"
+            variant="primary"
+            isDisabled={importBusy || !importFile || !importTaskId}
+            onPress={() => void submitImportLog()}
+          >
+            {importBusy ? t("bizState.importing") : t("bizState.importSubmit")}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            isDisabled={importBusy}
+            onPress={() => setImportOpen(false)}
+          >
             {t("bizState.cancel")}
           </Button>
         </Modal.Footer>

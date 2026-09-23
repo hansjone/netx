@@ -127,6 +127,9 @@ class Settings(BaseSettings):
     biz_state_persist_every_cmds: int = 8
     # Cap raw_text loaded into Postgres from spool (0 = unlimited).
     biz_state_raw_max_bytes: int = 8 * 1024 * 1024
+    # Manual log import: max upload / zip uncompressed bytes and text file count.
+    biz_state_import_max_bytes: int = 256 * 1024 * 1024
+    biz_state_import_max_files: int = 200
     # Dedicated biz_state worker process(es); general worker skips biz_state scheduler.
     biz_state_dedicated_workers: bool = True
     # Global ceiling for simultaneous running batches (across all workers).

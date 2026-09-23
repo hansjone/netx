@@ -6,6 +6,7 @@ export type NmChipColor = "success" | "danger" | "warning" | "default" | "accent
 export function sourceChipColor(source: string | null | undefined): NmChipColor {
   const s = String(source || "").trim().toLowerCase();
   if (s === "ume") return "accent";
+  if (s === "import") return "warning";
   if (s === "managed" || s === "webcrt") return "default";
   return "default";
 }

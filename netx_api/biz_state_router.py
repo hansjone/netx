@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -285,6 +285,153 @@ def api_collect_stop(task_id: str, db: Session = Depends(get_db)) -> dict[str, A
 
         raise HTTPException(status_code=404, detail="task not found")
     return request_stop_collect(task_id)
+
+
+@router.post("/import")
+async def api_import_log_standalone(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    vendor_key: str = Form("zte"),
+    ne_name: str = Form(""),
+    note: str = Form(""),
+) -> dict[str, Any]:
+    """Standalone offline import: create an import task (no NE) and parse the log."""
+    from fastapi import HTTPException
+
+    from .biz_state.import_runner import execute_import, start_standalone_import
+    from .biz_state.log_split import import_max_bytes, read_upload_stream
+
+    fname = str(file.filename or "import.log")
+    try:
+        data = read_upload_stream(file.file, max_bytes=import_max_bytes())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    result = start_standalone_import(
+        filename=fname,
+        data=data,
+        vendor_key=str(vendor_key or "").strip() or "zte",
+        ne_name=str(ne_name or "").strip(),
+        note=str(note or "").strip(),
+    )
+    if not result.get("queued"):
+        return {
+            "ok": bool(result.get("ok", False)),
+            "started": False,
+            "queued": False,
+            "reason": result.get("reason") or "enqueue_failed",
+            "task_id": result.get("task_id") or "",
+            "created_task": bool(result.get("created_task")),
+            "segments_preview": result.get("segments_preview")
+            or {"files": result.get("files"), "segments": result.get("segments")},
+        }
+
+    segments = result.pop("segments", [])
+    bid = str(result.get("batch_id") or "")
+    tid = str(result.get("task_id") or "")
+    vk = str(result.get("vendor_key") or "zte")
+    vendor = str(result.get("vendor") or "")
+    device_type = str(result.get("device_type") or "")
+    background_tasks.add_task(
+        lambda: execute_import(
+            batch_id=bid,
+            task_id=tid,
+            segments=list(segments),
+            vendor_key=vk,
+            vendor=vendor,
+            device_type=device_type,
+            filename=fname,
+        )
+    )
+    return {
+        "ok": True,
+        "started": True,
+        "queued": True,
+        "batch_id": bid,
+        "task_id": tid,
+        "vendor_key": vk,
+        "filename": result.get("filename") or fname,
+        "ne_name": result.get("ne_name") or "",
+        "created_task": True,
+        "segments_preview": result.get("segments_preview") or {},
+        "collect_running": True,
+    }
+
+
+@router.post("/tasks/{task_id}/import")
+async def api_import_log(
+    task_id: str,
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    vendor_key: str = Form(""),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Upload a CLI transcript into an existing task and parse offline."""
+    from fastapi import HTTPException
+
+    from .biz_state.import_runner import execute_import, start_import_from_upload
+    from .biz_state.log_split import import_max_bytes, read_upload_stream
+
+    task = db.get(BizStateTask, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="task not found")
+    if bool(task.collect_running):
+        return {
+            "ok": True,
+            "started": False,
+            "reason": "already_collecting",
+            "task_id": task_id,
+        }
+
+    fname = str(file.filename or "import.log")
+    try:
+        data = read_upload_stream(file.file, max_bytes=import_max_bytes())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    result = start_import_from_upload(
+        task_id=task_id,
+        filename=fname,
+        data=data,
+        vendor_key=str(vendor_key or "").strip(),
+    )
+    if not result.get("queued"):
+        return {
+            "ok": bool(result.get("ok", False)),
+            "started": False,
+            "queued": False,
+            "reason": result.get("reason") or "enqueue_failed",
+            "task_id": task_id,
+            "segments_preview": result.get("segments_preview") or result.get("files"),
+        }
+
+    segments = result.pop("segments", [])
+    bid = str(result.get("batch_id") or "")
+    vk = str(result.get("vendor_key") or "")
+    vendor = str(result.get("vendor") or "")
+    device_type = str(result.get("device_type") or "")
+    background_tasks.add_task(
+        lambda: execute_import(
+            batch_id=bid,
+            task_id=task_id,
+            segments=list(segments),
+            vendor_key=vk,
+            vendor=vendor,
+            device_type=device_type,
+            filename=fname,
+        )
+    )
+    return {
+        "ok": True,
+        "started": True,
+        "queued": True,
+        "batch_id": bid,
+        "task_id": task_id,
+        "vendor_key": vk,
+        "filename": result.get("filename") or fname,
+        "segments_preview": result.get("segments_preview") or {},
+        "collect_running": True,
+    }
 
 
 @router.get("/tasks/{task_id}/batches")
