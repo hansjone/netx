@@ -10181,6 +10181,20 @@ html.login-page--paused .login-page__flare {
 
 .bs-collect-detail-modal .bs-sheet-table {
   max-height: min(48vh, 480px);
+  overflow: auto;
+}
+
+.bs-collect-detail-modal .bs-collect-detail-table table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.bs-collect-detail-modal .bs-collect-detail-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: rgba(15, 23, 42, 0.97);
+  box-shadow: 0 1px 0 rgba(148, 163, 184, 0.25);
 }
 
 .bs-rawlog-pre {

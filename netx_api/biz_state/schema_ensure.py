@@ -79,6 +79,8 @@ def apply_biz_state_schema(conn: Connection) -> None:
         "ALTER TABLE biz_migration_project ADD COLUMN IF NOT EXISTS new_hf_bindings_json JSON DEFAULT '[]'",
         "ALTER TABLE biz_state_task ADD COLUMN IF NOT EXISTS purpose VARCHAR(32) DEFAULT ''",
         "CREATE INDEX IF NOT EXISTS ix_biz_state_task_purpose ON biz_state_task (purpose)",
+        "ALTER TABLE biz_state_batch_command ADD COLUMN IF NOT EXISTS raw_line_count INTEGER DEFAULT 0",
+        "ALTER TABLE biz_state_batch_command ADD COLUMN IF NOT EXISTS declared_total INTEGER DEFAULT 0",
         "ALTER TABLE biz_migration_red_ticket ADD COLUMN IF NOT EXISTS match_key_str VARCHAR(256) DEFAULT ''",
         "CREATE INDEX IF NOT EXISTS ix_biz_migration_red_match ON biz_migration_red_ticket (project_id, metric_id, match_key_str)",
     ):

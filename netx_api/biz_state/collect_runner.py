@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -222,7 +223,7 @@ def _run_primary_parse_job(job: Any) -> tuple[bool, bool]:
     """Parse primary+aux raws, write spool, submit persist. Returns (any_ok, any_fail)."""
     from .parse_pool import AuxRawCapture, PrimaryParseJob
     from .persist_pool import get_persist_pool
-    from .spool import SpooledCommand, write_meta, write_records
+    from .spool import SpooledCommand, count_text_lines, write_meta, write_records
 
     if not isinstance(job, PrimaryParseJob):
         return False, True
@@ -232,6 +233,10 @@ def _run_primary_parse_job(job: Any) -> tuple[bool, bool]:
     pending: list[SpooledCommand] = []
     any_ok = False
     any_fail = False
+
+    def _declared_total(raw: str) -> int:
+        m = re.search(r"(?i)total\s+number\s+of\s+routes\s*:\s*(\d+)", raw or "")
+        return int(m.group(1)) if m else 0
 
     def _flush_item(item: SpooledCommand, *, records: list[dict[str, Any]] | None = None) -> None:
         if records is not None and item.persist_kind:
@@ -301,6 +306,7 @@ def _run_primary_parse_job(job: Any) -> tuple[bool, bool]:
             raw_command=cap.command[:512],
             params_json={},
             raw_rel_path=cap.raw_rel_path,
+            raw_line_count=count_text_lines(cap.raw),
         )
         if cap.cache_hit and entry.ok and entry.records:
             aux_sp.parse_status = "aux_cached"
@@ -364,6 +370,9 @@ def _run_primary_parse_job(job: Any) -> tuple[bool, bool]:
         raw_command=job.concrete[:512],
         params_json=dict(job.merged_params or {}),
         raw_rel_path=job.raw_rel_path,
+        raw_line_count=int(getattr(job, "raw_line_count", 0) or 0)
+        or count_text_lines(job.raw_text),
+        declared_total=_declared_total(job.raw_text),
     )
     try:
         records, fsm_tables, rule_keys = run_primary_with_bundle(
@@ -389,6 +398,10 @@ def _run_primary_parse_job(job: Any) -> tuple[bool, bool]:
             hints.append(
                 "enrich=" + ",".join(getattr(j, "from_aux", "") for j in job.enrich_joins)
             )
+        declared = int(primary.declared_total or 0)
+        nrec = len(records or [])
+        if declared > 0:
+            hints.append(f"declared={declared};parsed={nrec}")
         if hints:
             primary.message = ";".join(hints)[:1020]
         primary.parse_status = "ok"
@@ -451,8 +464,28 @@ def _flush_spooled_commands(
         max_raw = raw_max_bytes()
         for item in items:
             raw = ""
+            truncated = False
+            line_count = int(getattr(item, "raw_line_count", 0) or 0)
             if item.raw_rel_path:
+                from .spool import count_file_lines
+
+                if line_count <= 0:
+                    try:
+                        line_count = count_file_lines(item.raw_rel_path)
+                    except Exception:
+                        line_count = 0
                 raw = read_raw_text(item.raw_rel_path, max_bytes=max_raw)
+                if max_raw > 0 and "[truncated" in raw:
+                    truncated = True
+            # Prefer full-file line count; fall back to stored text.
+            if line_count <= 0 and raw:
+                from .spool import count_text_lines
+
+                line_count = count_text_lines(raw)
+            msg = str(item.message or "").strip()
+            if truncated:
+                note = f"raw_truncated@{max_raw}B"
+                msg = f"{msg}; {note}" if msg else note
             cmd_row = BizStateBatchCommand(
                 id=item.id,
                 batch_id=batch_id,
@@ -463,9 +496,11 @@ def _flush_spooled_commands(
                 raw_command=str(item.raw_command or "")[:512],
                 params_json=dict(item.params_json or {}),
                 parse_status=item.parse_status,
-                message=str(item.message or "")[:1020],
+                message=msg[:1020],
                 raw_text=raw,
                 row_count=int(item.row_count or 0),
+                raw_line_count=int(line_count or 0),
+                declared_total=int(getattr(item, "declared_total", 0) or 0),
                 created_at=_utcnow(),
             )
             db.add(cmd_row)
@@ -925,8 +960,12 @@ def _run_collect_lane(
                     continue
 
                 raw_rel = ""
+                raw_lines = 0
                 try:
+                    from .spool import count_text_lines, write_raw_text
+
                     raw_rel = write_raw_text(batch_id, cmd_id, raw_text)
+                    raw_lines = count_text_lines(raw_text)
                 except Exception:
                     _log.exception("biz_state spool raw failed cmd=%s", cmd_id)
 
@@ -943,6 +982,7 @@ def _run_collect_lane(
                             parse_status="skipped_custom",
                             message="custom_raw",
                             raw_rel_path=raw_rel,
+                            raw_line_count=raw_lines,
                         )
                     )
                     continue
@@ -961,6 +1001,7 @@ def _run_collect_lane(
                             parse_status="unmatched",
                             message="no profile matched concrete command",
                             raw_rel_path=raw_rel,
+                            raw_line_count=raw_lines,
                         )
                     )
                     continue
@@ -981,6 +1022,7 @@ def _run_collect_lane(
                             parse_status="failed",
                             message=f"unknown parser {hit.profile.parser_id}",
                             raw_rel_path=raw_rel,
+                            raw_line_count=raw_lines,
                         )
                     )
                     continue
@@ -1070,6 +1112,7 @@ def _run_collect_lane(
                     merged_params=dict(merged or {}),
                     raw_text=raw_text,
                     raw_rel_path=raw_rel,
+                    raw_line_count=raw_lines,
                     textfsm_command=hit.profile.textfsm_command or concrete,
                     vendor=vendor_eff,
                     device_type=device_type_eff,
@@ -1105,6 +1148,11 @@ def _run_collect_lane(
                         label,
                     )
                     any_fail = True
+                    _emit_task_event(
+                        task_id=task_id,
+                        message=f"{label}: parse_barrier_timeout",
+                        level="error",
+                    )
                 with parse_stats_lock:
                     if parse_stats["ok"]:
                         any_ok = True
@@ -1115,6 +1163,12 @@ def _run_collect_lane(
                     "biz_state persist barrier timed out batch=%s lane=%s",
                     batch_id,
                     label,
+                )
+                any_fail = True
+                _emit_task_event(
+                    task_id=task_id,
+                    message=f"{label}: persist_barrier_timeout",
+                    level="error",
                 )
             # Do NOT read batch.row_count here — dual light+heavy lanes would each
             # see the cumulative DB total and _absorb would double-count.
@@ -1265,6 +1319,70 @@ def _batch_has_progress(batch_id: str) -> bool:
     return bool(_run_db_with_reconnect(_read, label="biz_state_batch_progress"))
 
 
+def _is_fail_parse_status(status: str | None) -> bool:
+    st = str(status or "").strip().lower()
+    return st in ("failed", "error", "fail", "aux_failed") or st.endswith("_failed")
+
+
+def _is_skip_parse_status(status: str | None) -> bool:
+    st = str(status or "").strip().lower()
+    return st.startswith("skipped")
+
+
+def _batch_issue_summary(
+    db,
+    batch_id: str,
+    lane_errors: list[str] | None = None,
+) -> str:
+    """Human-readable reason for partial/failed batches (never leave message empty)."""
+    parts: list[str] = []
+    for err in lane_errors or []:
+        e = str(err or "").strip()
+        if e and e not in parts:
+            parts.append(e)
+
+    cmds = (
+        db.query(BizStateBatchCommand)
+        .filter(BizStateBatchCommand.batch_id == batch_id)
+        .order_by(BizStateBatchCommand.created_at.asc())
+        .all()
+    )
+    n_fail = 0
+    n_skip = 0
+    n_aux_fail = 0
+    samples: list[str] = []
+    for c in cmds:
+        st = str(c.parse_status or "").strip().lower()
+        msg = str(c.message or "").strip()
+        if st == "aux_failed" or (st.startswith("aux") and "fail" in st):
+            n_aux_fail += 1
+            if msg and len(samples) < 3:
+                samples.append(f"aux:{c.raw_command}: {msg}"[:160])
+        elif _is_fail_parse_status(st):
+            n_fail += 1
+            if msg and len(samples) < 3:
+                samples.append(f"{c.raw_command}: {msg}"[:160])
+        elif _is_skip_parse_status(st):
+            n_skip += 1
+            if msg and len(samples) < 3:
+                samples.append(f"skip:{c.profile_id or c.raw_command}: {msg}"[:160])
+
+    if n_fail:
+        parts.append(f"{n_fail} command(s) failed")
+    if n_aux_fail:
+        parts.append(f"{n_aux_fail} aux command(s) failed")
+    if n_skip:
+        parts.append(f"{n_skip} item(s) skipped (e.g. missing bindings)")
+    for s in samples:
+        if s not in parts:
+            parts.append(s)
+
+    text = "; ".join(parts).strip()
+    if not text:
+        text = "partial success (some steps failed or were skipped)"
+    return text[:1020]
+
+
 def _finalize_batch_status(
     *,
     batch_id: str,
@@ -1295,16 +1413,27 @@ def _finalize_batch_status(
                 batch.message = STOP_USER_MESSAGE
         elif any_fail and any_ok:
             batch.status = "partial"
-            if lane_errors:
-                batch.message = "; ".join(lane_errors)[:1020]
+            batch.message = _batch_issue_summary(db, batch_id, lane_errors)
         elif any_fail and not any_ok:
             batch.status = "failed"
-            batch.message = (
+            batch.message = _batch_issue_summary(db, batch_id, lane_errors) or (
                 "; ".join(lane_errors)[:1020] if lane_errors else "all commands failed"
             )
         else:
-            batch.status = "success"
-            batch.message = ""
+            # Still surface skipped-only rows as partial when some cmds ran ok.
+            statuses = [
+                str(c.parse_status or "")
+                for c in db.query(BizStateBatchCommand)
+                .filter(BizStateBatchCommand.batch_id == batch_id)
+                .all()
+            ]
+            n_skip = sum(1 for st in statuses if _is_skip_parse_status(st))
+            if n_skip > 0 and any_ok:
+                batch.status = "partial"
+                batch.message = _batch_issue_summary(db, batch_id, lane_errors)
+            else:
+                batch.status = "success"
+                batch.message = ""
         status = str(batch.status or "")
         db.commit()
         # Only full success triggers auto compare; never block the collect thread.
@@ -1448,7 +1577,26 @@ def _run_collect_session(
                     command_override=item.command_override,
                 )
             except ValueError as exc:
-                _append_event(db, task_id=task_id, message=str(exc), level="error")
+                msg = str(exc)
+                _append_event(db, task_id=task_id, message=msg, level="error")
+                # Persist a visible skip row so UI / partial status can explain it.
+                db.add(
+                    BizStateBatchCommand(
+                        id=uuid4().hex,
+                        batch_id=batch_id,
+                        task_item_id=item.id,
+                        profile_id=profile.profile_id,
+                        parser_id=str(profile.parser_id or ""),
+                        metric_id=str(profile.metric_id or ""),
+                        raw_command=str(profile.command_template or "")[:512],
+                        params_json={},
+                        parse_status="skipped",
+                        message=msg[:1020],
+                        row_count=0,
+                        raw_text="",
+                    )
+                )
+                batch.command_count = int(batch.command_count or 0) + 1
                 continue
             for concrete, params in pairs:
                 if concrete == EXPAND_ALL_COMMAND:

@@ -51,9 +51,31 @@ def _cmd_paths(batch_id: str, cmd_id: str) -> tuple[Path, Path, Path]:
 def write_raw_text(batch_id: str, cmd_id: str, text: str) -> str:
     """Write CLI output; return path relative to spool root (posix)."""
     raw_path, _, _ = _cmd_paths(batch_id, cmd_id)
-    raw_path.write_bytes(str(text or "").encode("utf-8", errors="replace"))
+    data = str(text or "").encode("utf-8", errors="replace")
+    raw_path.write_bytes(data)
     rel = raw_path.resolve().relative_to(spool_root())
     return str(rel).replace("\\", "/")
+
+
+def count_file_lines(rel_path: str) -> int:
+    """Count lines in a spool raw file (full file, not DB-truncated)."""
+    if not rel_path:
+        return 0
+    path = (spool_root() / str(rel_path)).resolve()
+    if not str(path).startswith(str(spool_root())) or not path.is_file():
+        return 0
+    n = 0
+    with path.open("rb") as fh:
+        for _ in fh:
+            n += 1
+    return n
+
+
+def count_text_lines(text: str | None) -> int:
+    s = text or ""
+    if not s:
+        return 0
+    return s.count("\n") + (0 if s.endswith("\n") else 1)
 
 
 def write_records(batch_id: str, cmd_id: str, records: list[dict[str, Any]]) -> str:
@@ -130,6 +152,12 @@ class SpooledCommand:
     raw_rel_path: str = ""
     records_rel_path: str = ""
     row_count: int = 0
+    # Full CLI line count (before DB raw_text truncate).
+    raw_line_count: int = 0
+    # Device-declared total when present (e.g. BGP "Total number of routes").
+    declared_total: int = 0
+    # True when raw_text stored in DB was truncated by raw_max_bytes.
+    raw_truncated: bool = False
     # "" | "metric" | "lldp"
     persist_kind: str = ""
 
@@ -148,6 +176,9 @@ class SpooledCommand:
             "raw_rel_path": self.raw_rel_path,
             "records_rel_path": self.records_rel_path,
             "row_count": self.row_count,
+            "raw_line_count": self.raw_line_count,
+            "declared_total": self.declared_total,
+            "raw_truncated": self.raw_truncated,
             "persist_kind": self.persist_kind,
         }
 

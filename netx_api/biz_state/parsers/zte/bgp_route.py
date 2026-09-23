@@ -314,14 +314,22 @@ def _hand_parse(
         if _skip_noise_line(line):
             continue
 
-        # Continuation: indented next-hop after network-only line
+        # Continuation: indented next-hop after network-only line.
+        # RR vpnv6 often puts NH + LocPrf/Path on the same indented line
+        # ("24.11.0.8                100        0       ?") — take first token
+        # as NH or ECMP legs collapse under empty next_hop dedupe (~half count).
         if pending_net and not pending_nh and line[:1].isspace():
             tok = line.strip()
-            if _looks_like_ip_or_prefix(tok) and "/" not in tok:
-                pending_nh = tok
+            parts = tok.split()
+            first = parts[0] if parts else ""
+            if _looks_like_ip_or_prefix(first) and "/" not in first:
+                pending_nh = first
+                rest = " ".join(parts[1:])
+                if rest:
+                    _flush_pending(rest=rest, path_continuation=True)
                 continue
             # Metrics/path without explicit next-hop (rare)
-            if tok and not _looks_like_prefix(tok.split()[0] if tok.split() else ""):
+            if tok and not _looks_like_prefix(first):
                 _flush_pending(rest=tok, path_continuation=True)
                 continue
 
@@ -417,9 +425,9 @@ def normalize_bgp_route(
         )
 
     rows = prefer_fsm(tables, RULE_KEYS, _map, _hand, raw_text=raw_text)
-    # If device declared a large table but FSM/hand returned a tiny subset, prefer hand.
+    # Prefer hand when FSM under-parses vs device-declared total (common on vpnv6 wraps).
     declared = _declared_total(raw_text)
-    if declared is not None and declared > 0 and len(rows) < max(1, declared // 2):
+    if declared is not None and declared > 0 and len(rows) < int(declared * 0.9):
         hand_rows = _hand(raw_text=raw_text)
         if len(hand_rows) > len(rows):
             return hand_rows

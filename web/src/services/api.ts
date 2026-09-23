@@ -1915,6 +1915,7 @@ export const bizStateGetBatchCommand = (batchId: string, commandId: string) =>
     parse_status: string;
     row_count: number;
     raw_line_count?: number;
+    declared_total?: number;
     message: string;
     raw_text: string;
     collected_at?: string | null;

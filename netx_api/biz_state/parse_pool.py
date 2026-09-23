@@ -52,6 +52,7 @@ class PrimaryParseJob:
     merged_params: dict[str, Any]
     raw_text: str
     raw_rel_path: str
+    raw_line_count: int = 0
     textfsm_command: str
     vendor: str
     device_type: str

@@ -123,6 +123,64 @@ class BatchWorkbookApiTests(unittest.TestCase):
         self.assertEqual(out["message"], "stopped")
         self.assertEqual(out["commands"][0]["raw_line_count"], 3)
         self.assertEqual(out["commands"][0]["row_count"], 3)
+        self.assertEqual(out["commands"][0]["declared_total"], 0)
+
+    def test_get_batch_prefers_stored_raw_line_count(self) -> None:
+        """DB raw_text may be truncated; API must use persisted full-file line count."""
+        batch = BizStateBatch(
+            id="b1",
+            task_id="t1",
+            status="ok",
+            command_count=1,
+            row_count=100,
+        )
+        cmd = BizStateBatchCommand(
+            id="c1",
+            batch_id="b1",
+            profile_id="zte.bgp_vpnv4_neighbor_in",
+            parser_id="bgp_route",
+            metric_id="bgp_route",
+            raw_command="show bgp vpnv4 unicast neighbor in 1.1.1.1",
+            parse_status="ok",
+            row_count=100,
+            raw_text="a\nb\nc",  # truncated stub (3 lines)
+            raw_line_count=119303,
+            declared_total=1669101,
+            message="declared=1669101;parsed=100",
+        )
+        db = MagicMock()
+        db.get.side_effect = lambda model, pk: batch if pk == "b1" else None
+        cmd_q = MagicMock()
+        cmd_q.filter.return_value.order_by.return_value.all.return_value = [cmd]
+        metric_count_q = MagicMock()
+        metric_count_q.filter.return_value.group_by.return_value.all.return_value = [
+            ("bgp_route", 100)
+        ]
+        lldp_count_q = MagicMock()
+        lldp_count_q.filter.return_value.scalar.return_value = 0
+
+        def query(*_args, **_kwargs):
+            n = query.n
+            query.n += 1
+            if n == 0:
+                return cmd_q
+            if n == 1:
+                return metric_count_q
+            return lldp_count_q
+
+        query.n = 0
+        db.query.side_effect = query
+
+        with patch(
+            "netx_api.biz_state.service.batch_protect_info",
+            return_value={"protected": False, "reasons": []},
+        ):
+            out = get_batch(db, "b1")
+
+        self.assertEqual(out["commands"][0]["raw_line_count"], 119303)
+        self.assertEqual(out["commands"][0]["declared_total"], 1669101)
+        self.assertEqual(out["sheets"][0]["commands"][0]["raw_line_count"], 119303)
+        self.assertEqual(out["sheets"][0]["commands"][0]["declared_total"], 1669101)
 
     def test_get_batch_command_and_raw_download(self) -> None:
         from netx_api.biz_state.service import get_batch_command

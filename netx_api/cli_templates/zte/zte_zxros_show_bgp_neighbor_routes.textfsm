@@ -33,8 +33,11 @@ Routes
   # One-line IPv4 / RR "* i  prefix nh …"
   ^\s*${STATUS}\s+${NETWORK}\s+${NEXT_HOP}\s+${METRIC}\s+${LOC_PRF}\s+${TAG}\s+${PATH}\s*$$ -> Record
   ^\s*${STATUS}\s+${NETWORK}\s+${NEXT_HOP}\s+${PATH}\s*$$ -> Record
-  # IPv6 wrap: network / next-hop / metrics+path on separate lines
+  # IPv6 wrap: network alone, then next-hop (+ optional metric/path) lines
   ^\s*${STATUS}\s+${NETWORK}\s*$$
+  ^\s+${NEXT_HOP}\s+${METRIC}\s+${LOC_PRF}\s+${TAG}\s+${PATH}\s*$$ -> Record
+  ^\s+${NEXT_HOP}\s+${METRIC}\s+${LOC_PRF}\s+${PATH}\s*$$ -> Record
+  ^\s+${NEXT_HOP}\s+${PATH}\s*$$ -> Record
   ^\s+${NEXT_HOP}\s*$$
   ^\s+${PATH}\s*$$ -> Record
   ^\s*$$

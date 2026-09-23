@@ -118,6 +118,10 @@ class BizStateBatchCommand(Base):
     params_json: Mapped[dict] = mapped_column(_JsonType, default=dict)
     parse_status: Mapped[str] = mapped_column(String(32), default="")  # ok|unmatched|failed|skipped_custom
     row_count: Mapped[int] = mapped_column(Integer, default=0)
+    # Full CLI lines counted before raw_text truncate into Postgres.
+    raw_line_count: Mapped[int] = mapped_column(Integer, default=0)
+    # Optional device-declared total (BGP Total number of routes, etc.).
+    declared_total: Mapped[int] = mapped_column(Integer, default=0)
     raw_text: Mapped[str] = mapped_column(Text, default="")
     message: Mapped[str] = mapped_column(String(1024), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)

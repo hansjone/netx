@@ -601,6 +601,18 @@ def _raw_line_count(raw: str | None) -> int:
     return s.count("\n") + (0 if s.endswith("\n") else 1)
 
 
+def _cmd_raw_line_count(cmd: Any) -> int:
+    """Prefer full-file line count persisted before DB raw_text truncate."""
+    stored = int(getattr(cmd, "raw_line_count", 0) or 0)
+    if stored > 0:
+        return stored
+    return _raw_line_count(getattr(cmd, "raw_text", None))
+
+
+def _cmd_declared_total(cmd: Any) -> int:
+    return int(getattr(cmd, "declared_total", 0) or 0)
+
+
 def get_batch(db: Session, batch_id: str) -> dict[str, Any]:
     """Batch workbook summary: meta + commands + sheet catalog (no metric row payload)."""
     b = db.get(BizStateBatch, batch_id)
@@ -666,7 +678,8 @@ def get_batch(db: Session, batch_id: str) -> dict[str, Any]:
             "params": c.params_json or {},
             "parse_status": c.parse_status,
             "row_count": c.row_count,
-            "raw_line_count": _raw_line_count(raw),
+            "raw_line_count": _cmd_raw_line_count(c),
+            "declared_total": _cmd_declared_total(c),
             "message": c.message,
             "has_raw": bool(str(raw).strip()),
             "is_aux": is_aux,
@@ -674,8 +687,12 @@ def get_batch(db: Session, batch_id: str) -> dict[str, Any]:
         cmd_n = normalize_command(str(c.raw_command or ""))
         if not is_aux and cmd_n:
             primary_cmds_by_cli.setdefault(cmd_n, info)
-        # Commands sheet: hide aux when the same CLI already has a primary row
+        # Commands sheet: hide successful aux when the same CLI already has a primary row;
+        # keep failed/skipped aux visible so partial reasons are not hidden.
         if is_aux and cmd_n and cmd_n in primary_cmds_by_cli:
+            st_l = status
+            if st_l in ("aux_failed",) or "fail" in st_l or st_l.startswith("skipped"):
+                cmd_payload.append(info)
             continue
         if is_aux and cmd_n:
             # aux may appear before primary in list — defer; second pass below
@@ -699,6 +716,7 @@ def get_batch(db: Session, batch_id: str) -> dict[str, Any]:
                     "parse_status": c.parse_status,
                     "row_count": c.row_count,
                     "raw_line_count": info["raw_line_count"],
+                    "declared_total": info["declared_total"],
                     "message": c.message,
                     "has_raw": info["has_raw"],
                     "profile_id": c.profile_id,
@@ -724,7 +742,8 @@ def get_batch(db: Session, batch_id: str) -> dict[str, Any]:
                 "params": c.params_json or {},
                 "parse_status": c.parse_status,
                 "row_count": c.row_count,
-                "raw_line_count": _raw_line_count(c.raw_text),
+                "raw_line_count": _cmd_raw_line_count(c),
+                "declared_total": _cmd_declared_total(c),
                 "message": c.message,
                 "has_raw": bool(str(c.raw_text or "").strip()),
                 "is_aux": True,
@@ -756,6 +775,23 @@ def get_batch(db: Session, batch_id: str) -> dict[str, Any]:
     sheet_count = len(sheets)
     sheets_with_data = sum(1 for s in sheets if int(s.get("row_count") or 0) > 0)
 
+    # Full-batch command stats (includes hidden successful aux).
+    stats = {"total": 0, "ok": 0, "failed": 0, "aux_failed": 0, "skipped": 0, "other": 0}
+    for c in cmds:
+        stats["total"] += 1
+        st = str(c.parse_status or "").strip().lower()
+        if st in ("ok", "success", "aux", "aux_ok", "aux_cached"):
+            stats["ok"] += 1
+        elif st == "aux_failed" or (st.startswith("aux") and "fail" in st):
+            stats["aux_failed"] += 1
+            stats["failed"] += 1
+        elif st in ("failed", "error", "fail") or st.endswith("_failed"):
+            stats["failed"] += 1
+        elif st.startswith("skipped"):
+            stats["skipped"] += 1
+        else:
+            stats["other"] += 1
+
     return {
         "id": b.id,
         "task_id": b.task_id,
@@ -777,6 +813,7 @@ def get_batch(db: Session, batch_id: str) -> dict[str, Any]:
         "sheets_with_data": sheets_with_data,
         "sheet_count": sheet_count,
         "commands": cmd_payload,
+        "command_stats": stats,
         "sheets": sheets,
     }
 
@@ -935,7 +972,8 @@ def get_batch_command(db: Session, batch_id: str, command_id: str) -> dict[str, 
         "params": c.params_json or {},
         "parse_status": c.parse_status,
         "row_count": c.row_count,
-        "raw_line_count": _raw_line_count(raw),
+        "raw_line_count": _cmd_raw_line_count(c),
+        "declared_total": _cmd_declared_total(c),
         "message": c.message,
         "raw_text": raw,
         "collected_at": c.created_at.isoformat() + "Z" if c.created_at else None,

@@ -111,6 +111,7 @@ type SheetCmd = {
   parse_status?: string;
   row_count?: number;
   raw_line_count?: number;
+  declared_total?: number;
   message?: string;
   has_raw?: boolean;
   profile_id?: string;
@@ -160,6 +161,20 @@ function intervalUnitMax(unit: "days" | "hours" | "seconds") {
   if (unit === "days") return 365;
   if (unit === "hours") return 8760;
   return 604800; // up to 7 days in seconds
+}
+
+function formatCmdCollectStats(
+  t: (key: string, vars?: Record<string, unknown>) => string,
+  lines: number,
+  rows: number,
+  declared?: number,
+) {
+  const base = t("bizState.rawLogStats", { lines, rows });
+  const d = Number(declared || 0);
+  if (d > 0) {
+    return `${base} · ${t("bizState.rawLogDeclared", { declared: d })}`;
+  }
+  return base;
 }
 
 function convertIntervalValue(
@@ -311,6 +326,7 @@ export function BizStatePage() {
   const [rawLogCommandId, setRawLogCommandId] = useState("");
   const [rawLogLines, setRawLogLines] = useState(0);
   const [rawLogRows, setRawLogRows] = useState(0);
+  const [rawLogDeclared, setRawLogDeclared] = useState(0);
   const [rawLogMessage, setRawLogMessage] = useState("");
   /** Collect status / errors detail (lighter than workbook). */
   const [collectDetail, setCollectDetail] = useState<any>(null);
@@ -550,17 +566,33 @@ export function BizStatePage() {
   }, [activeSheet, batchDetail, debouncedSheetKw, sheetColumn, sheetTotal]);
 
   const collectDetailCmdSummary = useMemo(() => {
+    const stats = collectDetail?.command_stats as
+      | { ok?: number; failed?: number; skipped?: number; other?: number; total?: number; aux_failed?: number }
+      | undefined;
+    if (stats && typeof stats.total === "number") {
+      return {
+        ok: Number(stats.ok || 0),
+        fail: Number(stats.failed || 0),
+        skipped: Number(stats.skipped || 0),
+        other: Number(stats.other || 0),
+        total: Number(stats.total || 0),
+        auxFailed: Number(stats.aux_failed || 0),
+      };
+    }
     const cmds = (collectDetail?.commands || []) as SheetCmd[];
     let ok = 0;
     let fail = 0;
+    let skipped = 0;
     let other = 0;
     for (const c of cmds) {
       const st = String(c.parse_status || "").toLowerCase();
       if (st === "ok" || st === "success" || st === "aux" || st === "aux_ok" || st === "aux_cached") ok += 1;
-      else if (st === "failed" || st === "error" || st === "fail") fail += 1;
+      else if (st === "failed" || st === "error" || st === "fail" || st === "aux_failed" || st.endsWith("_failed"))
+        fail += 1;
+      else if (st.startsWith("skipped")) skipped += 1;
       else other += 1;
     }
-    return { ok, fail, other, total: cmds.length };
+    return { ok, fail, skipped, other, total: cmds.length, auxFailed: 0 };
   }, [collectDetail]);
 
   const loadSheetPage = useCallback(
@@ -1192,6 +1224,7 @@ export function BizStatePage() {
     setRawLogCommandId(commandId);
     setRawLogLines(0);
     setRawLogRows(0);
+    setRawLogDeclared(0);
     setRawLogMessage("");
     try {
       const d = await bizStateGetBatchCommand(bid, commandId);
@@ -1199,13 +1232,15 @@ export function BizStatePage() {
       setRawLogText(String(d.raw_text || ""));
       const lines = Number(d.raw_line_count ?? 0);
       const rows = Number(d.row_count ?? 0);
+      const declared = Number(d.declared_total ?? 0);
       setRawLogLines(lines);
       setRawLogRows(rows);
+      setRawLogDeclared(declared);
       setRawLogMessage(String(d.message || ""));
       const bits = [
         d.parse_status,
         d.metric_id,
-        t("bizState.rawLogStats", { lines, rows }),
+        formatCmdCollectStats(t, lines, rows, declared),
         d.collected_at ? fmtTime(d.collected_at) : "",
       ].filter(Boolean);
       setRawLogMeta(bits.join(" · "));
@@ -2336,10 +2371,12 @@ export function BizStatePage() {
                             {t("bizState.exportRawLog")}
                           </Button>
                           <span className="muted bs-cmd-stat">
-                            {t("bizState.rawLogStats", {
-                              lines: Number(c.raw_line_count ?? 0),
-                              rows: Number(c.row_count ?? 0),
-                            })}
+                            {formatCmdCollectStats(
+                              t,
+                              Number(c.raw_line_count ?? 0),
+                              Number(c.row_count ?? 0),
+                              Number(c.declared_total ?? 0),
+                            )}
                           </span>
                           {c.parse_status ? (
                             <NmStatusChip color={jobChipColor(String(c.parse_status))}>
@@ -2383,10 +2420,12 @@ export function BizStatePage() {
                           {t("bizState.exportRawLog")}
                         </Button>
                         <span className="muted bs-cmd-stat">
-                          {t("bizState.rawLogStats", {
-                            lines: Number(row.raw_line_count ?? 0),
-                            rows: Number(row.row_count ?? 0),
-                          })}
+                          {formatCmdCollectStats(
+                            t,
+                            Number(row.raw_line_count ?? 0),
+                            Number(row.row_count ?? 0),
+                            Number(row.declared_total ?? 0),
+                          )}
                         </span>
                         {cellText(row.parse_status) ? (
                           <NmStatusChip color={jobChipColor(cellText(row.parse_status))}>
@@ -2573,7 +2612,7 @@ export function BizStatePage() {
           {rawLogCmd ? <code className="bs-sheet-cmd-code bs-sheet-cmd-code--block">{rawLogCmd}</code> : null}
           <div className="bs-rawlog-stats">
             <NmStatusChip color="accent">
-              {t("bizState.rawLogStats", { lines: rawLogLines, rows: rawLogRows })}
+              {formatCmdCollectStats(t, rawLogLines, rawLogRows, rawLogDeclared)}
             </NmStatusChip>
             {rawLogMeta ? <span className="muted">{rawLogMeta}</span> : null}
           </div>
@@ -2655,11 +2694,13 @@ export function BizStatePage() {
                 {t("bizState.batchCmdSummary", {
                   ok: collectDetailCmdSummary.ok,
                   fail: collectDetailCmdSummary.fail,
+                  skipped: collectDetailCmdSummary.skipped,
                   other: collectDetailCmdSummary.other,
                   total: collectDetailCmdSummary.total,
+                  batchCmds: Number(collectDetail.command_count ?? collectDetailCmdSummary.total),
                 })}
               </p>
-              <div className="pt-list-table-wrap bs-sheet-table">
+              <div className="pt-list-table-wrap bs-sheet-table bs-collect-detail-table">
                 <table className="data-table pt-list-table">
                   <thead>
                     <tr>
@@ -2667,6 +2708,7 @@ export function BizStatePage() {
                       <th>{t("bizState.colStatus")}</th>
                       <th>{t("bizState.colRawLines")}</th>
                       <th>{t("bizState.colRows")}</th>
+                      <th>{t("bizState.colDeclared")}</th>
                       <th>{t("bizState.colMessage")}</th>
                       <th>{t("bizState.colActions")}</th>
                     </tr>
@@ -2684,6 +2726,9 @@ export function BizStatePage() {
                         </td>
                         <td className="pt-list-num">{Number(c.raw_line_count ?? 0)}</td>
                         <td className="pt-list-num">{Number(c.row_count ?? 0)}</td>
+                        <td className="pt-list-num">
+                          {Number(c.declared_total ?? 0) > 0 ? Number(c.declared_total) : "—"}
+                        </td>
                         <td className="bs-msg-cell" title={c.message || ""}>
                           {c.message?.trim() ? c.message : "—"}
                         </td>

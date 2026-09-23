@@ -79,6 +79,100 @@ class BizStateCollectFinalizeTests(unittest.TestCase):
         self.assertIn("biz_state_heavy_timeout", batch.message or "")
         self.assertIsNotNone(batch.ended_at)
 
+    def test_finalize_partial_message_from_failed_cmds_when_lane_errors_empty(self) -> None:
+        from netx_api.models import BizStateBatchCommand
+
+        self.db.add(
+            BizStateBatchCommand(
+                id="c-ok",
+                batch_id="b-finalize",
+                profile_id="zte.arp",
+                parser_id="arp",
+                metric_id="arp",
+                raw_command="show arp",
+                parse_status="ok",
+                row_count=10,
+            )
+        )
+        self.db.add(
+            BizStateBatchCommand(
+                id="c-aux-fail",
+                batch_id="b-finalize",
+                profile_id="zte.if_intf",
+                parser_id="if_intf",
+                metric_id="if_intf",
+                raw_command="show interface brief",
+                parse_status="aux_failed",
+                message="aux_for=x;parse boom",
+                row_count=0,
+            )
+        )
+        self.db.commit()
+        with patch.object(runner, "SessionLocal", self.Session):
+            with patch(
+                "netx_api.biz_state.compare_service.schedule_auto_compare_for_task",
+            ):
+                status = runner._finalize_batch_status(
+                    batch_id="b-finalize",
+                    task_id="t-finalize",
+                    cmd_count=2,
+                    total_rows=10,
+                    any_fail=True,
+                    any_ok=True,
+                    lane_errors=[],
+                )
+        self.assertEqual(status, "partial")
+        self.db.expire_all()
+        batch = self.db.get(BizStateBatch, "b-finalize")
+        assert batch is not None
+        self.assertEqual(batch.status, "partial")
+        self.assertTrue(str(batch.message or "").strip())
+        self.assertIn("aux", (batch.message or "").lower())
+
+    def test_finalize_partial_when_skipped_bindings_with_success(self) -> None:
+        from netx_api.models import BizStateBatchCommand
+
+        self.db.add(
+            BizStateBatchCommand(
+                id="c-ok2",
+                batch_id="b-finalize",
+                profile_id="zte.arp",
+                raw_command="show arp",
+                parse_status="ok",
+                row_count=1,
+            )
+        )
+        self.db.add(
+            BizStateBatchCommand(
+                id="c-skip",
+                batch_id="b-finalize",
+                profile_id="zte.bgp_vpnv4_neighbor_in",
+                raw_command="show bgp vpnv4 ...",
+                parse_status="skipped",
+                message="profile requires parameter bindings",
+                row_count=0,
+            )
+        )
+        self.db.commit()
+        with patch.object(runner, "SessionLocal", self.Session):
+            with patch(
+                "netx_api.biz_state.compare_service.schedule_auto_compare_for_task",
+            ):
+                status = runner._finalize_batch_status(
+                    batch_id="b-finalize",
+                    task_id="t-finalize",
+                    cmd_count=2,
+                    total_rows=1,
+                    any_fail=False,
+                    any_ok=True,
+                    lane_errors=[],
+                )
+        self.assertEqual(status, "partial")
+        self.db.expire_all()
+        batch = self.db.get(BizStateBatch, "b-finalize")
+        assert batch is not None
+        self.assertIn("skipped", (batch.message or "").lower())
+
     def test_finalize_retries_once_on_operational_error(self) -> None:
         calls = {"n": 0}
         real_session = self.Session
@@ -92,6 +186,12 @@ class BizStateCollectFinalizeTests(unittest.TestCase):
 
             def get(self, *args, **kwargs):
                 return self._inner.get(*args, **kwargs)
+
+            def query(self, *args, **kwargs):
+                return self._inner.query(*args, **kwargs)
+
+            def add(self, *args, **kwargs):
+                return self._inner.add(*args, **kwargs)
 
             def commit(self) -> None:
                 calls["n"] += 1

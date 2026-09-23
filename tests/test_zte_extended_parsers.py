@@ -1198,5 +1198,42 @@ Total number of routes: 2
         by_key = {(r["rd"], r["network"], r["next_hop"]) for r in routes}
         self.assertEqual(len(by_key), 2)
 
+    def test_bgp_route_vpnv6_ecmp_nh_with_metrics_same_line(self) -> None:
+        """RR vpnv6 wrap: indented 'NH  LocPrf  Path' must keep both ECMP legs."""
+        raw = """
+Routes Learned From This Neighbor:
+Status codes: * valid, i - internal
+Total number of routes: 4
+     Dest                Next Hop        Metric     LocPrf     InTag   Path
+Route Distinguisher:10.0.0.1:100
+* i  2407:1::/48
+                      10.1.1.1                100        0       ?
+* i  2407:1::/48
+                      10.1.1.2                100        0       ?
+* i  2407:2::/48
+                      10.1.1.1                100        0       ?
+* i  2407:2::/48
+                      10.1.1.2                100        0       ?
+"""
+        routes = normalize_bgp_route(
+            raw_text=raw,
+            command="show bgp vpnv6 unicast neighbor in 24.11.0.8 | one-line",
+            vendor="ZTE",
+            device_type="zte_zxros",
+            params={"neighbor": "24.11.0.8", "direction": "in", "afi": "vpnv6"},
+        )
+        self.assertEqual(len(routes), 4, "empty next_hop must not collapse ECMP")
+        self.assertEqual(
+            {(r["network"], r["next_hop"]) for r in routes},
+            {
+                ("2407:1::/48", "10.1.1.1"),
+                ("2407:1::/48", "10.1.1.2"),
+                ("2407:2::/48", "10.1.1.1"),
+                ("2407:2::/48", "10.1.1.2"),
+            },
+        )
+        self.assertTrue(all(r.get("status_codes") == "*i" for r in routes))
+        self.assertTrue(all(r.get("rd") == "10.0.0.1:100" for r in routes))
+
 if __name__ == "__main__":
     unittest.main()
