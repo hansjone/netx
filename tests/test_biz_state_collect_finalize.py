@@ -127,7 +127,9 @@ class BizStateCollectFinalizeTests(unittest.TestCase):
         assert batch is not None
         self.assertEqual(batch.status, "partial")
         self.assertTrue(str(batch.message or "").strip())
-        self.assertIn("aux", (batch.message or "").lower())
+        self.assertIn("aux_failed", (batch.message or "").lower())
+        self.assertIn("show interface brief", batch.message or "")
+        self.assertIn("parse boom", batch.message or "")
 
     def test_finalize_partial_when_skipped_bindings_with_success(self) -> None:
         from netx_api.models import BizStateBatchCommand
@@ -172,6 +174,71 @@ class BizStateCollectFinalizeTests(unittest.TestCase):
         batch = self.db.get(BizStateBatch, "b-finalize")
         assert batch is not None
         self.assertIn("skipped", (batch.message or "").lower())
+        self.assertIn("zte.bgp_vpnv4_neighbor_in", batch.message or "")
+        self.assertIn("bindings", (batch.message or "").lower())
+
+    def test_finalize_partial_lists_unmatched_and_failed_commands(self) -> None:
+        from netx_api.models import BizStateBatchCommand
+
+        self.db.add(
+            BizStateBatchCommand(
+                id="c-ok3",
+                batch_id="b-finalize",
+                profile_id="zte.arp",
+                metric_id="arp",
+                raw_command="show arp",
+                parse_status="ok",
+                row_count=1,
+            )
+        )
+        self.db.add(
+            BizStateBatchCommand(
+                id="c-unmatched",
+                batch_id="b-finalize",
+                profile_id="zte.legacy_x",
+                raw_command="show weird-legacy",
+                parse_status="unmatched",
+                message="no profile matched concrete command",
+                row_count=0,
+            )
+        )
+        self.db.add(
+            BizStateBatchCommand(
+                id="c-fail",
+                batch_id="b-finalize",
+                profile_id="zte.bgp_route",
+                metric_id="bgp_route",
+                raw_command="show bgp vpnv4 unicast neighbor in 1.1.1.1",
+                parse_status="failed",
+                message="parse: ValueError: boom",
+                row_count=0,
+            )
+        )
+        self.db.commit()
+        with patch.object(runner, "SessionLocal", self.Session):
+            with patch(
+                "netx_api.biz_state.compare_service.schedule_auto_compare_for_task",
+            ):
+                status = runner._finalize_batch_status(
+                    batch_id="b-finalize",
+                    task_id="t-finalize",
+                    cmd_count=3,
+                    total_rows=1,
+                    any_fail=True,
+                    any_ok=True,
+                    lane_errors=[],
+                )
+        self.assertEqual(status, "partial")
+        self.db.expire_all()
+        batch = self.db.get(BizStateBatch, "b-finalize")
+        assert batch is not None
+        msg = batch.message or ""
+        self.assertIn("unmatched=1", msg)
+        self.assertIn("failed=1", msg)
+        self.assertIn("show weird-legacy", msg)
+        self.assertIn("show bgp vpnv4", msg)
+        self.assertIn("zte.bgp_route", msg)
+        self.assertNotIn("partial success (some steps failed", msg)
 
     def test_finalize_retries_once_on_operational_error(self) -> None:
         calls = {"n": 0}

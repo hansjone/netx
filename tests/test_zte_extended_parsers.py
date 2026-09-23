@@ -1242,6 +1242,43 @@ Route Distinguisher:10.0.0.1:100
         self.assertTrue(all(r.get("status_codes") == "*i" for r in routes))
         self.assertTrue(all(r.get("rd") == "10.0.0.1:100" for r in routes))
 
+    def test_bgp_route_vpnv6_prefix_not_skipped_as_clock(self) -> None:
+        """Prefixes like 56:16:10::/64 must not match HH:MM:SS noise filter."""
+        from netx_api.biz_state.parsers.zte.bgp_route import _skip_noise_line
+
+        self.assertTrue(_skip_noise_line("09:30:01"))
+        self.assertTrue(_skip_noise_line("9:05:00 system ready"))
+        self.assertFalse(_skip_noise_line("56:16:10::/64"))
+        self.assertFalse(_skip_noise_line("* i  56:16:10::/64"))
+
+        raw = """
+Routes Advertised to This Neighbor:
+Status codes: * valid, i - internal
+Total number of routes: 2
+     Dest                Next Hop        Metric     LocPrf     InTag   Path
+Route Distinguisher:65525:30001 (default for vrf CUST_V6)
+* i  56:16:10::/64       ::FFFF:10.1.1.1              100        0       ?
+* i  56:16:32::/64       ::FFFF:10.1.1.1              100        0       ?
+"""
+        routes = normalize_bgp_route(
+            raw_text=raw,
+            command="show bgp vpnv6 unicast neighbor out 24.11.0.8 as 24208 | one-line",
+            vendor="ZTE",
+            device_type="zte_zxros",
+            params={
+                "neighbor": "24.11.0.8",
+                "direction": "out",
+                "afi": "vpnv6",
+                "local_as": "24208",
+            },
+        )
+        self.assertEqual(len(routes), 2)
+        self.assertEqual(
+            {r["network"] for r in routes},
+            {"56:16:10::/64", "56:16:32::/64"},
+        )
+        self.assertTrue(all(r.get("rd") == "65525:30001" for r in routes))
+
     def test_bgp_route_prod_snippets_rd_vrf_and_wraps(self) -> None:
         """Live RR snippets: OUT without status, RD+VRF, vpnv6 *i + NH wrap."""
         from pathlib import Path

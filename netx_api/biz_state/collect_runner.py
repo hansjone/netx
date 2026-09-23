@@ -1049,27 +1049,50 @@ def _run_collect_lane(
             # Resolve expand_all → concrete per-VRF commands via discover profile.
             flat_work: list[WorkItem] = []
             persisted = aux_persisted if aux_persisted is not None else set()
+
+            def _queue_expand_fail(
+                *,
+                profile_id: str,
+                item_id: str,
+                message: str,
+                command: str = "",
+            ) -> None:
+                nonlocal any_fail
+                any_fail = True
+                msg = str(message or "").strip()
+                _emit_task_event(task_id=task_id, message=msg, level="error")
+                _queue(
+                    SpooledCommand(
+                        id=uuid4().hex,
+                        batch_id=batch_id,
+                        task_item_id=item_id,
+                        profile_id=profile_id,
+                        raw_command=(command or profile_id or "expand_all")[:512],
+                        parse_status="failed",
+                        message=msg[:1020],
+                    )
+                )
+
             for concrete, params, profile_id, item_id, mode in work:
                 if mode != "expand_all":
                     flat_work.append((concrete, params, profile_id, item_id, mode))
                     continue
                 profile = get_profile(profile_id)
                 if profile is None or not profile.placeholders:
-                    any_fail = True
-                    _emit_task_event(
-                        task_id=task_id,
+                    _queue_expand_fail(
+                        profile_id=profile_id,
+                        item_id=item_id,
                         message=f"expand_all missing profile {profile_id}",
-                        level="error",
                     )
                     continue
                 ph = profile.placeholders[0]
                 disc = get_profile(str(ph.discover_profile_id or "").strip())
                 if disc is None:
-                    any_fail = True
-                    _emit_task_event(
-                        task_id=task_id,
+                    _queue_expand_fail(
+                        profile_id=profile_id,
+                        item_id=item_id,
                         message=f"expand_all discover profile missing for {profile_id}",
-                        level="error",
+                        command=str(profile.command_template or "")[:512],
                     )
                     continue
                 disc_cmd = normalize_command(disc.command_template)
@@ -1080,11 +1103,11 @@ def _run_collect_lane(
                     params={},
                 )
                 if not entry.ok:
-                    any_fail = True
-                    _emit_task_event(
-                        task_id=task_id,
+                    _queue_expand_fail(
+                        profile_id=profile_id,
+                        item_id=item_id,
                         message=f"expand_all discover failed: {entry.error}",
-                        level="error",
+                        command=disc_cmd[:512],
                     )
                     continue
                 try:
@@ -1093,8 +1116,12 @@ def _run_collect_lane(
                         records=entry.records,
                     )
                 except ValueError as exc:
-                    any_fail = True
-                    _emit_task_event(task_id=task_id, message=str(exc), level="error")
+                    _queue_expand_fail(
+                        profile_id=profile_id,
+                        item_id=item_id,
+                        message=str(exc),
+                        command=str(profile.command_template or "")[:512],
+                    )
                     continue
                 for cmd, p in pairs:
                     flat_work.append((cmd, p, profile_id, item_id, "normal"))
@@ -1502,17 +1529,51 @@ def _is_skip_parse_status(status: str | None) -> bool:
     return st.startswith("skipped")
 
 
+def _is_issue_parse_status(status: str | None) -> bool:
+    """Statuses that explain partial/failed batches (not ok / successful aux)."""
+    st = str(status or "").strip().lower()
+    if not st or st in ("ok", "aux", "aux_cached"):
+        return False
+    if st.startswith("aux") and "fail" not in st:
+        return False
+    return (
+        _is_fail_parse_status(st)
+        or _is_skip_parse_status(st)
+        or st in ("unmatched", "error")
+        or "fail" in st
+    )
+
+
+def _cmd_issue_line(c: Any) -> str:
+    """One line: [status] profile|metric | command | reason."""
+    st = str(getattr(c, "parse_status", "") or "").strip() or "unknown"
+    profile = str(getattr(c, "profile_id", "") or "").strip()
+    metric = str(getattr(c, "metric_id", "") or "").strip()
+    item = profile or metric or "-"
+    if profile and metric and profile != metric:
+        item = f"{profile}/{metric}"
+    cmd = str(getattr(c, "raw_command", "") or "").strip() or "(no command)"
+    if len(cmd) > 120:
+        cmd = cmd[:117] + "..."
+    reason = str(getattr(c, "message", "") or "").strip() or st
+    if len(reason) > 180:
+        reason = reason[:177] + "..."
+    return f"[{st}] {item} | {cmd} | {reason}"
+
+
 def _batch_issue_summary(
     db,
     batch_id: str,
     lane_errors: list[str] | None = None,
+    *,
+    task_id: str = "",
 ) -> str:
-    """Human-readable reason for partial/failed batches (never leave message empty)."""
-    parts: list[str] = []
+    """List which profile/command failed or was skipped (fits batch.message 1024)."""
+    lines: list[str] = []
     for err in lane_errors or []:
         e = str(err or "").strip()
-        if e and e not in parts:
-            parts.append(e)
+        if e and e not in lines:
+            lines.append(e)
 
     cmds = (
         db.query(BizStateBatchCommand)
@@ -1523,36 +1584,79 @@ def _batch_issue_summary(
     n_fail = 0
     n_skip = 0
     n_aux_fail = 0
-    samples: list[str] = []
+    n_unmatched = 0
+    detail: list[str] = []
     for c in cmds:
         st = str(c.parse_status or "").strip().lower()
-        msg = str(c.message or "").strip()
-        if st == "aux_failed" or (st.startswith("aux") and "fail" in st):
+        if not _is_issue_parse_status(st):
+            continue
+        if st == "unmatched":
+            n_unmatched += 1
+        elif st == "aux_failed" or (st.startswith("aux") and "fail" in st):
             n_aux_fail += 1
-            if msg and len(samples) < 3:
-                samples.append(f"aux:{c.raw_command}: {msg}"[:160])
-        elif _is_fail_parse_status(st):
-            n_fail += 1
-            if msg and len(samples) < 3:
-                samples.append(f"{c.raw_command}: {msg}"[:160])
         elif _is_skip_parse_status(st):
             n_skip += 1
-            if msg and len(samples) < 3:
-                samples.append(f"skip:{c.profile_id or c.raw_command}: {msg}"[:160])
+        else:
+            n_fail += 1
+        detail.append(_cmd_issue_line(c))
 
+    counts: list[str] = []
     if n_fail:
-        parts.append(f"{n_fail} command(s) failed")
+        counts.append(f"failed={n_fail}")
     if n_aux_fail:
-        parts.append(f"{n_aux_fail} aux command(s) failed")
+        counts.append(f"aux_failed={n_aux_fail}")
+    if n_unmatched:
+        counts.append(f"unmatched={n_unmatched}")
     if n_skip:
-        parts.append(f"{n_skip} item(s) skipped (e.g. missing bindings)")
-    for s in samples:
-        if s not in parts:
-            parts.append(s)
+        counts.append(f"skipped={n_skip}")
+    if counts:
+        lines.append("issues: " + " ".join(counts))
 
-    text = "; ".join(parts).strip()
+    # Prefer as many concrete command lines as fit in the remaining budget.
+    budget = 1020
+    used = sum(len(x) + 1 for x in lines)
+    shown = 0
+    omitted = 0
+    for d in detail:
+        # +1 for newline
+        if used + len(d) + 1 > budget - 40:
+            omitted = len(detail) - shown
+            break
+        lines.append(d)
+        used += len(d) + 1
+        shown += 1
+    if omitted > 0:
+        lines.append(f"...and {omitted} more (see Commands sheet)")
+
+    if not detail and task_id:
+        # expand_all / barrier failures may only leave task events.
+        evs = (
+            db.query(BizStateEvent)
+            .filter(
+                BizStateEvent.task_id == task_id,
+                BizStateEvent.level.in_(("error", "warn", "warning")),
+            )
+            .order_by(BizStateEvent.created_at.desc())
+            .limit(5)
+            .all()
+        )
+        for ev in reversed(evs):
+            msg = str(ev.message or "").strip()
+            if not msg:
+                continue
+            line = f"[event] {msg}"[:200]
+            if used + len(line) + 1 > budget:
+                break
+            if line not in lines:
+                lines.append(line)
+                used += len(line) + 1
+
+    text = "\n".join(lines).strip()
     if not text:
-        text = "partial success (some steps failed or were skipped)"
+        text = (
+            "partial: some steps failed, but no per-command details were persisted "
+            "(check task events / Commands sheet)"
+        )
     return text[:1020]
 
 
@@ -1577,6 +1681,7 @@ def _finalize_batch_status(
         batch.command_count = max(int(batch.command_count or 0), int(cmd_count or 0))
         batch.row_count = max(int(batch.row_count or 0), int(total_rows or 0))
         batch.ended_at = _utcnow()
+        tid = str(task_id or batch.task_id or "")
         if stopped:
             if any_ok or int(batch.command_count or 0) > 0 or int(batch.row_count or 0) > 0:
                 batch.status = "partial"
@@ -1586,10 +1691,14 @@ def _finalize_batch_status(
                 batch.message = STOP_USER_MESSAGE
         elif any_fail and any_ok:
             batch.status = "partial"
-            batch.message = _batch_issue_summary(db, batch_id, lane_errors)
+            batch.message = _batch_issue_summary(
+                db, batch_id, lane_errors, task_id=tid
+            )
         elif any_fail and not any_ok:
             batch.status = "failed"
-            batch.message = _batch_issue_summary(db, batch_id, lane_errors) or (
+            batch.message = _batch_issue_summary(
+                db, batch_id, lane_errors, task_id=tid
+            ) or (
                 "; ".join(lane_errors)[:1020] if lane_errors else "all commands failed"
             )
         else:
@@ -1603,7 +1712,9 @@ def _finalize_batch_status(
             n_skip = sum(1 for st in statuses if _is_skip_parse_status(st))
             if n_skip > 0 and any_ok:
                 batch.status = "partial"
-                batch.message = _batch_issue_summary(db, batch_id, lane_errors)
+                batch.message = _batch_issue_summary(
+                    db, batch_id, lane_errors, task_id=tid
+                )
             else:
                 batch.status = "success"
                 batch.message = ""

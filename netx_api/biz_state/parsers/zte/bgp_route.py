@@ -193,7 +193,9 @@ def _skip_noise_line(line: str) -> bool:
         return True
     if low.startswith("valid ") or low.startswith("invalid "):
         return True
-    if re.match(r"^\d{1,2}:\d{2}:\d{2}\b", low):
+    # Clock banners like "09:30:01" — require whitespace/EOL so IPv6
+    # prefixes such as "56:16:10::/64" are not treated as HH:MM:SS.
+    if re.match(r"^\d{1,2}:\d{2}:\d{2}(?:\s|$)", low):
         return True
     if low.endswith("#") or "#'" in low:
         return True
