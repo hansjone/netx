@@ -52,10 +52,11 @@ class PrimaryParseJob:
     merged_params: dict[str, Any]
     raw_text: str
     raw_rel_path: str
-    raw_line_count: int = 0
     textfsm_command: str
     vendor: str
     device_type: str
+    # Full CLI line count before DB raw_text truncate (must follow required fields).
+    raw_line_count: int = 0
     enrich_joins: list[Any] = field(default_factory=list)
     aux_captures: list[AuxRawCapture] = field(default_factory=list)
     # Shared across lanes for aux metric de-dupe (may be None).
