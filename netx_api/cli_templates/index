@@ -13,7 +13,8 @@ zte/zte_zxros_show_bgp_summary.textfsm, .*, zte_zxros, sh[[ow]] bgp .+ sum[[mary
 zte/zte_zxros_show_ospf_neighbor.textfsm, .*, zte_zxros, sh[[ow]] ip ospf nei[[ghbor]]
 zte/zte_zxros_show_vrrp_brief.textfsm, .*, zte_zxros, sh[[ow]] vrrp .+ br[[ief]]
 zte/zte_zxros_show_opticalinfo_brief.textfsm, .*, zte_zxros, sh[[ow]] opticalinfo br[[ief]]
-zte/zte_zxros_show_bgp_neighbor_routes.textfsm, .*, zte_zxros, sh[[ow]] bgp .+ nei[[ghbor]] (in|out)
+# bgp neighbor in/out routes: hand-only (parsers/zte/bgp_route.py); template kept as archive
+# zte/zte_zxros_show_bgp_neighbor_routes.textfsm, .*, zte_zxros, sh[[ow]] bgp .+ nei[[ghbor]] (in|out)
 zte/zte_zxros_show_ip_forwarding_route.textfsm, .*, zte_zxros, sh[[ow]] ip forw[[arding]] rou[[te]]
 zte/zte_zxros_show_ipv6_forwarding_route.textfsm, .*, zte_zxros, sh[[ow]] ipv6 forw[[arding]] rou[[te]]
 zte/zte_zxros_show_l2vpn_forwardinfo_detail.textfsm, .*, zte_zxros, sh[[ow]] l2vpn forw[[ardinfo]] det[[ail]]

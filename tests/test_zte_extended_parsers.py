@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 
@@ -1234,6 +1235,139 @@ Route Distinguisher:10.0.0.1:100
         )
         self.assertTrue(all(r.get("status_codes") == "*i" for r in routes))
         self.assertTrue(all(r.get("rd") == "10.0.0.1:100" for r in routes))
+
+    def test_bgp_route_prod_snippets_rd_vrf_and_wraps(self) -> None:
+        """Live RR snippets: OUT without status, RD+VRF, vpnv6 *i + NH wrap."""
+        from pathlib import Path
+
+        fixture = (
+            Path(__file__).resolve().parents[2]
+            / "test"
+            / "show-zte"
+            / "Untitled-1.ini"
+        )
+        if not fixture.is_file():
+            fixture = (
+                Path(__file__).resolve().parents[3]
+                / "test"
+                / "show-zte"
+                / "Untitled-1.ini"
+            )
+        raw_all = fixture.read_text(encoding="utf-8", errors="replace")
+
+        def _section(cmd_prefix: str) -> tuple[str, str]:
+            text = raw_all.replace("\u00a0", " ")
+            parts = re.split(r"(?=^show bgp )", text, flags=re.M)
+            for part in parts:
+                part = part.strip()
+                if not part.startswith("show bgp"):
+                    continue
+                head = part.splitlines()[0].strip()
+                if head.startswith(cmd_prefix):
+                    body = "\n".join(part.splitlines()[1:])
+                    return head, body
+            self.fail(f"section not found: {cmd_prefix}")
+
+        # ipv4 out — sample truncated vs declared 34; parse all pasted routes
+        cmd, body = _section("show bgp ipv4 unicast neighbor out")
+        ipv4_out = normalize_bgp_route(
+            raw_text=body,
+            command=cmd,
+            vendor="ZTE",
+            device_type="zte_zxros",
+            params={
+                "neighbor": "24.11.0.8",
+                "direction": "out",
+                "afi": "ipv4",
+                "local_as": "24208",
+            },
+        )
+        self.assertEqual(len(ipv4_out), 21)
+        self.assertTrue(all(r["next_hop"] for r in ipv4_out))
+
+        # vpnv6 out — RD + VRF + ::FFFF NH + From wraps
+        cmd, body = _section("show bgp vpnv6 unicast neighbor out")
+        v6_out = normalize_bgp_route(
+            raw_text=body,
+            command=cmd,
+            vendor="ZTE",
+            device_type="zte_zxros",
+            params={
+                "neighbor": "24.11.0.8",
+                "direction": "out",
+                "afi": "vpnv6",
+                "local_as": "24208",
+            },
+        )
+        self.assertEqual(len(v6_out), 559)
+        self.assertTrue(all(r.get("rd") for r in v6_out))
+        self.assertTrue(all(r.get("vrf") for r in v6_out))
+        self.assertEqual(v6_out[0]["rd"], "2:111")
+        self.assertEqual(v6_out[0]["vrf"], "css-srv6-mpls-1")
+        self.assertTrue(v6_out[0]["next_hop"].upper().startswith("::FFFF:"))
+        self.assertGreaterEqual(
+            sum(1 for r in v6_out if r["network"] == "60::/64"), 2, "ECMP under RD"
+        )
+
+        # vpnv4 out — RD + VRF
+        cmd, body = _section("show bgp vpnv4 unicast neighbor out")
+        v4_out = normalize_bgp_route(
+            raw_text=body,
+            command=cmd,
+            vendor="ZTE",
+            device_type="zte_zxros",
+            params={
+                "neighbor": "24.11.0.8",
+                "direction": "out",
+                "afi": "vpnv4",
+                "local_as": "24208",
+            },
+        )
+        self.assertEqual(len(v4_out), 54)
+        self.assertTrue(all(r.get("rd") and r.get("vrf") for r in v4_out))
+
+        # vpnv6 in — * i + IPv4-mapped NH wrap onto metric line
+        cmd, body = _section("show bgp vpnv6 unicast neighbor in")
+        v6_in = normalize_bgp_route(
+            raw_text=body,
+            command=cmd,
+            vendor="ZTE",
+            device_type="zte_zxros",
+            params={
+                "neighbor": "24.11.0.8",
+                "direction": "in",
+                "afi": "vpnv6",
+                "local_as": "24208",
+            },
+        )
+        self.assertEqual(len(v6_in), 22)
+        self.assertTrue(all(r.get("rd") for r in v6_in))
+        self.assertTrue(all(r.get("status_codes") == "*i" for r in v6_in))
+        self.assertTrue(all(":" in r["network"] for r in v6_in))
+        self.assertTrue(all(r["next_hop"] for r in v6_in))
+        self.assertEqual(v6_in[0]["network"], "100:0:17::/64")
+        self.assertEqual(v6_in[0]["next_hop"].upper(), "::FFFF:24.11.0.5")
+
+        # vpnv4 in — RD fill-down + ECMP next-hops
+        cmd, body = _section("show bgp vpnv4 unicast neighbor in")
+        v4_in = normalize_bgp_route(
+            raw_text=body,
+            command=cmd,
+            vendor="ZTE",
+            device_type="zte_zxros",
+            params={
+                "neighbor": "24.11.0.8",
+                "direction": "in",
+                "afi": "vpnv4",
+                "local_as": "24208",
+            },
+        )
+        self.assertEqual(len(v4_in), 21)
+        self.assertTrue(all(r.get("rd") for r in v4_in))
+        multi = [r for r in v4_in if r["network"] == "1.0.0.1/32"]
+        self.assertEqual(len(multi), 3)
+        self.assertEqual(len({r["next_hop"] for r in multi}), 3)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -235,7 +235,8 @@ def _run_primary_parse_job(job: Any) -> tuple[bool, bool]:
     any_fail = False
 
     def _declared_total(raw: str) -> int:
-        m = re.search(r"(?i)total\s+number\s+of\s+routes\s*:\s*(\d+)", raw or "")
+        text = (raw or "").replace("\u00a0", " ")
+        m = re.search(r"(?i)total\s+number\s+of\s+routes\s*:\s*(\d+)", text)
         return int(m.group(1)) if m else 0
 
     def _flush_item(item: SpooledCommand, *, records: list[dict[str, Any]] | None = None) -> None:
