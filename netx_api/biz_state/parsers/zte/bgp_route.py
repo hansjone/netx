@@ -269,7 +269,10 @@ def _hand_parse(
     pending_nh = ""
     pending_rest = ""
     current_rd = ""
-    current_vrf = vrf
+    # Command-scoped VRF (CE view); RD blocks may temporarily override via
+    # ``(default for vrf X)`` but must not fill-down onto RD-only segments.
+    cmd_vrf = vrf
+    current_vrf = cmd_vrf
 
     def _flush_pending(*, rest: str = "", path_continuation: bool = False) -> dict[str, Any] | None:
         nonlocal pending_net, pending_flags, pending_nh, pending_rest
@@ -313,9 +316,8 @@ def _hand_parse(
             if row:
                 yield row
             current_rd = (rd_m.group("rd") or "").strip()
-            vrf_from_rd = (rd_m.group("vrf") or "").strip()
-            if vrf_from_rd:
-                current_vrf = vrf_from_rd
+            # Reset every RD header: annotation wins; else fall back to cmd VRF.
+            current_vrf = (rd_m.group("vrf") or "").strip() or cmd_vrf
             continue
         if _skip_noise_line(line):
             continue

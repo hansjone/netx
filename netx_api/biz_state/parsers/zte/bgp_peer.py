@@ -33,9 +33,32 @@ _LOCAL_AS_IN_CMD_RE = re.compile(r"(?i)(?:^|\s)as\s+(\S+)(?:\s*\||\s*$)")
 
 
 def _detect_bgp_afi(command: str, params: dict[str, str] | None) -> str:
+    """Detect BGP AFI for peer/route rows.
+
+    VRF-scoped CLI (``… vrf <name> …``) is the CE/ipv4|ipv6 VRF AF even when
+    ZTE spells the command as ``vpnv4|vpnv6 unicast vrf``. Map those to
+    ``ipv4``/``ipv6`` so split-by-(afi,vrf) does not collide with global
+    VPNv4/VPNv6 tables that may carry RD ``(default for vrf X)`` into ``vrf``.
+    """
+    low = str(command or "").lower()
+    has_vrf = bool(_detect_vrf(command, params))
+    if has_vrf:
+        # Prefer command tokens over stale params.afi=vpnv*
+        if "vpnv6" in low or "ipv6" in low:
+            return "ipv6"
+        if "vpnv4" in low or "ipv4" in low:
+            return "ipv4"
+        # Bare ``vrf`` with params.afi hint
+        if params and params.get("afi"):
+            af = str(params.get("afi") or "").strip().lower()
+            if af in ("vpnv6", "ipv6"):
+                return "ipv6"
+            if af in ("vpnv4", "ipv4"):
+                return "ipv4"
+        return "ipv4"
+
     if params and params.get("afi"):
         return str(params.get("afi") or "").strip().lower()
-    low = str(command or "").lower()
     if "l2vpn" in low and "evpn" in low:
         return "evpn"
     if "l2vpn" in low and "vpls" in low:

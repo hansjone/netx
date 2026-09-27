@@ -267,6 +267,7 @@ class ZteExtendedParserTests(unittest.TestCase):
         )
         self.assertTrue(all(r["vrf"] == "CUST_A" for r in vrf))
         self.assertTrue(all(r["local_as"] == "65000" for r in vrf))
+        self.assertTrue(all(r["afi"] == "ipv4" for r in vrf), "vrf-scoped vpnv4 → ipv4")
 
         # Real wrapped vpnv6 summary + IPv6 neighbor in/out routes
         sample_dir = Path(__file__).resolve().parents[2] / "test" / "show-zte"
@@ -288,10 +289,12 @@ class ZteExtendedParserTests(unittest.TestCase):
                 "vrf": "vpn.giims",
                 "neighbor": "2407::45:0:0:5:1",
                 "direction": "in",
-                "afi": "vpnv6",
+                "afi": "vpnv6",  # stale params; vrf scope must win → ipv6
             },
         )
         self.assertEqual(len(routes_in), 9)
+        self.assertTrue(all(r["afi"] == "ipv6" for r in routes_in))
+        self.assertTrue(all(r["vrf"] == "vpn.giims" for r in routes_in))
         self.assertTrue(all(r["network"].startswith("2407::") for r in routes_in))
         self.assertTrue(all(r["next_hop"].startswith("2407::") for r in routes_in))
         self.assertFalse(any(r["network"].startswith("09:") for r in routes_in))
@@ -309,6 +312,7 @@ class ZteExtendedParserTests(unittest.TestCase):
             },
         )
         self.assertEqual(len(routes_out), 1)
+        self.assertEqual(routes_out[0]["afi"], "ipv6")
         self.assertEqual(routes_out[0]["network"], "2407::45:0:0:5:0/127")
         self.assertIn("4761", routes_out[0]["path"])
 
@@ -431,6 +435,8 @@ class ZteExtendedParserTests(unittest.TestCase):
         self.assertEqual(len(routes), 2)
         self.assertEqual(routes[0]["network"], "10.1.0.0/24")
         self.assertEqual(routes[0]["direction"], "in")
+        self.assertEqual(routes[0]["afi"], "ipv4")
+        self.assertEqual(routes[0]["vrf"], "CUST_A")
 
         from netx_api.biz_state.enrich import EnrichJoin
         from netx_api.biz_state.parsers.zte.config_bgp_peer import normalize_config_bgp_peer
@@ -1410,6 +1416,59 @@ Route Distinguisher:65525:30001 (default for vrf CUST_V6)
         multi = [r for r in v4_in if r["network"] == "1.0.0.1/32"]
         self.assertEqual(len(multi), 3)
         self.assertEqual(len({r["next_hop"] for r in multi}), 3)
+
+    def test_bgp_route_rd_vrf_no_filldown_vpnv4_vpnv6(self) -> None:
+        """RD ``(default for vrf)`` must not inherit onto following RD-only blocks."""
+        raw_v4 = """
+Routes Learned From This Neighbor:
+Total number of routes: 3
+     Network          Next Hop        Metric     LocPrf     RtPrf   Path
+Route Distinguisher:10.0.0.1:100 (default for vrf CUST_LOCAL)
+* i  192.0.2.0/24     10.1.1.1        0          100        0       65001 i
+Route Distinguisher:10.0.0.2:200
+* i  198.51.100.0/24  10.1.1.2        0          100        0       65002 i
+Route Distinguisher:10.0.0.3:300 (default for vrf CUST_OTHER)
+* i  203.0.113.0/24   10.1.1.3        0          100        0       65003 i
+"""
+        v4 = normalize_bgp_route(
+            raw_text=raw_v4,
+            command="show bgp vpnv4 unicast neighbor in 10.0.0.1 | one-line",
+            params={"neighbor": "10.0.0.1", "direction": "in", "afi": "vpnv4"},
+        )
+        self.assertEqual(len(v4), 3)
+        self.assertTrue(all(r["afi"] == "vpnv4" for r in v4))
+        by_rd = {r["rd"]: r for r in v4}
+        self.assertEqual(by_rd["10.0.0.1:100"]["vrf"], "CUST_LOCAL")
+        self.assertEqual(by_rd["10.0.0.2:200"]["vrf"], "")
+        self.assertEqual(by_rd["10.0.0.3:300"]["vrf"], "CUST_OTHER")
+
+        raw_v6 = """
+Routes Advertised to This Neighbor:
+Total number of routes: 2
+     Dest                Next Hop        Metric     LocPrf     InTag   Path
+Route Distinguisher:65525:30001 (default for vrf CUST_V6)
+* i  56:16:10::/64       ::FFFF:10.1.1.1              100        0       ?
+Route Distinguisher:65525:30002
+* i  56:16:32::/64       ::FFFF:10.1.1.1              100        0       ?
+"""
+        v6 = normalize_bgp_route(
+            raw_text=raw_v6,
+            command="show bgp vpnv6 unicast neighbor out 24.11.0.8 | one-line",
+            params={"neighbor": "24.11.0.8", "direction": "out", "afi": "vpnv6"},
+        )
+        self.assertEqual(len(v6), 2)
+        self.assertTrue(all(r["afi"] == "vpnv6" for r in v6))
+        by_rd6 = {r["rd"]: r for r in v6}
+        self.assertEqual(by_rd6["65525:30001"]["vrf"], "CUST_V6")
+        self.assertEqual(by_rd6["65525:30002"]["vrf"], "")
+
+        # VRF CE views stay ipv4/ipv6 + cmd vrf (distinct from global vpn*)
+        v4_ce = normalize_bgp_route(
+            raw_text=_BGP_ROUTE_IN,
+            command="show bgp vpnv4 unicast vrf CUST_A neighbor in 10.0.0.1",
+            params={"vrf": "CUST_A", "neighbor": "10.0.0.1", "direction": "in"},
+        )
+        self.assertTrue(all(r["afi"] == "ipv4" and r["vrf"] == "CUST_A" for r in v4_ce))
 
 
 if __name__ == "__main__":
