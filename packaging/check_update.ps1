@@ -15,17 +15,17 @@ param(
 
 # Check for a newer NetX Windows package.
 #
-# Source order (first success wins), controlled by NETX_UPDATE_SOURCES or defaults:
-#   manifest  → NETX_UPDATE_URL JSON (manifest.example.json)
-#   forgejo   → NETX_UPDATE_FORGEJO_URL (Forgejo/Gitea releases/latest API)
-#   github    → GitHub releases/latest (NETX_UPDATE_GITHUB_REPO, default hansjone/netx)
+# Default (no config needed):
+#   GitHub primary + Forgejo mirror fallback (git.avelo.top).
+#   Probe every reachable source and pick the highest version;
+#   on equal versions prefer GitHub (listed first).
 #
-# Examples:
-#   NETX_UPDATE_FORGEJO_URL=https://git.example.com/api/v1/repos/ops/netx/releases/latest
-#   NETX_UPDATE_SOURCES=forgejo,github          # Forgejo primary, GitHub fallback
-#   NETX_UPDATE_URL=https://cdn/.../manifest.json
-#   NETX_UPDATE_FALLBACK_URL=https://cdn/.../manifest-backup.json
-#   NETX_UPDATE_TOKEN=...                      # optional Bearer/token for private APIs
+# Optional overrides:
+#   NETX_UPDATE_SOURCES=github,forgejo
+#   NETX_UPDATE_FORGEJO_URL=https://git.avelo.top/api/v1/repos/hansjone/netx/releases/latest
+#   NETX_UPDATE_GITHUB_REPO=hansjone/netx
+#   NETX_UPDATE_URL=... manifest JSON
+#   NETX_UPDATE_TOKEN=... private API token
 
 $ErrorActionPreference = "Stop"
 . "$PSScriptRoot\_common.ps1"
@@ -47,6 +47,9 @@ function Get-Cfg([string]$Key, [string]$ParamVal = "") {
 $UpdateUrl = Get-Cfg "NETX_UPDATE_URL" $UpdateUrl
 $FallbackUrl = Get-Cfg "NETX_UPDATE_FALLBACK_URL" $FallbackUrl
 $ForgejoUrl = Get-Cfg "NETX_UPDATE_FORGEJO_URL" $ForgejoUrl
+if (-not $ForgejoUrl) {
+    $ForgejoUrl = "https://git.avelo.top/api/v1/repos/hansjone/netx/releases/latest"
+}
 $GithubRepo = Get-Cfg "NETX_UPDATE_GITHUB_REPO" $GithubRepo
 if (-not $GithubRepo) { $GithubRepo = "hansjone/netx" }
 $Channel = Get-Cfg "NETX_UPDATE_CHANNEL" $Channel
@@ -81,8 +84,28 @@ function Get-AuthHeaders {
     return $h
 }
 
+function Resolve-AssetUrl {
+    param($Asset, $Rel, [string]$SourceName, [string]$ApiLatestUrl = "")
+    $url = [string]$Asset.browser_download_url
+    if ($url) { return $url }
+    # Forgejo/Gitea sometimes omit browser_download_url; synthesize release download URL.
+    if ($SourceName -eq "forgejo" -and $ApiLatestUrl -and $Rel.tag_name -and $Asset.name) {
+        if ($ApiLatestUrl -match '^(https?://[^/]+)/api/v1/repos/([^/]+)/([^/]+)/releases/latest') {
+            $base = $Matches[1]
+            $owner = $Matches[2]
+            $repo = $Matches[3]
+            $tag = [string]$Rel.tag_name
+            $name = [uri]::EscapeDataString([string]$Asset.name).Replace('%2F', '/')
+            # EscapeDataString encodes too much; use raw name (assets shouldn't need query encoding).
+            $name = [string]$Asset.name
+            return "$base/$owner/$repo/releases/download/$tag/$name"
+        }
+    }
+    return ""
+}
+
 function Convert-ReleaseToManifest {
-    param($Rel, [string]$SourceName)
+    param($Rel, [string]$SourceName, [string]$ApiLatestUrl = "")
     $tag = [string]$Rel.tag_name
     $ver = $tag.TrimStart('v', 'V')
     $assets = @($Rel.assets)
@@ -90,16 +113,12 @@ function Convert-ReleaseToManifest {
     $setupAsset = $assets | Where-Object { $_.name -match 'Setup-.*\.exe$' } | Select-Object -First 1
     if (-not $zipAsset) { throw "${SourceName}_release_missing_zip" }
 
-    $zipUrl = [string]$zipAsset.browser_download_url
-    if (-not $zipUrl -and $zipAsset.id -and $Rel.html_url) {
-        # Some Gitea/Forgejo builds omit browser_download_url; leave empty to fail clearly.
-        $zipUrl = [string]$zipAsset.browser_download_url
-    }
+    $zipUrl = Resolve-AssetUrl -Asset $zipAsset -Rel $Rel -SourceName $SourceName -ApiLatestUrl $ApiLatestUrl
     if (-not $zipUrl) { throw "${SourceName}_zip_url_missing" }
 
     $setupUrl = ""
-    if ($setupAsset -and $setupAsset.browser_download_url) {
-        $setupUrl = [string]$setupAsset.browser_download_url
+    if ($setupAsset) {
+        $setupUrl = Resolve-AssetUrl -Asset $setupAsset -Rel $Rel -SourceName $SourceName -ApiLatestUrl $ApiLatestUrl
     }
 
     return [pscustomobject]@{
@@ -139,87 +158,93 @@ function Get-FromGitHubReleases {
 function Get-FromForgejoReleases {
     param([string]$ApiUrl)
     if (-not $ApiUrl) { throw "forgejo_url_empty" }
-    # Forgejo/Gitea: /api/v1/repos/{owner}/{repo}/releases/latest
     $headers = Get-AuthHeaders -Style "token"
     $headers["Accept"] = "application/json"
     $rel = Invoke-RestMethod -Uri $ApiUrl -Headers $headers -TimeoutSec 30
-    return Convert-ReleaseToManifest -Rel $rel -SourceName "forgejo"
+    return Convert-ReleaseToManifest -Rel $rel -SourceName "forgejo" -ApiLatestUrl $ApiUrl
 }
 
 function Get-UpdateSourceList {
     if ($Sources) {
         return @($Sources.Split(',') | ForEach-Object { $_.Trim().ToLowerInvariant() } | Where-Object { $_ })
     }
+    # Default: GitHub primary, Forgejo mirror backup. Optional manifests prepended if configured.
     $list = [System.Collections.Generic.List[string]]::new()
     if ($UpdateUrl) { [void]$list.Add("manifest") }
-    if ($ForgejoUrl) { [void]$list.Add("forgejo") }
+    [void]$list.Add("github")
+    [void]$list.Add("forgejo")
     if ($FallbackUrl) { [void]$list.Add("manifest_fallback") }
-    # Always keep GitHub as last resort unless explicitly disabled via SOURCES.
-    if (-not $list.Contains("github")) { [void]$list.Add("github") }
-    # Prefer Forgejo before GitHub when both configured and no explicit SOURCES.
-    if ($ForgejoUrl -and $list.Contains("forgejo") -and $list.Contains("github")) {
-        $ordered = [System.Collections.Generic.List[string]]::new()
-        foreach ($s in @("manifest", "forgejo", "manifest_fallback", "github")) {
-            if ($list.Contains($s) -and -not $ordered.Contains($s)) { [void]$ordered.Add($s) }
-        }
-        foreach ($s in $list) {
-            if (-not $ordered.Contains($s)) { [void]$ordered.Add($s) }
-        }
-        return @($ordered)
-    }
     return @($list)
+}
+
+function Get-ManifestFromSource([string]$src) {
+    switch ($src) {
+        "manifest" {
+            if (-not $UpdateUrl) { throw "NETX_UPDATE_URL empty" }
+            Write-Host "==> Probing manifest: $UpdateUrl"
+            return Get-ManifestFromUrl -Url $UpdateUrl
+        }
+        "manifest_fallback" {
+            if (-not $FallbackUrl) { throw "NETX_UPDATE_FALLBACK_URL empty" }
+            Write-Host "==> Probing fallback manifest: $FallbackUrl"
+            $m = Get-ManifestFromUrl -Url $FallbackUrl
+            if ($m -and -not $m.source) {
+                $m | Add-Member -NotePropertyName source -NotePropertyValue "manifest_fallback" -Force
+            }
+            return $m
+        }
+        "forgejo" {
+            Write-Host "==> Probing Forgejo: $ForgejoUrl"
+            return Get-FromForgejoReleases -ApiUrl $ForgejoUrl
+        }
+        "github" {
+            Write-Host "==> Probing GitHub: $GithubRepo"
+            return Get-FromGitHubReleases
+        }
+        default { throw "unknown_source: $src" }
+    }
 }
 
 Write-Host "==> Current version: $current"
 $sourceList = Get-UpdateSourceList
-Write-Host "==> Update sources: $($sourceList -join ' -> ')"
+Write-Host "==> Probe sources (pick newest reachable; tie → earlier in list): $($sourceList -join ', ')"
 
-$manifest = $null
+$candidates = @()
 $errors = @()
 foreach ($src in $sourceList) {
     try {
-        switch ($src) {
-            "manifest" {
-                if (-not $UpdateUrl) { throw "NETX_UPDATE_URL empty" }
-                Write-Host "==> Trying manifest: $UpdateUrl"
-                $manifest = Get-ManifestFromUrl -Url $UpdateUrl
-            }
-            "manifest_fallback" {
-                if (-not $FallbackUrl) { throw "NETX_UPDATE_FALLBACK_URL empty" }
-                Write-Host "==> Trying fallback manifest: $FallbackUrl"
-                $manifest = Get-ManifestFromUrl -Url $FallbackUrl
-                if ($manifest -and -not $manifest.source) {
-                    $manifest | Add-Member -NotePropertyName source -NotePropertyValue "manifest_fallback" -Force
-                }
-            }
-            "forgejo" {
-                Write-Host "==> Trying Forgejo/Gitea: $ForgejoUrl"
-                $manifest = Get-FromForgejoReleases -ApiUrl $ForgejoUrl
-            }
-            "github" {
-                Write-Host "==> Trying GitHub Releases: $GithubRepo"
-                $manifest = Get-FromGitHubReleases
-            }
-            default { throw "unknown_source: $src" }
+        $m = Get-ManifestFromSource -src $src
+        if ($m.channel -and $Channel -and ($m.channel -ne $Channel)) {
+            Write-Host "[WARN] $src channel=$($m.channel) requested=$Channel"
         }
-        if ($manifest.channel -and $Channel -and ($manifest.channel -ne $Channel)) {
-            Write-Host "[WARN] manifest channel=$($manifest.channel) requested=$Channel"
+        if (-not $m.windows -or -not $m.windows.url) {
+            throw "missing_windows_download_url"
         }
-        Write-Host "==> Using source: $(if ($manifest.source) { $manifest.source } else { $src })" -ForegroundColor Green
-        break
+        Write-Host "    OK $($m.source) latest=$($m.latest)" -ForegroundColor DarkGreen
+        $candidates += $m
     } catch {
         $msg = $_.Exception.Message
         $errors += "${src}: $msg"
-        Write-Host "[WARN] source '$src' failed: $msg" -ForegroundColor Yellow
-        $manifest = $null
+        Write-Host "[WARN] source '$src' unreachable/failed: $msg" -ForegroundColor Yellow
     }
 }
 
-if (-not $manifest) {
+if ($candidates.Count -eq 0) {
     $joined = ($errors -join "; ")
     if ($Quiet) { exit 2 }
     throw "update_check_failed: all sources failed ($joined)"
 }
+
+# Prefer highest semver; on tie keep earlier source in $sourceList (GitHub before Forgejo by default).
+$manifest = $candidates[0]
+foreach ($c in $candidates) {
+    $cmpCand = Compare-SemVer -A ([string]$manifest.latest) -B ([string]$c.latest)
+    if ($cmpCand -lt 0) {
+        $manifest = $c
+    }
+}
+
+Write-Host "==> Selected source=$($manifest.source) latest=$($manifest.latest) (from $($candidates.Count) reachable)" -ForegroundColor Green
 
 $latest = [string]$manifest.latest
 $cmp = Compare-SemVer -A $current -B $latest
@@ -232,6 +257,7 @@ $result = [pscustomobject]@{
     setup_url        = $(if ($manifest.windows.setup_url) { [string]$manifest.windows.setup_url } else { "" })
     notes_url        = $(if ($manifest.notes_url) { [string]$manifest.notes_url } else { "" })
     sha256           = $(if ($manifest.windows.sha256) { [string]$manifest.windows.sha256 } else { "" })
+    reachable        = @($candidates | ForEach-Object { "$($_.source)=$($_.latest)" })
 }
 
 if (-not $result.update_available) {

@@ -87,38 +87,30 @@ Or reinstall a newer `NetX-Setup-*.exe` over the same program directory.
 
 ## Check / apply updates
 
-Default when nothing is configured: **GitHub Releases** (`hansjone/netx`).
-
-You can put **Forgejo/Gitea first** and keep GitHub as fallback:
+**Defaults (no `.env` needed):** probe **GitHub** (`hansjone/netx`) and Forgejo mirror (`https://git.avelo.top/hansjone/netx`), then use the **newest reachable** version. Same version → prefer GitHub.
 
 ```env
-# Data-root .env (ProgramData\NetX\.env)
-NETX_UPDATE_FORGEJO_URL=https://git.example.com/api/v1/repos/ops/netx/releases/latest
-NETX_UPDATE_SOURCES=forgejo,github
-# Optional private repo token (Forgejo "token …" / GitHub Bearer)
+# Optional overrides in ProgramData\NetX\.env
+# NETX_UPDATE_SOURCES=github,forgejo
+# NETX_UPDATE_FORGEJO_URL=https://git.avelo.top/api/v1/repos/hansjone/netx/releases/latest
+# NETX_UPDATE_GITHUB_REPO=hansjone/netx
+# NETX_UPDATE_URL=https://cdn.example.com/netx/manifest.json
 # NETX_UPDATE_TOKEN=******
 ```
 
-Other options:
-
 | Variable | Role |
 |----------|------|
-| `NETX_UPDATE_URL` | Custom JSON manifest (see `manifest.example.json`) |
-| `NETX_UPDATE_FALLBACK_URL` | Second manifest URL |
-| `NETX_UPDATE_GITHUB_REPO` | Override GitHub `owner/repo` (default `hansjone/netx`) |
-| `NETX_UPDATE_SOURCES` | Explicit order, e.g. `forgejo,github` or `manifest,forgejo,github` |
-
-If `NETX_UPDATE_FORGEJO_URL` is set and `SOURCES` is empty, order is: manifest (if URL set) → **forgejo** → fallback manifest → **github**.
+| `NETX_UPDATE_FORGEJO_URL` | Forgejo/Gitea `releases/latest` API (default: git.avelo.top mirror) |
+| `NETX_UPDATE_GITHUB_REPO` | GitHub `owner/repo` (default `hansjone/netx`) |
+| `NETX_UPDATE_SOURCES` | Probe order / tie-break order, e.g. `github,forgejo` |
+| `NETX_UPDATE_URL` | Optional custom JSON manifest |
 
 ```powershell
-# Report only (exit 0 = up to date, 10 = update available)
 .\packaging\check_update.ps1
-
-# Download zip + run update_netx.ps1
 .\packaging\check_update.ps1 -Apply
 ```
 
-Forgejo must publish the same assets as GitHub (`NetX-*-win64.zip`, optional `NetX-Setup-*.exe`) on a release whose tag is like `v0.4.0`.
+Both sides should publish the same release assets (`NetX-*-win64.zip`). Code mirror alone is not enough—Forgejo Release 也需要挂上安装包（或仅用 GitHub 下包）。
 ## Tray & autostart
 
 ```powershell
