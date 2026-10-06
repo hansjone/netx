@@ -11,11 +11,14 @@ scripts/.run/
 scripts/_*
 scripts/archive/
 packages/netx-topology-mcp/tests/_*
+_tmp_*
+.idea/
 ume/
 data/ne_collections/
 data/webcrt/
 data/auth/
 data/runtime/
+data/ne_exec_jobs/
 # Windows packaging artifacts (binaries / release trees)
 packaging/cache/
 packaging/release/
