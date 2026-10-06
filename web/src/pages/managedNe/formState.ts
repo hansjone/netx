@@ -46,6 +46,22 @@ export function isLinuxDeviceType(deviceType: string | undefined | null): boolea
   return low === "linux" || low === "linux_ssh" || low === "linux_telnet" || low.startsWith("linux_");
 }
 
+export function isMikrotikDeviceType(deviceType: string | undefined | null): boolean {
+  const low = String(deviceType || "")
+    .trim()
+    .toLowerCase();
+  return (
+    low === "mikrotik_routeros" ||
+    low === "mikrotik_switchos" ||
+    low.startsWith("mikrotik_")
+  );
+}
+
+/** Linux + MikroTik may use linux_shell / unrestricted (multiline scripts). */
+export function allowsOpenExecPolicy(deviceType: string | undefined | null): boolean {
+  return isLinuxDeviceType(deviceType) || isMikrotikDeviceType(deviceType);
+}
+
 export function emptyManagedNeForm(): ManagedNeFormState {
   return {
     name: "",
@@ -173,7 +189,7 @@ export function buildManagedNeSaveBody(
     ...(form.hop_password ? { hop_password: form.hop_password } : {}),
   };
   if (opts.execPolicyEnabled) {
-    body.exec_policy = isLinuxDeviceType(form.device_type) ? form.exec_policy : "readonly";
+    body.exec_policy = allowsOpenExecPolicy(form.device_type) ? form.exec_policy : "readonly";
   }
   if (form.hop_enabled) {
     if (!form.hop_host.trim()) throw new Error(opts.hopHostRequired);

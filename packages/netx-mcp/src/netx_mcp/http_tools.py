@@ -24,6 +24,57 @@ def exec_max_commands() -> int:
     return max(1, min(_EXEC_MAX_COMMANDS_CAP, raw))
 
 
+def _async_min_nes() -> int:
+    try:
+        raw = int(os.getenv("NETX_NE_EXEC_ASYNC_MIN_NES") or 4)
+    except ValueError:
+        raw = 4
+    return max(0, min(50, raw))
+
+
+def _truthy_async_flag(raw: Any) -> bool | None:
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        return raw
+    text = str(raw).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
+def _count_exec_ne_targets(args: dict[str, Any]) -> int:
+    n = 0
+    for key in ("ne_ids", "nms_ne_ids", "ume_ne_ids"):
+        val = args.get(key)
+        if isinstance(val, list):
+            n = max(n, len([x for x in val if str(x or "").strip()]))
+    targets = args.get("targets")
+    if isinstance(targets, list):
+        n = max(n, len([t for t in targets if isinstance(t, dict)]))
+    if n == 0 and (
+        str(args.get("ne_id") or "").strip()
+        or str(args.get("nms_ne_id") or "").strip()
+        or str(args.get("ume_ne_id") or "").strip()
+    ):
+        return 1
+    return int(n)
+
+
+def _should_run_exec_async(args: dict[str, Any]) -> bool:
+    flag = _truthy_async_flag(args.get("async"))
+    if flag is False:
+        return False
+    if flag is True:
+        return True
+    min_n = _async_min_nes()
+    if min_n <= 0:
+        return False
+    return _count_exec_ne_targets(args) >= min_n
+
+
 UME_RAW_GROUP_FIELDS = [
     "alarm_alarm_key",
     "alarm_host_name",
@@ -310,6 +361,8 @@ def _exec_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
         or (isinstance(ne_ids_raw, list) and ne_ids_raw)
         or (isinstance(nms_ne_ids_raw, list) and nms_ne_ids_raw)
     )
+    want_async = _should_run_exec_async(args)
+
     if multi:
         body: dict[str, Any] = {}
         if isinstance(targets_raw, list) and targets_raw:
@@ -343,6 +396,12 @@ def _exec_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
         conc = args.get("concurrency")
         if conc is not None:
             body["concurrency"] = int(conc)
+        if want_async:
+            out = http_post_json("/v1/managed-ne/exec-jobs", body, timeout=60.0)
+            if not out.get("ok"):
+                return out
+            data = out.get("data") if isinstance(out.get("data"), dict) else out
+            return data if isinstance(data, dict) else {"ok": True, "data": data}
         # Wall clock: many NEs × per-cmd timeout; keep below oclaw MCP override.
         out = http_post_json("/v1/managed-ne/exec-batch", body, timeout=600.0)
         if not out.get("ok"):
@@ -377,6 +436,12 @@ def _exec_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
     # Default 60s matches netx API default; slow show commands often exceed 30s.
     rts = args.get("read_timeout_sec")
     body["read_timeout_sec"] = int(rts) if rts is not None else 60
+    if want_async:
+        out = http_post_json("/v1/managed-ne/exec-jobs", body, timeout=60.0)
+        if not out.get("ok"):
+            return out
+        data = out.get("data") if isinstance(out.get("data"), dict) else out
+        return data if isinstance(data, dict) else {"ok": True, "data": data}
     out = http_post_json("/v1/managed-ne/exec", body, timeout=300.0)
     if not out.get("ok"):
         return out
@@ -384,6 +449,18 @@ def _exec_managed_ne(args: dict[str, Any]) -> dict[str, Any]:
     if isinstance(data, dict) and data.get("ok") is False:
         return {"ok": False, "data": data, "error": str(data.get("error") or "exec_failed")}
     return {"ok": True, "data": data}
+
+
+def _get_ne_exec_job(args: dict[str, Any]) -> dict[str, Any]:
+    job_id = str(args.get("job_id") or "").strip()
+    if not job_id:
+        return {
+            "ok": False,
+            "error": "job_id_required",
+            "error_code": "job_id_required",
+            "hint": "Pass job_id from execManagedNe async ack.",
+        }
+    return http_json("GET", f"/v1/managed-ne/exec-jobs/{quote_ne_id(job_id)}", params=None)
 
 
 def _list_cli_targets(args: dict[str, Any]) -> dict[str, Any]:
@@ -665,6 +742,8 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
         "name": "getManagedNe",
         "description": (
             "Get one **managed** NE by managed ne_id (from listManagedNe / listCliTargets source=managed). "
+            "Response includes capability (device_family, exec_policy_effective, recommended_mode, hints) "
+            "— read it before complex execManagedNe. "
             "Do NOT pass NMS inventory UUID here — use getNmsNe or execManagedNe(nms_ne_id=...) instead."
         ),
         "inputSchema": {
@@ -686,8 +765,9 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
         "description": (
             f"Run CLI via netx (default read-only: show/display/ping/traceroute; "
             f"max {exec_max_commands()} commands per NE, NETX_NE_EXEC_MAX_COMMANDS). "
-            "Managed NE exec_policy=linux_shell|unrestricted allows single-line shell on that host "
-            "(check getManagedNe / listManagedNe). "
+            "Managed NE exec_policy=linux_shell|unrestricted allows shell/script on Linux or "
+            "MikroTik (routeros/switchos) hosts "
+            "(pipes/&&/;/quotes/heredoc / RouterOS multiline OK; check getManagedNe / listManagedNe). "
             "Single NE: ne_id OR nms_ne_id (+ alias ume_ne_id) + commands. "
             "Many NEs (batch-first, server concurrency default 4, max 20): "
             "(1) same CLI on all → ne_ids[]/nms_ne_ids[] + shared commands; "
@@ -695,8 +775,9 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
             "{nms_ne_id|ne_id, commands:[…]}, …] — do NOT fall back to one-NE loops. "
             "Do NOT loop one-NE execManagedNe for multi-NE work. "
             "Default read_timeout_sec=60; on timeout raise to 90–120 — do not blind-retry. "
-            "Large batches (≈4+ NEs) may auto-run async in oclaw: returns job_id immediately; "
-            "poll get_ne_exec_job. Pass async=true to force background, async=false to force sync."
+            "Long or multi-NE work: async=true (or auto when ≥4 NEs) returns job_id immediately; "
+            "poll getNeExecJob. Pass async=false to force sync. "
+            "Read getManagedNe.capability before choosing show_only vs script_on_device."
         ),
         "inputSchema": {
             "type": "object",
@@ -774,12 +855,28 @@ HTTP_MCP_TOOLS: list[dict[str, Any]] = [
                 "async": {
                     "type": "boolean",
                     "description": (
-                        "oclaw-only: true=background job_id + get_ne_exec_job; "
-                        "false=force sync; omit=auto for large batches (~4+ NEs)."
+                        "true=background job_id + getNeExecJob; false=force sync; "
+                        "omit=auto for large batches (~4+ NEs, NETX_NE_EXEC_ASYNC_MIN_NES)."
                     ),
                 },
             },
             "required": [],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "getNeExecJob",
+        "description": (
+            "Poll a background execManagedNe job (job_id from async ack). "
+            "When terminal=true, result holds the exec/exec-batch payload. "
+            "Do not busy-wait; end the turn and poll later if still running."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "job_id": {"type": "string", "description": "Job id from execManagedNe async response."},
+            },
+            "required": ["job_id"],
             "additionalProperties": False,
         },
     },
@@ -872,6 +969,7 @@ _HANDLERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "listManagedNe": _list_managed_ne,
     "getManagedNe": _get_managed_ne,
     "execManagedNe": _exec_managed_ne,
+    "getNeExecJob": _get_ne_exec_job,
     "listCliTargets": _list_cli_targets,
     "findTopologyPaths": _find_topology_paths,
 }
@@ -890,6 +988,7 @@ TOOL_REQUIRED_SCOPE: dict[str, str] = {
     "listManagedNe": "ne:read",
     "getManagedNe": "ne:read",
     "execManagedNe": "ne:exec",
+    "getNeExecJob": "ne:exec",
     "listCliTargets": "ne:read",
     "findTopologyPaths": "ne:read",
 }

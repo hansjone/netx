@@ -176,6 +176,19 @@ class ManagedNeExecBatchRequest(BaseModel):
     concurrency: int | None = Field(default=4, ge=1, le=8)
 
 
+class ManagedNeExecJobCreate(BaseModel):
+    """Start a background single or batch exec (poll GET /v1/managed-ne/exec-jobs/{job_id})."""
+
+    ne_id: str | None = None
+    ume_ne_id: str | None = None
+    targets: list[ManagedNeExecBatchTarget] | None = Field(default=None, max_length=20)
+    ne_ids: list[str] | None = Field(default=None, max_length=20)
+    ume_ne_ids: list[str] | None = Field(default=None, max_length=20)
+    commands: list[str] | None = Field(default=None, max_length=50)
+    read_timeout_sec: int | None = Field(default=None, ge=10, le=120)
+    concurrency: int | None = Field(default=4, ge=1, le=8)
+
+
 class HopProxyConfig(BaseModel):
     """Shared jump-host (proxy) settings applied to one or many NEs."""
 

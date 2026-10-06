@@ -118,6 +118,8 @@ def required_scope_for_request(method: str, path: str) -> str | None:
 
     if p.startswith("/v1/managed-ne"):
         path_tail = p.rstrip("/")
+        if "/exec-jobs" in p:
+            return SCOPE_NE_EXEC
         if m == "POST" and (path_tail.endswith("/exec") or path_tail.endswith("/exec-batch")):
             return SCOPE_NE_EXEC
         if m in ("POST", "PUT", "PATCH", "DELETE"):

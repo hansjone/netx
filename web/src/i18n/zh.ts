@@ -1627,9 +1627,9 @@ const zh = {
     },
     execPolicy: {
       readonly: "只读（show/display/ping）",
-      linuxShell: "Linux shell（单行）",
-      unrestricted: "实验室全开（单行）",
-      hint: "仅影响 MCP/API 的 execManagedNe。默认只读；仅 Linux 设备类型可选 shell / 实验室全开。",
+      linuxShell: "Shell/脚本（允许多行/heredoc）",
+      unrestricted: "实验室全开（允许多行/heredoc）",
+      hint: "仅影响 MCP/API 的 execManagedNe。默认只读；Linux 与 MikroTik（routeros/switchos）可选 shell / 实验室全开，支持多行脚本与 heredoc。",
     },
     source: {
       manual: "手工",

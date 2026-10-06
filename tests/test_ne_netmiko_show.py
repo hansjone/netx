@@ -1,9 +1,9 @@
-"""Tests for Netmiko show helpers (IOSv leftover-prompt drain / retry)."""
+"""Tests for Netmiko show helpers (IOSv leftover-prompt drain; no re-send)."""
 
 from __future__ import annotations
 
 import unittest
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 from netx_api.ne_netmiko import drain_read_channel, send_show_command
 
@@ -24,25 +24,24 @@ class DrainReadChannelTests(unittest.TestCase):
 
 class SendShowCommandTests(unittest.TestCase):
     @patch("netx_api.ne_netmiko.drain_read_channel")
-    def test_returns_first_nonempty_send_command(self, drain: MagicMock) -> None:
+    def test_drains_then_sends_once(self, drain: MagicMock) -> None:
         conn = MagicMock()
         conn.send_command.return_value = "*12:00:00 UTC"
         out = send_show_command(conn, "show clock", read_timeout=30)
         self.assertEqual(out, "*12:00:00 UTC")
         conn.send_command.assert_called_once()
         conn.send_command_timing.assert_not_called()
-        drain.assert_called()
+        drain.assert_called_once_with(conn)
 
     @patch("netx_api.ne_netmiko.drain_read_channel")
-    def test_retries_then_falls_back_to_timing_when_empty(self, drain: MagicMock) -> None:
+    def test_empty_output_does_not_resend(self, drain: MagicMock) -> None:
         conn = MagicMock()
         conn.send_command.return_value = ""
-        conn.send_command_timing.return_value = "Cisco IOS Software"
         out = send_show_command(conn, "show version", read_timeout=30)
-        self.assertEqual(out, "Cisco IOS Software")
-        self.assertEqual(conn.send_command.call_count, 2)
-        conn.send_command_timing.assert_called_once_with("show version", read_timeout=30)
-        self.assertGreaterEqual(drain.call_count, 2)
+        self.assertEqual(out, "")
+        conn.send_command.assert_called_once()
+        conn.send_command_timing.assert_not_called()
+        drain.assert_called_once_with(conn)
 
 
 if __name__ == "__main__":

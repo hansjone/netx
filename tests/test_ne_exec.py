@@ -105,6 +105,10 @@ class NeExecValidationTests(unittest.TestCase):
             "systemctl status sshd",
             "cat /etc/os-release && uname -a",
             "df -h; free -m",
+            "printf 'a\\nb' > /tmp/x",
+            "python3 -c \"print('hi')\"",
+            "cat <<'EOF' > /tmp/x\nhello world\nEOF",
+            "tee /tmp/x <<EOF\nline1\nline2\nEOF",
         ):
             with self.subTest(cmd=cmd):
                 _validate_command(cmd, policy="linux_shell")
@@ -117,13 +121,21 @@ class NeExecValidationTests(unittest.TestCase):
             self.assertEqual(effective_exec_policy("linux_shell", device_type="linux"), "readonly")
             self.assertEqual(effective_exec_policy("unrestricted", device_type="linux"), "readonly")
 
-    def test_effective_policy_forces_readonly_for_non_linux(self) -> None:
+    def test_effective_policy_forces_readonly_for_ineligible_types(self) -> None:
         from netx_api.ne_exec_guard import effective_exec_policy
 
         with patch("netx_api.ne_exec_guard.exec_policy_feature_enabled", return_value=True):
             self.assertEqual(effective_exec_policy("linux_shell", device_type="zte_zxros"), "readonly")
             self.assertEqual(effective_exec_policy("linux_shell", device_type="linux"), "linux_shell")
             self.assertEqual(effective_exec_policy("unrestricted", device_type="linux_ssh"), "unrestricted")
+            self.assertEqual(
+                effective_exec_policy("linux_shell", device_type="mikrotik_routeros"),
+                "linux_shell",
+            )
+            self.assertEqual(
+                effective_exec_policy("unrestricted", device_type="mikrotik_switchos"),
+                "unrestricted",
+            )
 
     def test_require_writable_rejects_when_feature_off(self) -> None:
         from netx_api.ne_exec_guard import require_exec_policy_writable
@@ -134,7 +146,7 @@ class NeExecValidationTests(unittest.TestCase):
                 require_exec_policy_writable("linux_shell", device_type="linux")
             self.assertEqual(ctx.exception.detail, "exec_policy_feature_disabled")
 
-    def test_require_writable_rejects_non_linux(self) -> None:
+    def test_require_writable_rejects_ineligible_types(self) -> None:
         from netx_api.ne_exec_guard import require_exec_policy_writable
 
         with patch("netx_api.ne_exec_guard.exec_policy_feature_enabled", return_value=True):
@@ -142,14 +154,36 @@ class NeExecValidationTests(unittest.TestCase):
                 require_exec_policy_writable("linux_shell", device_type="linux"),
                 "linux_shell",
             )
+            self.assertEqual(
+                require_exec_policy_writable("linux_shell", device_type="mikrotik_routeros"),
+                "linux_shell",
+            )
             with self.assertRaises(HTTPException) as ctx:
                 require_exec_policy_writable("linux_shell", device_type="cisco_ios")
-            self.assertEqual(ctx.exception.detail, "exec_policy_requires_linux_device_type")
+            self.assertEqual(ctx.exception.detail, "exec_policy_requires_shell_device_type")
 
-    def test_linux_shell_blocks_newline(self) -> None:
+    def test_linux_shell_allows_multiline_and_chained(self) -> None:
+        # Newlines are intentional for heredoc / small scripts (agent-friendly).
+        _validate_command("ls\nrm -rf /", policy="linux_shell")
+        _validate_command("cat <<'EOF' > /tmp/a\nx\nEOF", policy="unrestricted")
+
+    def test_linux_shell_blocks_unicode_line_separator(self) -> None:
         with self.assertRaises(HTTPException) as ctx:
-            _validate_command("ls\nrm -rf /", policy="linux_shell")
+            _validate_command("ls\u2028rm -rf /", policy="linux_shell")
         self.assertEqual(ctx.exception.detail, "command_chars_not_allowed")
+
+    def test_linux_shell_blocks_too_many_lines(self) -> None:
+        body = "\n".join(["echo x"] * 2001)
+        with self.assertRaises(HTTPException) as ctx:
+            _validate_command(body, policy="linux_shell")
+        self.assertEqual(ctx.exception.detail, "command_too_many_lines")
+
+    def test_linux_shell_allows_longer_than_readonly_cap(self) -> None:
+        cmd = "echo " + ("a" * 600)
+        with self.assertRaises(HTTPException) as ctx:
+            _validate_command(cmd, policy="readonly")
+        self.assertEqual(ctx.exception.detail, "command_too_long")
+        _validate_command(cmd, policy="linux_shell")
 
     def test_readonly_still_blocks_linux_cmds(self) -> None:
         with self.assertRaises(HTTPException) as ctx:
@@ -282,6 +316,31 @@ class NeExecRunTests(unittest.TestCase):
             out = execute_managed_ne_commands(db, ["ls -la /tmp"], ne_id="linux-1")
         self.assertTrue(out["ok"])
         self.assertEqual(out["output"], "shell-ok")
+        self.assertEqual(out["device"]["exec_policy"], "linux_shell")
+        collect.assert_called_once()
+
+    @patch("netx_api.ne_exec.credentials_configured", return_value=True)
+    @patch("netx_api.ne_exec._collect_on_device", return_value="ros-ok")
+    @patch("netx_api.ne_exec.resolve_cli_target")
+    def test_execute_mikrotik_shell_policy_allows_multiline(self, resolve, collect, _configured) -> None:
+        resolve.return_value = (
+            _ready_creds(),
+            {
+                "source": "managed",
+                "id": "mt-1",
+                "exec_policy": "linux_shell",
+                "name": "rb5009",
+                "device_type": "mikrotik_routeros",
+                "ip_address": "10.0.0.10",
+            },
+        )
+        db = MagicMock()
+        script = ":local x 1\n:put $x\n/ip address print"
+        with patch("netx_api.config.settings") as mock_settings:
+            mock_settings.ne_exec_policy_enabled = True
+            out = execute_managed_ne_commands(db, [script], ne_id="mt-1")
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["output"], "ros-ok")
         self.assertEqual(out["device"]["exec_policy"], "linux_shell")
         collect.assert_called_once()
 

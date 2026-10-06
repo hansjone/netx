@@ -14,7 +14,7 @@ import {
   buildManagedNeSaveBody,
   emptyManagedNeForm,
   formFromManagedNe,
-  isLinuxDeviceType,
+  allowsOpenExecPolicy,
   type ManagedNeFormState,
 } from "./formState";
 
@@ -139,7 +139,7 @@ export function ManagedNeFormDialog({
               setForm((prev) => ({
                 ...prev,
                 device_type,
-                exec_policy: isLinuxDeviceType(device_type) ? prev.exec_policy : "readonly",
+                exec_policy: allowsOpenExecPolicy(device_type) ? prev.exec_policy : "readonly",
               }));
             }}
           >
@@ -162,7 +162,7 @@ export function ManagedNeFormDialog({
                 }
               >
                 <option value="readonly">{t("managedNe.execPolicy.readonly")}</option>
-                {isLinuxDeviceType(form.device_type) ? (
+                {allowsOpenExecPolicy(form.device_type) ? (
                   <>
                     <option value="linux_shell">{t("managedNe.execPolicy.linuxShell")}</option>
                     <option value="unrestricted">{t("managedNe.execPolicy.unrestricted")}</option>

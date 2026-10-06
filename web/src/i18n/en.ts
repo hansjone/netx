@@ -1640,9 +1640,9 @@ const en = {
     },
     execPolicy: {
       readonly: "Read-only (show/display/ping)",
-      linuxShell: "Linux shell (single line)",
-      unrestricted: "Lab open (single line)",
-      hint: "Applies to MCP/API execManagedNe only. Default is read-only; shell / lab-open require a Linux device type.",
+      linuxShell: "Shell / script (multiline / heredoc OK)",
+      unrestricted: "Lab open (multiline / heredoc OK)",
+      hint: "Applies to MCP/API execManagedNe only. Default is read-only; Linux and MikroTik (routeros/switchos) may use shell / lab-open for multiline scripts and heredoc.",
     },
     source: {
       manual: "Manual",

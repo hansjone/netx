@@ -35,7 +35,7 @@ from .ne_service_common import (
 )
 from .ne_exec_guard import (
     EXEC_POLICY_READONLY,
-    is_linux_device_type,
+    allows_open_exec_policy,
     require_exec_policy_writable,
 )
 
@@ -173,8 +173,8 @@ def update_managed_ne(db: Session, ne_id: str, body: ManagedNeUpdate) -> Managed
             str(data["exec_policy"]),
             device_type=row.device_type,
         )
-    elif "device_type" in data and not is_linux_device_type(row.device_type):
-        # Leaving linux clears any previously open policy.
+    elif "device_type" in data and not allows_open_exec_policy(row.device_type):
+        # Leaving linux/mikrotik clears any previously open policy.
         row.exec_policy = EXEC_POLICY_READONLY
     if "password" in data and data["password"]:
         _require_crypto()

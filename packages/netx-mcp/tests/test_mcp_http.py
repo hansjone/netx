@@ -15,10 +15,11 @@ from netx_mcp.server import _fetch_scopes
 
 def test_http_mcp_tool_list_has_expected_tools() -> None:
     names = [str(t.get("name") or "") for t in HTTP_MCP_TOOLS]
-    assert len(names) == 14
+    assert len(names) == 15
     assert "queryNmsAlarms" in names
     assert "queryNmsAlarmsRaw" in names
     assert "execManagedNe" in names
+    assert "getNeExecJob" in names
     assert "listCliTargets" in names
     assert "findTopologyPaths" in names
     assert "getBizMonitorContext" not in names

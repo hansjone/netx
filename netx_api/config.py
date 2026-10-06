@@ -146,6 +146,12 @@ class Settings(BaseSettings):
     ne_exec_max_commands: int = 5
     # Opt-in: allow per-NE exec_policy (linux_shell/unrestricted). Default off — UI hidden.
     ne_exec_policy_enabled: bool = False
+    # Background exec jobs (MCP getNeExecJob / POST /v1/managed-ne/exec-jobs).
+    ne_exec_job_dir: str = "data/ne_exec_jobs"
+    ne_exec_job_max_concurrent: int = 3
+    ne_exec_job_timeout_s: int = 900
+    # Auto-async when batch NE count >= this (0 = only when async=true).
+    ne_exec_async_min_nes: int = 4
     # WebCRT interactive terminal sessions (multi-operator concurrent terminals).
     webcrt_max_sessions: int = 40
     # Per-user cap (0 = unlimited beyond global max).

@@ -71,6 +71,9 @@ pip install "git+https://github.com/hansjone/netx.git#subdirectory=packages/netx
 | `NETX_MCP_TOKEN_FILE` | 否 | `data/auth/mcp_token` | 默认 token 文件路径 |
 | `NETX_LANG` | 否 | `zh` | `zh` / `en`，影响 API 文案 |
 | `NETX_NE_EXEC_MAX_COMMANDS` | 否 | `5` | `execManagedNe` 单次最多命令数（硬上限 50）；API 与 MCP 需同设 |
+| `NETX_NE_EXEC_ASYNC_MIN_NES` | 否 | `4` | 批量 NE 数 ≥ 此值时自动走后台 job（`0`=仅 `async=true`） |
+| `NETX_NE_EXEC_JOB_DIR` | 否 | `data/ne_exec_jobs` | 后台 exec job 状态目录 |
+| `NETX_NE_EXEC_JOB_MAX_CONCURRENT` | 否 | `3` | 同时运行的 exec job 上限 |
 
 本机默认端口时 **可不设任何变量**。启用登录后，先启动一次 netx API，会生成 `data/auth/mcp_token`；MCP 会自动带上该 token。若要把 token 写进 Cursor 配置：
 
@@ -136,7 +139,7 @@ pip install "git+https://github.com/hansjone/netx.git#subdirectory=packages/netx
 | NMS 告警 | `queryNmsAlarms`, `aggregateNmsAlarms`, `runNmsDiagnostics` |
 | NMS 网元 | `queryNmsNeInventory`, `getNmsNe` |
 | NMS 原始/SQL | `queryNmsAlarmsRaw`, `aggregateNmsAlarmsRaw`, `listNmsAlarmFields`, `sqlQueryNms` |
-| common（CLI + 路径） | `listManagedNe`, `getManagedNe`, `execManagedNe`, `listCliTargets`, `findTopologyPaths` |
+| common（CLI + 路径） | `listManagedNe`, `getManagedNe`, `execManagedNe`, `getNeExecJob`, `listCliTargets`, `findTopologyPaths` |
 
 参数优先 `nms_ne_id` / `nms_ne_ids`（保留 `ume_*` 别名）。拓扑 Fabric / 画布工具在 **[`netx-topology-mcp`](./MCP_TOPOLOGY.md)**。oclaw 中名称带前缀：`mcp__netx__<toolName>`；DSH：`netx__<toolName>`。
 

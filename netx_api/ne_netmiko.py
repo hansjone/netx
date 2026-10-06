@@ -149,12 +149,15 @@ def _send_command_expect_prompt(conn: Any, cmd: str, *, read_timeout: int) -> st
 
 
 def send_show_command(conn: Any, command: str, *, read_timeout: int = 120) -> str:
-    """Send a show/display command via ``send_command`` (wait for device prompt).
+    """Send one CLI command via ``send_command`` (wait for device prompt).
 
-    Do not use ``send_command_timing`` as the primary path for Cisco config
-    collection: long idle during ``Building configuration...`` is treated as
-    end-of-output and truncates the config. Timing is only a fallback when
-    expect-prompt returns empty after a channel drain (IOSv leftover-prompt bug).
+    Never re-sends the same command on empty/short output: this path is shared by
+    show collection and open-policy config/scripts (MikroTik ``add``, etc.). A
+    leftover-prompt empty read must be fixed by draining *before* send, not by
+    retrying — retries duplicate side-effecting commands.
+
+    Prefer ``send_command`` over ``send_command_timing`` for long config dumps:
+    idle during ``Building configuration...`` truncates timing reads.
 
     ``cmd_verify=False``: Netmiko's default echo check often raises
     ``Pattern not detected: 'show\\ lldp\\ ...'`` on IOSv / hop / slow echo paths.
@@ -163,19 +166,7 @@ def send_show_command(conn: Any, command: str, *, read_timeout: int = 120) -> st
     if not cmd:
         return ""
 
+    # IOSv / hop: find_prompt / paging-off often leave an extra prompt in the
+    # channel; drain so send_command does not match that leftover immediately.
     drain_read_channel(conn)
-    out = _send_command_expect_prompt(conn, cmd, read_timeout=read_timeout)
-    if out.strip():
-        return out
-
-    # Leftover prompt matched before command echo — drain again and retry once.
-    drain_read_channel(conn)
-    out = _send_command_expect_prompt(conn, cmd, read_timeout=read_timeout)
-    if out.strip():
-        return out
-
-    drain_read_channel(conn)
-    try:
-        return str(conn.send_command_timing(cmd, read_timeout=read_timeout) or "")
-    except Exception:
-        return ""
+    return _send_command_expect_prompt(conn, cmd, read_timeout=read_timeout)

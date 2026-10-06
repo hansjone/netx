@@ -12,13 +12,16 @@ from .db import get_db
 from .device_types import SUPPORTED_VENDORS
 from .ne_connect import schedule_connect_tests
 from .ne_crypto import credentials_configured
+from .ne_capability import build_ne_capability
 from .ne_exec import execute_managed_ne_commands, execute_managed_ne_commands_batch
+from .ne_exec_jobs import get_ne_exec_job, start_ne_exec_job
 from .ne_schemas import (
     BatchAccountApplyRequest,
     BatchHopApplyRequest,
     ConnectTestRequest,
     ManagedNeCreate,
     ManagedNeExecBatchRequest,
+    ManagedNeExecJobCreate,
     ManagedNeExecRequest,
     ManagedNeUpdate,
 )
@@ -149,6 +152,39 @@ def api_delete_ume_synced_managed_ne(db: Session = Depends(get_db)):
     return delete_ume_synced_managed_ne(db).model_dump()
 
 
+def _audit_exec(
+    db: Session,
+    *,
+    uid: str,
+    uname: str,
+    path: str,
+    out: dict,
+    body_ne_id: str = "",
+    body_ume_ne_id: str = "",
+    commands: list | None = None,
+) -> None:
+    device = out.get("device") if isinstance(out.get("device"), dict) else {}
+    write_audit(
+        db,
+        action="ne.exec",
+        actor_user_id=uid,
+        actor_username=uname,
+        method="POST",
+        path=path,
+        status_code=200 if out.get("ok") else 502,
+        detail={
+            "ne_id": body_ne_id,
+            "ume_ne_id": body_ume_ne_id,
+            "ne_name": str(device.get("name") or device.get("ne_name") or ""),
+            "ne_ip": str(device.get("ip_address") or device.get("ip") or device.get("mgmt_ip") or ""),
+            "commands": list(out.get("commands") or commands or [])[:20],
+            "ok": bool(out.get("ok")),
+            "error": str(out.get("error") or "")[:500],
+            "output_len": len(str(out.get("output") or "")),
+        },
+    )
+
+
 @router.post("/exec")
 def api_exec_managed_ne(
     body: ManagedNeExecRequest,
@@ -164,25 +200,15 @@ def api_exec_managed_ne(
         ume_ne_id=body.ume_ne_id,
         read_timeout_sec=body.read_timeout_sec,
     )
-    device = out.get("device") if isinstance(out.get("device"), dict) else {}
-    write_audit(
+    _audit_exec(
         db,
-        action="ne.exec",
-        actor_user_id=uid,
-        actor_username=uname,
-        method="POST",
+        uid=uid,
+        uname=uname,
         path="/v1/managed-ne/exec",
-        status_code=200 if out.get("ok") else 502,
-        detail={
-            "ne_id": body.ne_id or "",
-            "ume_ne_id": body.ume_ne_id or "",
-            "ne_name": str(device.get("name") or device.get("ne_name") or ""),
-            "ne_ip": str(device.get("ip_address") or device.get("ip") or device.get("mgmt_ip") or ""),
-            "commands": list(out.get("commands") or body.commands or [])[:20],
-            "ok": bool(out.get("ok")),
-            "error": str(out.get("error") or "")[:500],
-            "output_len": len(str(out.get("output") or "")),
-        },
+        out=out,
+        body_ne_id=body.ne_id or "",
+        body_ume_ne_id=body.ume_ne_id or "",
+        commands=list(body.commands or []),
     )
     return out
 
@@ -235,6 +261,96 @@ def api_exec_managed_ne_batch(
     return out
 
 
+@router.post("/exec-jobs")
+def api_create_exec_job(
+    body: ManagedNeExecJobCreate,
+    ctx: Annotated[AuthContext, Depends(require_user)],
+    db: Session = Depends(get_db),
+):
+    """Start a background exec (single or batch). Poll GET /exec-jobs/{job_id}."""
+    from .db import SessionLocal
+
+    uid, uname = _actor(ctx)
+    payload = body.model_dump(exclude_none=True)
+    is_batch = bool(
+        payload.get("targets")
+        or payload.get("ne_ids")
+        or payload.get("ume_ne_ids")
+    )
+    kind = "exec-batch" if is_batch else "exec"
+
+    def _runner() -> dict:
+        with SessionLocal() as job_db:
+            if is_batch:
+                targets = payload.get("targets")
+                out = execute_managed_ne_commands_batch(
+                    targets=targets,
+                    ne_ids=payload.get("ne_ids"),
+                    ume_ne_ids=payload.get("ume_ne_ids"),
+                    commands=payload.get("commands"),
+                    read_timeout_sec=payload.get("read_timeout_sec"),
+                    concurrency=payload.get("concurrency"),
+                )
+                write_audit(
+                    job_db,
+                    action="ne.exec_batch",
+                    actor_user_id=uid,
+                    actor_username=uname,
+                    method="POST",
+                    path="/v1/managed-ne/exec-jobs",
+                    status_code=200,
+                    detail={
+                        "async": True,
+                        "ne_ids": list(payload.get("ne_ids") or [])[:100],
+                        "ume_ne_ids": list(payload.get("ume_ne_ids") or [])[:100],
+                        "ok": bool(out.get("ok", True)),
+                    },
+                )
+                return out
+            cmds = list(payload.get("commands") or [])
+            out = execute_managed_ne_commands(
+                job_db,
+                cmds,
+                ne_id=payload.get("ne_id"),
+                ume_ne_id=payload.get("ume_ne_id"),
+                read_timeout_sec=payload.get("read_timeout_sec"),
+            )
+            _audit_exec(
+                job_db,
+                uid=uid,
+                uname=uname,
+                path="/v1/managed-ne/exec-jobs",
+                out=out,
+                body_ne_id=str(payload.get("ne_id") or ""),
+                body_ume_ne_id=str(payload.get("ume_ne_id") or ""),
+                commands=cmds,
+            )
+            return out
+
+    ack = start_ne_exec_job(kind=kind, arguments=payload, runner=_runner)
+    write_audit(
+        db,
+        action="ne.exec_job_start",
+        actor_user_id=uid,
+        actor_username=uname,
+        method="POST",
+        path="/v1/managed-ne/exec-jobs",
+        status_code=200 if ack.get("ok") else 429,
+        detail={"job_id": ack.get("job_id") or "", "kind": kind, "ok": bool(ack.get("ok"))},
+    )
+    return ack
+
+
+@router.get("/exec-jobs/{job_id}")
+def api_get_exec_job(
+    job_id: str,
+    ctx: Annotated[AuthContext, Depends(require_user)],
+):
+    """Poll a background exec job started via POST /exec-jobs."""
+    _ = ctx
+    return get_ne_exec_job(job_id)
+
+
 @router.post("/connect-test")
 def api_connect_test(body: ConnectTestRequest, db: Session = Depends(get_db)):
     ids = [str(x).strip() for x in body.ids if str(x).strip()]
@@ -251,7 +367,14 @@ def api_connect_test(body: ConnectTestRequest, db: Session = Depends(get_db)):
 
 @router.get("/{ne_id}")
 def api_get_managed_ne(ne_id: str, db: Session = Depends(get_db)):
-    return get_managed_ne(db, ne_id).model_dump()
+    out = get_managed_ne(db, ne_id).model_dump()
+    out["capability"] = build_ne_capability(
+        device_type=out.get("device_type"),
+        exec_policy=out.get("exec_policy"),
+        vendor=out.get("vendor"),
+        hop_enabled=bool(out.get("hop_enabled")),
+    )
+    return out
 
 
 @router.patch("/{ne_id}")

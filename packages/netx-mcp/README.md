@@ -44,7 +44,7 @@ python -m netx_mcp
 `queryNmsAlarms`, `aggregateNmsAlarms`, `runNmsDiagnostics`, `queryNmsNeInventory`, `getNmsNe`, `queryNmsAlarmsRaw`, `aggregateNmsAlarmsRaw`, `listNmsAlarmFields`, `sqlQueryNms`
 
 **Managed CLI + paths**（问「能否登录」必须走这里，不要只查 inventory）：  
-`listManagedNe`, `getManagedNe`, `execManagedNe`, `listCliTargets`, `findTopologyPaths`
+`listManagedNe`, `getManagedNe`, `execManagedNe`, `getNeExecJob`, `listCliTargets`, `findTopologyPaths`
 
 参数优先 `nms_ne_id` / `nms_ne_ids`（保留 `ume_*` 别名）。
 
