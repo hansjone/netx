@@ -3,7 +3,8 @@ param(
     [switch]$SkipBuild = $false,
     [switch]$SkipInstaller = $false,
     [switch]$SkipGitHub = $false,
-    [switch]$Draft = $false
+    [switch]$Draft = $false,
+    [switch]$Sign = $false
 )
 
 $ErrorActionPreference = "Stop"
@@ -48,6 +49,17 @@ if (-not $SkipInstaller) {
             throw "installer_build_failed: expected $setup"
         }
         Write-Host "==> Setup.exe: $setup" -ForegroundColor Green
+    }
+}
+
+if ($Sign) {
+    $toSign = @()
+    if (Test-Path $setup) { $toSign += $setup }
+    if ($toSign.Count -eq 0) {
+        Write-Host "[WARN] -Sign set but no Setup.exe to sign"
+    } else {
+        Write-Host "==> Signing release artifacts"
+        & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "sign_release.ps1") -Files $toSign
     }
 }
 

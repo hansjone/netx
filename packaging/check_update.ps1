@@ -4,7 +4,9 @@ param(
     [string]$UpdateUrl = "",
     [string]$Channel = "",
     [switch]$Apply = $false,
-    [switch]$Quiet = $false
+    [switch]$Quiet = $false,
+    # Only apply when NETX_UPDATE_AUTO=true (scheduled silent updates).
+    [switch]$AutoOnly = $false
 )
 
 # Check for a newer NetX Windows package.
@@ -116,33 +118,68 @@ if (-not $result.update_available) {
 Write-Host "==> Update available: $current -> $latest" -ForegroundColor Cyan
 if ($result.notes_url) { Write-Host "    Notes: $($result.notes_url)" }
 
+$autoEnabled = $false
+$autoVal = ""
+if ($map["NETX_UPDATE_AUTO"]) { $autoVal = $map["NETX_UPDATE_AUTO"] }
+elseif ($env:NETX_UPDATE_AUTO) { $autoVal = $env:NETX_UPDATE_AUTO }
+if ($autoVal -match '^(1|true|yes|on)$') { $autoEnabled = $true }
+
 if (-not $Apply) {
     Write-Host "    Download (zip): $($result.download_url)"
     if ($result.setup_url) { Write-Host "    Or install: $($result.setup_url)" }
     Write-Host "    To apply: .\packaging\check_update.ps1 -Apply"
-    $result | ConvertTo-Json -Compress | Write-Output
+    if (-not $Quiet) {
+        $result | ConvertTo-Json -Compress | Write-Output
+    }
     exit 10
 }
 
-$dlDir = Join-Path $data "backups\downloads"
-if (-not (Test-Path $dlDir)) {
-    New-Item -ItemType Directory -Path $dlDir -Force | Out-Null
-}
-$zipName = "NetX-$latest-win64.zip"
-$zipPath = Join-Path $dlDir $zipName
-Write-Host "==> Downloading $zipName ..."
-Invoke-WebRequest -Uri $result.download_url -OutFile $zipPath -UseBasicParsing
-if ($result.sha256 -and $result.sha256 -notmatch 'REPLACE') {
-    $hash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    $expect = $result.sha256.ToLowerInvariant()
-    if ($hash -ne $expect) {
-        throw "sha256_mismatch: got $hash expected $expect"
+if ($AutoOnly -and -not $autoEnabled) {
+    Write-Host "==> Update available but NETX_UPDATE_AUTO is not enabled; skip apply"
+    if (-not $Quiet) {
+        $result | ConvertTo-Json -Compress | Write-Output
     }
-    Write-Host "==> SHA256 OK"
+    exit 10
 }
 
-Write-Host "==> Applying update via update_netx.ps1"
-& powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "update_netx.ps1") `
-    -PackagePath $zipPath -ProgramRoot $prog -DataRoot $data
-Write-Host "==> Update applied to $latest" -ForegroundColor Green
+$lockFile = Join-Path $data "data\runtime\update.lock"
+$lockDir = Split-Path -Parent $lockFile
+if (-not (Test-Path $lockDir)) {
+    New-Item -ItemType Directory -Path $lockDir -Force | Out-Null
+}
+if (Test-Path $lockFile) {
+    $ageHrs = ((Get-Date) - (Get-Item $lockFile).LastWriteTime).TotalHours
+    if ($ageHrs -lt 2) {
+        Write-Host "==> Another update appears in progress ($lockFile); abort"
+        exit 3
+    }
+    Remove-Item -Force $lockFile -ErrorAction SilentlyContinue
+}
+Set-Content -Path $lockFile -Value (Get-Date).ToString("o") -Encoding ascii
+
+try {
+    $dlDir = Join-Path $data "backups\downloads"
+    if (-not (Test-Path $dlDir)) {
+        New-Item -ItemType Directory -Path $dlDir -Force | Out-Null
+    }
+    $zipName = "NetX-$latest-win64.zip"
+    $zipPath = Join-Path $dlDir $zipName
+    Write-Host "==> Downloading $zipName ..."
+    Invoke-WebRequest -Uri $result.download_url -OutFile $zipPath -UseBasicParsing
+    if ($result.sha256 -and $result.sha256 -notmatch 'REPLACE' -and $result.sha256.Trim()) {
+        $hash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $expect = $result.sha256.ToLowerInvariant()
+        if ($hash -ne $expect) {
+            throw "sha256_mismatch: got $hash expected $expect"
+        }
+        Write-Host "==> SHA256 OK"
+    }
+
+    Write-Host "==> Applying update via update_netx.ps1"
+    & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "update_netx.ps1") `
+        -PackagePath $zipPath -ProgramRoot $prog -DataRoot $data
+    Write-Host "==> Update applied to $latest" -ForegroundColor Green
+} finally {
+    Remove-Item -Force $lockFile -ErrorAction SilentlyContinue
+}
 exit 0

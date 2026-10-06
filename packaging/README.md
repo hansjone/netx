@@ -108,6 +108,40 @@ Default source: latest GitHub Release for `hansjone/netx`. Optional custom manif
 # Remove: .\packaging\install_autostart.ps1 -Remove
 ```
 
+## Windows Service (admin)
+
+Uses [WinSW](https://github.com/winsw/winsw) (downloaded on first install into `packaging/cache`).
+
+```powershell
+# Elevated PowerShell
+.\packaging\install_service.ps1 -Start
+# Uninstall: .\packaging\install_service.ps1 -Uninstall
+
+# Fallback without WinSW binary management: SYSTEM scheduled task at startup
+.\packaging\install_service.ps1 -Mode task -Start
+```
+
+## Silent auto-update
+
+```powershell
+# Writes NETX_UPDATE_AUTO=true and registers a daily task (default 03:30)
+.\packaging\install_update_task.ps1
+
+# Manual silent path (only applies when NETX_UPDATE_AUTO=true)
+.\packaging\check_update.ps1 -Apply -Quiet -AutoOnly
+```
+
+Tray also auto-applies on launch when `NETX_UPDATE_AUTO=true`.
+
+## Code signing (optional, publisher machine)
+
+```powershell
+.\packaging\sign_release.ps1 -Files .\packaging\release\NetX-Setup-0.4.0.exe -Thumbprint <cert-sha1>
+# or: -PfxPath .\certs\code.pfx -PfxPassword ***
+```
+
+Needs `signtool.exe` (Windows SDK) and a real code-signing certificate. Without a trusted cert, SmartScreen may still warn.
+
 ## Layout reminder
 
 ```

@@ -20,4 +20,6 @@ data/runtime/
 packaging/cache/
 packaging/release/
 packaging/postgres/pgsql/
+packaging/winsw/
 *.exe
+!packaging/installer/*.iss

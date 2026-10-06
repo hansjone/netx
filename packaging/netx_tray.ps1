@@ -2,7 +2,8 @@ param(
     [string]$ProgramRoot = "",
     [string]$DataRoot = "",
     [switch]$StartOnLaunch = $true,
-    [switch]$CheckUpdateOnLaunch = $false
+    [switch]$CheckUpdateOnLaunch = $false,
+    [switch]$AutoUpdate = $false
 )
 
 # Simple system-tray controller for NetX (Windows packaged installs).
@@ -19,10 +20,18 @@ $data = Get-NetxDataRoot -ProgramRoot $prog -Override $DataRoot
 $hostBind = "127.0.0.1"
 $port = 8890
 $envPath = Join-Path $data ".env"
+$map = @{}
 if (Test-Path $envPath) {
     $map = Read-DotEnv -Path $envPath
     if ($map["NETX_HOST"]) { $hostBind = $map["NETX_HOST"] }
     if ($map["NETX_PORT"]) { try { $port = [int]$map["NETX_PORT"] } catch {} }
+}
+$autoVal = ""
+if ($map["NETX_UPDATE_AUTO"]) { $autoVal = $map["NETX_UPDATE_AUTO"] }
+elseif ($env:NETX_UPDATE_AUTO) { $autoVal = $env:NETX_UPDATE_AUTO }
+if ($autoVal -match '^(1|true|yes|on)$') {
+    $AutoUpdate = $true
+    $CheckUpdateOnLaunch = $true
 }
 $uiUrl = "http://${hostBind}:${port}/"
 $ver = Get-NetxVersion -ProgramRoot $prog
@@ -112,16 +121,22 @@ $notify.ContextMenuStrip = $menu
 $notify.add_DoubleClick({ Start-Process $uiUrl })
 
 $form.add_Shown({
-    if ($StartOnLaunch) {
-        Invoke-NetxScript -File $startPs1 -ExtraArgs @("-SkipBrowser")
-        Start-Sleep -Seconds 2
-        try { Start-Process $uiUrl } catch {}
-    }
-    if ($CheckUpdateOnLaunch) {
+    if ($AutoUpdate) {
+        $notify.ShowBalloonTip(4000, "NetX", "Checking for updates…", [System.Windows.Forms.ToolTipIcon]::Info)
+        Start-Process -FilePath "powershell.exe" -ArgumentList @(
+            "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $checkPs1,
+            "-ProgramRoot", $prog, "-DataRoot", $data, "-Apply", "-Quiet", "-AutoOnly"
+        ) -Wait -WindowStyle Hidden
+    } elseif ($CheckUpdateOnLaunch) {
         Start-Process -FilePath "powershell.exe" -ArgumentList @(
             "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $checkPs1,
             "-ProgramRoot", $prog, "-DataRoot", $data, "-Quiet"
         ) -WindowStyle Hidden
+    }
+    if ($StartOnLaunch) {
+        Invoke-NetxScript -File $startPs1 -ExtraArgs @("-SkipBrowser")
+        Start-Sleep -Seconds 2
+        try { Start-Process $uiUrl } catch {}
     }
 })
 

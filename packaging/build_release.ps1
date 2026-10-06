@@ -72,8 +72,9 @@ Copy-Item -Path (Join-Path $PSScriptRoot "_common.ps1") -Destination $packOut -F
 foreach ($name in @(
         "download_postgres.ps1", "setup_first_run.ps1", "start_netx_app.ps1",
         "stop_netx_app.ps1", "update_netx.ps1", "check_update.ps1",
-        "netx_tray.ps1", "install_autostart.ps1", "build_release.ps1",
-        "publish_release.ps1", "README.md", "manifest.example.json"
+        "netx_tray.ps1", "install_autostart.ps1", "install_service.ps1",
+        "service_run.ps1", "install_update_task.ps1", "sign_release.ps1",
+        "build_release.ps1", "publish_release.ps1", "README.md", "manifest.example.json"
     )) {
     $src = Join-Path $PSScriptRoot $name
     if (Test-Path $src) { Copy-Item $src (Join-Path $packOut $name) -Force }
