@@ -87,7 +87,28 @@ Or reinstall a newer `NetX-Setup-*.exe` over the same program directory.
 
 ## Check / apply updates
 
-Default source: latest GitHub Release for `hansjone/netx`. Optional custom manifest via `NETX_UPDATE_URL` (see `manifest.example.json`).
+Default when nothing is configured: **GitHub Releases** (`hansjone/netx`).
+
+You can put **Forgejo/Gitea first** and keep GitHub as fallback:
+
+```env
+# Data-root .env (ProgramData\NetX\.env)
+NETX_UPDATE_FORGEJO_URL=https://git.example.com/api/v1/repos/ops/netx/releases/latest
+NETX_UPDATE_SOURCES=forgejo,github
+# Optional private repo token (Forgejo "token …" / GitHub Bearer)
+# NETX_UPDATE_TOKEN=******
+```
+
+Other options:
+
+| Variable | Role |
+|----------|------|
+| `NETX_UPDATE_URL` | Custom JSON manifest (see `manifest.example.json`) |
+| `NETX_UPDATE_FALLBACK_URL` | Second manifest URL |
+| `NETX_UPDATE_GITHUB_REPO` | Override GitHub `owner/repo` (default `hansjone/netx`) |
+| `NETX_UPDATE_SOURCES` | Explicit order, e.g. `forgejo,github` or `manifest,forgejo,github` |
+
+If `NETX_UPDATE_FORGEJO_URL` is set and `SOURCES` is empty, order is: manifest (if URL set) → **forgejo** → fallback manifest → **github**.
 
 ```powershell
 # Report only (exit 0 = up to date, 10 = update available)
@@ -97,6 +118,7 @@ Default source: latest GitHub Release for `hansjone/netx`. Optional custom manif
 .\packaging\check_update.ps1 -Apply
 ```
 
+Forgejo must publish the same assets as GitHub (`NetX-*-win64.zip`, optional `NetX-Setup-*.exe`) on a release whose tag is like `v0.4.0`.
 ## Tray & autostart
 
 ```powershell
