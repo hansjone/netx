@@ -54,15 +54,19 @@ Name: "{commonappdata}\NetX\pgdata"
 Name: "{commonappdata}\NetX\backups"
 
 [Icons]
+Name: "{group}\NetX Tray"; Filename: "powershell.exe"; Parameters: "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\packaging\netx_tray.ps1"" -ProgramRoot ""{app}"" -DataRoot ""{commonappdata}\NetX"" -StartOnLaunch"; WorkingDir: "{app}"
 Name: "{group}\Start NetX"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\packaging\start_netx_app.ps1"" -ProgramRoot ""{app}"" -DataRoot ""{commonappdata}\NetX"""; WorkingDir: "{app}"
 Name: "{group}\Stop NetX"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\packaging\stop_netx_app.ps1"" -ProgramRoot ""{app}"" -DataRoot ""{commonappdata}\NetX"""; WorkingDir: "{app}"
+Name: "{group}\Check for updates"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\packaging\check_update.ps1"" -ProgramRoot ""{app}"" -DataRoot ""{commonappdata}\NetX"""; WorkingDir: "{app}"
 Name: "{group}\Open NetX UI"; Filename: "http://127.0.0.1:8890/"
 Name: "{group}\First-time setup"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\packaging\setup_first_run.ps1"" -ProgramRoot ""{app}"" -DataRoot ""{commonappdata}\NetX"""; WorkingDir: "{app}"
-Name: "{autodesktop}\Start NetX"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\packaging\start_netx_app.ps1"" -ProgramRoot ""{app}"" -DataRoot ""{commonappdata}\NetX"""; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{group}\Enable start at logon"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\packaging\install_autostart.ps1"" -ProgramRoot ""{app}"""; WorkingDir: "{app}"
+Name: "{autodesktop}\NetX"; Filename: "powershell.exe"; Parameters: "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\packaging\netx_tray.ps1"" -ProgramRoot ""{app}"" -DataRoot ""{commonappdata}\NetX"" -StartOnLaunch"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
 Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\packaging\setup_first_run.ps1"" -ProgramRoot ""{app}"" -DataRoot ""{commonappdata}\NetX"""; WorkingDir: "{app}"; Flags: postinstall skipifsilent; Tasks: firstrun
-Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\packaging\start_netx_app.ps1"" -ProgramRoot ""{app}"" -DataRoot ""{commonappdata}\NetX"""; WorkingDir: "{app}"; Description: "Start NetX now"; Flags: postinstall nowait skipifsilent unchecked
+Filename: "powershell.exe"; Parameters: "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\packaging\netx_tray.ps1"" -ProgramRoot ""{app}"" -DataRoot ""{commonappdata}\NetX"" -StartOnLaunch"; WorkingDir: "{app}"; Description: "Start NetX tray now"; Flags: postinstall nowait skipifsilent unchecked
+Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\packaging\install_autostart.ps1"" -ProgramRoot ""{app}"""; WorkingDir: "{app}"; Description: "Start NetX at Windows logon"; Flags: postinstall skipifsilent unchecked
 
 [UninstallDelete]
 ; Do NOT delete {commonappdata}\NetX — preserves DB and secrets across reinstall

@@ -71,8 +71,9 @@ New-Item -ItemType Directory -Path $packOut -Force | Out-Null
 Copy-Item -Path (Join-Path $PSScriptRoot "_common.ps1") -Destination $packOut -Force
 foreach ($name in @(
         "download_postgres.ps1", "setup_first_run.ps1", "start_netx_app.ps1",
-        "stop_netx_app.ps1", "update_netx.ps1", "build_release.ps1",
-        "README.md", "manifest.example.json"
+        "stop_netx_app.ps1", "update_netx.ps1", "check_update.ps1",
+        "netx_tray.ps1", "install_autostart.ps1", "build_release.ps1",
+        "publish_release.ps1", "README.md", "manifest.example.json"
     )) {
     $src = Join-Path $PSScriptRoot $name
     if (Test-Path $src) { Copy-Item $src (Join-Path $packOut $name) -Force }
@@ -104,8 +105,28 @@ if ($CreateVenv) {
     $py = (Get-Command python -ErrorAction SilentlyContinue)
     if (-not $py) { throw "python_not_found_for_venv" }
     & $py.Source -m venv (Join-Path $stage ".venv")
-    & (Join-Path $stage ".venv\Scripts\python.exe") -m pip install --upgrade pip
-    & (Join-Path $stage ".venv\Scripts\python.exe") -m pip install -r (Join-Path $stage "requirements.txt")
+    $venvPy = Join-Path $stage ".venv\Scripts\python.exe"
+    & $venvPy -m pip install --upgrade pip
+    & $venvPy -m pip install -r (Join-Path $stage "requirements.txt")
+    if ($LASTEXITCODE -ne 0) { throw "pip_install_failed" }
+
+    Write-Host "==> Slimming .venv (drop tests / __pycache__ / *.pyc)"
+    $site = Join-Path $stage ".venv\Lib\site-packages"
+    if (Test-Path $site) {
+        Get-ChildItem -Path $site -Recurse -Directory -Force -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.Name -in @('__pycache__', 'tests', 'test', 'testing', 'Tests') -or
+                $_.FullName -match '\\pandas\\tests(\\|$)' -or
+                $_.FullName -match '\\numpy\\(_*tests|tests)(\\|$)' -or
+                $_.FullName -match '\\scipy\\(_*tests|tests)(\\|$)'
+            } |
+            Sort-Object { $_.FullName.Length } -Descending |
+            ForEach-Object {
+                Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        Get-ChildItem -Path $site -Recurse -Include *.pyc,*.pyo -Force -ErrorAction SilentlyContinue |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+    }
 }
 
 Write-Host "==> Stage ready: $stage" -ForegroundColor Green

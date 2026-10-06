@@ -7,7 +7,8 @@ This directory builds a Windows deliverable with:
 - Optional **bundled** portable PostgreSQL **or** **external** existing Postgres
 - API-hosted UI (`web/dist`) — no separate Vite process for end users
 - Program / data split so upgrades do not wipe the database
-- Manual update script + auto-update **manifest contract** (fetch not implemented yet)
+- Manual update script + check/apply updates (GitHub Releases or custom manifest)
+- Optional system tray + start-at-logon
 
 ## What users get
 
@@ -77,14 +78,35 @@ Existing Windows deploys that only set `NETX_DATABASE_URL` keep working: never s
 ## Manual update
 
 ```powershell
-.\packaging\update_netx.ps1 -PackagePath .\NetX-0.3.0-win64.zip
+.\packaging\update_netx.ps1 -PackagePath .\NetX-0.4.0-win64.zip
 ```
 
 Stops services, replaces program folders (`netx_api`, `web`, `packaging`, `postgres`, …), **keeps** the data root, restarts. Schema migrations still run via Alembic on API start.
 
-## Auto-update (reserved)
+Or reinstall a newer `NetX-Setup-*.exe` over the same program directory.
 
-See `manifest.example.json`. Future: set `NETX_UPDATE_URL` + `NETX_UPDATE_CHANNEL`; a checker will download the zip and call `update_netx.ps1`. Not implemented in this phase.
+## Check / apply updates
+
+Default source: latest GitHub Release for `hansjone/netx`. Optional custom manifest via `NETX_UPDATE_URL` (see `manifest.example.json`).
+
+```powershell
+# Report only (exit 0 = up to date, 10 = update available)
+.\packaging\check_update.ps1
+
+# Download zip + run update_netx.ps1
+.\packaging\check_update.ps1 -Apply
+```
+
+## Tray & autostart
+
+```powershell
+# System tray: Start / Stop / Open UI / Check updates
+.\packaging\netx_tray.ps1 -StartOnLaunch
+
+# Start tray at Windows logon (current user)
+.\packaging\install_autostart.ps1
+# Remove: .\packaging\install_autostart.ps1 -Remove
+```
 
 ## Layout reminder
 
