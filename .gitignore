@@ -16,3 +16,8 @@ data/ne_collections/
 data/webcrt/
 data/auth/
 data/runtime/
+# Windows packaging artifacts (binaries / release trees)
+packaging/cache/
+packaging/release/
+packaging/postgres/pgsql/
+*.exe

@@ -95,16 +95,21 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/")
-def root() -> dict:
-    return {
-        "ok": True,
-        "mode": "api_only",
-        "message": "netx UI is served by Vite frontend only",
-        "frontend_url": settings.frontend_url,
-        "api_health": "/health",
-        "api_status": "/v1/integrations/status",
-    }
+from .ui_static import mount_ui_if_present  # noqa: E402
+
+_UI_MOUNTED = mount_ui_if_present(app)
+if not _UI_MOUNTED:
+
+    @app.get("/")
+    def root() -> dict:
+        return {
+            "ok": True,
+            "mode": "api_only",
+            "message": "netx UI is served by Vite frontend only",
+            "frontend_url": settings.frontend_url,
+            "api_health": "/health",
+            "api_status": "/v1/integrations/status",
+        }
 
 
 if __name__ == "__main__":

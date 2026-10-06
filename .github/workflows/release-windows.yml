@@ -1,0 +1,48 @@
+name: Release Windows
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build release zip
+        shell: pwsh
+        run: |
+          powershell -ExecutionPolicy Bypass -File ./packaging/build_release.ps1 -CreateVenv
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          echo "C:\Program Files (x86)\Inno Setup 6" >> $env:GITHUB_PATH
+
+      - name: Compile installer
+        shell: pwsh
+        run: |
+          $ver = (Get-Content pyproject.toml | Select-String '^\s*version\s*=').Line -replace '.*"(.+)"','$1'
+          ISCC.exe "/DMyAppVersion=$ver" packaging/installer/netx.iss
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            packaging/release/NetX-*-win64.zip
+            packaging/release/NetX-Setup-*.exe
+          generate_release_notes: true

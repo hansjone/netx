@@ -33,3 +33,4 @@
 - Validate after restart:
   - `GET /v1/integrations/status` returns all major components as `up`.
 - Keep parser config and importer changes versioned and reviewed before release.
+- **Windows packaged installs:** program under `%ProgramFiles%\NetX`, data under `%ProgramData%\NetX` (see [packaging/README.md](packaging/README.md)). Prefer `update_netx.ps1` or Setup upgrade so `pgdata` / `.env` are preserved. Linux continues to manage Postgres separately.

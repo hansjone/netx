@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     source_type: str = "gateway_export_excel"
     parser_config: str = "netx_api/config/parsers/zte_alarm_monitor_v1.yaml"
     frontend_url: str = "http://127.0.0.1:5173"
+    # Built Vite UI (web/dist). Empty / missing → API-only root JSON (dev with Vite).
+    ui_dist_dir: str = "web/dist"
     oclaw_analyze_url: str = "http://127.0.0.1:8787/admin/api/ops-ai/analyze-sync"
     oclaw_analyze_token: str = ""
     oclaw_health_url: str = "http://127.0.0.1:8787/admin/api/ops-ai/health"

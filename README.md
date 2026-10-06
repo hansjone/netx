@@ -156,6 +156,12 @@ powershell -ExecutionPolicy Bypass -File .\scripts\stop_netx.ps1 -Force
 Primary web UI (Vite): `http://127.0.0.1:5173/`  
 API base: `http://127.0.0.1:8890/`
 
+After `npm run build` in `web/`, the API can also serve the UI at `http://127.0.0.1:8890/` (same origin). See `NETX_UI_DIST_DIR` in `.env.example`.
+
+### Windows installer / portable package (optional)
+
+Fool-proof Windows delivery (bundled or external Postgres, program/data split, manual update) lives under [`packaging/`](packaging/README.md). **Linux installs are unchanged** — keep using your own Postgres and `scripts/start_netx.sh`.
+
 ### 6) MCP（Cursor / oclaw / Claude）
 
 先启动 netx API（§5），再在 **MCP 宿主同机** 安装轻量客户端并配置。

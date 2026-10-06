@@ -35,6 +35,18 @@ _PUBLIC_PREFIXES = (
     "/assets",
 )
 
+# Authenticated API / infra only. Everything else (SPA routes, favicon, …) is public.
+def _is_api_auth_path(path: str) -> bool:
+    p = str(path or "")
+    if p.startswith("/v1/"):
+        return True
+    if p in ("/metrics", "/metrics/json", "/v1/metrics/json", "/openapi.json"):
+        return True
+    if p.startswith("/docs") or p.startswith("/redoc"):
+        return True
+    return False
+
+
 # While must_change_password is true, only these authenticated endpoints are allowed.
 _PASSWORD_CHANGE_ALLOW = frozenset(
     {
@@ -60,7 +72,12 @@ def _is_public(path: str) -> bool:
         or p.startswith("/redoc")
     ):
         return True
-    return any(p.startswith(pref) for pref in _PUBLIC_PREFIXES)
+    if any(p.startswith(pref) for pref in _PUBLIC_PREFIXES):
+        return True
+    # Bundled UI routes (/login, /topology, …) must load without a token.
+    if not _is_api_auth_path(p):
+        return True
+    return False
 
 
 def _client_ip(request: Request) -> str:
