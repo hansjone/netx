@@ -74,7 +74,7 @@ foreach ($name in @(
         "stop_netx_app.ps1", "update_netx.ps1", "check_update.ps1",
         "netx_tray.ps1", "install_autostart.ps1", "install_service.ps1",
         "service_run.ps1", "install_update_task.ps1", "sign_release.ps1",
-        "build_release.ps1", "publish_release.ps1", "README.md", "manifest.example.json"
+        "build_release.ps1", "publish_release.ps1", "publish_forgejo_release.ps1", "README.md", "manifest.example.json"
     )) {
     $src = Join-Path $PSScriptRoot $name
     if (Test-Path $src) { Copy-Item $src (Join-Path $packOut $name) -Force }

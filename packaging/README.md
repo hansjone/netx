@@ -110,7 +110,43 @@ Or reinstall a newer `NetX-Setup-*.exe` over the same program directory.
 .\packaging\check_update.ps1 -Apply
 ```
 
-Both sides should publish the same release assets (`NetX-*-win64.zip`). Code mirror alone is not enough—Forgejo Release 也需要挂上安装包（或仅用 GitHub 下包）。
+Both sides should publish the same release assets (`NetX-*-win64.zip`). **Code mirror alone is not enough** — Forgejo pull-mirror syncs git/tags only; Release zip/exe must be uploaded separately (or clients can only fall back to GitHub).
+
+### Maintainer release checklist (Windows)
+
+Do this on the **dev PC on the home LAN** after bumping version:
+
+1. **Build** — `.\packaging\build_release.ps1 -CreateVenv` (and Inno Setup for Setup.exe if needed)
+2. **GitHub** — `.\packaging\publish_release.ps1 -Version x.y.z` (or `gh release create …`)
+3. **Forgejo (intranet)** — upload the same assets to QNAP Forgejo; public `git.avelo.top` is only a reverse proxy to the same instance:
+
+```powershell
+# One-time: User env var (never commit the token)
+# Forgejo → Settings → Applications → Generate New Token (repo write)
+[Environment]::SetEnvironmentVariable("NETX_FORGEJO_TOKEN", "your_token", "User")
+# Restart Cursor / open a new terminal so the agent/scripts see it
+
+# Default publishes to LAN Forgejo; public git.avelo.top shows the same Release.
+.\packaging\publish_forgejo_release.ps1 -Version 0.4.0
+
+# Only when off the home LAN:
+# .\packaging\publish_forgejo_release.ps1 -Version 0.4.0 -ForgejoBase "https://git.avelo.top"
+```
+
+| Role | URL |
+|------|-----|
+| Publish default (home LAN) | `http://10.0.0.131:3000` (`-ForgejoBase` default) |
+| Clients / remote clone | `https://git.avelo.top` (Caddy → `10.0.0.131:3000`) |
+| Update probe (default) | GitHub + `https://git.avelo.top/.../releases/latest` |
+
+Verify:
+
+- LAN: http://10.0.0.131:3000/hansjone/netx/releases
+- Public: https://git.avelo.top/hansjone/netx/releases
+- Probe: `.\packaging\check_update.ps1` → both `github` and `forgejo` reachable with the new version
+
+Token: `NETX_FORGEJO_TOKEN` (or `FORGEJO_TOKEN`).
+
 ## Tray & autostart
 
 ```powershell
