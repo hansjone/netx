@@ -36,7 +36,8 @@ if (-not $SkipWebBuild) {
         & npm.cmd install --prefix $webRoot
         if ($LASTEXITCODE -ne 0) { throw "npm_install_failed" }
     }
-    & npm.cmd run build --prefix $webRoot
+    # Release packaging skips tsc (dev CI still uses `npm run build`).
+    & npm.cmd run build:release --prefix $webRoot
     if ($LASTEXITCODE -ne 0) { throw "web_build_failed" }
 }
 if (-not (Test-Path (Join-Path $dist "index.html"))) {
