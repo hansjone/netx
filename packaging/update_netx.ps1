@@ -54,7 +54,35 @@ try {
         if (Test-Path $envFile) {
             Copy-Item $envFile (Join-Path $bak ".env")
         }
-        Write-Host "==> Backup marker: $bak (data/pgdata left in place; optional pg_dump not run)"
+        # Best-effort logical backup when psql is available (bundled or PATH).
+        $map = Read-DotEnv -Path $envFile
+        $pgDump = $null
+        foreach ($c in @(
+                (Join-Path $prog "postgres\pgsql\bin\pg_dump.exe"),
+                (Join-Path $PSScriptRoot "postgres\pgsql\bin\pg_dump.exe")
+            )) {
+            if (Test-Path $c) { $pgDump = $c; break }
+        }
+        if (-not $pgDump) {
+            $cmd = Get-Command pg_dump -ErrorAction SilentlyContinue
+            if ($cmd) { $pgDump = $cmd.Source }
+        }
+        if ($pgDump -and $map["NETX_DATABASE_URL"] -match 'postgresql\+?[^:]*://([^:]+):([^@]+)@([^:/]+):?(\d+)?/([^?\s]+)') {
+            $u = $Matches[1]; $p = [uri]::UnescapeDataString($Matches[2]); $h = $Matches[3]
+            $pt = if ($Matches[4]) { $Matches[4] } else { "5432" }
+            $dbn = $Matches[5]
+            $dumpOut = Join-Path $bak "netx.dump"
+            Write-Host "==> pg_dump -> $dumpOut"
+            $env:PGPASSWORD = $p
+            try {
+                & $pgDump -h $h -p $pt -U $u -d $dbn -Fc -f $dumpOut
+            } catch {
+                Write-Host "[WARN] pg_dump failed: $($_.Exception.Message)" -ForegroundColor Yellow
+            } finally {
+                Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
+            }
+        }
+        Write-Host "==> Backup: $bak"
     }
 
     Write-Host "==> Stopping services"

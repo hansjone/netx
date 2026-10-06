@@ -316,7 +316,14 @@ try {
     $zipName = "NetX-$latest-win64.zip"
     $zipPath = Join-Path $dlDir $zipName
     Write-Host "==> Downloading $zipName from $($result.source) ..."
-    $dlHeaders = Get-AuthHeaders -Style "token"
+    # Only attach token for non-GitHub hosts (Forgejo/private). Public GitHub assets need no auth;
+    # a Forgejo token would break anonymous GitHub downloads.
+    $dlHeaders = @{ "User-Agent" = "NetX-UpdateCheck" }
+    $dlUri = [uri]$result.download_url
+    $isGithub = ($dlUri.Host -match '(^|\.)github\.com$' -or $dlUri.Host -match '(^|\.)githubusercontent\.com$')
+    if ($UpdateToken -and -not $isGithub) {
+        $dlHeaders["Authorization"] = "token $UpdateToken"
+    }
     Invoke-WebRequest -Uri $result.download_url -OutFile $zipPath -Headers $dlHeaders -UseBasicParsing
     if ($result.sha256 -and $result.sha256 -notmatch 'REPLACE' -and $result.sha256.Trim()) {
         $hash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()

@@ -135,3 +135,72 @@ function Import-NetxEnvFile {
     }
     return $map
 }
+
+function ConvertTo-NetxFsPath([string]$Path) {
+    # Forward slashes work in .env and most Windows APIs via Python pathlib.
+    return ($Path -replace '\\', '/')
+}
+
+function Get-NetxDataEnvMap {
+    param([string]$DataRoot)
+    $d = $DataRoot
+    return @{
+        "NETX_AUTH_MCP_TOKEN_FILE"       = (ConvertTo-NetxFsPath (Join-Path $d "data\auth\mcp_token"))
+        "NETX_AUTH_SECRET_FILE"          = (ConvertTo-NetxFsPath (Join-Path $d "data\auth\jwt_secret"))
+        "NETX_SCHEDULER_HEARTBEAT_PATH"  = (ConvertTo-NetxFsPath (Join-Path $d "data\runtime\scheduler_heartbeat.json"))
+        "NETX_BIZ_STATE_SPOOL_DIR"       = (ConvertTo-NetxFsPath (Join-Path $d "data\biz_state_spool"))
+        "NETX_NE_COLLECTION_DATA_DIR"    = (ConvertTo-NetxFsPath (Join-Path $d "data\ne_collections"))
+        "NETX_NE_EXEC_JOB_DIR"           = (ConvertTo-NetxFsPath (Join-Path $d "data\ne_exec_jobs"))
+        "NETX_WEBCRT_DATA_DIR"           = (ConvertTo-NetxFsPath (Join-Path $d "data\webcrt"))
+    }
+}
+
+function Ensure-NetxDataDirectories {
+    param([string]$DataRoot)
+    $subs = @(
+        "data", "data\auth", "data\runtime", "data\biz_state_spool",
+        "data\ne_collections", "data\ne_exec_jobs", "data\webcrt",
+        "backups", "pgdata"
+    )
+    foreach ($sub in $subs) {
+        $p = Join-Path $DataRoot $sub
+        if (-not (Test-Path $p)) {
+            New-Item -ItemType Directory -Path $p -Force | Out-Null
+        }
+    }
+}
+
+function Test-NetxTcpPortFree {
+    param([string]$HostName = "127.0.0.1", [int]$Port)
+    try {
+        $client = New-Object System.Net.Sockets.TcpClient
+        $iar = $client.BeginConnect($HostName, $Port, $null, $null)
+        $ok = $iar.AsyncWaitHandle.WaitOne(400)
+        if ($ok -and $client.Connected) {
+            $client.Close()
+            return $false
+        }
+        $client.Close()
+        return $true
+    } catch {
+        return $true
+    }
+}
+
+function Test-NetxApiHealthy {
+    param([string]$HostName = "127.0.0.1", [int]$Port = 8890, [int]$TimeoutSec = 2)
+    try {
+        $url = "http://${HostName}:${Port}/health"
+        $r = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec $TimeoutSec -MaximumRedirection 0
+        if ($r.StatusCode -ne 200) { return $false }
+        $body = $r.Content | ConvertFrom-Json -ErrorAction Stop
+        return ($body.status -eq "ok")
+    } catch {
+        return $false
+    }
+}
+
+function ConvertTo-NetxSqlLiteral([string]$Value) {
+    # Single-quote escaping for PostgreSQL string literals.
+    return ($Value -replace "'", "''")
+}

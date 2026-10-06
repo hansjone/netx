@@ -125,6 +125,7 @@ Both sides should publish the same release assets (`NetX-*-win64.zip`). Code mir
 ## Windows Service (admin)
 
 Uses [WinSW](https://github.com/winsw/winsw) (downloaded on first install into `packaging/cache`).
+`service_run.ps1` probes `/health` and restarts children after consecutive failures.
 
 ```powershell
 # Elevated PowerShell

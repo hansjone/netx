@@ -20,15 +20,7 @@ Write-Host "==> Program root: $prog"
 Write-Host "==> Data root:    $data"
 Write-Host "==> Env file:     $envPath"
 
-if (-not (Test-Path $data)) {
-    New-Item -ItemType Directory -Path $data -Force | Out-Null
-}
-foreach ($sub in @("data", "data\auth", "data\runtime", "backups", "pgdata")) {
-    $p = Join-Path $data $sub
-    if (-not (Test-Path $p)) {
-        New-Item -ItemType Directory -Path $p -Force | Out-Null
-    }
-}
+Ensure-NetxDataDirectories -DataRoot $data
 
 $existing = Read-DotEnv -Path $envPath
 if (-not $DbMode) {
@@ -58,16 +50,21 @@ $values = @{}
 $values["NETX_DB_MODE"] = $DbMode
 $values["NETX_HOST"] = "127.0.0.1"
 $values["NETX_PORT"] = "8890"
-$values["NETX_UI_DIST_DIR"] = "web/dist"
+# Absolute UI path when present; else relative for source trees.
+$distAbs = Join-Path $prog "web\dist"
+if (Test-Path (Join-Path $distAbs "index.html")) {
+    $values["NETX_UI_DIST_DIR"] = (ConvertTo-NetxFsPath $distAbs)
+} else {
+    $values["NETX_UI_DIST_DIR"] = "web/dist"
+}
 
-# Point runtime data dirs into the data root (absolute).
-$values["NETX_AUTH_MCP_TOKEN_FILE"] = ((Join-Path $data "data\auth\mcp_token") -replace '\\', '/')
-$values["NETX_SCHEDULER_HEARTBEAT_PATH"] = ((Join-Path $data "data\runtime\scheduler_heartbeat.json") -replace '\\', '/')
+# All runtime data under data root (never under Program Files).
+$dataEnv = Get-NetxDataEnvMap -DataRoot $data
+foreach ($k in $dataEnv.Keys) { $values[$k] = $dataEnv[$k] }
 
 if ($DbMode -eq "bundled") {
     $pgsql = Join-Path $prog "postgres\pgsql"
     if (-not (Test-Path (Join-Path $pgsql "bin\initdb.exe"))) {
-        # In-repo layout
         $alt = Join-Path $PSScriptRoot "postgres\pgsql"
         if (Test-Path (Join-Path $alt "bin\initdb.exe")) {
             $pgsql = $alt
@@ -94,18 +91,16 @@ if ($DbMode -eq "bundled") {
     }
     $pgData = Join-Path $data "pgdata"
     $values["NETX_BUNDLED_PG_PORT"] = "$BundledPort"
-    $values["NETX_BUNDLED_PG_DATA_DIR"] = ($pgData -replace '\\', '/')
+    $values["NETX_BUNDLED_PG_DATA_DIR"] = (ConvertTo-NetxFsPath $pgData)
     $pwFile = Join-Path $data "pg_netx.pw"
     Set-Content -Path $pwFile -Value $BundledPassword -Encoding ascii -NoNewline
     $encPw = [uri]::EscapeDataString($BundledPassword)
     $values["NETX_DATABASE_URL"] = "postgresql+psycopg://netx:${encPw}@127.0.0.1:${BundledPort}/netx"
 
-    # Initialize cluster if needed
     $initdb = Join-Path $pgsql "bin\initdb.exe"
     $pgCtl = Join-Path $pgsql "bin\pg_ctl.exe"
     $psql = Join-Path $pgsql "bin\psql.exe"
-    $createdb = Join-Path $pgsql "bin\createdb.exe"
-    $createuser = Join-Path $pgsql "bin\createuser.exe"
+    $sqlPw = ConvertTo-NetxSqlLiteral $BundledPassword
 
     if (-not (Test-Path (Join-Path $pgData "PG_VERSION"))) {
         Write-Host "==> initdb $pgData"
@@ -115,7 +110,6 @@ if ($DbMode -eq "bundled") {
         if ($LASTEXITCODE -ne 0) { throw "initdb_failed" }
     }
 
-    # Ensure listen / port in postgresql.conf
     $conf = Join-Path $pgData "postgresql.conf"
     $hba = Join-Path $pgData "pg_hba.conf"
     if (Test-Path $conf) {
@@ -126,6 +120,8 @@ if ($DbMode -eq "bundled") {
             $confText = $confText -replace '(?m)^\s*port\s*=\s*\d+', "port = $BundledPort"
             if ($confText -notmatch "(?m)^\s*listen_addresses\s*=") {
                 $confText += "`nlisten_addresses = '127.0.0.1'`n"
+            } else {
+                $confText = $confText -replace "(?m)^\s*listen_addresses\s*=\s*'[^']*'", "listen_addresses = '127.0.0.1'"
             }
             Set-Content -Path $conf -Value $confText -Encoding utf8
         }
@@ -137,19 +133,26 @@ if ($DbMode -eq "bundled") {
         }
     }
 
-    Write-Host "==> Starting bundled PostgreSQL for bootstrap"
-    & $pgCtl -D $pgData -l (Join-Path $data "pgdata\pg.log") start
-    Start-Sleep -Seconds 2
+    $status = & $pgCtl -D $pgData status 2>&1 | Out-String
+    if ($status -notmatch "server is running") {
+        if (-not (Test-NetxTcpPortFree -HostName "127.0.0.1" -Port $BundledPort)) {
+            throw "port_in_use: 127.0.0.1:$BundledPort already occupied (bundled Postgres)"
+        }
+        Write-Host "==> Starting bundled PostgreSQL for bootstrap"
+        & $pgCtl -D $pgData -l (Join-Path $pgData "pg.log") start
+        if ($LASTEXITCODE -ne 0) { throw "pg_start_failed" }
+        Start-Sleep -Seconds 2
+    }
 
     $env:PGPASSWORD = $BundledPassword
     try {
         $role = & $psql -h 127.0.0.1 -p $BundledPort -U postgres -d postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='netx'"
         if ($role -notmatch "1") {
             & $psql -h 127.0.0.1 -p $BundledPort -U postgres -d postgres -v ON_ERROR_STOP=1 `
-                -c "CREATE ROLE netx LOGIN PASSWORD '$BundledPassword';"
+                -c "CREATE ROLE netx LOGIN PASSWORD '$sqlPw';"
         } else {
             & $psql -h 127.0.0.1 -p $BundledPort -U postgres -d postgres -v ON_ERROR_STOP=1 `
-                -c "ALTER ROLE netx WITH LOGIN PASSWORD '$BundledPassword';"
+                -c "ALTER ROLE netx WITH LOGIN PASSWORD '$sqlPw';"
         }
         $db = & $psql -h 127.0.0.1 -p $BundledPort -U postgres -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='netx'"
         if ($db -notmatch "1") {
