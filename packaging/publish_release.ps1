@@ -33,6 +33,7 @@ if (-not $SkipInstaller) {
     $isccCmd = Get-Command ISCC.exe -ErrorAction SilentlyContinue
     $isccCandidates = @(
         $(if ($isccCmd) { $isccCmd.Source }),
+        "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
         "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
         "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
     ) | Where-Object { $_ -and (Test-Path $_) }
