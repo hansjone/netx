@@ -35,6 +35,22 @@ if ($autoVal -match '^(1|true|yes|on)$') {
 }
 $uiUrl = "http://${hostBind}:${port}/"
 $ver = Get-NetxVersion -ProgramRoot $prog
+$zh = ([cultureinfo]::CurrentUICulture.Name -match '^(zh|zh-)')
+function T([string]$En, [string]$Zh) {
+    if ($zh) { return $Zh } else { return $En }
+}
+
+if (-not (Test-Path $envPath)) {
+    [void][System.Windows.Forms.MessageBox]::Show(
+        (T `
+            "First-time setup incomplete (missing $envPath).`nRun Start Menu → NetX → First-time setup." `
+            "尚未完成首次配置（缺少 $envPath）。`n请运行「开始菜单 → NetX → First-time setup」。"),
+        "NetX",
+        [System.Windows.Forms.MessageBoxButtons]::OK,
+        [System.Windows.Forms.MessageBoxIcon]::Warning
+    )
+    exit 1
+}
 
 $startPs1 = Join-Path $PSScriptRoot "start_netx_app.ps1"
 $stopPs1 = Join-Path $PSScriptRoot "stop_netx_app.ps1"
@@ -55,11 +71,6 @@ $form.ShowInTaskbar = $false
 $form.WindowState = "Minimized"
 $form.Visible = $false
 $form.Size = New-Object System.Drawing.Size(0, 0)
-
-$zh = ([cultureinfo]::CurrentUICulture.Name -match '^(zh|zh-)')
-function T([string]$En, [string]$Zh) {
-    if ($zh) { return $Zh } else { return $En }
-}
 
 $notify = New-Object System.Windows.Forms.NotifyIcon
 $notify.Text = "NetX $ver"
