@@ -73,8 +73,13 @@ if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
 }
 
 Set-Location $repo
+# gh writes "release not found" to stderr; keep Stop for the rest of the script.
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
 $existing = gh release view $tag 2>$null
-if ($LASTEXITCODE -eq 0) {
+$viewCode = $LASTEXITCODE
+$ErrorActionPreference = $prevEap
+if ($viewCode -eq 0) {
     Write-Host "==> Release $tag exists; uploading assets"
     gh release upload $tag $zip --clobber
     if (Test-Path $setup) {
