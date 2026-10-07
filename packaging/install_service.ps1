@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$ProgramRoot = "",
     [string]$DataRoot = "",
     [ValidateSet("winsw", "task")]

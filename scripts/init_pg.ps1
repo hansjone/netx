@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$PgHost = "127.0.0.1",
     [int]$PgPort = 5432,
     [string]$SuperUser = "postgres",

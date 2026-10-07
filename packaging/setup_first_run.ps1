@@ -1,4 +1,4 @@
-param(
+﻿param(
     [ValidateSet("bundled", "external", "")]
     [string]$DbMode = "",
     [string]$ProgramRoot = "",

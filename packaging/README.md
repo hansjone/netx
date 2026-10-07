@@ -21,6 +21,8 @@ This directory builds a Windows deliverable with:
 
 **Offline:** Setup ships portable PostgreSQL, `.venv` (when built with `-CreateVenv`), and WinSW. First-run uses `-NonInteractive -DbMode bundled` — **no GitHub/EDB download on the target PC**. Service install uses bundled WinSW (pass `-AllowDownload` only on a build/dev machine if the binary is missing). Auto-update still needs network later, and is unchecked by default.
 
+**OS:** Windows 10/11 or Windows Server **2016+** recommended. Packaging scripts are UTF-8 **with BOM** so Chinese UI works on Windows PowerShell 5.x. Bundled Python in current releases is **3.13+**, which does **not** support Windows Server 2012 R2 — use Server 2016+ or a newer desktop OS.
+
 ## Build (developer machine)
 
 Prerequisites: Python 3.11+, Node 20+, PowerShell, network (to download PG binaries once).

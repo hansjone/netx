@@ -1,4 +1,4 @@
-# Shared path helpers for Windows packaging scripts.
+﻿# Shared path helpers for Windows packaging scripts.
 # Dot-source: . "$PSScriptRoot\_common.ps1"
 
 $ErrorActionPreference = "Stop"

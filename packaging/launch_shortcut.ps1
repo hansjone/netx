@@ -1,4 +1,4 @@
-param(
+﻿param(
     [ValidateSet("tray", "start", "stop", "setup", "update")]
     [string]$Action = "tray",
     [string]$ProgramRoot = "",

@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$Version = "",
     [string]$OutDir = "",
     [switch]$SkipWebBuild = $false,
@@ -80,6 +80,22 @@ $webOut = Join-Path $stage "web\dist"
 New-Item -ItemType Directory -Path (Split-Path $webOut -Parent) -Force | Out-Null
 Copy-Item -Path $dist -Destination $webOut -Recurse -Force
 
+function Write-Utf8BomFile {
+    param([string]$Path)
+    # Windows PowerShell 4/5 (Server 2012+) mis-parses UTF-8 without BOM when scripts contain CJK.
+    $utf8Bom = New-Object System.Text.UTF8Encoding $true
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    $hasBom = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
+    $text = if ($hasBom) {
+        [Text.Encoding]::UTF8.GetString($bytes, 3, $bytes.Length - 3)
+    } else {
+        [Text.Encoding]::UTF8.GetString($bytes)
+    }
+    $text = $text -replace "`r`n", "`n" -replace "`n", "`r`n"
+    if (-not $text.EndsWith("`r`n")) { $text += "`r`n" }
+    [IO.File]::WriteAllText($Path, $text, $utf8Bom)
+}
+
 $packOut = Join-Path $stage "packaging"
 New-Item -ItemType Directory -Path $packOut -Force | Out-Null
 Copy-Item -Path (Join-Path $PSScriptRoot "_common.ps1") -Destination $packOut -Force
@@ -87,13 +103,15 @@ foreach ($name in @(
         "download_postgres.ps1", "setup_first_run.ps1", "start_netx_app.ps1",
         "stop_netx_app.ps1", "update_netx.ps1", "check_update.ps1",
         "launch_shortcut.ps1", "netx_tray.ps1", "install_autostart.ps1", "install_service.ps1",
-
         "service_run.ps1", "install_update_task.ps1", "sign_release.ps1",
         "build_release.ps1", "publish_release.ps1", "publish_forgejo_release.ps1", "README.md", "manifest.example.json"
     )) {
     $src = Join-Path $PSScriptRoot $name
     if (Test-Path $src) { Copy-Item $src (Join-Path $packOut $name) -Force }
 }
+Get-ChildItem -Path $packOut -Filter *.ps1 -File | ForEach-Object { Write-Utf8BomFile -Path $_.FullName }
+Get-ChildItem -Path (Join-Path $stage "scripts") -Filter *.ps1 -File -ErrorAction SilentlyContinue |
+    ForEach-Object { Write-Utf8BomFile -Path $_.FullName }
 Copy-Item -Path (Join-Path $PSScriptRoot "config") -Destination (Join-Path $packOut "config") -Recurse -Force
 Copy-Item -Path (Join-Path $PSScriptRoot "installer") -Destination (Join-Path $packOut "installer") -Recurse -Force
 $assetsSrc = Join-Path $PSScriptRoot "assets"

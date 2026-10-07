@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$Version = "",
     [string]$ForgejoBase = "http://10.0.0.131:3000",
     [string]$Owner = "hansjone",

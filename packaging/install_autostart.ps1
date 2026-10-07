@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$ProgramRoot = "",
     [switch]$Remove = $false
 )
