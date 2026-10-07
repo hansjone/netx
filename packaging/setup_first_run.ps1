@@ -293,20 +293,18 @@ Write-DotEnvValue -Path $envPath -Values $values
 Write-Host ""
 Write-Host "Wrote $envPath" -ForegroundColor Green
 
-# Official Setup ships .venv (build_release -CreateVenv). Only bootstrap if missing
-# (e.g. zip without venv). Prefer not to pip-install on the target machine.
+# Official Setup ships python/runtime + .venv (build_release -CreateVenv).
 $venvPy = Join-Path $prog ".venv\Scripts\python.exe"
-if (Test-Path $venvPy) {
-    Write-Host "==> Using bundled Python venv: $venvPy" -ForegroundColor Green
-} else {
-    Write-Host "==> Bundled .venv missing — creating one (Setup should normally ship it)." -ForegroundColor Yellow
-    try {
-        $null = Ensure-NetxVenv -ProgramRoot $prog
-        Write-Host "==> Python venv ready: $venvPy" -ForegroundColor Green
-    } catch {
-        Write-Host "[WARN] $($_.Exception.Message)" -ForegroundColor Yellow
-        Write-Host "       Install a Setup built with: packaging\build_release.ps1 -CreateVenv" -ForegroundColor Yellow
+try {
+    $null = Ensure-NetxVenv -ProgramRoot $prog
+    Write-Host "==> Bundled Python venv OK: $venvPy" -ForegroundColor Green
+} catch {
+    if (Test-Path $venvPy) {
+        throw
     }
+    Write-Host "==> Bundled .venv missing — creating one (Setup should normally ship it)." -ForegroundColor Yellow
+    Write-Host "[WARN] $($_.Exception.Message)" -ForegroundColor Yellow
+    Write-Host "       Install a Setup built with: packaging\build_release.ps1 -CreateVenv" -ForegroundColor Yellow
 }
 
 Write-Host ""

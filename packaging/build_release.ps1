@@ -168,15 +168,49 @@ foreach ($cmdName in @("NetX-FirstRun.cmd", "NetX-Start.cmd", "NetX-Tray.cmd", "
 }
 
 if ($CreateVenv) {
-    Write-Host "==> Creating .venv in stage (ships with Setup; target should NOT pip-install)"
+    Write-Host "==> Creating portable python/runtime + .venv (must not reference build-machine paths)"
     $pyPath = Get-NetxSystemPython
     if (-not $pyPath) { throw "python_not_found_for_venv: need Python 3.11+ (not WindowsApps stub)" }
-    Write-Host "    Using: $pyPath"
-    & $pyPath -m venv (Join-Path $stage ".venv")
-    $venvPy = Join-Path $stage ".venv\Scripts\python.exe"
+    Write-Host "    Build Python: $pyPath"
+
+    $prefix = (& $pyPath -c "import sys; print(sys.base_prefix)" 2>$null | Out-String).Trim()
+    if (-not $prefix -or -not (Test-Path -LiteralPath $prefix)) {
+        throw "python_base_prefix_not_found: $prefix"
+    }
+    $rtDir = Join-Path $stage "python\runtime"
+    if (Test-Path $rtDir) { Remove-Item -Recurse -Force $rtDir }
+    New-Item -ItemType Directory -Path $rtDir -Force | Out-Null
+
+    Write-Host "==> Copying Python stdlib/runtime to $rtDir (exclude base site-packages)"
+    $spEx = Join-Path $prefix "Lib\site-packages"
+    $robocopy = Join-Path $env:SystemRoot "System32\robocopy.exe"
+    if (-not (Test-Path -LiteralPath $robocopy)) { throw "robocopy_not_found" }
+    & $robocopy $prefix $rtDir /E /XD $spEx __pycache__ /XF *.pyc /NFL /NDL /NJH /NJS /nc /ns /np | Out-Null
+    if ($LASTEXITCODE -ge 8) { throw "robocopy_python_runtime_failed: exit $LASTEXITCODE" }
+
+    $rtPy = Join-Path $rtDir "python.exe"
+    if (-not (Test-Path -LiteralPath $rtPy)) { throw "python_runtime_missing: $rtPy" }
+
+    $venvDir = Join-Path $stage ".venv"
+    if (Test-Path $venvDir) { Remove-Item -Recurse -Force $venvDir }
+    Write-Host "==> Creating .venv from shipped runtime (--copies)"
+    & $rtPy -m venv $venvDir --copies
+    if ($LASTEXITCODE -ne 0) { throw "venv_create_failed" }
+
+    $venvPy = Join-Path $venvDir "Scripts\python.exe"
+    $null = Repair-NetxShippedVenv -ProgramRoot $stage
+    if (-not (Test-NetxVenvRunnable -VenvPython $venvPy)) {
+        throw "venv_not_runnable_after_build: check python/runtime copy"
+    }
+
     & $venvPy -m pip install --upgrade pip
     & $venvPy -m pip install -r (Join-Path $stage "requirements.txt")
     if ($LASTEXITCODE -ne 0) { throw "pip_install_failed" }
+
+    $null = Repair-NetxShippedVenv -ProgramRoot $stage
+    if (-not (Test-NetxVenvRunnable -VenvPython $venvPy)) {
+        throw "venv_not_runnable_after_pip"
+    }
 
     Write-Host "==> Slimming .venv (drop tests / __pycache__ / *.pyc)"
     $site = Join-Path $stage ".venv\Lib\site-packages"

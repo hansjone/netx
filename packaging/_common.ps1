@@ -276,11 +276,20 @@ function Start-NetxPowerShell {
 function Get-NetxSystemPython {
     # Prefer a real interpreter; skip the WindowsApps Store stub.
     $candidates = @()
-    foreach ($cmd in @("python", "python3", "py")) {
+    foreach ($cmd in @("python", "python3")) {
         $c = Get-Command $cmd -ErrorAction SilentlyContinue
         if ($c -and $c.Source -and ($c.Source -notmatch '\\WindowsApps\\')) {
             $candidates += $c.Source
         }
+    }
+    $pyLauncher = Get-Command "py" -ErrorAction SilentlyContinue
+    if ($pyLauncher -and $pyLauncher.Source -and ($pyLauncher.Source -notmatch '\\WindowsApps\\')) {
+        try {
+            $resolved = (& $pyLauncher.Source -3 -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
+            if ($resolved -and (Test-Path -LiteralPath $resolved)) {
+                $candidates += $resolved
+            }
+        } catch {}
     }
     foreach ($p in @(
             "$env:LOCALAPPDATA\Python\pythoncore-3.14-64\python.exe",
@@ -300,6 +309,65 @@ function Get-NetxSystemPython {
     return $null
 }
 
+function Get-NetxBundledPythonRoot {
+    param([Parameter(Mandatory = $true)][string]$ProgramRoot)
+    return Join-Path $ProgramRoot "python\runtime"
+}
+
+function Repair-NetxShippedVenv {
+    param([Parameter(Mandatory = $true)][string]$ProgramRoot)
+    $cfgPath = Join-Path $ProgramRoot ".venv\pyvenv.cfg"
+    $rtRoot = Get-NetxBundledPythonRoot -ProgramRoot $ProgramRoot
+    $rtPy = Join-Path $rtRoot "python.exe"
+    if (-not (Test-Path -LiteralPath $rtPy)) { return $false }
+    if (-not (Test-Path -LiteralPath $cfgPath)) { return $false }
+
+    $rtRootAbs = (Resolve-Path -LiteralPath $rtRoot).Path
+    $rtPyAbs = (Resolve-Path -LiteralPath $rtPy).Path
+    $ver = "3.14.0"
+    try {
+        $verOut = & $rtPyAbs -c "import sys; print('%d.%d.%d' % sys.version_info[:3])" 2>$null
+        if ($verOut) { $ver = ($verOut | Out-String).Trim() }
+    } catch {}
+
+    $lines = @(
+        "home = $rtRootAbs",
+        "include-system-site-packages = false",
+        "version = $ver",
+        "executable = $rtPyAbs"
+    )
+    Set-Content -LiteralPath $cfgPath -Value ($lines -join "`r`n") -Encoding ascii
+    return $true
+}
+
+function Test-NetxVenvRunnable {
+    param([Parameter(Mandatory = $true)][string]$VenvPython)
+    if (-not (Test-Path -LiteralPath $VenvPython)) { return $false }
+
+    $outFile = Join-Path $env:TEMP ("netx-venv-out-" + [Guid]::NewGuid().ToString("n") + ".txt")
+    $errFile = Join-Path $env:TEMP ("netx-venv-err-" + [Guid]::NewGuid().ToString("n") + ".txt")
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $VenvPython
+        $psi.Arguments = '-c "import encodings, sys; sys.exit(0 if sys.prefix else 1)"'
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.CreateNoWindow = $true
+        $p = [Diagnostics.Process]::Start($psi)
+        $stderr = $p.StandardError.ReadToEnd()
+        $null = $p.StandardOutput.ReadToEnd()
+        $p.WaitForExit()
+        if ($stderr -match 'did not find executable|No Python at|Fatal Python error') {
+            return $false
+        }
+        if ($p.ExitCode -ne 0) { return $false }
+        return $true
+    } finally {
+        Remove-Item -LiteralPath $outFile, $errFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Ensure-NetxVenv {
     param(
         [Parameter(Mandatory = $true)][string]$ProgramRoot,
@@ -307,8 +375,27 @@ function Ensure-NetxVenv {
     )
     $venvPy = Join-Path $ProgramRoot ".venv\Scripts\python.exe"
     $req = Join-Path $ProgramRoot "requirements.txt"
-    if ((Test-Path $venvPy) -and -not $ForcePip) {
-        return $venvPy
+    $rtPy = Join-Path (Get-NetxBundledPythonRoot -ProgramRoot $ProgramRoot) "python.exe"
+
+    if (Test-Path -LiteralPath $rtPy) {
+        $null = Repair-NetxShippedVenv -ProgramRoot $ProgramRoot
+    }
+
+    if ((Test-Path -LiteralPath $venvPy) -and -not $ForcePip) {
+        if (Test-NetxVenvRunnable -VenvPython $venvPy) {
+            return $venvPy
+        }
+        Write-Host "[WARN] Shipped .venv exists but Python cannot start (broken pyvenv.cfg or missing runtime)." -ForegroundColor Yellow
+        if (Test-Path -LiteralPath $rtPy) {
+            $null = Repair-NetxShippedVenv -ProgramRoot $ProgramRoot
+            if (Test-NetxVenvRunnable -VenvPython $venvPy) {
+                Write-Host "==> Repaired .venv to use bundled python/runtime" -ForegroundColor Green
+                return $venvPy
+            }
+        }
+        if (-not $ForcePip) {
+            throw "venv_not_runnable: reinstall NetX Setup (ships python/runtime + .venv) or run repair as admin"
+        }
     }
     if (-not (Test-Path $venvPy)) {
         $py = Get-NetxSystemPython

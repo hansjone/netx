@@ -23,6 +23,14 @@ if ($Backgtound -and -not $Background) {
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $projectRoot
 
+$packCommon = Join-Path $projectRoot "packaging\_common.ps1"
+if (Test-Path -LiteralPath $packCommon) {
+    . $packCommon
+    if (Get-Command Repair-NetxShippedVenv -ErrorAction SilentlyContinue) {
+        $null = Repair-NetxShippedVenv -ProgramRoot $projectRoot
+    }
+}
+
 # Prefer writable data-root runtime dir (Program Files is not writable after Setup install).
 if ($env:NETX_RUN_DIR) {
     $runDir = $env:NETX_RUN_DIR
@@ -46,13 +54,17 @@ $webPidFile = Join-Path $runDir "web.pid"
 $webLogFile = Join-Path $runDir "web.out.log"
 $webErrFile = Join-Path $runDir "web.err.log"
 
-$venvPython = Join-Path $projectRoot ".venv\\Scripts\\python.exe"
-if (-not (Test-Path $venvPython)) {
+$venvPython = Join-Path $projectRoot ".venv\Scripts\python.exe"
+if (Get-Command Test-NetxVenvRunnable -ErrorAction SilentlyContinue) {
+    if (-not (Test-NetxVenvRunnable -VenvPython $venvPython)) {
+        throw "venv_not_runnable: reinstall NetX or run setup as administrator"
+    }
+} elseif (-not (Test-Path -LiteralPath $venvPython)) {
     Write-Host "==> .venv not found, creating virtual environment"
     python -m venv (Join-Path $projectRoot ".venv")
-}
-if (-not (Test-Path $venvPython)) {
-    throw "failed_to_create_venv"
+    if (-not (Test-Path -LiteralPath $venvPython)) {
+        throw "failed_to_create_venv"
+    }
 }
 $pythonExe = $venvPython
 
