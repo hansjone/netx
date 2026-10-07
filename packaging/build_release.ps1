@@ -157,6 +157,15 @@ $builtAt = (Get-Date).ToUniversalTime().ToString("o")
 
 Set-Content -Path (Join-Path $stage ".portable") -Value "1" -Encoding ascii
 
+# Root .cmd launchers (Explorer / Start Menu friendly; ASCII-only).
+$cmdSrc = Join-Path $PSScriptRoot "cmd"
+foreach ($cmdName in @("NetX-FirstRun.cmd", "NetX-Start.cmd", "NetX-Tray.cmd")) {
+    $c = Join-Path $cmdSrc $cmdName
+    if (Test-Path $c) {
+        Copy-Item -Path $c -Destination (Join-Path $stage $cmdName) -Force
+    }
+}
+
 if ($CreateVenv) {
     Write-Host "==> Creating .venv in stage (requires Python 3.11+ on PATH)"
     $py = (Get-Command python -ErrorAction SilentlyContinue)

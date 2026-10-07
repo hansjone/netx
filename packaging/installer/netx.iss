@@ -4,7 +4,7 @@
 
 #define MyAppName "NetX"
 #ifndef MyAppVersion
-  #define MyAppVersion "0.4.3"
+  #define MyAppVersion "0.4.4"
 #endif
 #define MyAppPublisher "NetX"
 #define MyAppURL "https://github.com/hansjone/netx"
@@ -59,7 +59,7 @@ chinesesimplified.EnableAutoUpdate=启用每日静默自动更新（以后需要
 chinesesimplified.InstallService=安装为 Windows 服务（使用已捆绑的 WinSW，可离线）
 
 [Tasks]
-Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: checkedonce
 Name: "firstrun"; Description: "{cm:RunFirstSetup}"; GroupDescription: "{cm:SetupOptions}"; Flags: checkedonce
 
 [Files]
@@ -75,16 +75,20 @@ Name: "{commonappdata}\NetX\pgdata"
 Name: "{commonappdata}\NetX\backups"
 
 [Icons]
-Name: "{group}\NetX Tray"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\packaging\launch_shortcut.ps1"" -Action tray -ProgramRoot ""{app}"" -DataRoot ""{commonappdata}\NetX"" -StartOnLaunch"; WorkingDir: "{app}"; IconFilename: "{app}\packaging\assets\netx.ico"
-Name: "{group}\Start NetX"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\packaging\launch_shortcut.ps1"" -Action start -ProgramRoot ""{app}"" -DataRoot ""{commonappdata}\NetX"""; WorkingDir: "{app}"; IconFilename: "{app}\packaging\assets\netx.ico"
+; Prefer .cmd targets so Server 2012 / classic Start Menu shows normal program entries.
+; Also pin First-time setup + Start to common desktop (always), not only optional tray icon.
+Name: "{group}\NetX Tray"; Filename: "{app}\NetX-Tray.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\packaging\assets\netx.ico"
+Name: "{group}\Start NetX"; Filename: "{app}\NetX-Start.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\packaging\assets\netx.ico"
 Name: "{group}\Stop NetX"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\packaging\launch_shortcut.ps1"" -Action stop -ProgramRoot ""{app}"" -DataRoot ""{commonappdata}\NetX"""; WorkingDir: "{app}"; IconFilename: "{app}\packaging\assets\netx.ico"
 Name: "{group}\Check for updates"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\packaging\launch_shortcut.ps1"" -Action update -ProgramRoot ""{app}"" -DataRoot ""{commonappdata}\NetX"""; WorkingDir: "{app}"; IconFilename: "{app}\packaging\assets\netx.ico"
 Name: "{group}\Open NetX UI"; Filename: "http://127.0.0.1:8890/"; IconFilename: "{app}\packaging\assets\netx.ico"
-Name: "{group}\First-time setup"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\packaging\launch_shortcut.ps1"" -Action setup -ProgramRoot ""{app}"" -DataRoot ""{commonappdata}\NetX"""; WorkingDir: "{app}"; IconFilename: "{app}\packaging\assets\netx.ico"
+Name: "{group}\First-time setup"; Filename: "{app}\NetX-FirstRun.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\packaging\assets\netx.ico"
 Name: "{group}\Install Windows Service (admin)"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\packaging\install_service.ps1"" -ProgramRoot ""{app}"" -DataRoot ""{commonappdata}\NetX"" -Start"; WorkingDir: "{app}"; IconFilename: "{app}\packaging\assets\netx.ico"
 Name: "{group}\Enable silent auto-update (daily)"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\packaging\install_update_task.ps1"" -ProgramRoot ""{app}"" -DataRoot ""{commonappdata}\NetX"""; WorkingDir: "{app}"; IconFilename: "{app}\packaging\assets\netx.ico"
 Name: "{group}\Enable start at logon"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\packaging\install_autostart.ps1"" -ProgramRoot ""{app}"""; WorkingDir: "{app}"; IconFilename: "{app}\packaging\assets\netx.ico"
-Name: "{autodesktop}\NetX"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\packaging\launch_shortcut.ps1"" -Action tray -ProgramRoot ""{app}"" -DataRoot ""{commonappdata}\NetX"" -StartOnLaunch"; WorkingDir: "{app}"; IconFilename: "{app}\packaging\assets\netx.ico"; Tasks: desktopicon
+Name: "{commondesktop}\NetX First-time setup"; Filename: "{app}\NetX-FirstRun.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\packaging\assets\netx.ico"
+Name: "{commondesktop}\NetX Start"; Filename: "{app}\NetX-Start.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\packaging\assets\netx.ico"
+Name: "{commondesktop}\NetX"; Filename: "{app}\NetX-Tray.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\packaging\assets\netx.ico"; Tasks: desktopicon
 
 [Run]
 ; First-run is NonInteractive + bundled DB so offline machines succeed without prompts or downloads.

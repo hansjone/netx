@@ -50,9 +50,10 @@ function Ensure-NetxEnv {
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $setup `
         -ProgramRoot $prog -DataRoot $data -NonInteractive -DbMode bundled
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $envPath)) {
+        $cmd = Join-Path $prog "NetX-FirstRun.cmd"
         throw (T `
-            "First-time setup failed. Run Start Menu → NetX → First-time setup.`nLog: $log" `
-            "首次配置失败。请运行「开始菜单 → NetX → First-time setup」。`n日志: $log")
+            "First-time setup failed.`nDouble-click: $cmd`nOr: Start Menu → All Programs → NetX → First-time setup`nLog: $log" `
+            "首次配置失败。`n请双击: $cmd`n或: 开始菜单 → 所有程序 → NetX → First-time setup`n日志: $log")
     }
 }
 
