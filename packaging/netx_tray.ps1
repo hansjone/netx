@@ -208,11 +208,105 @@ function Start-NetxTrayDeferred {
     $timer.Start()
 }
 
+function Start-NetxTrayWatchProcess {
+    # Never Start-Process -Wait on the WinForms UI thread — it freezes the tray menu.
+    param(
+        [Parameter(Mandatory = $true)]$Process,
+        [scriptblock]$OnExit
+    )
+    if ($null -eq $Process) {
+        if ($OnExit) { & $OnExit $null }
+        return
+    }
+    $script:netxWatchProc = $Process
+    $script:netxWatchOnExit = $OnExit
+    if ($script:netxWatchTimer) {
+        try { $script:netxWatchTimer.Stop(); $script:netxWatchTimer.Dispose() } catch {}
+    }
+    $timer = New-Object System.Windows.Forms.Timer
+    $timer.Interval = 400
+    $timer.add_Tick({
+        $p = $script:netxWatchProc
+        if ($null -eq $p) {
+            try { $script:netxWatchTimer.Stop(); $script:netxWatchTimer.Dispose() } catch {}
+            $script:netxWatchTimer = $null
+            return
+        }
+        $done = $false
+        try { $done = [bool]$p.HasExited } catch { $done = $true }
+        if (-not $done) { return }
+        try { $script:netxWatchTimer.Stop(); $script:netxWatchTimer.Dispose() } catch {}
+        $script:netxWatchTimer = $null
+        $cb = $script:netxWatchOnExit
+        $script:netxWatchOnExit = $null
+        $script:netxWatchProc = $null
+        if ($cb) { & $cb $p }
+    })
+    $script:netxWatchTimer = $timer
+    $timer.Start()
+}
+
+function Restart-NetxTraySelf {
+    # Fresh process picks up new version.json / scripts after in-place update.
+    try {
+        $notify.ShowBalloonTip(
+            2500, "NetX",
+            (T "Restarting tray…" "正在重启托盘…"),
+            [System.Windows.Forms.ToolTipIcon]::Info
+        )
+    } catch {}
+    $trayFile = Join-Path $PSScriptRoot "netx_tray.ps1"
+    $arg = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$trayFile`" -ProgramRoot `"$prog`" -DataRoot `"$data`""
+    try {
+        Start-Process -FilePath "powershell.exe" -ArgumentList $arg -WindowStyle Hidden | Out-Null
+    } catch {}
+    try { $notify.Visible = $false } catch {}
+    try { $form.Close() } catch {}
+    [System.Windows.Forms.Application]::Exit()
+}
+
 function Test-NetxSetupCancelled {
     param([AllowNull()][Nullable[int]]$ExitCode)
     if ($null -eq $ExitCode) { return $false }
     # STATUS_CONTROL_C_EXIT (0xC000013A): console closed / Ctrl+C — not a setup failure.
     return ([int]$ExitCode -eq -1073741510)
+}
+
+function Complete-NetxTrayReconfig {
+    # Reload .env after reconfigure (host/port/mode may change).
+    if (Test-Path $envPath) {
+        $map = Read-DotEnv -Path $envPath
+        if ($map["NETX_HOST"]) { $script:hostBind = $map["NETX_HOST"]; $hostBind = $script:hostBind }
+        if ($map["NETX_PORT"]) {
+            try {
+                $script:port = [int]$map["NETX_PORT"]
+                $port = $script:port
+            } catch {}
+        }
+        $script:uiUrl = "http://${hostBind}:${port}/"
+        $uiUrl = $script:uiUrl
+        $dbMode = Get-DbMode -EnvMap $map
+        $script:dbModeLabel = if ($dbMode -eq "bundled") {
+            (T "built-in DB" "内置库")
+        } else {
+            (T "external DB" "外置库")
+        }
+        $dbModeLabel = $script:dbModeLabel
+        if ($miSub) { $miSub.Text = "$dbModeLabel  ·  ${hostBind}:$port" }
+    }
+
+    $restart = [System.Windows.Forms.MessageBox]::Show(
+        (T "Database configuration saved.`nStart NetX now?" "数据库配置已保存。`n是否立即启动 NetX？"),
+        "NetX",
+        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+        [System.Windows.Forms.MessageBoxIcon]::Information
+    )
+    if ($restart -eq [System.Windows.Forms.DialogResult]::Yes) {
+        Invoke-NetxScript -File $startPs1 -ExtraArgs @("-SkipBrowser") | Out-Null
+        Open-NetxUiWhenReady
+    } else {
+        Update-NetxTrayTip
+    }
 }
 
 function Open-NetxUiWhenReady {
@@ -223,18 +317,37 @@ function Open-NetxUiWhenReady {
         (T "Starting… first run may take a minute." "正在启动…首次迁移可能需要一分钟。"),
         [System.Windows.Forms.ToolTipIcon]::Info
     )
-    if (Wait-NetxApiHealthy -HostName $hostBind -Port $port -TimeoutSec $TimeoutSec) {
-        try { Start-Process $uiUrl } catch {}
-        Update-NetxTrayTip
-        return
+    # Poll on a timer — do not block the tray UI thread with Wait-NetxApiHealthy.
+    if ($script:netxUiReadyTimer) {
+        try { $script:netxUiReadyTimer.Stop(); $script:netxUiReadyTimer.Dispose() } catch {}
     }
-    $notify.ShowBalloonTip(
-        8000,
-        "NetX",
-        (T "UI not ready yet. Use tray → Open UI when ready, or check data\runtime\netx.err.log." "界面尚未就绪。就绪后请用托盘「打开界面」，或查看 data\runtime\netx.err.log。"),
-        [System.Windows.Forms.ToolTipIcon]::Warning
-    )
-    Update-NetxTrayTip
+    $script:netxUiReadyTicks = 0
+    $script:netxUiReadyMax = [Math]::Max(1, [int]($TimeoutSec * 2))
+    $timer = New-Object System.Windows.Forms.Timer
+    $timer.Interval = 500
+    $timer.add_Tick({
+        $script:netxUiReadyTicks++
+        if (Test-NetxApiHealthy -HostName $hostBind -Port $port -TimeoutSec 2) {
+            try { $script:netxUiReadyTimer.Stop(); $script:netxUiReadyTimer.Dispose() } catch {}
+            $script:netxUiReadyTimer = $null
+            try { Start-Process $uiUrl } catch {}
+            Update-NetxTrayTip
+            return
+        }
+        if ($script:netxUiReadyTicks -ge $script:netxUiReadyMax) {
+            try { $script:netxUiReadyTimer.Stop(); $script:netxUiReadyTimer.Dispose() } catch {}
+            $script:netxUiReadyTimer = $null
+            $notify.ShowBalloonTip(
+                8000,
+                "NetX",
+                (T "UI not ready yet. Use tray → Open UI when ready, or check data\runtime\netx.err.log." "界面尚未就绪。就绪后请用托盘「打开界面」，或查看 data\runtime\netx.err.log。"),
+                [System.Windows.Forms.ToolTipIcon]::Warning
+            )
+            Update-NetxTrayTip
+        }
+    })
+    $script:netxUiReadyTimer = $timer
+    $timer.Start()
 }
 
 $form = New-Object System.Windows.Forms.Form
@@ -370,7 +483,7 @@ $miReconfig.add_Click({
         if ($ans -ne [System.Windows.Forms.DialogResult]::Yes) { return }
 
         $notify.ShowBalloonTip(3000, "NetX", (T "Stopping…" "正在停止…"), [System.Windows.Forms.ToolTipIcon]::Info)
-        Invoke-NetxScript -File $stopPs1 -Wait | Out-Null
+        Invoke-NetxScript -File $stopPs1 | Out-Null
 
         # ProgramData\.env is often admin-owned after Setup; repair ACL before reconfigure.
         $null = Ensure-NetxDataAcl -DataRoot $data -Quiet
@@ -378,48 +491,61 @@ $miReconfig.add_Click({
         try {
             $p = Start-NetxPowerShell -File $setupPs1 `
                 -Arguments @("-ProgramRoot", $prog, "-DataRoot", $data) `
-                -WorkingDirectory $prog -WindowStyle Normal -Wait -PassThru
-            if (Test-NetxSetupCancelled -ExitCode $p.ExitCode) {
-                $notify.ShowBalloonTip(
-                    4000, "NetX",
-                    (T "Database setup cancelled." "已取消数据库配置。"),
-                    [System.Windows.Forms.ToolTipIcon]::Info
-                )
-                Update-NetxTrayTip
-                return
-            }
-            if ($null -ne $p.ExitCode -and $p.ExitCode -ne 0) {
-                # Access denied → offer elevated re-run (UAC).
-                $elev = [System.Windows.Forms.MessageBox]::Show(
-                    (T `
-                        "Database setup failed (exit $($p.ExitCode)).`n`nIf this was a permission error on %ProgramData%\NetX\.env, click Yes to retry as Administrator." `
-                        "数据库配置失败（退出码 $($p.ExitCode)）。`n`n若是 %ProgramData%\NetX\.env 权限问题，点「是」将以管理员身份重试。"),
-                    "NetX",
-                    [System.Windows.Forms.MessageBoxButtons]::YesNo,
-                    [System.Windows.Forms.MessageBoxIcon]::Warning
-                )
-                if ($elev -eq [System.Windows.Forms.DialogResult]::Yes) {
-                    $arg = "-NoProfile -ExecutionPolicy Bypass -File `"$setupPs1`" -ProgramRoot `"$prog`" -DataRoot `"$data`""
-                    $ep = Start-Process -FilePath "powershell.exe" -ArgumentList $arg `
-                        -WorkingDirectory $prog -Verb RunAs -Wait -PassThru
-                    if (Test-NetxSetupCancelled -ExitCode $ep.ExitCode) {
-                        Update-NetxTrayTip
-                        return
-                    }
-                    if ($null -ne $ep.ExitCode -and $ep.ExitCode -ne 0) {
-                        [System.Windows.Forms.MessageBox]::Show(
-                            (T "Elevated database setup still failed (exit $($ep.ExitCode))." "管理员配置仍失败（退出码 $($ep.ExitCode)）。"),
-                            "NetX",
-                            [System.Windows.Forms.MessageBoxButtons]::OK,
-                            [System.Windows.Forms.MessageBoxIcon]::Error
-                        )
-                        Update-NetxTrayTip
-                        return
-                    }
-                } else {
+                -WorkingDirectory $prog -WindowStyle Normal -PassThru
+            Start-NetxTrayWatchProcess -Process $p -OnExit {
+                param($sp)
+                if ($null -eq $sp) { Update-NetxTrayTip; return }
+                if (Test-NetxSetupCancelled -ExitCode $sp.ExitCode) {
+                    $notify.ShowBalloonTip(
+                        4000, "NetX",
+                        (T "Database setup cancelled." "已取消数据库配置。"),
+                        [System.Windows.Forms.ToolTipIcon]::Info
+                    )
                     Update-NetxTrayTip
                     return
                 }
+                if ($null -ne $sp.ExitCode -and $sp.ExitCode -ne 0) {
+                    $elev = [System.Windows.Forms.MessageBox]::Show(
+                        (T `
+                            "Database setup failed (exit $($sp.ExitCode)).`n`nIf this was a permission error on %ProgramData%\NetX\.env, click Yes to retry as Administrator." `
+                            "数据库配置失败（退出码 $($sp.ExitCode)）。`n`n若是 %ProgramData%\NetX\.env 权限问题，点「是」将以管理员身份重试。"),
+                        "NetX",
+                        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                        [System.Windows.Forms.MessageBoxIcon]::Warning
+                    )
+                    if ($elev -ne [System.Windows.Forms.DialogResult]::Yes) {
+                        Update-NetxTrayTip
+                        return
+                    }
+                    $arg = "-NoProfile -ExecutionPolicy Bypass -File `"$setupPs1`" -ProgramRoot `"$prog`" -DataRoot `"$data`""
+                    try {
+                        $ep = Start-Process -FilePath "powershell.exe" -ArgumentList $arg `
+                            -WorkingDirectory $prog -Verb RunAs -PassThru
+                    } catch {
+                        Update-NetxTrayTip
+                        return
+                    }
+                    Start-NetxTrayWatchProcess -Process $ep -OnExit {
+                        param($ep2)
+                        if ($null -eq $ep2 -or (Test-NetxSetupCancelled -ExitCode $ep2.ExitCode)) {
+                            Update-NetxTrayTip
+                            return
+                        }
+                        if ($null -ne $ep2.ExitCode -and $ep2.ExitCode -ne 0) {
+                            [System.Windows.Forms.MessageBox]::Show(
+                                (T "Elevated database setup still failed (exit $($ep2.ExitCode))." "管理员配置仍失败（退出码 $($ep2.ExitCode)）。"),
+                                "NetX",
+                                [System.Windows.Forms.MessageBoxButtons]::OK,
+                                [System.Windows.Forms.MessageBoxIcon]::Error
+                            )
+                            Update-NetxTrayTip
+                            return
+                        }
+                        Complete-NetxTrayReconfig
+                    }
+                    return
+                }
+                Complete-NetxTrayReconfig
             }
         } catch {
             [System.Windows.Forms.MessageBox]::Show(
@@ -428,35 +554,6 @@ $miReconfig.add_Click({
                 [System.Windows.Forms.MessageBoxButtons]::OK,
                 [System.Windows.Forms.MessageBoxIcon]::Error
             )
-            Update-NetxTrayTip
-            return
-        }
-
-        # Reload .env after reconfigure (host/port/mode may change).
-        if (Test-Path $envPath) {
-            $map = Read-DotEnv -Path $envPath
-            if ($map["NETX_HOST"]) { $hostBind = $map["NETX_HOST"] }
-            if ($map["NETX_PORT"]) { try { $port = [int]$map["NETX_PORT"] } catch {} }
-            $uiUrl = "http://${hostBind}:${port}/"
-            $dbMode = Get-DbMode -EnvMap $map
-            $dbModeLabel = if ($dbMode -eq "bundled") {
-                (T "built-in DB" "内置库")
-            } else {
-                (T "external DB" "外置库")
-            }
-            $miSub.Text = "$dbModeLabel  ·  ${hostBind}:$port"
-        }
-
-        $restart = [System.Windows.Forms.MessageBox]::Show(
-            (T "Database configuration saved.`nStart NetX now?" "数据库配置已保存。`n是否立即启动 NetX？"),
-            "NetX",
-            [System.Windows.Forms.MessageBoxButtons]::YesNo,
-            [System.Windows.Forms.MessageBoxIcon]::Information
-        )
-        if ($restart -eq [System.Windows.Forms.DialogResult]::Yes) {
-            Invoke-NetxScript -File $startPs1 -ExtraArgs @("-SkipBrowser") | Out-Null
-            Open-NetxUiWhenReady
-        } else {
             Update-NetxTrayTip
         }
     }
@@ -467,54 +564,78 @@ $miUpdate = New-NetxMenuItem -Text (T "Check for updates…" "检查更新…")
 $miUpdate.add_Click({
     Start-NetxTrayDeferred {
         try {
+            $notify.ShowBalloonTip(
+                3000, "NetX",
+                (T "Checking for updates…" "正在检查更新…"),
+                [System.Windows.Forms.ToolTipIcon]::Info
+            )
+            # No -Wait on UI thread (freezes ContextMenuStrip / tray).
             $p = Start-NetxPowerShell -File $checkPs1 -Arguments @("-ProgramRoot", $prog, "-DataRoot", $data) `
-                -WorkingDirectory $prog -WindowStyle Normal -Wait -PassThru
-            if (Test-NetxSetupCancelled -ExitCode $p.ExitCode) { return }
-            if ($p.ExitCode -eq 10) {
-                $ans = [System.Windows.Forms.MessageBox]::Show(
-                    (T "A newer NetX is available. Download and apply now?" "发现新版本，是否立即下载并更新？"),
-                    (T "NetX update" "NetX 更新"),
-                    [System.Windows.Forms.MessageBoxButtons]::YesNo,
-                    [System.Windows.Forms.MessageBoxIcon]::Question
-                )
-                if ($ans -eq [System.Windows.Forms.DialogResult]::Yes) {
-                    # Apply replaces Program Files → needs admin; wait so the console is not abandoned mid-copy.
-                    $arg = "-NoProfile -ExecutionPolicy Bypass -File `"$checkPs1`" -ProgramRoot `"$prog`" -DataRoot `"$data`" -Apply"
-                    $notify.ShowBalloonTip(
-                        5000, "NetX",
-                        (T "Downloading / applying update… keep the console open." "正在下载/应用更新…请勿关闭控制台窗口。"),
-                        [System.Windows.Forms.ToolTipIcon]::Info
-                    )
-                    $ap = Start-Process -FilePath "powershell.exe" -ArgumentList $arg `
-                        -WorkingDirectory $prog -WindowStyle Normal -Verb RunAs -Wait -PassThru
-                    $newVer = Get-NetxVersion -ProgramRoot $prog
-                    if ($null -ne $ap.ExitCode -and $ap.ExitCode -eq 0) {
-                        $script:ver = $newVer
-                        $ver = $newVer
-                        if ($script:miHeader) { $script:miHeader.Text = "NetX  $script:ver" }
-                        [System.Windows.Forms.MessageBox]::Show(
-                            (T "Updated to $script:ver." "已更新到 $script:ver。"),
+                -WorkingDirectory $prog -WindowStyle Normal -PassThru
+            Start-NetxTrayWatchProcess -Process $p -OnExit {
+                param($cp)
+                try {
+                    if ($null -eq $cp) { return }
+                    if (Test-NetxSetupCancelled -ExitCode $cp.ExitCode) { return }
+                    if ($cp.ExitCode -eq 10) {
+                        $ans = [System.Windows.Forms.MessageBox]::Show(
+                            (T "A newer NetX is available. Download and apply now?" "发现新版本，是否立即下载并更新？"),
                             (T "NetX update" "NetX 更新"),
-                            [System.Windows.Forms.MessageBoxButtons]::OK,
-                            [System.Windows.Forms.MessageBoxIcon]::Information
+                            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                            [System.Windows.Forms.MessageBoxIcon]::Question
                         )
-                    } elseif (Test-NetxSetupCancelled -ExitCode $ap.ExitCode) {
-                        $notify.ShowBalloonTip(4000, "NetX", (T "Update cancelled." "已取消更新。"), [System.Windows.Forms.ToolTipIcon]::Info)
-                    } else {
+                        if ($ans -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+                        $arg = "-NoProfile -ExecutionPolicy Bypass -File `"$checkPs1`" -ProgramRoot `"$prog`" -DataRoot `"$data`" -Apply"
+                        $notify.ShowBalloonTip(
+                            5000, "NetX",
+                            (T "Downloading / applying update… keep the console open." "正在下载/应用更新…请勿关闭控制台窗口。"),
+                            [System.Windows.Forms.ToolTipIcon]::Info
+                        )
+                        try {
+                            $ap = Start-Process -FilePath "powershell.exe" -ArgumentList $arg `
+                                -WorkingDirectory $prog -WindowStyle Normal -Verb RunAs -PassThru
+                        } catch {
+                            $notify.ShowBalloonTip(4000, "NetX", (T "Update cancelled (UAC)." "已取消更新（UAC）。"), [System.Windows.Forms.ToolTipIcon]::Info)
+                            return
+                        }
+                        Start-NetxTrayWatchProcess -Process $ap -OnExit {
+                            param($ap2)
+                            if ($null -eq $ap2) { return }
+                            if (Test-NetxSetupCancelled -ExitCode $ap2.ExitCode) {
+                                $notify.ShowBalloonTip(4000, "NetX", (T "Update cancelled." "已取消更新。"), [System.Windows.Forms.ToolTipIcon]::Info)
+                                return
+                            }
+                            if ($null -ne $ap2.ExitCode -and $ap2.ExitCode -eq 0) {
+                                $newVer = Get-NetxVersion -ProgramRoot $prog
+                                [System.Windows.Forms.MessageBox]::Show(
+                                    (T "Updated to $newVer.`nTray will restart." "已更新到 $newVer。`n即将重启托盘。"),
+                                    (T "NetX update" "NetX 更新"),
+                                    [System.Windows.Forms.MessageBoxButtons]::OK,
+                                    [System.Windows.Forms.MessageBoxIcon]::Information
+                                )
+                                Restart-NetxTraySelf
+                                return
+                            }
+                            [System.Windows.Forms.MessageBox]::Show(
+                                (T "Update failed (exit $($ap2.ExitCode)). Re-run Check for updates, or install NetX-Setup manually." "更新失败（退出码 $($ap2.ExitCode)）。请重试「检查更新」，或手动运行 Setup 安装包。"),
+                                (T "NetX update" "NetX 更新"),
+                                [System.Windows.Forms.MessageBoxButtons]::OK,
+                                [System.Windows.Forms.MessageBoxIcon]::Warning
+                            )
+                            Update-NetxTrayTip
+                        }
+                    } elseif ($cp.ExitCode -eq 0) {
                         [System.Windows.Forms.MessageBox]::Show(
-                            (T "Update failed (exit $($ap.ExitCode)). Re-run Check for updates, or install NetX-Setup manually." "更新失败（退出码 $($ap.ExitCode)）。请重试「检查更新」，或手动运行 Setup 安装包。"),
-                            (T "NetX update" "NetX 更新"),
-                            [System.Windows.Forms.MessageBoxButtons]::OK,
-                            [System.Windows.Forms.MessageBoxIcon]::Warning
+                            (T "NetX is up to date ($script:ver)." "已是最新版本 ($script:ver)。"),
+                            (T "NetX update" "NetX 更新")
                         )
                     }
-                    Update-NetxTrayTip
+                } catch {
+                    [System.Windows.Forms.MessageBox]::Show(
+                        (T "Update check failed: $($_.Exception.Message)" "检查更新失败：$($_.Exception.Message)"),
+                        "NetX"
+                    )
                 }
-            } elseif ($p.ExitCode -eq 0) {
-                [System.Windows.Forms.MessageBox]::Show(
-                    (T "NetX is up to date ($ver)." "已是最新版本 ($ver)。"),
-                    (T "NetX update" "NetX 更新")
-                )
             }
         } catch {
             [System.Windows.Forms.MessageBox]::Show(
