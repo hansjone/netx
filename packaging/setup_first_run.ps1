@@ -25,6 +25,8 @@ function T([string]$En, [string]$Zh) {
     if ($zh) { return $Zh } else { return $En }
 }
 
+try {
+
 Write-Host ("==> " + (T "Program root:" "程序目录:") + " $prog")
 Write-Host ("==> " + (T "Data root:" "数据目录:") + "    $data")
 Write-Host ("==> " + (T "Env file:" "环境文件:") + "     $envPath")
@@ -72,33 +74,13 @@ if (Test-Path (Join-Path $distAbs "index.html")) {
 $dataEnv = Get-NetxDataEnvMap -DataRoot $data
 foreach ($k in $dataEnv.Keys) { $values[$k] = $dataEnv[$k] }
 
-# Fernet key for managed-NE password encryption (required to save SSH passwords).
-# Priority: -CredentialSecretKey(File) > interactive prompt > existing .env > generate.
+# Preload credential key from file/CLI only; interactive prompt comes AFTER DB settings
+# so users are not left thinking the key alone finished setup.
 if ($CredentialSecretKeyFile) {
     if (-not (Test-Path -LiteralPath $CredentialSecretKeyFile)) {
         throw "credential_secret_key_file_missing: $CredentialSecretKeyFile"
     }
     $CredentialSecretKey = [IO.File]::ReadAllText($CredentialSecretKeyFile).Trim()
-}
-if (-not $CredentialSecretKey -and -not $NonInteractive) {
-    Write-Host ""
-    Write-Host (T `
-        "Optional: paste NETX_CREDENTIAL_SECRET_KEY from an existing install" `
-        "可选: 粘贴已有安装的 NETX_CREDENTIAL_SECRET_KEY（便于沿用已加密凭据）") -ForegroundColor Cyan
-    Write-Host (T `
-        "Leave empty to keep existing .env key, or auto-generate if none." `
-        "留空则保留已有 .env 中的密钥；若没有则自动生成。")
-    $CredentialSecretKey = (Read-Host "NETX_CREDENTIAL_SECRET_KEY").Trim()
-}
-if ($CredentialSecretKey) {
-    $values["NETX_CREDENTIAL_SECRET_KEY"] = $CredentialSecretKey.Trim()
-    Write-Host "==> Using provided NETX_CREDENTIAL_SECRET_KEY" -ForegroundColor Green
-} elseif ($existing.ContainsKey("NETX_CREDENTIAL_SECRET_KEY") -and $existing["NETX_CREDENTIAL_SECRET_KEY"]) {
-    $values["NETX_CREDENTIAL_SECRET_KEY"] = $existing["NETX_CREDENTIAL_SECRET_KEY"]
-    Write-Host "==> Keeping existing NETX_CREDENTIAL_SECRET_KEY from .env" -ForegroundColor Green
-} else {
-    $values["NETX_CREDENTIAL_SECRET_KEY"] = New-NetxFernetKey
-    Write-Host "==> Generated NETX_CREDENTIAL_SECRET_KEY (saved in .env)" -ForegroundColor Green
 }
 
 if ($DbMode -eq "bundled") {
@@ -230,11 +212,14 @@ if ($DbMode -eq "bundled") {
         $ExternalDatabaseUrl = [IO.File]::ReadAllText($ExternalDatabaseUrlFile).Trim()
     }
     if (-not $ExternalDatabaseUrl) {
-        if ($existing.ContainsKey("NETX_DATABASE_URL") -and $existing["NETX_DATABASE_URL"]) {
-            $ExternalDatabaseUrl = $existing["NETX_DATABASE_URL"]
-        } elseif ($NonInteractive) {
-            throw "external_url_required"
+        if ($NonInteractive) {
+            if ($existing.ContainsKey("NETX_DATABASE_URL") -and $existing["NETX_DATABASE_URL"]) {
+                $ExternalDatabaseUrl = $existing["NETX_DATABASE_URL"]
+            } else {
+                throw "external_url_required"
+            }
         } else {
+            # Interactive: always ask. Empty = keep existing URL (never silent).
             Write-Host ""
             Write-Host (T `
                 "Enter PostgreSQL URL (database/role must already exist):" `
@@ -243,7 +228,21 @@ if ($DbMode -eq "bundled") {
             Write-Host (T `
                 "Example: postgresql+psycopg://netx:secret@10.0.0.8:5432/netx" `
                 "示例: postgresql+psycopg://netx:secret@10.0.0.8:5432/netx")
-            $ExternalDatabaseUrl = Read-Host "NETX_DATABASE_URL"
+            if ($existing.ContainsKey("NETX_DATABASE_URL") -and $existing["NETX_DATABASE_URL"]) {
+                Write-Host (T `
+                    "Current: $($existing['NETX_DATABASE_URL'])" `
+                    "当前: $($existing['NETX_DATABASE_URL'])") -ForegroundColor DarkGray
+                Write-Host (T `
+                    "Press Enter to keep the current URL, or paste a new one." `
+                    "直接回车 = 保留当前连接串；或粘贴新的连接串。")
+            }
+            $entered = (Read-Host "NETX_DATABASE_URL").Trim()
+            if ($entered) {
+                $ExternalDatabaseUrl = $entered
+            } elseif ($existing.ContainsKey("NETX_DATABASE_URL") -and $existing["NETX_DATABASE_URL"]) {
+                $ExternalDatabaseUrl = $existing["NETX_DATABASE_URL"]
+                Write-Host (T "==> Keeping existing NETX_DATABASE_URL" "==> 保留已有 NETX_DATABASE_URL") -ForegroundColor Green
+            }
         }
     }
     if (-not $ExternalDatabaseUrl) {
@@ -266,27 +265,59 @@ if ($DbMode -eq "bundled") {
             $h = $Matches[3]
             $po = if ($Matches[4]) { [int]$Matches[4] } else { 5432 }
             $dbn = [uri]::UnescapeDataString($Matches[5])
+            Write-Host "==> Probing external PostgreSQL ${h}:${po}/${dbn} ..."
             if (Test-Path $testHelper) {
-                Write-Host "==> Probing external PostgreSQL..."
+                $probeErr = Join-Path $env:TEMP ("netx-pg-probe-" + [Guid]::NewGuid().ToString("n") + ".txt")
                 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $testHelper `
-                    -PgHost $h -Port $po -User $u -Password $pw -Database $dbn -PsqlPath $psqlProbe
+                    -PgHost $h -Port $po -User $u -Password $pw -Database $dbn `
+                    -PsqlPath $psqlProbe -OutErrFile $probeErr
                 if ($LASTEXITCODE -ne 0) {
-                    throw "external_db_probe_failed"
+                    $detail = if (Test-Path $probeErr) { (Get-Content -LiteralPath $probeErr -Raw) } else { "exit $LASTEXITCODE" }
+                    Remove-Item -LiteralPath $probeErr -Force -ErrorAction SilentlyContinue
+                    throw (T "external_db_probe_failed: $detail" "外置数据库连接失败: $detail")
                 }
+                Remove-Item -LiteralPath $probeErr -Force -ErrorAction SilentlyContinue
                 Write-Host "==> External PostgreSQL OK" -ForegroundColor Green
             } else {
                 $env:PGPASSWORD = $pw
                 try {
                     $ping = & $psqlProbe -h $h -p $po -U $u -d $dbn -t -A -c "SELECT 1" 2>&1
                     if ($LASTEXITCODE -ne 0 -or (($ping | Out-String).Trim()) -notmatch '1') {
-                        throw "external_db_probe_failed: $ping"
+                        throw (T "external_db_probe_failed: $ping" "外置数据库连接失败: $ping")
                     }
                 } finally {
                     Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
                 }
             }
+        } else {
+            Write-Host (T `
+                "[WARN] Skipped connection probe (no bundled psql or URL parse failed)." `
+                "[WARN] 已跳过连接探测（缺少捆绑 psql 或连接串无法解析）。") -ForegroundColor Yellow
         }
     }
+}
+
+# Fernet key AFTER database prompts (interactive UX).
+# Priority: CLI/file > interactive prompt > existing .env > generate.
+if (-not $CredentialSecretKey -and -not $NonInteractive) {
+    Write-Host ""
+    Write-Host (T `
+        "Optional: paste NETX_CREDENTIAL_SECRET_KEY from an existing install" `
+        "可选: 粘贴已有安装的 NETX_CREDENTIAL_SECRET_KEY（便于沿用已加密凭据）") -ForegroundColor Cyan
+    Write-Host (T `
+        "Leave empty to keep existing .env key, or auto-generate if none." `
+        "留空则保留已有 .env 中的密钥；若没有则自动生成。")
+    $CredentialSecretKey = (Read-Host "NETX_CREDENTIAL_SECRET_KEY").Trim()
+}
+if ($CredentialSecretKey) {
+    $values["NETX_CREDENTIAL_SECRET_KEY"] = $CredentialSecretKey.Trim()
+    Write-Host "==> Using provided NETX_CREDENTIAL_SECRET_KEY" -ForegroundColor Green
+} elseif ($existing.ContainsKey("NETX_CREDENTIAL_SECRET_KEY") -and $existing["NETX_CREDENTIAL_SECRET_KEY"]) {
+    $values["NETX_CREDENTIAL_SECRET_KEY"] = $existing["NETX_CREDENTIAL_SECRET_KEY"]
+    Write-Host "==> Keeping existing NETX_CREDENTIAL_SECRET_KEY from .env" -ForegroundColor Green
+} else {
+    $values["NETX_CREDENTIAL_SECRET_KEY"] = New-NetxFernetKey
+    Write-Host "==> Generated NETX_CREDENTIAL_SECRET_KEY (saved in .env)" -ForegroundColor Green
 }
 
 Write-DotEnvValue -Path $envPath -Values $values
@@ -326,4 +357,15 @@ if (-not $NonInteractive) {
     }
 } else {
     Write-Host "Next: .\packaging\start_netx_app.ps1  or NetX-Tray.cmd"
+}
+
+} catch {
+    Write-Host ""
+    Write-Host ("[ERR] " + $_.Exception.Message) -ForegroundColor Red
+    if (-not $NonInteractive) {
+        try {
+            [void](Read-Host (T "Press Enter to close" "按回车关闭窗口"))
+        } catch {}
+    }
+    exit 1
 }

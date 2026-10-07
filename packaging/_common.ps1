@@ -1,4 +1,4 @@
-# Shared path helpers for Windows packaging scripts.
+﻿# Shared path helpers for Windows packaging scripts.
 # Dot-source: . "$PSScriptRoot\_common.ps1"
 
 $ErrorActionPreference = "Stop"
@@ -114,7 +114,33 @@ function Write-DotEnvValue {
     if (-not (Test-Path $dir)) {
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
     }
-    Set-Content -Path $Path -Value ($lines -join "`r`n") -Encoding utf8
+    $text = ($lines -join "`r`n")
+    try {
+        Set-Content -LiteralPath $Path -Value $text -Encoding utf8
+    } catch {
+        # Admin-created .env is often Users:RX only — repair ACL then retry once.
+        $root = $dir
+        if ((Split-Path -Leaf $dir) -eq "NetX" -or $dir -match '\\NetX$') {
+            $root = $dir
+        } else {
+            $parent = Split-Path -Parent $dir
+            if ($parent -and ((Split-Path -Leaf $parent) -eq "NetX")) { $root = $parent }
+        }
+        $null = Ensure-NetxDataAcl -DataRoot $root -Quiet
+        try {
+            # Reset .env ACL explicitly if still blocked.
+            $icacls = Join-Path $env:SystemRoot "System32\icacls.exe"
+            if (Test-Path -LiteralPath $icacls) {
+                & $icacls $Path /grant "*S-1-5-32-545:M" /C /Q 2>$null | Out-Null
+            }
+            Set-Content -LiteralPath $Path -Value $text -Encoding utf8
+        } catch {
+            throw (New-Object System.UnauthorizedAccessException(
+                ("access_denied: cannot write {0}. Run Start Menu → NetX → Reconfigure database as Administrator, or: icacls `"{1}`" /grant Users:(OI)(CI)M /T" -f $Path, $root),
+                $_.Exception
+            ))
+        }
+    }
 }
 
 function Get-DbMode {
@@ -169,8 +195,48 @@ function New-NetxFernetKey {
     return [Convert]::ToBase64String($bytes).Replace('+', '-').Replace('/', '_')
 }
 
+function Ensure-NetxDataAcl {
+    param(
+        [Parameter(Mandatory = $true)][string]$DataRoot,
+        [switch]$Quiet = $false
+    )
+    # Installer creates %ProgramData%\NetX as Administrators. Tray / normal users must
+    # be able to update .env and runtime files when reconfiguring DB.
+    if (-not (Test-Path -LiteralPath $DataRoot)) { return $false }
+    try {
+        $acl = Get-Acl -LiteralPath $DataRoot
+        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+            "BUILTIN\Users",
+            "Modify",
+            "ContainerInherit,ObjectInherit",
+            "None",
+            "Allow"
+        )
+        $acl.SetAccessRule($rule)
+        Set-Acl -LiteralPath $DataRoot -AclObject $acl
+
+        # Also fix already-created files that only inherited RX for Users.
+        $icacls = Join-Path $env:SystemRoot "System32\icacls.exe"
+        if (Test-Path -LiteralPath $icacls) {
+            & $icacls $DataRoot /grant "*S-1-5-32-545:(OI)(CI)M" /T /C /Q 2>$null | Out-Null
+        }
+        if (-not $Quiet) {
+            Write-Host "==> Data ACL: BUILTIN\Users Modify on $DataRoot" -ForegroundColor DarkGray
+        }
+        return $true
+    } catch {
+        if (-not $Quiet) {
+            Write-Host "[WARN] Ensure-NetxDataAcl: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+        return $false
+    }
+}
+
 function Ensure-NetxDataDirectories {
     param([string]$DataRoot)
+    if (-not (Test-Path -LiteralPath $DataRoot)) {
+        New-Item -ItemType Directory -Path $DataRoot -Force | Out-Null
+    }
     $subs = @(
         "data", "data\auth", "data\runtime", "data\biz_state_spool",
         "data\ne_collections", "data\ne_exec_jobs", "data\webcrt",
@@ -182,6 +248,8 @@ function Ensure-NetxDataDirectories {
             New-Item -ItemType Directory -Path $p -Force | Out-Null
         }
     }
+    # Best-effort; succeeds when running elevated (installer / first-run as admin).
+    $null = Ensure-NetxDataAcl -DataRoot $DataRoot -Quiet
 }
 
 function Test-NetxTcpPortFree {

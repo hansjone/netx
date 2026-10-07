@@ -1,11 +1,11 @@
-ï»¿; NetX Windows installer (Inno Setup 6+)
+; NetX Windows installer (Inno Setup 6+)
 ; Compile after: packaging\build_release.ps1
 ; ISCC.exe packaging\installer\netx.iss
 ; Encoding: UTF-8 with BOM (required for Chinese CustomMessages)
 
 #define MyAppName "NetX"
 #ifndef MyAppVersion
-  #define MyAppVersion "0.4.6"
+  #define MyAppVersion "0.4.7"
 #endif
 #define MyAppPublisher "NetX"
 #define MyAppURL "https://github.com/hansjone/netx"
@@ -39,7 +39,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=admin
 ; Data lives under {commonappdata}\NetX - not overwritten by upgrades.
-; Do NOT use CloseApplications=yes â€” it can freeze/beep on the Tasks/Ready
+; Do NOT use CloseApplications=yes ¡ª it can freeze/beep on the Tasks/Ready
 ; pages while scanning locked NetX tray/service processes with no visible dialog.
 CloseApplications=no
 ShowLanguageDialog=yes
@@ -66,45 +66,45 @@ english.DbUser=User
 english.DbPassword=Password
 english.DbName=Database
 english.CredKey=Credential key
-english.CredKeyHint=NETX_CREDENTIAL_SECRET_KEY (optional â€” empty = auto-generate)
+english.CredKeyHint=NETX_CREDENTIAL_SECRET_KEY (optional ¡ª empty = auto-generate)
 english.DbFieldsRequired=Please fill in host, port, user, password, and database name.
-english.DbTesting=Testing PostgreSQL connection, please waitâ€¦
+english.DbTesting=Testing PostgreSQL connection, please wait¡­
 english.DbTestFailed=Cannot connect to PostgreSQL with these settings.%n%n%1%n%nFix the settings and try again.
 english.DbTestExtractFailed=Could not extract PostgreSQL client tools for connection test.
 english.DbSilentExternalMissing=Silent install with external DB requires /DbHost /DbUser /DbPassword /DbName (optional /DbPort).
-english.DbApplyFailed=Database configuration failed after file install (exit %1).%n%nLog: %2%n%nFix the problem, then use Start Menu â†’ Reconfigure database â€” or reinstall.
+english.DbApplyFailed=Database configuration failed after file install (exit %1).%n%nLog: %2%n%nFix the problem, then use Start Menu ¡ú Reconfigure database ¡ª or reinstall.
 english.DbApplyExecFailed=Could not start database configuration script.
 english.DbBundledMissing=Built-in PostgreSQL files are missing from the install folder:%n%1%n%nThe Setup package is incomplete. Re-download NetX-Setup and install again.
 english.DbEnvMissing=Database configuration did not write %ProgramData%\NetX\.env.
 english.ReconfigureDb=Reconfigure database
-chinesesimplified.CreateDesktopIcon=åˆ›å»ºæ¡Œé¢å¿«æ·æ–¹å¼
-chinesesimplified.SetupOptions=å®‰è£…å®Œæˆå:
-chinesesimplified.StartTrayNow=ç«‹å³å¯åŠ¨ NetX æ‰˜ç›˜
-chinesesimplified.EnableAutostart=å¼€æœºæ—¶è‡ªåŠ¨å¯åŠ¨ NetX æ‰˜ç›˜
-chinesesimplified.EnableAutoUpdate=å¯ç”¨æ¯æ—¥é™é»˜è‡ªåŠ¨æ›´æ–°ï¼ˆä»¥åéœ€è¦è”ç½‘ï¼‰
-chinesesimplified.InstallService=å®‰è£…ä¸º Windows æœåŠ¡ï¼ˆä½¿ç”¨å·²æ†ç»‘çš„ WinSWï¼Œå¯ç¦»çº¿ï¼‰
-chinesesimplified.UninstallDeleteData=æ˜¯å¦åŒæ—¶åˆ é™¤ NetX æ•°æ®ï¼ˆ%ProgramData%\NetXï¼‰ï¼Ÿ%n%næ˜¯ = åˆ é™¤æ•°æ®åº“ã€é…ç½®å’Œå¯†é’¥%nå¦ = ä¿ç•™æ•°æ®ä»¥ä¾¿ä»¥åé‡è£…
-chinesesimplified.DbPageCaption=æ•°æ®åº“
-chinesesimplified.DbPageDescription=é€‰æ‹©å†…ç½®æˆ–å¤–ç½® PostgreSQLã€‚å¯é€‰ç²˜è´´å·²æœ‰ NETX_CREDENTIAL_SECRET_KEYï¼›ç•™ç©ºåˆ™è‡ªåŠ¨ç”Ÿæˆã€‚
-chinesesimplified.DbBundled=å†…ç½® PostgreSQLï¼ˆä¾¿æºï¼Œå¯ç¦»çº¿ï¼‰
-chinesesimplified.DbExternal=å¤–ç½® PostgreSQLï¼ˆå·²æœ‰æœåŠ¡å™¨ï¼‰
-chinesesimplified.DbHost=ä¸»æœº
-chinesesimplified.DbPort=ç«¯å£
-chinesesimplified.DbUser=ç”¨æˆ·
-chinesesimplified.DbPassword=å¯†ç 
-chinesesimplified.DbName=æ•°æ®åº“å
-chinesesimplified.CredKey=å‡­æ®å¯†é’¥
-chinesesimplified.CredKeyHint=NETX_CREDENTIAL_SECRET_KEYï¼ˆå¯é€‰ï¼Œç•™ç©º=è‡ªåŠ¨ç”Ÿæˆï¼‰
-chinesesimplified.DbFieldsRequired=è¯·å¡«å†™ä¸»æœºã€ç«¯å£ã€ç”¨æˆ·ã€å¯†ç å’Œæ•°æ®åº“åã€‚
-chinesesimplified.DbTesting=æ­£åœ¨æµ‹è¯• PostgreSQL è¿æ¥ï¼Œè¯·ç¨å€™â€¦
-chinesesimplified.DbTestFailed=æ— æ³•ç”¨å½“å‰è®¾ç½®è¿æ¥ PostgreSQLã€‚%n%n%1%n%nè¯·æ”¹æ­£åé‡è¯•ã€‚
-chinesesimplified.DbTestExtractFailed=æ— æ³•è§£å‹ PostgreSQL å®¢æˆ·ç«¯ä»¥æµ‹è¯•è¿æ¥ã€‚
-chinesesimplified.DbSilentExternalMissing=é™é»˜å®‰è£…å¤–ç½®åº“éœ€è¦å‚æ•° /DbHost /DbUser /DbPassword /DbNameï¼ˆå¯é€‰ /DbPortï¼‰ã€‚
-chinesesimplified.DbApplyFailed=æ–‡ä»¶å®‰è£…åæ•°æ®åº“è‡ªåŠ¨é…ç½®å¤±è´¥ï¼ˆé€€å‡ºç  %1ï¼‰ã€‚%n%næ—¥å¿—: %2%n%nè¯·å¤„ç†åä½¿ç”¨å¼€å§‹èœå• â†’ é‡æ–°é…ç½®æ•°æ®åº“ï¼Œæˆ–é‡æ–°å®‰è£…ã€‚
-chinesesimplified.DbApplyExecFailed=æ— æ³•å¯åŠ¨æ•°æ®åº“é…ç½®è„šæœ¬ã€‚
-chinesesimplified.DbBundledMissing=å®‰è£…ç›®å½•ä¸­ç¼ºå°‘å†…ç½® PostgreSQL æ–‡ä»¶ï¼š%n%1%n%nå®‰è£…åŒ…ä¸å®Œæ•´ï¼Œè¯·é‡æ–°ä¸‹è½½ NetX-Setup åå†è£…ã€‚
-chinesesimplified.DbEnvMissing=æ•°æ®åº“é…ç½®æœªå†™å…¥ %ProgramData%\NetX\.envã€‚
-chinesesimplified.ReconfigureDb=é‡æ–°é…ç½®æ•°æ®åº“
+chinesesimplified.CreateDesktopIcon=´´½¨×ÀÃæ¿ì½İ·½Ê½
+chinesesimplified.SetupOptions=°²×°Íê³Éºó:
+chinesesimplified.StartTrayNow=Á¢¼´Æô¶¯ NetX ÍĞÅÌ
+chinesesimplified.EnableAutostart=¿ª»úÊ±×Ô¶¯Æô¶¯ NetX ÍĞÅÌ
+chinesesimplified.EnableAutoUpdate=ÆôÓÃÃ¿ÈÕ¾²Ä¬×Ô¶¯¸üĞÂ£¨ÒÔºóĞèÒªÁªÍø£©
+chinesesimplified.InstallService=°²×°Îª Windows ·şÎñ£¨Ê¹ÓÃÒÑÀ¦°óµÄ WinSW£¬¿ÉÀëÏß£©
+chinesesimplified.UninstallDeleteData=ÊÇ·ñÍ¬Ê±É¾³ı NetX Êı¾İ£¨%ProgramData%\NetX£©£¿%n%nÊÇ = É¾³ıÊı¾İ¿â¡¢ÅäÖÃºÍÃÜÔ¿%n·ñ = ±£ÁôÊı¾İÒÔ±ãÒÔºóÖØ×°
+chinesesimplified.DbPageCaption=Êı¾İ¿â
+chinesesimplified.DbPageDescription=Ñ¡ÔñÄÚÖÃ»òÍâÖÃ PostgreSQL¡£¿ÉÑ¡Õ³ÌùÒÑÓĞ NETX_CREDENTIAL_SECRET_KEY£»Áô¿ÕÔò×Ô¶¯Éú³É¡£
+chinesesimplified.DbBundled=ÄÚÖÃ PostgreSQL£¨±ãĞ¯£¬¿ÉÀëÏß£©
+chinesesimplified.DbExternal=ÍâÖÃ PostgreSQL£¨ÒÑÓĞ·şÎñÆ÷£©
+chinesesimplified.DbHost=Ö÷»ú
+chinesesimplified.DbPort=¶Ë¿Ú
+chinesesimplified.DbUser=ÓÃ»§
+chinesesimplified.DbPassword=ÃÜÂë
+chinesesimplified.DbName=Êı¾İ¿âÃû
+chinesesimplified.CredKey=Æ¾¾İÃÜÔ¿
+chinesesimplified.CredKeyHint=NETX_CREDENTIAL_SECRET_KEY£¨¿ÉÑ¡£¬Áô¿Õ=×Ô¶¯Éú³É£©
+chinesesimplified.DbFieldsRequired=ÇëÌîĞ´Ö÷»ú¡¢¶Ë¿Ú¡¢ÓÃ»§¡¢ÃÜÂëºÍÊı¾İ¿âÃû¡£
+chinesesimplified.DbTesting=ÕıÔÚ²âÊÔ PostgreSQL Á¬½Ó£¬ÇëÉÔºò¡­
+chinesesimplified.DbTestFailed=ÎŞ·¨ÓÃµ±Ç°ÉèÖÃÁ¬½Ó PostgreSQL¡£%n%n%1%n%nÇë¸ÄÕıºóÖØÊÔ¡£
+chinesesimplified.DbTestExtractFailed=ÎŞ·¨½âÑ¹ PostgreSQL ¿Í»§¶ËÒÔ²âÊÔÁ¬½Ó¡£
+chinesesimplified.DbSilentExternalMissing=¾²Ä¬°²×°ÍâÖÃ¿âĞèÒª²ÎÊı /DbHost /DbUser /DbPassword /DbName£¨¿ÉÑ¡ /DbPort£©¡£
+chinesesimplified.DbApplyFailed=ÎÄ¼ş°²×°ºóÊı¾İ¿â×Ô¶¯ÅäÖÃÊ§°Ü£¨ÍË³öÂë %1£©¡£%n%nÈÕÖ¾: %2%n%nÇë´¦ÀíºóÊ¹ÓÃ¿ªÊ¼²Ëµ¥ ¡ú ÖØĞÂÅäÖÃÊı¾İ¿â£¬»òÖØĞÂ°²×°¡£
+chinesesimplified.DbApplyExecFailed=ÎŞ·¨Æô¶¯Êı¾İ¿âÅäÖÃ½Å±¾¡£
+chinesesimplified.DbBundledMissing=°²×°Ä¿Â¼ÖĞÈ±ÉÙÄÚÖÃ PostgreSQL ÎÄ¼ş£º%n%1%n%n°²×°°ü²»ÍêÕû£¬ÇëÖØĞÂÏÂÔØ NetX-Setup ºóÔÙ×°¡£
+chinesesimplified.DbEnvMissing=Êı¾İ¿âÅäÖÃÎ´Ğ´Èë %ProgramData%\NetX\.env¡£
+chinesesimplified.ReconfigureDb=ÖØĞÂÅäÖÃÊı¾İ¿â
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: checkedonce
@@ -128,18 +128,19 @@ Source: "{#StageDir}\postgres\pgsql\bin\libxml2.dll"; Flags: dontcopy
 Source: "{#StageDir}\postgres\pgsql\bin\libxslt.dll"; Flags: dontcopy
 
 [Dirs]
-Name: "{commonappdata}\NetX"
-Name: "{commonappdata}\NetX\data"
-Name: "{commonappdata}\NetX\data\auth"
-Name: "{commonappdata}\NetX\data\runtime"
-Name: "{commonappdata}\NetX\pgdata"
-Name: "{commonappdata}\NetX\backups"
+; users-modify so tray / non-admin reconfigure can update .env and runtime files.
+Name: "{commonappdata}\NetX"; Permissions: users-modify
+Name: "{commonappdata}\NetX\data"; Permissions: users-modify
+Name: "{commonappdata}\NetX\data\auth"; Permissions: users-modify
+Name: "{commonappdata}\NetX\data\runtime"; Permissions: users-modify
+Name: "{commonappdata}\NetX\pgdata"; Permissions: users-modify
+Name: "{commonappdata}\NetX\backups"; Permissions: users-modify
 
 [InstallDelete]
 ; Remove legacy desktop shortcuts from older Setup builds (keep a single NetX icon).
 Type: files; Name: "{commondesktop}\NetX Start.lnk"
 Type: files; Name: "{commondesktop}\NetX First-time setup.lnk"
-Type: files; Name: "{commondesktop}\é¦–æ¬¡é…ç½®ï¼ˆå†…ç½®æˆ–å¤–ç½®æ•°æ®åº“ï¼‰.lnk"
+Type: files; Name: "{commondesktop}\Ê×´ÎÅäÖÃ£¨ÄÚÖÃ»òÍâÖÃÊı¾İ¿â£©.lnk"
 
 [Icons]
 ; Prefer .cmd targets so Server 2012 / classic Start Menu shows normal program entries.
@@ -505,7 +506,7 @@ begin
   GDbConnOk := False;
   { Always show DB page so choosing built-in always re-runs auto-configure.
     Skipping when .env exists caused upgrades/reinstalls to keep a broken or
-    external config and still launch tray â†’ confusing "first-time" prompts. }
+    external config and still launch tray ¡ú confusing "first-time" prompts. }
   GSkipDbPage := False;
 
   DbPage := CreateCustomPage(wpSelectDir,
@@ -678,7 +679,7 @@ begin
   end;
 
   { Connection test here so bad settings never reach Tasks/Ready.
-    Show busy state â€” ExtractTemporaryFile + psql can take a few seconds. }
+    Show busy state ¡ª ExtractTemporaryFile + psql can take a few seconds. }
   SetWizardBusy(True, ExpandConstant('{cm:DbTesting}'));
   try
     Result := ValidateExternalDbSaved(ErrMsg);
