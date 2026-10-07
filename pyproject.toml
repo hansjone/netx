@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "netx-ops"
-version = "0.4.8"
+version = "0.4.9"
 description = "netx operations tool: alarm-centric workflows with REST API and stdio MCP"
 readme = "README.md"
 requires-python = ">=3.11"

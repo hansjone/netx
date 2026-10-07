@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$ProgramRoot = "",
     [string]$DataRoot = "",
     [switch]$SkipBrowser = $false,
@@ -118,21 +118,25 @@ if (-not (Test-Path $startScript)) {
     throw "start_netx.ps1 not found at $startScript"
 }
 
-$startExtra = @(
-    "-SkipInstall", "-Background",
-    "-BindHost", $hostBind, "-Port", "$port"
-)
-if ($InlineSchedulers) { $startExtra += "-InlineSchedulers" }
-
 Write-Host "==> Starting NetX (API + workers; UI via API on :$port)"
-$startProc = Start-NetxPowerShell -File $startScript -Arguments $startExtra `
-    -WorkingDirectory $prog -WindowStyle Hidden -Wait -PassThru
-if ($startProc.ExitCode -ne 0) { exit $startProc.ExitCode }
+# Run in-process with -Background so this console exits after /health (nested
+# Start-Process -Wait on a Hidden child often never returns under UAC update).
+$startArgs = @{
+    SkipInstall = $true
+    Background  = $true
+    BindHost    = $hostBind
+    Port        = $port
+}
+if ($InlineSchedulers) { $startArgs["InlineSchedulers"] = $true }
+& $startScript @startArgs
+if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $url = "http://${hostBind}:${port}/"
-if (-not (Wait-NetxApiHealthy -HostName $hostBind -Port $port -TimeoutSec 30)) {
-    Write-Host "[ERR] NetX process exited 0 but /health not ready: $url" -ForegroundColor Red
-    exit 1
+if (-not (Test-NetxApiHealthy -HostName $hostBind -Port $port -TimeoutSec 2)) {
+    if (-not (Wait-NetxApiHealthy -HostName $hostBind -Port $port -TimeoutSec 30)) {
+        Write-Host "[ERR] NetX started but /health not ready: $url" -ForegroundColor Red
+        exit 1
+    }
 }
 Write-Host "==> Open: $url" -ForegroundColor Green
 if (-not $SkipBrowser) {

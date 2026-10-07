@@ -1,11 +1,11 @@
 {
   "channel": "stable",
-  "latest": "0.4.8",
+  "latest": "0.4.9",
   "min_compatible": "0.3.0",
-  "notes_url": "https://github.com/hansjone/netx/releases/tag/v0.4.8",
+  "notes_url": "https://github.com/hansjone/netx/releases/tag/v0.4.9",
   "windows": {
-    "url": "https://github.com/hansjone/netx/releases/download/v0.4.8/NetX-0.4.8-win64.zip",
-    "setup_url": "https://github.com/hansjone/netx/releases/download/v0.4.8/NetX-Setup-0.4.8.exe",
+    "url": "https://github.com/hansjone/netx/releases/download/v0.4.9/NetX-0.4.9-win64.zip",
+    "setup_url": "https://github.com/hansjone/netx/releases/download/v0.4.9/NetX-Setup-0.4.9.exe",
     "sha256": "",
     "size": 0
   }

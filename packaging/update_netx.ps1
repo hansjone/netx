@@ -130,9 +130,12 @@ try {
 
     Write-Host "==> Update files applied" -ForegroundColor Green
     if (-not $NoStart) {
-        & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "start_netx_app.ps1") `
+        # Same process (no nested powershell) so the update console can exit cleanly.
+        & (Join-Path $PSScriptRoot "start_netx_app.ps1") `
             -ProgramRoot $prog -DataRoot $data -SkipBrowser
+        if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     }
+    Write-Host "==> Update complete. You can close this window." -ForegroundColor Green
 } finally {
     if (Test-Path $work) {
         Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue

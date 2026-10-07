@@ -101,7 +101,8 @@ if ($autoVal -match '^(1|true|yes|on)$') {
     $CheckUpdateOnLaunch = $true
 }
 $uiUrl = "http://${hostBind}:${port}/"
-$ver = Get-NetxVersion -ProgramRoot $prog
+$script:ver = Get-NetxVersion -ProgramRoot $prog
+$ver = $script:ver
 $dbMode = Get-DbMode -EnvMap $map
 $dbModeLabel = if ($dbMode -eq "bundled") {
     if (([cultureinfo]::CurrentUICulture.Name -match '^(zh|zh-)')) { "内置库" } else { "built-in DB" }
@@ -160,16 +161,25 @@ function Invoke-NetxScript {
 }
 
 function Update-NetxTrayTip {
+    # Refresh version after in-place updates (tray process may outlive version.json).
+    try {
+        $nowVer = Get-NetxVersion -ProgramRoot $prog
+        if ($nowVer -and $nowVer -ne $script:ver) {
+            $script:ver = $nowVer
+            if ($null -ne $script:miHeader) { $script:miHeader.Text = "NetX  $script:ver" }
+        }
+    } catch {}
     $running = Test-NetxApiHealthy -HostName $hostBind -Port $port -TimeoutSec 1
     $state = if ($running) {
         (T "Running" "运行中")
     } else {
         (T "Stopped" "已停止")
     }
-    $tip = "NetX $ver  ·  $state  ·  $dbModeLabel`n$uiUrl"
+    $v = $script:ver
+    $tip = "NetX $v  ·  $state  ·  $dbModeLabel`n$uiUrl"
     if ($tip.Length -gt 63) {
         # NotifyIcon.Text max ~63 chars on older Windows.
-        $tip = "NetX $ver · $state · $dbModeLabel"
+        $tip = "NetX $v · $state · $dbModeLabel"
     }
     $notify.Text = $tip
 }
@@ -297,7 +307,8 @@ $menu.Padding = New-Object System.Windows.Forms.Padding(4, 4, 4, 4)
 $menu.Renderer = New-Object NetxMenuRenderer
 
 # --- header (info only) ---
-$miHeader = New-NetxMenuItem -Text "NetX  $ver" -Header
+$script:miHeader = New-NetxMenuItem -Text "NetX  $script:ver" -Header
+$miHeader = $script:miHeader
 [void]$menu.Items.Add($miHeader)
 
 $miSub = New-NetxMenuItem -Text "$dbModeLabel  ·  ${hostBind}:$port" -Muted
@@ -478,10 +489,11 @@ $miUpdate.add_Click({
                         -WorkingDirectory $prog -WindowStyle Normal -Verb RunAs -Wait -PassThru
                     $newVer = Get-NetxVersion -ProgramRoot $prog
                     if ($null -ne $ap.ExitCode -and $ap.ExitCode -eq 0) {
+                        $script:ver = $newVer
                         $ver = $newVer
-                        $miHeader.Text = "NetX  $ver"
+                        if ($script:miHeader) { $script:miHeader.Text = "NetX  $script:ver" }
                         [System.Windows.Forms.MessageBox]::Show(
-                            (T "Updated to $ver. Restart the tray if the menu still shows the old version." "已更新到 $ver。若菜单仍显示旧版本，请退出托盘后重新打开。"),
+                            (T "Updated to $script:ver." "已更新到 $script:ver。"),
                             (T "NetX update" "NetX 更新"),
                             [System.Windows.Forms.MessageBoxButtons]::OK,
                             [System.Windows.Forms.MessageBoxIcon]::Information
