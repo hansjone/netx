@@ -15,6 +15,7 @@ from .schema_patches import (
     apply_topology_schema_safety_net,
     run_alembic_upgrade_to_head,
 )
+from .ne_crypto import ensure_credential_secret_key
 from .security_bootstrap import assert_secure_defaults_or_exit
 from .ume_runtime import start_api_sideband_threads, start_device_schedulers
 import netx_api.ume_support as ume_support
@@ -42,6 +43,8 @@ def _configure_ume_diag_logging() -> None:
 def run_api_startup() -> None:
     """Full API boot sequence previously inlined in ``main.on_startup``."""
     assert_secure_defaults_or_exit()
+    # Persist Fernet key for managed-NE passwords (same idea as JWT secret file).
+    ensure_credential_secret_key()
     _configure_ume_diag_logging()
     _log.info(
         "startup: ne_exec_policy_enabled=%s",

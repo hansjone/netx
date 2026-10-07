@@ -1,4 +1,4 @@
-﻿# Shared path helpers for Windows packaging scripts.
+# Shared path helpers for Windows packaging scripts.
 # Dot-source: . "$PSScriptRoot\_common.ps1"
 
 $ErrorActionPreference = "Stop"
@@ -147,6 +147,7 @@ function Get-NetxDataEnvMap {
     return @{
         "NETX_AUTH_MCP_TOKEN_FILE"       = (ConvertTo-NetxFsPath (Join-Path $d "data\auth\mcp_token"))
         "NETX_AUTH_SECRET_FILE"          = (ConvertTo-NetxFsPath (Join-Path $d "data\auth\jwt_secret"))
+        "NETX_CREDENTIAL_SECRET_FILE"    = (ConvertTo-NetxFsPath (Join-Path $d "data\auth\credential_secret"))
         "NETX_SCHEDULER_HEARTBEAT_PATH"  = (ConvertTo-NetxFsPath (Join-Path $d "data\runtime\scheduler_heartbeat.json"))
         "NETX_RUN_DIR"                   = (ConvertTo-NetxFsPath (Join-Path $d "data\runtime"))
         "NETX_BIZ_STATE_SPOOL_DIR"       = (ConvertTo-NetxFsPath (Join-Path $d "data\biz_state_spool"))
@@ -154,6 +155,18 @@ function Get-NetxDataEnvMap {
         "NETX_NE_EXEC_JOB_DIR"           = (ConvertTo-NetxFsPath (Join-Path $d "data\ne_exec_jobs"))
         "NETX_WEBCRT_DATA_DIR"           = (ConvertTo-NetxFsPath (Join-Path $d "data\webcrt"))
     }
+}
+
+function New-NetxFernetKey {
+    # cryptography.fernet.Fernet.generate_key() == urlsafe_b64encode(os.urandom(32))
+    $bytes = New-Object byte[] 32
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $rng.GetBytes($bytes)
+    } finally {
+        $rng.Dispose()
+    }
+    return [Convert]::ToBase64String($bytes).Replace('+', '-').Replace('/', '_')
 }
 
 function Ensure-NetxDataDirectories {
@@ -198,6 +211,146 @@ function Test-NetxApiHealthy {
         return ($body.status -eq "ok")
     } catch {
         return $false
+    }
+}
+
+function Wait-NetxApiHealthy {
+    param(
+        [string]$HostName = "127.0.0.1",
+        [int]$Port = 8890,
+        [int]$TimeoutSec = 180,
+        [int]$PollMs = 500
+    )
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        if (Test-NetxApiHealthy -HostName $HostName -Port $Port -TimeoutSec 2) {
+            return $true
+        }
+        Start-Sleep -Milliseconds $PollMs
+    }
+    return $false
+}
+
+function ConvertTo-NetxProcessArgument {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
+    # Start-Process joins string[] args with spaces and does NOT quote values that
+    # contain spaces (e.g. C:\Program Files\NetX). Always emit one argv token.
+    if ($Value -match '[\s"]') {
+        return '"' + ($Value -replace '"', '\"') + '"'
+    }
+    return $Value
+}
+
+function ConvertTo-NetxProcessArgumentString {
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+    return (($Arguments | ForEach-Object { ConvertTo-NetxProcessArgument -Value "$_" }) -join " ")
+}
+
+function Start-NetxPowerShell {
+    param(
+        [Parameter(Mandatory = $true)][string]$File,
+        [string[]]$Arguments = @(),
+        [string]$WorkingDirectory = "",
+        [ValidateSet("Hidden", "Normal", "Minimized")]
+        [string]$WindowStyle = "Hidden",
+        [switch]$Wait = $false,
+        [switch]$PassThru = $false
+    )
+    $parts = @(
+        "-NoProfile",
+        "-WindowStyle", $WindowStyle,
+        "-ExecutionPolicy", "Bypass",
+        "-File", $File
+    ) + $Arguments
+    $sp = @{
+        FilePath     = "powershell.exe"
+        ArgumentList = (ConvertTo-NetxProcessArgumentString -Arguments $parts)
+        WindowStyle  = $WindowStyle
+    }
+    if ($WorkingDirectory) { $sp.WorkingDirectory = $WorkingDirectory }
+    if ($Wait) { $sp.Wait = $true }
+    if ($PassThru -or $Wait) { $sp.PassThru = $true }
+    return Start-Process @sp
+}
+
+function Get-NetxSystemPython {
+    # Prefer a real interpreter; skip the WindowsApps Store stub.
+    $candidates = @()
+    foreach ($cmd in @("python", "python3", "py")) {
+        $c = Get-Command $cmd -ErrorAction SilentlyContinue
+        if ($c -and $c.Source -and ($c.Source -notmatch '\\WindowsApps\\')) {
+            $candidates += $c.Source
+        }
+    }
+    foreach ($p in @(
+            "$env:LOCALAPPDATA\Python\pythoncore-3.14-64\python.exe",
+            "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe",
+            "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe",
+            "$env:ProgramFiles\Python312\python.exe",
+            "$env:ProgramFiles\Python311\python.exe"
+        )) {
+        if ($p -and (Test-Path $p)) { $candidates += $p }
+    }
+    foreach ($p in ($candidates | Select-Object -Unique)) {
+        try {
+            $v = & $p -c "import sys; print('%d.%d'%sys.version_info[:2])" 2>$null
+            if ($v -match '^(3\.(1[1-9]|[2-9]\d))$') { return $p }
+        } catch {}
+    }
+    return $null
+}
+
+function Ensure-NetxVenv {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProgramRoot,
+        [switch]$ForcePip = $false
+    )
+    $venvPy = Join-Path $ProgramRoot ".venv\Scripts\python.exe"
+    $req = Join-Path $ProgramRoot "requirements.txt"
+    if ((Test-Path $venvPy) -and -not $ForcePip) {
+        return $venvPy
+    }
+    if (-not (Test-Path $venvPy)) {
+        $py = Get-NetxSystemPython
+        if (-not $py) {
+            throw "python_not_found: install Python 3.11+ (or ship Setup built with -CreateVenv)"
+        }
+        Write-Host "==> Creating .venv with $py"
+        $venvDir = Join-Path $ProgramRoot ".venv"
+        try {
+            & $py -m venv $venvDir
+        } catch {
+            throw "venv_create_failed: cannot write $venvDir (need admin / ship -CreateVenv). $($_.Exception.Message)"
+        }
+        if (-not (Test-Path $venvPy)) {
+            throw "venv_create_failed: missing $venvPy (Program Files may be read-only without elevation)"
+        }
+        $ForcePip = $true
+    }
+    if ($ForcePip) {
+        if (-not (Test-Path $req)) { throw "requirements_missing: $req" }
+        Write-Host "==> pip install -r requirements.txt"
+        & $venvPy -m pip install --upgrade pip
+        & $venvPy -m pip install -r $req
+        if ($LASTEXITCODE -ne 0) { throw "pip_install_failed" }
+    }
+    return $venvPy
+}
+
+function Stop-NetxTrayProcesses {
+    param([string]$ProgramRoot = "")
+    $hits = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+            $_.CommandLine -and $_.CommandLine -match 'netx_tray\.ps1'
+        })
+    if ($ProgramRoot) {
+        $esc = [regex]::Escape($ProgramRoot)
+        $hits = @($hits | Where-Object { $_.CommandLine -match $esc -or $_.CommandLine -match 'netx_tray\.ps1' })
+    }
+    foreach ($p in $hits) {
+        try {
+            Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop
+            Write-Host "Stopped NetX tray PID=$($p.ProcessId)"
+        } catch {}
     }
 }
 

@@ -80,8 +80,9 @@ class Settings(BaseSettings):
     ume_topo_nodes_path: str = "/restconf/data/zte-resources-module:TopoNodes"
     ume_topological_links_path: str = "/restconf/data/zte-resources-module:TopologicalLinks"
     ume_sync_alarms_history_every_hours: int = 24
-    # Managed NE credentials (Fernet key; generate with cryptography.fernet.Fernet.generate_key())
+    # Managed NE credentials (Fernet). Empty = auto-generate & persist to credential_secret_file.
     credential_secret_key: str = ""
+    credential_secret_file: str = "data/auth/credential_secret"
     # Shared-server worker caps (sized for multi-operator use; raise if bastion/DB allow).
     ne_connect_max_workers: int = 8
     ne_connect_timeout_sec: int = 30

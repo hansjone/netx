@@ -19,7 +19,7 @@ This directory builds a Windows deliverable with:
 
 **Installer:** English + 简体中文 (language dialog). Icons use `packaging/assets/netx.ico`.
 
-**Offline:** Setup ships portable PostgreSQL, `.venv` (when built with `-CreateVenv`), and WinSW. First-run uses `-NonInteractive -DbMode bundled` — **no GitHub/EDB download on the target PC**. Service install uses bundled WinSW (pass `-AllowDownload` only on a build/dev machine if the binary is missing). Auto-update still needs network later, and is unchecked by default.
+**Offline:** Setup ships portable PostgreSQL, `.venv` (when built with `-CreateVenv`), and WinSW. The installer wizard chooses **built-in or external** PostgreSQL and validates external credentials (`psql SELECT 1`) before files are installed — **no GitHub/EDB download on the target PC**. Service install uses bundled WinSW (pass `-AllowDownload` only on a build/dev machine if the binary is missing). Auto-update still needs network later, and is unchecked by default.
 
 **OS:** Windows 10/11 or Windows Server **2016+** recommended. Packaging scripts are UTF-8 **with BOM** so Chinese UI works on Windows PowerShell 5.x. Bundled Python in current releases is **3.13+**, which does **not** support Windows Server 2012 R2 — use Server 2016+ or a newer desktop OS.
 
@@ -54,10 +54,14 @@ Override version in the `.iss` or edit `#define MyAppVersion`.
 ### Setup.exe
 
 1. Run `NetX-Setup-x.y.z.exe` (admin).
-2. Files → `%ProgramFiles%\NetX\` (program root).
-3. Data → `%ProgramData%\NetX\` (`.env`, `pgdata`, spool, secrets).
-4. Optional post-install task runs `setup_first_run.ps1` (choose bundled vs external DB).
-5. Start menu: **Start NetX** / **Stop NetX** / **Open NetX UI**.
+2. On the **Database** page: choose built-in (offline) or external PostgreSQL (host/port/user/password/db; connection must succeed to continue).
+3. Files → `%ProgramFiles%\NetX\` (program root).
+4. Data → `%ProgramData%\NetX\` (`.env`, `pgdata`, spool, secrets). Post-install writes `.env` automatically.
+5. Start menu: **Start NetX** / **Stop NetX** / **Open NetX UI** / **Reconfigure database** (repair only).
+
+Silent (bundled default): `/SILENT /DbMode=bundled`  
+Silent external: `/SILENT /DbMode=external /DbHost=... /DbPort=5432 /DbUser=... /DbPassword=... /DbName=...`  
+Optional credential key (reuse encrypted NE passwords from another install): `/CredentialSecretKey=...` — omit to auto-generate.
 
 ### Zip (portable)
 

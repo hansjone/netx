@@ -7,7 +7,7 @@
 )
 
 # Visible entrypoint for Start Menu / desktop shortcuts.
-# Shows a message box on failure (explorer-launched PowerShell otherwise flashes and exits).
+# Nested PowerShell runs are hidden; only failures show a message box.
 
 $ErrorActionPreference = "Stop"
 . "$PSScriptRoot\_common.ps1"
@@ -42,63 +42,83 @@ function Show-NetxError([string]$Msg) {
     )
 }
 
+function Invoke-NetxHiddenPs1 {
+    param(
+        [string]$File,
+        [string[]]$ExtraArgs = @(),
+        [switch]$NoWait = $false
+    )
+    return Start-NetxPowerShell -File $File `
+        -Arguments (@("-ProgramRoot", $prog, "-DataRoot", $data) + $ExtraArgs) `
+        -WorkingDirectory $prog -WindowStyle Hidden -PassThru -Wait:(-not $NoWait)
+}
+
 function Ensure-NetxEnv {
     $envPath = Join-Path $data ".env"
     if (Test-Path $envPath) { return }
-    Write-LaunchLog "missing .env — running setup_first_run -NonInteractive -DbMode bundled"
-    $setup = Join-Path $PSScriptRoot "setup_first_run.ps1"
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $setup `
-        -ProgramRoot $prog -DataRoot $data -NonInteractive -DbMode bundled
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $envPath)) {
-        $cmd = Join-Path $prog "NetX-FirstRun.cmd"
-        throw (T `
-            "First-time setup failed.`nDouble-click: $cmd`nOr: Start Menu → All Programs → NetX → First-time setup`nLog: $log" `
-            "首次配置失败。`n请双击: $cmd`n或: 开始菜单 → 所有程序 → NetX → First-time setup`n日志: $log")
-    }
+    # Do not silently force bundled DB — external-DB users must run interactive First-time setup.
+    $cmd = Join-Path $prog "NetX-FirstRun.cmd"
+    throw (T `
+        "First-time setup not done (missing $envPath).`nDouble-click desktop/Start Menu: First-time setup`nOr run: $cmd`nThere you can choose built-in or external PostgreSQL." `
+        "尚未完成首次配置（缺少 $envPath）。`n请双击桌面/开始菜单的「首次配置」`n或运行: $cmd`n在向导里可选内置或外置 PostgreSQL。")
 }
 
 try {
     Write-LaunchLog "action=$Action prog=$prog data=$data"
     switch ($Action) {
         "setup" {
-            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "setup_first_run.ps1") `
-                -ProgramRoot $prog -DataRoot $data
-            if ($LASTEXITCODE -ne 0) { throw "setup_exit_$LASTEXITCODE" }
+            # Visible console so user can pick bundled vs external DB.
+            $p = Start-NetxPowerShell -File (Join-Path $PSScriptRoot "setup_first_run.ps1") `
+                -Arguments @("-ProgramRoot", $prog, "-DataRoot", $data) `
+                -WorkingDirectory $prog -WindowStyle Normal -Wait -PassThru
+            if ($p.ExitCode -ne 0) { throw "setup_exit_$($p.ExitCode)" }
+            if (Test-Path (Join-Path $data ".env")) {
+                Start-NetxPowerShell -File (Join-Path $PSScriptRoot "netx_tray.ps1") `
+                    -Arguments @("-ProgramRoot", $prog, "-DataRoot", $data, "-StartOnLaunch") `
+                    -WorkingDirectory $prog -WindowStyle Hidden | Out-Null
+            }
         }
         "stop" {
-            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "stop_netx_app.ps1") `
-                -ProgramRoot $prog -DataRoot $data
+            $p = Invoke-NetxHiddenPs1 -File (Join-Path $PSScriptRoot "stop_netx_app.ps1")
+            if ($null -ne $p.ExitCode -and $p.ExitCode -ne 0) { throw "stop_exit_$($p.ExitCode)" }
         }
         "update" {
             Ensure-NetxEnv
-            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "check_update.ps1") `
-                -ProgramRoot $prog -DataRoot $data
+            # Update UI may need a visible window for prompts.
+            $p = Start-NetxPowerShell -File (Join-Path $PSScriptRoot "check_update.ps1") `
+                -Arguments @("-ProgramRoot", $prog, "-DataRoot", $data) `
+                -WorkingDirectory $prog -WindowStyle Normal -Wait -PassThru
+            if ($null -ne $p.ExitCode -and $p.ExitCode -ne 0 -and $p.ExitCode -ne 10) {
+                throw "update_exit_$($p.ExitCode)"
+            }
         }
         "start" {
             Ensure-NetxEnv
-            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "start_netx_app.ps1") `
-                -ProgramRoot $prog -DataRoot $data
-            if ($LASTEXITCODE -ne 0) { throw "start_exit_$LASTEXITCODE" }
+            $hostBind = "127.0.0.1"
+            $port = 8890
+            $envPath = Join-Path $data ".env"
+            if (Test-Path $envPath) {
+                $map = Read-DotEnv -Path $envPath
+                if ($map["NETX_HOST"]) { $hostBind = $map["NETX_HOST"] }
+                if ($map["NETX_PORT"]) { try { $port = [int]$map["NETX_PORT"] } catch {} }
+            }
+            $p = Invoke-NetxHiddenPs1 -File (Join-Path $PSScriptRoot "start_netx_app.ps1") -ExtraArgs @("-SkipBrowser")
+            if ($p.ExitCode -ne 0) { throw "start_exit_$($p.ExitCode)" }
+            if (Wait-NetxApiHealthy -HostName $hostBind -Port $port -TimeoutSec 180) {
+                try { Start-Process "http://${hostBind}:${port}/" } catch {}
+            } else {
+                throw (T `
+                    "NetX started but /health not ready within 180s.`nSee: $logDir\netx.err.log" `
+                    "NetX 已启动但 /health 在 180 秒内未就绪。`n请查看: $logDir\netx.err.log")
+            }
         }
         "tray" {
             Ensure-NetxEnv
-            $trayArgs = @(
-                "-NoProfile", "-ExecutionPolicy", "Bypass",
-                "-File", (Join-Path $PSScriptRoot "netx_tray.ps1"),
-                "-ProgramRoot", $prog, "-DataRoot", $data
-            )
-            if ($StartOnLaunch) { $trayArgs += "-StartOnLaunch" }
-            # Detach tray; keep this process short so Start Menu returns quickly.
-            Start-Process -FilePath "powershell.exe" -ArgumentList $trayArgs -WorkingDirectory $prog -WindowStyle Hidden
-            Start-Sleep -Milliseconds 800
-            [void][System.Windows.Forms.MessageBox]::Show(
-                (T `
-                    "NetX tray started.`nLook for the NetX icon in the system tray (click ^ if hidden).`nUI: http://127.0.0.1:8890/" `
-                    "NetX 托盘已启动。`n请在任务栏右下角找 NetX 图标（被藏起来时点 ^）。`n界面: http://127.0.0.1:8890/"),
-                "NetX",
-                [System.Windows.Forms.MessageBoxButtons]::OK,
-                [System.Windows.Forms.MessageBoxIcon]::Information
-            )
+            $extra = @("-ProgramRoot", $prog, "-DataRoot", $data)
+            if ($StartOnLaunch) { $extra += "-StartOnLaunch" }
+            # Detach tray; do not leave a success MessageBox (keeps a console open).
+            Start-NetxPowerShell -File (Join-Path $PSScriptRoot "netx_tray.ps1") `
+                -Arguments $extra -WorkingDirectory $prog -WindowStyle Hidden | Out-Null
         }
     }
     Write-LaunchLog "action=$Action ok"

@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$ProgramRoot = "",
     [string]$DataRoot = "",
     [switch]$SkipBrowser = $false,
@@ -96,15 +96,13 @@ if ($mode -eq "bundled") {
     }
 }
 
-$venvPy = Join-Path $prog ".venv\Scripts\python.exe"
-if (-not (Test-Path $venvPy)) {
-    Write-Host "==> Creating .venv (one-time)"
-    $pyCmd = Get-Command python -ErrorAction SilentlyContinue
-    if (-not $pyCmd) { throw "python_not_found: install Python 3.11+ and re-run" }
-    & $pyCmd.Source -m venv (Join-Path $prog ".venv")
-    & $venvPy -m pip install --upgrade pip
-    & $venvPy -m pip install -r (Join-Path $prog "requirements.txt")
-    if ($LASTEXITCODE -ne 0) { throw "pip_install_failed" }
+try {
+    $null = Ensure-NetxVenv -ProgramRoot $prog
+} catch {
+    Write-Host "[ERR] $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "      Tip: run Start Menu → NetX → First-time setup once as Administrator," -ForegroundColor Yellow
+    Write-Host "      or install a Setup built with packaging\\build_release.ps1 -CreateVenv." -ForegroundColor Yellow
+    exit 1
 }
 
 if (-not (Test-NetxTcpPortFree -HostName $hostBind -Port $port)) {
@@ -120,18 +118,22 @@ if (-not (Test-Path $startScript)) {
     throw "start_netx.ps1 not found at $startScript"
 }
 
-$psArgs = @(
-    "-ExecutionPolicy", "Bypass", "-File", $startScript,
+$startExtra = @(
     "-SkipInstall", "-Background",
     "-BindHost", $hostBind, "-Port", "$port"
 )
-if ($InlineSchedulers) { $psArgs += "-InlineSchedulers" }
+if ($InlineSchedulers) { $startExtra += "-InlineSchedulers" }
 
 Write-Host "==> Starting NetX (API + workers; UI via API on :$port)"
-& powershell @psArgs
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+$startProc = Start-NetxPowerShell -File $startScript -Arguments $startExtra `
+    -WorkingDirectory $prog -WindowStyle Hidden -Wait -PassThru
+if ($startProc.ExitCode -ne 0) { exit $startProc.ExitCode }
 
 $url = "http://${hostBind}:${port}/"
+if (-not (Wait-NetxApiHealthy -HostName $hostBind -Port $port -TimeoutSec 30)) {
+    Write-Host "[ERR] NetX process exited 0 but /health not ready: $url" -ForegroundColor Red
+    exit 1
+}
 Write-Host "==> Open: $url" -ForegroundColor Green
 if (-not $SkipBrowser) {
     try { Start-Process $url } catch {}

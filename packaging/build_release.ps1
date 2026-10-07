@@ -1,10 +1,11 @@
-﻿param(
+param(
     [string]$Version = "",
     [string]$OutDir = "",
     [switch]$SkipWebBuild = $false,
     [switch]$SkipPostgresDownload = $false,
     [switch]$SkipZip = $false,
-    [switch]$CreateVenv = $false
+    # Default on: offline Setup must ship .venv so target PCs never pip-install.
+    [switch]$CreateVenv = $true
 )
 
 $ErrorActionPreference = "Stop"
@@ -103,7 +104,7 @@ foreach ($name in @(
         "download_postgres.ps1", "setup_first_run.ps1", "start_netx_app.ps1",
         "stop_netx_app.ps1", "update_netx.ps1", "check_update.ps1",
         "launch_shortcut.ps1", "netx_tray.ps1", "install_autostart.ps1", "install_service.ps1",
-        "service_run.ps1", "install_update_task.ps1", "sign_release.ps1",
+        "service_run.ps1", "install_update_task.ps1", "uninstall_prepare.ps1", "uninstall_delete_data.ps1", "sign_release.ps1",
         "build_release.ps1", "publish_release.ps1", "publish_forgejo_release.ps1", "README.md", "manifest.example.json"
     )) {
     $src = Join-Path $PSScriptRoot $name
@@ -159,7 +160,7 @@ Set-Content -Path (Join-Path $stage ".portable") -Value "1" -Encoding ascii
 
 # Root .cmd launchers (Explorer / Start Menu friendly; ASCII-only).
 $cmdSrc = Join-Path $PSScriptRoot "cmd"
-foreach ($cmdName in @("NetX-FirstRun.cmd", "NetX-Start.cmd", "NetX-Tray.cmd")) {
+foreach ($cmdName in @("NetX-FirstRun.cmd", "NetX-Start.cmd", "NetX-Tray.cmd", "NetX-Stop.cmd")) {
     $c = Join-Path $cmdSrc $cmdName
     if (Test-Path $c) {
         Copy-Item -Path $c -Destination (Join-Path $stage $cmdName) -Force
@@ -167,10 +168,11 @@ foreach ($cmdName in @("NetX-FirstRun.cmd", "NetX-Start.cmd", "NetX-Tray.cmd")) 
 }
 
 if ($CreateVenv) {
-    Write-Host "==> Creating .venv in stage (requires Python 3.11+ on PATH)"
-    $py = (Get-Command python -ErrorAction SilentlyContinue)
-    if (-not $py) { throw "python_not_found_for_venv" }
-    & $py.Source -m venv (Join-Path $stage ".venv")
+    Write-Host "==> Creating .venv in stage (ships with Setup; target should NOT pip-install)"
+    $pyPath = Get-NetxSystemPython
+    if (-not $pyPath) { throw "python_not_found_for_venv: need Python 3.11+ (not WindowsApps stub)" }
+    Write-Host "    Using: $pyPath"
+    & $pyPath -m venv (Join-Path $stage ".venv")
     $venvPy = Join-Path $stage ".venv\Scripts\python.exe"
     & $venvPy -m pip install --upgrade pip
     & $venvPy -m pip install -r (Join-Path $stage "requirements.txt")

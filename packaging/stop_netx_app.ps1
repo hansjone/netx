@@ -1,7 +1,8 @@
-﻿param(
+param(
     [string]$ProgramRoot = "",
     [string]$DataRoot = "",
-    [switch]$KeepPostgres = $false
+    [switch]$KeepPostgres = $false,
+    [switch]$KillTray = $false
 )
 
 $ErrorActionPreference = "Continue"
@@ -21,9 +22,15 @@ if (-not (Test-Path $stopScript)) {
 }
 if (Test-Path $stopScript) {
     Write-Host "==> Stopping NetX processes"
-    & powershell -ExecutionPolicy Bypass -File $stopScript -Force
+    Start-NetxPowerShell -File $stopScript -Arguments @("-Force") `
+        -WorkingDirectory $prog -WindowStyle Hidden -Wait | Out-Null
 } else {
     Write-Host "[WARN] stop_netx.ps1 not found"
+}
+
+if ($KillTray) {
+    Write-Host "==> Stopping NetX tray icons"
+    Stop-NetxTrayProcesses -ProgramRoot $prog
 }
 
 $mode = Get-DbMode -EnvMap $map

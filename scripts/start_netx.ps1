@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$BindHost = "127.0.0.1",
     [int]$Port = 8890,
     [int]$WebPort = 5173,
@@ -260,7 +260,11 @@ if ($Background) {
         Show-LogTail -Path $logFile
         exit 1
     }
-    $healthWaitSec = 45
+    # Fresh installs run Alembic upgrades on first boot; 45s is often too short.
+    $healthWaitSec = 180
+    if ($env:NETX_START_HEALTH_WAIT_SEC) {
+        try { $healthWaitSec = [int]$env:NETX_START_HEALTH_WAIT_SEC } catch {}
+    }
     if (-not (Test-NetxApiListening -HostName $BindHost -LocalPort $Port -WaitSec $healthWaitSec)) {
         Write-Host "[ERR] Port $Port not listening /health not OK within ${healthWaitSec}s (process may be stuck on DB or schema migration)." -ForegroundColor Red
         Show-LogTail -Path $errFile

@@ -4,9 +4,13 @@
     [string]$ProgramRoot = "",
     [string]$DataRoot = "",
     [string]$ExternalDatabaseUrl = "",
+    [string]$ExternalDatabaseUrlFile = "",
+    [string]$CredentialSecretKey = "",
+    [string]$CredentialSecretKeyFile = "",
     [string]$BundledPassword = "",
     [int]$BundledPort = 15432,
-    [switch]$NonInteractive = $false
+    [switch]$NonInteractive = $false,
+    [switch]$SkipExternalProbe = $false
 )
 
 $ErrorActionPreference = "Stop"
@@ -39,9 +43,10 @@ if (-not $DbMode) {
         }
     } else {
         Write-Host ""
-        Write-Host (T "Choose database mode:" "选择数据库模式:")
-        Write-Host (T "  1) bundled  — use NetX portable PostgreSQL (default for new installs)" "  1) bundled  — 使用 NetX 内置便携 PostgreSQL（新安装默认）")
-        Write-Host (T "  2) external — connect to an existing PostgreSQL (Linux / already deployed)" "  2) external — 连接已有 PostgreSQL")
+        Write-Host (T "Choose database mode:" "选择数据库模式:") -ForegroundColor Cyan
+        Write-Host (T "  1) bundled  — NetX portable PostgreSQL (offline / default)" "  1) bundled  — NetX 内置便携 PostgreSQL（可离线，默认）")
+        Write-Host (T "  2) external — existing PostgreSQL (you provide connection URL)" "  2) external — 已有外置 PostgreSQL（需填写连接串）")
+        Write-Host ""
         $choice = Read-Host (T "Enter 1 or 2" "请输入 1 或 2")
         if ($choice -eq "2") { $DbMode = "external" } else { $DbMode = "bundled" }
     }
@@ -66,6 +71,35 @@ if (Test-Path (Join-Path $distAbs "index.html")) {
 # All runtime data under data root (never under Program Files).
 $dataEnv = Get-NetxDataEnvMap -DataRoot $data
 foreach ($k in $dataEnv.Keys) { $values[$k] = $dataEnv[$k] }
+
+# Fernet key for managed-NE password encryption (required to save SSH passwords).
+# Priority: -CredentialSecretKey(File) > interactive prompt > existing .env > generate.
+if ($CredentialSecretKeyFile) {
+    if (-not (Test-Path -LiteralPath $CredentialSecretKeyFile)) {
+        throw "credential_secret_key_file_missing: $CredentialSecretKeyFile"
+    }
+    $CredentialSecretKey = [IO.File]::ReadAllText($CredentialSecretKeyFile).Trim()
+}
+if (-not $CredentialSecretKey -and -not $NonInteractive) {
+    Write-Host ""
+    Write-Host (T `
+        "Optional: paste NETX_CREDENTIAL_SECRET_KEY from an existing install" `
+        "可选: 粘贴已有安装的 NETX_CREDENTIAL_SECRET_KEY（便于沿用已加密凭据）") -ForegroundColor Cyan
+    Write-Host (T `
+        "Leave empty to keep existing .env key, or auto-generate if none." `
+        "留空则保留已有 .env 中的密钥；若没有则自动生成。")
+    $CredentialSecretKey = (Read-Host "NETX_CREDENTIAL_SECRET_KEY").Trim()
+}
+if ($CredentialSecretKey) {
+    $values["NETX_CREDENTIAL_SECRET_KEY"] = $CredentialSecretKey.Trim()
+    Write-Host "==> Using provided NETX_CREDENTIAL_SECRET_KEY" -ForegroundColor Green
+} elseif ($existing.ContainsKey("NETX_CREDENTIAL_SECRET_KEY") -and $existing["NETX_CREDENTIAL_SECRET_KEY"]) {
+    $values["NETX_CREDENTIAL_SECRET_KEY"] = $existing["NETX_CREDENTIAL_SECRET_KEY"]
+    Write-Host "==> Keeping existing NETX_CREDENTIAL_SECRET_KEY from .env" -ForegroundColor Green
+} else {
+    $values["NETX_CREDENTIAL_SECRET_KEY"] = New-NetxFernetKey
+    Write-Host "==> Generated NETX_CREDENTIAL_SECRET_KEY (saved in .env)" -ForegroundColor Green
+}
 
 if ($DbMode -eq "bundled") {
     $pgsql = Join-Path $prog "postgres\pgsql"
@@ -189,23 +223,109 @@ if ($DbMode -eq "bundled") {
     }
     Write-Host "==> Bundled Postgres ready on 127.0.0.1:$BundledPort" -ForegroundColor Green
 } else {
+    if ($ExternalDatabaseUrlFile) {
+        if (-not (Test-Path -LiteralPath $ExternalDatabaseUrlFile)) {
+            throw "external_url_file_missing: $ExternalDatabaseUrlFile"
+        }
+        $ExternalDatabaseUrl = [IO.File]::ReadAllText($ExternalDatabaseUrlFile).Trim()
+    }
     if (-not $ExternalDatabaseUrl) {
         if ($existing.ContainsKey("NETX_DATABASE_URL") -and $existing["NETX_DATABASE_URL"]) {
             $ExternalDatabaseUrl = $existing["NETX_DATABASE_URL"]
         } elseif ($NonInteractive) {
             throw "external_url_required"
         } else {
-            $ExternalDatabaseUrl = Read-Host "NETX_DATABASE_URL (postgresql+psycopg://user:pass@host:5432/netx)"
+            Write-Host ""
+            Write-Host (T `
+                "Enter PostgreSQL URL (database/role must already exist):" `
+                "请输入 PostgreSQL 连接串（库和用户需事先建好）:") -ForegroundColor Cyan
+            Write-Host "  postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME"
+            Write-Host (T `
+                "Example: postgresql+psycopg://netx:secret@10.0.0.8:5432/netx" `
+                "示例: postgresql+psycopg://netx:secret@10.0.0.8:5432/netx")
+            $ExternalDatabaseUrl = Read-Host "NETX_DATABASE_URL"
         }
     }
     if (-not $ExternalDatabaseUrl) {
         throw "external_url_required"
     }
+    $ExternalDatabaseUrl = $ExternalDatabaseUrl.Trim()
     $values["NETX_DATABASE_URL"] = $ExternalDatabaseUrl
-    Write-Host "==> External Postgres configured (ensure role/db exist; see scripts\init_pg.ps1)" -ForegroundColor Green
+    Write-Host "==> External Postgres configured" -ForegroundColor Green
+
+    if (-not $SkipExternalProbe) {
+        # Probe with bundled psql when available (wizard already tested; this covers CLI reconfigure).
+        $psqlProbe = Join-Path $prog "postgres\pgsql\bin\psql.exe"
+        $testHelper = Join-Path $PSScriptRoot "installer\test_pg_conn.ps1"
+        if (-not (Test-Path $testHelper)) {
+            $testHelper = Join-Path $PSScriptRoot "test_pg_conn.ps1"
+        }
+        if ((Test-Path $psqlProbe) -and ($ExternalDatabaseUrl -match '^(?:postgresql(?:\+psycopg)?|postgres)://([^:]+):([^@]*)@([^:/]+):?(\d+)?/([^?\s]+)')) {
+            $u = [uri]::UnescapeDataString($Matches[1])
+            $pw = [uri]::UnescapeDataString($Matches[2])
+            $h = $Matches[3]
+            $po = if ($Matches[4]) { [int]$Matches[4] } else { 5432 }
+            $dbn = [uri]::UnescapeDataString($Matches[5])
+            if (Test-Path $testHelper) {
+                Write-Host "==> Probing external PostgreSQL..."
+                & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $testHelper `
+                    -PgHost $h -Port $po -User $u -Password $pw -Database $dbn -PsqlPath $psqlProbe
+                if ($LASTEXITCODE -ne 0) {
+                    throw "external_db_probe_failed"
+                }
+                Write-Host "==> External PostgreSQL OK" -ForegroundColor Green
+            } else {
+                $env:PGPASSWORD = $pw
+                try {
+                    $ping = & $psqlProbe -h $h -p $po -U $u -d $dbn -t -A -c "SELECT 1" 2>&1
+                    if ($LASTEXITCODE -ne 0 -or (($ping | Out-String).Trim()) -notmatch '1') {
+                        throw "external_db_probe_failed: $ping"
+                    }
+                } finally {
+                    Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
+                }
+            }
+        }
+    }
 }
 
 Write-DotEnvValue -Path $envPath -Values $values
 Write-Host ""
 Write-Host "Wrote $envPath" -ForegroundColor Green
-Write-Host "Next: .\packaging\start_netx_app.ps1"
+
+# Official Setup ships .venv (build_release -CreateVenv). Only bootstrap if missing
+# (e.g. zip without venv). Prefer not to pip-install on the target machine.
+$venvPy = Join-Path $prog ".venv\Scripts\python.exe"
+if (Test-Path $venvPy) {
+    Write-Host "==> Using bundled Python venv: $venvPy" -ForegroundColor Green
+} else {
+    Write-Host "==> Bundled .venv missing — creating one (Setup should normally ship it)." -ForegroundColor Yellow
+    try {
+        $null = Ensure-NetxVenv -ProgramRoot $prog
+        Write-Host "==> Python venv ready: $venvPy" -ForegroundColor Green
+    } catch {
+        Write-Host "[WARN] $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "       Install a Setup built with: packaging\build_release.ps1 -CreateVenv" -ForegroundColor Yellow
+    }
+}
+
+Write-Host ""
+Write-Host (T "Setup complete." "首次配置完成。") -ForegroundColor Green
+if (-not $NonInteractive) {
+    Write-Host (T `
+        "Next: Start Menu → NetX Tray  (or press Y below)." `
+        "下一步: 开始菜单 → NetX 托盘  （或在下方按 Y 立即启动）。")
+    $ans = Read-Host (T "Start NetX tray now? [Y/n]" "现在启动 NetX 托盘？[Y/n]")
+    if ($ans -notmatch '^[Nn]') {
+        try {
+            Start-NetxPowerShell -File (Join-Path $PSScriptRoot "netx_tray.ps1") `
+                -Arguments @("-ProgramRoot", $prog, "-DataRoot", $data, "-StartOnLaunch") `
+                -WorkingDirectory $prog -WindowStyle Hidden | Out-Null
+            Write-Host (T "Tray started." "托盘已启动。") -ForegroundColor Green
+        } catch {
+            Write-Host "[WARN] $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+    }
+} else {
+    Write-Host "Next: .\packaging\start_netx_app.ps1  or NetX-Tray.cmd"
+}
