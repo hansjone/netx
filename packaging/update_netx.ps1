@@ -90,7 +90,8 @@ try {
         -ProgramRoot $prog -DataRoot $data
 
     # Replace program layers only — never wipe data root.
-    $replaceDirs = @("netx_api", "alembic", "web", "packaging", "scripts", "postgres", "packages")
+    # Include python/ (portable runtime) — required with shipped .venv since 0.4.6.
+    $replaceDirs = @("netx_api", "alembic", "web", "packaging", "scripts", "postgres", "packages", "python")
     foreach ($name in $replaceDirs) {
         $from = Join-Path $src $name
         $to = Join-Path $prog $name
@@ -107,7 +108,7 @@ try {
             Copy-Item -Path $from -Destination (Join-Path $prog $f) -Force
         }
     }
-    # Optional runtime / .venv shipped in package
+    # Legacy top-level runtime/ (older packages) + shipped .venv
     if (Test-Path (Join-Path $src "runtime")) {
         $rt = Join-Path $prog "runtime"
         if (Test-Path $rt) { Remove-Item -Recurse -Force $rt }
@@ -118,6 +119,13 @@ try {
         $venvTo = Join-Path $prog ".venv"
         if (Test-Path $venvTo) { Remove-Item -Recurse -Force $venvTo }
         Copy-Item -Path (Join-Path $src ".venv") -Destination $venvTo -Recurse -Force
+    }
+
+    # Builder-path pyvenv.cfg → local python/runtime (same as first install).
+    if (Get-Command Repair-NetxShippedVenv -ErrorAction SilentlyContinue) {
+        if (Repair-NetxShippedVenv -ProgramRoot $prog) {
+            Write-Host "==> Relinked .venv to bundled python/runtime" -ForegroundColor Green
+        }
     }
 
     Write-Host "==> Update files applied" -ForegroundColor Green

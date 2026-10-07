@@ -467,8 +467,36 @@ $miUpdate.add_Click({
                     [System.Windows.Forms.MessageBoxIcon]::Question
                 )
                 if ($ans -eq [System.Windows.Forms.DialogResult]::Yes) {
-                    Start-NetxPowerShell -File $checkPs1 -Arguments @("-ProgramRoot", $prog, "-DataRoot", $data, "-Apply") `
-                        -WorkingDirectory $prog -WindowStyle Normal | Out-Null
+                    # Apply replaces Program Files → needs admin; wait so the console is not abandoned mid-copy.
+                    $arg = "-NoProfile -ExecutionPolicy Bypass -File `"$checkPs1`" -ProgramRoot `"$prog`" -DataRoot `"$data`" -Apply"
+                    $notify.ShowBalloonTip(
+                        5000, "NetX",
+                        (T "Downloading / applying update… keep the console open." "正在下载/应用更新…请勿关闭控制台窗口。"),
+                        [System.Windows.Forms.ToolTipIcon]::Info
+                    )
+                    $ap = Start-Process -FilePath "powershell.exe" -ArgumentList $arg `
+                        -WorkingDirectory $prog -WindowStyle Normal -Verb RunAs -Wait -PassThru
+                    $newVer = Get-NetxVersion -ProgramRoot $prog
+                    if ($null -ne $ap.ExitCode -and $ap.ExitCode -eq 0) {
+                        $ver = $newVer
+                        $miHeader.Text = "NetX  $ver"
+                        [System.Windows.Forms.MessageBox]::Show(
+                            (T "Updated to $ver. Restart the tray if the menu still shows the old version." "已更新到 $ver。若菜单仍显示旧版本，请退出托盘后重新打开。"),
+                            (T "NetX update" "NetX 更新"),
+                            [System.Windows.Forms.MessageBoxButtons]::OK,
+                            [System.Windows.Forms.MessageBoxIcon]::Information
+                        )
+                    } elseif (Test-NetxSetupCancelled -ExitCode $ap.ExitCode) {
+                        $notify.ShowBalloonTip(4000, "NetX", (T "Update cancelled." "已取消更新。"), [System.Windows.Forms.ToolTipIcon]::Info)
+                    } else {
+                        [System.Windows.Forms.MessageBox]::Show(
+                            (T "Update failed (exit $($ap.ExitCode)). Re-run Check for updates, or install NetX-Setup manually." "更新失败（退出码 $($ap.ExitCode)）。请重试「检查更新」，或手动运行 Setup 安装包。"),
+                            (T "NetX update" "NetX 更新"),
+                            [System.Windows.Forms.MessageBoxButtons]::OK,
+                            [System.Windows.Forms.MessageBoxIcon]::Warning
+                        )
+                    }
+                    Update-NetxTrayTip
                 }
             } elseif ($p.ExitCode -eq 0) {
                 [System.Windows.Forms.MessageBox]::Show(

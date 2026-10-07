@@ -315,16 +315,24 @@ try {
     }
     $zipName = "NetX-$latest-win64.zip"
     $zipPath = Join-Path $dlDir $zipName
-    Write-Host "==> Downloading $zipName from $($result.source) ..."
-    # Only attach token for non-GitHub hosts (Forgejo/private). Public GitHub assets need no auth;
-    # a Forgejo token would break anonymous GitHub downloads.
-    $dlHeaders = @{ "User-Agent" = "NetX-UpdateCheck" }
-    $dlUri = [uri]$result.download_url
-    $isGithub = ($dlUri.Host -match '(^|\.)github\.com$' -or $dlUri.Host -match '(^|\.)githubusercontent\.com$')
-    if ($UpdateToken -and -not $isGithub) {
-        $dlHeaders["Authorization"] = "token $UpdateToken"
+
+    $needDownload = $true
+    if ((Test-Path -LiteralPath $zipPath) -and ((Get-Item -LiteralPath $zipPath).Length -gt 1MB)) {
+        Write-Host "==> Using existing download: $zipPath ($([math]::Round((Get-Item $zipPath).Length/1MB,1)) MB)"
+        $needDownload = $false
     }
-    Invoke-WebRequest -Uri $result.download_url -OutFile $zipPath -Headers $dlHeaders -UseBasicParsing
+    if ($needDownload) {
+        Write-Host "==> Downloading $zipName from $($result.source) ..."
+        # Only attach token for non-GitHub hosts (Forgejo/private). Public GitHub assets need no auth;
+        # a Forgejo token would break anonymous GitHub downloads.
+        $dlHeaders = @{ "User-Agent" = "NetX-UpdateCheck" }
+        $dlUri = [uri]$result.download_url
+        $isGithub = ($dlUri.Host -match '(^|\.)github\.com$' -or $dlUri.Host -match '(^|\.)githubusercontent\.com$')
+        if ($UpdateToken -and -not $isGithub) {
+            $dlHeaders["Authorization"] = "token $UpdateToken"
+        }
+        Invoke-WebRequest -Uri $result.download_url -OutFile $zipPath -Headers $dlHeaders -UseBasicParsing
+    }
     if ($result.sha256 -and $result.sha256 -notmatch 'REPLACE' -and $result.sha256.Trim()) {
         $hash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
         $expect = $result.sha256.ToLowerInvariant()
@@ -334,7 +342,27 @@ try {
         Write-Host "==> SHA256 OK"
     }
 
+    # Program Files installs need admin to replace files; elevate once (avoid loop via NETX_UPDATE_ELEVATED).
+    $progWritable = $false
+    try {
+        $probe = Join-Path $prog (".netx_w_" + [guid]::NewGuid().ToString("n"))
+        [IO.File]::WriteAllText($probe, "x")
+        Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+        $progWritable = $true
+    } catch {
+        $progWritable = $false
+    }
+    if (-not $progWritable -and -not $env:NETX_UPDATE_ELEVATED) {
+        Write-Host "==> Program directory is not writable; relaunching update as Administrator (UAC)..." -ForegroundColor Yellow
+        $arg = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -ProgramRoot `"$prog`" -DataRoot `"$data`" -Apply"
+        $ep = Start-Process -FilePath "powershell.exe" -ArgumentList $arg -WorkingDirectory $prog `
+            -Verb RunAs -Wait -PassThru
+        if ($null -eq $ep.ExitCode) { exit 1 }
+        exit $ep.ExitCode
+    }
+
     Write-Host "==> Applying update via update_netx.ps1"
+    $env:NETX_UPDATE_ELEVATED = "1"
     & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "update_netx.ps1") `
         -PackagePath $zipPath -ProgramRoot $prog -DataRoot $data
     Write-Host "==> Update applied to $latest" -ForegroundColor Green
