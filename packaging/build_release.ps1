@@ -51,6 +51,20 @@ if (-not $SkipPostgresDownload) {
     }
 }
 
+# Bundle WinSW so offline installs can register a Windows Service without GitHub.
+$winswCache = Join-Path $PSScriptRoot "cache\WinSW-x64.exe"
+$winswShip = Join-Path $PSScriptRoot "winsw\WinSW-x64.exe"
+if (-not (Test-Path $winswShip)) {
+    if (-not (Test-Path $winswCache)) {
+        $winswUrl = "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW-x64.exe"
+        Write-Host "==> Downloading WinSW for offline bundle: $winswUrl"
+        New-Item -ItemType Directory -Path (Split-Path $winswCache -Parent) -Force | Out-Null
+        Invoke-WebRequest -Uri $winswUrl -OutFile $winswCache -UseBasicParsing
+    }
+    New-Item -ItemType Directory -Path (Split-Path $winswShip -Parent) -Force | Out-Null
+    Copy-Item -Path $winswCache -Destination $winswShip -Force
+}
+
 # Flat layout = same as repo so scripts\start_netx.ps1 works unchanged.
 foreach ($d in @("netx_api", "alembic", "scripts")) {
     Copy-Item -Path (Join-Path $repo $d) -Destination (Join-Path $stage $d) -Recurse -Force
@@ -81,13 +95,36 @@ foreach ($name in @(
 }
 Copy-Item -Path (Join-Path $PSScriptRoot "config") -Destination (Join-Path $packOut "config") -Recurse -Force
 Copy-Item -Path (Join-Path $PSScriptRoot "installer") -Destination (Join-Path $packOut "installer") -Recurse -Force
+$assetsSrc = Join-Path $PSScriptRoot "assets"
+if (Test-Path $assetsSrc) {
+    Copy-Item -Path $assetsSrc -Destination (Join-Path $packOut "assets") -Recurse -Force
+}
+$winswOut = Join-Path $packOut "winsw"
+New-Item -ItemType Directory -Path $winswOut -Force | Out-Null
+if (Test-Path $winswShip) {
+    Copy-Item -Path $winswShip -Destination (Join-Path $winswOut "WinSW-x64.exe") -Force
+    Write-Host "==> Bundled WinSW for offline service install"
+} else {
+    Write-Host "[WARN] WinSW missing — offline service install will fail" -ForegroundColor Yellow
+}
 New-Item -ItemType Directory -Path (Join-Path $packOut "postgres") -Force | Out-Null
 Copy-Item -Path (Join-Path $PSScriptRoot "postgres\README.md") -Destination (Join-Path $packOut "postgres\README.md") -Force
 
 if (Test-Path (Join-Path $pgsql "bin\pg_ctl.exe")) {
-    Write-Host "==> Copying bundled PostgreSQL"
-    New-Item -ItemType Directory -Path (Join-Path $stage "postgres") -Force | Out-Null
-    Copy-Item -Path $pgsql -Destination (Join-Path $stage "postgres\pgsql") -Recurse -Force
+    Write-Host "==> Copying bundled PostgreSQL (bin/lib/share; skip doc/)"
+    $pgStage = Join-Path $stage "postgres\pgsql"
+    New-Item -ItemType Directory -Path $pgStage -Force | Out-Null
+    foreach ($sub in @("bin", "lib", "share")) {
+        $srcSub = Join-Path $pgsql $sub
+        if (Test-Path $srcSub) {
+            Copy-Item -Path $srcSub -Destination (Join-Path $pgStage $sub) -Recurse -Force
+        }
+    }
+    Get-ChildItem -Path $pgsql -File -ErrorAction SilentlyContinue | ForEach-Object {
+        Copy-Item -Path $_.FullName -Destination (Join-Path $pgStage $_.Name) -Force
+    }
+} else {
+    throw "bundled_postgres_missing: Setup.exe must ship postgres for offline install. Run download_postgres.ps1 (build machine only)."
 }
 
 $builtAt = (Get-Date).ToUniversalTime().ToString("o")

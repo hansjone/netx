@@ -4,11 +4,14 @@ param(
     [ValidateSet("winsw", "task")]
     [string]$Mode = "winsw",
     [switch]$Uninstall = $false,
-    [switch]$Start = $false
+    [switch]$Start = $false,
+    # Offline-safe by default: use WinSW shipped in the package. Opt-in to download from GitHub.
+    [switch]$AllowDownload = $false
 )
 
 # Install NetX as a Windows Service (WinSW) or as a SYSTEM startup Scheduled Task.
 # Requires elevation for winsw / task modes that run as SYSTEM.
+# WinSW binary is bundled at packaging\winsw\WinSW-x64.exe by build_release.ps1 — no network needed.
 
 $ErrorActionPreference = "Stop"
 . "$PSScriptRoot\_common.ps1"
@@ -38,13 +41,24 @@ function Ensure-WinSW {
     if (-not (Test-Path $cacheDir)) {
         New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
     }
+    $bundled = Join-Path $PSScriptRoot "winsw\WinSW-x64.exe"
     $dl = Join-Path $cacheDir "WinSW-x64.exe"
-    if (-not (Test-Path $dl)) {
+    $src = $null
+    if (Test-Path $bundled) {
+        $src = $bundled
+        Write-Host "==> Using bundled WinSW: $bundled"
+    } elseif (Test-Path $dl) {
+        $src = $dl
+        Write-Host "==> Using cached WinSW: $dl"
+    } elseif ($AllowDownload) {
         $url = "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW-x64.exe"
         Write-Host "==> Downloading WinSW: $url"
         Invoke-WebRequest -Uri $url -OutFile $dl -UseBasicParsing
+        $src = $dl
+    } else {
+        throw "winsw_missing_offline: expected $bundled (rebuild with build_release.ps1). Or pass -AllowDownload when online."
     }
-    Copy-Item -Path $dl -Destination $winswExe -Force
+    Copy-Item -Path $src -Destination $winswExe -Force
 
     $runPs1 = ConvertTo-WinSWPath (Join-Path $PSScriptRoot "service_run.ps1")
     $stopPs1 = ConvertTo-WinSWPath (Join-Path $PSScriptRoot "stop_netx_app.ps1")

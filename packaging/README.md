@@ -17,6 +17,10 @@ This directory builds a Windows deliverable with:
 | `NetX-x.y.z-win64.zip` | `build_release.ps1` |
 | `NetX-Setup-x.y.z.exe` | Compile `installer/netx.iss` with [Inno Setup](https://jrsoftware.org/isinfo.php) after staging |
 
+**Installer:** English + 简体中文 (language dialog). Icons use `packaging/assets/netx.ico`.
+
+**Offline:** Setup ships portable PostgreSQL, `.venv` (when built with `-CreateVenv`), and WinSW. First-run uses `-NonInteractive -DbMode bundled` — **no GitHub/EDB download on the target PC**. Service install uses bundled WinSW (pass `-AllowDownload` only on a build/dev machine if the binary is missing). Auto-update still needs network later, and is unchecked by default.
+
 ## Build (developer machine)
 
 Prerequisites: Python 3.11+, Node 20+, PowerShell, network (to download PG binaries once).

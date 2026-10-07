@@ -56,31 +56,43 @@ $form.WindowState = "Minimized"
 $form.Visible = $false
 $form.Size = New-Object System.Drawing.Size(0, 0)
 
+$zh = ([cultureinfo]::CurrentUICulture.Name -match '^(zh|zh-)')
+function T([string]$En, [string]$Zh) {
+    if ($zh) { return $Zh } else { return $En }
+}
+
 $notify = New-Object System.Windows.Forms.NotifyIcon
 $notify.Text = "NetX $ver"
 $notify.Visible = $true
+$iconPath = Join-Path $PSScriptRoot "assets\netx.ico"
 try {
-    $notify.Icon = [System.Drawing.SystemIcons]::Application
-} catch {}
+    if (Test-Path $iconPath) {
+        $notify.Icon = New-Object System.Drawing.Icon $iconPath
+    } else {
+        $notify.Icon = [System.Drawing.SystemIcons]::Application
+    }
+} catch {
+    try { $notify.Icon = [System.Drawing.SystemIcons]::Application } catch {}
+}
 
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
 
-$miOpen = $menu.Items.Add("Open UI ($uiUrl)")
+$miOpen = $menu.Items.Add((T "Open UI ($uiUrl)" "打开界面 ($uiUrl)"))
 $miOpen.add_Click({ Start-Process $uiUrl })
 
-$miStart = $menu.Items.Add("Start NetX")
+$miStart = $menu.Items.Add((T "Start NetX" "启动 NetX"))
 $miStart.add_Click({
-    $notify.ShowBalloonTip(3000, "NetX", "Starting…", [System.Windows.Forms.ToolTipIcon]::Info)
+    $notify.ShowBalloonTip(3000, "NetX", (T "Starting…" "正在启动…"), [System.Windows.Forms.ToolTipIcon]::Info)
     Invoke-NetxScript -File $startPs1 -ExtraArgs @("-SkipBrowser")
 })
 
-$miStop = $menu.Items.Add("Stop NetX")
+$miStop = $menu.Items.Add((T "Stop NetX" "停止 NetX"))
 $miStop.add_Click({
-    $notify.ShowBalloonTip(3000, "NetX", "Stopping…", [System.Windows.Forms.ToolTipIcon]::Info)
+    $notify.ShowBalloonTip(3000, "NetX", (T "Stopping…" "正在停止…"), [System.Windows.Forms.ToolTipIcon]::Info)
     Invoke-NetxScript -File $stopPs1
 })
 
-$miUpdate = $menu.Items.Add("Check for updates")
+$miUpdate = $menu.Items.Add((T "Check for updates" "检查更新"))
 $miUpdate.add_Click({
     try {
         $p = Start-Process -FilePath "powershell.exe" -ArgumentList @(
@@ -89,8 +101,8 @@ $miUpdate.add_Click({
         ) -Wait -PassThru -WindowStyle Normal
         if ($p.ExitCode -eq 10) {
             $ans = [System.Windows.Forms.MessageBox]::Show(
-                "A newer NetX is available. Download and apply now?",
-                "NetX update",
+                (T "A newer NetX is available. Download and apply now?" "发现新版本，是否立即下载并更新？"),
+                (T "NetX update" "NetX 更新"),
                 [System.Windows.Forms.MessageBoxButtons]::YesNo,
                 [System.Windows.Forms.MessageBoxIcon]::Question
             )
@@ -101,16 +113,16 @@ $miUpdate.add_Click({
                 ) -WorkingDirectory $prog
             }
         } elseif ($p.ExitCode -eq 0) {
-            [System.Windows.Forms.MessageBox]::Show("NetX is up to date ($ver).", "NetX update")
+            [System.Windows.Forms.MessageBox]::Show((T "NetX is up to date ($ver)." "已是最新版本 ($ver)。"), (T "NetX update" "NetX 更新"))
         }
     } catch {
-        [System.Windows.Forms.MessageBox]::Show("Update check failed: $($_.Exception.Message)", "NetX")
+        [System.Windows.Forms.MessageBox]::Show((T "Update check failed: $($_.Exception.Message)" "检查更新失败：$($_.Exception.Message)"), "NetX")
     }
 })
 
 [void]$menu.Items.Add("-")
 
-$miExit = $menu.Items.Add("Exit tray (services keep running)")
+$miExit = $menu.Items.Add((T "Exit tray (services keep running)" "退出托盘（服务继续运行）"))
 $miExit.add_Click({
     $notify.Visible = $false
     $form.Close()
@@ -122,7 +134,7 @@ $notify.add_DoubleClick({ Start-Process $uiUrl })
 
 $form.add_Shown({
     if ($AutoUpdate) {
-        $notify.ShowBalloonTip(4000, "NetX", "Checking for updates…", [System.Windows.Forms.ToolTipIcon]::Info)
+        $notify.ShowBalloonTip(4000, "NetX", (T "Checking for updates…" "正在检查更新…"), [System.Windows.Forms.ToolTipIcon]::Info)
         Start-Process -FilePath "powershell.exe" -ArgumentList @(
             "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $checkPs1,
             "-ProgramRoot", $prog, "-DataRoot", $data, "-Apply", "-Quiet", "-AutoOnly"

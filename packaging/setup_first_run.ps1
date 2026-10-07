@@ -15,10 +15,15 @@ $ErrorActionPreference = "Stop"
 $prog = Get-NetxProgramRoot -Override $ProgramRoot
 $data = Get-NetxDataRoot -ProgramRoot $prog -Override $DataRoot
 $envPath = Join-Path $data ".env"
+$zh = ([cultureinfo]::CurrentUICulture.Name -match '^(zh|zh-)')
 
-Write-Host "==> Program root: $prog"
-Write-Host "==> Data root:    $data"
-Write-Host "==> Env file:     $envPath"
+function T([string]$En, [string]$Zh) {
+    if ($zh) { return $Zh } else { return $En }
+}
+
+Write-Host ("==> " + (T "Program root:" "程序目录:") + " $prog")
+Write-Host ("==> " + (T "Data root:" "数据目录:") + "    $data")
+Write-Host ("==> " + (T "Env file:" "环境文件:") + "     $envPath")
 
 Ensure-NetxDataDirectories -DataRoot $data
 
@@ -34,10 +39,10 @@ if (-not $DbMode) {
         }
     } else {
         Write-Host ""
-        Write-Host "Choose database mode:"
-        Write-Host "  1) bundled  — use NetX portable PostgreSQL (default for new installs)"
-        Write-Host "  2) external — connect to an existing PostgreSQL (Linux / already deployed)"
-        $choice = Read-Host "Enter 1 or 2"
+        Write-Host (T "Choose database mode:" "选择数据库模式:")
+        Write-Host (T "  1) bundled  — use NetX portable PostgreSQL (default for new installs)" "  1) bundled  — 使用 NetX 内置便携 PostgreSQL（新安装默认）")
+        Write-Host (T "  2) external — connect to an existing PostgreSQL (Linux / already deployed)" "  2) external — 连接已有 PostgreSQL")
+        $choice = Read-Host (T "Enter 1 or 2" "请输入 1 或 2")
         if ($choice -eq "2") { $DbMode = "external" } else { $DbMode = "bundled" }
     }
 }
@@ -69,14 +74,16 @@ if ($DbMode -eq "bundled") {
         if (Test-Path (Join-Path $alt "bin\initdb.exe")) {
             $pgsql = $alt
         } else {
-            throw "bundled_postgres_missing: run packaging\download_postgres.ps1 first (expected $pgsql)"
+            throw (T `
+                "bundled_postgres_missing: incomplete package (expected $pgsql). Offline Setup must include postgres; rebuild with build_release.ps1 on a machine that already ran download_postgres.ps1." `
+                "缺少内置 PostgreSQL（期望路径 $pgsql）。离线安装包必须自带数据库；请在已运行过 download_postgres.ps1 的机器上重新 build_release。")
         }
     }
     if (-not $BundledPassword) {
         if ($NonInteractive) {
             $BundledPassword = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 24 | ForEach-Object { [char]$_ })
         } else {
-            $sec = Read-Host -Prompt "Password for bundled role 'netx' (empty = auto-generate)" -AsSecureString
+            $sec = Read-Host -Prompt (T "Password for bundled role 'netx' (empty = auto-generate)" "内置数据库用户 netx 的密码（回车=自动生成）") -AsSecureString
             $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
             try {
                 $BundledPassword = [Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
@@ -85,7 +92,7 @@ if ($DbMode -eq "bundled") {
             }
             if (-not $BundledPassword) {
                 $BundledPassword = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 24 | ForEach-Object { [char]$_ })
-                Write-Host "Generated password (saved in .env only)."
+                Write-Host (T "Generated password (saved in .env only)." "已自动生成密码（仅保存在 .env）。")
             }
         }
     }
