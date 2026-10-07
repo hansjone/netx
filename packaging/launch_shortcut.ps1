@@ -56,11 +56,10 @@ function Invoke-NetxHiddenPs1 {
 function Ensure-NetxEnv {
     $envPath = Join-Path $data ".env"
     if (Test-Path $envPath) { return }
-    # Do not silently force bundled DB — external-DB users must run interactive First-time setup.
     $cmd = Join-Path $prog "NetX-FirstRun.cmd"
     throw (T `
-        "First-time setup not done (missing $envPath).`nDouble-click desktop/Start Menu: First-time setup`nOr run: $cmd`nThere you can choose built-in or external PostgreSQL." `
-        "尚未完成首次配置（缺少 $envPath）。`n请双击桌面/开始菜单的「首次配置」`n或运行: $cmd`n在向导里可选内置或外置 PostgreSQL。")
+        "NetX is not configured yet (missing $envPath).`nRe-run Setup and choose built-in or external DB,`nor Start Menu → Reconfigure database:`n$cmd" `
+        "尚未完成数据库配置（缺少 $envPath）。`n请重新运行安装向导选择内置/外置库，`n或开始菜单 → 重新配置数据库：`n$cmd")
 }
 
 try {

@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$ProgramRoot = "",
     [string]$DataRoot = "",
     [switch]$StartOnLaunch = $true,
@@ -43,8 +43,8 @@ function T([string]$En, [string]$Zh) {
 if (-not (Test-Path $envPath)) {
     [void][System.Windows.Forms.MessageBox]::Show(
         (T `
-            "First-time setup incomplete (missing $envPath).`nRun Start Menu → NetX → First-time setup." `
-            "尚未完成首次配置（缺少 $envPath）。`n请运行「开始菜单 → NetX → First-time setup」。"),
+            "NetX is not configured yet (missing $envPath).`nRe-run the installer and choose built-in or external DB,`nor use Start Menu → NetX → Reconfigure database." `
+            "尚未完成数据库配置（缺少 $envPath）。`n请重新运行安装向导并选择内置或外置数据库，`n或使用「开始菜单 → NetX → 重新配置数据库」。"),
         "NetX",
         [System.Windows.Forms.MessageBoxButtons]::OK,
         [System.Windows.Forms.MessageBoxIcon]::Warning

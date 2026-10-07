@@ -72,7 +72,10 @@ english.DbTesting=Testing PostgreSQL connection, please wait…
 english.DbTestFailed=Cannot connect to PostgreSQL with these settings.%n%n%1%n%nFix the settings and try again.
 english.DbTestExtractFailed=Could not extract PostgreSQL client tools for connection test.
 english.DbSilentExternalMissing=Silent install with external DB requires /DbHost /DbUser /DbPassword /DbName (optional /DbPort).
-english.DbApplyFailed=Database configuration failed after file install (exit %1). See %ProgramData%\NetX or run Start Menu → Reconfigure database.
+english.DbApplyFailed=Database configuration failed after file install (exit %1).%n%nLog: %2%n%nFix the problem, then use Start Menu → Reconfigure database — or reinstall.
+english.DbApplyExecFailed=Could not start database configuration script.
+english.DbBundledMissing=Built-in PostgreSQL files are missing from the install folder:%n%1%n%nThe Setup package is incomplete. Re-download NetX-Setup and install again.
+english.DbEnvMissing=Database configuration did not write %ProgramData%\NetX\.env.
 english.ReconfigureDb=Reconfigure database
 chinesesimplified.CreateDesktopIcon=创建桌面快捷方式
 chinesesimplified.SetupOptions=安装完成后:
@@ -97,7 +100,10 @@ chinesesimplified.DbTesting=正在测试 PostgreSQL 连接，请稍候…
 chinesesimplified.DbTestFailed=无法用当前设置连接 PostgreSQL。%n%n%1%n%n请改正后重试。
 chinesesimplified.DbTestExtractFailed=无法解压 PostgreSQL 客户端以测试连接。
 chinesesimplified.DbSilentExternalMissing=静默安装外置库需要参数 /DbHost /DbUser /DbPassword /DbName（可选 /DbPort）。
-chinesesimplified.DbApplyFailed=文件安装后数据库配置失败（退出码 %1）。请查看 %ProgramData%\NetX，或运行开始菜单 → 重新配置数据库。
+chinesesimplified.DbApplyFailed=文件安装后数据库自动配置失败（退出码 %1）。%n%n日志: %2%n%n请处理后使用开始菜单 → 重新配置数据库，或重新安装。
+chinesesimplified.DbApplyExecFailed=无法启动数据库配置脚本。
+chinesesimplified.DbBundledMissing=安装目录中缺少内置 PostgreSQL 文件：%n%1%n%n安装包不完整，请重新下载 NetX-Setup 后再装。
+chinesesimplified.DbEnvMissing=数据库配置未写入 %ProgramData%\NetX\.env。
 chinesesimplified.ReconfigureDb=重新配置数据库
 
 [Tasks]
@@ -150,7 +156,7 @@ Name: "{group}\Enable start at logon"; Filename: "powershell.exe"; Parameters: "
 Name: "{commondesktop}\NetX"; Filename: "{app}\NetX-Tray.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\packaging\assets\netx.ico"; Tasks: desktopicon
 
 [Run]
-Filename: "powershell.exe"; Parameters: "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\packaging\netx_tray.ps1"" -ProgramRoot ""{app}"" -DataRoot ""{commonappdata}\NetX"" -StartOnLaunch"; WorkingDir: "{app}"; Description: "{cm:StartTrayNow}"; Flags: postinstall runhidden nowait skipifsilent
+Filename: "powershell.exe"; Parameters: "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\packaging\netx_tray.ps1"" -ProgramRoot ""{app}"" -DataRoot ""{commonappdata}\NetX"" -StartOnLaunch"; WorkingDir: "{app}"; Description: "{cm:StartTrayNow}"; Flags: postinstall runhidden nowait skipifsilent; Check: NetxShouldStartTray
 Filename: "powershell.exe"; Parameters: "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\packaging\install_autostart.ps1"" -ProgramRoot ""{app}"""; WorkingDir: "{app}"; Description: "{cm:EnableAutostart}"; Flags: postinstall runhidden skipifsilent unchecked
 Filename: "powershell.exe"; Parameters: "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\packaging\install_update_task.ps1"" -ProgramRoot ""{app}"" -DataRoot ""{commonappdata}\NetX"""; WorkingDir: "{app}"; Description: "{cm:EnableAutoUpdate}"; Flags: postinstall runhidden skipifsilent unchecked
 Filename: "powershell.exe"; Parameters: "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\packaging\install_service.ps1"" -ProgramRoot ""{app}"" -DataRoot ""{commonappdata}\NetX"" -Start"; WorkingDir: "{app}"; Description: "{cm:InstallService}"; Flags: postinstall runhidden skipifsilent unchecked
@@ -219,6 +225,32 @@ begin
       end;
     end;
   end;
+end;
+
+function EnvModeIsExternal(): Boolean;
+var
+  Lines: TArrayOfString;
+  i: Integer;
+  Line: String;
+begin
+  Result := False;
+  if not LoadStringsFromFile(ExpandConstant('{commonappdata}\NetX\.env'), Lines) then
+    Exit;
+  for i := 0 to GetArrayLength(Lines) - 1 do
+  begin
+    Line := Trim(Lines[i]);
+    if CompareText(Line, 'NETX_DB_MODE=external') = 0 then
+    begin
+      Result := True;
+      Exit;
+    end;
+  end;
+end;
+
+function NetxShouldStartTray(): Boolean;
+begin
+  Result := GDbConfigured or
+    FileExists(ExpandConstant('{commonappdata}\NetX\.env'));
 end;
 
 procedure UpdateDbFieldState();
@@ -471,7 +503,10 @@ begin
   GDbConfigured := False;
   GPgToolsReady := False;
   GDbConnOk := False;
-  GSkipDbPage := EnvHasDbMode();
+  { Always show DB page so choosing built-in always re-runs auto-configure.
+    Skipping when .env exists caused upgrades/reinstalls to keep a broken or
+    external config and still launch tray → confusing "first-time" prompts. }
+  GSkipDbPage := False;
 
   DbPage := CreateCustomPage(wpSelectDir,
     ExpandConstant('{cm:DbPageCaption}'),
@@ -590,6 +625,18 @@ begin
 
   UpdateDbFieldState();
 
+  { Prefill from existing ProgramData\.env when present. }
+  if EnvModeIsExternal() then
+  begin
+    RbExternal.Checked := True;
+    UpdateDbFieldState();
+  end
+  else if EnvHasDbMode() then
+  begin
+    RbBundled.Checked := True;
+    UpdateDbFieldState();
+  end;
+
   if WizardSilent then
   begin
     { Params applied in PrepareToInstall }
@@ -675,16 +722,36 @@ var
   Params: String;
   UrlFile: String;
   KeyFile: String;
+  LogFile: String;
+  InitDb: String;
+  EnvFile: String;
+  Wrapper: String;
+  WrapBody: String;
 begin
-  Result := True;
-  if GSkipDbPage then
-    Exit;
+  Result := False;
+  GDbConfigured := False;
+  if GDbMode = '' then
+    GDbMode := 'bundled';
 
-  Params :=
-    '-NoProfile -ExecutionPolicy Bypass -File "' +
-    ExpandConstant('{app}\packaging\setup_first_run.ps1') + '"' +
-    ' -ProgramRoot "' + ExpandConstant('{app}') + '"' +
-    ' -DataRoot "' + ExpandConstant('{commonappdata}\NetX') + '"' +
+  InitDb := ExpandConstant('{app}\postgres\pgsql\bin\initdb.exe');
+  if (GDbMode = 'bundled') and (not FileExists(InitDb)) then
+  begin
+    MsgBox(FmtMessage(ExpandConstant('{cm:DbBundledMissing}'), [InitDb]), mbError, MB_OK);
+    Exit;
+  end;
+
+  ForceDirectories(ExpandConstant('{commonappdata}\NetX\data\runtime'));
+  LogFile := ExpandConstant('{commonappdata}\NetX\data\runtime\setup_first_run.log');
+  Wrapper := ExpandConstant('{tmp}\netx_apply_db.ps1');
+
+  WrapBody :=
+    '$ErrorActionPreference = ''Stop''' + #13#10 +
+    '$log = ''' + LogFile + '''' + #13#10 +
+    'Start-Transcript -Path $log -Force | Out-Null' + #13#10 +
+    'try {' + #13#10 +
+    '  & ''' + ExpandConstant('{app}\packaging\setup_first_run.ps1') + '''' +
+    ' -ProgramRoot ''' + ExpandConstant('{app}') + '''' +
+    ' -DataRoot ''' + ExpandConstant('{commonappdata}\NetX') + '''' +
     ' -NonInteractive -DbMode ' + GDbMode;
 
   if GDbMode = 'external' then
@@ -692,29 +759,49 @@ begin
     UrlFile := ExpandConstant('{tmp}\netx_db_url.txt');
     if GDbUrl <> '' then
       SaveStringToFile(UrlFile, GDbUrl, False);
-    Params := Params + ' -ExternalDatabaseUrlFile "' + UrlFile + '" -SkipExternalProbe';
+    WrapBody := WrapBody +
+      ' -ExternalDatabaseUrlFile ''' + UrlFile + ''' -SkipExternalProbe';
   end;
 
   if GCredKey <> '' then
   begin
     KeyFile := ExpandConstant('{tmp}\netx_cred_key.txt');
     SaveStringToFile(KeyFile, GCredKey, False);
-    Params := Params + ' -CredentialSecretKeyFile "' + KeyFile + '"';
+    WrapBody := WrapBody + ' -CredentialSecretKeyFile ''' + KeyFile + '''';
   end;
+
+  WrapBody := WrapBody + #13#10 +
+    '  if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }' + #13#10 +
+    '} catch {' + #13#10 +
+    '  Write-Error $_' + #13#10 +
+    '  exit 1' + #13#10 +
+    '} finally {' + #13#10 +
+    '  Stop-Transcript | Out-Null' + #13#10 +
+    '}' + #13#10;
+
+  SaveStringToFile(Wrapper, WrapBody, False);
+  Params := '-NoProfile -ExecutionPolicy Bypass -File "' + Wrapper + '"';
 
   if not Exec(
     'powershell.exe', Params, ExpandConstant('{app}'),
     SW_HIDE, ewWaitUntilTerminated, ResultCode) then
   begin
-    Result := False;
+    MsgBox(ExpandConstant('{cm:DbApplyExecFailed}'), mbError, MB_OK);
     Exit;
   end;
   if ResultCode <> 0 then
   begin
-    MsgBox(FmtMessage(ExpandConstant('{cm:DbApplyFailed}'), [IntToStr(ResultCode)]), mbError, MB_OK);
-    Result := False;
+    MsgBox(FmtMessage(ExpandConstant('{cm:DbApplyFailed}'), [IntToStr(ResultCode), LogFile]), mbError, MB_OK);
     Exit;
   end;
+
+  EnvFile := ExpandConstant('{commonappdata}\NetX\.env');
+  if not FileExists(EnvFile) then
+  begin
+    MsgBox(ExpandConstant('{cm:DbEnvMissing}'), mbError, MB_OK);
+    Exit;
+  end;
+
   GDbConfigured := True;
   Result := True;
 end;
