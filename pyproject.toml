@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "netx-ops"
-version = "0.4.4"
+version = "0.4.5"
 description = "netx operations tool: alarm-centric workflows with REST API and stdio MCP"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -43,3 +43,4 @@ netx-topology-mcp = "netx_topology_mcp.server:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["netx_api*"]
+

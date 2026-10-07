@@ -148,6 +148,7 @@ function Get-NetxDataEnvMap {
         "NETX_AUTH_MCP_TOKEN_FILE"       = (ConvertTo-NetxFsPath (Join-Path $d "data\auth\mcp_token"))
         "NETX_AUTH_SECRET_FILE"          = (ConvertTo-NetxFsPath (Join-Path $d "data\auth\jwt_secret"))
         "NETX_SCHEDULER_HEARTBEAT_PATH"  = (ConvertTo-NetxFsPath (Join-Path $d "data\runtime\scheduler_heartbeat.json"))
+        "NETX_RUN_DIR"                   = (ConvertTo-NetxFsPath (Join-Path $d "data\runtime"))
         "NETX_BIZ_STATE_SPOOL_DIR"       = (ConvertTo-NetxFsPath (Join-Path $d "data\biz_state_spool"))
         "NETX_NE_COLLECTION_DATA_DIR"    = (ConvertTo-NetxFsPath (Join-Path $d "data\ne_collections"))
         "NETX_NE_EXEC_JOB_DIR"           = (ConvertTo-NetxFsPath (Join-Path $d "data\ne_exec_jobs"))

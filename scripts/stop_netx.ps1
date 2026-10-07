@@ -9,7 +9,13 @@
 $ErrorActionPreference = "Continue"
 $useForce = if ($NoForce) { $false } else { [bool]$Force }
 
-$runDir = Join-Path $PSScriptRoot ".run"
+if ($env:NETX_RUN_DIR) {
+    $runDir = $env:NETX_RUN_DIR
+} elseif ($env:NETX_SCHEDULER_HEARTBEAT_PATH) {
+    $runDir = Split-Path -Parent ($env:NETX_SCHEDULER_HEARTBEAT_PATH -replace '/', '\')
+} else {
+    $runDir = Join-Path $PSScriptRoot ".run"
+}
 $pidFile = Join-Path $runDir "netx.pid"
 $workerPidFile = Join-Path $runDir "worker.pid"
 $webPidFile = Join-Path $runDir "web.pid"

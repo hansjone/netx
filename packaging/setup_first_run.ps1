@@ -153,21 +153,37 @@ if ($DbMode -eq "bundled") {
 
     $env:PGPASSWORD = $BundledPassword
     try {
-        $role = & $psql -h 127.0.0.1 -p $BundledPort -U postgres -d postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='netx'"
-        if ($role -notmatch "1") {
-            & $psql -h 127.0.0.1 -p $BundledPort -U postgres -d postgres -v ON_ERROR_STOP=1 `
-                -c "CREATE ROLE netx LOGIN PASSWORD '$sqlPw';"
+        function Invoke-NetxPsql {
+            param([string]$Sql, [string]$Database = "postgres")
+            $out = & $psql -h 127.0.0.1 -p $BundledPort -U postgres -d $Database -v ON_ERROR_STOP=1 -tAc $Sql 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                throw "psql_failed ($LASTEXITCODE): $Sql`n$out"
+            }
+            return (($out | Out-String).Trim())
+        }
+
+        $role = Invoke-NetxPsql -Sql "SELECT 1 FROM pg_roles WHERE rolname='netx'"
+        if ($role -eq "1") {
+            Invoke-NetxPsql -Sql "ALTER ROLE netx WITH LOGIN PASSWORD '$sqlPw'" | Out-Null
         } else {
-            & $psql -h 127.0.0.1 -p $BundledPort -U postgres -d postgres -v ON_ERROR_STOP=1 `
-                -c "ALTER ROLE netx WITH LOGIN PASSWORD '$sqlPw';"
+            Invoke-NetxPsql -Sql "CREATE ROLE netx LOGIN PASSWORD '$sqlPw'" | Out-Null
         }
-        $db = & $psql -h 127.0.0.1 -p $BundledPort -U postgres -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='netx'"
-        if ($db -notmatch "1") {
-            & $psql -h 127.0.0.1 -p $BundledPort -U postgres -d postgres -v ON_ERROR_STOP=1 `
-                -c "CREATE DATABASE netx OWNER netx;"
+        $db = Invoke-NetxPsql -Sql "SELECT 1 FROM pg_database WHERE datname='netx'"
+        if ($db -ne "1") {
+            Invoke-NetxPsql -Sql "CREATE DATABASE netx OWNER netx" | Out-Null
         }
-        & $psql -h 127.0.0.1 -p $BundledPort -U postgres -d postgres -v ON_ERROR_STOP=1 `
-            -c "GRANT ALL PRIVILEGES ON DATABASE netx TO netx;"
+        Invoke-NetxPsql -Sql "GRANT ALL PRIVILEGES ON DATABASE netx TO netx" | Out-Null
+        # Verify login as app role (catches auth/hba mismatches early).
+        $prev = $env:PGPASSWORD
+        $env:PGPASSWORD = $BundledPassword
+        try {
+            $ping = & $psql -h 127.0.0.1 -p $BundledPort -U netx -d netx -v ON_ERROR_STOP=1 -tAc "SELECT 1" 2>&1
+            if ($LASTEXITCODE -ne 0 -or (($ping | Out-String).Trim()) -ne "1") {
+                throw "netx_role_login_failed: $ping"
+            }
+        } finally {
+            $env:PGPASSWORD = $prev
+        }
     } finally {
         Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
     }

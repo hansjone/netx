@@ -1,10 +1,10 @@
-; NetX Windows installer (Inno Setup 6+)
+﻿; NetX Windows installer (Inno Setup 6+)
 ; Compile after: packaging\build_release.ps1
 ; ISCC.exe packaging\installer\netx.iss
 
 #define MyAppName "NetX"
 #ifndef MyAppVersion
-  #define MyAppVersion "0.4.4"
+  #define MyAppVersion "0.4.5"
 #endif
 #define MyAppPublisher "NetX"
 #define MyAppURL "https://github.com/hansjone/netx"
@@ -34,7 +34,7 @@ WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=admin
-; Data lives under {commonappdata}\NetX — not overwritten by upgrades
+; Data lives under {commonappdata}\NetX 鈥?not overwritten by upgrades
 CloseApplications=yes
 ShowLanguageDialog=yes
 
@@ -50,20 +50,19 @@ english.StartTrayNow=Start NetX tray now
 english.EnableAutostart=Start NetX tray at Windows logon
 english.EnableAutoUpdate=Enable daily silent auto-update (needs network later)
 english.InstallService=Install as Windows Service (uses bundled WinSW, offline)
-chinesesimplified.CreateDesktopIcon=创建桌面快捷方式
-chinesesimplified.SetupOptions=安装选项:
-chinesesimplified.RunFirstSetup=安装后运行首次配置（内置数据库，可离线）
-chinesesimplified.StartTrayNow=立即启动 NetX 托盘
-chinesesimplified.EnableAutostart=开机时自动启动 NetX 托盘
-chinesesimplified.EnableAutoUpdate=启用每日静默自动更新（以后需要联网）
-chinesesimplified.InstallService=安装为 Windows 服务（使用已捆绑的 WinSW，可离线）
-
+chinesesimplified.CreateDesktopIcon=鍒涘缓妗岄潰蹇嵎鏂瑰紡
+chinesesimplified.SetupOptions=瀹夎閫夐」:
+chinesesimplified.RunFirstSetup=瀹夎鍚庤繍琛岄娆￠厤缃紙鍐呯疆鏁版嵁搴擄紝鍙绾匡級
+chinesesimplified.StartTrayNow=绔嬪嵆鍚姩 NetX 鎵樼洏
+chinesesimplified.EnableAutostart=寮€鏈烘椂鑷姩鍚姩 NetX 鎵樼洏
+chinesesimplified.EnableAutoUpdate=鍚敤姣忔棩闈欓粯鑷姩鏇存柊锛堜互鍚庨渶瑕佽仈缃戯級
+chinesesimplified.InstallService=瀹夎涓?Windows 鏈嶅姟锛堜娇鐢ㄥ凡鎹嗙粦鐨?WinSW锛屽彲绂荤嚎锛?
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: checkedonce
 Name: "firstrun"; Description: "{cm:RunFirstSetup}"; GroupDescription: "{cm:SetupOptions}"; Flags: checkedonce
 
 [Files]
-; Entire release stage → {app}. Exclude .portable so installed builds use ProgramData.
+; Entire release stage 鈫?{app}. Exclude .portable so installed builds use ProgramData.
 Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: ".portable"
 
 [Dirs]
@@ -99,5 +98,6 @@ Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\p
 Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\packaging\install_service.ps1"" -ProgramRoot ""{app}"" -DataRoot ""{commonappdata}\NetX"" -Start"; WorkingDir: "{app}"; Description: "{cm:InstallService}"; Flags: postinstall skipifsilent unchecked
 
 [UninstallDelete]
-; Do NOT delete {commonappdata}\NetX — preserves DB and secrets across reinstall
+; Do NOT delete {commonappdata}\NetX 鈥?preserves DB and secrets across reinstall
 Type: filesandordirs; Name: "{app}"
+

@@ -23,9 +23,16 @@ if ($Backgtound -and -not $Background) {
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $projectRoot
 
-$runDir = Join-Path $PSScriptRoot ".run"
+# Prefer writable data-root runtime dir (Program Files is not writable after Setup install).
+if ($env:NETX_RUN_DIR) {
+    $runDir = $env:NETX_RUN_DIR
+} elseif ($env:NETX_SCHEDULER_HEARTBEAT_PATH) {
+    $runDir = Split-Path -Parent ($env:NETX_SCHEDULER_HEARTBEAT_PATH -replace '/', '\')
+} else {
+    $runDir = Join-Path $PSScriptRoot ".run"
+}
 if (-not (Test-Path $runDir)) {
-    New-Item -ItemType Directory -Path $runDir | Out-Null
+    New-Item -ItemType Directory -Path $runDir -Force | Out-Null
 }
 
 $pidFile = Join-Path $runDir "netx.pid"
