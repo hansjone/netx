@@ -1794,7 +1794,7 @@ def _run_sheet(
             on_load_progress(side, n)
 
     # PostgreSQL path: pushdown-safe sheets join in-DB (BGP-scale).
-    from .compare_sql import run_sql_sheet_compare, sql_compare_skip_reason
+    from .compare_sql import SqlCompareSkip, run_sql_sheet_compare, sql_compare_skip_reason
 
     skip_reason = sql_compare_skip_reason(
         db,
@@ -1834,6 +1834,18 @@ def _run_sheet(
                 diffs=list(result.get("diffs") or []),
                 mapping_stats=dict(result.get("mapping_stats") or {}),
             )
+        except SqlCompareSkip as skip:
+            skip_reason = skip.reason or "skip"
+            _log.info(
+                "python compare sheet=%s metric=%s skip_sql=%s",
+                sheet_key(sheet),
+                mid,
+                skip_reason,
+            )
+            try:
+                db.rollback()
+            except Exception:
+                pass
         except Exception:
             _log.exception(
                 "sql compare fallback sheet=%s metric=%s — using Python engine",
@@ -1841,6 +1853,11 @@ def _run_sheet(
                 mid,
             )
             skip_reason = "sql_error_fallback"
+            # Roll back aborted SQL transaction so Python path can use the session
+            try:
+                db.rollback()
+            except Exception:
+                pass
     else:
         _log.info(
             "python compare sheet=%s metric=%s skip_sql=%s",
@@ -2002,9 +2019,14 @@ def _set_run_progress(
     sheet: dict[str, Any] | None,
     started_mono: float,
     extra: dict[str, Any] | None = None,
+    detach: bool = False,
 ) -> None:
+    """Update run progress.
+
+    ``detach=True`` writes via a fresh session so SQL compare can keep an open
+    transaction (TEMP CTAS) without mid-flight commits on the worker ``db``.
+    """
     elapsed_ms = int((time.monotonic() - started_mono) * 1000)
-    prev = dict(run.summary_json or {})
     progress = {
         "phase": phase,
         "sheet_index": sheet_index,
@@ -2015,6 +2037,39 @@ def _set_run_progress(
     }
     if extra:
         progress.update(extra)
+    title = progress["sheet_title"] or progress["sheet_id"] or ""
+    message = (
+        f"{phase} {sheet_index}/{sheet_total}"
+        + (f" · {title}" if title else "")
+        + f" · {elapsed_ms // 1000}s"
+    )[:1024]
+
+    if detach:
+        from ..db import SessionLocal
+
+        s = SessionLocal()
+        try:
+            r = s.get(BizCompareRun, str(run.id))
+            if not r:
+                return
+            prev = dict(r.summary_json or {})
+            prev["progress"] = progress
+            r.summary_json = prev
+            if str(r.status or "") != "cancelled":
+                r.status = "running"
+                r.message = message
+            s.commit()
+            # Mirror into worker instance for later in-memory reads (do not commit db)
+            prev_w = dict(run.summary_json or {})
+            prev_w["progress"] = progress
+            run.summary_json = prev_w
+            if str(run.status or "") != "cancelled":
+                run.message = message
+        finally:
+            s.close()
+        return
+
+    prev = dict(run.summary_json or {})
     prev["progress"] = progress
     run.summary_json = prev
     # Re-read status from DB — cancel may have been committed by another session
@@ -2022,12 +2077,7 @@ def _set_run_progress(
     db.expire(run, ["status", "message"])
     if str(run.status or "") != "cancelled":
         run.status = "running"
-        title = progress["sheet_title"] or progress["sheet_id"] or ""
-        run.message = (
-            f"{phase} {sheet_index}/{sheet_total}"
-            + (f" · {title}" if title else "")
-            + f" · {elapsed_ms // 1000}s"
-        )[:1024]
+        run.message = message
     db.commit()
 
 
@@ -2146,6 +2196,7 @@ def _execute_compare_into_run(db: Session, run_id: str) -> dict[str, Any]:
                 }
                 if note:
                     extra["engine_note"] = str(note)[:128]
+                # SQL path: detach progress commits so TEMP CTAS stays in one txn
                 _set_run_progress(
                     db,
                     run,
@@ -2155,6 +2206,7 @@ def _execute_compare_into_run(db: Session, run_id: str) -> dict[str, Any]:
                     sheet=_sheet,
                     started_mono=started_mono,
                     extra=extra,
+                    detach=(eng == "sql"),
                 )
 
             _set_run_progress(

@@ -18,7 +18,20 @@ from .compare_rules import effective_compare_fields, field_rule_map
 
 _log = logging.getLogger("netx.biz_state.compare_sql")
 
+# Below this, Python hash-join is faster and avoids TEMP CTAS / progress races.
+_SQL_MIN_ROWS = 20_000
+# Cap a single SQL statement so a stuck planner/lock surfaces as fallback.
+_SQL_STATEMENT_TIMEOUT_MS = 180_000
+
 _FIELD_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+class SqlCompareSkip(Exception):
+    """Soft skip — caller should use the Python engine (not an error)."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = str(reason or "skip")
 _SQL_FILTER_OPS = frozenset(
     {"eq", "==", "ne", "!=", "in", "not_in", "nin", "contains", "empty", "not_empty", "nonempty", "ci_eq"}
 )
@@ -381,6 +394,9 @@ def run_sql_sheet_compare(
     tb = f"_netx_cmp_b_{tag}"
     ta = f"_netx_cmp_a_{tag}"
 
+    # Keep worker transaction open across CTAS — progress must NOT commit this session.
+    db.execute(text(f"SET LOCAL statement_timeout = '{int(_SQL_STATEMENT_TIMEOUT_MS)}'"))
+
     _prog("before", 0, phase="sql_count", note="count")
 
     # Raw counts (no row_filters)
@@ -407,13 +423,20 @@ def run_sql_sheet_compare(
     )
     _prog("after", raw_a, phase="sql_count")
 
+    if max(raw_b, raw_a) < int(_SQL_MIN_ROWS):
+        raise SqlCompareSkip("small_sheet")
+
     base_params = {"bid": bid_b, "mid": mid, **filter_params}
-    # Build TEMP sides
-    for tname, batch_id, side in ((tb, bid_b, "before"), (ta, bid_a, "after")):
+    # Build TEMP sides (one transaction — no mid-flight commits on ``db``)
+    _prog("before", raw_b, phase="sql_project", note="temp_before")
+    for tname, batch_id, side, note in (
+        (tb, bid_b, "before", "temp_before"),
+        (ta, bid_a, "after", "temp_after"),
+    ):
         db.execute(text(f"DROP TABLE IF EXISTS {tname}"))
         params = {**base_params, "bid": batch_id}
-        _prog(side, raw_b if side == "before" else raw_a, phase="sql_project", note="temp")
-        # PRESERVE ROWS: compare progress commits must not drop temps mid-run
+        if side == "after":
+            _prog(side, raw_a, phase="sql_project", note=note)
         db.execute(
             text(
                 f"""
@@ -434,7 +457,9 @@ def run_sql_sheet_compare(
             ),
             params,
         )
-        db.execute(text(f"CREATE INDEX ON {tname} (rk) WHERE dup_rn = 1"))
+        db.execute(
+            text(f"CREATE INDEX IF NOT EXISTS {tname}_rk ON {tname} (rk) WHERE dup_rn = 1")
+        )
 
     before_n = int(
         db.execute(text(f"SELECT count(*) FROM {tb}")).scalar() or 0
