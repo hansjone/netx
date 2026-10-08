@@ -336,6 +336,106 @@ function sheetLabel(s: { title?: string; sheet_id?: string; metric_id?: string }
   return String(s?.title || s?.sheet_id || s?.metric_id || "").trim() || "—";
 }
 
+type RunProgressInfo = {
+  phase?: string;
+  sheet_index?: number;
+  sheet_total?: number;
+  sheet_title?: string;
+  sheet_id?: string;
+  elapsed_ms?: number;
+  load_side?: string;
+  rows_loaded?: number;
+  engine?: string;
+  engine_note?: string;
+  persisted?: number;
+  persist_total?: number;
+};
+
+function localizeRunPhase(phase: string | undefined, t: (key: string) => string): string {
+  const p = String(phase || "").trim().toLowerCase();
+  if (!p || p === "…") return "…";
+  if (p.startsWith("persisting")) {
+    if (p.includes("fail")) return t("bizCompare.phasePersistingFail");
+    if (p.includes("ok")) return t("bizCompare.phasePersistingOk");
+    return t("bizCompare.phasePersisting");
+  }
+  const map: Record<string, string> = {
+    queued: "bizCompare.phaseQueued",
+    loading: "bizCompare.phaseLoading",
+    sql_count: "bizCompare.phaseSqlCount",
+    comparing: "bizCompare.phaseComparing",
+    done: "bizCompare.phaseDone",
+    failed: "bizCompare.phaseFailed",
+    cancelled: "bizCompare.phaseCancelled",
+  };
+  const key = map[p];
+  return key ? t(key) : String(phase);
+}
+
+function runProgressPercent(prog: RunProgressInfo): number {
+  const total = Number(prog.sheet_total || 0);
+  const idx = Number(prog.sheet_index || 0);
+  if (total <= 0) return 8;
+  const phase = String(prog.phase || "").toLowerCase();
+  if (phase === "queued") return 4;
+  if (phase === "done") return 100;
+  let base = Math.max(0, Math.min(idx, total)) / total;
+  const persistTotal = Number(prog.persist_total || 0);
+  const persisted = Number(prog.persisted || 0);
+  if (persistTotal > 0 && phase.startsWith("persisting")) {
+    const within = Math.min(1, persisted / persistTotal) * (1 / total);
+    base = Math.max(0, (idx - 1) / total) + within;
+  } else if (phase === "loading" || phase === "sql_count" || phase === "comparing") {
+    base = Math.max(0, (idx - 1) / total) + 0.35 / total;
+  }
+  return Math.max(4, Math.min(99, Math.round(base * 100)));
+}
+
+function runProgressMetaLine(
+  prog: RunProgressInfo,
+  t: (key: string, vars?: Record<string, string>) => string,
+): string {
+  const parts: string[] = [];
+  const phase = localizeRunPhase(prog.phase, t);
+  if (phase && phase !== "…") parts.push(phase);
+  const total = Number(prog.sheet_total || 0);
+  if (total > 0) {
+    parts.push(
+      t("bizCompare.runSheetProgress", {
+        i: String(prog.sheet_index || 0),
+        n: String(total),
+      }),
+    );
+  }
+  const title = String(prog.sheet_title || prog.sheet_id || "").trim();
+  if (title) parts.push(title);
+  const rows = Number(prog.rows_loaded || 0);
+  if (rows > 0) {
+    const eng = String(prog.engine || "").toLowerCase();
+    parts.push(
+      eng === "sql"
+        ? t("bizCompare.runRowsSqlCount", {
+            side: String(prog.load_side || "—"),
+            n: String(rows),
+          })
+        : t("bizCompare.runRowsLoaded", {
+            side: String(prog.load_side || "—"),
+            n: String(rows),
+          }),
+    );
+  }
+  const persistTotal = Number(prog.persist_total || 0);
+  if (String(prog.phase || "").startsWith("persisting") && persistTotal > 0) {
+    parts.push(
+      t("bizCompare.runPersisting", {
+        done: String(prog.persisted || 0),
+        total: String(persistTotal),
+      }),
+    );
+  }
+  return parts.join(" · ");
+}
+
 function templateSheets(tpl?: Template | null): MetricSheet[] {
   if (!tpl) return [];
   if (tpl.metrics?.length) return tpl.metrics;
@@ -1937,25 +2037,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
       setBusy(false);
     }
   };
-  const runProgress = (runDetail?.summary?.progress || {}) as {
-    phase?: string;
-    sheet_index?: number;
-    sheet_total?: number;
-    sheet_title?: string;
-    sheet_id?: string;
-    elapsed_ms?: number;
-    before_count?: number;
-    after_count?: number;
-    diff_rows?: number;
-    load_side?: string;
-    rows_loaded?: number;
-    engine?: string;
-    engine_note?: string;
-    persisted?: number;
-    persist_total?: number;
-    fail_rows?: number;
-    ok_rows?: number;
-  };
+  const runProgress = (runDetail?.summary?.progress || {}) as RunProgressInfo;
   const runEngine = String(runProgress.engine || "").toLowerCase();
 
   // Poll active compare runs so the modal can be closed and reopened safely.
@@ -3009,10 +3091,8 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
             renderJobForm()
           ) : jobDetailTab === "runs" ? (
             <div className="bs-cmp-runs">
-              <div className="btn-row" style={{ marginBottom: 8, justifyContent: "space-between" }}>
-                <p className="muted bm-hint" style={{ margin: 0 }}>
-                  {t("bizCompare.runsHint")}
-                </p>
+              <div className="bs-cmp-runs__toolbar">
+                <p className="muted bm-hint bs-cmp-runs__hint">{t("bizCompare.runsHint")}</p>
                 <Button
                   size="sm"
                   variant="primary"
@@ -3025,14 +3105,14 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
               {!runs.length ? (
                 <div className="pt-list-empty">{t("bizCompare.noRuns")}</div>
               ) : (
-                <div className="table-wrap">
-                  <table className="data-table">
+                <div className="pt-list-table-wrap">
+                  <table className="data-table pt-list-table bs-cmp-runs__table">
                     <thead>
                       <tr>
                         <th>{t("bizCompare.colStatus")}</th>
                         <th>{t("bizCompare.colTime")}</th>
                         <th>{t("bizCompare.sidesTitle")}</th>
-                        <th>{t("bizCompare.colResult")}</th>
+                        <th>{t("bizCompare.colProgress")}</th>
                         <th>{t("bizCompare.colActions")}</th>
                       </tr>
                     </thead>
@@ -3059,17 +3139,11 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                           Number(sum.removed || 0) + Number(sum.changed || 0);
                         const ok = Number(sum.unchanged || 0);
                         const durMs = Number(sum.duration_ms || 0);
-                        const prog = ((r as any).progress || {}) as {
-                          phase?: string;
-                          sheet_index?: number;
-                          sheet_total?: number;
-                          sheet_title?: string;
-                          rows_loaded?: number;
-                          load_side?: string;
-                          engine?: string;
-                          engine_note?: string;
-                        };
-                        const eng = String(prog.engine || "").toLowerCase();
+                        const prog = ((r as any).progress ||
+                          (r as any).summary?.progress ||
+                          {}) as RunProgressInfo;
+                        const pct = active ? runProgressPercent(prog) : 100;
+                        const elapsedSec = Math.round(Number(prog.elapsed_ms || 0) / 1000);
                         const stLabel =
                           st === "running" || st === "queued"
                             ? t("bizCompare.runStatusRunning")
@@ -3080,62 +3154,76 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                                 : t("bizCompare.runStatusDoneSec", {
                                     s: String(durMs > 0 ? Math.round(durMs / 1000) : 0),
                                   });
+                        const chipColor = active
+                          ? "accent"
+                          : st === "cancelled"
+                            ? "warning"
+                            : jobChipColor(st);
+                        const meta = active ? runProgressMetaLine(prog, t) : "";
                         return (
                           <tr key={String(r.id)} className={selected ? "is-selected" : undefined}>
                             <td>
-                              <NmStatusChip color={jobChipColor(st)}>{stLabel}</NmStatusChip>
-                              {active && (prog.phase || eng) ? (
-                                <div className="muted" style={{ fontSize: "0.75rem", marginTop: 4 }}>
-                                  {eng === "sql"
-                                    ? t("bizCompare.runEngineSql")
-                                    : eng === "python"
-                                      ? t("bizCompare.runEnginePython")
-                                      : ""}
-                                  {eng && prog.engine_note
-                                    ? ` · ${prog.engine_note}`
-                                    : ""}
-                                  {prog.phase ? `${eng ? " · " : ""}${prog.phase}` : ""}
-                                  {prog.sheet_total
-                                    ? ` · ${prog.sheet_index || 0}/${prog.sheet_total}`
-                                    : ""}
-                                  {prog.sheet_title ? ` · ${prog.sheet_title}` : ""}
-                                  {Number(prog.rows_loaded || 0) > 0
-                                    ? eng === "sql"
-                                      ? ` · ${prog.load_side || ""} ${prog.rows_loaded}`
-                                      : ` · ${prog.load_side || ""} ${prog.rows_loaded}`
-                                    : ""}
-                                </div>
-                              ) : null}
-                              {(r as any).message ? (
-                                <div
-                                  className="muted"
-                                  style={{ fontSize: "0.75rem", marginTop: 2 }}
-                                  title={String((r as any).message)}
-                                >
-                                  {String((r as any).message).slice(0, 80)}
+                              <NmStatusChip color={chipColor}>{stLabel}</NmStatusChip>
+                              {active && elapsedSec > 0 ? (
+                                <div className="bs-cmp-runs__elapsed">
+                                  {t("bizCompare.runElapsed", { s: String(elapsedSec) })}
                                 </div>
                               ) : null}
                             </td>
-                            <td>{when}</td>
+                            <td className="pt-list-time">{when}</td>
                             <td>
-                              {sideDeviceName(before)} {sideCollectTime(before)}
-                              {" → "}
-                              {sideDeviceName(after)} {sideCollectTime(after)}
+                              <div className="bs-cmp-runs__sides" title={`${sideDeviceName(before)} → ${sideDeviceName(after)}`}>
+                                <span>{sideDeviceName(before)}</span>
+                                <span className="muted">{sideCollectTime(before)}</span>
+                                <span className="bs-cmp-runs__arrow" aria-hidden>
+                                  →
+                                </span>
+                                <span>{sideDeviceName(after)}</span>
+                                <span className="muted">{sideCollectTime(after)}</span>
+                              </div>
                             </td>
                             <td>
-                              {active
-                                ? "…"
-                                : t("bizCompare.runBatchSummary", {
-                                    fail: String(fail),
-                                    ok: String(ok),
-                                    added: String(Number(sum.added || 0)),
-                                  })}
+                              {active ? (
+                                <div className="bs-cmp-run-prog">
+                                  <div
+                                    className="bs-cmp-run-prog__track"
+                                    role="progressbar"
+                                    aria-valuenow={pct}
+                                    aria-valuemin={0}
+                                    aria-valuemax={100}
+                                  >
+                                    <div
+                                      className={`bs-cmp-run-prog__fill${
+                                        Number(prog.sheet_total || 0) <= 0 ? " is-indeterminate" : ""
+                                      }`}
+                                      style={
+                                        Number(prog.sheet_total || 0) > 0
+                                          ? { width: `${pct}%` }
+                                          : undefined
+                                      }
+                                    />
+                                  </div>
+                                  <div className="bs-cmp-run-prog__meta" title={meta}>
+                                    {meta || "…"}
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="bs-cmp-runs__summary">
+                                  {st === "failed" || st === "cancelled"
+                                    ? String((r as any).message || stLabel).slice(0, 96)
+                                    : t("bizCompare.runBatchSummary", {
+                                        fail: String(fail),
+                                        ok: String(ok),
+                                        added: String(Number(sum.added || 0)),
+                                      })}
+                                </div>
+                              )}
                             </td>
                             <td>
-                              <div className="btn-row">
+                              <div className="pt-list-actions">
                                 <Button
                                   size="sm"
-                                  variant="secondary"
+                                  variant="primary"
                                   isDisabled={busy || active}
                                   onPress={() => void loadRun(String(r.id))}
                                 >
@@ -3259,11 +3347,13 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                               ? t("bizCompare.runStatusRunning")
                               : st === "failed"
                                 ? t("bizCompare.runStatusFailed")
-                                : durMs > 0
-                                  ? t("bizCompare.runStatusDoneSec", {
-                                      s: String(Math.round(durMs / 1000)),
-                                    })
-                                  : "";
+                                : st === "cancelled"
+                                  ? t("bizCompare.runStatusCancelled")
+                                  : durMs > 0
+                                    ? t("bizCompare.runStatusDoneSec", {
+                                        s: String(Math.round(durMs / 1000)),
+                                      })
+                                    : "";
                           return (
                             <option key={r.id} value={r.id}>
                               {stLabel ? `[${stLabel}] ` : ""}
@@ -3315,61 +3405,75 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
 
               {runDetail && runIsActive ? (
                 <div className="bs-cmp-progress" role="status" aria-live="polite">
-                  <strong>{t("bizCompare.runStatusRunning")}</strong>
-                  {runEngine === "sql" || runEngine === "python" ? (
-                    <span className="muted">
-                      {runEngine === "sql"
-                        ? t("bizCompare.runEngineSql")
-                        : t("bizCompare.runEnginePython")}
-                      {runProgress.engine_note
-                        ? ` · ${t("bizCompare.runEngineNote", {
-                            note: String(runProgress.engine_note),
-                          })}`
-                        : ""}
-                    </span>
-                  ) : null}
-                  <span className="muted">
-                    {t("bizCompare.runProgress", {
-                      phase: String(runProgress.phase || "…"),
-                      i: String(runProgress.sheet_index || 0),
-                      n: String(runProgress.sheet_total || 0),
-                      sheet: String(
-                        runProgress.sheet_title || runProgress.sheet_id || "—",
-                      ),
-                      s: String(Math.round(Number(runProgress.elapsed_ms || 0) / 1000)),
-                    })}
-                  </span>
-                  {Number(runProgress.rows_loaded || 0) > 0 ? (
-                    <span className="muted">
-                      {runEngine === "sql"
-                        ? t("bizCompare.runRowsSqlCount", {
-                            side: String(runProgress.load_side || "—"),
-                            n: String(runProgress.rows_loaded || 0),
-                          })
-                        : t("bizCompare.runRowsLoaded", {
-                            side: String(runProgress.load_side || "—"),
-                            n: String(runProgress.rows_loaded || 0),
-                          })}
-                    </span>
-                  ) : null}
-                  {String(runProgress.phase || "").startsWith("persisting") &&
-                  Number(runProgress.persist_total || 0) > 0 ? (
-                    <span className="muted">
-                      {t("bizCompare.runPersisting", {
-                        done: String(runProgress.persisted || 0),
-                        total: String(runProgress.persist_total || 0),
+                  <div className="bs-cmp-progress__head">
+                    <NmStatusChip color="accent">{t("bizCompare.runStatusRunning")}</NmStatusChip>
+                    {runEngine === "sql" || runEngine === "python" ? (
+                      <span className="muted bs-cmp-progress__engine">
+                        {runEngine === "sql"
+                          ? t("bizCompare.runEngineSql")
+                          : t("bizCompare.runEnginePython")}
+                        {runProgress.engine_note
+                          ? ` · ${t("bizCompare.runEngineNote", {
+                              note: String(runProgress.engine_note),
+                            })}`
+                          : ""}
+                      </span>
+                    ) : null}
+                    <span className="muted bs-cmp-progress__elapsed">
+                      {t("bizCompare.runElapsed", {
+                        s: String(Math.round(Number(runProgress.elapsed_ms || 0) / 1000)),
                       })}
                     </span>
-                  ) : null}
-                  {runDetail.message ? (
-                    <span className="muted bs-cmp-progress__msg">{String(runDetail.message)}</span>
-                  ) : null}
+                    <div className="bs-cmp-progress__actions">
+                      <Button
+                        size="sm"
+                        variant="danger"
+                        isDisabled={busy}
+                        onPress={() => void cancelRun(String(runDetail.id))}
+                      >
+                        {t("bizCompare.cancelRun")}
+                      </Button>
+                    </div>
+                  </div>
+                  <div
+                    className="bs-cmp-progress__track"
+                    role="progressbar"
+                    aria-valuenow={runProgressPercent(runProgress)}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                  >
+                    <div
+                      className={`bs-cmp-progress__fill${
+                        Number(runProgress.sheet_total || 0) <= 0 ? " is-indeterminate" : ""
+                      }`}
+                      style={
+                        Number(runProgress.sheet_total || 0) > 0
+                          ? { width: `${runProgressPercent(runProgress)}%` }
+                          : undefined
+                      }
+                    />
+                  </div>
+                  <div className="bs-cmp-progress__meta">
+                    {runProgressMetaLine(runProgress, t)}
+                  </div>
                 </div>
               ) : null}
               {runDetail && runStatus === "failed" ? (
                 <div className="bs-cmp-progress is-failed" role="alert">
-                  <strong>{t("bizCompare.runStatusFailed")}</strong>
-                  <span>{String(runDetail.message || "")}</span>
+                  <div className="bs-cmp-progress__head">
+                    <NmStatusChip color="danger">{t("bizCompare.runStatusFailed")}</NmStatusChip>
+                  </div>
+                  <div className="bs-cmp-progress__meta">{String(runDetail.message || "")}</div>
+                </div>
+              ) : null}
+              {runDetail && runStatus === "cancelled" ? (
+                <div className="bs-cmp-progress is-cancelled" role="status">
+                  <div className="bs-cmp-progress__head">
+                    <NmStatusChip color="warning">{t("bizCompare.runStatusCancelled")}</NmStatusChip>
+                  </div>
+                  <div className="bs-cmp-progress__meta">
+                    {String(runDetail.message || t("bizCompare.runCancelled"))}
+                  </div>
                 </div>
               ) : null}
               {runDetail ? (

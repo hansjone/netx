@@ -11700,10 +11700,9 @@ html.login-page--paused .login-page__flare {
 
 .bs-cmp-progress {
   display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 8px 14px;
-  padding: 8px 12px;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
   border-radius: 8px;
   border: 1px solid rgba(59, 130, 246, 0.35);
   background: rgba(37, 99, 235, 0.12);
@@ -11716,9 +11715,145 @@ html.login-page--paused .login-page__flare {
   background: rgba(239, 68, 68, 0.12);
 }
 
+.bs-cmp-progress.is-cancelled {
+  border-color: rgba(245, 158, 11, 0.4);
+  background: rgba(245, 158, 11, 0.1);
+}
+
+.bs-cmp-progress__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.bs-cmp-progress__actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.bs-cmp-progress__engine,
+.bs-cmp-progress__elapsed {
+  font-size: 0.8125rem;
+}
+
+.bs-cmp-progress__track,
+.bs-cmp-run-prog__track {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.28);
+  overflow: hidden;
+}
+
+.bs-cmp-progress__fill,
+.bs-cmp-run-prog__fill {
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #2563eb, #60a5fa);
+  transition: width 0.35s ease;
+}
+
+.bs-cmp-progress__fill.is-indeterminate,
+.bs-cmp-run-prog__fill.is-indeterminate {
+  width: 36%;
+  animation: bs-cmp-prog-slide 1.25s ease-in-out infinite;
+}
+
+@keyframes bs-cmp-prog-slide {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}
+
+.bs-cmp-progress__meta {
+  font-size: 0.8125rem;
+  color: var(--bs-cmp-muted, #94a3b8);
+  line-height: 1.4;
+  word-break: break-word;
+}
+
 .bs-cmp-progress__msg {
   flex: 1 1 100%;
   font-size: 0.8125rem;
+}
+
+/* Compare batch list (job detail → 对比批次) */
+.bs-cmp-runs {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 260px;
+}
+
+.bs-cmp-runs__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px 14px;
+}
+
+.bs-cmp-runs__hint {
+  margin: 0;
+  flex: 1 1 220px;
+  line-height: 1.45;
+}
+
+.bs-cmp-runs__table tbody tr.is-selected td {
+  background: rgba(37, 99, 235, 0.08);
+}
+
+.bs-cmp-runs__elapsed {
+  margin-top: 4px;
+  font-size: 0.75rem;
+  color: var(--muted, #64748b);
+  font-variant-numeric: tabular-nums;
+}
+
+.bs-cmp-runs__sides {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 6px;
+  font-size: 0.8125rem;
+  line-height: 1.35;
+  max-width: 22rem;
+}
+
+.bs-cmp-runs__arrow {
+  color: var(--muted, #94a3b8);
+  flex: 0 0 auto;
+}
+
+.bs-cmp-runs__summary {
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  color: var(--ink, #334155);
+  max-width: 18rem;
+}
+
+.bs-cmp-run-prog {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 160px;
+  max-width: 22rem;
+}
+
+.bs-cmp-run-prog__meta {
+  font-size: 0.75rem;
+  line-height: 1.35;
+  color: var(--muted, #64748b);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 /* Native :fullscreen + CSS immersive fallback (class only when FS API blocked) */
