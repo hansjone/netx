@@ -1,0 +1,1051 @@
+{
+  "format": "netx.biz_compare_template",
+  "version": 1,
+  "name": "ZTE status default",
+  "note": "Built-in ZTE status cutover (ISIS/IF/ARP/ND6/BGP, address-family sheets)",
+  "iface_normalize_rules": [],
+  "metrics": [
+    {
+      "sheet_id": "isis_adjacency.ipv4",
+      "title": "ISIS IPv4",
+      "metric_id": "isis_adjacency",
+      "key_fields": [
+        "process_id",
+        "interface",
+        "system_id"
+      ],
+      "iface_fields": [
+        "interface"
+      ],
+      "compare_fields": [
+        "state",
+        "lev",
+        "af"
+      ],
+      "display_fields": [
+        "process_id",
+        "interface",
+        "system_id",
+        "state",
+        "lev",
+        "af"
+      ],
+      "row_filters": [
+        {
+          "op": "contains",
+          "field": "af",
+          "value": "IPv4"
+        }
+      ],
+      "field_rules": []
+    },
+    {
+      "sheet_id": "isis_adjacency.ipv6",
+      "title": "ISIS IPv6",
+      "metric_id": "isis_adjacency",
+      "key_fields": [
+        "process_id",
+        "interface",
+        "system_id"
+      ],
+      "iface_fields": [
+        "interface"
+      ],
+      "compare_fields": [
+        "state",
+        "lev",
+        "af"
+      ],
+      "display_fields": [
+        "process_id",
+        "interface",
+        "system_id",
+        "state",
+        "lev",
+        "af"
+      ],
+      "row_filters": [
+        {
+          "op": "contains",
+          "field": "af",
+          "value": "IPv6"
+        }
+      ],
+      "field_rules": []
+    },
+    {
+      "sheet_id": "interface_brief",
+      "title": "interface_brief",
+      "metric_id": "interface_brief",
+      "key_fields": [
+        "interface"
+      ],
+      "iface_fields": [
+        "interface"
+      ],
+      "compare_fields": [
+        "prot"
+      ],
+      "display_fields": [
+        "interface",
+        "prot",
+        "admin",
+        "phy"
+      ],
+      "row_filters": [
+        {
+          "op": "regex",
+          "field": "interface",
+          "value": "^[^.]+$"
+        },
+        {
+          "op": "contains",
+          "field": "interface",
+          "value": "gei"
+        }
+      ],
+      "field_rules": []
+    },
+    {
+      "sheet_id": "arp",
+      "title": "arp",
+      "metric_id": "arp",
+      "key_fields": [
+        "ip",
+        "interface",
+        "vrf"
+      ],
+      "iface_fields": [
+        "interface"
+      ],
+      "compare_fields": [
+        "mac"
+      ],
+      "display_fields": [
+        "ip",
+        "interface",
+        "vrf",
+        "mac",
+        "age",
+        "entry_type"
+      ],
+      "row_filters": [
+        {
+          "op": "age_timer",
+          "field": "age",
+          "value": ""
+        }
+      ],
+      "field_rules": [
+        {
+          "field": "mac",
+          "normalize": "mac"
+        }
+      ]
+    },
+    {
+      "sheet_id": "nd6_cache",
+      "title": "nd6_cache",
+      "metric_id": "nd6_cache",
+      "key_fields": [
+        "address",
+        "interface"
+      ],
+      "iface_fields": [
+        "interface"
+      ],
+      "compare_fields": [
+        "link_address",
+        "status"
+      ],
+      "display_fields": [
+        "address",
+        "interface",
+        "link_address",
+        "status",
+        "type",
+        "age"
+      ],
+      "row_filters": [
+        {
+          "op": "ne",
+          "field": "status",
+          "value": " Incomplete"
+        }
+      ],
+      "field_rules": []
+    },
+    {
+      "sheet_id": "bgp_peer.ipv4",
+      "title": "BGP IPv4",
+      "metric_id": "bgp_peer",
+      "key_fields": [
+        "afi",
+        "vrf",
+        "neighbor",
+        "as_num"
+      ],
+      "iface_fields": [],
+      "compare_fields": [
+        "state",
+        "pfx_rcd"
+      ],
+      "display_fields": [
+        "afi",
+        "vrf",
+        "neighbor",
+        "as_num",
+        "state",
+        "pfx_rcd"
+      ],
+      "row_filters": [
+        {
+          "op": "eq",
+          "field": "afi",
+          "value": "ipv4"
+        }
+      ],
+      "field_rules": [
+        {
+          "field": "pfx_rcd",
+          "compare": "percent",
+          "tolerance": 5
+        }
+      ]
+    },
+    {
+      "sheet_id": "bgp_peer.ipv6",
+      "title": "BGP IPv6",
+      "metric_id": "bgp_peer",
+      "key_fields": [
+        "afi",
+        "vrf",
+        "neighbor",
+        "as_num"
+      ],
+      "iface_fields": [],
+      "compare_fields": [
+        "state",
+        "pfx_rcd"
+      ],
+      "display_fields": [
+        "afi",
+        "vrf",
+        "neighbor",
+        "as_num",
+        "state",
+        "pfx_rcd"
+      ],
+      "row_filters": [
+        {
+          "op": "eq",
+          "field": "afi",
+          "value": "ipv6"
+        }
+      ],
+      "field_rules": [
+        {
+          "field": "pfx_rcd",
+          "compare": "percent",
+          "tolerance": 5
+        }
+      ]
+    },
+    {
+      "sheet_id": "bgp_peer.vpnv4",
+      "title": "BGP VPNv4",
+      "metric_id": "bgp_peer",
+      "key_fields": [
+        "afi",
+        "vrf",
+        "neighbor",
+        "as_num"
+      ],
+      "iface_fields": [],
+      "compare_fields": [
+        "state",
+        "pfx_rcd"
+      ],
+      "display_fields": [
+        "afi",
+        "vrf",
+        "neighbor",
+        "as_num",
+        "state",
+        "pfx_rcd"
+      ],
+      "row_filters": [
+        {
+          "op": "eq",
+          "field": "afi",
+          "value": "vpnv4"
+        }
+      ],
+      "field_rules": [
+        {
+          "field": "pfx_rcd",
+          "compare": "percent",
+          "tolerance": 5
+        }
+      ]
+    },
+    {
+      "sheet_id": "bgp_peer.vpnv6",
+      "title": "BGP VPNv6",
+      "metric_id": "bgp_peer",
+      "key_fields": [
+        "afi",
+        "vrf",
+        "neighbor",
+        "as_num"
+      ],
+      "iface_fields": [],
+      "compare_fields": [
+        "state",
+        "pfx_rcd"
+      ],
+      "display_fields": [
+        "afi",
+        "vrf",
+        "neighbor",
+        "as_num",
+        "state",
+        "pfx_rcd"
+      ],
+      "row_filters": [
+        {
+          "op": "eq",
+          "field": "afi",
+          "value": "vpnv6"
+        }
+      ],
+      "field_rules": [
+        {
+          "field": "pfx_rcd",
+          "compare": "percent",
+          "tolerance": 5
+        }
+      ]
+    },
+    {
+      "sheet_id": "bgp_peer.evpn",
+      "title": "BGP EVPN",
+      "metric_id": "bgp_peer",
+      "key_fields": [
+        "afi",
+        "vrf",
+        "neighbor",
+        "as_num"
+      ],
+      "iface_fields": [],
+      "compare_fields": [
+        "state",
+        "pfx_rcd"
+      ],
+      "display_fields": [
+        "afi",
+        "vrf",
+        "neighbor",
+        "as_num",
+        "state",
+        "pfx_rcd"
+      ],
+      "row_filters": [
+        {
+          "op": "eq",
+          "field": "afi",
+          "value": "evpn"
+        }
+      ],
+      "field_rules": [
+        {
+          "field": "pfx_rcd",
+          "compare": "percent",
+          "tolerance": 5
+        }
+      ]
+    },
+    {
+      "sheet_id": "bgp_peer.vpls",
+      "title": "BGP VPLS",
+      "metric_id": "bgp_peer",
+      "key_fields": [
+        "afi",
+        "vrf",
+        "neighbor",
+        "as_num"
+      ],
+      "iface_fields": [],
+      "compare_fields": [
+        "state",
+        "pfx_rcd"
+      ],
+      "display_fields": [
+        "afi",
+        "vrf",
+        "neighbor",
+        "as_num",
+        "state",
+        "pfx_rcd"
+      ],
+      "row_filters": [
+        {
+          "op": "eq",
+          "field": "afi",
+          "value": "vpls"
+        }
+      ],
+      "field_rules": [
+        {
+          "field": "pfx_rcd",
+          "compare": "percent",
+          "tolerance": 5
+        }
+      ]
+    },
+    {
+      "sheet_id": "interface_detail",
+      "title": "interface_detail",
+      "metric_id": "interface_detail",
+      "key_fields": [
+        "interface"
+      ],
+      "iface_fields": [
+        "interface"
+      ],
+      "compare_fields": [
+        "admin",
+        "input_bps",
+        "output_bps",
+        "port_status",
+        "in_util",
+        "out_util",
+        "ip_mtu",
+        "mtu",
+        "mpls_mtu",
+        "ipv6_mtu",
+        "port_media",
+        "negotiation"
+      ],
+      "display_fields": [
+        "interface",
+        "admin",
+        "input_bps",
+        "output_bps",
+        "port_status",
+        "in_util",
+        "out_util",
+        "ip_mtu",
+        "mtu",
+        "mpls_mtu",
+        "ipv6_mtu",
+        "port_media",
+        "negotiation",
+        "bw",
+        "description",
+        "rate_period"
+      ],
+      "row_filters": [],
+      "field_rules": [
+        {
+          "field": "input_bps",
+          "compare": "percent",
+          "tolerance": 5
+        },
+        {
+          "field": "output_bps",
+          "compare": "numeric",
+          "tolerance": 5
+        },
+        {
+          "field": "in_util",
+          "compare": "numeric",
+          "tolerance": 5
+        },
+        {
+          "field": "out_util",
+          "compare": "numeric",
+          "tolerance": 5
+        }
+      ]
+    },
+    {
+      "sheet_id": "ospf_neighbor",
+      "title": "ospf_neighbor",
+      "metric_id": "ospf_neighbor",
+      "key_fields": [
+        "neighbor_id",
+        "interface"
+      ],
+      "iface_fields": [
+        "interface"
+      ],
+      "compare_fields": [
+        "state"
+      ],
+      "display_fields": [
+        "neighbor_id",
+        "interface",
+        "state",
+        "process_id",
+        "address"
+      ],
+      "row_filters": [],
+      "field_rules": []
+    },
+    {
+      "sheet_id": "vrrp.ipv4",
+      "title": "VRRP IPv4",
+      "metric_id": "vrrp",
+      "key_fields": [
+        "af",
+        "interface",
+        "vr_id"
+      ],
+      "iface_fields": [
+        "interface"
+      ],
+      "compare_fields": [
+        "state",
+        "priority",
+        "master_addr",
+        "vrouter_addr"
+      ],
+      "display_fields": [
+        "af",
+        "interface",
+        "vr_id",
+        "state",
+        "priority",
+        "master_addr",
+        "vrouter_addr"
+      ],
+      "row_filters": [
+        {
+          "op": "eq",
+          "field": "af",
+          "value": "ipv4"
+        }
+      ],
+      "field_rules": []
+    },
+    {
+      "sheet_id": "vrrp.ipv6",
+      "title": "VRRP IPv6",
+      "metric_id": "vrrp",
+      "key_fields": [
+        "af",
+        "interface",
+        "vr_id"
+      ],
+      "iface_fields": [
+        "interface"
+      ],
+      "compare_fields": [
+        "state",
+        "priority",
+        "master_addr",
+        "vrouter_addr"
+      ],
+      "display_fields": [
+        "af",
+        "interface",
+        "vr_id",
+        "state",
+        "priority",
+        "master_addr",
+        "vrouter_addr"
+      ],
+      "row_filters": [
+        {
+          "op": "eq",
+          "field": "af",
+          "value": "ipv6"
+        }
+      ],
+      "field_rules": []
+    },
+    {
+      "sheet_id": "optical_brief",
+      "title": "optical_brief",
+      "metric_id": "optical_brief",
+      "key_fields": [
+        "interface"
+      ],
+      "iface_fields": [
+        "interface"
+      ],
+      "compare_fields": [
+        "status",
+        "rx_power"
+      ],
+      "display_fields": [
+        "interface",
+        "status",
+        "rx_power",
+        "tx_power",
+        "optic_type",
+        "wavelength",
+        "rx_threshold",
+        "tx_threshold"
+      ],
+      "row_filters": [],
+      "field_rules": [
+        {
+          "field": "rx_power",
+          "compare": "percent",
+          "tolerance": 5
+        }
+      ]
+    },
+    {
+      "sheet_id": "lldp_neighbor",
+      "title": "lldp_neighbor",
+      "metric_id": "lldp_neighbor",
+      "key_fields": [
+        "local_if",
+        "remote_sys",
+        "remote_if"
+      ],
+      "iface_fields": [
+        "local_if"
+      ],
+      "compare_fields": [],
+      "display_fields": [
+        "local_if",
+        "remote_sys",
+        "remote_if",
+        "remote_ip",
+        "protocol"
+      ],
+      "row_filters": [],
+      "field_rules": []
+    },
+    {
+      "sheet_id": "l2vpn_pw_detail",
+      "title": "l2vpn_pw_detail",
+      "metric_id": "l2vpn_pw_detail",
+      "key_fields": [
+        "peer",
+        "vcid",
+        "service_instance"
+      ],
+      "iface_fields": [],
+      "compare_fields": [
+        "vc_status",
+        "remote_status",
+        "vc_type",
+        "control_word"
+      ],
+      "display_fields": [
+        "peer",
+        "vcid",
+        "service_instance",
+        "vc_status",
+        "remote_status",
+        "vc_type",
+        "control_word",
+        "pw_name",
+        "activation_status",
+        "service_instance_type",
+        "conn_mode",
+        "signaling",
+        "tunnel_dest"
+      ],
+      "row_filters": [],
+      "field_rules": []
+    },
+    {
+      "sheet_id": "l2vpn_mac",
+      "title": "l2vpn_mac",
+      "metric_id": "l2vpn_mac",
+      "key_fields": [
+        "mac",
+        "vpn",
+        "neighbor",
+        "ac_port",
+        "exter_vlan",
+        "vpn_sid",
+        "neighbor_sid"
+      ],
+      "iface_fields": [],
+      "compare_fields": [],
+      "display_fields": [
+        "mac",
+        "vpn",
+        "neighbor",
+        "ac_port",
+        "exter_vlan",
+        "vpn_sid",
+        "neighbor_sid",
+        "vlan",
+        "pw",
+        "attribute"
+      ],
+      "row_filters": [],
+      "field_rules": []
+    },
+    {
+      "sheet_id": "bgp_route",
+      "title": "bgp_route_ipv4",
+      "metric_id": "bgp_route",
+      "key_fields": [
+        "local_as",
+        "afi",
+        "neighbor",
+        "direction",
+        "rd",
+        "network",
+        "vrf"
+      ],
+      "iface_fields": [],
+      "compare_fields": [
+        "metric",
+        "loc_prf",
+        "path",
+        "as_num",
+        "state",
+        "pfx_rcd",
+        "remote_as"
+      ],
+      "display_fields": [
+        "local_as",
+        "afi",
+        "neighbor",
+        "direction",
+        "rd",
+        "network",
+        "vrf",
+        "metric",
+        "loc_prf",
+        "path",
+        "as_num",
+        "state",
+        "pfx_rcd",
+        "remote_as",
+        "next_hop",
+        "tag",
+        "status_codes"
+      ],
+      "row_filters": [
+        {
+          "op": "empty",
+          "field": "vrf",
+          "value": ""
+        },
+        {
+          "op": "eq",
+          "field": "afi",
+          "value": "ipv4"
+        }
+      ],
+      "field_rules": [
+        {
+          "field": "pfx_rcd",
+          "compare": "percent",
+          "tolerance": 5
+        }
+      ]
+    },
+    {
+      "sheet_id": "bgp_route.vpnv4",
+      "title": "bgp_route_vpnv4",
+      "metric_id": "bgp_route",
+      "key_fields": [
+        "local_as",
+        "afi",
+        "neighbor",
+        "direction",
+        "rd",
+        "network",
+        "vrf"
+      ],
+      "iface_fields": [],
+      "compare_fields": [
+        "metric",
+        "loc_prf",
+        "path",
+        "as_num",
+        "state",
+        "pfx_rcd",
+        "remote_as"
+      ],
+      "display_fields": [
+        "local_as",
+        "afi",
+        "neighbor",
+        "direction",
+        "rd",
+        "network",
+        "vrf",
+        "metric",
+        "loc_prf",
+        "path",
+        "as_num",
+        "state",
+        "pfx_rcd",
+        "remote_as",
+        "next_hop",
+        "tag",
+        "status_codes"
+      ],
+      "row_filters": [
+        {
+          "op": "eq",
+          "field": "afi",
+          "value": "vpnv4"
+        }
+      ],
+      "field_rules": [
+        {
+          "field": "pfx_rcd",
+          "compare": "percent",
+          "tolerance": 5
+        }
+      ]
+    },
+    {
+      "sheet_id": "bgp_route.ipv6",
+      "title": "bgp_route_ipv6",
+      "metric_id": "bgp_route",
+      "key_fields": [
+        "local_as",
+        "afi",
+        "neighbor",
+        "direction",
+        "rd",
+        "network",
+        "vrf"
+      ],
+      "iface_fields": [],
+      "compare_fields": [
+        "metric",
+        "loc_prf",
+        "path",
+        "as_num",
+        "state",
+        "pfx_rcd",
+        "remote_as"
+      ],
+      "display_fields": [
+        "local_as",
+        "afi",
+        "neighbor",
+        "direction",
+        "rd",
+        "network",
+        "vrf",
+        "metric",
+        "loc_prf",
+        "path",
+        "as_num",
+        "state",
+        "pfx_rcd",
+        "remote_as",
+        "next_hop",
+        "tag",
+        "status_codes"
+      ],
+      "row_filters": [
+        {
+          "op": "empty",
+          "field": "vrf",
+          "value": ""
+        },
+        {
+          "op": "eq",
+          "field": "afi",
+          "value": "ipv6"
+        }
+      ],
+      "field_rules": [
+        {
+          "field": "pfx_rcd",
+          "compare": "percent",
+          "tolerance": 5
+        }
+      ]
+    },
+    {
+      "sheet_id": "bgp_route.vpnv6",
+      "title": "bgp_route_vpnv6",
+      "metric_id": "bgp_route",
+      "key_fields": [
+        "local_as",
+        "afi",
+        "neighbor",
+        "direction",
+        "rd",
+        "network",
+        "vrf"
+      ],
+      "iface_fields": [],
+      "compare_fields": [
+        "metric",
+        "loc_prf",
+        "path",
+        "as_num",
+        "state",
+        "pfx_rcd",
+        "remote_as"
+      ],
+      "display_fields": [
+        "local_as",
+        "afi",
+        "neighbor",
+        "direction",
+        "rd",
+        "network",
+        "vrf",
+        "metric",
+        "loc_prf",
+        "path",
+        "as_num",
+        "state",
+        "pfx_rcd",
+        "remote_as",
+        "next_hop",
+        "tag",
+        "status_codes"
+      ],
+      "row_filters": [
+        {
+          "op": "eq",
+          "field": "afi",
+          "value": "vpnv6"
+        }
+      ],
+      "field_rules": [
+        {
+          "field": "pfx_rcd",
+          "compare": "percent",
+          "tolerance": 5
+        }
+      ]
+    },
+    {
+      "sheet_id": "bgp_route.vpnv6_vrf",
+      "title": "bgp_route_vpnv6_vrf",
+      "metric_id": "bgp_route",
+      "key_fields": [
+        "local_as",
+        "afi",
+        "neighbor",
+        "direction",
+        "rd",
+        "network",
+        "vrf"
+      ],
+      "iface_fields": [],
+      "compare_fields": [
+        "metric",
+        "loc_prf",
+        "path",
+        "as_num",
+        "state",
+        "pfx_rcd",
+        "remote_as"
+      ],
+      "display_fields": [
+        "local_as",
+        "afi",
+        "neighbor",
+        "direction",
+        "rd",
+        "network",
+        "vrf",
+        "metric",
+        "loc_prf",
+        "path",
+        "as_num",
+        "state",
+        "pfx_rcd",
+        "remote_as",
+        "next_hop",
+        "tag",
+        "status_codes"
+      ],
+      "row_filters": [
+        {
+          "op": "not_empty",
+          "field": "vrf",
+          "value": ""
+        },
+        {
+          "op": "eq",
+          "field": "afi",
+          "value": "ipv6"
+        }
+      ],
+      "field_rules": [
+        {
+          "field": "pfx_rcd",
+          "compare": "percent",
+          "tolerance": 5
+        }
+      ]
+    },
+    {
+      "sheet_id": "bgp_route.vpnv4_vrf",
+      "title": "bgp_route_vpnv4_vrf",
+      "metric_id": "bgp_route",
+      "key_fields": [
+        "local_as",
+        "afi",
+        "neighbor",
+        "direction",
+        "rd",
+        "network",
+        "vrf"
+      ],
+      "iface_fields": [],
+      "compare_fields": [
+        "metric",
+        "loc_prf",
+        "path",
+        "as_num",
+        "state",
+        "pfx_rcd",
+        "remote_as"
+      ],
+      "display_fields": [
+        "local_as",
+        "afi",
+        "neighbor",
+        "direction",
+        "rd",
+        "network",
+        "vrf",
+        "metric",
+        "loc_prf",
+        "path",
+        "as_num",
+        "state",
+        "pfx_rcd",
+        "remote_as",
+        "next_hop",
+        "tag",
+        "status_codes"
+      ],
+      "row_filters": [
+        {
+          "op": "not_empty",
+          "field": "vrf",
+          "value": ""
+        },
+        {
+          "op": "eq",
+          "field": "afi",
+          "value": "ipv4"
+        }
+      ],
+      "field_rules": [
+        {
+          "field": "pfx_rcd",
+          "compare": "percent",
+          "tolerance": 5
+        }
+      ]
+    }
+  ]
+}

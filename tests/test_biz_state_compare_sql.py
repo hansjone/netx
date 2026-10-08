@@ -112,13 +112,18 @@ class CompareSqlGateTests(unittest.TestCase):
                 "network",
                 "next_hop",
             ],
-            "compare_fields": ["path", "as_num"],
+            "compare_fields": ["path", "as_num", "pfx_rcd"],
             "iface_fields": [],
-            "field_rules": [],
-            "row_filters": [{"field": "afi", "op": "eq", "value": "ipv4"}],
+            "field_rules": [
+                {"field": "pfx_rcd", "compare": "percent", "tolerance": 5},
+            ],
+            "row_filters": [
+                {"field": "vrf", "op": "empty"},
+                {"field": "afi", "op": "eq", "value": "ipv4"},
+            ],
         }
         self.assertTrue(can_sql_compare(_db(), sheet, port_map={}))
-        # BGP afi/vrf sheet splits via row_filters must not force Python
+        # BGP afi/vrf sheet splits + percent rules must not force Python
         self.assertEqual(sql_compare_skip_reason(_db(), sheet, port_map={}), "")
 
     def test_rejects_iface_normalize_when_key_uses_iface(self) -> None:
@@ -204,9 +209,14 @@ class CompareSqlFilterCompileTests(unittest.TestCase):
     def test_field_rules_matrix(self) -> None:
         self.assertTrue(_field_rules_sql_compatible([{"field": "mac", "normalize": "lower"}]))
         self.assertFalse(_field_rules_sql_compatible([{"field": "mac", "normalize": "mac"}]))
-        self.assertFalse(
+        self.assertTrue(
             _field_rules_sql_compatible(
                 [{"field": "rx", "compare": "numeric", "tolerance": 1}]
+            )
+        )
+        self.assertTrue(
+            _field_rules_sql_compatible(
+                [{"field": "pfx_rcd", "compare": "percent", "tolerance": 5}]
             )
         )
         self.assertTrue(

@@ -36,8 +36,24 @@ _SQL_FILTER_OPS = frozenset(
     {"eq", "==", "ne", "!=", "in", "not_in", "nin", "contains", "empty", "not_empty", "nonempty", "ci_eq"}
 )
 _SQL_NORMALIZE = frozenset({"", "none", "strip", "lower", "upper", "empty_as_blank"})
-_SQL_COMPARE_MODES = frozenset({"", "eq", "ignore", "skip", "off"})
+_SQL_COMPARE_MODES = frozenset(
+    {
+        "",
+        "eq",
+        "ignore",
+        "skip",
+        "off",
+        "numeric",
+        "number",
+        "int",
+        "float",
+        "percent",
+        "pct",
+        "rel",
+    }
+)
 _EMPTY_AS_BLANK = ("n/a", "na", "-", "--", "none", "null")
+_NUM_RE_SQL = r"^-?[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$"
 
 
 def _dialect_is_postgres(db: Session) -> bool:
@@ -291,6 +307,36 @@ def _rk_sql(key_fields: list[str], *, json_col: str = "data_json") -> str:
     return "concat_ws('|', " + ", ".join(parts) + ")"
 
 
+def _field_differs_sql(bv: str, av: str, rule: Mapping[str, Any]) -> str:
+    """SQL boolean: True when before/after values differ under the field rule."""
+    mode = str(rule.get("compare") or "eq").strip().lower() or "eq"
+    if mode in ("ignore", "skip", "off") or rule.get("ignore") is True:
+        return "FALSE"
+    try:
+        tol = float(rule.get("tolerance") or 0)
+    except (TypeError, ValueError):
+        tol = 0.0
+    if mode in ("numeric", "number", "int", "float", "percent", "pct", "rel"):
+        # Match Python values_equal: parseable → numeric compare; else string eq
+        num_b = f"(({bv}) ~ '{_NUM_RE_SQL}')"
+        num_a = f"(({av}) ~ '{_NUM_RE_SQL}')"
+        bn = f"({bv})::double precision"
+        an = f"({av})::double precision"
+        if mode in ("percent", "pct", "rel"):
+            # differ when relative % > tol (before==0 → after must be 0)
+            num_diff = (
+                f"(CASE WHEN {bn} = 0 THEN {an} IS DISTINCT FROM 0 "
+                f"ELSE (abs({an} - {bn}) / abs({bn}) * 100.0) > {tol} END)"
+            )
+        else:
+            num_diff = f"(abs({an} - {bn}) > {tol})"
+        return (
+            f"(CASE WHEN {num_b} AND {num_a} THEN {num_diff} "
+            f"ELSE ({bv} IS DISTINCT FROM {av}) END)"
+        )
+    return f"({bv} IS DISTINCT FROM {av})"
+
+
 def _changed_predicate(
     compare_fields: list[str],
     rules: dict[str, dict[str, Any]],
@@ -313,7 +359,7 @@ def _changed_predicate(
         norm = str(rule.get("normalize") or "strip").strip().lower() or "strip"
         bv = _norm_expr(f"{before_alias}.data", name, norm)
         av = _norm_expr(f"{after_alias}.data", name, norm)
-        clauses.append(f"({bv} IS DISTINCT FROM {av})")
+        clauses.append(_field_differs_sql(bv, av, rule))
     if not clauses:
         return "FALSE"
     return "(" + " OR ".join(clauses) + ")"

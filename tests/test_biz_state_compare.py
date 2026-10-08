@@ -455,21 +455,31 @@ class CompareSheetDefaultsTests(unittest.TestCase):
         self.assertIn("isis_adjacency.ipv6", ids)
         # Same source metric may appear multiple times (afi splits)
         self.assertEqual(sum(1 for s in sheets if s["metric_id"] == "bgp_peer"), 6)
+        self.assertGreaterEqual(sum(1 for s in sheets if s["metric_id"] == "bgp_route"), 4)
         self.assertIn("bgp_peer.evpn", ids)
         self.assertIn("bgp_peer.vpls", ids)
         self.assertIn("vrrp.ipv4", ids)
         self.assertIn("lldp_neighbor", ids)
-        detail = next(s for s in sheets if sheet_key(s) == "interface_detail")
-        self.assertEqual(detail["compare_fields"], ["port_status"])
-        self.assertIn("input_bps", detail["display_fields"])
-        optical = next(s for s in sheets if sheet_key(s) == "optical_brief")
-        self.assertEqual(optical["compare_fields"], ["status"])
-        self.assertIn("rx_power", optical["display_fields"])
-        bgp4 = next(s for s in sheets if sheet_key(s) == "bgp_peer.ipv4")
-        self.assertEqual(bgp4["compare_fields"], ["as_num", "state"])
-        self.assertIn("pfx_rcd", bgp4["display_fields"])
+        # Packaged IOH default: filtered bgp_route ipv4 + percent pfx_rcd
+        route4 = next(s for s in sheets if sheet_key(s) == "bgp_route")
+        self.assertEqual(route4["metric_id"], "bgp_route")
+        self.assertTrue(
+            any(
+                f.get("field") == "afi" and f.get("value") == "ipv4"
+                for f in (route4.get("row_filters") or [])
+            )
+        )
+        self.assertTrue(
+            any(
+                r.get("field") == "pfx_rcd" and r.get("compare") == "percent"
+                for r in (route4.get("field_rules") or [])
+            )
+        )
         vpnv4 = next(s for s in sheets if sheet_key(s) == "bgp_peer.vpnv4")
-        self.assertEqual(vpnv4["row_filters"], [{"field": "afi", "op": "eq", "value": "vpnv4"}])
+        self.assertEqual(
+            vpnv4["row_filters"],
+            [{"field": "afi", "op": "eq", "value": "vpnv4"}],
+        )
         isis4 = next(s for s in sheets if sheet_key(s) == "isis_adjacency.ipv4")
         self.assertEqual(isis4["row_filters"][0]["op"], "contains")
 

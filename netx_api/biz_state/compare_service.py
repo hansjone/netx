@@ -36,6 +36,7 @@ from .compare_rules import (
     arp_dynamic_row_filters,
     effective_compare_fields,
     effective_display_fields,
+    row_matches_filter,
 )
 from .iface_normalize import (
     apply_iface_normalize_rows,
@@ -772,7 +773,35 @@ def _builtin_source_splits() -> dict[str, list[dict[str, Any]]]:
     }
 
 
+def _packaged_zte_status_template_path():
+    from pathlib import Path
+
+    return Path(__file__).resolve().parent / "data" / "default_zte_status_template.json"
+
+
+def _load_packaged_zte_status_template() -> dict[str, Any]:
+    """IOH CN migration sheet set shipped as the built-in status default."""
+    path = _packaged_zte_status_template_path()
+    if not path.is_file():
+        return {}
+    try:
+        return dict(json.loads(path.read_text(encoding="utf-8")) or {})
+    except Exception:
+        _log.exception("failed to load packaged ZTE status template %s", path)
+        return {}
+
+
 def _default_zte_status_sheets() -> list[dict[str, Any]]:
+    """Built-in status sheets — prefer packaged IOH CN migration rules."""
+    raw = _load_packaged_zte_status_template()
+    out: list[dict[str, Any]] = []
+    for item in list(raw.get("metrics") or []):
+        sheet = _normalize_sheet(item)
+        if sheet:
+            out.append(sheet)
+    if out:
+        return out
+    # Fallback if package missing (tests / incomplete install)
     return [
         *_isis_af_sheets(),
         _default_sheet_for_metric("interface_brief", compare_roles=("state",)),
@@ -787,6 +816,23 @@ def _default_zte_status_sheets() -> list[dict[str, Any]]:
         _default_sheet_for_metric("l2vpn_pw_detail", compare_roles=("state",)),
         _default_lldp_sheet(),
     ]
+
+
+def _builtin_status_needs_packaged_upgrade(existing: list[dict[str, Any]]) -> bool:
+    """True when built-in template still lacks filtered BGP route sheets."""
+    mids = {str(s.get("metric_id") or "") for s in existing}
+    if "bgp_route" not in mids and "l2vpn_mac" not in mids:
+        return True
+    has_filtered_route = any(
+        str(s.get("metric_id") or "") == "bgp_route" and list(s.get("row_filters") or [])
+        for s in existing
+    )
+    if not has_filtered_route:
+        return True
+    packaged_keys = {sheet_key(s) for s in _default_zte_status_sheets()}
+    have_keys = {sheet_key(s) for s in existing}
+    # Missing several packaged sheet ids → sync to packaged default
+    return len(packaged_keys - have_keys) >= 3
 
 
 def _default_zte_config_sheets() -> list[dict[str, Any]]:
@@ -1055,52 +1101,63 @@ def ensure_default_lldp_template(db: Session) -> BizCompareTemplate:
 def ensure_default_zte_status_template(db: Session) -> BizCompareTemplate:
     name = "ZTE status default"
     row = db.query(BizCompareTemplate).filter(BizCompareTemplate.name == name).one_or_none()
+    packaged = _load_packaged_zte_status_template()
     sheets = _default_zte_status_sheets()
-    # Volatile counters must not stay in compare_fields on upgraded installs.
-    _STRIP_COMPARE: dict[str, frozenset[str]] = {
-        "interface_detail": frozenset({"input_bps", "output_bps", "in_util", "out_util"}),
-        "optical_brief": frozenset({"rx_power", "tx_power"}),
-        "bgp_peer": frozenset({"pfx_rcd"}),
-    }
+    note = str(
+        packaged.get("note")
+        or "Built-in ZTE status cutover (ISIS/IF/ARP/ND6/BGP route AF sheets)"
+    )[:512]
+    iface_rules = list(packaged.get("iface_normalize_rules") or [])
     if row:
         existing = template_metrics(row)
-        want = {s["metric_id"] for s in sheets}
-        have = {s["metric_id"] for s in existing}
-        changed = bool(want - have)
+        if _builtin_status_needs_packaged_upgrade(existing) and sheets:
+            _apply_sheets_to_row(row, sheets)
+            row.note = note
+            row.updated_at = _utcnow()
+            if iface_rules:
+                _set_template_iface_normalize(row, iface_rules)
+            elif not template_iface_normalize(row):
+                # Packaged IOH rules use empty normalize; leave empty when explicit
+                _set_template_iface_normalize(row, [])
+            db.commit()
+            db.refresh(row)
+            return row
+        # Incremental patches for already-upgraded installs
+        changed = False
         upgraded: list[dict[str, Any]] = []
-        by_want = {s["metric_id"]: s for s in sheets}
+        by_sid = {sheet_key(s): s for s in sheets}
         for s in existing:
             cur = dict(s)
             mid = str(cur.get("metric_id") or "")
+            sid = sheet_key(cur)
             if mid == "arp" and not cur.get("row_filters"):
-                cur["row_filters"] = list(by_want.get("arp", {}).get("row_filters") or arp_dynamic_row_filters())
-                if not cur.get("field_rules") and by_want.get("arp", {}).get("field_rules"):
-                    cur["field_rules"] = list(by_want["arp"]["field_rules"])
+                src = by_sid.get(sid) or next(
+                    (x for x in sheets if x.get("metric_id") == "arp"), None
+                )
+                cur["row_filters"] = list(
+                    (src or {}).get("row_filters") or arp_dynamic_row_filters()
+                )
+                if not cur.get("field_rules") and src and src.get("field_rules"):
+                    cur["field_rules"] = list(src["field_rules"])
                 changed = True
-            strip = _STRIP_COMPARE.get(mid)
-            if strip:
-                old_cmp = list(cur.get("compare_fields") or [])
-                new_cmp = [f for f in old_cmp if f not in strip]
-                if new_cmp != old_cmp:
-                    cur["compare_fields"] = new_cmp
-                    want_disp = list((by_want.get(mid) or {}).get("display_fields") or [])
-                    if want_disp:
-                        cur["display_fields"] = want_disp
-                    changed = True
             upgraded.append(_normalize_sheet(cur) or cur)
-        if want - have:
-            for s in sheets:
-                if s["metric_id"] not in have:
+        have_mids = {str(s.get("metric_id") or "") for s in upgraded}
+        for s in sheets:
+            if str(s.get("metric_id") or "") not in have_mids:
+                # Only append wholly missing metrics (e.g. bgp_route family)
+                if str(s.get("metric_id") or "") == "bgp_route" and "bgp_route" not in have_mids:
+                    upgraded.extend(
+                        [x for x in sheets if x.get("metric_id") == "bgp_route"]
+                    )
+                    have_mids.add("bgp_route")
+                    changed = True
+                elif str(s.get("metric_id") or "") not in have_mids:
                     upgraded.append(s)
-            changed = True
+                    have_mids.add(str(s.get("metric_id") or ""))
+                    changed = True
         if changed:
             _apply_sheets_to_row(row, upgraded if upgraded else sheets)
-            row.note = "Built-in ZTE status cutover (ISIS/IF/ARP/ND6/BGP/LLDP)"
-            row.updated_at = _utcnow()
-            db.commit()
-            db.refresh(row)
-        if not template_iface_normalize(row):
-            _set_template_iface_normalize(row, default_zte_iface_normalize_rules())
+            row.note = note
             row.updated_at = _utcnow()
             db.commit()
             db.refresh(row)
@@ -1108,12 +1165,12 @@ def ensure_default_zte_status_template(db: Session) -> BizCompareTemplate:
     row = BizCompareTemplate(
         id=uuid4().hex,
         name=name,
-        note="Built-in ZTE status cutover (ISIS/IF/ARP/ND6/BGP/LLDP)",
+        note=note,
         created_at=_utcnow(),
         updated_at=_utcnow(),
     )
     _apply_sheets_to_row(row, sheets)
-    _set_template_iface_normalize(row, default_zte_iface_normalize_rules())
+    _set_template_iface_normalize(row, iface_rules)
     db.add(row)
     db.commit()
     db.refresh(row)
@@ -1169,10 +1226,10 @@ def ensure_default_templates(db: Session) -> None:
 
 
 def upgrade_builtin_split_sheets(db: Session) -> None:
-    """Split unfiltered whole-table sheets on the built-in ZTE template only.
+    """Upgrade built-in ZTE status template to packaged AF / BGP route sheets.
 
-    A sheet is replaced when its id is still the source metric and it has no
-    row filters. Custom templates and already-split sheets are left alone.
+    Custom templates are left alone. Built-in is replaced wholesale when it
+    still lacks filtered ``bgp_route`` sheets (IOH CN migration default).
     """
     row = (
         db.query(BizCompareTemplate)
@@ -1182,6 +1239,18 @@ def upgrade_builtin_split_sheets(db: Session) -> None:
     if not row:
         return
     existing = template_metrics(row)
+    packaged_sheets = _default_zte_status_sheets()
+    if _builtin_status_needs_packaged_upgrade(existing) and packaged_sheets:
+        packaged = _load_packaged_zte_status_template()
+        _apply_sheets_to_row(row, packaged_sheets)
+        row.note = str(
+            packaged.get("note")
+            or "Built-in ZTE status cutover (ISIS/IF/ARP/ND6/BGP route AF sheets)"
+        )[:512]
+        _set_template_iface_normalize(row, list(packaged.get("iface_normalize_rules") or []))
+        row.updated_at = _utcnow()
+        db.commit()
+        return
     splits = _builtin_source_splits()
     out: list[dict[str, Any]] = []
     changed = False
@@ -1433,12 +1502,28 @@ def _load_metric_rows(
     batch_id: str,
     metric_id: str,
     on_chunk: Callable[[int], None] | None = None,
+    row_filters: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Load metric rows in keyset chunks (stable on million-row sheets).
 
-    Avoids ORM ``yield_per``/``unique()`` clash and OFFSET degradation on BGP-sized tables.
-    ``on_chunk(loaded_count)`` is called after each chunk for progress UI.
+    When ``row_filters`` are SQL-pushdown-safe on PostgreSQL, they are applied in
+    the SELECT (critical for BGP afi/vrf sheet splits — avoids loading 1M+ then
+    discarding). Otherwise filters are applied in Python after each chunk.
     """
+    from .compare_sql import (
+        _dialect_is_postgres,
+        _filters_sql_compatible,
+        compile_row_filters_sql,
+    )
+
+    filters = [f for f in (row_filters or []) if isinstance(f, dict)]
+    pushdown = bool(
+        filters and _dialect_is_postgres(db) and _filters_sql_compatible(filters)
+    )
+    filter_sql, filter_params = ("TRUE", {})
+    if pushdown:
+        filter_sql, filter_params = compile_row_filters_sql(filters)
+
     if metric_id == "lldp_neighbor":
         out: list[dict[str, Any]] = []
         last_id = ""
@@ -1450,39 +1535,104 @@ def _load_metric_rows(
             if not chunk:
                 break
             for n in chunk:
-                out.append(
-                    {
-                        "local_if": n.local_if,
-                        "remote_sys": n.remote_sys,
-                        "remote_if": n.remote_if,
-                        "remote_ip": n.remote_ip,
-                        "protocol": n.protocol,
-                        "_netx": {
-                            "batch_id": batch_id,
-                            "batch_command_id": n.batch_command_id or "",
-                            "task_id": n.task_id or "",
-                            "ne_id": n.ne_id or "",
-                            "collected_at": n.collected_at.isoformat() + "Z"
-                            if n.collected_at
-                            else None,
-                            "row_id": n.id,
-                        },
-                    }
-                )
+                row = {
+                    "local_if": n.local_if,
+                    "remote_sys": n.remote_sys,
+                    "remote_if": n.remote_if,
+                    "remote_ip": n.remote_ip,
+                    "protocol": n.protocol,
+                    "_netx": {
+                        "batch_id": batch_id,
+                        "batch_command_id": n.batch_command_id or "",
+                        "task_id": n.task_id or "",
+                        "ne_id": n.ne_id or "",
+                        "collected_at": n.collected_at.isoformat() + "Z"
+                        if n.collected_at
+                        else None,
+                        "row_id": n.id,
+                    },
+                }
+                if filters and not pushdown and not all(
+                    row_matches_filter(row, f) for f in filters
+                ):
+                    db.expunge(n)
+                    continue
+                out.append(row)
                 db.expunge(n)
             last_id = str(chunk[-1].id)
             if on_chunk:
                 on_chunk(len(out))
             if len(chunk) < _LOAD_YIELD_PER:
                 break
+        if filters and not pushdown:
+            return apply_row_filters(out, filters)
         return out
-    # Generic tabular metrics (ISIS / interface / ARP / ND6 / BGP …)
+
+    # Generic tabular metrics — PG + pushdown uses SQL keyset with JSON filters
     from ..models import BizStateMetricRow
+    from sqlalchemy import text as sql_text
 
     out: list[dict[str, Any]] = []
     last_seq = -1
     last_id = ""
     while True:
+        if pushdown:
+            params = {
+                "bid": batch_id,
+                "mid": metric_id,
+                "last_seq": last_seq,
+                "last_id": last_id,
+                "lim": int(_LOAD_YIELD_PER),
+                **filter_params,
+            }
+            keyset = (
+                "(seq > :last_seq OR (seq = :last_seq AND id > :last_id))"
+                if last_id
+                else "TRUE"
+            )
+            rows = db.execute(
+                sql_text(
+                    f"""
+                    SELECT id, batch_command_id, task_id, ne_id, seq, data_json, collected_at
+                    FROM biz_state_metric_row
+                    WHERE batch_id = :bid
+                      AND metric_id = :mid
+                      AND ({filter_sql})
+                      AND ({keyset})
+                    ORDER BY seq ASC, id ASC
+                    LIMIT :lim
+                    """
+                ),
+                params,
+            ).mappings().all()
+            if not rows:
+                break
+            for r in rows:
+                data = dict(r["data_json"] or {})
+                collected = r["collected_at"]
+                out.append(
+                    {
+                        **data,
+                        "_netx": {
+                            "batch_id": batch_id,
+                            "batch_command_id": str(r["batch_command_id"] or ""),
+                            "task_id": str(r["task_id"] or ""),
+                            "ne_id": str(r["ne_id"] or ""),
+                            "collected_at": collected.isoformat() + "Z"
+                            if collected is not None
+                            else None,
+                            "row_id": str(r["id"]),
+                        },
+                    }
+                )
+            last_seq = int(rows[-1]["seq"] or 0)
+            last_id = str(rows[-1]["id"])
+            if on_chunk:
+                on_chunk(len(out))
+            if len(rows) < _LOAD_YIELD_PER:
+                break
+            continue
+
         q = db.query(BizStateMetricRow).filter(
             BizStateMetricRow.batch_id == batch_id,
             BizStateMetricRow.metric_id == metric_id,
@@ -1505,24 +1655,23 @@ def _load_metric_rows(
         if not chunk:
             break
         for r in chunk:
-            # Raw rows only — filtering belongs to the compare sheet template
-            # (``row_filters``), not metric-specific branches here.
-            # ``_netx`` is collector provenance (stripped before field compare).
-            out.append(
-                {
-                    **dict(r.data_json or {}),
-                    "_netx": {
-                        "batch_id": batch_id,
-                        "batch_command_id": r.batch_command_id or "",
-                        "task_id": r.task_id or "",
-                        "ne_id": r.ne_id or "",
-                        "collected_at": r.collected_at.isoformat() + "Z"
-                        if r.collected_at
-                        else None,
-                        "row_id": r.id,
-                    },
-                }
-            )
+            row = {
+                **dict(r.data_json or {}),
+                "_netx": {
+                    "batch_id": batch_id,
+                    "batch_command_id": r.batch_command_id or "",
+                    "task_id": r.task_id or "",
+                    "ne_id": r.ne_id or "",
+                    "collected_at": r.collected_at.isoformat() + "Z"
+                    if r.collected_at
+                    else None,
+                    "row_id": r.id,
+                },
+            }
+            if filters and not all(row_matches_filter(row, f) for f in filters):
+                db.expunge(r)
+                continue
+            out.append(row)
             db.expunge(r)
         last_seq = int(chunk[-1].seq or 0)
         last_id = str(chunk[-1].id)
@@ -1875,13 +2024,22 @@ def _run_sheet(
         _emit_load("after", n, engine="python", note=skip_reason or "python", phase="loading")
 
     before_raw = _load_metric_rows(
-        db, batch_id=before_batch_id, metric_id=mid, on_chunk=_before_chunk
+        db,
+        batch_id=before_batch_id,
+        metric_id=mid,
+        on_chunk=_before_chunk,
+        row_filters=row_filters,
     )
     after_raw = _load_metric_rows(
-        db, batch_id=after_batch_id, metric_id=mid, on_chunk=_after_chunk
+        db,
+        batch_id=after_batch_id,
+        metric_id=mid,
+        on_chunk=_after_chunk,
+        row_filters=row_filters,
     )
-    before_rows = apply_row_filters(before_raw, row_filters)
-    after_rows = apply_row_filters(after_raw, row_filters)
+    # Filters already applied in load when pushdown-safe; keep apply for safety
+    before_rows = apply_row_filters(before_raw, row_filters) if row_filters else before_raw
+    after_rows = apply_row_filters(after_raw, row_filters) if row_filters else after_raw
     policy = resolve_unchanged_policy(
         store_unchanged, before_n=len(before_rows), after_n=len(after_rows)
     )
