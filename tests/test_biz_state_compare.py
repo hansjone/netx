@@ -475,6 +475,13 @@ class CompareSheetDefaultsTests(unittest.TestCase):
                 for r in (route4.get("field_rules") or [])
             )
         )
+        route_vpn = next(s for s in sheets if sheet_key(s) == "bgp_route.vpnv4")
+        self.assertTrue(
+            any(
+                f.get("field") == "afi" and f.get("value") == "vpnv4"
+                for f in (route_vpn.get("row_filters") or [])
+            )
+        )
         vpnv4 = next(s for s in sheets if sheet_key(s) == "bgp_peer.vpnv4")
         self.assertEqual(
             vpnv4["row_filters"],
@@ -483,7 +490,8 @@ class CompareSheetDefaultsTests(unittest.TestCase):
         isis4 = next(s for s in sheets if sheet_key(s) == "isis_adjacency.ipv4")
         self.assertEqual(isis4["row_filters"][0]["op"], "contains")
 
-    def test_duplicate_match_keys_are_reported(self) -> None:
+    def test_ordered_same_key_pairing_2v2(self) -> None:
+        """Same key, two rows each: zip by order (not first-wins + duplicate)."""
         before = [
             {"local_if": "a", "remote_sys": "X", "remote_if": "1", "remote_ip": "1"},
             {"local_if": "a", "remote_sys": "X", "remote_if": "1", "remote_ip": "9"},
@@ -500,15 +508,47 @@ class CompareSheetDefaultsTests(unittest.TestCase):
             compare_fields=["remote_ip"],
             port_map={"a": "a"},
         )
+        self.assertEqual(out["summary"]["before_count"], 2)
+        self.assertEqual(out["summary"]["after_count"], 2)
+        self.assertEqual(out["summary"]["duplicate"], 0)
         self.assertEqual(out["summary"]["duplicate_keys_before"], 1)
         self.assertEqual(out["summary"]["duplicate_keys_after"], 1)
-        self.assertEqual(out["summary"]["duplicate"], 2)
         self.assertIn("a|X|1", out["summary"]["duplicate_key_list"])
         kinds = [d["kind"] for d in out["diffs"]]
-        self.assertEqual(kinds.count("duplicate"), 2)
-        # First before wins → matches first after → unchanged (same remote_ip)
+        self.assertNotIn("duplicate", kinds)
+        # Pair 0: 1==1 unchanged; pair 1: 9!=2 changed
         self.assertEqual(out["summary"]["unchanged"], 1)
+        self.assertEqual(out["summary"]["changed"], 1)
+        self.assertEqual(out["summary"]["added"], 0)
+        self.assertEqual(out["summary"]["removed"], 0)
+
+    def test_ordered_multipath_5_vs_2(self) -> None:
+        """5 before / 2 after same key → 2 compared + 3 removed failures."""
+        key = {"local_if": "a", "remote_sys": "X", "remote_if": "1"}
+        before = [{**key, "remote_ip": str(i)} for i in range(5)]
+        after = [{**key, "remote_ip": "0"}, {**key, "remote_ip": "1"}]
+        out = compare_rows(
+            before_rows=before,
+            after_rows=after,
+            key_fields=["local_if", "remote_sys", "remote_if"],
+            iface_fields=["local_if"],
+            compare_fields=["remote_ip"],
+            port_map={"a": "a"},
+        )
+        self.assertEqual(out["summary"]["before_count"], 5)
+        self.assertEqual(out["summary"]["after_count"], 2)
+        self.assertEqual(out["summary"]["removed"], 3)
+        self.assertEqual(out["summary"]["added"], 0)
+        self.assertEqual(
+            out["summary"]["unchanged"] + out["summary"]["changed"],
+            2,
+        )
+        self.assertEqual(out["summary"]["unchanged"], 2)
         self.assertEqual(out["summary"]["changed"], 0)
+        self.assertEqual(out["summary"]["duplicate"], 0)
+        kinds = [d["kind"] for d in out["diffs"]]
+        self.assertEqual(kinds.count("removed"), 3)
+        self.assertNotIn("duplicate", kinds)
 
     def test_ignore_port_changes_false_keeps_iface(self) -> None:
         before = [

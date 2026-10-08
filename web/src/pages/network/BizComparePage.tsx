@@ -1895,6 +1895,10 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     rows_loaded?: number;
     engine?: string;
     engine_note?: string;
+    persisted?: number;
+    persist_total?: number;
+    fail_rows?: number;
+    ok_rows?: number;
   };
   const runEngine = String(runProgress.engine || "").toLowerCase();
 
@@ -3290,6 +3294,15 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                             side: String(runProgress.load_side || "—"),
                             n: String(runProgress.rows_loaded || 0),
                           })}
+                    </span>
+                  ) : null}
+                  {String(runProgress.phase || "").startsWith("persisting") &&
+                  Number(runProgress.persist_total || 0) > 0 ? (
+                    <span className="muted">
+                      {t("bizCompare.runPersisting", {
+                        done: String(runProgress.persisted || 0),
+                        total: String(runProgress.persist_total || 0),
+                      })}
                     </span>
                   ) : null}
                   {runDetail.message ? (

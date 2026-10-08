@@ -501,6 +501,7 @@ const zh = {
     runProgress: "{{phase}} · 表 {{i}}/{{n}} · {{sheet}} · 已用 {{s}}s",
     runRowsLoaded: "已加载 {{side}} {{n}} 行",
     runRowsSqlCount: "库内统计 {{side}} {{n}} 行",
+    runPersisting: "已写入 {{done}}/{{total}} 行",
     runEngineSql: "引擎 SQL",
     runEnginePython: "引擎 Python",
     runEngineNote: "原因 {{note}}",

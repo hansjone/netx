@@ -186,6 +186,10 @@ def _compare_side(
 _DIFF_CHUNK = 2000
 _LOAD_YIELD_PER = 5000
 _SEARCH_TEXT_MAX = 4000
+# Heartbeat while bulk-inserting large fail/ok diff sets (vpnv4-scale).
+_PERSIST_PROGRESS_EVERY = 10_000
+# Above this, store fail diffs as key + row_id + changes (hydrate sides on read).
+_FAIL_COMPACT_MIN = 50_000
 # Success-row persist policy (see resolve_unchanged_policy)
 _STORE_UNCHANGED_MODES = frozenset({"auto", "always", "never", "sample", "keys"})
 _UNCHANGED_FULL_MAX = 20_000
@@ -273,15 +277,41 @@ def _persist_sheet_diffs(
     metric_id: str,
     diffs: list[dict[str, Any]],
     seq_start: int = 0,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> int:
     """Bulk-insert diff rows already selected by the engine policy.
 
     Compact success rows carry key + before/after_row_id; JSON sides stay empty
     and are hydrated from metric tables on read.
+
+    ``on_progress(written, total)`` fires periodically so UI elapsed time moves
+    during multi-minute inserts (e.g. large vpnv4 fail sets).
     """
     buf: list[dict[str, Any]] = []
     seq = int(seq_start or 0)
     written = 0
+    total = len(diffs)
+    last_prog = 0
+    last_prog_t = time.monotonic()
+
+    def _maybe_prog(force: bool = False) -> None:
+        nonlocal last_prog, last_prog_t
+        if not on_progress:
+            return
+        now = time.monotonic()
+        if (
+            not force
+            and written - last_prog < _PERSIST_PROGRESS_EVERY
+            and now - last_prog_t < 2.0
+        ):
+            return
+        last_prog = written
+        last_prog_t = now
+        try:
+            on_progress(written, total)
+        except Exception:
+            _log.exception("persist progress callback failed run=%s metric=%s", run_id, metric_id)
+
     for d in diffs:
         kind = str(d.get("kind") or "")
         before = _strip_netx(d.get("before"))
@@ -295,10 +325,14 @@ def _persist_sheet_diffs(
             "mapped_before": mapped,
             "changes": dict(d.get("changes") or {}),
         }
-        # Compact success: search_text = kind + key only (no fat sides)
+        # Compact rows: search_text = kind + key (+ changes) only — no fat sides
         search_src = (
-            {"kind": kind, "key": payload["key"]}
-            if kind == "unchanged" and bool(d.get("compact"))
+            {
+                "kind": kind,
+                "key": payload["key"],
+                **({"changes": payload["changes"]} if payload["changes"] else {}),
+            }
+            if bool(d.get("compact"))
             else payload
         )
         buf.append(
@@ -323,8 +357,14 @@ def _persist_sheet_diffs(
         if len(buf) >= _DIFF_CHUNK:
             db.bulk_insert_mappings(BizCompareDiff, buf)
             buf.clear()
+            # Commit chunks so progress/UI can see mid-write fail rows and
+            # elapsed_ms advances (otherwise persisting_* looks frozen).
+            db.commit()
+            _maybe_prog()
     if buf:
         db.bulk_insert_mappings(BizCompareDiff, buf)
+        db.commit()
+    _maybe_prog(force=True)
     return written
 
 
@@ -2423,6 +2463,39 @@ def _execute_compare_into_run(db: Session, run_id: str) -> dict[str, Any]:
             fail_diffs = [d for d in diffs if str(d.get("kind") or "") != "unchanged"]
             ok_diffs = [d for d in diffs if str(d.get("kind") or "") == "unchanged"]
             mid = sheet_key(one)
+            # Million-row vpnv4 with many diffs: keep key/row_id/changes only.
+            if len(fail_diffs) >= _FAIL_COMPACT_MIN:
+                for d in fail_diffs:
+                    d["before"] = {}
+                    d["after"] = {}
+                    d["mapped_before"] = {}
+                    d["compact"] = True
+
+            def _on_persist(
+                written: int,
+                total_n: int,
+                *,
+                phase: str,
+                kind_key: str,
+            ) -> None:
+                _set_run_progress(
+                    db,
+                    run,
+                    phase=phase,
+                    sheet_index=idx,
+                    sheet_total=total,
+                    sheet=sheet,
+                    started_mono=started_mono,
+                    extra={
+                        kind_key: total_n,
+                        "persisted": written,
+                        "persist_total": total_n,
+                    },
+                    # Separate session so chunk commits in persist do not race
+                    # with progress JSON writes on the worker session.
+                    detach=True,
+                )
+
             _set_run_progress(
                 db,
                 run,
@@ -2431,12 +2504,22 @@ def _execute_compare_into_run(db: Session, run_id: str) -> dict[str, Any]:
                 sheet_total=total,
                 sheet=sheet,
                 started_mono=started_mono,
-                extra={"fail_rows": len(fail_diffs)},
+                extra={
+                    "fail_rows": len(fail_diffs),
+                    "persisted": 0,
+                    "persist_total": len(fail_diffs),
+                },
             )
             n_fail = _persist_sheet_diffs(
-                db, run_id=run.id, metric_id=mid, diffs=fail_diffs, seq_start=0
+                db,
+                run_id=run.id,
+                metric_id=mid,
+                diffs=fail_diffs,
+                seq_start=0,
+                on_progress=lambda w, n: _on_persist(
+                    w, n, phase="persisting_fail", kind_key="fail_rows"
+                ),
             )
-            db.commit()
             if ok_diffs:
                 _set_run_progress(
                     db,
@@ -2446,7 +2529,11 @@ def _execute_compare_into_run(db: Session, run_id: str) -> dict[str, Any]:
                     sheet_total=total,
                     sheet=sheet,
                     started_mono=started_mono,
-                    extra={"ok_rows": len(ok_diffs)},
+                    extra={
+                        "ok_rows": len(ok_diffs),
+                        "persisted": 0,
+                        "persist_total": len(ok_diffs),
+                    },
                 )
                 _persist_sheet_diffs(
                     db,
@@ -2454,6 +2541,9 @@ def _execute_compare_into_run(db: Session, run_id: str) -> dict[str, Any]:
                     metric_id=mid,
                     diffs=ok_diffs,
                     seq_start=n_fail,
+                    on_progress=lambda w, n: _on_persist(
+                        w, n, phase="persisting_ok", kind_key="ok_rows"
+                    ),
                 )
             for k in agg:
                 agg[k] += int(s.get(k) or 0)

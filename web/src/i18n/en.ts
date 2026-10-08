@@ -502,6 +502,7 @@ const en = {
     runProgress: "{{phase}} · sheet {{i}}/{{n}} · {{sheet}} · {{s}}s elapsed",
     runRowsLoaded: "Loaded {{side}} {{n}} rows",
     runRowsSqlCount: "DB count {{side}} {{n}} rows",
+    runPersisting: "Wrote {{done}}/{{total}} rows",
     runEngineSql: "engine SQL",
     runEnginePython: "engine Python",
     runEngineNote: "reason {{note}}",

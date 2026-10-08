@@ -406,6 +406,9 @@ def run_sql_sheet_compare(
 ) -> dict[str, Any]:
     """Compare one sheet via PostgreSQL TEMP tables + FULL OUTER JOIN.
 
+    Same-key multipath: rows get ``dup_rn`` by ``seq,id`` and join on
+    ``(rk, dup_rn)`` (ordered zip). Extras are added/removed, not duplicate.
+
     Returns the same ``{summary, diffs, mapping_stats}`` shape as ``compare_rows``.
     ``on_progress(side, n, *, engine=\"sql\", note=..., phase=...)``.
     """
@@ -503,9 +506,7 @@ def run_sql_sheet_compare(
             ),
             params,
         )
-        db.execute(
-            text(f"CREATE INDEX IF NOT EXISTS {tname}_rk ON {tname} (rk) WHERE dup_rn = 1")
-        )
+        db.execute(text(f"CREATE INDEX IF NOT EXISTS {tname}_rk ON {tname} (rk, dup_rn)"))
 
     before_n = int(
         db.execute(text(f"SELECT count(*) FROM {tb}")).scalar() or 0
@@ -525,14 +526,14 @@ def run_sql_sheet_compare(
       END
     """
 
-    # Aggregate primary match kinds (first-wins keys only)
+    # Ordered same-key pairing: join on (rk, dup_rn) so 5 vs 2 → 2 compared + 3 removed
     agg_rows = db.execute(
         text(
             f"""
             SELECT {kind_expr} AS kind, count(*)::bigint AS n
-            FROM (SELECT * FROM {tb} WHERE dup_rn = 1) b
-            FULL OUTER JOIN (SELECT * FROM {ta} WHERE dup_rn = 1) a
-              ON b.rk = a.rk
+            FROM {tb} b
+            FULL OUTER JOIN {ta} a
+              ON b.rk = a.rk AND b.dup_rn = a.dup_rn
             GROUP BY 1
             """
         )
@@ -543,13 +544,19 @@ def run_sql_sheet_compare(
     changed = counts.get("changed", 0)
     unchanged = counts.get("unchanged", 0)
 
-    dup_b = int(
-        db.execute(text(f"SELECT count(*) FROM {tb} WHERE dup_rn > 1")).scalar() or 0
+    # Diagnostic: count of match keys with >1 row (not fail rows)
+    multi_b = int(
+        db.execute(
+            text(f"SELECT count(*) FROM (SELECT rk FROM {tb} GROUP BY rk HAVING count(*) > 1) t")
+        ).scalar()
+        or 0
     )
-    dup_a = int(
-        db.execute(text(f"SELECT count(*) FROM {ta} WHERE dup_rn > 1")).scalar() or 0
+    multi_a = int(
+        db.execute(
+            text(f"SELECT count(*) FROM (SELECT rk FROM {ta} GROUP BY rk HAVING count(*) > 1) t")
+        ).scalar()
+        or 0
     )
-    duplicate = dup_b + dup_a
 
     # Lazy import — avoid circular import with compare_service
     from .compare_service import resolve_unchanged_policy
@@ -559,7 +566,7 @@ def run_sql_sheet_compare(
     )
     diffs: list[dict[str, Any]] = []
 
-    # Fail + duplicate rows (stream into Python — should be << million)
+    # Fail rows (stream into Python — should be << million)
     fail_sql = text(
         f"""
         SELECT
@@ -569,12 +576,14 @@ def run_sql_sheet_compare(
           b.data AS before_data,
           a.data AS after_data,
           COALESCE(b.rk, a.rk) AS rk
-        FROM (SELECT * FROM {tb} WHERE dup_rn = 1) b
-        FULL OUTER JOIN (SELECT * FROM {ta} WHERE dup_rn = 1) a
-          ON b.rk = a.rk
+        FROM {tb} b
+        FULL OUTER JOIN {ta} a
+          ON b.rk = a.rk AND b.dup_rn = a.dup_rn
         WHERE {kind_expr} IN ('added', 'removed', 'changed')
         """
     )
+    fail_n = 0
+    _prog("after", after_n, phase="sql_fail_fetch", note="fetch_fails")
     for row in db.execute(fail_sql).mappings():
         kind = str(row["kind"] or "")
         before = dict(row["before_data"] or {}) if row["before_data"] is not None else None
@@ -593,29 +602,11 @@ def run_sql_sheet_compare(
         if kind == "changed":
             item["changes"] = _changes_from_rows(before, after, compare_fields, rules)
         diffs.append(item)
-
-    # Duplicate extras
-    for side, tname in (("before", tb), ("after", ta)):
-        q = text(
-            f"""
-            SELECT id, data, rk FROM {tname} WHERE dup_rn > 1
-            """
-        )
-        for row in db.execute(q).mappings():
-            data = dict(row["data"] or {})
-            diffs.append(
-                {
-                    "kind": "duplicate",
-                    "side": side,
-                    "key": _key_obj_from_data(data, key_fields),
-                    "before": data if side == "before" else None,
-                    "after": data if side == "after" else None,
-                    "mapped_before": data if side == "before" else None,
-                    "changes": {},
-                    "before_row_id": str(row["id"] or "") if side == "before" else "",
-                    "after_row_id": str(row["id"] or "") if side == "after" else "",
-                }
-            )
+        fail_n += 1
+        if fail_n == 1 or fail_n % 25_000 == 0:
+            _prog("fail", fail_n, phase="sql_fail_fetch", note="fetch_fails")
+    if fail_n:
+        _prog("fail", fail_n, phase="sql_fail_fetch", note="fetch_fails")
 
     unchanged_listed = 0
     include_u = bool(policy.get("include"))
@@ -634,9 +625,9 @@ def run_sql_sheet_compare(
               a.id AS after_row_id,
               b.data AS before_data,
               a.data AS after_data
-            FROM (SELECT * FROM {tb} WHERE dup_rn = 1) b
-            INNER JOIN (SELECT * FROM {ta} WHERE dup_rn = 1) a
-              ON b.rk = a.rk
+            FROM {tb} b
+            INNER JOIN {ta} a
+              ON b.rk = a.rk AND b.dup_rn = a.dup_rn
             WHERE NOT ({changed_pred})
             {lim_sql}
             """
@@ -677,7 +668,6 @@ def run_sql_sheet_compare(
     db.execute(text(f"DROP TABLE IF EXISTS {tb}"))
     db.execute(text(f"DROP TABLE IF EXISTS {ta}"))
 
-    dup_key_list: list[str] = []
     summary = {
         "before_count": before_n,
         "after_count": after_n,
@@ -685,11 +675,11 @@ def run_sql_sheet_compare(
         "removed": removed,
         "changed": changed,
         "unchanged": unchanged,
-        "duplicate": duplicate,
+        "duplicate": 0,
         "match_key_fields": list(key_fields),
-        "duplicate_keys_before": dup_b,
-        "duplicate_keys_after": dup_a,
-        "duplicate_key_list": dup_key_list,
+        "duplicate_keys_before": multi_b,
+        "duplicate_keys_after": multi_a,
+        "duplicate_key_list": [],
         "unchanged_listed": unchanged_listed,
         "unchanged_truncated": bool(
             include_u and limit_n is not None and unchanged > unchanged_listed

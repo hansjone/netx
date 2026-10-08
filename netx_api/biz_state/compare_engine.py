@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from typing import Any, Mapping, Sequence
 
 from .compare_rules import field_rule_map, values_equal, explain_diff
@@ -111,9 +112,14 @@ def compare_rows(
 ) -> dict[str, Any]:
     """Return summary + diffs list.
 
-    Diff kinds: added | removed | changed | unchanged | duplicate
+    Diff kinds: added | removed | changed | unchanged
 
-    Pipeline: iface normalize (both sides) → port map (before) → match.
+    Pipeline: iface normalize (both sides) → port map (before) → ordered
+    same-key pairing (load / list order within each match key).
+
+    Same match key with N before and M after rows: zip by index
+    ``0..min(N,M)-1`` for field compare; extras become ``removed`` (before)
+    or ``added`` (after). Example: 5 vs 2 → 2 compared + 3 removed.
 
     ``include_unchanged``: when False, matching rows still increment
     ``summary.unchanged`` but are omitted from ``diffs``.
@@ -129,8 +135,8 @@ def compare_rows(
       - ``True``: force drop iface from match key when a non-empty candidate exists.
       - ``False``: never drop iface from match key.
 
-    Duplicate match keys are not silently discarded: extras become ``duplicate``
-    diffs and ``summary.duplicate_key_list`` lists the colliding keys.
+    ``summary.duplicate`` is always 0. ``duplicate_keys_*`` count match keys
+    that appear more than once on a side (diagnostic only).
 
     ``field_rules`` drives normalize / numeric tolerance / per-field compare mode
     (template-driven; no metric-specific branches here).
@@ -177,26 +183,21 @@ def compare_rows(
         apply_port_map(r, iface_fields=iface_list, port_map=pmap) for r in before_norm
     ]
 
-    after_index: dict[tuple[str, ...], dict[str, Any]] = {}
-    after_dup = 0
-    after_dup_keys: list[tuple[str, ...]] = []
-    after_dup_rows: list[tuple[tuple[str, ...], dict[str, Any]]] = []
+    before_groups: dict[tuple[str, ...], list[tuple[dict[str, Any], dict[str, Any]]]] = (
+        defaultdict(list)
+    )
+    after_groups: dict[tuple[str, ...], list[dict[str, Any]]] = defaultdict(list)
+    for orig, mapped in zip(before_rows, before_mapped):
+        before_groups[row_key(mapped, match_keys)].append((orig, mapped))
     for r in after_norm:
-        k = row_key(r, match_keys)
-        if k in after_index:
-            after_dup += 1
-            after_dup_keys.append(k)
-            after_dup_rows.append((k, r))
-            continue  # first wins — do not overwrite
-        after_index[k] = r
+        after_groups[row_key(r, match_keys)].append(r)
 
-    before_keys: set[tuple[str, ...]] = set()
-    before_dup = 0
-    before_dup_keys: list[tuple[str, ...]] = []
     diffs: list[dict[str, Any]] = []
-    added = removed = changed = unchanged = duplicate = 0
+    added = removed = changed = unchanged = 0
     unchanged_listed = 0
     limit_n = None if unchanged_limit is None else max(0, int(unchanged_limit))
+    multi_before_keys: list[tuple[str, ...]] = []
+    multi_after_keys: list[tuple[str, ...]] = []
 
     def _key_obj(row: dict[str, Any]) -> dict[str, Any]:
         return {f: row.get(f, "") for f in key_fields}
@@ -246,96 +247,90 @@ def compare_rows(
                 }
             )
 
+    # Stable key order: before encounter order, then after-only keys
+    seen_keys: set[tuple[str, ...]] = set()
+    ordered_keys: list[tuple[str, ...]] = []
     for orig, mapped in zip(before_rows, before_mapped):
         k = row_key(mapped, match_keys)
-        if k in before_keys:
-            before_dup += 1
-            before_dup_keys.append(k)
-            duplicate += 1
-            diffs.append(
-                {
-                    "kind": "duplicate",
-                    "side": "before",
-                    "key": _key_obj(mapped),
-                    "before": orig,
-                    "after": after_index.get(k),
-                    "mapped_before": mapped,
-                    "changes": {},
-                }
-            )
-            continue  # only first before row participates in match
-        before_keys.add(k)
-        after = after_index.get(k)
-        if after is None:
-            removed += 1
-            diffs.append(
-                {
-                    "kind": "removed",
-                    "key": _key_obj(mapped),
-                    "before": orig,
-                    "after": None,
-                    "mapped_before": mapped,
-                    "changes": {},
-                }
-            )
-            continue
-        # Empty compare_fields = presence-only: keyed rows that exist on both
-        # sides are unchanged (no value checks).
-        field_changes: dict[str, dict[str, Any]] = {}
-        for f in compare_fields:
-            bv = mapped.get(f, "")
-            av = after.get(f, "")
-            rule = rules.get(f)
-            if not values_equal(bv, av, rule=rule):
-                entry: dict[str, Any] = {"before": bv, "after": av}
-                reason = explain_diff(bv, av, rule=rule)
-                if reason:
-                    entry["reason"] = reason
-                field_changes[f] = entry
-        if field_changes:
-            changed += 1
-            diffs.append(
-                {
-                    "kind": "changed",
-                    "key": _key_obj(mapped),
-                    "before": orig,
-                    "after": after,
-                    "mapped_before": mapped,
-                    "changes": field_changes,
-                }
-            )
-        else:
-            unchanged += 1
-            _emit_unchanged(orig, mapped, after)
-
-    for k, after in after_index.items():
-        if k in before_keys:
-            continue
-        added += 1
-        diffs.append(
-            {
-                "kind": "added",
-                "key": _key_obj(after),
-                "before": None,
-                "after": after,
-                "mapped_before": None,
-                "changes": {},
-            }
-        )
-
-    for k, after in after_dup_rows:
-        duplicate += 1
-        diffs.append(
-            {
-                "kind": "duplicate",
-                "side": "after",
-                "key": _key_obj(after),
-                "before": None,
-                "after": after,
-                "mapped_before": None,
-                "changes": {},
-            }
-        )
+        if k not in seen_keys:
+            seen_keys.add(k)
+            ordered_keys.append(k)
+    for r in after_norm:
+        k = row_key(r, match_keys)
+        if k not in seen_keys:
+            seen_keys.add(k)
+            ordered_keys.append(k)
+    for k in ordered_keys:
+        b_list = before_groups.get(k) or []
+        a_list = after_groups.get(k) or []
+        if len(b_list) > 1:
+            multi_before_keys.append(k)
+        if len(a_list) > 1:
+            multi_after_keys.append(k)
+        n = max(len(b_list), len(a_list))
+        for i in range(n):
+            if i >= len(b_list):
+                after = a_list[i]
+                added += 1
+                diffs.append(
+                    {
+                        "kind": "added",
+                        "key": _key_obj(after),
+                        "before": None,
+                        "after": after,
+                        "mapped_before": None,
+                        "changes": {},
+                        "before_row_id": "",
+                        "after_row_id": _row_id(after),
+                    }
+                )
+                continue
+            if i >= len(a_list):
+                orig, mapped = b_list[i]
+                removed += 1
+                diffs.append(
+                    {
+                        "kind": "removed",
+                        "key": _key_obj(mapped),
+                        "before": orig,
+                        "after": None,
+                        "mapped_before": mapped,
+                        "changes": {},
+                        "before_row_id": _row_id(orig),
+                        "after_row_id": "",
+                    }
+                )
+                continue
+            orig, mapped = b_list[i]
+            after = a_list[i]
+            field_changes: dict[str, dict[str, Any]] = {}
+            for f in compare_fields:
+                bv = mapped.get(f, "")
+                av = after.get(f, "")
+                rule = rules.get(f)
+                if not values_equal(bv, av, rule=rule):
+                    entry: dict[str, Any] = {"before": bv, "after": av}
+                    reason = explain_diff(bv, av, rule=rule)
+                    if reason:
+                        entry["reason"] = reason
+                    field_changes[f] = entry
+            if field_changes:
+                changed += 1
+                diffs.append(
+                    {
+                        "kind": "changed",
+                        "key": _key_obj(mapped),
+                        "before": orig,
+                        "after": after,
+                        "mapped_before": mapped,
+                        "changes": field_changes,
+                        "before_row_id": _row_id(orig),
+                        "after_row_id": _row_id(after),
+                    }
+                )
+            else:
+                unchanged += 1
+                _emit_unchanged(orig, mapped, after)
 
     def _fmt_keys(keys: list[tuple[str, ...]]) -> list[str]:
         seen: set[str] = set()
@@ -345,7 +340,7 @@ def compare_rows(
             if s not in seen:
                 seen.add(s)
                 out.append(s)
-        return out
+        return out[:64]
 
     stats = mapping_stats(
         before_rows=before_norm,
@@ -363,11 +358,11 @@ def compare_rows(
             "removed": removed,
             "changed": changed,
             "unchanged": unchanged,
-            "duplicate": duplicate,
+            "duplicate": 0,
             "match_key_fields": match_keys,
-            "duplicate_keys_before": before_dup,
-            "duplicate_keys_after": after_dup,
-            "duplicate_key_list": _fmt_keys(before_dup_keys + after_dup_keys),
+            "duplicate_keys_before": len(multi_before_keys),
+            "duplicate_keys_after": len(multi_after_keys),
+            "duplicate_key_list": _fmt_keys(multi_before_keys + multi_after_keys),
             "unchanged_listed": unchanged_listed,
             "unchanged_truncated": bool(
                 include_unchanged and limit_n is not None and unchanged > unchanged_listed
