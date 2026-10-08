@@ -613,25 +613,66 @@ def run_sql_sheet_compare(
     compact = bool(policy.get("compact"))
     limit_n = policy.get("limit")
     if include_u and unchanged > 0:
-        lim_sql = ""
         params_u: dict[str, Any] = {}
+        # Stratified sample: round-robin by neighbor|direction|afi|vrf so one
+        # BGP command cannot consume the whole success sample.
+        stratum_expr = """
+          concat_ws('|',
+            coalesce(nullif(trim(both from coalesce(b.data->>'neighbor','')), ''), '_'),
+            coalesce(nullif(trim(both from coalesce(b.data->>'direction','')), ''), '_'),
+            coalesce(nullif(trim(both from coalesce(b.data->>'afi','')), ''), '_'),
+            coalesce(nullif(trim(both from coalesce(b.data->>'vrf','')), ''), '_')
+          )
+        """
         if limit_n is not None:
-            lim_sql = " LIMIT :lim"
             params_u["lim"] = max(0, int(limit_n))
-        u_sql = text(
-            f"""
-            SELECT
-              b.id AS before_row_id,
-              a.id AS after_row_id,
-              b.data AS before_data,
-              a.data AS after_data
-            FROM {tb} b
-            INNER JOIN {ta} a
-              ON b.rk = a.rk AND b.dup_rn = a.dup_rn
-            WHERE NOT ({changed_pred})
-            {lim_sql}
-            """
-        )
+            u_sql = text(
+                f"""
+                WITH u AS (
+                  SELECT
+                    b.id AS before_row_id,
+                    a.id AS after_row_id,
+                    b.data AS before_data,
+                    a.data AS after_data,
+                    {stratum_expr} AS stratum
+                  FROM {tb} b
+                  INNER JOIN {ta} a
+                    ON b.rk = a.rk AND b.dup_rn = a.dup_rn
+                  WHERE NOT ({changed_pred})
+                ),
+                ranked AS (
+                  SELECT *,
+                    row_number() OVER (
+                      PARTITION BY stratum ORDER BY before_row_id ASC
+                    ) AS rn_in
+                  FROM u
+                ),
+                picked AS (
+                  SELECT *,
+                    row_number() OVER (
+                      ORDER BY rn_in ASC, stratum ASC, before_row_id ASC
+                    ) AS pick_ord
+                  FROM ranked
+                )
+                SELECT before_row_id, after_row_id, before_data, after_data
+                FROM picked
+                WHERE pick_ord <= :lim
+                """
+            )
+        else:
+            u_sql = text(
+                f"""
+                SELECT
+                  b.id AS before_row_id,
+                  a.id AS after_row_id,
+                  b.data AS before_data,
+                  a.data AS after_data
+                FROM {tb} b
+                INNER JOIN {ta} a
+                  ON b.rk = a.rk AND b.dup_rn = a.dup_rn
+                WHERE NOT ({changed_pred})
+                """
+            )
         for row in db.execute(u_sql, params_u).mappings():
             before = dict(row["before_data"] or {})
             after = dict(row["after_data"] or {})
@@ -685,6 +726,11 @@ def run_sql_sheet_compare(
             include_u and limit_n is not None and unchanged > unchanged_listed
         ),
         "unchanged_compact": bool(compact and unchanged_listed > 0),
+        "unchanged_sample_mode": (
+            "stratified"
+            if include_u and limit_n is not None and unchanged > unchanged_listed
+            else ("full" if include_u else "none")
+        ),
         "engine": "sql",
         "before_raw_count": raw_b,
         "after_raw_count": raw_a,

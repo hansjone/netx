@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import defaultdict, deque
 from typing import Any, Mapping, Sequence
 
 from .compare_rules import field_rule_map, values_equal, explain_diff
@@ -11,6 +11,53 @@ from .iface_normalize import (
     normalize_iface_rules,
     resolve_mapped_iface,
 )
+
+# Prefer these fields when stratifying success samples (BGP multipath / multi-cmd).
+_STRATUM_FIELDS = ("neighbor", "direction", "afi", "vrf")
+
+
+def stratum_key(row: Mapping[str, Any] | None) -> str:
+    """Bucket key for stratified unchanged sampling."""
+    if not isinstance(row, Mapping):
+        return "_"
+    parts: list[str] = []
+    for f in _STRATUM_FIELDS:
+        v = str(row.get(f) or "").strip()
+        if v:
+            parts.append(f"{f}={v}")
+    return "|".join(parts) if parts else "_"
+
+
+def stratify_take(items: list[Any], limit: int, *, key_fn) -> list[Any]:
+    """Round-robin across strata so one neighbor/direction cannot consume the whole sample."""
+    lim = max(0, int(limit))
+    if lim <= 0 or not items:
+        return []
+    if len(items) <= lim:
+        return list(items)
+    buckets: dict[str, deque[Any]] = defaultdict(deque)
+    order: list[str] = []
+    for it in items:
+        sk = str(key_fn(it) or "_")
+        if sk not in buckets:
+            order.append(sk)
+        buckets[sk].append(it)
+    out: list[Any] = []
+    while len(out) < lim and buckets:
+        drained: list[str] = []
+        for sk in order:
+            q = buckets.get(sk)
+            if not q:
+                drained.append(sk)
+                continue
+            out.append(q.popleft())
+            if len(out) >= lim:
+                break
+        for sk in drained:
+            buckets.pop(sk, None)
+            if sk in order:
+                order = [x for x in order if x != sk]
+    return out
 
 
 def apply_port_map(
@@ -198,6 +245,7 @@ def compare_rows(
     limit_n = None if unchanged_limit is None else max(0, int(unchanged_limit))
     multi_before_keys: list[tuple[str, ...]] = []
     multi_after_keys: list[tuple[str, ...]] = []
+    unchanged_candidates: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]] = []
 
     def _key_obj(row: dict[str, Any]) -> dict[str, Any]:
         return {f: row.get(f, "") for f in key_fields}
@@ -210,12 +258,10 @@ def compare_rows(
             return str(netx.get("row_id") or "")
         return ""
 
-    def _emit_unchanged(orig: dict[str, Any], mapped: dict[str, Any], after_row: dict[str, Any]) -> None:
+    def _append_unchanged_diff(
+        orig: dict[str, Any], mapped: dict[str, Any], after_row: dict[str, Any]
+    ) -> None:
         nonlocal unchanged_listed
-        if not include_unchanged:
-            return
-        if limit_n is not None and unchanged_listed >= limit_n:
-            return
         unchanged_listed += 1
         before_rid = _row_id(orig)
         after_rid = _row_id(after_row)
@@ -330,7 +376,20 @@ def compare_rows(
                 )
             else:
                 unchanged += 1
-                _emit_unchanged(orig, mapped, after)
+                if include_unchanged:
+                    unchanged_candidates.append((orig, mapped, after))
+
+    if include_unchanged and unchanged_candidates:
+        if limit_n is None:
+            picked = unchanged_candidates
+        else:
+            picked = stratify_take(
+                unchanged_candidates,
+                limit_n,
+                key_fn=lambda t: stratum_key(t[1]),
+            )
+        for orig, mapped, after_row in picked:
+            _append_unchanged_diff(orig, mapped, after_row)
 
     def _fmt_keys(keys: list[tuple[str, ...]]) -> list[str]:
         seen: set[str] = set()
@@ -368,6 +427,11 @@ def compare_rows(
                 include_unchanged and limit_n is not None and unchanged > unchanged_listed
             ),
             "unchanged_compact": bool(compact_unchanged and unchanged_listed > 0),
+            "unchanged_sample_mode": (
+                "stratified"
+                if include_unchanged and limit_n is not None and unchanged > unchanged_listed
+                else ("full" if include_unchanged else "none")
+            ),
         },
         "diffs": diffs,
         "mapping_stats": stats,

@@ -2185,6 +2185,10 @@ export const bizCompareListRunDiffs = (params: {
     page_size: number;
     metric_id: string;
     items: Record<string, unknown>[];
+    source?: string;
+    truncated?: boolean;
+    live_before_matched?: number;
+    live_after_matched?: number;
   }>(`/v1/biz-state/compare/runs/${encodeURIComponent(params.runId)}/diffs?${p.toString()}`);
 };
 

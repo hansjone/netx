@@ -38,6 +38,7 @@ import { jobChipColor, NmStatusChip } from "./nmChips";
 type PageTab = "templates" | "jobs";
 type JobDetailTab = "config" | "runs" | "result";
 type KindFilter = "diff" | "all" | "added" | "removed" | "changed" | "unchanged";
+type DiffListSource = "stored" | "live" | "";
 type CreateJobStep = 0 | 1 | 2 | 3;
 const CREATE_JOB_STEPS = 4;
 
@@ -847,6 +848,8 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
   const [resultTotal, setResultTotal] = useState(0);
   const [pagedDiffs, setPagedDiffs] = useState<DiffRow[]>([]);
   const [diffsLoading, setDiffsLoading] = useState(false);
+  const [diffsSource, setDiffsSource] = useState<DiffListSource>("");
+  const [diffsTruncated, setDiffsTruncated] = useState(false);
   const boardRef = useRef<HTMLDivElement | null>(null);
   const tableScrollRef = useRef<HTMLDivElement | null>(null);
   const tableScrollPosRef = useRef({ top: 0, left: 0 });
@@ -1069,6 +1072,8 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     if (!runId || !mid || jobDetailTab !== "result" || sheetStillRunning) {
       setPagedDiffs([]);
       setResultTotal(0);
+      setDiffsSource("");
+      setDiffsTruncated(false);
       return;
     }
     let cancelled = false;
@@ -1086,6 +1091,10 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
         if (cancelled) return;
         setPagedDiffs((res.items || []) as DiffRow[]);
         setResultTotal(Number(res.total || 0));
+        setDiffsSource(
+          String((res as any).source || "").toLowerCase() === "live" ? "live" : "stored",
+        );
+        setDiffsTruncated(Boolean((res as any).truncated));
         const pages = Math.max(
           1,
           Math.ceil(Number(res.total || 0) / Number(res.page_size || resultPageSize)),
@@ -1257,8 +1266,15 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     String(activeSheetCard?.status || ""),
   );
   const activeAdded = Number(activeSheetCard?.added || 0);
+  const activeRemoved = Number(activeSheetCard?.removed || 0);
+  const activeChanged = Number(activeSheetCard?.changed || 0);
   const showFailCol =
-    kindFilter === "diff" || kindFilter === "all" || kindFilter === "added";
+    kindFilter === "diff" ||
+    kindFilter === "all" ||
+    kindFilter === "added" ||
+    kindFilter === "removed" ||
+    kindFilter === "changed";
+  const isLiveSearch = diffsSource === "live" && Boolean(debouncedResultKw.trim());
   const resultEmptyColSpan =
     1 +
     (showFailCol ? 1 : 0) +
@@ -3504,6 +3520,8 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                         {(
                           [
                             ["diff", activeFail, "diff"],
+                            ["removed", activeRemoved, "removed"],
+                            ["changed", activeChanged, "changed"],
                             ["added", activeAdded, "added"],
                             ["unchanged", activeSuccess, "unchanged"],
                             ["all", null, "all"],
@@ -3523,7 +3541,11 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                                 ? t("bizCompare.kindAll")
                                 : id === "added"
                                   ? t("bizCompare.kindAddedShort")
-                                  : t("bizCompare.kindSuccess")}
+                                  : id === "removed"
+                                    ? t("bizCompare.kindRemovedShort")
+                                    : id === "changed"
+                                      ? t("bizCompare.kindChangedShort")
+                                      : t("bizCompare.kindSuccess")}
                             {n !== null ? (
                               <>
                                 {" "}
@@ -3543,11 +3565,31 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                           {diffsLoading ? "…" : `${pagedDiffs.length}/${resultTotal}`}
                         </span>
                       </div>
-                      {kindFilter === "unchanged" &&
+                      {isLiveSearch ? (
+                        <p className="muted bm-hint" style={{ margin: "4px 0 0" }}>
+                          {diffsTruncated
+                            ? t("bizCompare.liveSearchTruncatedHint")
+                            : t("bizCompare.liveSearchHint")}
+                        </p>
+                      ) : null}
+                      {!isLiveSearch &&
+                      kindFilter === "unchanged" &&
                       (runDetail?.summary?.unchanged_truncated ||
-                        (Number(runDetail?.summary?.unchanged || 0) >
-                          Number(runDetail?.summary?.unchanged_listed || 0) &&
-                          Number(runDetail?.summary?.unchanged_listed || 0) > 0)) ? (
+                        (Number(
+                          (activeRunSheet?.summary as any)?.unchanged ||
+                            runDetail?.summary?.unchanged ||
+                            0,
+                        ) >
+                          Number(
+                            (activeRunSheet?.summary as any)?.unchanged_listed ??
+                              runDetail?.summary?.unchanged_listed ??
+                              0,
+                          ) &&
+                          Number(
+                            (activeRunSheet?.summary as any)?.unchanged_listed ??
+                              runDetail?.summary?.unchanged_listed ??
+                              0,
+                          ) > 0)) ? (
                         <p className="muted bm-hint" style={{ margin: "4px 0 0" }}>
                           {t("bizCompare.unchangedSampleHint", {
                             listed: String(

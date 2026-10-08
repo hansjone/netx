@@ -5,7 +5,8 @@ from __future__ import annotations
 import copy
 import unittest
 
-from netx_api.biz_state.compare_engine import compare_rows, mapping_stats
+from netx_api.biz_state.compare_engine import compare_rows, mapping_stats, stratify_take
+from netx_api.biz_state.compare_service import _kind_allows
 from netx_api.biz_state.compare_rules import (
     apply_row_filters,
     arp_dynamic_row_filters,
@@ -198,11 +199,69 @@ class CompareEngineTests(unittest.TestCase):
         self.assertEqual(out["summary"]["unchanged_listed"], 2)
         self.assertTrue(out["summary"]["unchanged_truncated"])
         self.assertTrue(out["summary"]["unchanged_compact"])
+        self.assertEqual(out["summary"]["unchanged_sample_mode"], "stratified")
         self.assertEqual(len(out["diffs"]), 2)
         self.assertEqual(out["diffs"][0]["before"], {})
         self.assertEqual(out["diffs"][0]["after"], {})
         self.assertEqual(out["diffs"][0]["before_row_id"], "b0")
         self.assertEqual(out["diffs"][0]["after_row_id"], "a0")
+
+    def test_stratify_take_round_robin(self) -> None:
+        items = [("a", i) for i in range(5)] + [("b", i) for i in range(5)]
+        got = stratify_take(items, 4, key_fn=lambda x: x[0])
+        self.assertEqual([x[0] for x in got], ["a", "b", "a", "b"])
+
+    def test_kind_allows_tabs(self) -> None:
+        self.assertTrue(_kind_allows("all", "unchanged"))
+        self.assertTrue(_kind_allows("diff", "removed"))
+        self.assertTrue(_kind_allows("diff", "changed"))
+        self.assertFalse(_kind_allows("diff", "added"))
+        self.assertFalse(_kind_allows("diff", "unchanged"))
+        self.assertTrue(_kind_allows("unchanged", "unchanged"))
+        self.assertFalse(_kind_allows("unchanged", "removed"))
+        self.assertTrue(_kind_allows("removed", "removed"))
+        self.assertTrue(_kind_allows("changed", "changed"))
+
+    def test_unchanged_sample_stratified_across_neighbors(self) -> None:
+        """Sample must cover multiple neighbors, not only the first command's rows."""
+        before = []
+        after = []
+        for n_i, neigh in enumerate(("1.1.1.1", "2.2.2.2", "3.3.3.3")):
+            for j in range(10):
+                net = f"10.{n_i}.{j}.0/24"
+                before.append(
+                    {
+                        "neighbor": neigh,
+                        "direction": "in",
+                        "network": net,
+                        "v": "1",
+                        "_netx": {"row_id": f"b-{neigh}-{j}"},
+                    }
+                )
+                after.append(
+                    {
+                        "neighbor": neigh,
+                        "direction": "in",
+                        "network": net,
+                        "v": "1",
+                        "_netx": {"row_id": f"a-{neigh}-{j}"},
+                    }
+                )
+        out = compare_rows(
+            before_rows=before,
+            after_rows=after,
+            key_fields=["neighbor", "direction", "network"],
+            iface_fields=[],
+            compare_fields=["v"],
+            port_map={},
+            include_unchanged=True,
+            unchanged_limit=6,
+            compact_unchanged=True,
+        )
+        self.assertEqual(out["summary"]["unchanged"], 30)
+        self.assertEqual(out["summary"]["unchanged_listed"], 6)
+        keys = [d["key"]["neighbor"] for d in out["diffs"]]
+        self.assertEqual(set(keys), {"1.1.1.1", "2.2.2.2", "3.3.3.3"})
 
     def test_mac_normalize_via_field_rules(self) -> None:
         before = [{"ip": "1.1.1.1", "mac": "00:11:22:33:44:55", "iface": "gei-0/1"}]
