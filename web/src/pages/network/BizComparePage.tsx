@@ -138,6 +138,8 @@ type RunSheet = {
   display_fields?: string[];
   field_rules?: FieldRule[];
   mode?: string;
+  /** pending|running|queued|done|cancelled — set while overall run is active */
+  status?: string;
   summary?: Record<string, number>;
   diffs?: DiffRow[];
 };
@@ -1061,14 +1063,10 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
   useEffect(() => {
     const runId = String(runDetail?.id || "");
     const mid = resultSheetId || sheetIdentity(activeRunSheet) || "";
-    const st = String(runDetail?.status || "");
-    if (
-      !runId ||
-      !mid ||
-      jobDetailTab !== "result" ||
-      st === "running" ||
-      st === "queued"
-    ) {
+    const sheetSt = String(activeRunSheet?.status || "");
+    // Block only while *this* sheet is still in flight — done sheets are readable mid-run
+    const sheetStillRunning = ["pending", "running", "queued"].includes(sheetSt);
+    if (!runId || !mid || jobDetailTab !== "result" || sheetStillRunning) {
       setPagedDiffs([]);
       setResultTotal(0);
       return;
@@ -1110,6 +1108,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     runDetail?.status,
     resultSheetId,
     activeRunSheet?.metric_id,
+    activeRunSheet?.status,
     kindFilter,
     debouncedResultKw,
     resultPage,
@@ -3714,7 +3713,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                                       !Number(runDetail?.summary?.unchanged_listed || 0)
                                       ? t("bizCompare.unchangedNotStored")
                                       : t("bizCompare.resultEmpty")
-                                    : runIsActive
+                                    : activeSheetPending
                                       ? t("bizCompare.runStatusRunning")
                                       : t("bizCompare.resultEmpty")}
                                 </div>

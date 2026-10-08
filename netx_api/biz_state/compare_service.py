@@ -453,6 +453,53 @@ def _sheet_meta_from_summary(summary: dict[str, Any], run: BizCompareRun, tpl: A
     ]
 
 
+def _metric_row_estimate(
+    db: Session, batch_ids: list[str], metric_id: str
+) -> int:
+    """Cheap size hint from batch command row_count (max across sides)."""
+    mid = str(metric_id or "").strip()
+    if not mid:
+        return 0
+    best = 0
+    for bid in batch_ids:
+        bid = str(bid or "").strip()
+        if not bid:
+            continue
+        rows = (
+            db.query(BizStateBatchCommand)
+            .filter(
+                BizStateBatchCommand.batch_id == bid,
+                BizStateBatchCommand.metric_id == mid,
+            )
+            .all()
+        )
+        if not rows:
+            continue
+        n = sum(int(c.row_count or 0) for c in rows)
+        if n > best:
+            best = n
+    return best
+
+
+def _order_sheets_small_first(
+    db: Session,
+    sheets: list[dict[str, Any]],
+    *,
+    before_batch_id: str,
+    after_batch_id: str,
+) -> list[dict[str, Any]]:
+    """Run smaller metrics first so field engineers can review early results."""
+    if len(sheets) <= 1:
+        return list(sheets)
+    batches = [before_batch_id, after_batch_id]
+    scored: list[tuple[int, int, dict[str, Any]]] = []
+    for i, sheet in enumerate(sheets):
+        n = _metric_row_estimate(db, batches, str(sheet.get("metric_id") or ""))
+        scored.append((n, i, sheet))
+    scored.sort(key=lambda x: (x[0], x[1]))
+    return [s for _, _, s in scored]
+
+
 def _pending_sheet_meta(sheet: dict[str, Any]) -> dict[str, Any]:
     """Placeholder meta so the UI lists all check items while a run is in flight."""
     key_fields = list(sheet.get("key_fields") or [])
@@ -1672,6 +1719,40 @@ def _resolve_after_batch(db: Session, job: BizCompareJob) -> str:
     return str(latest.id) if latest else ""
 
 
+def _sheet_result_envelope(
+    sheet: dict[str, Any],
+    *,
+    key_fields: list[str],
+    iface_fields: list[str],
+    compare_fields: list[str],
+    display_fields: list[str],
+    row_filters: list[Any],
+    field_rules: list[Any],
+    ignore_ports: bool | None,
+    mode: str,
+    summary: dict[str, Any],
+    diffs: list[Any],
+    mapping_stats: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "sheet_id": sheet_key(sheet),
+        "title": sheet_title(sheet),
+        "metric_id": sheet["metric_id"],
+        "key_fields": key_fields,
+        "iface_fields": iface_fields,
+        "compare_fields": compare_fields,
+        "display_fields": display_fields,
+        "row_filters": row_filters,
+        "field_rules": field_rules,
+        "ignore_port_changes": ignore_ports,
+        "mode": mode,
+        "status": "done",
+        "summary": summary,
+        "diffs": diffs,
+        "mapping_stats": mapping_stats,
+    }
+
+
 def _run_sheet(
     db: Session,
     *,
@@ -1703,6 +1784,58 @@ def _run_sheet(
     if ignore_ports is not None:
         ignore_ports = bool(ignore_ports)
     mid = sheet["metric_id"]
+
+    # PostgreSQL path: pushdown-safe sheets join in-DB (BGP-scale).
+    from .compare_sql import can_sql_compare, run_sql_sheet_compare
+
+    if can_sql_compare(
+        db,
+        sheet,
+        port_map=port_map,
+        iface_normalize_rules=iface_normalize_rules,
+    ):
+        try:
+
+            def _sql_progress(side: str, n: int) -> None:
+                if on_load_progress:
+                    on_load_progress(side, n)
+
+            result = run_sql_sheet_compare(
+                db,
+                sheet=sheet,
+                before_batch_id=before_batch_id,
+                after_batch_id=after_batch_id,
+                store_unchanged=store_unchanged,
+                on_progress=_sql_progress,
+            )
+            summary = dict(result["summary"])
+            # Engine already sets raw counts / policy; keep keys stable
+            if "unchanged_policy" not in summary:
+                summary["unchanged_policy"] = resolve_unchanged_policy(
+                    store_unchanged,
+                    before_n=int(summary.get("before_count") or 0),
+                    after_n=int(summary.get("after_count") or 0),
+                )
+            return _sheet_result_envelope(
+                sheet,
+                key_fields=key_fields,
+                iface_fields=iface_fields,
+                compare_fields=compare_fields,
+                display_fields=display_fields,
+                row_filters=row_filters,
+                field_rules=field_rules,
+                ignore_ports=ignore_ports,
+                mode=mode,
+                summary=summary,
+                diffs=list(result.get("diffs") or []),
+                mapping_stats=dict(result.get("mapping_stats") or {}),
+            )
+        except Exception:
+            _log.exception(
+                "sql compare fallback sheet=%s metric=%s — using Python engine",
+                sheet_key(sheet),
+                mid,
+            )
 
     def _before_chunk(n: int) -> None:
         if on_load_progress:
@@ -1742,23 +1875,21 @@ def _run_sheet(
     summary["after_raw_count"] = len(after_raw)
     summary["row_filters"] = len(row_filters)
     summary["unchanged_policy"] = policy
-    return {
-        "sheet_id": sheet_key(sheet),
-        "title": sheet_title(sheet),
-        "metric_id": sheet["metric_id"],
-        "key_fields": key_fields,
-        "iface_fields": iface_fields,
-        "compare_fields": compare_fields,
-        "display_fields": display_fields,
-        "row_filters": row_filters,
-        "field_rules": field_rules,
-        "ignore_port_changes": ignore_ports,
-        "mode": mode,
-        "status": "done",
-        "summary": summary,
-        "diffs": result["diffs"],
-        "mapping_stats": result["mapping_stats"],
-    }
+    summary.setdefault("engine", "python")
+    return _sheet_result_envelope(
+        sheet,
+        key_fields=key_fields,
+        iface_fields=iface_fields,
+        compare_fields=compare_fields,
+        display_fields=display_fields,
+        row_filters=row_filters,
+        field_rules=field_rules,
+        ignore_ports=ignore_ports,
+        mode=mode,
+        summary=summary,
+        diffs=list(result.get("diffs") or []),
+        mapping_stats=dict(result.get("mapping_stats") or {}),
+    )
 
 
 def _validate_compare_job(
@@ -1784,6 +1915,12 @@ def _validate_compare_job(
     sheets_cfg = _filter_enabled_sheets(sheets_cfg, getattr(j, "enabled_sheet_ids", None))
     if not sheets_cfg:
         raise HTTPException(status_code=400, detail="no_enabled_sheets")
+    sheets_cfg = _order_sheets_small_first(
+        db,
+        sheets_cfg,
+        before_batch_id=before_batch_id,
+        after_batch_id=after_batch_id,
+    )
     return {
         "job": j,
         "template": tpl,
@@ -1910,6 +2047,12 @@ def _execute_compare_into_run(db: Session, run_id: str) -> dict[str, Any]:
         run.message = "no_enabled_sheets"
         db.commit()
         raise HTTPException(status_code=400, detail="no_enabled_sheets")
+    sheets_cfg = _order_sheets_small_first(
+        db,
+        sheets_cfg,
+        before_batch_id=before_batch_id,
+        after_batch_id=after_batch_id,
+    )
 
     started_mono = time.monotonic()
     store_mode = normalize_store_unchanged(getattr(j, "store_unchanged", None))
@@ -1931,10 +2074,12 @@ def _execute_compare_into_run(db: Session, run_id: str) -> dict[str, Any]:
     field_counts: dict[str, int] = {}
     total = len(sheets_cfg)
 
-    # Prefer seeded pending sheets from create; rebuild if missing
-    sheet_metas: list[dict[str, Any]] = list((run.summary_json or {}).get("sheets") or [])
-    if len(sheet_metas) != total:
-        sheet_metas = [_pending_sheet_meta(s) for s in sheets_cfg]
+    # Prefer seeded pending sheets from create; realign to small-first order
+    prev_metas = list((run.summary_json or {}).get("sheets") or [])
+    by_key = {sheet_key(m): m for m in prev_metas}
+    sheet_metas = [
+        by_key.get(sheet_key(s)) or _pending_sheet_meta(s) for s in sheets_cfg
+    ]
 
     def _publish_sheets() -> None:
         prev = dict(run.summary_json or {})
