@@ -14,12 +14,13 @@ This directory builds a Windows deliverable with:
 
 | Artifact | How |
 |----------|-----|
-| `NetX-x.y.z-win64.zip` | `build_release.ps1` |
-| `NetX-Setup-x.y.z.exe` | Compile `installer/netx.iss` with [Inno Setup](https://jrsoftware.org/isinfo.php) after staging |
+| `NetX-Setup-x.y.z.exe` | Stage with `build_release.ps1`, then compile `installer/netx.iss` with [Inno Setup](https://jrsoftware.org/isinfo.php) |
+
+Zip packages are **not** published. Releases ship **Setup.exe only**.
 
 **Installer:** English + 简体中文 (language dialog). Icons use `packaging/assets/netx.ico`.
 
-**Offline:** Setup ships portable PostgreSQL, **`python/runtime` + `.venv`** (portable; not tied to the build PC’s user profile), and WinSW. The installer wizard chooses **built-in or external** PostgreSQL and validates external credentials (`psql SELECT 1`) before files are installed — **no GitHub/EDB download on the target PC**. Service install uses bundled WinSW (pass `-AllowDownload` only on a build/dev machine if the binary is missing). Auto-update still needs network later, and is unchecked by default.
+**Offline:** Setup ships portable PostgreSQL, **`python/runtime` + `.venv`** (portable; not tied to the build PC’s user profile), and WinSW. **First install** shows the Database page (built-in or external PostgreSQL; external credentials validated with `psql SELECT 1`). **Re-running Setup when `%ProgramData%\NetX\.env` already has `NETX_DB_MODE`** skips the DB wizard and updates program files in place — **no GitHub/EDB download on the target PC**. Service install uses bundled WinSW (pass `-AllowDownload` only on a build/dev machine if the binary is missing). Auto-update still needs network later, and is unchecked by default.
 
 **OS:** Windows 10/11 or Windows Server **2016+** recommended. Packaging scripts are UTF-8 **with BOM** so Chinese UI works on Windows PowerShell 5.x. Bundled Python in current releases is **3.13+**, which does **not** support Windows Server 2012 R2 — use Server 2016+ or a newer desktop OS.
 
@@ -32,14 +33,13 @@ cd netx
 # Optional: download portable Postgres into packaging\postgres\pgsql
 powershell -ExecutionPolicy Bypass -File .\packaging\download_postgres.ps1
 
-# Build web + stage + zip (-CreateVenv ships a ready .venv; large)
+# Build web + stage (-CreateVenv ships a ready .venv; large). No zip by default.
 powershell -ExecutionPolicy Bypass -File .\packaging\build_release.ps1 -CreateVenv
 ```
 
 Output:
 
-- `packaging/release/netx-win64/` — stage tree
-- `packaging/release/NetX-<ver>-win64.zip`
+- `packaging/release/netx-win64/` — stage tree (input to Inno Setup)
 
 Inno Setup:
 
@@ -47,33 +47,25 @@ Inno Setup:
 ISCC.exe packaging\installer\netx.iss
 ```
 
-Override version in the `.iss` or edit `#define MyAppVersion`.
+Override version in the `.iss` or edit `#define MyAppVersion`.  
+Optional local zip only: `build_release.ps1 -CreateZip` (not for release upload).
 
 ## End-user install
 
 ### Setup.exe
 
 1. Run `NetX-Setup-x.y.z.exe` (admin).
-2. On the **Database** page: choose built-in (offline) or external PostgreSQL (host/port/user/password/db; connection must succeed to continue).
-3. Files → `%ProgramFiles%\NetX\` (program root).
-4. Data → `%ProgramData%\NetX\` (`.env`, `pgdata`, spool, secrets). Post-install writes `.env` automatically.
-5. Start menu: **Start NetX** / **Stop NetX** / **Open NetX UI** / **Reconfigure database** (repair only).
+2. **First install:** Database page — choose built-in (offline) or external PostgreSQL (host/port/user/password/db; connection must succeed to continue).
+3. **Already installed (upgrade):** if `%ProgramData%\NetX\.env` already has `NETX_DB_MODE`, Setup **skips** the Database page, stops running NetX, replaces program files, and **keeps** data / DB settings. Use Start Menu → **Reconfigure database** only when you need to change DB mode.
+4. Files → `%ProgramFiles%\NetX\` (program root).
+5. Data → `%ProgramData%\NetX\` (`.env`, `pgdata`, spool, secrets).
+6. Start menu: **Start NetX** / **Stop NetX** / **Open NetX UI** / **Reconfigure database**.
 
-Silent (bundled default): `/SILENT /DbMode=bundled`  
+Silent first install (bundled default): `/SILENT /DbMode=bundled`  
 Silent external: `/SILENT /DbMode=external /DbHost=... /DbPort=5432 /DbUser=... /DbPassword=... /DbName=...`  
+Silent upgrade over existing data: `/VERYSILENT /NORESTART` (auto-detects `.env`; or force `/SkipDbPage=1`)  
+Force DB wizard on an existing install: `/ForceDbPage=1`  
 Optional credential key (reuse encrypted NE passwords from another install): `/CredentialSecretKey=...` — omit to auto-generate.
-
-### Zip (portable)
-
-1. Unpack anywhere.
-2. Marker `.portable` → data root is sibling `NetXData\`.
-3. Target needs **Python 3.11+** on PATH unless the zip was built with `-CreateVenv`.
-4. Run:
-
-```powershell
-.\packaging\setup_first_run.ps1
-.\packaging\start_netx_app.ps1
-```
 
 ## Database modes
 
@@ -87,13 +79,15 @@ Existing Windows deploys that only set `NETX_DATABASE_URL` keep working: never s
 
 ## Manual update
 
+Preferred: run a newer `NetX-Setup-*.exe` over the same machine (upgrade mode keeps ProgramData).
+
+Legacy/dev zip (only if you built with `-CreateZip`):
+
 ```powershell
 .\packaging\update_netx.ps1 -PackagePath .\NetX-0.4.0-win64.zip
 ```
 
 Stops services, replaces program folders (`netx_api`, `web`, `packaging`, `postgres`, …), **keeps** the data root, restarts. Schema migrations still run via Alembic on API start.
-
-Or reinstall a newer `NetX-Setup-*.exe` over the same program directory.
 
 ## Check / apply updates
 
@@ -120,15 +114,15 @@ Or reinstall a newer `NetX-Setup-*.exe` over the same program directory.
 .\packaging\check_update.ps1 -Apply
 ```
 
-Both sides should publish the same release assets (`NetX-*-win64.zip`). **Code mirror alone is not enough** — Forgejo pull-mirror syncs git/tags only; Release zip/exe must be uploaded separately (or clients can only fall back to GitHub).
+Both sides should publish the same **Setup.exe**. `check_update.ps1` prefers `NetX-Setup-*.exe` (legacy `win64.zip` still works if present). **Code mirror alone is not enough** — Forgejo pull-mirror syncs git/tags only; Release assets must be uploaded separately (or clients can only fall back to GitHub).
 
 ### Maintainer release checklist (Windows)
 
 Do this on the **dev PC on the home LAN** after bumping version:
 
-1. **Build** — `.\packaging\build_release.ps1 -CreateVenv` (and Inno Setup for Setup.exe if needed)
-2. **GitHub** — `.\packaging\publish_release.ps1 -Version x.y.z` (or `gh release create …`)
-3. **Forgejo (intranet)** — upload the same assets to QNAP Forgejo; public `git.avelo.top` is only a reverse proxy to the same instance:
+1. **Build** — `.\packaging\build_release.ps1 -CreateVenv` + Inno Setup → `NetX-Setup-*.exe`
+2. **GitHub** — `.\packaging\publish_release.ps1 -Version x.y.z` (uploads Setup.exe only)
+3. **Forgejo (intranet)** — upload the same Setup.exe to QNAP Forgejo; public `git.avelo.top` is only a reverse proxy to the same instance:
 
 ```powershell
 # One-time: User env var (never commit the token)

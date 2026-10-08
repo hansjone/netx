@@ -22,7 +22,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Build release zip
+      - name: Build release stage
         shell: pwsh
         run: |
           powershell -ExecutionPolicy Bypass -File ./packaging/build_release.ps1 -CreateVenv
@@ -43,6 +43,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            packaging/release/NetX-*-win64.zip
             packaging/release/NetX-Setup-*.exe
           generate_release_notes: true

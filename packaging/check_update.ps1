@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$ProgramRoot = "",
     [string]$DataRoot = "",
     [string]$UpdateUrl = "",
@@ -109,16 +109,32 @@ function Convert-ReleaseToManifest {
     $tag = [string]$Rel.tag_name
     $ver = $tag.TrimStart('v', 'V')
     $assets = @($Rel.assets)
-    $zipAsset = $assets | Where-Object { $_.name -match 'win64\.zip$' } | Select-Object -First 1
+    # Prefer Setup.exe (current ship format). Legacy win64.zip still accepted.
     $setupAsset = $assets | Where-Object { $_.name -match 'Setup-.*\.exe$' } | Select-Object -First 1
-    if (-not $zipAsset) { throw "${SourceName}_release_missing_zip" }
-
-    $zipUrl = Resolve-AssetUrl -Asset $zipAsset -Rel $Rel -SourceName $SourceName -ApiLatestUrl $ApiLatestUrl
-    if (-not $zipUrl) { throw "${SourceName}_zip_url_missing" }
+    $zipAsset = $assets | Where-Object { $_.name -match 'win64\.zip$' } | Select-Object -First 1
+    if (-not $setupAsset -and -not $zipAsset) {
+        throw "${SourceName}_release_missing_setup_or_zip"
+    }
 
     $setupUrl = ""
     if ($setupAsset) {
         $setupUrl = Resolve-AssetUrl -Asset $setupAsset -Rel $Rel -SourceName $SourceName -ApiLatestUrl $ApiLatestUrl
+        if (-not $setupUrl) { throw "${SourceName}_setup_url_missing" }
+    }
+    $zipUrl = ""
+    if ($zipAsset) {
+        $zipUrl = Resolve-AssetUrl -Asset $zipAsset -Rel $Rel -SourceName $SourceName -ApiLatestUrl $ApiLatestUrl
+    }
+
+    if ($setupUrl) {
+        $primaryUrl = $setupUrl
+        $packageKind = "setup"
+        $primarySize = [int64]$(if ($setupAsset.size) { $setupAsset.size } else { 0 })
+    } else {
+        if (-not $zipUrl) { throw "${SourceName}_zip_url_missing" }
+        $primaryUrl = $zipUrl
+        $packageKind = "zip"
+        $primarySize = [int64]$(if ($zipAsset.size) { $zipAsset.size } else { 0 })
     }
 
     return [pscustomobject]@{
@@ -128,10 +144,11 @@ function Convert-ReleaseToManifest {
         notes_url      = [string]$Rel.html_url
         source         = $SourceName
         windows        = [pscustomobject]@{
-            url       = $zipUrl
+            url       = $primaryUrl
             sha256    = ""
-            size      = [int64]$(if ($zipAsset.size) { $zipAsset.size } else { 0 })
+            size      = $primarySize
             setup_url = $setupUrl
+            package   = $packageKind
         }
     }
 }
@@ -246,8 +263,26 @@ foreach ($c in $candidates) {
 
 Write-Host "==> Selected source=$($manifest.source) latest=$($manifest.latest) (from $($candidates.Count) reachable)" -ForegroundColor Green
 
+# Prefer Setup.exe when a manifest still lists a legacy zip as windows.url but also has setup_url.
+if ($manifest.windows -and $manifest.windows.setup_url) {
+    $setupCandidate = [string]$manifest.windows.setup_url
+    $urlNow = [string]$manifest.windows.url
+    $pkgNow = if ($manifest.windows.package) { [string]$manifest.windows.package } else { "" }
+    if ($setupCandidate -and ($pkgNow -eq "zip" -or $urlNow -match '\.zip(\?|$)' -or -not $urlNow)) {
+        $manifest.windows | Add-Member -NotePropertyName url -NotePropertyValue $setupCandidate -Force
+        $manifest.windows | Add-Member -NotePropertyName package -NotePropertyValue "setup" -Force
+    }
+}
+
 $latest = [string]$manifest.latest
 $cmp = Compare-SemVer -A $current -B $latest
+$packageKind = "setup"
+if ($manifest.windows.package) {
+    $packageKind = [string]$manifest.windows.package
+} elseif ([string]$manifest.windows.url -match '\.zip(\?|$)') {
+    $packageKind = "zip"
+}
+
 $result = [pscustomobject]@{
     current          = $current
     latest           = $latest
@@ -255,6 +290,7 @@ $result = [pscustomobject]@{
     source           = $(if ($manifest.source) { [string]$manifest.source } else { "unknown" })
     download_url     = [string]$manifest.windows.url
     setup_url        = $(if ($manifest.windows.setup_url) { [string]$manifest.windows.setup_url } else { "" })
+    package          = $packageKind
     notes_url        = $(if ($manifest.notes_url) { [string]$manifest.notes_url } else { "" })
     sha256           = $(if ($manifest.windows.sha256) { [string]$manifest.windows.sha256 } else { "" })
     reachable        = @($candidates | ForEach-Object { "$($_.source)=$($_.latest)" })
@@ -276,8 +312,7 @@ $autoVal = Get-Cfg "NETX_UPDATE_AUTO" ""
 if ($autoVal -match '^(1|true|yes|on)$') { $autoEnabled = $true }
 
 if (-not $Apply) {
-    Write-Host "    Download (zip): $($result.download_url)"
-    if ($result.setup_url) { Write-Host "    Or install: $($result.setup_url)" }
+    Write-Host "    Download ($($result.package)): $($result.download_url)"
     Write-Host "    To apply: .\packaging\check_update.ps1 -Apply"
     if (-not $Quiet) {
         $result | ConvertTo-Json -Compress | Write-Output
@@ -313,16 +348,22 @@ try {
     if (-not (Test-Path $dlDir)) {
         New-Item -ItemType Directory -Path $dlDir -Force | Out-Null
     }
-    $zipName = "NetX-$latest-win64.zip"
-    $zipPath = Join-Path $dlDir $zipName
+
+    $isSetup = ($result.package -eq "setup") -or ($result.download_url -match '\.exe(\?|$)')
+    if ($isSetup) {
+        $pkgName = "NetX-Setup-$latest.exe"
+    } else {
+        $pkgName = "NetX-$latest-win64.zip"
+    }
+    $pkgPath = Join-Path $dlDir $pkgName
 
     $needDownload = $true
-    if ((Test-Path -LiteralPath $zipPath) -and ((Get-Item -LiteralPath $zipPath).Length -gt 1MB)) {
-        Write-Host "==> Using existing download: $zipPath ($([math]::Round((Get-Item $zipPath).Length/1MB,1)) MB)"
+    if ((Test-Path -LiteralPath $pkgPath) -and ((Get-Item -LiteralPath $pkgPath).Length -gt 1MB)) {
+        Write-Host "==> Using existing download: $pkgPath ($([math]::Round((Get-Item $pkgPath).Length/1MB,1)) MB)"
         $needDownload = $false
     }
     if ($needDownload) {
-        Write-Host "==> Downloading $zipName from $($result.source) ..."
+        Write-Host "==> Downloading $pkgName from $($result.source) ..."
         # Only attach token for non-GitHub hosts (Forgejo/private). Public GitHub assets need no auth;
         # a Forgejo token would break anonymous GitHub downloads.
         $dlHeaders = @{ "User-Agent" = "NetX-UpdateCheck" }
@@ -331,10 +372,10 @@ try {
         if ($UpdateToken -and -not $isGithub) {
             $dlHeaders["Authorization"] = "token $UpdateToken"
         }
-        Invoke-WebRequest -Uri $result.download_url -OutFile $zipPath -Headers $dlHeaders -UseBasicParsing
+        Invoke-WebRequest -Uri $result.download_url -OutFile $pkgPath -Headers $dlHeaders -UseBasicParsing
     }
     if ($result.sha256 -and $result.sha256 -notmatch 'REPLACE' -and $result.sha256.Trim()) {
-        $hash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $hash = (Get-FileHash -Path $pkgPath -Algorithm SHA256).Hash.ToLowerInvariant()
         $expect = $result.sha256.ToLowerInvariant()
         if ($hash -ne $expect) {
             throw "sha256_mismatch: got $hash expected $expect"
@@ -342,7 +383,7 @@ try {
         Write-Host "==> SHA256 OK"
     }
 
-    # Program Files installs need admin to replace files; elevate once (avoid loop via NETX_UPDATE_ELEVATED).
+    # Program Files installs need admin; elevate once (avoid loop via NETX_UPDATE_ELEVATED).
     $progWritable = $false
     try {
         $probe = Join-Path $prog (".netx_w_" + [guid]::NewGuid().ToString("n"))
@@ -361,10 +402,26 @@ try {
         exit $ep.ExitCode
     }
 
-    Write-Host "==> Applying update via update_netx.ps1"
     $env:NETX_UPDATE_ELEVATED = "1"
-    & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "update_netx.ps1") `
-        -PackagePath $zipPath -ProgramRoot $prog -DataRoot $data
+    if ($isSetup) {
+        # Silent Setup over an existing configured install skips the DB wizard
+        # (see installer/netx.iss GSkipDbPage) and preserves ProgramData.
+        Write-Host "==> Applying update via silent Setup.exe"
+        $setupArgs = "/VERYSILENT /NORESTART /SUPPRESSMSGBOXES /DIR=`"$prog`" /SkipDbPage=1"
+        $sp = Start-Process -FilePath $pkgPath -ArgumentList $setupArgs -Wait -PassThru
+        if ($null -eq $sp.ExitCode -or $sp.ExitCode -ne 0) {
+            $code = if ($null -eq $sp.ExitCode) { "null" } else { $sp.ExitCode }
+            throw "setup_update_failed: exit $code"
+        }
+        Write-Host "==> Restarting NetX after Setup"
+        & (Join-Path $PSScriptRoot "start_netx_app.ps1") `
+            -ProgramRoot $prog -DataRoot $data -SkipBrowser
+        if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    } else {
+        Write-Host "==> Applying legacy zip update via update_netx.ps1"
+        & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "update_netx.ps1") `
+            -PackagePath $pkgPath -ProgramRoot $prog -DataRoot $data
+    }
     Write-Host "==> Update applied to $latest" -ForegroundColor Green
 } finally {
     Remove-Item -Force $lockFile -ErrorAction SilentlyContinue

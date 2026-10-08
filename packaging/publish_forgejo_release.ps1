@@ -1,14 +1,13 @@
-﻿param(
+param(
     [string]$Version = "",
     [string]$ForgejoBase = "http://10.0.0.131:3000",
     [string]$Owner = "hansjone",
     [string]$Repo = "netx",
     [string]$Token = "",
-    [string]$ReleaseDir = "",
-    [switch]$SkipSetup = $false
+    [string]$ReleaseDir = ""
 )
 
-# Publish Windows release assets to Forgejo/Gitea (mirror sync does NOT copy GitHub Release files).
+# Publish Windows Setup.exe to Forgejo/Gitea (mirror sync does NOT copy GitHub Release files).
 # Requires a Forgejo token with repo write (Settings → Applications → Generate New Token).
 # Default: home LAN Forgejo. Public git.avelo.top is the same instance (VPS reverse proxy).
 #
@@ -28,7 +27,6 @@ if (-not $Version) {
 }
 $tag = "v$Version"
 $relDir = if ($ReleaseDir) { $ReleaseDir } else { Join-Path $PSScriptRoot "release" }
-$zip = Join-Path $relDir "NetX-$Version-win64.zip"
 $setup = Join-Path $relDir "NetX-Setup-$Version.exe"
 
 if (-not $Token) {
@@ -38,8 +36,8 @@ if (-not $Token) {
 if (-not $Token) {
     throw "forgejo_token_required: set NETX_FORGEJO_TOKEN or pass -Token"
 }
-if (-not (Test-Path $zip)) {
-    throw "missing_zip: $zip (run build_release.ps1 first)"
+if (-not (Test-Path $setup)) {
+    throw "missing_setup: $setup (run build_release.ps1 + ISCC first)"
 }
 
 $apiBase = "$ForgejoBase/api/v1/repos/$Owner/$Repo"
@@ -84,10 +82,9 @@ try {
 }
 
 $notes = @"
-NetX $Version Windows install package (published from GitHub release build).
+NetX $Version Windows installer (published from GitHub release build).
 
 - NetX-Setup-$Version.exe
-- NetX-$Version-win64.zip
 "@
 
 if ($existing -and $existing.id) {
@@ -97,12 +94,12 @@ if ($existing -and $existing.id) {
 
 Write-Host "==> Creating release $tag"
 $rel = Invoke-ForgejoJson -Method POST -Url "$apiBase/releases" -Body @{
-    tag_name    = $tag
-    target      = "main"
-    name        = "NetX $Version"
-    body        = $notes
-    draft       = $false
-    prerelease  = $false
+    tag_name   = $tag
+    target     = "main"
+    name       = "NetX $Version"
+    body       = $notes
+    draft      = $false
+    prerelease = $false
 }
 $relId = $rel.id
 if (-not $relId) { throw "forgejo_create_release_failed" }
@@ -123,10 +120,7 @@ function Upload-ForgejoAsset {
     Write-Host "    OK $name" -ForegroundColor Green
 }
 
-Upload-ForgejoAsset -Path $zip
-if (-not $SkipSetup -and (Test-Path $setup)) {
-    Upload-ForgejoAsset -Path $setup
-}
+Upload-ForgejoAsset -Path $setup
 
 $releaseUrl = "$ForgejoBase/$Owner/$Repo/releases/tag/$tag"
 Write-Host ""

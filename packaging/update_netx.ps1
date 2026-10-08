@@ -1,4 +1,4 @@
-﻿param(
+param(
     [Parameter(Mandatory = $true)]
     [string]$PackagePath,
     [string]$ProgramRoot = "",
@@ -22,10 +22,14 @@ New-Item -ItemType Directory -Path $work -Force | Out-Null
 
 try {
     Write-Host "==> Extracting update package"
+    # Preferred end-user path is NetX-Setup-*.exe (check_update / offline installer).
+    # This script remains for legacy/dev .zip packages (build_release.ps1 -CreateZip).
     if ($PackagePath.ToLowerInvariant().EndsWith(".zip")) {
         Expand-Archive -Path $PackagePath -DestinationPath $work -Force
+    } elseif ($PackagePath.ToLowerInvariant().EndsWith(".exe")) {
+        throw "unsupported_package: run NetX-Setup-*.exe (upgrade keeps DB), or use check_update.ps1 -Apply"
     } else {
-        throw "unsupported_package: use a .zip built by build_release.ps1"
+        throw "unsupported_package: use a .zip from build_release.ps1 -CreateZip, or NetX-Setup-*.exe"
     }
 
     $src = $work

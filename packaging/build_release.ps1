@@ -3,6 +3,9 @@ param(
     [string]$OutDir = "",
     [switch]$SkipWebBuild = $false,
     [switch]$SkipPostgresDownload = $false,
+    # Zip is no longer published; stage + Setup.exe only. Opt-in for local/dev testing.
+    [switch]$CreateZip = $false,
+    # Deprecated no-op (zip is off by default). Kept so older scripts that pass -SkipZip still run.
     [switch]$SkipZip = $false,
     # Default on: offline Setup must ship .venv so target PCs never pip-install.
     [switch]$CreateVenv = $true
@@ -233,15 +236,18 @@ if ($CreateVenv) {
 
 Write-Host "==> Stage ready: $stage" -ForegroundColor Green
 
-if (-not $SkipZip) {
+if ($SkipZip -and $CreateZip) {
+    Write-Host "[WARN] -SkipZip ignored because -CreateZip was set" -ForegroundColor Yellow
+}
+if ($CreateZip) {
     $zip = Join-Path (Split-Path -Parent $stage) "NetX-$Version-win64.zip"
     if (Test-Path $zip) { Remove-Item -Force $zip }
     Compress-Archive -Path $stage -DestinationPath $zip -Force
-    Write-Host "==> Zip: $zip" -ForegroundColor Green
+    Write-Host "==> Zip (optional/dev): $zip" -ForegroundColor Yellow
 }
 
 Write-Host ""
-Write-Host "Ship options:"
-Write-Host "  Zip:  user unpacks, runs packaging\setup_first_run.ps1 then start_netx_app.ps1"
+Write-Host "Ship:"
 Write-Host "  Exe:  compile packaging\installer\netx.iss with Inno Setup (needs stage above)"
+Write-Host "  (Zip packages are not published; use -CreateZip only for local testing.)"
 Write-Host "Python: install 3.11+ on target, or rebuild with -CreateVenv and ship .venv"

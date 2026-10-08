@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$Version = "",
     [switch]$SkipBuild = $false,
     [switch]$SkipInstaller = $false,
@@ -16,7 +16,6 @@ if (-not $Version) {
 }
 $tag = "v$Version"
 $releaseDir = Join-Path $PSScriptRoot "release"
-$zip = Join-Path $releaseDir "NetX-$Version-win64.zip"
 $setup = Join-Path $releaseDir "NetX-Setup-$Version.exe"
 
 Write-Host "==> NetX publish $tag"
@@ -24,10 +23,6 @@ Write-Host "==> NetX publish $tag"
 if (-not $SkipBuild) {
     & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "build_release.ps1") `
         -Version $Version -CreateVenv
-}
-
-if (-not (Test-Path $zip)) {
-    throw "missing_zip: $zip"
 }
 
 if (-not $SkipInstaller) {
@@ -40,27 +35,23 @@ if (-not $SkipInstaller) {
     ) | Where-Object { $_ -and (Test-Path $_) }
     $iscc = $isccCandidates | Select-Object -First 1
     if (-not $iscc) {
-        Write-Host "[WARN] Inno Setup (ISCC) not found. Install: winget install JRSoftware.InnoSetup" -ForegroundColor Yellow
-        Write-Host "       Skipping Setup.exe; zip-only release."
-    } else {
-        Write-Host "==> Compiling installer: $iscc"
-        & $iscc "/DMyAppVersion=$Version" (Join-Path $PSScriptRoot "installer\netx.iss")
-        if (-not (Test-Path $setup)) {
-            throw "installer_build_failed: expected $setup"
-        }
-        Write-Host "==> Setup.exe: $setup" -ForegroundColor Green
+        throw "innosetup_not_found: install with winget install JRSoftware.InnoSetup"
     }
+    Write-Host "==> Compiling installer: $iscc"
+    & $iscc "/DMyAppVersion=$Version" (Join-Path $PSScriptRoot "installer\netx.iss")
+    if (-not (Test-Path $setup)) {
+        throw "installer_build_failed: expected $setup"
+    }
+    Write-Host "==> Setup.exe: $setup" -ForegroundColor Green
+}
+
+if (-not (Test-Path $setup)) {
+    throw "missing_setup: $setup"
 }
 
 if ($Sign) {
-    $toSign = @()
-    if (Test-Path $setup) { $toSign += $setup }
-    if ($toSign.Count -eq 0) {
-        Write-Host "[WARN] -Sign set but no Setup.exe to sign"
-    } else {
-        Write-Host "==> Signing release artifacts"
-        & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "sign_release.ps1") -Files $toSign
-    }
+    Write-Host "==> Signing release artifacts"
+    & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "sign_release.ps1") -Files @($setup)
 }
 
 if ($SkipGitHub) {
@@ -81,27 +72,24 @@ $viewCode = $LASTEXITCODE
 $ErrorActionPreference = $prevEap
 if ($viewCode -eq 0) {
     Write-Host "==> Release $tag exists; uploading assets"
-    gh release upload $tag $zip --clobber
-    if (Test-Path $setup) {
-        gh release upload $tag $setup --clobber
-    }
+    gh release upload $tag $setup --clobber
 } else {
     $notes = @"
-## NetX $Version — first Windows installable release
+## NetX $Version
 
 ### Downloads
-- **NetX-Setup-$Version.exe** — recommended installer (Program Files + ProgramData)
-- **NetX-$Version-win64.zip** — portable directory package
+- **NetX-Setup-$Version.exe** — Windows installer (Program Files + ProgramData)
 
 ### Requirements
-- Windows 10/11 x64
-- No separate Python or PostgreSQL install required (bundled in package)
+- Windows 10/11 x64 (or Windows Server 2016+)
+- No separate Python or PostgreSQL install required (bundled)
 
-### Quick start (installer)
+### Quick start
 1. Run ``NetX-Setup-$Version.exe`` as administrator.
-2. Complete first-time setup (choose **bundled** or **external** PostgreSQL).
-3. Start menu → **Start NetX** → browser opens ``http://127.0.0.1:8890/``
-4. Default login: ``admin`` / ``admin123`` (change after first login)
+2. **First install:** choose built-in or external PostgreSQL.
+3. **Already installed:** Setup detects existing data and updates in place (keeps DB settings).
+4. Start menu → **Start NetX** → ``http://127.0.0.1:8890/``
+5. Default login: ``admin`` / ``admin123`` (change after first login)
 
 ### Linux
 Unchanged — use your own PostgreSQL and ``scripts/start_netx.sh``.
@@ -110,8 +98,7 @@ See [packaging/README.md](https://github.com/hansjone/netx/blob/main/packaging/R
 "@
     $args = @("release", "create", $tag, "--title", "NetX $Version", "--notes", $notes)
     if ($Draft) { $args += "--draft" }
-    $args += $zip
-    if (Test-Path $setup) { $args += $setup }
+    $args += $setup
     & gh @args
 }
 

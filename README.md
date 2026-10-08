@@ -158,9 +158,9 @@ API base: `http://127.0.0.1:8890/`
 
 After `npm run build` in `web/`, the API can also serve the UI at `http://127.0.0.1:8890/` (same origin). See `NETX_UI_DIST_DIR` in `.env.example`.
 
-### Windows installer / portable package (optional)
+### Windows installer (optional)
 
-Fool-proof Windows delivery (bundled or external Postgres, program/data split, manual update) lives under [`packaging/`](packaging/README.md). **Linux installs are unchanged** — keep using your own Postgres and `scripts/start_netx.sh`.
+Fool-proof Windows delivery via `NetX-Setup-*.exe` (bundled or external Postgres, program/data split, offline upgrade over existing installs) lives under [`packaging/`](packaging/README.md). **Linux installs are unchanged** — keep using your own Postgres and `scripts/start_netx.sh`.
 
 ### 6) MCP（Cursor / oclaw / Claude）
 
