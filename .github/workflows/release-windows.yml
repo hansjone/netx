@@ -25,7 +25,8 @@ jobs:
       - name: Build release stage
         shell: pwsh
         run: |
-          powershell -ExecutionPolicy Bypass -File ./packaging/build_release.ps1 -CreateVenv
+          # Use pwsh -File (UTF-8). Nested Windows PowerShell 5.1 mis-parses UTF-8 scripts without BOM.
+          & ./packaging/build_release.ps1 -CreateVenv
 
       - name: Install Inno Setup
         shell: pwsh

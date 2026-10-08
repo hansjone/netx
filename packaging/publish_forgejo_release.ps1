@@ -1,6 +1,6 @@
-param(
+﻿param(
     [string]$Version = "",
-    [string]$ForgejoBase = "http://10.0.0.131:3000",
+    [string]$ForgejoBase = "https://git.avelo.top",
     [string]$Owner = "hansjone",
     [string]$Repo = "netx",
     [string]$Token = "",
@@ -9,14 +9,14 @@ param(
 
 # Publish Windows Setup.exe to Forgejo/Gitea (mirror sync does NOT copy GitHub Release files).
 # Requires a Forgejo token with repo write (Settings → Applications → Generate New Token).
-# Default: home LAN Forgejo. Public git.avelo.top is the same instance (VPS reverse proxy).
+# Default: https://git.avelo.top (public domain). LAN IP only when explicitly reachable.
 #
-# Example (usual — LAN):
+# Example:
 #   $env:NETX_FORGEJO_TOKEN = "..."   # or User env NETX_FORGEJO_TOKEN
-#   .\packaging\publish_forgejo_release.ps1 -Version 0.4.0
+#   .\packaging\publish_forgejo_release.ps1 -Version 0.4.11
 #
-# Away from LAN only (hairpins via VPS):
-#   .\packaging\publish_forgejo_release.ps1 -Version 0.4.0 -ForgejoBase "https://git.avelo.top"
+# Optional LAN (when 10.0.0.131 is reachable):
+#   .\packaging\publish_forgejo_release.ps1 -Version 0.4.11 -ForgejoBase "http://10.0.0.131:3000"
 
 $ErrorActionPreference = "Stop"
 . "$PSScriptRoot\_common.ps1"

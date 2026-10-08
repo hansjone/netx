@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory = $true)]
     [string]$PackagePath,
     [string]$ProgramRoot = "",

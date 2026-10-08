@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$Version = "",
     [string]$OutDir = "",
     [switch]$SkipWebBuild = $false,
@@ -128,13 +128,13 @@ if (Test-Path $winswShip) {
     Copy-Item -Path $winswShip -Destination (Join-Path $winswOut "WinSW-x64.exe") -Force
     Write-Host "==> Bundled WinSW for offline service install"
 } else {
-    Write-Host "[WARN] WinSW missing — offline service install will fail" -ForegroundColor Yellow
+    Write-Host "[WARN] WinSW missing - offline service install will fail" -ForegroundColor Yellow
 }
 New-Item -ItemType Directory -Path (Join-Path $packOut "postgres") -Force | Out-Null
 Copy-Item -Path (Join-Path $PSScriptRoot "postgres\README.md") -Destination (Join-Path $packOut "postgres\README.md") -Force
 
 if (Test-Path (Join-Path $pgsql "bin\pg_ctl.exe")) {
-    Write-Host "==> Copying bundled PostgreSQL (bin/lib/share; skip doc/)"
+    Write-Host '==> Copying bundled PostgreSQL (bin/lib/share; skip doc/)'
     $pgStage = Join-Path $stage "postgres\pgsql"
     New-Item -ItemType Directory -Path $pgStage -Force | Out-Null
     foreach ($sub in @("bin", "lib", "share")) {
@@ -196,7 +196,7 @@ if ($CreateVenv) {
 
     $venvDir = Join-Path $stage ".venv"
     if (Test-Path $venvDir) { Remove-Item -Recurse -Force $venvDir }
-    Write-Host "==> Creating .venv from shipped runtime (--copies)"
+    Write-Host '==> Creating .venv from shipped runtime (--copies)'
     & $rtPy -m venv $venvDir --copies
     if ($LASTEXITCODE -ne 0) { throw "venv_create_failed" }
 

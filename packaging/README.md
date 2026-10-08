@@ -122,7 +122,7 @@ Do this on the **dev PC on the home LAN** after bumping version:
 
 1. **Build** — `.\packaging\build_release.ps1 -CreateVenv` + Inno Setup → `NetX-Setup-*.exe`
 2. **GitHub** — `.\packaging\publish_release.ps1 -Version x.y.z` (uploads Setup.exe only)
-3. **Forgejo (intranet)** — upload the same Setup.exe to QNAP Forgejo; public `git.avelo.top` is only a reverse proxy to the same instance:
+3. **Forgejo** — upload the same Setup.exe (default: public domain `https://git.avelo.top`):
 
 ```powershell
 # One-time: User env var (never commit the token)
@@ -130,23 +130,22 @@ Do this on the **dev PC on the home LAN** after bumping version:
 [Environment]::SetEnvironmentVariable("NETX_FORGEJO_TOKEN", "your_token", "User")
 # Restart Cursor / open a new terminal so the agent/scripts see it
 
-# Default publishes to LAN Forgejo; public git.avelo.top shows the same Release.
-.\packaging\publish_forgejo_release.ps1 -Version 0.4.0
+# Default: https://git.avelo.top
+.\packaging\publish_forgejo_release.ps1 -Version 0.4.11
 
-# Only when off the home LAN:
-# .\packaging\publish_forgejo_release.ps1 -Version 0.4.0 -ForgejoBase "https://git.avelo.top"
+# Optional when LAN IP is reachable:
+# .\packaging\publish_forgejo_release.ps1 -Version 0.4.11 -ForgejoBase "http://10.0.0.131:3000"
 ```
 
 | Role | URL |
 |------|-----|
-| Publish default (home LAN) | `http://10.0.0.131:3000` (`-ForgejoBase` default) |
-| Clients / remote clone | `https://git.avelo.top` (Caddy → `10.0.0.131:3000`) |
+| Publish default | `https://git.avelo.top` (`-ForgejoBase` default) |
+| Optional LAN | `http://10.0.0.131:3000` |
 | Update probe (default) | GitHub + `https://git.avelo.top/.../releases/latest` |
 
 Verify:
 
-- LAN: http://10.0.0.131:3000/hansjone/netx/releases
-- Public: https://git.avelo.top/hansjone/netx/releases
+- https://git.avelo.top/hansjone/netx/releases
 - Probe: `.\packaging\check_update.ps1` → both `github` and `forgejo` reachable with the new version
 
 Token: `NETX_FORGEJO_TOKEN` (or `FORGEJO_TOKEN`).
