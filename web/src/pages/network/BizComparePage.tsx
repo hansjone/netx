@@ -7,6 +7,7 @@ import { useDebouncedValue } from "../../hooks/useDebouncedValue";
 import { useToast } from "../../hooks/useToast";
 import { useI18n } from "../../i18n";
 import {
+  bizCompareCancelRun,
   bizCompareCreateJob,
   bizCompareCreateMapping,
   bizCompareCreateTemplate,
@@ -35,7 +36,7 @@ import { cutoverCachedGet, cutoverCachedGetSWR, invalidateCutoverCache } from ".
 import { jobChipColor, NmStatusChip } from "./nmChips";
 
 type PageTab = "templates" | "jobs";
-type JobDetailTab = "config" | "result";
+type JobDetailTab = "config" | "runs" | "result";
 type KindFilter = "diff" | "all" | "added" | "removed" | "changed" | "unchanged";
 type CreateJobStep = 0 | 1 | 2 | 3;
 const CREATE_JOB_STEPS = 4;
@@ -1802,12 +1803,14 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     const job = jobs.find((x) => x.id === id);
     if (job) resetJobForm(job);
     try {
-      const r = await bizCompareListRuns(id);
-      setRuns(r.items || []);
-      if ((r.items || []).length) {
-        const latest = await bizCompareGetRun(String((r.items as any[])[0].id));
+      const r = await bizCompareListRuns(id, 50);
+      const items = r.items || [];
+      setRuns(items);
+      if (items.length) {
+        const latest = await bizCompareGetRun(String((items as any[])[0].id));
         setRunDetail(latest);
-        setJobDetailTab("result");
+        // Land on batch list so stuck/cancelled runs are visible and actionable
+        setJobDetailTab("runs");
       }
     } catch (e) {
       showError(formatErr(e));
@@ -1843,10 +1846,22 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     }
   };
 
+  const runStatus = String(runDetail?.status || "");
+  const runIsActive = runStatus === "running" || runStatus === "queued";
+  const jobHasActiveRun = runs.some((r) => {
+    const st = String((r as any).status || "");
+    return st === "running" || st === "queued";
+  });
+
   const runNow = async () => {
     if (!jobId) return;
     if (!enabledJobSheetCount) {
       showError(t("bizCompare.needSheets"));
+      return;
+    }
+    if (jobHasActiveRun) {
+      showError(t("bizCompare.compareAlreadyRunning"));
+      setJobDetailTab("runs");
       return;
     }
     setBusy(true);
@@ -1855,20 +1870,18 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
       // Async enqueue — returns immediately with status=running; poll below.
       const run = await bizCompareRunJob(jobId);
       setRunDetail(run);
-      setJobDetailTab("result");
+      setJobDetailTab("runs");
       showOk(t("bizCompare.runStarted"));
-      const r = await bizCompareListRuns(jobId);
+      const r = await bizCompareListRuns(jobId, 50);
       setRuns(r.items || []);
       await refresh({ force: true });
     } catch (e) {
       showError(formatErr(e));
+      setJobDetailTab("runs");
     } finally {
       setBusy(false);
     }
   };
-
-  const runStatus = String(runDetail?.status || "");
-  const runIsActive = runStatus === "running" || runStatus === "queued";
   const runProgress = (runDetail?.summary?.progress || {}) as {
     phase?: string;
     sheet_index?: number;
@@ -1906,6 +1919,9 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
         } else if (!notified && st === "failed") {
           notified = true;
           showError(String(d.message || t("bizCompare.runFailed")));
+        } else if (!notified && st === "cancelled") {
+          notified = true;
+          showError(String(d.message || t("bizCompare.runCancelled")));
         }
       } catch (e) {
         if (!cancelled) showError(formatErr(e));
@@ -1919,6 +1935,31 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     };
   }, [runDetail?.id, runIsActive, jobId, showOk, showError, t]);
 
+  // Keep the runs list fresh while any batch on this job is active
+  useEffect(() => {
+    if (!jobId || !jobHasActiveRun || jobDetailTab !== "runs") return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const r = await bizCompareListRuns(jobId, 50);
+        if (!cancelled) setRuns(r.items || []);
+        const curId = String(runDetail?.id || "");
+        if (curId) {
+          const d = await bizCompareGetRun(curId);
+          if (!cancelled) setRunDetail(d);
+        }
+      } catch {
+        /* ignore list poll errors */
+      }
+    };
+    void tick();
+    const id = window.setInterval(() => void tick(), 2500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [jobId, jobHasActiveRun, jobDetailTab, runDetail?.id]);
+
   const loadRun = async (runId: string) => {
     try {
       const d = await bizCompareGetRun(runId);
@@ -1931,6 +1972,25 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     }
   };
 
+  const cancelRun = async (runId: string) => {
+    if (!runId) return;
+    if (!window.confirm(t("bizCompare.confirmCancelRun"))) return;
+    setBusy(true);
+    try {
+      const d = await bizCompareCancelRun(runId);
+      if (String(runDetail?.id || "") === runId) setRunDetail(d);
+      if (jobId) {
+        const r = await bizCompareListRuns(jobId, 50);
+        setRuns(r.items || []);
+      }
+      showOk(t("bizCompare.runCancelled"));
+    } catch (e) {
+      showError(formatErr(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const removeRun = async (runId: string) => {
     if (!runId) return;
     if (!window.confirm(t("bizCompare.confirmDeleteRun"))) return;
@@ -1940,19 +2000,16 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
       await bizCompareDeleteRun(runId);
       let nextRuns: typeof runs = [];
       if (jobId) {
-        const r = await bizCompareListRuns(jobId);
+        const r = await bizCompareListRuns(jobId, 50);
         nextRuns = r.items || [];
       } else {
         nextRuns = (runs || []).filter((r) => String(r.id) !== runId);
       }
       setRuns(nextRuns);
       if (wasCurrent) {
-        if (nextRuns.length) {
-          await loadRun(String(nextRuns[0].id));
-        } else {
-          setRunDetail(null);
-          setResultSheetId("");
-        }
+        setRunDetail(null);
+        setResultSheetId("");
+        setJobDetailTab("runs");
       }
       showOk(t("bizCompare.runDeleted"));
     } catch (e) {
@@ -2866,6 +2923,18 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
             </Button>
             <Button
               size="sm"
+              variant={jobDetailTab === "runs" ? "primary" : "secondary"}
+              className={jobDetailTab === "runs" ? "is-active" : undefined}
+              onPress={() => {
+                setJobDetailTab("runs");
+                if (jobId) void bizCompareListRuns(jobId, 50).then((r) => setRuns(r.items || []));
+              }}
+            >
+              {t("bizCompare.tabRuns")}
+              {runs.length ? ` (${runs.length})` : ""}
+            </Button>
+            <Button
+              size="sm"
               variant={jobDetailTab === "result" ? "primary" : "secondary"}
               className={jobDetailTab === "result" ? "is-active" : undefined}
               onPress={() => setJobDetailTab("result")}
@@ -2876,6 +2945,156 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
 
           {jobDetailTab === "config" ? (
             renderJobForm()
+          ) : jobDetailTab === "runs" ? (
+            <div className="bs-cmp-runs">
+              <div className="btn-row" style={{ marginBottom: 8, justifyContent: "space-between" }}>
+                <p className="muted bm-hint" style={{ margin: 0 }}>
+                  {t("bizCompare.runsHint")}
+                </p>
+                <Button
+                  size="sm"
+                  variant="primary"
+                  isDisabled={busy || jobHasActiveRun}
+                  onPress={() => void runNow()}
+                >
+                  {jobHasActiveRun ? t("bizCompare.runStatusRunning") : t("bizCompare.runNow")}
+                </Button>
+              </div>
+              {!runs.length ? (
+                <div className="pt-list-empty">{t("bizCompare.noRuns")}</div>
+              ) : (
+                <div className="table-wrap">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>{t("bizCompare.colStatus")}</th>
+                        <th>{t("bizCompare.colTime")}</th>
+                        <th>{t("bizCompare.sidesTitle")}</th>
+                        <th>{t("bizCompare.colResult")}</th>
+                        <th>{t("bizCompare.colActions")}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {runs.map((r) => {
+                        const st = String((r as any).status || "");
+                        const active = st === "running" || st === "queued";
+                        const selected = String(runDetail?.id || "") === String(r.id);
+                        const before = enrichSide(
+                          (r as any).before,
+                          beforeTaskId,
+                          tasks,
+                          beforeBatches,
+                        );
+                        const after = enrichSide(
+                          (r as any).after,
+                          afterTaskId || beforeTaskId,
+                          tasks,
+                          afterBatches.length ? afterBatches : beforeBatches,
+                        );
+                        const when = formatSystemTime((r as any).created_at) || "—";
+                        const sum = ((r as any).summary || {}) as Record<string, number>;
+                        const fail =
+                          Number(sum.removed || 0) + Number(sum.changed || 0);
+                        const ok = Number(sum.unchanged || 0);
+                        const durMs = Number(sum.duration_ms || 0);
+                        const prog = ((r as any).progress || {}) as {
+                          phase?: string;
+                          sheet_index?: number;
+                          sheet_total?: number;
+                          sheet_title?: string;
+                          rows_loaded?: number;
+                          load_side?: string;
+                        };
+                        const stLabel =
+                          st === "running" || st === "queued"
+                            ? t("bizCompare.runStatusRunning")
+                            : st === "failed"
+                              ? t("bizCompare.runStatusFailed")
+                              : st === "cancelled"
+                                ? t("bizCompare.runStatusCancelled")
+                                : t("bizCompare.runStatusDoneSec", {
+                                    s: String(durMs > 0 ? Math.round(durMs / 1000) : 0),
+                                  });
+                        return (
+                          <tr key={String(r.id)} className={selected ? "is-selected" : undefined}>
+                            <td>
+                              <NmStatusChip color={jobChipColor(st)}>{stLabel}</NmStatusChip>
+                              {active && prog.phase ? (
+                                <div className="muted" style={{ fontSize: "0.75rem", marginTop: 4 }}>
+                                  {prog.phase}
+                                  {prog.sheet_total
+                                    ? ` · ${prog.sheet_index || 0}/${prog.sheet_total}`
+                                    : ""}
+                                  {prog.sheet_title ? ` · ${prog.sheet_title}` : ""}
+                                  {Number(prog.rows_loaded || 0) > 0
+                                    ? ` · ${prog.load_side || ""} ${prog.rows_loaded}`
+                                    : ""}
+                                </div>
+                              ) : null}
+                              {(r as any).message ? (
+                                <div
+                                  className="muted"
+                                  style={{ fontSize: "0.75rem", marginTop: 2 }}
+                                  title={String((r as any).message)}
+                                >
+                                  {String((r as any).message).slice(0, 80)}
+                                </div>
+                              ) : null}
+                            </td>
+                            <td>{when}</td>
+                            <td>
+                              {sideDeviceName(before)} {sideCollectTime(before)}
+                              {" → "}
+                              {sideDeviceName(after)} {sideCollectTime(after)}
+                            </td>
+                            <td>
+                              {active
+                                ? "…"
+                                : t("bizCompare.runBatchSummary", {
+                                    fail: String(fail),
+                                    ok: String(ok),
+                                    added: String(Number(sum.added || 0)),
+                                  })}
+                            </td>
+                            <td>
+                              <div className="btn-row">
+                                <Button
+                                  size="sm"
+                                  variant="secondary"
+                                  isDisabled={busy || active}
+                                  onPress={() => void loadRun(String(r.id))}
+                                >
+                                  {t("bizCompare.viewResult")}
+                                </Button>
+                                {active ? (
+                                  <Button
+                                    size="sm"
+                                    variant="danger"
+                                    isDisabled={busy}
+                                    onPress={() => void cancelRun(String(r.id))}
+                                  >
+                                    {t("bizCompare.cancelRun")}
+                                  </Button>
+                                ) : (
+                                  <Button
+                                    size="sm"
+                                    variant="danger"
+                                    isDisabled={busy}
+                                    onPress={() => void removeRun(String(r.id))}
+                                  >
+                                    {t("bizCompare.deleteRun")}
+                                  </Button>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
           ) : (
             <div
               ref={boardRef}
@@ -3536,10 +3755,10 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
               <Button
                 size="sm"
                 variant="primary"
-                isDisabled={busy || runIsActive}
+                isDisabled={busy || jobHasActiveRun}
                 onPress={() => void runNow()}
               >
-                {runIsActive ? t("bizCompare.runStatusRunning") : t("bizCompare.runNow")}
+                {jobHasActiveRun ? t("bizCompare.runStatusRunning") : t("bizCompare.runNow")}
               </Button>
               {jobId ? (
                 <Button size="sm" variant="danger" isDisabled={busy} onPress={() => void removeJob(jobId)}>
@@ -3547,12 +3766,21 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                 </Button>
               ) : null}
             </>
+          ) : jobDetailTab === "runs" ? (
+            <Button
+              size="sm"
+              variant="primary"
+              isDisabled={busy || jobHasActiveRun}
+              onPress={() => void runNow()}
+            >
+              {jobHasActiveRun ? t("bizCompare.runStatusRunning") : t("bizCompare.runNow")}
+            </Button>
           ) : (
             <>
               <Button
                 size="sm"
                 variant="secondary"
-                isDisabled={busy || !runDetail?.id}
+                isDisabled={busy || runIsActive || !runDetail?.id}
                 onPress={() => void downloadRunTables()}
               >
                 {t("bizCompare.exportTables")}
@@ -3568,10 +3796,10 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
               <Button
                 size="sm"
                 variant="primary"
-                isDisabled={busy || runIsActive}
+                isDisabled={busy || jobHasActiveRun}
                 onPress={() => void runNow()}
               >
-                {runIsActive ? t("bizCompare.runStatusRunning") : t("bizCompare.runNow")}
+                {jobHasActiveRun ? t("bizCompare.runStatusRunning") : t("bizCompare.runNow")}
               </Button>
             </>
           )}

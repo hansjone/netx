@@ -160,6 +160,17 @@ def run_api_startup() -> None:
         except Exception:
             _log.exception("startup: biz_state collect recovery failed")
         try:
+            from .biz_state.compare_service import recover_interrupted_compares_on_startup
+
+            cmp_rec = recover_interrupted_compares_on_startup(db)
+            if cmp_rec.get("runs"):
+                _log.info(
+                    "startup: cancelled %s interrupted biz compare run(s)",
+                    cmp_rec.get("runs"),
+                )
+        except Exception:
+            _log.exception("startup: biz compare recovery failed")
+        try:
             from .port_traffic_migrate import backfill_port_traffic_series
 
             backfill_port_traffic_series(db)

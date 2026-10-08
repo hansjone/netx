@@ -2154,6 +2154,12 @@ export const bizCompareListRuns = (jobId: string, limit = 20) =>
 export const bizCompareGetRun = (runId: string) =>
   apiGet<Record<string, unknown>>(`/v1/biz-state/compare/runs/${encodeURIComponent(runId)}`);
 
+export const bizCompareCancelRun = (runId: string) =>
+  apiPost<Record<string, unknown>>(
+    `/v1/biz-state/compare/runs/${encodeURIComponent(runId)}/cancel`,
+    {},
+  );
+
 export const bizCompareDeleteRun = (runId: string) =>
   apiDelete<{ ok: boolean; job_id?: string; run_id?: string }>(
     `/v1/biz-state/compare/runs/${encodeURIComponent(runId)}`,

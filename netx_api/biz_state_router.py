@@ -746,6 +746,12 @@ def api_get_run(run_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
     return cmp_svc.get_run(db, run_id)
 
 
+@router.post("/compare/runs/{run_id}/cancel")
+def api_cancel_run(run_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Cancel a stuck/running compare so a new run can start."""
+    return cmp_svc.cancel_compare_run(db, run_id)
+
+
 @router.delete("/compare/runs/{run_id}")
 def api_delete_run(run_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
     return cmp_svc.delete_run(db, run_id)
