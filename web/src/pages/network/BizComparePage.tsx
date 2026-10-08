@@ -100,6 +100,8 @@ type Template = {
 };
 
 type Mapping = { id: string; name: string; rows: { before_if: string; after_if: string }[] };
+type StoreUnchanged = "auto" | "always" | "never" | "sample" | "keys";
+
 type Job = {
   id: string;
   name: string;
@@ -112,6 +114,7 @@ type Job = {
   mode: string;
   status: string;
   enabled_sheet_ids?: string[];
+  store_unchanged?: StoreUnchanged | string;
   note?: string;
 };
 
@@ -824,6 +827,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
   const [beforeBatchId, setBeforeBatchId] = useState("");
   const [afterBatchId, setAfterBatchId] = useState("");
   const [mode, setMode] = useState<"manual" | "auto">("manual");
+  const [storeUnchanged, setStoreUnchanged] = useState<StoreUnchanged>("auto");
   const [mapName, setMapName] = useState("端口映射");
   const [mapText, setMapText] = useState("");
   const [validateOut, setValidateOut] = useState<any>(null);
@@ -1056,7 +1060,14 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
   useEffect(() => {
     const runId = String(runDetail?.id || "");
     const mid = resultSheetId || sheetIdentity(activeRunSheet) || "";
-    if (!runId || !mid || jobDetailTab !== "result") {
+    const st = String(runDetail?.status || "");
+    if (
+      !runId ||
+      !mid ||
+      jobDetailTab !== "result" ||
+      st === "running" ||
+      st === "queued"
+    ) {
       setPagedDiffs([]);
       setResultTotal(0);
       return;
@@ -1095,6 +1106,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     };
   }, [
     runDetail?.id,
+    runDetail?.status,
     resultSheetId,
     activeRunSheet?.metric_id,
     kindFilter,
@@ -1649,6 +1661,14 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     setBeforeBatchId(preset?.before_batch_id || "");
     setAfterBatchId(preset?.after_batch_id || "");
     setMode(preset?.mode === "auto" ? "auto" : "manual");
+    {
+      const su = String(preset?.store_unchanged || "auto");
+      setStoreUnchanged(
+        su === "always" || su === "never" || su === "sample" || su === "keys"
+          ? su
+          : "auto",
+      );
+    }
     setValidateOut(null);
     if (preset?.mapping_id) loadMappingText(preset.mapping_id);
     else {
@@ -1667,7 +1687,23 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     after_batch_id: mode === "manual" ? afterBatchId : "",
     mode,
     enabled_sheet_ids: enabledSheetIds,
+    store_unchanged: storeUnchanged,
   });
+
+  const renderStoreUnchangedField = () => (
+    <FieldSelect
+      label={t("bizCompare.storeUnchanged")}
+      value={storeUnchanged}
+      onChange={(e) => setStoreUnchanged(e.target.value as StoreUnchanged)}
+      fullWidth
+    >
+      <option value="auto">{t("bizCompare.storeUnchangedAuto")}</option>
+      <option value="sample">{t("bizCompare.storeUnchangedSample")}</option>
+      <option value="keys">{t("bizCompare.storeUnchangedKeys")}</option>
+      <option value="always">{t("bizCompare.storeUnchangedAlways")}</option>
+      <option value="never">{t("bizCompare.storeUnchangedNever")}</option>
+    </FieldSelect>
+  );
 
   const closeCreateJob = () => {
     setJobCreateOpen(false);
@@ -1805,10 +1841,11 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     setBusy(true);
     try {
       await bizCompareUpdateJob(jobId, jobConfigBody());
+      // Async enqueue — returns immediately with status=running; poll below.
       const run = await bizCompareRunJob(jobId);
       setRunDetail(run);
       setJobDetailTab("result");
-      showOk(t("bizCompare.ran"));
+      showOk(t("bizCompare.runStarted"));
       const r = await bizCompareListRuns(jobId);
       setRuns(r.items || []);
       await refresh({ force: true });
@@ -1818,6 +1855,56 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
       setBusy(false);
     }
   };
+
+  const runStatus = String(runDetail?.status || "");
+  const runIsActive = runStatus === "running" || runStatus === "queued";
+  const runProgress = (runDetail?.summary?.progress || {}) as {
+    phase?: string;
+    sheet_index?: number;
+    sheet_total?: number;
+    sheet_title?: string;
+    sheet_id?: string;
+    elapsed_ms?: number;
+    before_count?: number;
+    after_count?: number;
+    diff_rows?: number;
+  };
+
+  // Poll active compare runs so the modal can be closed and reopened safely.
+  useEffect(() => {
+    if (!runIsActive || !runDetail?.id) return;
+    let cancelled = false;
+    let notified = false;
+    const tick = async () => {
+      try {
+        const d = await bizCompareGetRun(String(runDetail.id));
+        if (cancelled) return;
+        setRunDetail(d);
+        if (jobId) {
+          const r = await bizCompareListRuns(jobId);
+          if (!cancelled) setRuns(r.items || []);
+        }
+        const st = String(d.status || "");
+        if (!notified && st === "success") {
+          notified = true;
+          const ms = Number((d.summary as any)?.duration_ms || 0);
+          const sec = ms > 0 ? Math.round(ms / 1000) : 0;
+          showOk(sec > 0 ? t("bizCompare.ranWithDuration", { s: String(sec) }) : t("bizCompare.ran"));
+        } else if (!notified && st === "failed") {
+          notified = true;
+          showError(String(d.message || t("bizCompare.runFailed")));
+        }
+      } catch (e) {
+        if (!cancelled) showError(formatErr(e));
+      }
+    };
+    void tick();
+    const id = window.setInterval(() => void tick(), 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [runDetail?.id, runIsActive, jobId, showOk, showError, t]);
 
   const loadRun = async (runId: string) => {
     try {
@@ -2034,6 +2121,8 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
         <option value="manual">{t("bizCompare.modeManual")}</option>
         <option value="auto">{t("bizCompare.modeAuto")}</option>
       </FieldSelect>
+      {renderStoreUnchangedField()}
+      <p className="muted bm-hint">{t("bizCompare.storeUnchangedHint")}</p>
       {renderSheetChips()}
       {renderBatchFields()}
       {renderMappingBlock()}
@@ -2701,6 +2790,8 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                 <option value="manual">{t("bizCompare.modeManual")}</option>
                 <option value="auto">{t("bizCompare.modeAuto")}</option>
               </FieldSelect>
+              {renderStoreUnchangedField()}
+              <p className="muted bm-hint">{t("bizCompare.storeUnchangedHint")}</p>
             </div>
           ) : null}
 
@@ -2854,8 +2945,21 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                           const bl = sideDeviceName(before);
                           const al = sideDeviceName(after);
                           const when = formatSystemTime((r as any).created_at) || "";
+                          const st = String((r as any).status || "");
+                          const durMs = Number((r as any).summary?.duration_ms || 0);
+                          const stLabel =
+                            st === "running" || st === "queued"
+                              ? t("bizCompare.runStatusRunning")
+                              : st === "failed"
+                                ? t("bizCompare.runStatusFailed")
+                                : durMs > 0
+                                  ? t("bizCompare.runStatusDoneSec", {
+                                      s: String(Math.round(durMs / 1000)),
+                                    })
+                                  : "";
                           return (
                             <option key={r.id} value={r.id}>
+                              {stLabel ? `[${stLabel}] ` : ""}
                               {when ? `${when} · ` : ""}
                               {bl} {sideCollectTime(before)} → {al} {sideCollectTime(after)}
                             </option>
@@ -2876,7 +2980,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                       <Button
                         size="sm"
                         variant="secondary"
-                        isDisabled={busy || !runDetail?.id}
+                        isDisabled={busy || runIsActive || !runDetail?.id}
                         onPress={() => void downloadRunTables()}
                       >
                         {t("bizCompare.exportTables")}
@@ -2884,7 +2988,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                       <Button
                         size="sm"
                         variant="danger"
-                        isDisabled={busy || !runDetail?.id}
+                        isDisabled={busy || runIsActive || !runDetail?.id}
                         onPress={() => void removeRun(String(runDetail?.id || ""))}
                       >
                         {t("bizCompare.deleteRun")}
@@ -2902,6 +3006,31 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                 </div>
               </div>
 
+              {runDetail && runIsActive ? (
+                <div className="bs-cmp-progress" role="status" aria-live="polite">
+                  <strong>{t("bizCompare.runStatusRunning")}</strong>
+                  <span className="muted">
+                    {t("bizCompare.runProgress", {
+                      phase: String(runProgress.phase || "…"),
+                      i: String(runProgress.sheet_index || 0),
+                      n: String(runProgress.sheet_total || 0),
+                      sheet: String(
+                        runProgress.sheet_title || runProgress.sheet_id || "—",
+                      ),
+                      s: String(Math.round(Number(runProgress.elapsed_ms || 0) / 1000)),
+                    })}
+                  </span>
+                  {runDetail.message ? (
+                    <span className="muted bs-cmp-progress__msg">{String(runDetail.message)}</span>
+                  ) : null}
+                </div>
+              ) : null}
+              {runDetail && runStatus === "failed" ? (
+                <div className="bs-cmp-progress is-failed" role="alert">
+                  <strong>{t("bizCompare.runStatusFailed")}</strong>
+                  <span>{String(runDetail.message || "")}</span>
+                </div>
+              ) : null}
               {runDetail ? (
                 <div
                   className={`bs-cmp-board__body${navCollapsed ? " is-nav-collapsed" : ""}`}
@@ -3101,6 +3230,30 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                           {diffsLoading ? "…" : `${pagedDiffs.length}/${resultTotal}`}
                         </span>
                       </div>
+                      {kindFilter === "unchanged" &&
+                      (runDetail?.summary?.unchanged_truncated ||
+                        (Number(runDetail?.summary?.unchanged || 0) >
+                          Number(runDetail?.summary?.unchanged_listed || 0) &&
+                          Number(runDetail?.summary?.unchanged_listed || 0) > 0)) ? (
+                        <p className="muted bm-hint" style={{ margin: "4px 0 0" }}>
+                          {t("bizCompare.unchangedSampleHint", {
+                            listed: String(
+                              Number(
+                                (activeRunSheet?.summary as any)?.unchanged_listed ??
+                                  runDetail?.summary?.unchanged_listed ??
+                                  resultTotal,
+                              ),
+                            ),
+                            total: String(
+                              Number(
+                                (activeRunSheet?.summary as any)?.unchanged ??
+                                  runDetail?.summary?.unchanged ??
+                                  0,
+                              ),
+                            ),
+                          })}
+                        </p>
+                      ) : null}
                     </div>
 
                     <div
@@ -3287,7 +3440,16 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                           {runDetail && !diffsLoading && !pagedDiffs.length ? (
                             <tr>
                               <td colSpan={resultEmptyColSpan}>
-                                <div className="pt-list-empty">{t("bizCompare.resultEmpty")}</div>
+                                <div className="pt-list-empty">
+                                  {kindFilter === "unchanged"
+                                    ? Number(runDetail?.summary?.unchanged || 0) > 0 &&
+                                      !Number(runDetail?.summary?.unchanged_listed || 0)
+                                      ? t("bizCompare.unchangedNotStored")
+                                      : t("bizCompare.resultEmpty")
+                                    : runIsActive
+                                      ? t("bizCompare.runStatusRunning")
+                                      : t("bizCompare.resultEmpty")}
+                                </div>
                               </td>
                             </tr>
                           ) : null}
@@ -3322,8 +3484,13 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
               <Button size="sm" variant="secondary" isDisabled={busy} onPress={() => void saveJobConfig()}>
                 {t("bizCompare.saveJob")}
               </Button>
-              <Button size="sm" variant="primary" isDisabled={busy} onPress={() => void runNow()}>
-                {t("bizCompare.runNow")}
+              <Button
+                size="sm"
+                variant="primary"
+                isDisabled={busy || runIsActive}
+                onPress={() => void runNow()}
+              >
+                {runIsActive ? t("bizCompare.runStatusRunning") : t("bizCompare.runNow")}
               </Button>
               {jobId ? (
                 <Button size="sm" variant="danger" isDisabled={busy} onPress={() => void removeJob(jobId)}>
@@ -3349,8 +3516,13 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
               >
                 {t("bizCompare.deleteRun")}
               </Button>
-              <Button size="sm" variant="primary" isDisabled={busy} onPress={() => void runNow()}>
-                {t("bizCompare.runNow")}
+              <Button
+                size="sm"
+                variant="primary"
+                isDisabled={busy || runIsActive}
+                onPress={() => void runNow()}
+              >
+                {runIsActive ? t("bizCompare.runStatusRunning") : t("bizCompare.runNow")}
               </Button>
             </>
           )}

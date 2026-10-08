@@ -6,6 +6,7 @@ import io
 import json
 import logging
 import threading
+import time
 import zipfile
 from datetime import datetime
 from typing import Any
@@ -181,7 +182,61 @@ def _compare_side(
     }
 
 _DIFF_CHUNK = 2000
+_LOAD_YIELD_PER = 5000
 _SEARCH_TEXT_MAX = 4000
+# Success-row persist policy (see resolve_unchanged_policy)
+_STORE_UNCHANGED_MODES = frozenset({"auto", "always", "never", "sample", "keys"})
+_UNCHANGED_FULL_MAX = 20_000
+_UNCHANGED_SAMPLE_MAX = 5_000
+
+
+def normalize_store_unchanged(raw: Any) -> str:
+    m = str(raw or "auto").strip().lower()
+    return m if m in _STORE_UNCHANGED_MODES else "auto"
+
+
+def resolve_unchanged_policy(
+    mode: str, *, before_n: int, after_n: int
+) -> dict[str, Any]:
+    """Decide whether / how many success rows to emit for one sheet.
+
+    - always: full before/after for every match (slow on million-row sheets)
+    - never: count only
+    - sample: key + row_id sample (cap) — cutover spot-check default for large sheets
+    - keys: all success as key + row_id (full browse; write still heavy)
+    - auto: full when sheet is small; otherwise sample compact
+    """
+    m = normalize_store_unchanged(mode)
+    n = max(int(before_n or 0), int(after_n or 0))
+    if m == "never":
+        return {"mode": m, "include": False, "limit": None, "compact": False}
+    if m == "always":
+        return {"mode": m, "include": True, "limit": None, "compact": False}
+    if m == "keys":
+        return {"mode": m, "include": True, "limit": None, "compact": True}
+    if m == "sample":
+        return {
+            "mode": m,
+            "include": True,
+            "limit": _UNCHANGED_SAMPLE_MAX,
+            "compact": True,
+        }
+    # auto — cutover-oriented: large sheets sample, not full key dump
+    if n <= _UNCHANGED_FULL_MAX:
+        return {"mode": m, "include": True, "limit": None, "compact": False}
+    return {
+        "mode": m,
+        "include": True,
+        "limit": _UNCHANGED_SAMPLE_MAX,
+        "compact": True,
+    }
+
+
+def _strip_netx(row: Any) -> dict[str, Any]:
+    """Drop collector provenance before persisting compare payloads."""
+    if not isinstance(row, dict):
+        return {}
+    return {k: v for k, v in row.items() if k != "_netx"}
 
 
 def _diff_search_text(d: dict[str, Any]) -> str:
@@ -215,30 +270,114 @@ def _persist_sheet_diffs(
     run_id: str,
     metric_id: str,
     diffs: list[dict[str, Any]],
-) -> None:
-    """Bulk-insert diff rows; avoids embedding million-row arrays in summary_json."""
+    seq_start: int = 0,
+) -> int:
+    """Bulk-insert diff rows already selected by the engine policy.
+
+    Compact success rows carry key + before/after_row_id; JSON sides stay empty
+    and are hydrated from metric tables on read.
+    """
     buf: list[dict[str, Any]] = []
-    for i, d in enumerate(diffs):
+    seq = int(seq_start or 0)
+    written = 0
+    for d in diffs:
+        kind = str(d.get("kind") or "")
+        before = _strip_netx(d.get("before"))
+        after = _strip_netx(d.get("after"))
+        mapped = _strip_netx(d.get("mapped_before"))
+        payload = {
+            "kind": kind,
+            "key": dict(d.get("key") or {}),
+            "before": before,
+            "after": after,
+            "mapped_before": mapped,
+            "changes": dict(d.get("changes") or {}),
+        }
+        # Compact success: search_text = kind + key only (no fat sides)
+        search_src = (
+            {"kind": kind, "key": payload["key"]}
+            if kind == "unchanged" and bool(d.get("compact"))
+            else payload
+        )
         buf.append(
             {
                 "id": uuid4().hex,
                 "run_id": run_id,
                 "metric_id": metric_id,
-                "seq": i,
-                "kind": str(d.get("kind") or ""),
-                "key_json": dict(d.get("key") or {}),
-                "before_json": dict(d.get("before") or {}),
-                "after_json": dict(d.get("after") or {}),
-                "mapped_before_json": dict(d.get("mapped_before") or {}),
-                "changes_json": dict(d.get("changes") or {}),
-                "search_text": _diff_search_text(d),
+                "seq": seq,
+                "kind": kind,
+                "key_json": payload["key"],
+                "before_json": before,
+                "after_json": after,
+                "mapped_before_json": mapped,
+                "changes_json": payload["changes"],
+                "before_row_id": str(d.get("before_row_id") or "")[:64],
+                "after_row_id": str(d.get("after_row_id") or "")[:64],
+                "search_text": _diff_search_text(search_src),
             }
         )
+        seq += 1
+        written += 1
         if len(buf) >= _DIFF_CHUNK:
             db.bulk_insert_mappings(BizCompareDiff, buf)
             buf.clear()
     if buf:
         db.bulk_insert_mappings(BizCompareDiff, buf)
+    return written
+
+
+def _metric_rows_by_ids(db: Session, ids: list[str]) -> dict[str, dict[str, Any]]:
+    """Load BizStateMetricRow / LLDP rows by primary key for hydrate."""
+    clean = [str(i).strip() for i in ids if str(i or "").strip()]
+    if not clean:
+        return {}
+    from ..models import BizStateMetricRow
+
+    out: dict[str, dict[str, Any]] = {}
+    # Chunk IN lists for large pages
+    for i in range(0, len(clean), 500):
+        chunk = clean[i : i + 500]
+        for r in db.query(BizStateMetricRow).filter(BizStateMetricRow.id.in_(chunk)).all():
+            out[str(r.id)] = dict(r.data_json or {})
+        missing = [x for x in chunk if x not in out]
+        if missing:
+            for n in (
+                db.query(BizStateLldpNeighbor)
+                .filter(BizStateLldpNeighbor.id.in_(missing))
+                .all()
+            ):
+                out[str(n.id)] = {
+                    "local_if": n.local_if,
+                    "remote_sys": n.remote_sys,
+                    "remote_if": n.remote_if,
+                    "remote_ip": n.remote_ip,
+                    "protocol": n.protocol,
+                }
+    return out
+
+
+def _hydrate_diff_rows(db: Session, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Fill empty before/after from metric tables when row_ids are present."""
+    need: list[str] = []
+    for it in items:
+        if not it.get("before") and it.get("before_row_id"):
+            need.append(str(it["before_row_id"]))
+        if not it.get("after") and it.get("after_row_id"):
+            need.append(str(it["after_row_id"]))
+    if not need:
+        return items
+    by_id = _metric_rows_by_ids(db, need)
+    for it in items:
+        brid = str(it.get("before_row_id") or "")
+        arid = str(it.get("after_row_id") or "")
+        if not it.get("before") and brid and brid in by_id:
+            it["before"] = by_id[brid]
+        if not it.get("after") and arid and arid in by_id:
+            it["after"] = by_id[arid]
+        # Success compact: no mapped_before stored — UI falls back to before
+        if not it.get("mapped_before") and it.get("before"):
+            it["mapped_before"] = dict(it["before"])
+    return items
 
 
 def _diff_row_out(r: BizCompareDiff) -> dict[str, Any]:
@@ -249,6 +388,8 @@ def _diff_row_out(r: BizCompareDiff) -> dict[str, Any]:
         "after": r.after_json or {},
         "mapped_before": r.mapped_before_json or {},
         "changes": r.changes_json or {},
+        "before_row_id": getattr(r, "before_row_id", "") or "",
+        "after_row_id": getattr(r, "after_row_id", "") or "",
     }
 
 
@@ -1207,47 +1348,54 @@ def _port_map_dict(db: Session, mapping_id: str) -> dict[str, str]:
 
 
 def _load_metric_rows(db: Session, *, batch_id: str, metric_id: str) -> list[dict[str, Any]]:
+    """Load metric rows with streaming fetch to avoid holding the full ORM set."""
     if metric_id == "lldp_neighbor":
-        rows = (
+        q = (
             db.query(BizStateLldpNeighbor)
             .filter(BizStateLldpNeighbor.batch_id == batch_id)
-            .all()
+            .execution_options(stream_results=True, yield_per=_LOAD_YIELD_PER)
         )
-        return [
-            {
-                "local_if": n.local_if,
-                "remote_sys": n.remote_sys,
-                "remote_if": n.remote_if,
-                "remote_ip": n.remote_ip,
-                "protocol": n.protocol,
-                "_netx": {
-                    "batch_id": batch_id,
-                    "batch_command_id": n.batch_command_id or "",
-                    "task_id": n.task_id or "",
-                    "ne_id": n.ne_id or "",
-                    "collected_at": n.collected_at.isoformat() + "Z" if n.collected_at else None,
-                    "row_id": n.id,
-                },
-            }
-            for n in rows
-        ]
+        out: list[dict[str, Any]] = []
+        for n in q:
+            out.append(
+                {
+                    "local_if": n.local_if,
+                    "remote_sys": n.remote_sys,
+                    "remote_if": n.remote_if,
+                    "remote_ip": n.remote_ip,
+                    "protocol": n.protocol,
+                    "_netx": {
+                        "batch_id": batch_id,
+                        "batch_command_id": n.batch_command_id or "",
+                        "task_id": n.task_id or "",
+                        "ne_id": n.ne_id or "",
+                        "collected_at": n.collected_at.isoformat() + "Z"
+                        if n.collected_at
+                        else None,
+                        "row_id": n.id,
+                    },
+                }
+            )
+            db.expunge(n)
+        return out
     # Generic tabular metrics (ISIS / interface / ARP / ND6 / BGP …)
     from ..models import BizStateMetricRow
 
-    rows = (
+    q = (
         db.query(BizStateMetricRow)
         .filter(
             BizStateMetricRow.batch_id == batch_id,
             BizStateMetricRow.metric_id == metric_id,
         )
         .order_by(BizStateMetricRow.seq.asc(), BizStateMetricRow.id.asc())
-        .all()
+        .execution_options(stream_results=True, yield_per=_LOAD_YIELD_PER)
     )
-    if rows:
+    out = []
+    for r in q:
         # Raw rows only — filtering belongs to the compare sheet template
         # (``row_filters``), not metric-specific branches here.
         # ``_netx`` is collector provenance (stripped before field compare).
-        return [
+        out.append(
             {
                 **dict(r.data_json or {}),
                 "_netx": {
@@ -1255,12 +1403,16 @@ def _load_metric_rows(db: Session, *, batch_id: str, metric_id: str) -> list[dic
                     "batch_command_id": r.batch_command_id or "",
                     "task_id": r.task_id or "",
                     "ne_id": r.ne_id or "",
-                    "collected_at": r.collected_at.isoformat() + "Z" if r.collected_at else None,
+                    "collected_at": r.collected_at.isoformat() + "Z"
+                    if r.collected_at
+                    else None,
                     "row_id": r.id,
                 },
             }
-            for r in rows
-        ]
+        )
+        db.expunge(r)
+    if out:
+        return out
     # Known metric with zero rows is OK; unknown metric still errors
     if metric_id in metric_field_map():
         return []
@@ -1318,6 +1470,7 @@ def _job_out(j: BizCompareJob) -> dict[str, Any]:
         "mode": j.mode,
         "status": j.status,
         "enabled_sheet_ids": _str_list(getattr(j, "enabled_sheet_ids", None)),
+        "store_unchanged": normalize_store_unchanged(getattr(j, "store_unchanged", None)),
         "note": j.note,
         "updated_at": j.updated_at.isoformat() + "Z" if j.updated_at else None,
     }
@@ -1360,6 +1513,7 @@ def create_job(db: Session, body: dict[str, Any]) -> dict[str, Any]:
         mode=str(body.get("mode") or "manual")[:16],
         status="ready",
         enabled_sheet_ids=enabled,
+        store_unchanged=normalize_store_unchanged(body.get("store_unchanged")),
         note=str(body.get("note") or "")[:512],
         created_at=_utcnow(),
         updated_at=_utcnow(),
@@ -1391,6 +1545,8 @@ def update_job(db: Session, job_id: str, body: dict[str, Any]) -> dict[str, Any]
             setattr(j, key, str(body.get(key) or ""))
     if "enabled_sheet_ids" in body:
         j.enabled_sheet_ids = _str_list(body.get("enabled_sheet_ids"))
+    if "store_unchanged" in body:
+        j.store_unchanged = normalize_store_unchanged(body.get("store_unchanged"))
     j.updated_at = _utcnow()
     db.commit()
     return _job_out(j)
@@ -1452,6 +1608,7 @@ def _run_sheet(
     after_batch_id: str,
     port_map: dict[str, str],
     iface_normalize_rules: list[dict[str, str]] | None = None,
+    store_unchanged: str = "auto",
 ) -> dict[str, Any]:
     key_fields = list(sheet.get("key_fields") or [])
     iface_fields = list(sheet.get("iface_fields") or [])
@@ -1476,6 +1633,9 @@ def _run_sheet(
     after_raw = _load_metric_rows(db, batch_id=after_batch_id, metric_id=sheet["metric_id"])
     before_rows = apply_row_filters(before_raw, row_filters)
     after_rows = apply_row_filters(after_raw, row_filters)
+    policy = resolve_unchanged_policy(
+        store_unchanged, before_n=len(before_rows), after_n=len(after_rows)
+    )
     result = compare_rows(
         before_rows=before_rows,
         after_rows=after_rows,
@@ -1486,11 +1646,15 @@ def _run_sheet(
         field_rules=field_rules,
         iface_normalize_rules=iface_normalize_rules,
         ignore_port_changes=ignore_ports,
+        include_unchanged=bool(policy["include"]),
+        unchanged_limit=policy.get("limit"),
+        compact_unchanged=bool(policy.get("compact")),
     )
     summary = dict(result["summary"])
     summary["before_raw_count"] = len(before_raw)
     summary["after_raw_count"] = len(after_raw)
     summary["row_filters"] = len(row_filters)
+    summary["unchanged_policy"] = policy
     return {
         "sheet_id": sheet_key(sheet),
         "title": sheet_title(sheet),
@@ -1509,19 +1673,10 @@ def _run_sheet(
     }
 
 
-def run_compare(db: Session, job_id: str, *, force_after_batch_id: str = "") -> dict[str, Any]:
-    lock = _job_compare_lock(job_id)
-    if not lock.acquire(blocking=False):
-        raise HTTPException(status_code=409, detail="compare_already_running")
-    try:
-        return _run_compare_unlocked(db, job_id, force_after_batch_id=force_after_batch_id)
-    finally:
-        lock.release()
-
-
-def _run_compare_unlocked(
+def _validate_compare_job(
     db: Session, job_id: str, *, force_after_batch_id: str = ""
 ) -> dict[str, Any]:
+    """Resolve job/template/batches/sheets; raises HTTPException on bad input."""
     j = db.get(BizCompareJob, job_id)
     if not j:
         raise HTTPException(status_code=404, detail="job_not_found")
@@ -1541,10 +1696,136 @@ def _run_compare_unlocked(
     sheets_cfg = _filter_enabled_sheets(sheets_cfg, getattr(j, "enabled_sheet_ids", None))
     if not sheets_cfg:
         raise HTTPException(status_code=400, detail="no_enabled_sheets")
+    return {
+        "job": j,
+        "template": tpl,
+        "before_batch_id": before_batch_id,
+        "after_batch_id": after_batch_id,
+        "sheets_cfg": sheets_cfg,
+    }
 
-    pmap = _port_map_dict(db, j.mapping_id)
+
+def _create_running_run(
+    db: Session,
+    *,
+    job: BizCompareJob,
+    tpl: BizCompareTemplate,
+    before_batch_id: str,
+    after_batch_id: str,
+    sheets_cfg: list[dict[str, Any]],
+) -> BizCompareRun:
+    first_metric = str(sheets_cfg[0].get("metric_id") or "")
+    run = BizCompareRun(
+        id=uuid4().hex,
+        job_id=job.id,
+        template_id=tpl.id,
+        mapping_id=job.mapping_id,
+        before_batch_id=before_batch_id,
+        after_batch_id=after_batch_id,
+        metric_id=first_metric,
+        status="running",
+        summary_json={
+            "progress": {
+                "phase": "queued",
+                "sheet_index": 0,
+                "sheet_total": len(sheets_cfg),
+                "sheet_id": "",
+                "sheet_title": "",
+                "elapsed_ms": 0,
+            },
+            "sheet_count": len(sheets_cfg),
+            "added": 0,
+            "removed": 0,
+            "changed": 0,
+            "unchanged": 0,
+            "duplicate": 0,
+            "before_count": 0,
+            "after_count": 0,
+            "sheets": [],
+        },
+        diffs_json=[],
+        mapping_stats_json={},
+        message="queued",
+        created_at=_utcnow(),
+    )
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+    return run
+
+
+def _set_run_progress(
+    db: Session,
+    run: BizCompareRun,
+    *,
+    phase: str,
+    sheet_index: int,
+    sheet_total: int,
+    sheet: dict[str, Any] | None,
+    started_mono: float,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    elapsed_ms = int((time.monotonic() - started_mono) * 1000)
+    prev = dict(run.summary_json or {})
+    progress = {
+        "phase": phase,
+        "sheet_index": sheet_index,
+        "sheet_total": sheet_total,
+        "sheet_id": sheet_key(sheet) if sheet else "",
+        "sheet_title": sheet_title(sheet) if sheet else "",
+        "elapsed_ms": elapsed_ms,
+    }
+    if extra:
+        progress.update(extra)
+    prev["progress"] = progress
+    run.summary_json = prev
+    run.status = "running"
+    title = progress["sheet_title"] or progress["sheet_id"] or ""
+    run.message = (
+        f"{phase} {sheet_index}/{sheet_total}"
+        + (f" · {title}" if title else "")
+        + f" · {elapsed_ms // 1000}s"
+    )[:1024]
+    db.commit()
+
+
+def _execute_compare_into_run(db: Session, run_id: str) -> dict[str, Any]:
+    """Run compare into an existing ``running`` BizCompareRun; persist sheet-by-sheet."""
+    run = db.get(BizCompareRun, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="run_not_found")
+    j = db.get(BizCompareJob, run.job_id)
+    if not j:
+        run.status = "failed"
+        run.message = "job_not_found"
+        db.commit()
+        raise HTTPException(status_code=404, detail="job_not_found")
+    tpl = db.get(BizCompareTemplate, run.template_id)
+    if not tpl:
+        run.status = "failed"
+        run.message = "template_not_found"
+        db.commit()
+        raise HTTPException(status_code=404, detail="template_not_found")
+
+    before_batch_id = str(run.before_batch_id or "")
+    after_batch_id = str(run.after_batch_id or "")
+    sheets_cfg = _filter_enabled_sheets(
+        template_metrics(tpl), getattr(j, "enabled_sheet_ids", None)
+    )
+    if not sheets_cfg:
+        run.status = "failed"
+        run.message = "no_enabled_sheets"
+        db.commit()
+        raise HTTPException(status_code=400, detail="no_enabled_sheets")
+
+    started_mono = time.monotonic()
+    store_mode = normalize_store_unchanged(getattr(j, "store_unchanged", None))
+    pmap = _port_map_dict(db, run.mapping_id)
     norm_rules = template_iface_normalize(tpl)
-    sheet_results: list[dict[str, Any]] = []
+    sheet_metas: list[dict[str, Any]] = []
+    unchanged_listed_total = 0
+    unchanged_truncated_any = False
+    unchanged_compact_any = False
     agg = {
         "before_count": 0,
         "after_count": 0,
@@ -1555,87 +1836,250 @@ def _run_compare_unlocked(
         "duplicate": 0,
     }
     mapping_by_metric: dict[str, Any] = {}
-    for sheet in sheets_cfg:
-        one = _run_sheet(
-            db,
-            sheet=sheet,
-            before_batch_id=before_batch_id,
-            after_batch_id=after_batch_id,
-            port_map=pmap,
-            iface_normalize_rules=norm_rules,
-        )
-        sheet_results.append(one)
-        s = one["summary"]
-        for k in agg:
-            agg[k] += int(s.get(k) or 0)
-        mapping_by_metric[sheet_key(one)] = one["mapping_stats"]
-
-    first = sheet_results[0]
     field_counts: dict[str, int] = {}
-    for s in sheet_results:
-        for d in list(s.get("diffs") or []):
-            if str(d.get("kind") or "") != "changed":
-                continue
-            for fname in d.get("changes") or {}:
-                field_counts[str(fname)] = field_counts.get(str(fname), 0) + 1
-    top_fields = sorted(
-        [{"field": k, "count": v} for k, v in field_counts.items()],
-        key=lambda x: (-int(x["count"]), str(x["field"])),
-    )[:8]
+    total = len(sheets_cfg)
 
-    run_id = uuid4().hex
-    # Persist counts/meta only — diffs go to biz_compare_diff rows
-    summary_payload = {
-        **agg,
-        "sheet_count": len(sheet_results),
-        "top_changed_fields": top_fields,
-        "sheets": [
-            {
-                "sheet_id": s.get("sheet_id") or s["metric_id"],
-                "title": s.get("title") or s.get("sheet_id") or s["metric_id"],
-                "metric_id": s["metric_id"],
-                "key_fields": s["key_fields"],
-                "iface_fields": s["iface_fields"],
-                "compare_fields": s["compare_fields"],
-                "display_fields": s.get("display_fields") or [],
-                "field_rules": s.get("field_rules") or [],
-                "ignore_port_changes": s.get("ignore_port_changes"),
-                "mode": s["mode"],
-                "summary": s["summary"],
-            }
-            for s in sheet_results
-        ],
-    }
+    try:
+        for idx, sheet in enumerate(sheets_cfg, start=1):
+            _set_run_progress(
+                db,
+                run,
+                phase="loading",
+                sheet_index=idx,
+                sheet_total=total,
+                sheet=sheet,
+                started_mono=started_mono,
+            )
+            one = _run_sheet(
+                db,
+                sheet=sheet,
+                before_batch_id=before_batch_id,
+                after_batch_id=after_batch_id,
+                port_map=pmap,
+                iface_normalize_rules=norm_rules,
+                store_unchanged=store_mode,
+            )
+            s = one["summary"]
+            listed = int(s.get("unchanged_listed") or 0)
+            unchanged_listed_total += listed
+            if s.get("unchanged_truncated"):
+                unchanged_truncated_any = True
+            if s.get("unchanged_compact"):
+                unchanged_compact_any = True
+            _set_run_progress(
+                db,
+                run,
+                phase="persisting",
+                sheet_index=idx,
+                sheet_total=total,
+                sheet=sheet,
+                started_mono=started_mono,
+                extra={
+                    "before_count": int(s.get("before_count") or 0),
+                    "after_count": int(s.get("after_count") or 0),
+                    "diff_rows": int(s.get("added") or 0)
+                    + int(s.get("removed") or 0)
+                    + int(s.get("changed") or 0)
+                    + int(s.get("duplicate") or 0)
+                    + listed,
+                },
+            )
+            diffs = list(one.get("diffs") or [])
+            for d in diffs:
+                if str(d.get("kind") or "") != "changed":
+                    continue
+                for fname in d.get("changes") or {}:
+                    field_counts[str(fname)] = field_counts.get(str(fname), 0) + 1
+            # Cutover-first: persist fails so the UI can open the fail tab ASAP,
+            # then write success slim keys (sample / keys mode).
+            fail_diffs = [d for d in diffs if str(d.get("kind") or "") != "unchanged"]
+            ok_diffs = [d for d in diffs if str(d.get("kind") or "") == "unchanged"]
+            mid = sheet_key(one)
+            _set_run_progress(
+                db,
+                run,
+                phase="persisting_fail",
+                sheet_index=idx,
+                sheet_total=total,
+                sheet=sheet,
+                started_mono=started_mono,
+                extra={"fail_rows": len(fail_diffs)},
+            )
+            n_fail = _persist_sheet_diffs(
+                db, run_id=run.id, metric_id=mid, diffs=fail_diffs, seq_start=0
+            )
+            db.commit()
+            if ok_diffs:
+                _set_run_progress(
+                    db,
+                    run,
+                    phase="persisting_ok",
+                    sheet_index=idx,
+                    sheet_total=total,
+                    sheet=sheet,
+                    started_mono=started_mono,
+                    extra={"ok_rows": len(ok_diffs)},
+                )
+                _persist_sheet_diffs(
+                    db,
+                    run_id=run.id,
+                    metric_id=mid,
+                    diffs=ok_diffs,
+                    seq_start=n_fail,
+                )
+            for k in agg:
+                agg[k] += int(s.get(k) or 0)
+            mapping_by_metric[mid] = one["mapping_stats"]
+            sheet_metas.append(
+                {
+                    "sheet_id": one.get("sheet_id") or one["metric_id"],
+                    "title": one.get("title") or one.get("sheet_id") or one["metric_id"],
+                    "metric_id": one["metric_id"],
+                    "key_fields": one["key_fields"],
+                    "iface_fields": one["iface_fields"],
+                    "compare_fields": one["compare_fields"],
+                    "display_fields": one.get("display_fields") or [],
+                    "field_rules": one.get("field_rules") or [],
+                    "ignore_port_changes": one.get("ignore_port_changes"),
+                    "mode": one["mode"],
+                    "summary": one["summary"],
+                }
+            )
+            # Drop heavy diffs before next sheet
+            one.clear()
+            diffs.clear()
+            fail_diffs.clear()
+            ok_diffs.clear()
+            db.commit()
 
-    run = BizCompareRun(
-        id=run_id,
-        job_id=j.id,
-        template_id=tpl.id,
-        mapping_id=j.mapping_id,
-        before_batch_id=before_batch_id,
-        after_batch_id=after_batch_id,
-        metric_id=first["metric_id"],
-        status="success",
-        summary_json=summary_payload,
-        diffs_json=[],
-        mapping_stats_json=mapping_by_metric,
-        message="",
-        created_at=_utcnow(),
-    )
-    db.add(run)
-    db.flush()
-    for s in sheet_results:
-        _persist_sheet_diffs(
+        duration_ms = int((time.monotonic() - started_mono) * 1000)
+        top_fields = sorted(
+            [{"field": k, "count": v} for k, v in field_counts.items()],
+            key=lambda x: (-int(x["count"]), str(x["field"])),
+        )[:8]
+        summary_payload = {
+            **agg,
+            "sheet_count": len(sheet_metas),
+            "top_changed_fields": top_fields,
+            "duration_ms": duration_ms,
+            "store_unchanged": store_mode,
+            "unchanged_stored": unchanged_listed_total > 0,
+            "unchanged_listed": unchanged_listed_total,
+            "unchanged_truncated": unchanged_truncated_any,
+            "unchanged_compact": unchanged_compact_any,
+            "progress": {
+                "phase": "done",
+                "sheet_index": total,
+                "sheet_total": total,
+                "sheet_id": "",
+                "sheet_title": "",
+                "elapsed_ms": duration_ms,
+            },
+            "sheets": sheet_metas,
+        }
+        run.status = "success"
+        run.summary_json = summary_payload
+        run.mapping_stats_json = mapping_by_metric
+        run.metric_id = str(sheet_metas[0]["metric_id"]) if sheet_metas else run.metric_id
+        run.message = f"done · {duration_ms // 1000}s"
+        run.diffs_json = []
+        j.updated_at = _utcnow()
+        if j.mode == "manual":
+            j.after_batch_id = after_batch_id
+        db.commit()
+        return get_run(db, run.id)
+    except HTTPException as exc:
+        run.status = "failed"
+        run.message = str(getattr(exc, "detail", "") or exc)[:1024]
+        prev = dict(run.summary_json or {})
+        prog = dict(prev.get("progress") or {})
+        prog["phase"] = "failed"
+        prog["elapsed_ms"] = int((time.monotonic() - started_mono) * 1000)
+        prev["progress"] = prog
+        prev["duration_ms"] = prog["elapsed_ms"]
+        run.summary_json = prev
+        db.commit()
+        raise
+    except Exception as exc:
+        _log.exception("compare run failed run=%s job=%s", run_id, j.id)
+        run.status = "failed"
+        run.message = str(exc)[:1024]
+        prev = dict(run.summary_json or {})
+        prog = dict(prev.get("progress") or {})
+        prog["phase"] = "failed"
+        prog["elapsed_ms"] = int((time.monotonic() - started_mono) * 1000)
+        prev["progress"] = prog
+        prev["duration_ms"] = prog["elapsed_ms"]
+        run.summary_json = prev
+        db.commit()
+        raise
+
+
+def run_compare(db: Session, job_id: str, *, force_after_batch_id: str = "") -> dict[str, Any]:
+    """Synchronous compare (auto-compare / tests). Blocks the caller until done."""
+    lock = _job_compare_lock(job_id)
+    if not lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="compare_already_running")
+    try:
+        ctx = _validate_compare_job(db, job_id, force_after_batch_id=force_after_batch_id)
+        run = _create_running_run(
             db,
-            run_id=run_id,
-            metric_id=sheet_key(s),
-            diffs=list(s.get("diffs") or []),
+            job=ctx["job"],
+            tpl=ctx["template"],
+            before_batch_id=ctx["before_batch_id"],
+            after_batch_id=ctx["after_batch_id"],
+            sheets_cfg=ctx["sheets_cfg"],
         )
-    j.updated_at = _utcnow()
-    if j.mode == "manual":
-        j.after_batch_id = after_batch_id
-    db.commit()
-    return get_run(db, run.id)
+        return _execute_compare_into_run(db, run.id)
+    finally:
+        lock.release()
+
+
+def enqueue_compare(
+    db: Session, job_id: str, *, force_after_batch_id: str = ""
+) -> dict[str, Any]:
+    """Create a ``running`` run and execute compare on a daemon thread.
+
+    Returns immediately so the HTTP worker / UI stay responsive. Poll
+    ``GET /compare/runs/{id}`` for progress (``summary.progress``).
+    """
+    lock = _job_compare_lock(job_id)
+    if not lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="compare_already_running")
+    run_id = ""
+    try:
+        ctx = _validate_compare_job(db, job_id, force_after_batch_id=force_after_batch_id)
+        run = _create_running_run(
+            db,
+            job=ctx["job"],
+            tpl=ctx["template"],
+            before_batch_id=ctx["before_batch_id"],
+            after_batch_id=ctx["after_batch_id"],
+            sheets_cfg=ctx["sheets_cfg"],
+        )
+        run_id = run.id
+    except Exception:
+        lock.release()
+        raise
+
+    def _bg() -> None:
+        from ..db import SessionLocal
+
+        s = SessionLocal()
+        try:
+            _execute_compare_into_run(s, run_id)
+        except Exception:
+            _log.exception("bg compare failed job=%s run=%s", job_id, run_id)
+        finally:
+            s.close()
+            lock.release()
+
+    threading.Thread(
+        target=_bg,
+        name=f"biz-cmp-{run_id[:8]}",
+        daemon=True,
+    ).start()
+    return get_run(db, run_id)
 
 
 def _csv_cell(v: Any) -> str:
@@ -1775,6 +2219,13 @@ def _enrich_summary(summary: dict[str, Any], sheets: list[dict[str, Any]]) -> di
         "ok": fail_count == 0,
         "sheet_cards": sheet_cards,
         "top_changed_fields": top_fields,
+        "duration_ms": int(summary.get("duration_ms") or 0),
+        "store_unchanged": str(summary.get("store_unchanged") or ""),
+        "unchanged_stored": bool(summary.get("unchanged_stored", True)),
+        "unchanged_listed": int(summary.get("unchanged_listed") or 0),
+        "unchanged_truncated": bool(summary.get("unchanged_truncated")),
+        "unchanged_compact": bool(summary.get("unchanged_compact")),
+        "progress": dict(summary.get("progress") or {}),
     }
 
 
@@ -1893,12 +2344,13 @@ def list_run_diffs(
             .limit(size_n)
             .all()
         )
+        items = _hydrate_diff_rows(db, [_diff_row_out(x) for x in rows])
         return {
             "total": total,
             "page": page_n,
             "page_size": size_n,
             "metric_id": mid,
-            "items": [_diff_row_out(x) for x in rows],
+            "items": items,
         }
 
     # Legacy: diffs embedded in summary_json / diffs_json
@@ -1922,7 +2374,10 @@ def list_run_diffs(
 
 
 def _iter_sheet_diffs(db: Session, run_id: str, metric_id: str) -> list[dict[str, Any]]:
-    """Load all diffs for one sheet (export). Prefer row table; fall back to inline."""
+    """Load all diffs for one sheet (export). Prefer row table; fall back to inline.
+
+    Compact success rows are hydrated in chunks from metric tables.
+    """
     if _run_has_diff_rows(db, run_id):
         out: list[dict[str, Any]] = []
         offset = 0
@@ -1937,7 +2392,8 @@ def _iter_sheet_diffs(db: Session, run_id: str, metric_id: str) -> list[dict[str
             )
             if not rows:
                 break
-            out.extend(_diff_row_out(x) for x in rows)
+            chunk = _hydrate_diff_rows(db, [_diff_row_out(x) for x in rows])
+            out.extend(chunk)
             offset += len(rows)
             if len(rows) < _DIFF_CHUNK:
                 break
@@ -2025,22 +2481,34 @@ def list_runs(db: Session, job_id: str, *, limit: int = 20) -> list[dict[str, An
     job = db.get(BizCompareJob, job_id)
     before_tid = str(job.before_task_id or "") if job else ""
     after_tid = str(job.after_task_id or "") if job else ""
-    return [
-        {
-            "id": r.id,
-            "before_batch_id": r.before_batch_id,
-            "after_batch_id": r.after_batch_id,
-            "before": _compare_side(db, r.before_batch_id, fallback_task_id=before_tid),
-            "after": _compare_side(db, r.after_batch_id, fallback_task_id=after_tid),
-            "status": r.status,
-            "summary": {
-                k: (r.summary_json or {}).get(k, 0)
-                for k in ("added", "removed", "changed", "unchanged", "sheet_count")
-            },
-            "created_at": r.created_at.isoformat() + "Z" if r.created_at else None,
-        }
-        for r in rows
-    ]
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        summary = dict(r.summary_json or {})
+        out.append(
+            {
+                "id": r.id,
+                "before_batch_id": r.before_batch_id,
+                "after_batch_id": r.after_batch_id,
+                "before": _compare_side(db, r.before_batch_id, fallback_task_id=before_tid),
+                "after": _compare_side(db, r.after_batch_id, fallback_task_id=after_tid),
+                "status": r.status,
+                "message": r.message or "",
+                "summary": {
+                    k: summary.get(k, 0)
+                    for k in (
+                        "added",
+                        "removed",
+                        "changed",
+                        "unchanged",
+                        "sheet_count",
+                        "duration_ms",
+                    )
+                },
+                "progress": dict(summary.get("progress") or {}),
+                "created_at": r.created_at.isoformat() + "Z" if r.created_at else None,
+            }
+        )
+    return out
 
 
 def try_auto_compare_for_task(db: Session, task_id: str, batch_id: str) -> int:

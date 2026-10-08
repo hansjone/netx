@@ -633,6 +633,8 @@ class CompareJobIn(BaseModel):
     mode: str = "manual"
     # Empty = all template sheets; non-empty = only these sheet_id values
     enabled_sheet_ids: list[str] = Field(default_factory=list)
+    # auto|always|never|sample|keys — how to persist matching (success) rows
+    store_unchanged: str = "auto"
     note: str = ""
 
 
@@ -723,8 +725,15 @@ def api_delete_job(job_id: str, db: Session = Depends(get_db)) -> dict[str, Any]
 
 
 @router.post("/compare/jobs/{job_id}/run")
-def api_run_job(job_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
-    return cmp_svc.run_compare(db, job_id)
+def api_run_job(
+    job_id: str,
+    sync: bool = Query(False, description="If true, block until compare finishes (tests/debug)"),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Start a compare run. Default is async (returns status=running immediately)."""
+    if sync:
+        return cmp_svc.run_compare(db, job_id)
+    return cmp_svc.enqueue_compare(db, job_id)
 
 
 @router.get("/compare/jobs/{job_id}/runs")

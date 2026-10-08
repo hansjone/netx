@@ -303,6 +303,8 @@ class BizCompareJob(Base):
     status: Mapped[str] = mapped_column(String(32), default="draft", index=True)  # draft|ready|auto
     # Empty = all template sheets; non-empty = only these sheet_id values
     enabled_sheet_ids: Mapped[list] = mapped_column(_JsonType, default=list)
+    # auto|always|never|sample — how to persist matching (success) rows
+    store_unchanged: Mapped[str] = mapped_column(String(16), default="auto")
     note: Mapped[str] = mapped_column(String(512), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
@@ -347,4 +349,7 @@ class BizCompareDiff(Base):
     after_json: Mapped[dict] = mapped_column(_JsonType, default=dict)
     mapped_before_json: Mapped[dict] = mapped_column(_JsonType, default=dict)
     changes_json: Mapped[dict] = mapped_column(_JsonType, default=dict)
+    # Pointers into BizStateMetricRow / LLDP tables for compact success hydrate
+    before_row_id: Mapped[str] = mapped_column(String(64), default="")
+    after_row_id: Mapped[str] = mapped_column(String(64), default="")
     search_text: Mapped[str] = mapped_column(Text, default="")

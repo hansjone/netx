@@ -105,12 +105,23 @@ def compare_rows(
     field_rules: Sequence[Mapping[str, Any]] | None = None,
     iface_normalize_rules: Sequence[Mapping[str, str]] | None = None,
     ignore_port_changes: bool | None = None,
+    include_unchanged: bool = False,
+    unchanged_limit: int | None = None,
+    compact_unchanged: bool = False,
 ) -> dict[str, Any]:
     """Return summary + diffs list.
 
     Diff kinds: added | removed | changed | unchanged | duplicate
 
     Pipeline: iface normalize (both sides) → port map (before) → match.
+
+    ``include_unchanged``: when False, matching rows still increment
+    ``summary.unchanged`` but are omitted from ``diffs``.
+
+    ``unchanged_limit``: max unchanged diffs to emit (None = no cap). Use with
+    large sheets so the UI can browse a sample without writing millions of rows.
+
+    ``compact_unchanged``: emit key only (empty before/after) to cut storage.
 
     ``ignore_port_changes``:
       - ``None`` (default): auto — drop iface from match key only when remaining
@@ -184,9 +195,56 @@ def compare_rows(
     before_dup_keys: list[tuple[str, ...]] = []
     diffs: list[dict[str, Any]] = []
     added = removed = changed = unchanged = duplicate = 0
+    unchanged_listed = 0
+    limit_n = None if unchanged_limit is None else max(0, int(unchanged_limit))
 
     def _key_obj(row: dict[str, Any]) -> dict[str, Any]:
         return {f: row.get(f, "") for f in key_fields}
+
+    def _row_id(row: dict[str, Any] | None) -> str:
+        if not isinstance(row, dict):
+            return ""
+        netx = row.get("_netx")
+        if isinstance(netx, dict):
+            return str(netx.get("row_id") or "")
+        return ""
+
+    def _emit_unchanged(orig: dict[str, Any], mapped: dict[str, Any], after_row: dict[str, Any]) -> None:
+        nonlocal unchanged_listed
+        if not include_unchanged:
+            return
+        if limit_n is not None and unchanged_listed >= limit_n:
+            return
+        unchanged_listed += 1
+        before_rid = _row_id(orig)
+        after_rid = _row_id(after_row)
+        if compact_unchanged:
+            diffs.append(
+                {
+                    "kind": "unchanged",
+                    "key": _key_obj(mapped),
+                    "before": {},
+                    "after": {},
+                    "mapped_before": {},
+                    "changes": {},
+                    "compact": True,
+                    "before_row_id": before_rid,
+                    "after_row_id": after_rid,
+                }
+            )
+        else:
+            diffs.append(
+                {
+                    "kind": "unchanged",
+                    "key": _key_obj(mapped),
+                    "before": orig,
+                    "after": after_row,
+                    "mapped_before": mapped,
+                    "changes": {},
+                    "before_row_id": before_rid,
+                    "after_row_id": after_rid,
+                }
+            )
 
     for orig, mapped in zip(before_rows, before_mapped):
         k = row_key(mapped, match_keys)
@@ -248,16 +306,7 @@ def compare_rows(
             )
         else:
             unchanged += 1
-            diffs.append(
-                {
-                    "kind": "unchanged",
-                    "key": _key_obj(mapped),
-                    "before": orig,
-                    "after": after,
-                    "mapped_before": mapped,
-                    "changes": {},
-                }
-            )
+            _emit_unchanged(orig, mapped, after)
 
     for k, after in after_index.items():
         if k in before_keys:
@@ -319,6 +368,11 @@ def compare_rows(
             "duplicate_keys_before": before_dup,
             "duplicate_keys_after": after_dup,
             "duplicate_key_list": _fmt_keys(before_dup_keys + after_dup_keys),
+            "unchanged_listed": unchanged_listed,
+            "unchanged_truncated": bool(
+                include_unchanged and limit_n is not None and unchanged > unchanged_listed
+            ),
+            "unchanged_compact": bool(compact_unchanged and unchanged_listed > 0),
         },
         "diffs": diffs,
         "mapping_stats": stats,

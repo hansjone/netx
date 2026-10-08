@@ -96,7 +96,18 @@ class CompareEngineTests(unittest.TestCase):
         self.assertEqual(s["removed"], 1)
         self.assertEqual(s["added"], 1)
         kinds = {d["kind"] for d in out["diffs"]}
-        self.assertIn("unchanged", kinds)
+        # Default: unchanged counted but not listed (million-row safe)
+        self.assertNotIn("unchanged", kinds)
+        out_full = compare_rows(
+            before_rows=before,
+            after_rows=after,
+            key_fields=["local_if", "remote_sys", "remote_if"],
+            iface_fields=["local_if"],
+            compare_fields=[],
+            port_map={},
+            include_unchanged=True,
+        )
+        self.assertIn("unchanged", {d["kind"] for d in out_full["diffs"]})
 
     def test_empty_port_map_ignores_iface_in_key(self) -> None:
         """No port map → ignore local_if when matching (same neighbor, renamed port)."""
@@ -149,10 +160,49 @@ class CompareEngineTests(unittest.TestCase):
             iface_fields=["local_if"],
             compare_fields=["remote_ip"],
             port_map={},
+            include_unchanged=True,
         )
         self.assertEqual(out["summary"]["unchanged"], 1)
         self.assertEqual(len(out["diffs"]), 1)
         self.assertEqual(out["diffs"][0]["kind"], "unchanged")
+        slim = compare_rows(
+            before_rows=before,
+            after_rows=after,
+            key_fields=["local_if", "remote_sys", "remote_if"],
+            iface_fields=["local_if"],
+            compare_fields=["remote_ip"],
+            port_map={},
+        )
+        self.assertEqual(slim["summary"]["unchanged"], 1)
+        self.assertEqual(slim["diffs"], [])
+
+    def test_unchanged_sample_limit_and_compact(self) -> None:
+        before = [
+            {"k": str(i), "v": "1", "_netx": {"row_id": f"b{i}"}} for i in range(5)
+        ]
+        after = [
+            {"k": str(i), "v": "1", "_netx": {"row_id": f"a{i}"}} for i in range(5)
+        ]
+        out = compare_rows(
+            before_rows=before,
+            after_rows=after,
+            key_fields=["k"],
+            iface_fields=[],
+            compare_fields=["v"],
+            port_map={},
+            include_unchanged=True,
+            unchanged_limit=2,
+            compact_unchanged=True,
+        )
+        self.assertEqual(out["summary"]["unchanged"], 5)
+        self.assertEqual(out["summary"]["unchanged_listed"], 2)
+        self.assertTrue(out["summary"]["unchanged_truncated"])
+        self.assertTrue(out["summary"]["unchanged_compact"])
+        self.assertEqual(len(out["diffs"]), 2)
+        self.assertEqual(out["diffs"][0]["before"], {})
+        self.assertEqual(out["diffs"][0]["after"], {})
+        self.assertEqual(out["diffs"][0]["before_row_id"], "b0")
+        self.assertEqual(out["diffs"][0]["after_row_id"], "a0")
 
     def test_mac_normalize_via_field_rules(self) -> None:
         before = [{"ip": "1.1.1.1", "mac": "00:11:22:33:44:55", "iface": "gei-0/1"}]
@@ -309,6 +359,57 @@ class CompareRulesTests(unittest.TestCase):
 
 
 class CompareDiffPagingTests(unittest.TestCase):
+    def test_resolve_unchanged_policy(self) -> None:
+        from netx_api.biz_state.compare_service import resolve_unchanged_policy
+
+        small = resolve_unchanged_policy("auto", before_n=100, after_n=100)
+        self.assertTrue(small["include"])
+        self.assertIsNone(small["limit"])
+        self.assertFalse(small["compact"])
+        large = resolve_unchanged_policy("auto", before_n=1_500_000, after_n=1_500_000)
+        self.assertTrue(large["include"])
+        self.assertEqual(large["limit"], 5000)
+        self.assertTrue(large["compact"])
+        self.assertFalse(resolve_unchanged_policy("never", before_n=10, after_n=10)["include"])
+        keys = resolve_unchanged_policy("keys", before_n=1_500_000, after_n=1_500_000)
+        self.assertTrue(keys["include"])
+        self.assertIsNone(keys["limit"])
+        self.assertTrue(keys["compact"])
+
+    def test_hydrate_diff_rows_fills_sides(self) -> None:
+        from netx_api.biz_state.compare_service import _hydrate_diff_rows
+
+        class _FakeDb:
+            pass
+
+        items = [
+            {
+                "kind": "unchanged",
+                "key": {"k": "1"},
+                "before": {},
+                "after": {},
+                "mapped_before": {},
+                "changes": {},
+                "before_row_id": "b1",
+                "after_row_id": "a1",
+            }
+        ]
+        # Patch loader
+        import netx_api.biz_state.compare_service as cs
+
+        orig = cs._metric_rows_by_ids
+        try:
+            cs._metric_rows_by_ids = lambda _db, ids: {  # type: ignore[assignment]
+                "b1": {"k": "1", "v": "pre"},
+                "a1": {"k": "1", "v": "post"},
+            }
+            out = _hydrate_diff_rows(_FakeDb(), items)
+        finally:
+            cs._metric_rows_by_ids = orig
+        self.assertEqual(out[0]["before"]["v"], "pre")
+        self.assertEqual(out[0]["after"]["v"], "post")
+        self.assertEqual(out[0]["mapped_before"]["v"], "pre")
+
     def test_filter_inline_diffs_kind_and_kw(self) -> None:
         from netx_api.biz_state.compare_service import _filter_inline_diffs
 
