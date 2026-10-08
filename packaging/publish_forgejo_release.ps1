@@ -112,7 +112,8 @@ function Upload-ForgejoAsset {
     $url = "$apiBase/releases/$relId/assets"
     $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
     if (-not $curl) { throw "curl.exe required for asset upload" }
-    & $curl.Source -f -sS -X POST `
+    # --ssl-no-revoke: schannel CRYPT_E_REVOCATION_OFFLINE often fails via proxy/offline CA.
+    & $curl.Source -f -sS --ssl-no-revoke -X POST `
         -H "Authorization: token $Token" `
         -F "attachment=@$Path" `
         $url
