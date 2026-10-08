@@ -196,6 +196,8 @@ function PairCell(props: {
   const post = afterText || "—";
   const isAdded = kind === "added";
   const isRemoved = kind === "removed";
+  const same =
+    !mismatch && !isAdded && !isRemoved && String(beforeText || "") === String(afterText || "");
   // Whole-row missing/extra: emphasize the present side; do not strike it out.
   const preClass = [
     "bs-cmp-val",
@@ -217,20 +219,31 @@ function PairCell(props: {
     <td
       className={`bs-cmp-val-cell bs-cmp-val-cell--pair${
         mismatch || isAdded || isRemoved ? " bs-cmp-val-cell--diff" : ""
-      }${isAdded ? " is-added" : ""}${isRemoved ? " is-removed" : ""}${
+      }${same ? " is-same" : ""}${isAdded ? " is-added" : ""}${isRemoved ? " is-removed" : ""}${
         zoneStart ? " bs-cmp-zone-start" : ""
       }`}
+      title={
+        same
+          ? pre
+          : `${beforeLabel} ${isAdded ? "—" : pre} → ${afterLabel} ${isRemoved ? "—" : post}`
+      }
     >
-      <div className="bs-cmp-pair">
-        <div className="bs-cmp-pair__row">
-          <span className="bs-cmp-pair__tag">{beforeLabel}</span>
-          <span className={preClass}>{isAdded ? "—" : pre}</span>
+      {same ? (
+        <div className="bs-cmp-pair bs-cmp-pair--same">
+          <span className="bs-cmp-val bs-cmp-val--same">{pre || "—"}</span>
         </div>
-        <div className="bs-cmp-pair__row">
-          <span className="bs-cmp-pair__tag">{afterLabel}</span>
-          <span className={postClass}>{isRemoved ? "—" : post}</span>
+      ) : (
+        <div className="bs-cmp-pair">
+          <div className="bs-cmp-pair__row">
+            <span className="bs-cmp-pair__tag">{beforeLabel}</span>
+            <span className={preClass}>{isAdded ? "—" : pre}</span>
+          </div>
+          <div className="bs-cmp-pair__row">
+            <span className="bs-cmp-pair__tag">{afterLabel}</span>
+            <span className={postClass}>{isRemoved ? "—" : post}</span>
+          </div>
         </div>
-      </div>
+      )}
       {reason ? <div className="bs-cmp-val-reason muted">{reason}</div> : null}
     </td>
   );
@@ -363,6 +376,9 @@ function localizeRunPhase(phase: string | undefined, t: (key: string) => string)
     queued: "bizCompare.phaseQueued",
     loading: "bizCompare.phaseLoading",
     sql_count: "bizCompare.phaseSqlCount",
+    sql_project: "bizCompare.phaseSqlProject",
+    sql_join: "bizCompare.phaseSqlJoin",
+    sql_fail_fetch: "bizCompare.phaseSqlFailFetch",
     comparing: "bizCompare.phaseComparing",
     done: "bizCompare.phaseDone",
     failed: "bizCompare.phaseFailed",
@@ -944,6 +960,8 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
   const [resultKw, setResultKw] = useState("");
   const debouncedResultKw = useDebouncedValue(resultKw, 300);
   const [resultKeyFilters, setResultKeyFilters] = useState<Record<string, string>>({});
+  const [keyFiltersOpen, setKeyFiltersOpen] = useState(false);
+  const [hideDisplayCols, setHideDisplayCols] = useState(true);
   const debouncedKeyFiltersJson = useDebouncedValue(JSON.stringify(resultKeyFilters), 300);
   const debouncedKeyFilters = useMemo(() => {
     try {
@@ -959,6 +977,10 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
   }, [debouncedKeyFiltersJson]);
   const hasResultSearch =
     Boolean(debouncedResultKw.trim()) || Object.keys(debouncedKeyFilters).length > 0;
+  const activeKeyFilterCount = Object.keys(resultKeyFilters).filter((k) =>
+    String(resultKeyFilters[k] || "").trim(),
+  ).length;
+  const keyFiltersVisible = keyFiltersOpen || activeKeyFilterCount > 0;
   const [resultPage, setResultPage] = useState(1);
   const [resultPageSize, setResultPageSize] = useState(100);
   const [resultTotal, setResultTotal] = useState(0);
@@ -1419,7 +1441,12 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     1 +
     (showFailCol ? 1 : 0) +
     resultColumns.keys.length +
-    Math.max(resultColumns.extras.length, 0);
+    Math.max(
+      resultColumns.extras.filter(
+        (f) => resultColumns.compareSet.has(f) || !hideDisplayCols,
+      ).length,
+      0,
+    );
 
   const rememberTableScroll = useCallback(() => {
     const wrap = tableScrollRef.current;
@@ -3404,7 +3431,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
               </div>
 
               {runDetail && runIsActive ? (
-                <div className="bs-cmp-progress" role="status" aria-live="polite">
+                <div className="bs-cmp-progress is-compact" role="status" aria-live="polite">
                   <div className="bs-cmp-progress__head">
                     <NmStatusChip color="accent">{t("bizCompare.runStatusRunning")}</NmStatusChip>
                     {runEngine === "sql" || runEngine === "python" ? (
@@ -3537,36 +3564,54 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                     <div className="bs-cmp-nav__list" role="tablist">
                       {(sheetCards.length
                         ? sheetCards
-                        : runSheets.map((s) => {
-                            const removed = Number(s.summary?.removed || 0);
-                            const changed = Number(s.summary?.changed || 0);
-                            const unchanged = Number(s.summary?.unchanged || 0);
-                            const fail = removed + changed;
-                            const judged = fail + unchanged;
-                            const st = String((s as any).status || "done");
-                            const pending = ["pending", "running", "queued"].includes(st);
-                            return {
-                              sheet_id: sheetIdentity(s),
-                              title: sheetLabel(s),
-                              metric_id: s.metric_id,
-                              mode: s.mode,
-                              status: st,
-                              added: s.summary?.added,
-                              removed,
-                              changed,
-                              unchanged,
-                              before_count: s.summary?.before_count,
-                              after_count: s.summary?.after_count,
-                              fail_count: fail,
-                              success_count: unchanged,
-                              diff_count: fail,
-                              pass_rate: pending
-                                ? null
-                                : judged
-                                  ? Math.round((unchanged / judged) * 1000) / 10
-                                  : 100,
-                            };
-                          })
+                        : [...runSheets]
+                            .map((s) => {
+                              const removed = Number(s.summary?.removed || 0);
+                              const changed = Number(s.summary?.changed || 0);
+                              const unchanged = Number(s.summary?.unchanged || 0);
+                              const fail = removed + changed;
+                              const judged = fail + unchanged;
+                              const st = String((s as any).status || "done");
+                              const pending = ["pending", "running", "queued"].includes(st);
+                              return {
+                                sheet_id: sheetIdentity(s),
+                                title: sheetLabel(s),
+                                metric_id: s.metric_id,
+                                mode: s.mode,
+                                status: st,
+                                added: s.summary?.added,
+                                removed,
+                                changed,
+                                unchanged,
+                                before_count: s.summary?.before_count,
+                                after_count: s.summary?.after_count,
+                                fail_count: fail,
+                                success_count: unchanged,
+                                diff_count: fail,
+                                pass_rate: pending
+                                  ? null
+                                  : judged
+                                    ? Math.round((unchanged / judged) * 1000) / 10
+                                    : 100,
+                              };
+                            })
+                            .sort((a, b) => {
+                              const pa = ["pending", "running", "queued"].includes(
+                                String(a.status || ""),
+                              )
+                                ? 1
+                                : 0;
+                              const pb = ["pending", "running", "queued"].includes(
+                                String(b.status || ""),
+                              )
+                                ? 1
+                                : 0;
+                              if (pa !== pb) return pa - pb;
+                              const da = Number(a.fail_count || 0);
+                              const db = Number(b.fail_count || 0);
+                              if (da !== db) return db - da;
+                              return String(a.metric_id).localeCompare(String(b.metric_id));
+                            })
                       ).map((c) => {
                         const fail = sheetFailOf(c);
                         const ok = sheetSuccessOf(c);
@@ -3586,11 +3631,17 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                             className={`bs-cmp-nav__item${active ? " is-active" : ""}${
                               pending ? " is-pending" : fail > 0 ? " has-diff" : " is-clean"
                             }`}
-                            onClick={() => setResultSheetId(id)}
+                            onClick={() => {
+                              setResultSheetId(id);
+                              // Cutover default: land on fails when switching sheets
+                              if (fail > 0 && kindFilter === "unchanged") {
+                                setKindFilter("diff");
+                              }
+                            }}
                             title={
                               pending
                                 ? `${label} · ${t("bizCompare.sheetPending")}`
-                                : `${label} · ${t("bizCompare.kindFail")} ${fail} · ${t("bizCompare.kindSuccess")} ${ok} · ${t("bizCompare.passRateShort")} ${rate}%`
+                                : `${label} · ${t("bizCompare.kindFail")} ${fail} · ${t("bizCompare.kindSuccess")} ${ok} · ${t("bizCompare.passRateShort")} ${rate ?? "…"}%`
                             }
                           >
                             <span className="bs-cmp-nav__dot" aria-hidden />
@@ -3650,9 +3701,15 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                             : ` · ${activeSheetCard?.before_count ?? 0}→${activeSheetCard?.after_count ?? 0}`}
                         </span>
                       </div>
-                      <div className="bs-cmp-strip__pass" title={t("bizCompare.passRate")}>
+                      <div
+                        className="bs-cmp-strip__pass"
+                        title={`${t("bizCompare.passRate")} · ${t("bizCompare.passRateScope")}`}
+                      >
                         <span className="bs-cmp-strip__pass-label">
                           {t("bizCompare.passRate")}
+                          <span className="bs-cmp-strip__pass-scope">
+                            {t("bizCompare.passRateScope")}
+                          </span>
                         </span>
                         <span className="bs-cmp-strip__pass-value">
                           {activeSheetPending || activePassRate === null
@@ -3708,9 +3765,31 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                         <span className="muted bs-sheet-count">
                           {diffsLoading ? "…" : `${pagedDiffs.length}/${resultTotal}`}
                         </span>
+                        {resultSearchKeyFields.length ? (
+                          <button
+                            type="button"
+                            className={`bs-cmp-strip__toggle${keyFiltersVisible ? " is-active" : ""}`}
+                            onClick={() => setKeyFiltersOpen((v) => !v)}
+                          >
+                            {t("bizCompare.keyFiltersToggle")}
+                            {activeKeyFilterCount
+                              ? ` (${activeKeyFilterCount})`
+                              : ""}
+                          </button>
+                        ) : null}
+                        <button
+                          type="button"
+                          className={`bs-cmp-strip__toggle${hideDisplayCols ? " is-active" : ""}`}
+                          title={t("bizCompare.hideDisplayColsHint")}
+                          onClick={() => setHideDisplayCols((v) => !v)}
+                        >
+                          {hideDisplayCols
+                            ? t("bizCompare.showDisplayCols")
+                            : t("bizCompare.hideDisplayCols")}
+                        </button>
                       </div>
-                      {resultSearchKeyFields.length ? (
-                        <div className="bs-cmp-key-filters" style={{ marginTop: 6 }}>
+                      {resultSearchKeyFields.length && keyFiltersVisible ? (
+                        <div className="bs-cmp-key-filters">
                           {resultSearchKeyFields.map((f) => (
                             <label key={f} className="bs-cmp-key-filter">
                               <span className="muted">{f}</span>
@@ -3735,9 +3814,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                               />
                             </label>
                           ))}
-                          {Object.keys(resultKeyFilters).some((k) =>
-                            String(resultKeyFilters[k] || "").trim(),
-                          ) ? (
+                          {activeKeyFilterCount ? (
                             <button
                               type="button"
                               className="linkish"
@@ -3749,7 +3826,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                         </div>
                       ) : null}
                       {isLiveSearch ? (
-                        <p className="muted bm-hint" style={{ margin: "4px 0 0" }}>
+                        <p className="muted bm-hint bs-cmp-strip__hint">
                           {diffsTruncated
                             ? t("bizCompare.liveSearchTruncatedHint")
                             : t("bizCompare.liveSearchHint")}
@@ -3773,7 +3850,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                               runDetail?.summary?.unchanged_listed ??
                               0,
                           ) > 0)) ? (
-                        <p className="muted bm-hint" style={{ margin: "4px 0 0" }}>
+                        <p className="muted bm-hint bs-cmp-strip__hint">
                           {t("bizCompare.unchangedSampleHint", {
                             listed: String(
                               Number(
@@ -3808,9 +3885,11 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                             const compareCols = resultColumns.extras.filter((f) =>
                               resultColumns.compareSet.has(f),
                             );
-                            const displayCols = resultColumns.extras.filter(
-                              (f) => !resultColumns.compareSet.has(f),
-                            );
+                            const displayCols = hideDisplayCols
+                              ? []
+                              : resultColumns.extras.filter(
+                                  (f) => !resultColumns.compareSet.has(f),
+                                );
                             const verdictColSpan = showFailCol ? 2 : 1;
                             const hasGroups =
                               keyCols.length + compareCols.length + displayCols.length > 0;
@@ -3942,36 +4021,41 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                                     {cellText(d.key?.[k] ?? pre[k] ?? post[k]) || "—"}
                                   </td>
                                 ))}
-                                {resultColumns.extras.map((f, fi) => {
-                                  const pv = cellText(pre[f]);
-                                  const av = cellText(post[f]);
-                                  const ch = d.changes?.[f];
-                                  const isCmp = resultColumns.compareSet.has(f);
-                                  const prev = resultColumns.extras[fi - 1];
-                                  const prevCmp = prev
-                                    ? resultColumns.compareSet.has(prev)
-                                    : null;
-                                  const zoneStart = fi === 0 || prevCmp !== isCmp;
-                                  const mismatch =
-                                    d.kind === "added" || d.kind === "removed"
-                                      ? Boolean(pv || av)
-                                      : isCmp
-                                        ? Boolean(ch)
-                                        : pv !== av;
-                                  return (
-                                    <PairCell
-                                      key={f}
-                                      beforeText={pv}
-                                      afterText={av}
-                                      kind={d.kind}
-                                      mismatch={mismatch}
-                                      reason={ch?.reason}
-                                      beforeLabel={t("bizCompare.pairBefore")}
-                                      afterLabel={t("bizCompare.pairAfter")}
-                                      zoneStart={zoneStart}
-                                    />
-                                  );
-                                })}
+                                {resultColumns.extras
+                                  .filter(
+                                    (f) =>
+                                      resultColumns.compareSet.has(f) || !hideDisplayCols,
+                                  )
+                                  .map((f, fi, visibleExtras) => {
+                                    const pv = cellText(pre[f]);
+                                    const av = cellText(post[f]);
+                                    const ch = d.changes?.[f];
+                                    const isCmp = resultColumns.compareSet.has(f);
+                                    const prev = visibleExtras[fi - 1];
+                                    const prevCmp = prev
+                                      ? resultColumns.compareSet.has(prev)
+                                      : null;
+                                    const zoneStart = fi === 0 || prevCmp !== isCmp;
+                                    const mismatch =
+                                      d.kind === "added" || d.kind === "removed"
+                                        ? Boolean(pv || av)
+                                        : isCmp
+                                          ? Boolean(ch)
+                                          : pv !== av;
+                                    return (
+                                      <PairCell
+                                        key={f}
+                                        beforeText={pv}
+                                        afterText={av}
+                                        kind={d.kind}
+                                        mismatch={mismatch}
+                                        reason={ch?.reason}
+                                        beforeLabel={t("bizCompare.pairBefore")}
+                                        afterLabel={t("bizCompare.pairAfter")}
+                                        zoneStart={zoneStart}
+                                      />
+                                    );
+                                  })}
                               </tr>
                             );
                           })}

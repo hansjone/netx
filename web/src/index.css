@@ -12970,15 +12970,15 @@ body:has(.bs-cmp-board:fullscreen) {
   vertical-align: middle;
 }
 
-.bs-cmp-val-cell--diff {
-  background: rgba(245, 158, 11, 0.08);
-}
-
 .bs-cmp-pair {
   display: flex;
   flex-direction: column;
   gap: 3px;
   min-width: 4.5rem;
+}
+
+.bs-cmp-pair--same {
+  min-width: 3rem;
 }
 
 .bs-cmp-pair__row {
@@ -13005,11 +13005,82 @@ body:has(.bs-cmp-board:fullscreen) {
   color: #86efac;
 }
 
+.bs-cmp-val-cell--pair.is-same {
+  background: transparent;
+}
+
+.bs-cmp-val--same {
+  color: #cbd5e1;
+  opacity: 0.92;
+}
+
+.bs-cmp-val-cell--diff {
+  background: rgba(245, 158, 11, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.22);
+}
+
 .bs-cmp-val {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   color: #e2e8f0;
   word-break: break-all;
   line-height: 1.35;
+}
+
+.bs-cmp-progress.is-compact {
+  padding: 6px 10px;
+  gap: 4px;
+}
+
+.bs-cmp-progress.is-compact .bs-cmp-progress__track {
+  height: 4px;
+}
+
+.bs-cmp-progress.is-compact .bs-cmp-progress__meta {
+  font-size: 0.75rem;
+}
+
+.bs-cmp-strip__pass-scope {
+  margin-left: 4px;
+  font-size: 9px;
+  font-weight: 600;
+  color: #64748b;
+  text-transform: none;
+}
+
+.bs-cmp-strip__toggle {
+  flex: 0 0 auto;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: rgba(15, 23, 42, 0.45);
+  color: #cbd5e1;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.bs-cmp-strip__toggle:hover {
+  border-color: rgba(96, 165, 250, 0.45);
+  color: #f1f5f9;
+}
+
+.bs-cmp-strip__toggle.is-active {
+  border-color: rgba(59, 130, 246, 0.5);
+  background: rgba(37, 99, 235, 0.18);
+  color: #93c5fd;
+}
+
+.bs-cmp-strip__hint {
+  flex: 1 1 100%;
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.35;
+}
+
+.bs-cmp-strip .bs-cmp-key-filters {
+  flex: 1 1 100%;
+  margin-top: 0;
 }
 
 .bs-cmp-val.is-empty {
