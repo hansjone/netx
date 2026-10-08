@@ -404,14 +404,21 @@ try {
 
     $env:NETX_UPDATE_ELEVATED = "1"
     if ($isSetup) {
-        # Silent Setup over an existing configured install skips the DB wizard
-        # (see installer/netx.iss GSkipDbPage) and preserves ProgramData.
+        # Silent Setup update mode: skip DB wizard, keep ProgramData
+        # (see installer/netx.iss /InstallMode=update).
         Write-Host "==> Applying update via silent Setup.exe"
-        $setupArgs = "/VERYSILENT /NORESTART /SUPPRESSMSGBOXES /DIR=`"$prog`" /SkipDbPage=1"
+        $setupArgs = "/VERYSILENT /NORESTART /SUPPRESSMSGBOXES /DIR=`"$prog`" /InstallMode=update"
         $sp = Start-Process -FilePath $pkgPath -ArgumentList $setupArgs -Wait -PassThru
         if ($null -eq $sp.ExitCode -or $sp.ExitCode -ne 0) {
             $code = if ($null -eq $sp.ExitCode) { "null" } else { $sp.ExitCode }
             throw "setup_update_failed: exit $code"
+        }
+        # Setup post-install also repairs; belt-and-suspenders when running elevated apply.
+        $repairPs1 = Join-Path $prog "packaging\repair_venv.ps1"
+        if (Test-Path -LiteralPath $repairPs1) {
+            Write-Host "==> Relinking .venv to bundled python/runtime"
+            & powershell -NoProfile -ExecutionPolicy Bypass -File $repairPs1 `
+                -ProgramRoot $prog -DataRoot $data
         }
         Write-Host "==> Restarting NetX after Setup"
         & (Join-Path $PSScriptRoot "start_netx_app.ps1") `

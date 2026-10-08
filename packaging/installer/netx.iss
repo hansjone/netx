@@ -5,7 +5,7 @@
 
 #define MyAppName "NetX"
 #ifndef MyAppVersion
-  #define MyAppVersion "0.4.11"
+  #define MyAppVersion "0.4.12"
 #endif
 #define MyAppPublisher "NetX"
 #define MyAppURL "https://github.com/hansjone/netx"
@@ -78,6 +78,12 @@ english.DbBundledMissing=Built-in PostgreSQL files are missing from the install 
 english.DbEnvMissing=Database configuration did not write %ProgramData%\NetX\.env.
 english.ReconfigureDb=Reconfigure database
 english.UpgradeKeepDb=Existing NetX data found - database settings will be kept (no wizard).
+english.ModePageCaption=Install mode
+english.ModePageDescription=An existing NetX installation was found. Choose update or reinstall.
+english.ModeUpdate=Update existing installation (keep database settings)
+english.ModeReinstall=Reinstall and reconfigure database (same as first install)
+english.ModeUpdateHint=Replaces program files only. ProgramData\.env and database data are kept.
+english.ModeReinstallHint=Shows the Database page again. Does not delete ProgramData unless you uninstall and choose to.
 chinesesimplified.CreateDesktopIcon=创建桌面快捷方式
 chinesesimplified.SetupOptions=安装完成后:
 chinesesimplified.StartTrayNow=立即启动 NetX 托盘
@@ -107,6 +113,12 @@ chinesesimplified.DbBundledMissing=安装目录中缺少内置 PostgreSQL 文件
 chinesesimplified.DbEnvMissing=数据库配置未写入 %ProgramData%\NetX\.env。
 chinesesimplified.ReconfigureDb=重新配置数据库
 chinesesimplified.UpgradeKeepDb=检测到已有 NetX 数据 - 将保留数据库配置（跳过向导）。
+chinesesimplified.ModePageCaption=安装模式
+chinesesimplified.ModePageDescription=检测到已有 NetX 安装。请选择更新或重装。
+chinesesimplified.ModeUpdate=更新现有安装（保留数据库配置）
+chinesesimplified.ModeReinstall=重装并重新配置数据库（与首次安装相同）
+chinesesimplified.ModeUpdateHint=仅替换程序文件，保留 ProgramData\.env 与数据库数据。
+chinesesimplified.ModeReinstallHint=再次显示数据库页。不会删除 ProgramData（除非卸载时选择删除）。
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: checkedonce
@@ -203,6 +215,11 @@ var
   GCredKey: String;
   GSkipDbPage: Boolean;
   GIsUpgrade: Boolean;
+  GInstallMode: String;
+  ModePage: TWizardPage;
+  RbModeUpdate: TNewRadioButton;
+  RbModeReinstall: TNewRadioButton;
+  LblModeHint: TNewStaticText;
   GDbConfigured: Boolean;
   GPgToolsReady: Boolean;
   GDbConnOk: Boolean;
@@ -263,6 +280,64 @@ function DetectExistingConfiguredInstall(): Boolean;
 begin
   { Configured install = ProgramData\.env already has NETX_DB_MODE. }
   Result := EnvHasDbMode();
+end;
+
+procedure SyncSkipDbFromInstallMode();
+begin
+  GSkipDbPage := (GInstallMode = 'update');
+end;
+
+procedure ApplyInstallModeFromChoice();
+begin
+  if (RbModeReinstall <> nil) and RbModeReinstall.Checked then
+    GInstallMode := 'reinstall'
+  else if GIsUpgrade then
+    GInstallMode := 'update'
+  else
+    GInstallMode := 'fresh';
+  SyncSkipDbFromInstallMode();
+end;
+
+procedure ModeChoiceClick(Sender: TObject);
+begin
+  ApplyInstallModeFromChoice();
+  if LblModeHint = nil then
+    Exit;
+  if GInstallMode = 'reinstall' then
+    LblModeHint.Caption := ExpandConstant('{cm:ModeReinstallHint}')
+  else
+    LblModeHint.Caption := ExpandConstant('{cm:ModeUpdateHint}');
+end;
+
+function ResolveInstallModeFromParams(): Boolean;
+{ Returns True if a CLI param forced the mode. }
+var
+  Mode: String;
+begin
+  Result := False;
+  Mode := LowerCase(Trim(ExpandConstant('{param:InstallMode|}')));
+  if (Mode = 'update') or (Mode = 'upgrade') then
+  begin
+    GInstallMode := 'update';
+    Result := True;
+  end
+  else if (Mode = 'reinstall') or (Mode = 'fresh') then
+  begin
+    GInstallMode := 'reinstall';
+    Result := True;
+  end
+  else if ParamIsTruthy('SkipDbPage') then
+  begin
+    GInstallMode := 'update';
+    Result := True;
+  end
+  else if ParamIsTruthy('ForceDbPage') then
+  begin
+    GInstallMode := 'reinstall';
+    Result := True;
+  end;
+  if Result then
+    SyncSkipDbFromInstallMode();
 end;
 
 procedure StopNetxBeforeFileReplace();
@@ -538,18 +613,62 @@ begin
   GDbConfigured := False;
   GPgToolsReady := False;
   GDbConnOk := False;
-  { Upgrade / reinstall over a configured install: skip DB wizard and keep
-    ProgramData\.env / pgdata. Fresh install still shows the Database page.
-    Force wizard: /ForceDbPage=1   Force skip: /SkipDbPage=1 }
+  { Existing install: interactive Mode page (Update vs Reinstall).
+    Silent: /InstallMode=update|reinstall (or /SkipDbPage=1 /ForceDbPage=1). }
   GIsUpgrade := DetectExistingConfiguredInstall();
-  if ParamIsTruthy('ForceDbPage') then
-    GSkipDbPage := False
-  else if ParamIsTruthy('SkipDbPage') then
-    GSkipDbPage := True
-  else
-    GSkipDbPage := GIsUpgrade;
+  ModePage := nil;
+  RbModeUpdate := nil;
+  RbModeReinstall := nil;
+  LblModeHint := nil;
+  if not ResolveInstallModeFromParams() then
+  begin
+    if GIsUpgrade then
+      GInstallMode := 'update'
+    else
+      GInstallMode := 'fresh';
+    SyncSkipDbFromInstallMode();
+  end;
 
-  DbPage := CreateCustomPage(wpSelectDir,
+  if GIsUpgrade and (not WizardSilent) then
+  begin
+    ModePage := CreateCustomPage(wpSelectDir,
+      ExpandConstant('{cm:ModePageCaption}'),
+      ExpandConstant('{cm:ModePageDescription}'));
+
+    RbModeUpdate := TNewRadioButton.Create(ModePage);
+    RbModeUpdate.Parent := ModePage.Surface;
+    RbModeUpdate.Caption := ExpandConstant('{cm:ModeUpdate}');
+    RbModeUpdate.Checked := (GInstallMode <> 'reinstall');
+    RbModeUpdate.Top := ScaleY(8);
+    RbModeUpdate.Left := ScaleX(0);
+    RbModeUpdate.Width := ModePage.SurfaceWidth;
+    RbModeUpdate.OnClick := @ModeChoiceClick;
+
+    RbModeReinstall := TNewRadioButton.Create(ModePage);
+    RbModeReinstall.Parent := ModePage.Surface;
+    RbModeReinstall.Caption := ExpandConstant('{cm:ModeReinstall}');
+    RbModeReinstall.Checked := (GInstallMode = 'reinstall');
+    RbModeReinstall.Top := RbModeUpdate.Top + ScaleY(28);
+    RbModeReinstall.Left := ScaleX(0);
+    RbModeReinstall.Width := ModePage.SurfaceWidth;
+    RbModeReinstall.OnClick := @ModeChoiceClick;
+
+    LblModeHint := TNewStaticText.Create(ModePage);
+    LblModeHint.Parent := ModePage.Surface;
+    LblModeHint.Top := RbModeReinstall.Top + ScaleY(36);
+    LblModeHint.Left := ScaleX(0);
+    LblModeHint.Width := ModePage.SurfaceWidth;
+    LblModeHint.Height := ScaleY(60);
+    LblModeHint.AutoSize := False;
+    LblModeHint.WordWrap := True;
+    ModeChoiceClick(nil);
+
+    DbPage := CreateCustomPage(ModePage.ID,
+      ExpandConstant('{cm:DbPageCaption}'),
+      ExpandConstant('{cm:DbPageDescription}'));
+  end
+  else
+    DbPage := CreateCustomPage(wpSelectDir,
     ExpandConstant('{cm:DbPageCaption}'),
     ExpandConstant('{cm:DbPageDescription}'));
 
@@ -687,6 +806,12 @@ end;
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
   Result := False;
+  if (ModePage <> nil) and (PageID = ModePage.ID) then
+  begin
+    { Only interactive existing installs show the mode page. }
+    Result := (not GIsUpgrade) or WizardSilent;
+    Exit;
+  end;
   if (DbPage <> nil) and (PageID = DbPage.ID) then
     Result := GSkipDbPage;
 end;
@@ -696,6 +821,11 @@ var
   ErrMsg: String;
 begin
   Result := True;
+  if (ModePage <> nil) and (CurPageID = ModePage.ID) then
+  begin
+    ApplyInstallModeFromChoice();
+    Exit;
+  end;
   { Only the DB page runs validation. Other pages must always proceed
     (Tasks/Ready used to appear "dead" when CloseApplications hung). }
   if (DbPage = nil) or (CurPageID <> DbPage.ID) or GSkipDbPage then
@@ -736,6 +866,14 @@ var
 begin
   Result := '';
   NeedsRestart := False;
+
+  if (ModePage <> nil) and (not WizardSilent) then
+    ApplyInstallModeFromChoice();
+
+  { Stop tray / API / bundled PG so Program Files can be replaced safely. }
+  if GSkipDbPage or GIsUpgrade or DirExists(ExpandConstant('{app}\packaging')) then
+    StopNetxBeforeFileReplace();
+
   if GSkipDbPage then
     Exit;
 
@@ -897,12 +1035,31 @@ begin
   end;
 end;
 
+procedure RepairNetxVenvAfterInstall();
+var
+  ResultCode: Integer;
+  RepairScript: String;
+  Params: String;
+begin
+  RepairScript := ExpandConstant('{app}\packaging\repair_venv.ps1');
+  if not FileExists(RepairScript) then
+    Exit;
+  Params :=
+    '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + RepairScript + '"' +
+    ' -ProgramRoot "' + ExpandConstant('{app}') + '"' +
+    ' -DataRoot "' + ExpandConstant('{commonappdata}\NetX') + '"';
+  Exec('powershell.exe', Params, ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   UninstallKey: String;
 begin
   if CurStep = ssPostInstall then
   begin
+    { Always relink .venv -> local python/runtime (Setup is elevated). }
+    RepairNetxVenvAfterInstall();
+
     { Upgrade keeps existing .env / pgdata - do not re-run DB wizard. }
     if not GSkipDbPage then
       ApplyDatabaseConfig()

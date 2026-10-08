@@ -56,15 +56,17 @@ Optional local zip only: `build_release.ps1 -CreateZip` (not for release upload)
 
 1. Run `NetX-Setup-x.y.z.exe` (admin).
 2. **First install:** Database page — choose built-in (offline) or external PostgreSQL (host/port/user/password/db; connection must succeed to continue).
-3. **Already installed (upgrade):** if `%ProgramData%\NetX\.env` already has `NETX_DB_MODE`, Setup **skips** the Database page, stops running NetX, replaces program files, and **keeps** data / DB settings. Use Start Menu → **Reconfigure database** only when you need to change DB mode.
+3. **Already installed:** if `%ProgramData%\NetX\.env` already has `NETX_DB_MODE`, Setup shows an **Install mode** page:
+   - **Update** (default) — skip Database page; stop NetX; replace program files; **keep** ProgramData / DB settings.
+   - **Reinstall** — same Database wizard as first install (`ApplyDatabaseConfig`); does **not** delete ProgramData (use Uninstall → delete data for a wipe).
 4. Files → `%ProgramFiles%\NetX\` (program root).
 5. Data → `%ProgramData%\NetX\` (`.env`, `pgdata`, spool, secrets).
 6. Start menu: **Start NetX** / **Stop NetX** / **Open NetX UI** / **Reconfigure database**.
 
 Silent first install (bundled default): `/SILENT /DbMode=bundled`  
 Silent external: `/SILENT /DbMode=external /DbHost=... /DbPort=5432 /DbUser=... /DbPassword=... /DbName=...`  
-Silent upgrade over existing data: `/VERYSILENT /NORESTART` (auto-detects `.env`; or force `/SkipDbPage=1`)  
-Force DB wizard on an existing install: `/ForceDbPage=1`  
+Silent update over existing data: `/VERYSILENT /NORESTART /InstallMode=update` (also `/SkipDbPage=1`)  
+Silent reinstall (DB wizard via params): `/VERYSILENT /InstallMode=reinstall /DbMode=bundled` (or external `/DbHost`…) — also `/ForceDbPage=1`  
 Optional credential key (reuse encrypted NE passwords from another install): `/CredentialSecretKey=...` — omit to auto-generate.
 
 ## Database modes
@@ -79,7 +81,7 @@ Existing Windows deploys that only set `NETX_DATABASE_URL` keep working: never s
 
 ## Manual update
 
-Preferred: run a newer `NetX-Setup-*.exe` over the same machine (upgrade mode keeps ProgramData).
+Preferred: run a newer `NetX-Setup-*.exe` and choose **Update** (or silent `/InstallMode=update`) so ProgramData is kept. Setup (elevated) always relinks `.venv` → `python/runtime` after file copy so tray start works without write access under Program Files.
 
 Legacy/dev zip (only if you built with `-CreateZip`):
 

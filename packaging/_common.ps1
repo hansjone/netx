@@ -404,8 +404,23 @@ function Repair-NetxShippedVenv {
         "version = $ver",
         "executable = $rtPyAbs"
     )
-    Set-Content -LiteralPath $cfgPath -Value ($lines -join "`r`n") -Encoding ascii
-    return $true
+    $desired = ($lines -join "`r`n")
+    # Skip write when already correct — Users cannot modify Program Files after Setup.
+    try {
+        $cur = ([IO.File]::ReadAllText($cfgPath) -replace "`r`n", "`n" -replace "`r", "`n").Trim()
+        $want = ($desired -replace "`r`n", "`n" -replace "`r", "`n").Trim()
+        if ($cur -eq $want) {
+            return $true
+        }
+    } catch {}
+
+    try {
+        Set-Content -LiteralPath $cfgPath -Value $desired -Encoding ascii -ErrorAction Stop
+        return $true
+    } catch {
+        # Non-elevated tray/start: leave cfg as-is; caller may still run if paths happen to work.
+        return $false
+    }
 }
 
 function Test-NetxVenvRunnable {
@@ -446,7 +461,11 @@ function Ensure-NetxVenv {
     $rtPy = Join-Path (Get-NetxBundledPythonRoot -ProgramRoot $ProgramRoot) "python.exe"
 
     if (Test-Path -LiteralPath $rtPy) {
-        $null = Repair-NetxShippedVenv -ProgramRoot $ProgramRoot
+        try {
+            $null = Repair-NetxShippedVenv -ProgramRoot $ProgramRoot
+        } catch {
+            # Access denied under Program Files when not elevated — ignore if venv already runs.
+        }
     }
 
     if ((Test-Path -LiteralPath $venvPy) -and -not $ForcePip) {
@@ -455,10 +474,18 @@ function Ensure-NetxVenv {
         }
         Write-Host "[WARN] Shipped .venv exists but Python cannot start (broken pyvenv.cfg or missing runtime)." -ForegroundColor Yellow
         if (Test-Path -LiteralPath $rtPy) {
-            $null = Repair-NetxShippedVenv -ProgramRoot $ProgramRoot
-            if (Test-NetxVenvRunnable -VenvPython $venvPy) {
+            $repaired = $false
+            try {
+                $repaired = [bool](Repair-NetxShippedVenv -ProgramRoot $ProgramRoot)
+            } catch {
+                $repaired = $false
+            }
+            if ($repaired -and (Test-NetxVenvRunnable -VenvPython $venvPy)) {
                 Write-Host "==> Repaired .venv to use bundled python/runtime" -ForegroundColor Green
                 return $venvPy
+            }
+            if (-not $repaired) {
+                throw "venv_needs_admin_repair: pyvenv.cfg still points at the build PC. Re-run Setup (Update) as Administrator, or Start Menu → Reconfigure database once elevated."
             }
         }
         if (-not $ForcePip) {
