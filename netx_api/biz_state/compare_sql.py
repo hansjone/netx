@@ -119,6 +119,53 @@ def _field_rules_sql_compatible(rules: Sequence[Mapping[str, Any]] | None) -> bo
     return True
 
 
+def sql_compare_skip_reason(
+    db: Session,
+    sheet: Mapping[str, Any],
+    *,
+    port_map: Mapping[str, str] | None = None,
+    iface_normalize_rules: Sequence[Mapping[str, str]] | None = None,
+) -> str:
+    """Empty string when SQL is allowed; otherwise a short reason for progress/logs.
+
+    Simple ``row_filters`` (eq/in/contains/…) used for BGP sheet splits are fine —
+    they do **not** force Python by themselves.
+    """
+    if not _dialect_is_postgres(db):
+        return "not_postgres"
+    if port_map:
+        return "port_map"
+    key_fields = [str(k).strip() for k in (sheet.get("key_fields") or []) if str(k).strip()]
+    if not key_fields:
+        return "no_key_fields"
+    if any(not _FIELD_RE.match(k) for k in key_fields):
+        return "unsafe_key_field"
+    iface_fields = [str(f).strip() for f in (sheet.get("iface_fields") or []) if str(f).strip()]
+    iface_set = set(iface_fields)
+    ignore_ports = sheet.get("ignore_port_changes")
+    if ignore_ports is True:
+        return "ignore_port_changes"
+    if ignore_ports is None and iface_set and any(k in iface_set for k in key_fields):
+        return "auto_ignore_ports"
+    field_rules = list(sheet.get("field_rules") or [])
+    if not _field_rules_sql_compatible(field_rules):
+        return "field_rules"
+    compare_fields = effective_compare_fields(
+        list(sheet.get("compare_fields") or []),
+        field_rules,
+    )
+    if any(not _FIELD_RE.match(str(f).strip()) for f in compare_fields if str(f).strip()):
+        return "unsafe_compare_field"
+    used = set(key_fields) | {str(f).strip() for f in compare_fields if str(f).strip()}
+    if iface_normalize_rules and (used & iface_set):
+        return "iface_normalize"
+    if not _filters_sql_compatible(list(sheet.get("row_filters") or [])):
+        return "row_filters"
+    if not str(sheet.get("metric_id") or "").strip():
+        return "no_metric_id"
+    return ""
+
+
 def can_sql_compare(
     db: Session,
     sheet: Mapping[str, Any],
@@ -127,39 +174,14 @@ def can_sql_compare(
     iface_normalize_rules: Sequence[Mapping[str, str]] | None = None,
 ) -> bool:
     """True when this sheet can run entirely as a PostgreSQL JOIN."""
-    if not _dialect_is_postgres(db):
-        return False
-    if port_map:
-        return False
-    key_fields = [str(k).strip() for k in (sheet.get("key_fields") or []) if str(k).strip()]
-    if not key_fields or any(not _FIELD_RE.match(k) for k in key_fields):
-        return False
-    iface_fields = [str(f).strip() for f in (sheet.get("iface_fields") or []) if str(f).strip()]
-    iface_set = set(iface_fields)
-    # Port-rename heuristic / map rewrite cannot be expressed here
-    ignore_ports = sheet.get("ignore_port_changes")
-    if ignore_ports is True:
-        return False
-    if ignore_ports is None and iface_set and any(k in iface_set for k in key_fields):
-        # Auto path may drop iface from match key — stay on Python
-        return False
-    field_rules = list(sheet.get("field_rules") or [])
-    if not _field_rules_sql_compatible(field_rules):
-        return False
-    compare_fields = effective_compare_fields(
-        list(sheet.get("compare_fields") or []),
-        field_rules,
+    return not bool(
+        sql_compare_skip_reason(
+            db,
+            sheet,
+            port_map=port_map,
+            iface_normalize_rules=iface_normalize_rules,
+        )
     )
-    if any(not _FIELD_RE.match(str(f).strip()) for f in compare_fields if str(f).strip()):
-        return False
-    used = set(key_fields) | {str(f).strip() for f in compare_fields if str(f).strip()}
-    if iface_normalize_rules and (used & iface_set):
-        return False
-    if not _filters_sql_compatible(list(sheet.get("row_filters") or [])):
-        return False
-    if not str(sheet.get("metric_id") or "").strip():
-        return False
-    return True
 
 
 def compile_row_filters_sql(
@@ -321,14 +343,23 @@ def run_sql_sheet_compare(
     before_batch_id: str,
     after_batch_id: str,
     store_unchanged: str = "auto",
-    on_progress: Callable[[str, int], None] | None = None,
+    on_progress: Callable[..., None] | None = None,
 ) -> dict[str, Any]:
     """Compare one sheet via PostgreSQL TEMP tables + FULL OUTER JOIN.
 
     Returns the same ``{summary, diffs, mapping_stats}`` shape as ``compare_rows``.
+    ``on_progress(side, n, *, engine=\"sql\", note=..., phase=...)``.
     """
     if not _dialect_is_postgres(db):
         raise RuntimeError("sql_compare_requires_postgres")
+
+    def _prog(side: str, n: int, *, phase: str = "sql_count", note: str = "") -> None:
+        if not on_progress:
+            return
+        try:
+            on_progress(side, n, engine="sql", note=note, phase=phase)
+        except TypeError:
+            on_progress(side, n)
 
     key_fields = [str(k).strip() for k in (sheet.get("key_fields") or []) if str(k).strip()]
     field_rules = list(sheet.get("field_rules") or [])
@@ -350,6 +381,8 @@ def run_sql_sheet_compare(
     tb = f"_netx_cmp_b_{tag}"
     ta = f"_netx_cmp_a_{tag}"
 
+    _prog("before", 0, phase="sql_count", note="count")
+
     # Raw counts (no row_filters)
     raw_b = int(
         db.execute(
@@ -361,8 +394,7 @@ def run_sql_sheet_compare(
         ).scalar()
         or 0
     )
-    if on_progress:
-        on_progress("before", raw_b)
+    _prog("before", raw_b, phase="sql_count")
     raw_a = int(
         db.execute(
             text(
@@ -373,14 +405,14 @@ def run_sql_sheet_compare(
         ).scalar()
         or 0
     )
-    if on_progress:
-        on_progress("after", raw_a)
+    _prog("after", raw_a, phase="sql_count")
 
     base_params = {"bid": bid_b, "mid": mid, **filter_params}
     # Build TEMP sides
-    for tname, batch_id in ((tb, bid_b), (ta, bid_a)):
+    for tname, batch_id, side in ((tb, bid_b, "before"), (ta, bid_a, "after")):
         db.execute(text(f"DROP TABLE IF EXISTS {tname}"))
         params = {**base_params, "bid": batch_id}
+        _prog(side, raw_b if side == "before" else raw_a, phase="sql_project", note="temp")
         # PRESERVE ROWS: compare progress commits must not drop temps mid-run
         db.execute(
             text(
@@ -410,8 +442,7 @@ def run_sql_sheet_compare(
     after_n = int(
         db.execute(text(f"SELECT count(*) FROM {ta}")).scalar() or 0
     )
-    if on_progress:
-        on_progress("after", after_n)
+    _prog("after", after_n, phase="sql_join", note="join")
 
     changed_pred = _changed_predicate(compare_fields, rules)
     kind_expr = f"""

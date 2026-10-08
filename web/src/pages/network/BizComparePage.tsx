@@ -1893,7 +1893,10 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     diff_rows?: number;
     load_side?: string;
     rows_loaded?: number;
+    engine?: string;
+    engine_note?: string;
   };
+  const runEngine = String(runProgress.engine || "").toLowerCase();
 
   // Poll active compare runs so the modal can be closed and reopened safely.
   useEffect(() => {
@@ -3003,7 +3006,10 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                           sheet_title?: string;
                           rows_loaded?: number;
                           load_side?: string;
+                          engine?: string;
+                          engine_note?: string;
                         };
+                        const eng = String(prog.engine || "").toLowerCase();
                         const stLabel =
                           st === "running" || st === "queued"
                             ? t("bizCompare.runStatusRunning")
@@ -3018,15 +3024,25 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                           <tr key={String(r.id)} className={selected ? "is-selected" : undefined}>
                             <td>
                               <NmStatusChip color={jobChipColor(st)}>{stLabel}</NmStatusChip>
-                              {active && prog.phase ? (
+                              {active && (prog.phase || eng) ? (
                                 <div className="muted" style={{ fontSize: "0.75rem", marginTop: 4 }}>
-                                  {prog.phase}
+                                  {eng === "sql"
+                                    ? t("bizCompare.runEngineSql")
+                                    : eng === "python"
+                                      ? t("bizCompare.runEnginePython")
+                                      : ""}
+                                  {eng && prog.engine_note
+                                    ? ` · ${prog.engine_note}`
+                                    : ""}
+                                  {prog.phase ? `${eng ? " · " : ""}${prog.phase}` : ""}
                                   {prog.sheet_total
                                     ? ` · ${prog.sheet_index || 0}/${prog.sheet_total}`
                                     : ""}
                                   {prog.sheet_title ? ` · ${prog.sheet_title}` : ""}
                                   {Number(prog.rows_loaded || 0) > 0
-                                    ? ` · ${prog.load_side || ""} ${prog.rows_loaded}`
+                                    ? eng === "sql"
+                                      ? ` · ${prog.load_side || ""} ${prog.rows_loaded}`
+                                      : ` · ${prog.load_side || ""} ${prog.rows_loaded}`
                                     : ""}
                                 </div>
                               ) : null}
@@ -3240,6 +3256,18 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
               {runDetail && runIsActive ? (
                 <div className="bs-cmp-progress" role="status" aria-live="polite">
                   <strong>{t("bizCompare.runStatusRunning")}</strong>
+                  {runEngine === "sql" || runEngine === "python" ? (
+                    <span className="muted">
+                      {runEngine === "sql"
+                        ? t("bizCompare.runEngineSql")
+                        : t("bizCompare.runEnginePython")}
+                      {runProgress.engine_note
+                        ? ` · ${t("bizCompare.runEngineNote", {
+                            note: String(runProgress.engine_note),
+                          })}`
+                        : ""}
+                    </span>
+                  ) : null}
                   <span className="muted">
                     {t("bizCompare.runProgress", {
                       phase: String(runProgress.phase || "…"),
@@ -3253,10 +3281,15 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                   </span>
                   {Number(runProgress.rows_loaded || 0) > 0 ? (
                     <span className="muted">
-                      {t("bizCompare.runRowsLoaded", {
-                        side: String(runProgress.load_side || "—"),
-                        n: String(runProgress.rows_loaded || 0),
-                      })}
+                      {runEngine === "sql"
+                        ? t("bizCompare.runRowsSqlCount", {
+                            side: String(runProgress.load_side || "—"),
+                            n: String(runProgress.rows_loaded || 0),
+                          })
+                        : t("bizCompare.runRowsLoaded", {
+                            side: String(runProgress.load_side || "—"),
+                            n: String(runProgress.rows_loaded || 0),
+                          })}
                     </span>
                   ) : null}
                   {runDetail.message ? (

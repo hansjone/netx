@@ -1762,7 +1762,7 @@ def _run_sheet(
     port_map: dict[str, str],
     iface_normalize_rules: list[dict[str, str]] | None = None,
     store_unchanged: str = "auto",
-    on_load_progress: Callable[[str, int], None] | None = None,
+    on_load_progress: Callable[..., None] | None = None,
 ) -> dict[str, Any]:
     key_fields = list(sheet.get("key_fields") or [])
     iface_fields = list(sheet.get("iface_fields") or [])
@@ -1785,28 +1785,32 @@ def _run_sheet(
         ignore_ports = bool(ignore_ports)
     mid = sheet["metric_id"]
 
-    # PostgreSQL path: pushdown-safe sheets join in-DB (BGP-scale).
-    from .compare_sql import can_sql_compare, run_sql_sheet_compare
+    def _emit_load(side: str, n: int, **meta: Any) -> None:
+        if not on_load_progress:
+            return
+        try:
+            on_load_progress(side, n, **meta)
+        except TypeError:
+            on_load_progress(side, n)
 
-    if can_sql_compare(
+    # PostgreSQL path: pushdown-safe sheets join in-DB (BGP-scale).
+    from .compare_sql import run_sql_sheet_compare, sql_compare_skip_reason
+
+    skip_reason = sql_compare_skip_reason(
         db,
         sheet,
         port_map=port_map,
         iface_normalize_rules=iface_normalize_rules,
-    ):
+    )
+    if not skip_reason:
         try:
-
-            def _sql_progress(side: str, n: int) -> None:
-                if on_load_progress:
-                    on_load_progress(side, n)
-
             result = run_sql_sheet_compare(
                 db,
                 sheet=sheet,
                 before_batch_id=before_batch_id,
                 after_batch_id=after_batch_id,
                 store_unchanged=store_unchanged,
-                on_progress=_sql_progress,
+                on_progress=_emit_load,
             )
             summary = dict(result["summary"])
             # Engine already sets raw counts / policy; keep keys stable
@@ -1836,14 +1840,22 @@ def _run_sheet(
                 sheet_key(sheet),
                 mid,
             )
+            skip_reason = "sql_error_fallback"
+    else:
+        _log.info(
+            "python compare sheet=%s metric=%s skip_sql=%s",
+            sheet_key(sheet),
+            mid,
+            skip_reason,
+        )
+
+    _emit_load("before", 0, engine="python", note=skip_reason or "python", phase="loading")
 
     def _before_chunk(n: int) -> None:
-        if on_load_progress:
-            on_load_progress("before", n)
+        _emit_load("before", n, engine="python", note=skip_reason or "python", phase="loading")
 
     def _after_chunk(n: int) -> None:
-        if on_load_progress:
-            on_load_progress("after", n)
+        _emit_load("after", n, engine="python", note=skip_reason or "python", phase="loading")
 
     before_raw = _load_metric_rows(
         db, batch_id=before_batch_id, metric_id=mid, on_chunk=_before_chunk
@@ -2106,27 +2118,43 @@ def _execute_compare_into_run(db: Session, run_id: str) -> dict[str, Any]:
                     break
             _publish_sheets()
 
-            _load_pub = {"t": 0.0, "n": -1}
+            _load_pub = {"t": 0.0, "n": -1, "engine": ""}
 
-            def _on_load(side: str, n: int, _idx: int = idx, _sheet: dict = sheet) -> None:
+            def _on_load(
+                side: str,
+                n: int,
+                *,
+                engine: str = "python",
+                note: str = "",
+                phase: str | None = None,
+                _idx: int = idx,
+                _sheet: dict = sheet,
+            ) -> None:
                 now = time.monotonic()
-                # Avoid committing every 5k on million-row BGP loads
-                if n - _load_pub["n"] < 25_000 and now - _load_pub["t"] < 2.0:
-                    return
+                eng = str(engine or "python")
+                # SQL emits sparse updates; Python still throttle chunk spam
+                if eng != "sql":
+                    if n - _load_pub["n"] < 25_000 and now - _load_pub["t"] < 2.0:
+                        return
                 _load_pub["t"] = now
                 _load_pub["n"] = n
+                _load_pub["engine"] = eng
+                extra: dict[str, Any] = {
+                    "load_side": side,
+                    "rows_loaded": n,
+                    "engine": eng,
+                }
+                if note:
+                    extra["engine_note"] = str(note)[:128]
                 _set_run_progress(
                     db,
                     run,
-                    phase="loading",
+                    phase=str(phase or ("loading" if eng != "sql" else "sql_count")),
                     sheet_index=_idx,
                     sheet_total=total,
                     sheet=_sheet,
                     started_mono=started_mono,
-                    extra={
-                        "load_side": side,
-                        "rows_loaded": n,
-                    },
+                    extra=extra,
                 )
 
             _set_run_progress(
@@ -2137,6 +2165,7 @@ def _execute_compare_into_run(db: Session, run_id: str) -> dict[str, Any]:
                 sheet_total=total,
                 sheet=sheet,
                 started_mono=started_mono,
+                extra={"engine": "", "engine_note": ""},
             )
             one = _run_sheet(
                 db,

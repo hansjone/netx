@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 from netx_api.biz_state.compare_sql import (
     can_sql_compare,
     compile_row_filters_sql,
+    sql_compare_skip_reason,
     _field_rules_sql_compatible,
     _filters_sql_compatible,
     _safe_field,
@@ -117,6 +118,8 @@ class CompareSqlGateTests(unittest.TestCase):
             "row_filters": [{"field": "afi", "op": "eq", "value": "ipv4"}],
         }
         self.assertTrue(can_sql_compare(_db(), sheet, port_map={}))
+        # BGP afi/vrf sheet splits via row_filters must not force Python
+        self.assertEqual(sql_compare_skip_reason(_db(), sheet, port_map={}), "")
 
     def test_rejects_iface_normalize_when_key_uses_iface(self) -> None:
         sheet = {
