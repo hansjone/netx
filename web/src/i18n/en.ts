@@ -500,6 +500,8 @@ const en = {
     runStatusFailed: "Failed",
     runStatusDoneSec: "Done {{s}}s",
     runProgress: "{{phase}} · sheet {{i}}/{{n}} · {{sheet}} · {{s}}s elapsed",
+    runRowsLoaded: "Loaded {{side}} {{n}} rows",
+    sheetPending: "Pending",
     ranWithDuration: "Compare finished ({{s}}s)",
     unchangedNotStored: "Success rows were counted but not stored. Set “Store success rows” to sample and re-run for spot-check.",
     unchangedSampleHint: "{{total}} success rows total; browsing a sample of {{listed}} (hydrated from source tables for cutover spot-check). Pass rate uses all {{total}}.",

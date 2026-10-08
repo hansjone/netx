@@ -499,6 +499,8 @@ const zh = {
     runStatusFailed: "失败",
     runStatusDoneSec: "完成 {{s}}s",
     runProgress: "{{phase}} · 表 {{i}}/{{n}} · {{sheet}} · 已用 {{s}}s",
+    runRowsLoaded: "已加载 {{side}} {{n}} 行",
+    sheetPending: "等待中",
     ranWithDuration: "比对完成（耗时 {{s}} 秒）",
     unchangedNotStored: "成功行仅统计数量未落库。可在任务配置将「成功行保存」改为抽样后重新比对（抽查用）。",
     unchangedSampleHint: "成功共 {{total}} 条，明细抽样 {{listed}} 条（从原表补全显示，割接抽查用）。通过率按全部 {{total}} 计。",

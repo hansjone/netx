@@ -1198,7 +1198,8 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     Number(c.success_count ?? c.unchanged ?? 0);
 
   const sheetPassRateOf = (c: {
-    pass_rate?: number;
+    pass_rate?: number | null;
+    status?: string;
     fail_count?: number;
     diff_count?: number;
     removed?: number;
@@ -1206,7 +1207,10 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     success_count?: number;
     unchanged?: number;
     added?: number;
-  }) => {
+  }): number | null => {
+    const st = String(c.status || "");
+    if (st === "pending" || st === "running" || st === "queued") return null;
+    if (c.pass_rate === null) return null;
     // Always recompute from fail/success so added never skews pass rate
     const fail = sheetFailOf(c);
     const ok = sheetSuccessOf(c);
@@ -1222,6 +1226,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
       title?: string;
       metric_id: string;
       mode?: string;
+      status?: string;
       added?: number;
       removed?: number;
       changed?: number;
@@ -1231,10 +1236,13 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
       fail_count?: number;
       success_count?: number;
       diff_count?: number;
-      pass_rate?: number;
+      pass_rate?: number | null;
     }>;
-    // Failures first so ops can scan quickly when many sheets
+    // Failures first; keep pending/running at the end so completed fails stay visible
     return [...raw].sort((a, b) => {
+      const pa = ["pending", "running", "queued"].includes(String(a.status || "")) ? 1 : 0;
+      const pb = ["pending", "running", "queued"].includes(String(b.status || "")) ? 1 : 0;
+      if (pa !== pb) return pa - pb;
       const da = sheetFailOf(a);
       const db = sheetFailOf(b);
       if (da !== db) return db - da;
@@ -1245,6 +1253,9 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
   const activeFail = sheetFailOf(activeSheetCard || {});
   const activeSuccess = sheetSuccessOf(activeSheetCard || {});
   const activePassRate = sheetPassRateOf(activeSheetCard || {});
+  const activeSheetPending = ["pending", "running", "queued"].includes(
+    String(activeSheetCard?.status || ""),
+  );
   const activeAdded = Number(activeSheetCard?.added || 0);
   const showFailCol =
     kindFilter === "diff" || kindFilter === "all" || kindFilter === "added";
@@ -1868,6 +1879,8 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     before_count?: number;
     after_count?: number;
     diff_rows?: number;
+    load_side?: string;
+    rows_loaded?: number;
   };
 
   // Poll active compare runs so the modal can be closed and reopened safely.
@@ -3020,6 +3033,14 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                       s: String(Math.round(Number(runProgress.elapsed_ms || 0) / 1000)),
                     })}
                   </span>
+                  {Number(runProgress.rows_loaded || 0) > 0 ? (
+                    <span className="muted">
+                      {t("bizCompare.runRowsLoaded", {
+                        side: String(runProgress.load_side || "—"),
+                        n: String(runProgress.rows_loaded || 0),
+                      })}
+                    </span>
+                  ) : null}
                   {runDetail.message ? (
                     <span className="muted bs-cmp-progress__msg">{String(runDetail.message)}</span>
                   ) : null}
@@ -3098,11 +3119,14 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                             const unchanged = Number(s.summary?.unchanged || 0);
                             const fail = removed + changed;
                             const judged = fail + unchanged;
+                            const st = String((s as any).status || "done");
+                            const pending = ["pending", "running", "queued"].includes(st);
                             return {
                               sheet_id: sheetIdentity(s),
                               title: sheetLabel(s),
                               metric_id: s.metric_id,
                               mode: s.mode,
+                              status: st,
                               added: s.summary?.added,
                               removed,
                               changed,
@@ -3112,9 +3136,11 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                               fail_count: fail,
                               success_count: unchanged,
                               diff_count: fail,
-                              pass_rate: judged
-                                ? Math.round((unchanged / judged) * 1000) / 10
-                                : 100,
+                              pass_rate: pending
+                                ? null
+                                : judged
+                                  ? Math.round((unchanged / judged) * 1000) / 10
+                                  : 100,
                             };
                           })
                       ).map((c) => {
@@ -3124,6 +3150,9 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                         const id = sheetIdentity(c);
                         const label = sheetLabel(c);
                         const active = resultSheetId === id;
+                        const pending = ["pending", "running", "queued"].includes(
+                          String((c as any).status || ""),
+                        );
                         return (
                           <button
                             key={id}
@@ -3131,10 +3160,14 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                             role="tab"
                             aria-selected={active}
                             className={`bs-cmp-nav__item${active ? " is-active" : ""}${
-                              fail > 0 ? " has-diff" : " is-clean"
+                              pending ? " is-pending" : fail > 0 ? " has-diff" : " is-clean"
                             }`}
                             onClick={() => setResultSheetId(id)}
-                            title={`${label} · ${t("bizCompare.kindFail")} ${fail} · ${t("bizCompare.kindSuccess")} ${ok} · ${t("bizCompare.passRateShort")} ${rate}%`}
+                            title={
+                              pending
+                                ? `${label} · ${t("bizCompare.sheetPending")}`
+                                : `${label} · ${t("bizCompare.kindFail")} ${fail} · ${t("bizCompare.kindSuccess")} ${ok} · ${t("bizCompare.passRateShort")} ${rate}%`
+                            }
                           >
                             <span className="bs-cmp-nav__dot" aria-hidden />
                             <span className="bs-cmp-nav__name">{label}</span>
@@ -3144,13 +3177,13 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                                   fail > 0 ? " is-hot" : ""
                                 }`}
                               >
-                                {fail}
+                                {pending ? "—" : fail}
                               </span>
                               <span className="bs-cmp-nav__num bs-cmp-nav__num--ok is-hot">
-                                {ok}
+                                {pending ? "—" : ok}
                               </span>
                               <span className="bs-cmp-nav__num bs-cmp-nav__num--rate">
-                                {rate}%
+                                {pending || rate === null ? "…" : `${rate}%`}
                               </span>
                             </span>
                           </button>
@@ -3161,7 +3194,13 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
 
                   <div className="bs-cmp-main">
                     <div
-                      className={`bs-cmp-strip${activeFail > 0 ? " is-warn" : " is-ok"}`}
+                      className={`bs-cmp-strip${
+                        activeSheetPending
+                          ? " is-pending"
+                          : activeFail > 0
+                            ? " is-warn"
+                            : " is-ok"
+                      }`}
                     >
                       <div className="bs-cmp-strip__sheet">
                         <span className="bs-cmp-strip__sheet-tag">
@@ -3174,18 +3213,28 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                           {sheetLabel(activeSheetCard)}
                         </strong>
                         <span className="muted bs-cmp-strip__sheet-mode">
-                          {activeFail > 0 ? t("bizCompare.kindFail") : t("bizCompare.kindPass")}
+                          {activeSheetPending
+                            ? t("bizCompare.sheetPending")
+                            : activeFail > 0
+                              ? t("bizCompare.kindFail")
+                              : t("bizCompare.kindPass")}
                           {activeSheetCard?.mode === "presence"
                             ? ` · ${t("bizCompare.presenceShort")}`
                             : ""}
-                          {` · ${activeSheetCard?.before_count ?? 0}→${activeSheetCard?.after_count ?? 0}`}
+                          {activeSheetPending
+                            ? ""
+                            : ` · ${activeSheetCard?.before_count ?? 0}→${activeSheetCard?.after_count ?? 0}`}
                         </span>
                       </div>
                       <div className="bs-cmp-strip__pass" title={t("bizCompare.passRate")}>
                         <span className="bs-cmp-strip__pass-label">
                           {t("bizCompare.passRate")}
                         </span>
-                        <span className="bs-cmp-strip__pass-value">{activePassRate}%</span>
+                        <span className="bs-cmp-strip__pass-value">
+                          {activeSheetPending || activePassRate === null
+                            ? "…"
+                            : `${activePassRate}%`}
+                        </span>
                       </div>
                       <div className="bs-cmp-strip__kinds" role="group">
                         {(

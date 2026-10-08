@@ -12152,6 +12152,15 @@ body:has(.bs-cmp-board:fullscreen) {
   box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.22);
 }
 
+.bs-cmp-nav__item.is-pending .bs-cmp-nav__dot {
+  background: #64748b;
+  box-shadow: 0 0 0 2px rgba(100, 116, 139, 0.25);
+}
+
+.bs-cmp-nav__item.is-pending .bs-cmp-nav__name {
+  opacity: 0.75;
+}
+
 .bs-cmp-nav__name {
   font-size: 12px;
   font-weight: 600;

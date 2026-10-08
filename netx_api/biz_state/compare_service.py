@@ -9,10 +9,11 @@ import threading
 import time
 import zipfile
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from fastapi import HTTPException
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from ..models import (
@@ -429,6 +430,10 @@ def _sheet_meta_from_summary(summary: dict[str, Any], run: BizCompareRun, tpl: A
     sheets = list(summary.get("sheets") or [])
     if sheets:
         return sheets
+    # Running / empty: do NOT invent a fake first-metric sheet (was showing
+    # isis 100% with 0→0 while BGP was still loading).
+    if str(run.status or "") in ("running", "queued"):
+        return []
     return [
         {
             "metric_id": run.metric_id,
@@ -438,6 +443,7 @@ def _sheet_meta_from_summary(summary: dict[str, Any], run: BizCompareRun, tpl: A
             "iface_fields": list((tpl.iface_fields if tpl else None) or []),
             "compare_fields": list((tpl.compare_fields if tpl else None) or []),
             "mode": "fields",
+            "status": "done",
             "summary": {
                 k: summary.get(k, 0)
                 for k in ("added", "removed", "changed", "unchanged", "before_count", "after_count")
@@ -445,6 +451,33 @@ def _sheet_meta_from_summary(summary: dict[str, Any], run: BizCompareRun, tpl: A
             "diffs": list(run.diffs_json or []),
         }
     ]
+
+
+def _pending_sheet_meta(sheet: dict[str, Any]) -> dict[str, Any]:
+    """Placeholder meta so the UI lists all check items while a run is in flight."""
+    key_fields = list(sheet.get("key_fields") or [])
+    compare_fields = list(sheet.get("compare_fields") or [])
+    return {
+        "sheet_id": sheet_key(sheet),
+        "title": sheet_title(sheet),
+        "metric_id": sheet.get("metric_id") or "",
+        "key_fields": key_fields,
+        "iface_fields": list(sheet.get("iface_fields") or []),
+        "compare_fields": compare_fields,
+        "display_fields": list(sheet.get("display_fields") or []),
+        "field_rules": list(sheet.get("field_rules") or []),
+        "ignore_port_changes": sheet.get("ignore_port_changes"),
+        "mode": "presence" if not compare_fields else "fields",
+        "status": "pending",
+        "summary": {
+            "added": 0,
+            "removed": 0,
+            "changed": 0,
+            "unchanged": 0,
+            "before_count": 0,
+            "after_count": 0,
+        },
+    }
 
 
 def _str_list(raw: Any) -> list[str]:
@@ -1347,20 +1380,26 @@ def _port_map_dict(db: Session, mapping_id: str) -> dict[str, str]:
     return {str(r.before_if): str(r.after_if) for r in rows if r.before_if and r.after_if}
 
 
-def _load_metric_rows(db: Session, *, batch_id: str, metric_id: str) -> list[dict[str, Any]]:
-    """Load metric rows in LIMIT/OFFSET chunks (avoid ORM yield_per + unique() clash)."""
+def _load_metric_rows(
+    db: Session,
+    *,
+    batch_id: str,
+    metric_id: str,
+    on_chunk: Callable[[int], None] | None = None,
+) -> list[dict[str, Any]]:
+    """Load metric rows in keyset chunks (stable on million-row sheets).
+
+    Avoids ORM ``yield_per``/``unique()`` clash and OFFSET degradation on BGP-sized tables.
+    ``on_chunk(loaded_count)`` is called after each chunk for progress UI.
+    """
     if metric_id == "lldp_neighbor":
         out: list[dict[str, Any]] = []
-        offset = 0
+        last_id = ""
         while True:
-            chunk = (
-                db.query(BizStateLldpNeighbor)
-                .filter(BizStateLldpNeighbor.batch_id == batch_id)
-                .order_by(BizStateLldpNeighbor.id.asc())
-                .offset(offset)
-                .limit(_LOAD_YIELD_PER)
-                .all()
-            )
+            q = db.query(BizStateLldpNeighbor).filter(BizStateLldpNeighbor.batch_id == batch_id)
+            if last_id:
+                q = q.filter(BizStateLldpNeighbor.id > last_id)
+            chunk = q.order_by(BizStateLldpNeighbor.id.asc()).limit(_LOAD_YIELD_PER).all()
             if not chunk:
                 break
             for n in chunk:
@@ -1384,24 +1423,35 @@ def _load_metric_rows(db: Session, *, batch_id: str, metric_id: str) -> list[dic
                     }
                 )
                 db.expunge(n)
-            offset += len(chunk)
+            last_id = str(chunk[-1].id)
+            if on_chunk:
+                on_chunk(len(out))
             if len(chunk) < _LOAD_YIELD_PER:
                 break
         return out
     # Generic tabular metrics (ISIS / interface / ARP / ND6 / BGP …)
     from ..models import BizStateMetricRow
 
-    out = []
-    offset = 0
+    out: list[dict[str, Any]] = []
+    last_seq = -1
+    last_id = ""
     while True:
-        chunk = (
-            db.query(BizStateMetricRow)
-            .filter(
-                BizStateMetricRow.batch_id == batch_id,
-                BizStateMetricRow.metric_id == metric_id,
+        q = db.query(BizStateMetricRow).filter(
+            BizStateMetricRow.batch_id == batch_id,
+            BizStateMetricRow.metric_id == metric_id,
+        )
+        if last_id:
+            q = q.filter(
+                or_(
+                    BizStateMetricRow.seq > last_seq,
+                    and_(
+                        BizStateMetricRow.seq == last_seq,
+                        BizStateMetricRow.id > last_id,
+                    ),
+                )
             )
-            .order_by(BizStateMetricRow.seq.asc(), BizStateMetricRow.id.asc())
-            .offset(offset)
+        chunk = (
+            q.order_by(BizStateMetricRow.seq.asc(), BizStateMetricRow.id.asc())
             .limit(_LOAD_YIELD_PER)
             .all()
         )
@@ -1427,7 +1477,10 @@ def _load_metric_rows(db: Session, *, batch_id: str, metric_id: str) -> list[dic
                 }
             )
             db.expunge(r)
-        offset += len(chunk)
+        last_seq = int(chunk[-1].seq or 0)
+        last_id = str(chunk[-1].id)
+        if on_chunk:
+            on_chunk(len(out))
         if len(chunk) < _LOAD_YIELD_PER:
             break
     if out:
@@ -1628,6 +1681,7 @@ def _run_sheet(
     port_map: dict[str, str],
     iface_normalize_rules: list[dict[str, str]] | None = None,
     store_unchanged: str = "auto",
+    on_load_progress: Callable[[str, int], None] | None = None,
 ) -> dict[str, Any]:
     key_fields = list(sheet.get("key_fields") or [])
     iface_fields = list(sheet.get("iface_fields") or [])
@@ -1648,8 +1702,22 @@ def _run_sheet(
     ignore_ports = sheet.get("ignore_port_changes")
     if ignore_ports is not None:
         ignore_ports = bool(ignore_ports)
-    before_raw = _load_metric_rows(db, batch_id=before_batch_id, metric_id=sheet["metric_id"])
-    after_raw = _load_metric_rows(db, batch_id=after_batch_id, metric_id=sheet["metric_id"])
+    mid = sheet["metric_id"]
+
+    def _before_chunk(n: int) -> None:
+        if on_load_progress:
+            on_load_progress("before", n)
+
+    def _after_chunk(n: int) -> None:
+        if on_load_progress:
+            on_load_progress("after", n)
+
+    before_raw = _load_metric_rows(
+        db, batch_id=before_batch_id, metric_id=mid, on_chunk=_before_chunk
+    )
+    after_raw = _load_metric_rows(
+        db, batch_id=after_batch_id, metric_id=mid, on_chunk=_after_chunk
+    )
     before_rows = apply_row_filters(before_raw, row_filters)
     after_rows = apply_row_filters(after_raw, row_filters)
     policy = resolve_unchanged_policy(
@@ -1686,6 +1754,7 @@ def _run_sheet(
         "field_rules": field_rules,
         "ignore_port_changes": ignore_ports,
         "mode": mode,
+        "status": "done",
         "summary": summary,
         "diffs": result["diffs"],
         "mapping_stats": result["mapping_stats"],
@@ -1734,6 +1803,7 @@ def _create_running_run(
     sheets_cfg: list[dict[str, Any]],
 ) -> BizCompareRun:
     first_metric = str(sheets_cfg[0].get("metric_id") or "")
+    pending_sheets = [_pending_sheet_meta(s) for s in sheets_cfg]
     run = BizCompareRun(
         id=uuid4().hex,
         job_id=job.id,
@@ -1760,7 +1830,7 @@ def _create_running_run(
             "duplicate": 0,
             "before_count": 0,
             "after_count": 0,
-            "sheets": [],
+            "sheets": pending_sheets,
         },
         diffs_json=[],
         mapping_stats_json={},
@@ -1841,7 +1911,6 @@ def _execute_compare_into_run(db: Session, run_id: str) -> dict[str, Any]:
     store_mode = normalize_store_unchanged(getattr(j, "store_unchanged", None))
     pmap = _port_map_dict(db, run.mapping_id)
     norm_rules = template_iface_normalize(tpl)
-    sheet_metas: list[dict[str, Any]] = []
     unchanged_listed_total = 0
     unchanged_truncated_any = False
     unchanged_compact_any = False
@@ -1858,8 +1927,51 @@ def _execute_compare_into_run(db: Session, run_id: str) -> dict[str, Any]:
     field_counts: dict[str, int] = {}
     total = len(sheets_cfg)
 
+    # Prefer seeded pending sheets from create; rebuild if missing
+    sheet_metas: list[dict[str, Any]] = list((run.summary_json or {}).get("sheets") or [])
+    if len(sheet_metas) != total:
+        sheet_metas = [_pending_sheet_meta(s) for s in sheets_cfg]
+
+    def _publish_sheets() -> None:
+        prev = dict(run.summary_json or {})
+        prev["sheets"] = list(sheet_metas)
+        prev.update({k: agg[k] for k in agg})
+        run.summary_json = prev
+        db.commit()
+
     try:
         for idx, sheet in enumerate(sheets_cfg, start=1):
+            sid = sheet_key(sheet)
+            # Mark current sheet running in the sidebar list
+            for meta in sheet_metas:
+                if sheet_key(meta) == sid:
+                    meta["status"] = "running"
+                    break
+            _publish_sheets()
+
+            _load_pub = {"t": 0.0, "n": -1}
+
+            def _on_load(side: str, n: int, _idx: int = idx, _sheet: dict = sheet) -> None:
+                now = time.monotonic()
+                # Avoid committing every 5k on million-row BGP loads
+                if n - _load_pub["n"] < 25_000 and now - _load_pub["t"] < 2.0:
+                    return
+                _load_pub["t"] = now
+                _load_pub["n"] = n
+                _set_run_progress(
+                    db,
+                    run,
+                    phase="loading",
+                    sheet_index=_idx,
+                    sheet_total=total,
+                    sheet=_sheet,
+                    started_mono=started_mono,
+                    extra={
+                        "load_side": side,
+                        "rows_loaded": n,
+                    },
+                )
+
             _set_run_progress(
                 db,
                 run,
@@ -1877,6 +1989,7 @@ def _execute_compare_into_run(db: Session, run_id: str) -> dict[str, Any]:
                 port_map=pmap,
                 iface_normalize_rules=norm_rules,
                 store_unchanged=store_mode,
+                on_load_progress=_on_load,
             )
             s = one["summary"]
             listed = int(s.get("unchanged_listed") or 0)
@@ -1888,7 +2001,7 @@ def _execute_compare_into_run(db: Session, run_id: str) -> dict[str, Any]:
             _set_run_progress(
                 db,
                 run,
-                phase="persisting",
+                phase="comparing",
                 sheet_index=idx,
                 sheet_total=total,
                 sheet=sheet,
@@ -1949,21 +2062,29 @@ def _execute_compare_into_run(db: Session, run_id: str) -> dict[str, Any]:
             for k in agg:
                 agg[k] += int(s.get(k) or 0)
             mapping_by_metric[mid] = one["mapping_stats"]
-            sheet_metas.append(
-                {
-                    "sheet_id": one.get("sheet_id") or one["metric_id"],
-                    "title": one.get("title") or one.get("sheet_id") or one["metric_id"],
-                    "metric_id": one["metric_id"],
-                    "key_fields": one["key_fields"],
-                    "iface_fields": one["iface_fields"],
-                    "compare_fields": one["compare_fields"],
-                    "display_fields": one.get("display_fields") or [],
-                    "field_rules": one.get("field_rules") or [],
-                    "ignore_port_changes": one.get("ignore_port_changes"),
-                    "mode": one["mode"],
-                    "summary": one["summary"],
-                }
-            )
+            done_meta = {
+                "sheet_id": one.get("sheet_id") or one["metric_id"],
+                "title": one.get("title") or one.get("sheet_id") or one["metric_id"],
+                "metric_id": one["metric_id"],
+                "key_fields": one["key_fields"],
+                "iface_fields": one["iface_fields"],
+                "compare_fields": one["compare_fields"],
+                "display_fields": one.get("display_fields") or [],
+                "field_rules": one.get("field_rules") or [],
+                "ignore_port_changes": one.get("ignore_port_changes"),
+                "mode": one["mode"],
+                "status": "done",
+                "summary": one["summary"],
+            }
+            replaced = False
+            for i, meta in enumerate(sheet_metas):
+                if sheet_key(meta) == mid:
+                    sheet_metas[i] = done_meta
+                    replaced = True
+                    break
+            if not replaced:
+                sheet_metas.append(done_meta)
+            _publish_sheets()
             # Drop heavy diffs before next sheet
             one.clear()
             diffs.clear()
@@ -2186,12 +2307,15 @@ def _enrich_summary(summary: dict[str, Any], sheets: list[dict[str, Any]]) -> di
         st = sa + sr + sc + su
         sf = sr + sc
         sj = sf + su
+        status = str(sh.get("status") or "done")
+        pending = status in ("pending", "running", "queued")
         sheet_cards.append(
             {
                 "sheet_id": sheet_key(sh),
                 "title": sheet_title(sh),
                 "metric_id": sh.get("metric_id") or "",
                 "mode": sh.get("mode") or ("presence" if not sh.get("compare_fields") else "fields"),
+                "status": status,
                 "added": sa,
                 "removed": sr,
                 "changed": sc,
@@ -2201,7 +2325,10 @@ def _enrich_summary(summary: dict[str, Any], sheets: list[dict[str, Any]]) -> di
                 "fail_count": sf,
                 "success_count": su,
                 "diff_count": sf,
-                "pass_rate": round((su / sj) * 100, 1) if sj else (100.0 if st == 0 else 0.0),
+                # Pending sheets must not look like "100% pass"
+                "pass_rate": None
+                if pending
+                else (round((su / sj) * 100, 1) if sj else (100.0 if st == 0 else 0.0)),
             }
         )
 
@@ -2220,6 +2347,9 @@ def _enrich_summary(summary: dict[str, Any], sheets: list[dict[str, Any]]) -> di
             key=lambda x: (-int(x["count"]), str(x["field"])),
         )[:8]
 
+    any_pending = any(
+        str(sh.get("status") or "") in ("pending", "running", "queued") for sh in sheets
+    )
     return {
         "added": added,
         "removed": removed,
@@ -2233,9 +2363,9 @@ def _enrich_summary(summary: dict[str, Any], sheets: list[dict[str, Any]]) -> di
         "fail_count": fail_count,
         "success_count": success_count,
         "diff_count": diff_count,
-        "pass_rate": pass_rate,
+        "pass_rate": None if any_pending else pass_rate,
         "diff_rate": diff_rate,
-        "ok": fail_count == 0,
+        "ok": False if any_pending else fail_count == 0,
         "sheet_cards": sheet_cards,
         "top_changed_fields": top_fields,
         "duration_ms": int(summary.get("duration_ms") or 0),
@@ -2267,6 +2397,7 @@ def get_run(db: Session, run_id: str) -> dict[str, Any]:
             "display_fields": list(sh.get("display_fields") or []),
             "field_rules": list(sh.get("field_rules") or []),
             "mode": sh.get("mode") or ("presence" if not sh.get("compare_fields") else "fields"),
+            "status": str(sh.get("status") or "done"),
             "summary": dict(sh.get("summary") or {}),
         }
         for sh in raw_sheets
