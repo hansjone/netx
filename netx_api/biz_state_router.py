@@ -763,6 +763,7 @@ def api_list_run_diffs(
     metric_id: str = "",
     kind: str = "diff",
     kw: str = "",
+    qf: str = "",
     page: int = 1,
     page_size: int = 100,
     db: Session = Depends(get_db),
@@ -773,6 +774,7 @@ def api_list_run_diffs(
         metric_id=metric_id,
         kind=kind,
         kw=kw,
+        qf=qf,
         page=page,
         page_size=page_size,
     )

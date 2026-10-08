@@ -12504,6 +12504,36 @@ body:has(.bs-cmp-board:fullscreen) {
   white-space: nowrap;
 }
 
+.bs-cmp-key-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  align-items: flex-end;
+  width: 100%;
+}
+
+.bs-cmp-key-filter {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 110px;
+  max-width: 160px;
+  flex: 0 1 140px;
+}
+
+.bs-cmp-key-filter > span {
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.bs-cmp-key-filter .input,
+.bs-cmp-key-filter [data-slot="input"],
+.bs-cmp-key-filter input {
+  min-width: 0;
+  width: 100%;
+  font-size: 12px;
+}
+
 .bs-cmp-kind-pills {
   display: flex;
   flex-wrap: wrap;

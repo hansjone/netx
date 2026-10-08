@@ -843,6 +843,22 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
   const [kindFilter, setKindFilter] = useState<KindFilter>("diff");
   const [resultKw, setResultKw] = useState("");
   const debouncedResultKw = useDebouncedValue(resultKw, 300);
+  const [resultKeyFilters, setResultKeyFilters] = useState<Record<string, string>>({});
+  const debouncedKeyFiltersJson = useDebouncedValue(JSON.stringify(resultKeyFilters), 300);
+  const debouncedKeyFilters = useMemo(() => {
+    try {
+      const o = JSON.parse(debouncedKeyFiltersJson || "{}") as Record<string, string>;
+      const out: Record<string, string> = {};
+      for (const [k, v] of Object.entries(o || {})) {
+        if (String(k || "").trim() && String(v || "").trim()) out[String(k)] = String(v).trim();
+      }
+      return out;
+    } catch {
+      return {} as Record<string, string>;
+    }
+  }, [debouncedKeyFiltersJson]);
+  const hasResultSearch =
+    Boolean(debouncedResultKw.trim()) || Object.keys(debouncedKeyFilters).length > 0;
   const [resultPage, setResultPage] = useState(1);
   const [resultPageSize, setResultPageSize] = useState(100);
   const [resultTotal, setResultTotal] = useState(0);
@@ -1058,10 +1074,22 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     [runSheets, resultSheetId],
   );
 
-    // Reset page when sheet / filter / page size changes
+  // Clear field filters when switching sheet
+  useEffect(() => {
+    setResultKeyFilters({});
+  }, [resultSheetId]);
+
+  // Reset page when sheet / filter / page size changes
   useEffect(() => {
     setResultPage(1);
-  }, [resultSheetId, kindFilter, debouncedResultKw, resultPageSize, runDetail?.id]);
+  }, [
+    resultSheetId,
+    kindFilter,
+    debouncedResultKw,
+    debouncedKeyFiltersJson,
+    resultPageSize,
+    runDetail?.id,
+  ]);
 
   useEffect(() => {
     const runId = String(runDetail?.id || "");
@@ -1085,6 +1113,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
           metricId: mid,
           kind: kindFilter,
           kw: debouncedResultKw.trim(),
+          qf: debouncedKeyFilters,
           page: resultPage,
           pageSize: resultPageSize,
         });
@@ -1120,6 +1149,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     activeRunSheet?.status,
     kindFilter,
     debouncedResultKw,
+    debouncedKeyFiltersJson,
     resultPage,
     resultPageSize,
     jobDetailTab,
@@ -1274,7 +1304,17 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     kindFilter === "added" ||
     kindFilter === "removed" ||
     kindFilter === "changed";
-  const isLiveSearch = diffsSource === "live" && Boolean(debouncedResultKw.trim());
+  const isLiveSearch = diffsSource === "live" && hasResultSearch;
+  const resultSearchKeyFields = useMemo(() => {
+    const keys = (activeRunSheet?.key_fields || []).map((f) => String(f || "").trim()).filter(Boolean);
+    // Prefer BGP-ish fields first for compact UI
+    const prefer = ["direction", "neighbor", "network", "rd", "afi", "vrf", "local_as"];
+    const ranked = [
+      ...prefer.filter((p) => keys.includes(p)),
+      ...keys.filter((k) => !prefer.includes(k)),
+    ];
+    return ranked.slice(0, 8);
+  }, [activeRunSheet?.key_fields]);
   const resultEmptyColSpan =
     1 +
     (showFailCol ? 1 : 0) +
@@ -3565,6 +3605,45 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                           {diffsLoading ? "…" : `${pagedDiffs.length}/${resultTotal}`}
                         </span>
                       </div>
+                      {resultSearchKeyFields.length ? (
+                        <div className="bs-cmp-key-filters" style={{ marginTop: 6 }}>
+                          {resultSearchKeyFields.map((f) => (
+                            <label key={f} className="bs-cmp-key-filter">
+                              <span className="muted">{f}</span>
+                              <Input
+                                value={resultKeyFilters[f] || ""}
+                                placeholder={
+                                  f === "direction"
+                                    ? "in / out"
+                                    : f === "network"
+                                      ? "1.1.1.1"
+                                      : ""
+                                }
+                                onChange={(e) =>
+                                  setResultKeyFilters((prev) => {
+                                    const next = { ...prev };
+                                    const v = e.target.value;
+                                    if (!v.trim()) delete next[f];
+                                    else next[f] = v;
+                                    return next;
+                                  })
+                                }
+                              />
+                            </label>
+                          ))}
+                          {Object.keys(resultKeyFilters).some((k) =>
+                            String(resultKeyFilters[k] || "").trim(),
+                          ) ? (
+                            <button
+                              type="button"
+                              className="linkish"
+                              onClick={() => setResultKeyFilters({})}
+                            >
+                              {t("bizCompare.clearKeyFilters")}
+                            </button>
+                          ) : null}
+                        </div>
+                      ) : null}
                       {isLiveSearch ? (
                         <p className="muted bm-hint" style={{ margin: "4px 0 0" }}>
                           {diffsTruncated

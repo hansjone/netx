@@ -2170,6 +2170,8 @@ export const bizCompareListRunDiffs = (params: {
   metricId?: string;
   kind?: string;
   kw?: string;
+  /** Field filters e.g. { direction: "out", network: "1.1.1.1" } */
+  qf?: Record<string, string>;
   page?: number;
   pageSize?: number;
 }) => {
@@ -2177,6 +2179,15 @@ export const bizCompareListRunDiffs = (params: {
   if (params.metricId) p.set("metric_id", params.metricId);
   if (params.kind) p.set("kind", params.kind);
   if (params.kw) p.set("kw", params.kw);
+  if (params.qf && Object.keys(params.qf).length) {
+    const cleaned: Record<string, string> = {};
+    for (const [k, v] of Object.entries(params.qf)) {
+      const key = String(k || "").trim();
+      const val = String(v || "").trim();
+      if (key && val) cleaned[key] = val;
+    }
+    if (Object.keys(cleaned).length) p.set("qf", JSON.stringify(cleaned));
+  }
   p.set("page", String(Math.max(1, Number(params.page || 1))));
   p.set("page_size", String(Math.max(1, Math.min(500, Number(params.pageSize || 100)))));
   return apiGet<{

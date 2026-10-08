@@ -3052,6 +3052,52 @@ def _kind_allows(kind_n: str, diff_kind: str) -> bool:
     return dk == kind_n
 
 
+def _parse_qf(raw: Any) -> dict[str, str]:
+    """Normalize field query map: {field: value} with safe names only."""
+    from .compare_sql import _FIELD_RE
+
+    if raw is None or raw == "":
+        return {}
+    obj: Any = raw
+    if isinstance(raw, str):
+        s = raw.strip()
+        if not s:
+            return {}
+        try:
+            obj = json.loads(s)
+        except Exception:
+            return {}
+    if not isinstance(obj, dict):
+        return {}
+    out: dict[str, str] = {}
+    for k, v in obj.items():
+        name = str(k or "").strip()
+        val = str(v or "").strip()
+        if not name or not val or not _FIELD_RE.match(name):
+            continue
+        out[name] = val
+    return out
+
+
+def _split_kw_and_field_tokens(kw: str) -> tuple[str, dict[str, str]]:
+    """Parse ``direction:out network:1.1.1.1 foo`` → free kw + field map."""
+    from .compare_sql import _FIELD_RE
+
+    free: list[str] = []
+    fields: dict[str, str] = {}
+    for tok in str(kw or "").split():
+        if ":" in tok:
+            name, _, val = tok.partition(":")
+            name = name.strip()
+            val = val.strip()
+            if name and val and _FIELD_RE.match(name):
+                fields[name] = val
+                continue
+        if tok.strip():
+            free.append(tok.strip())
+    return " ".join(free), fields
+
+
 def _kw_match_sql(key_fields: list[str], *, param: str = "kw") -> str:
     """OR of ILIKE on key fields (and data_json::text fallback)."""
     from .compare_sql import _FIELD_RE, _safe_field
@@ -3068,6 +3114,24 @@ def _kw_match_sql(key_fields: list[str], *, param: str = "kw") -> str:
     return "(" + " OR ".join(parts) + ")" if parts else f"(lower(data_json::text) LIKE :{param})"
 
 
+def _field_qf_sql(field_q: dict[str, str], *, prefix: str = "qf") -> tuple[str, dict[str, Any]]:
+    """AND of ILIKE contains on each field."""
+    from .compare_sql import _safe_field
+
+    if not field_q:
+        return "TRUE", {}
+    parts: list[str] = []
+    params: dict[str, Any] = {}
+    for i, (name, val) in enumerate(field_q.items()):
+        sf = _safe_field(name)
+        key = f"{prefix}_{i}"
+        params[key] = f"%{val.lower()}%"
+        parts.append(
+            f"lower(trim(both from coalesce(data_json->>'{sf}', ''))) LIKE :{key}"
+        )
+    return "(" + " AND ".join(parts) + ")", params
+
+
 def _load_metric_rows_for_search(
     db: Session,
     *,
@@ -3075,10 +3139,11 @@ def _load_metric_rows_for_search(
     metric_id: str,
     row_filters: list[dict[str, Any]] | None,
     key_fields: list[str],
-    kw: str,
+    kw: str = "",
+    field_q: dict[str, str] | None = None,
     cap: int = _LIVE_SEARCH_LOAD_CAP,
 ) -> tuple[list[dict[str, Any]], bool]:
-    """Load rows matching sheet filters + kw. Returns (rows, truncated)."""
+    """Load rows matching sheet filters + optional free kw / field_q. Returns (rows, truncated)."""
     from .compare_sql import (
         _dialect_is_postgres,
         _filters_sql_compatible,
@@ -3090,25 +3155,31 @@ def _load_metric_rows_for_search(
     bid = str(batch_id or "").strip()
     mid = str(metric_id or "").strip()
     needle = str(kw or "").strip()
-    if not bid or not mid or not needle:
+    fq = {k: v for k, v in (field_q or {}).items() if str(v or "").strip()}
+    if not bid or not mid or (not needle and not fq):
         return [], False
     lim = max(1, min(int(cap), _LIVE_SEARCH_LOAD_CAP))
     filters = [f for f in (row_filters or []) if isinstance(f, dict)]
-    like = f"%{needle.lower()}%"
 
     if _dialect_is_postgres(db):
         filter_sql, filter_params = ("TRUE", {})
         if filters and _filters_sql_compatible(filters):
             filter_sql, filter_params = compile_row_filters_sql(filters)
-        kw_sql = _kw_match_sql(key_fields)
-        # Fetch lim+1 to detect truncation
-        params = {
+        qf_sql, qf_params = _field_qf_sql(fq)
+        search_parts = [qf_sql]
+        params: dict[str, Any] = {
             "bid": bid,
             "mid": mid,
-            "kw": like,
             "lim": lim + 1,
             **filter_params,
+            **qf_params,
         }
+        if needle:
+            params["kw"] = f"%{needle.lower()}%"
+            search_parts.append(_kw_match_sql(key_fields))
+        search_sql = " AND ".join(f"({p})" for p in search_parts if p and p != "TRUE")
+        if not search_sql:
+            search_sql = "TRUE"
         rows = db.execute(
             sql_text(
                 f"""
@@ -3117,7 +3188,7 @@ def _load_metric_rows_for_search(
                 WHERE batch_id = :bid
                   AND metric_id = :mid
                   AND ({filter_sql})
-                  AND ({kw_sql})
+                  AND ({search_sql})
                 ORDER BY seq ASC, id ASC
                 LIMIT :lim
                 """
@@ -3178,21 +3249,30 @@ def _load_metric_rows_for_search(
         if filters and not all(row_matches_filter(row, f) for f in filters):
             db.expunge(r)
             continue
-        hit = False
-        for kf in key_set:
-            if needle_l in str(row.get(kf) or "").lower():
-                hit = True
-                break
-        if not hit:
-            blob = json.dumps(data, ensure_ascii=False, default=str).lower()
-            hit = needle_l in blob
-        if not hit:
-            db.expunge(r)
-            continue
+        if fq:
+            ok_f = True
+            for fname, fval in fq.items():
+                if fval.lower() not in str(row.get(fname) or "").lower():
+                    ok_f = False
+                    break
+            if not ok_f:
+                db.expunge(r)
+                continue
+        if needle_l:
+            hit = False
+            for kf in key_set:
+                if needle_l in str(row.get(kf) or "").lower():
+                    hit = True
+                    break
+            if not hit:
+                blob = json.dumps(data, ensure_ascii=False, default=str).lower()
+                hit = needle_l in blob
+            if not hit:
+                db.expunge(r)
+                continue
         out.append(row)
         db.expunge(r)
         if len(out) >= lim:
-            # peek one more?
             truncated = True
             break
     return out, truncated
@@ -3204,7 +3284,8 @@ def _live_search_sheet_diffs(
     sheet: dict[str, Any],
     *,
     kind: str,
-    kw: str,
+    kw: str = "",
+    field_q: dict[str, str] | None = None,
     page: int,
     page_size: int,
 ) -> dict[str, Any]:
@@ -3236,6 +3317,11 @@ def _live_search_sheet_diffs(
                         )
                     break
 
+    free_kw, tok_fields = _split_kw_and_field_tokens(kw)
+    merged_q = {**tok_fields, **(field_q or {})}
+    # Drop empty
+    merged_q = {k: v for k, v in merged_q.items() if str(v or "").strip()}
+
     if not key_fields or not mid_src:
         return {
             "total": 0,
@@ -3260,7 +3346,8 @@ def _live_search_sheet_diffs(
         metric_id=mid_src,
         row_filters=row_filters,
         key_fields=key_fields,
-        kw=kw,
+        kw=free_kw,
+        field_q=merged_q,
     )
     after_rows, trunc_a = _load_metric_rows_for_search(
         db,
@@ -3268,7 +3355,8 @@ def _live_search_sheet_diffs(
         metric_id=mid_src,
         row_filters=row_filters,
         key_fields=key_fields,
-        kw=kw,
+        kw=free_kw,
+        field_q=merged_q,
     )
     result = compare_rows(
         before_rows=before_rows,
@@ -3314,6 +3402,7 @@ def list_run_diffs(
     metric_id: str = "",
     kind: str = "diff",
     kw: str = "",
+    qf: Any = None,
     page: int = 1,
     page_size: int = 100,
 ) -> dict[str, Any]:
@@ -3324,6 +3413,12 @@ def list_run_diffs(
     size_n = max(1, min(500, int(page_size or 100)))
     kind_n = (kind or "diff").strip().lower()
     kw_n = (kw or "").strip()
+    field_q = _parse_qf(qf)
+    # Also accept field:value tokens inside kw
+    free_from_kw, tok_fields = _split_kw_and_field_tokens(kw_n)
+    if tok_fields:
+        field_q = {**tok_fields, **field_q}
+        kw_n = free_from_kw
 
     summary = dict(r.summary_json or {})
     tpl = db.get(BizCompareTemplate, r.template_id) if r.template_id else None
@@ -3332,14 +3427,15 @@ def list_run_diffs(
     sheet = _lookup_sheet(sheets, asked) if asked else (sheets[0] if sheets else None)
     mid = sheet_key(sheet) if sheet else (asked or str(r.metric_id or ""))
 
-    # Unified search: any kw → live source lookup; kind tab only filters.
-    if kw_n and sheet:
+    # Unified search: kw and/or field filters → live source lookup; kind tab only filters.
+    if (kw_n or field_q) and sheet:
         return _live_search_sheet_diffs(
             db,
             r,
             sheet,
             kind=kind_n,
             kw=kw_n,
+            field_q=field_q,
             page=page_n,
             page_size=size_n,
         )
