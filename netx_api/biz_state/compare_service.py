@@ -204,6 +204,27 @@ def normalize_store_unchanged(raw: Any) -> str:
     return m if m in _STORE_UNCHANGED_MODES else "auto"
 
 
+def compute_pass_rate(*, success: int, fail: int, empty_as: float = 100.0) -> float:
+    """Pass rate for cutover UI.
+
+    With million-row sheets, 3 fails / 50k can round to 100.0% at 1 decimal —
+    never report 100 when any fail remains; add decimals until it stays < 100.
+    """
+    s = max(0, int(success or 0))
+    f = max(0, int(fail or 0))
+    judged = s + f
+    if judged <= 0:
+        return float(empty_as)
+    rate = (s / judged) * 100.0
+    if f <= 0:
+        return round(rate, 1)
+    for nd in (1, 2, 3, 4):
+        r = round(rate, nd)
+        if r < 100.0:
+            return r
+    return 99.9999
+
+
 def resolve_unchanged_policy(
     mode: str, *, before_n: int, after_n: int
 ) -> dict[str, Any]:
@@ -2885,7 +2906,9 @@ def _enrich_summary(summary: dict[str, Any], sheets: list[dict[str, Any]]) -> di
     matched = changed + unchanged
     diff_count = fail_count
     pass_rate = (
-        round((success_count / judged) * 100, 1) if judged else (100.0 if total == 0 else 0.0)
+        compute_pass_rate(success=success_count, fail=fail_count, empty_as=100.0 if total == 0 else 0.0)
+        if judged
+        else (100.0 if total == 0 else 0.0)
     )
     diff_rate = round((fail_count / judged) * 100, 1) if judged else 0.0
 
@@ -2920,7 +2943,11 @@ def _enrich_summary(summary: dict[str, Any], sheets: list[dict[str, Any]]) -> di
                 # Pending sheets must not look like "100% pass"
                 "pass_rate": None
                 if pending
-                else (round((su / sj) * 100, 1) if sj else (100.0 if st == 0 else 0.0)),
+                else (
+                    compute_pass_rate(success=su, fail=sf, empty_as=100.0 if st == 0 else 0.0)
+                    if sj
+                    else (100.0 if st == 0 else 0.0)
+                ),
             }
         )
 

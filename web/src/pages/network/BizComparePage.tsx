@@ -1376,7 +1376,22 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     const fail = sheetFailOf(c);
     const ok = sheetSuccessOf(c);
     const judged = fail + ok;
-    return judged ? Math.round((ok / judged) * 1000) / 10 : 100;
+    if (!judged) return 100;
+    const rate = (ok / judged) * 100;
+    if (fail <= 0) return Math.round(rate * 10) / 10;
+    // 3 fails / 50k ≈ 99.994% — 1-decimal round becomes 100%; keep digits until < 100
+    for (const nd of [1, 2, 3, 4]) {
+      const r = Math.round(rate * 10 ** nd) / 10 ** nd;
+      if (r < 100) return r;
+    }
+    return 99.9999;
+  };
+
+  const formatPassRate = (rate: number | null | undefined) => {
+    if (rate === null || rate === undefined || Number.isNaN(rate)) return "…";
+    // Trim trailing zeros but keep enough precision for near-100 rates
+    const s = Number(rate).toFixed(4).replace(/\.?0+$/, "");
+    return `${s}%`;
   };
 
   const summary = runDetail?.summary || {};
@@ -3591,7 +3606,15 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                                 pass_rate: pending
                                   ? null
                                   : judged
-                                    ? Math.round((unchanged / judged) * 1000) / 10
+                                    ? (() => {
+                                        const rate = (unchanged / judged) * 100;
+                                        if (fail <= 0) return Math.round(rate * 10) / 10;
+                                        for (const nd of [1, 2, 3, 4]) {
+                                          const r = Math.round(rate * 10 ** nd) / 10 ** nd;
+                                          if (r < 100) return r;
+                                        }
+                                        return 99.9999;
+                                      })()
                                     : 100,
                               };
                             })
@@ -3641,7 +3664,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                             title={
                               pending
                                 ? `${label} · ${t("bizCompare.sheetPending")}`
-                                : `${label} · ${t("bizCompare.kindFail")} ${fail} · ${t("bizCompare.kindSuccess")} ${ok} · ${t("bizCompare.passRateShort")} ${rate ?? "…"}%`
+                                : `${label} · ${t("bizCompare.kindFail")} ${fail} · ${t("bizCompare.kindSuccess")} ${ok} · ${t("bizCompare.passRateShort")} ${formatPassRate(rate)}`
                             }
                           >
                             <span className="bs-cmp-nav__dot" aria-hidden />
@@ -3658,7 +3681,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                                 {pending ? "—" : ok}
                               </span>
                               <span className="bs-cmp-nav__num bs-cmp-nav__num--rate">
-                                {pending || rate === null ? "…" : `${rate}%`}
+                                {pending || rate === null ? "…" : formatPassRate(rate)}
                               </span>
                             </span>
                           </button>
@@ -3714,7 +3737,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                         <span className="bs-cmp-strip__pass-value">
                           {activeSheetPending || activePassRate === null
                             ? "…"
-                            : `${activePassRate}%`}
+                            : formatPassRate(activePassRate)}
                         </span>
                       </div>
                       <div className="bs-cmp-strip__kinds" role="group">
