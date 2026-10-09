@@ -3802,13 +3802,12 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                         ) : null}
                         <button
                           type="button"
-                          className={`bs-cmp-strip__toggle${hideDisplayCols ? " is-active" : ""}`}
+                          className={`bs-cmp-strip__toggle${!hideDisplayCols ? " is-active" : ""}`}
                           title={t("bizCompare.hideDisplayColsHint")}
+                          aria-pressed={!hideDisplayCols}
                           onClick={() => setHideDisplayCols((v) => !v)}
                         >
-                          {hideDisplayCols
-                            ? t("bizCompare.showDisplayCols")
-                            : t("bizCompare.hideDisplayCols")}
+                          {t("bizCompare.displayColsToggle")}
                         </button>
                       </div>
                       {resultSearchKeyFields.length && keyFiltersVisible ? (
