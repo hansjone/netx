@@ -1,4 +1,4 @@
-﻿param(
+param(
     [ValidateSet("tray", "start", "stop", "setup", "update")]
     [string]$Action = "tray",
     [string]$ProgramRoot = "",
@@ -11,6 +11,7 @@
 
 $ErrorActionPreference = "Stop"
 . "$PSScriptRoot\_common.ps1"
+Assert-NetxAdminOrRelaunch -ScriptPath $PSCommandPath -BoundParameters $PSBoundParameters -WindowStyle Hidden
 
 Add-Type -AssemblyName System.Windows.Forms
 

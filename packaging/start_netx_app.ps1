@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$ProgramRoot = "",
     [string]$DataRoot = "",
     [switch]$SkipBrowser = $false,
@@ -8,6 +8,7 @@
 
 $ErrorActionPreference = "Stop"
 . "$PSScriptRoot\_common.ps1"
+Assert-NetxAdminOrRelaunch -ScriptPath $PSCommandPath -BoundParameters $PSBoundParameters -WindowStyle Normal
 
 $prog = Get-NetxProgramRoot -Override $ProgramRoot
 $data = Get-NetxDataRoot -ProgramRoot $prog -Override $DataRoot

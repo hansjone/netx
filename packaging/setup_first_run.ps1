@@ -1,4 +1,4 @@
-﻿param(
+param(
     [ValidateSet("bundled", "external", "")]
     [string]$DbMode = "",
     [string]$ProgramRoot = "",
@@ -15,6 +15,7 @@
 
 $ErrorActionPreference = "Stop"
 . "$PSScriptRoot\_common.ps1"
+Assert-NetxAdminOrRelaunch -ScriptPath $PSCommandPath -BoundParameters $PSBoundParameters -WindowStyle Normal
 
 $prog = Get-NetxProgramRoot -Override $ProgramRoot
 $data = Get-NetxDataRoot -ProgramRoot $prog -Override $DataRoot

@@ -7,6 +7,7 @@ param(
 
 $ErrorActionPreference = "Continue"
 . "$PSScriptRoot\_common.ps1"
+Assert-NetxAdminOrRelaunch -ScriptPath $PSCommandPath -BoundParameters $PSBoundParameters -WindowStyle Hidden
 
 $prog = Get-NetxProgramRoot -Override $ProgramRoot
 $data = Get-NetxDataRoot -ProgramRoot $prog -Override $DataRoot

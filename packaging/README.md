@@ -63,6 +63,8 @@ Optional local zip only: `build_release.ps1 -CreateZip` (not for release upload)
 5. Data → `%ProgramData%\NetX\` (`.env`, `pgdata`, spool, secrets).
 6. Start menu: **Start NetX** / **Stop NetX** / **Open NetX UI** / **Reconfigure database**.
 
+**Elevation (required on fresh PCs):** all end-user entry points (`NetX-Start.cmd`, `NetX-Tray.cmd`, `NetX-Stop.cmd`, `NetX-FirstRun.cmd`, tray, start/stop/setup/update) **self-elevate via UAC**. Program Files installs cannot start reliably as a normal user (`.venv` repair / writes). Approve the UAC prompt once per launch (tray stays elevated afterward).
+
 Silent first install (bundled default): `/SILENT /DbMode=bundled`  
 Silent external: `/SILENT /DbMode=external /DbHost=... /DbPort=5432 /DbUser=... /DbPassword=... /DbName=...`  
 Silent update over existing data: `/VERYSILENT /NORESTART /InstallMode=update` (also `/SkipDbPage=1`)  
@@ -81,7 +83,7 @@ Existing Windows deploys that only set `NETX_DATABASE_URL` keep working: never s
 
 ## Manual update
 
-Preferred: run a newer `NetX-Setup-*.exe` and choose **Update** (or silent `/InstallMode=update`) so ProgramData is kept. Setup (elevated) always relinks `.venv` → `python/runtime` after file copy so tray start works without write access under Program Files.
+Preferred: run a newer `NetX-Setup-*.exe` and choose **Update** (or silent `/InstallMode=update`) so ProgramData is kept. Setup (elevated) always relinks `.venv` → `python/runtime` after file copy; runtime scripts also self-elevate so Start/Tray work on locked-down fresh PCs.
 
 Legacy/dev zip (only if you built with `-CreateZip`):
 
@@ -155,10 +157,11 @@ Token: `NETX_FORGEJO_TOKEN` (or `FORGEJO_TOKEN`).
 ## Tray & autostart
 
 ```powershell
-# System tray: Start / Stop / Open UI / Check updates
+# System tray: Start / Stop / Open UI / Check updates (self-elevates)
 .\packaging\netx_tray.ps1 -StartOnLaunch
 
-# Start tray at Windows logon (current user)
+# Start tray at Windows logon — Scheduled Task with RunLevel Highest
+# (replaces legacy HKCU\Run which cannot elevate on fresh installs)
 .\packaging\install_autostart.ps1
 # Remove: .\packaging\install_autostart.ps1 -Remove
 ```
@@ -180,10 +183,10 @@ Uses [WinSW](https://github.com/winsw/winsw) (downloaded on first install into `
 ## Silent auto-update
 
 ```powershell
-# Writes NETX_UPDATE_AUTO=true and registers a daily task (default 03:30)
+# Writes NETX_UPDATE_AUTO=true and registers a daily task (default 03:30, RunLevel Highest)
 .\packaging\install_update_task.ps1
 
-# Manual silent path (only applies when NETX_UPDATE_AUTO=true)
+# Manual silent path (only applies when NETX_UPDATE_AUTO=true; self-elevates)
 .\packaging\check_update.ps1 -Apply -Quiet -AutoOnly
 ```
 

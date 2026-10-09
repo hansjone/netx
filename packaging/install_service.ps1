@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$ProgramRoot = "",
     [string]$DataRoot = "",
     [ValidateSet("winsw", "task")]
@@ -15,6 +15,7 @@
 
 $ErrorActionPreference = "Stop"
 . "$PSScriptRoot\_common.ps1"
+Assert-NetxAdminOrRelaunch -ScriptPath $PSCommandPath -BoundParameters $PSBoundParameters -WindowStyle Normal
 
 $prog = Get-NetxProgramRoot -Override $ProgramRoot
 $data = Get-NetxDataRoot -ProgramRoot $prog -Override $DataRoot
@@ -25,9 +26,7 @@ $winswXml = Join-Path $winswDir "NetX.xml"
 $cacheDir = Join-Path $PSScriptRoot "cache"
 
 function Test-IsAdmin {
-    $id = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $p = New-Object Security.Principal.WindowsPrincipal($id)
-    return $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    return Test-NetxIsAdmin
 }
 
 function ConvertTo-WinSWPath([string]$Path) {

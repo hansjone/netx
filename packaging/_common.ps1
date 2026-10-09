@@ -322,7 +322,8 @@ function Start-NetxPowerShell {
         [ValidateSet("Hidden", "Normal", "Minimized")]
         [string]$WindowStyle = "Hidden",
         [switch]$Wait = $false,
-        [switch]$PassThru = $false
+        [switch]$PassThru = $false,
+        [switch]$RunAs = $false
     )
     $parts = @(
         "-NoProfile",
@@ -333,12 +334,102 @@ function Start-NetxPowerShell {
     $sp = @{
         FilePath     = "powershell.exe"
         ArgumentList = (ConvertTo-NetxProcessArgumentString -Arguments $parts)
-        WindowStyle  = $WindowStyle
+    }
+    # -Verb RunAs implies UseShellExecute; cannot combine with -WindowStyle.
+    if (-not $RunAs) {
+        $sp.WindowStyle = $WindowStyle
     }
     if ($WorkingDirectory) { $sp.WorkingDirectory = $WorkingDirectory }
     if ($Wait) { $sp.Wait = $true }
     if ($PassThru -or $Wait) { $sp.PassThru = $true }
+    if ($RunAs) { $sp.Verb = "RunAs" }
     return Start-Process @sp
+}
+
+function Test-NetxIsAdmin {
+    try {
+        $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $p = New-Object Security.Principal.WindowsPrincipal($id)
+        return $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    } catch {
+        return $false
+    }
+}
+
+function ConvertTo-NetxRelaunchArgumentList {
+    param([System.Collections.IDictionary]$BoundParameters)
+    $parts = [System.Collections.Generic.List[string]]::new()
+    if (-not $BoundParameters) { return @() }
+    foreach ($key in $BoundParameters.Keys) {
+        $val = $BoundParameters[$key]
+        if ($val -is [System.Management.Automation.SwitchParameter]) {
+            if ($val.IsPresent) { [void]$parts.Add("-$key") }
+            continue
+        }
+        if ($val -is [bool]) {
+            if ($val) { [void]$parts.Add("-$key") }
+            continue
+        }
+        if ($null -eq $val) { continue }
+        $s = [string]$val
+        if ($s -eq "") { continue }
+        [void]$parts.Add("-$key")
+        [void]$parts.Add($s)
+    }
+    return @($parts)
+}
+
+function Assert-NetxAdminOrRelaunch {
+    <#
+    .SYNOPSIS
+      End-user packaged scripts must run elevated (Program Files + ProgramData).
+      If not admin, re-launch the same script via UAC and exit with child exit code.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$ScriptPath,
+        [System.Collections.IDictionary]$BoundParameters = @{},
+        [string]$WorkingDirectory = "",
+        [ValidateSet("Hidden", "Normal", "Minimized")]
+        [string]$WindowStyle = "Normal"
+    )
+    if (Test-NetxIsAdmin) { return }
+
+    if ($env:NETX_ELEVATION_RELAUNCH -eq "1") {
+        throw "admin_required: still not elevated after UAC. Run NetX-Start / NetX-Tray as Administrator."
+    }
+
+    if (-not (Test-Path -LiteralPath $ScriptPath)) {
+        throw "elevation_script_missing: $ScriptPath"
+    }
+    $wd = $WorkingDirectory
+    if (-not $wd) { $wd = Split-Path -Parent $ScriptPath }
+
+    # Window style belongs on powershell.exe argv, not Start-Process (incompatible with -Verb RunAs).
+    $parts = @(
+        "-NoProfile",
+        "-WindowStyle", $WindowStyle,
+        "-ExecutionPolicy", "Bypass",
+        "-File", $ScriptPath
+    ) + (ConvertTo-NetxRelaunchArgumentList -BoundParameters $BoundParameters)
+
+    $prevRel = $env:NETX_ELEVATION_RELAUNCH
+    $env:NETX_ELEVATION_RELAUNCH = "1"
+    try {
+        $p = Start-Process -FilePath "powershell.exe" `
+            -ArgumentList (ConvertTo-NetxProcessArgumentString -Arguments $parts) `
+            -WorkingDirectory $wd `
+            -Verb RunAs -Wait -PassThru
+    } catch {
+        if ($null -ne $prevRel) { $env:NETX_ELEVATION_RELAUNCH = $prevRel } else { Remove-Item Env:NETX_ELEVATION_RELAUNCH -ErrorAction SilentlyContinue }
+        throw ("admin_required: UAC cancelled or elevation failed. Run NetX as Administrator. {0}" -f $_.Exception.Message)
+    }
+    if ($null -ne $prevRel) { $env:NETX_ELEVATION_RELAUNCH = $prevRel } else { Remove-Item Env:NETX_ELEVATION_RELAUNCH -ErrorAction SilentlyContinue }
+    if ($null -eq $p) {
+        throw "admin_required: elevation failed (no process)"
+    }
+    $code = 0
+    if ($null -ne $p.ExitCode) { $code = [int]$p.ExitCode }
+    exit $code
 }
 
 function Get-NetxSystemPython {

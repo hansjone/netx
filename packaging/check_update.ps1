@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$ProgramRoot = "",
     [string]$DataRoot = "",
     [string]$UpdateUrl = "",
@@ -29,6 +29,8 @@
 
 $ErrorActionPreference = "Stop"
 . "$PSScriptRoot\_common.ps1"
+Assert-NetxAdminOrRelaunch -ScriptPath $PSCommandPath -BoundParameters $PSBoundParameters `
+    -WindowStyle $(if ($Quiet) { "Hidden" } else { "Normal" })
 
 $prog = Get-NetxProgramRoot -Override $ProgramRoot
 $data = Get-NetxDataRoot -ProgramRoot $prog -Override $DataRoot

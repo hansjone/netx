@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$ProgramRoot = "",
     [string]$DataRoot = "",
     [ValidateSet("Daily", "AtLogOn", "Hourly")]
@@ -12,6 +12,7 @@
 
 $ErrorActionPreference = "Stop"
 . "$PSScriptRoot\_common.ps1"
+Assert-NetxAdminOrRelaunch -ScriptPath $PSCommandPath -BoundParameters $PSBoundParameters -WindowStyle Normal
 
 $prog = Get-NetxProgramRoot -Override $ProgramRoot
 $data = Get-NetxDataRoot -ProgramRoot $prog -Override $DataRoot
@@ -51,7 +52,8 @@ switch ($Trigger) {
 }
 
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -StartWhenAvailable
-$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+# Highest: silent apply must write Program Files / run Setup.
+$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Highest
 Register-ScheduledTask -TaskName $taskName -TaskPath $taskPath -Action $action -Trigger $trig -Settings $settings -Principal $principal -Force | Out-Null
-Write-Host "==> Scheduled update task: $taskPath$taskName ($Trigger)" -ForegroundColor Green
+Write-Host "==> Scheduled update task: $taskPath$taskName ($Trigger, RunLevel Highest)" -ForegroundColor Green
 Write-Host "    Manual run: .\packaging\check_update.ps1 -Apply -Quiet -AutoOnly"

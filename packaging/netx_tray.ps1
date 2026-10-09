@@ -7,9 +7,11 @@
 )
 
 # System-tray controller for NetX (Windows packaged installs).
+# Always elevated: Start/Stop/Update touch Program Files + services.
 
 $ErrorActionPreference = "Stop"
 . "$PSScriptRoot\_common.ps1"
+Assert-NetxAdminOrRelaunch -ScriptPath $PSCommandPath -BoundParameters $PSBoundParameters -WindowStyle Hidden
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -593,7 +595,7 @@ $miUpdate.add_Click({
                         )
                         try {
                             $ap = Start-Process -FilePath "powershell.exe" -ArgumentList $arg `
-                                -WorkingDirectory $prog -WindowStyle Normal -Verb RunAs -PassThru
+                                -WorkingDirectory $prog -Verb RunAs -PassThru
                         } catch {
                             $notify.ShowBalloonTip(4000, "NetX", (T "Update cancelled (UAC)." "已取消更新（UAC）。"), [System.Windows.Forms.ToolTipIcon]::Info)
                             return

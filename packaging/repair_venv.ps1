@@ -3,9 +3,10 @@ param(
     [string]$DataRoot = ""
 )
 
-# Relink shipped .venv to local python/runtime (run elevated after Setup/update).
+# Relink shipped .venv to local python/runtime (must be elevated under Program Files).
 $ErrorActionPreference = "Stop"
 . "$PSScriptRoot\_common.ps1"
+Assert-NetxAdminOrRelaunch -ScriptPath $PSCommandPath -BoundParameters $PSBoundParameters -WindowStyle Hidden
 
 $prog = Get-NetxProgramRoot -Override $ProgramRoot
 $data = Get-NetxDataRoot -ProgramRoot $prog -Override $DataRoot

@@ -5,7 +5,7 @@
 
 #define MyAppName "NetX"
 #ifndef MyAppVersion
-  #define MyAppVersion "0.4.12"
+  #define MyAppVersion "0.4.13"
 #endif
 #define MyAppPublisher "NetX"
 #define MyAppURL "https://github.com/hansjone/netx"
