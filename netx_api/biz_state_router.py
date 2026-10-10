@@ -173,6 +173,11 @@ def api_get_task(task_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
     return svc.get_task(db, task_id)
 
 
+@router.get("/tasks/{task_id}/progress")
+def api_task_progress(task_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    return svc.get_task_progress(db, task_id)
+
+
 @router.get("/tasks/{task_id}/commands")
 def api_plan_task_commands(
     task_id: str,

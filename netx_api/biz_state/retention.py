@@ -6,6 +6,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Any
 
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from ..models import (
@@ -26,38 +27,54 @@ def _utcnow() -> datetime:
     return datetime.utcnow()
 
 
-def protected_batch_map(db: Session, *, task_id: str = "") -> dict[str, list[str]]:
-    """batch_id → reason codes. Empty task_id = all tasks."""
+def protected_batch_map(
+    db: Session, *, task_id: str = "", batch_ids: list[str] | None = None,
+) -> dict[str, list[str]]:
+    """Only read reference columns, scoped to the requested task/batches when given."""
     out: dict[str, list[str]] = defaultdict(list)
+    wanted = set(batch_ids) if batch_ids is not None else None
+    if wanted == set():
+        return {}
+    scope = select(BizStateBatch.id)
+    q = db.query(BizStateBatch.id, BizStateBatch.is_baseline, BizStateBatch.status)
+    if task_id:
+        scope = scope.where(BizStateBatch.task_id == task_id)
+        q = q.filter(BizStateBatch.task_id == task_id)
+    if wanted is not None:
+        scope = scope.where(BizStateBatch.id.in_(wanted))
+        q = q.filter(BizStateBatch.id.in_(wanted))
+    batch_rows = q.all() if task_id or wanted is not None else q.filter(or_(
+        BizStateBatch.is_baseline.is_(True), BizStateBatch.status.in_(("queued", "running")),
+    )).all()
+    if task_id:
+        wanted = {row.id for row in batch_rows}
 
     def add(bid: str, reason: str) -> None:
         b = str(bid or "").strip()
-        if not b:
+        if not b or (wanted is not None and b not in wanted):
             return
         if reason not in out[b]:
             out[b].append(reason)
 
-    q = db.query(BizStateBatch)
-    if task_id:
-        q = q.filter(BizStateBatch.task_id == task_id)
-    for b in q.filter(BizStateBatch.is_baseline.is_(True)).all():
-        add(b.id, "manual_baseline")
+    for b in batch_rows:
+        if b.is_baseline:
+            add(b.id, "manual_baseline")
+        if b.status in ("queued", "running"):
+            add(b.id, "active_collection")
 
-    for j in db.query(BizCompareJob).all():
-        add(j.before_batch_id, "compare_job_before")
-        add(j.after_batch_id, "compare_job_after")
-
-    for r in db.query(BizCompareRun).all():
-        add(r.before_batch_id, "compare_run_before")
-        add(r.after_batch_id, "compare_run_after")
-
-    for p in db.query(BizMigrationProject).all():
-        add(p.old_baseline_batch_id, "migration_old_baseline")
-        add(p.new_baseline_batch_id, "migration_new_baseline")
-
-    for r in db.query(BizMigrationRun).all():
-        add(r.old_batch_id, "migration_run_old")
-        add(r.new_batch_id, "migration_run_new")
+    references = (
+        (BizCompareJob.before_batch_id, BizCompareJob.after_batch_id, "compare_job_before", "compare_job_after"),
+        (BizCompareRun.before_batch_id, BizCompareRun.after_batch_id, "compare_run_before", "compare_run_after"),
+        (BizMigrationProject.old_baseline_batch_id, BizMigrationProject.new_baseline_batch_id, "migration_old_baseline", "migration_new_baseline"),
+        (BizMigrationRun.old_batch_id, BizMigrationRun.new_batch_id, "migration_run_old", "migration_run_new"),
+    )
+    for before, after, before_reason, after_reason in references:
+        refs = db.query(before, after)
+        if task_id or batch_ids is not None:
+            refs = refs.filter(or_(before.in_(scope), after.in_(scope)))
+        for before_id, after_id in refs:
+            add(before_id, before_reason)
+            add(after_id, after_reason)
 
     return dict(out)
 
@@ -67,7 +84,7 @@ def protected_batch_ids(db: Session, *, task_id: str = "") -> set[str]:
 
 
 def batch_protect_info(db: Session, batch_id: str) -> dict[str, Any]:
-    reasons = protected_batch_map(db).get(batch_id, [])
+    reasons = protected_batch_map(db, batch_ids=[batch_id]).get(batch_id, [])
     b = db.get(BizStateBatch, batch_id)
     if b and bool(getattr(b, "is_baseline", False)) and "manual_baseline" not in reasons:
         reasons = ["manual_baseline", *reasons]
