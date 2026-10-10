@@ -1,5 +1,5 @@
 import { Button, Input, Modal } from "@heroui/react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { ListPager } from "../../components/ListPager";
 import { AppModalShell } from "../../components/ui/AppModalShell";
@@ -237,6 +237,8 @@ type DiffRow = {
   old_status?: string;
   new_status?: string;
   rule_hit?: string;
+  integrity_changes?: Array<{ field: string; before: unknown; after: unknown }>;
+  previous_batch?: boolean;
   evidence?: {
     old?: {
       device?: { ne_name?: string; ne_ip?: string };
@@ -285,6 +287,13 @@ type SheetCard = {
   new_baseline_mode?: string;
   collect_skipped?: boolean;
   current_missing?: boolean;
+  awaiting_peer?: number;
+  sample_issues?: string[];
+  old_collected_at?: string;
+  new_collected_at?: string;
+  duplicate_keys_before?: number;
+  duplicate_keys_after?: number;
+  age_limit_sec?: number;
 };
 type EvalRun = {
   id: string;
@@ -335,19 +344,15 @@ const VERDICT_I18N: Record<string, string> = {
   not_involved: "bizMigration.verdictNotInvolved",
   unexpected_new: "bizMigration.verdictUnexpected",
   unfinished: "bizMigration.verdictUnfinished",
+  awaiting_peer: "bizMigration.awaitingPeer",
+  migrated_previous: "bizMigration.migratedPrevious",
+  unfinished_previous: "bizMigration.unfinishedPrevious",
   ok: "bizMigration.verdictOk",
 };
 
 function fmtTime(v?: string | null) {
   if (!v) return "—";
   return formatSystemTime(v) || v;
-}
-
-function taskLabel(x: TaskOpt) {
-  const base = `${x.ne_name || x.id} (${x.ne_ip || "-"})`;
-  const note = x.note ? ` · ${x.note}` : "";
-  const iv = x.interval_sec ? ` · ${x.interval_sec}s` : "";
-  return `${base}${note}${iv}`;
 }
 
 export function BizMigrationPage() {
@@ -416,11 +421,19 @@ export function BizMigrationPage() {
   const [board, setBoard] = useState<{
     run?: {
       id: string;
+      created_at?: string;
+      purpose?: string;
       summary?: {
         sheet_cards?: SheetCard[];
         progress?: { ok: number; total: number };
         anomaly?: number;
         expect_ports?: string[];
+        coverage_complete?: boolean;
+        anomaly_outside_expect?: number;
+        steady_outside?: number;
+        verdict_counts?: Record<string, number>;
+        duplicate_keys?: number;
+        uncovered_scope?: string[];
       };
     } | null;
   } | null>(null);
@@ -432,6 +445,7 @@ export function BizMigrationPage() {
   const [expectMetricId, setExpectMetricId] = useState("");
   const [selectedExpectKeys, setSelectedExpectKeys] = useState<Set<string>>(new Set());
   const [portFilter, setPortFilter] = useState("");
+  const [expectPage, setExpectPage] = useState(1);
   const [redTickets, setRedTickets] = useState<RedTicket[]>([]);
   const [openRedCount, setOpenRedCount] = useState(0);
   const [acceptInfo, setAcceptInfo] = useState<MigBatch["accept_summary"] | null>(null);
@@ -439,6 +453,22 @@ export function BizMigrationPage() {
   const [pinNewBatchId, setPinNewBatchId] = useState("");
   const [evalRuns, setEvalRuns] = useState<EvalRun[]>([]);
   const [selectedRunId, setSelectedRunId] = useState("");
+  const [followLatest, setFollowLatest] = useState(true);
+  const [diffPage, setDiffPage] = useState(1);
+  const [diffTotal, setDiffTotal] = useState(0);
+  const [boardColor, setBoardColor] = useState("");
+  const [boardKeyword, setBoardKeyword] = useState("");
+  const boardSearch = useDebouncedValue(boardKeyword, 300);
+  const [boardLoading, setBoardLoading] = useState(false);
+  const [boardError, setBoardError] = useState("");
+  const [boardClock, setBoardClock] = useState(Date.now());
+  const boardRequest = useRef(0);
+  const runsRequest = useRef(0);
+  const activeBatchRef = useRef(batchId);
+  activeBatchRef.current = batchId;
+  const activeProjectRef = useRef(projectId);
+  activeProjectRef.current = projectId;
+  const historyRunId = followLatest ? "" : selectedRunId;
 
   const project = useMemo(
     () => projects.find((p) => p.id === projectId) || null,
@@ -446,29 +476,14 @@ export function BizMigrationPage() {
   );
   const batch = useMemo(() => batches.find((b) => b.id === batchId) || null, [batches, batchId]);
   const sheetCards = board?.run?.summary?.sheet_cards || [];
-  const visibleDiffs = useMemo(() => {
-    let rows = diffs;
-    if (boardMetricId) {
-      rows = rows.filter(
-        (d) => sheetIdentity(d) === boardMetricId || d.metric_id === boardMetricId,
-      );
-    }
-    if (onlyExpect) rows = rows.filter((d) => d.in_expect);
-    return rows;
-  }, [diffs, onlyExpect, boardMetricId]);
-
-  const boardMetricOptions = useMemo(() => {
-    const ids = new Set<string>();
-    for (const c of sheetCards) {
-      const id = sheetIdentity(c);
-      if (id) ids.add(id);
-    }
-    for (const d of diffs) {
-      const id = sheetIdentity(d);
-      if (id) ids.add(id);
-    }
-    return [...ids];
-  }, [sheetCards, diffs]);
+  const visibleDiffs = diffs;
+  const liveSummary = board?.run?.summary;
+  const liveProgress = liveSummary?.progress;
+  const monitorIsLive = followLatest && batch?.status === "active" && project?.status !== "done";
+  const samplesStale = monitorIsLive && sheetCards.some((c) =>
+    [c.old_collected_at, c.new_collected_at].some((at) => at &&
+      boardClock - Date.parse(at) > (c.age_limit_sec || 180) * 1000));
+  const coverageUnknown = Boolean(board?.run && (liveSummary?.coverage_complete !== true || samplesStale));
 
   const filteredProjects = useMemo(() => {
     const kw = debouncedListKw.trim().toLowerCase();
@@ -519,6 +534,9 @@ export function BizMigrationPage() {
       return blob.includes(kw);
     });
   }, [expectSheets, expectMetricId, portFilter]);
+  const expectPages = Math.max(1, Math.ceil(filteredExpectItems.length / 100));
+  const safeExpectPage = Math.min(expectPage, expectPages);
+  const visibleExpectItems = filteredExpectItems.slice((safeExpectPage - 1) * 100, safeExpectPage * 100);
 
   const reloadProjects = useCallback(async () => {
     const res = await cutoverCachedGet("bizMigration:projects", () => bizMigrationListProjects(), {
@@ -603,16 +621,20 @@ export function BizMigrationPage() {
     }
     try {
       const res = await bizMigrationListBaselineExpect(pid);
+      if (pid !== activeProjectRef.current) return;
       const sheets = (res.sheets || []) as ExpectSheet[];
       setExpectSheets(sheets);
       setExpectMetricId((prev) => {
         if (prev && sheets.some((s) => sheetIdentity(s) === prev)) return prev;
         return sheets[0] ? sheetIdentity(sheets[0]) : "";
       });
-    } catch {
-      setExpectSheets([]);
+    } catch (e) {
+      if (pid === activeProjectRef.current) {
+        setExpectSheets([]);
+        showError(formatErr(e));
+      }
     }
-  }, []);
+  }, [showError]);
 
   const loadRedTickets = useCallback(async (pid: string) => {
     if (!pid) {
@@ -622,13 +644,13 @@ export function BizMigrationPage() {
     }
     try {
       const res = await bizMigrationListRedTickets(pid);
+      if (pid !== activeProjectRef.current) return;
       setRedTickets((res.items || []) as RedTicket[]);
       setOpenRedCount(Number(res.open_count || 0));
-    } catch {
-      setRedTickets([]);
-      setOpenRedCount(0);
+    } catch (e) {
+      if (pid === activeProjectRef.current) showError(formatErr(e));
     }
-  }, []);
+  }, [showError]);
 
   useEffect(() => {
     void (async () => {
@@ -690,6 +712,12 @@ export function BizMigrationPage() {
   }, [showError]);
 
   useEffect(() => {
+    let cancelled = false;
+    setBatchId("");
+    setBatches([]);
+    setAcceptInfo(null);
+    setRedTickets([]);
+    setOpenRedCount(0);
     if (!projectId) {
       setBatches([]);
       setBatchId("");
@@ -706,18 +734,29 @@ export function BizMigrationPage() {
     void (async () => {
       try {
         const res = await bizMigrationListBatches(projectId);
+        if (cancelled || projectId !== activeProjectRef.current) return;
         const items = (res.items || []) as MigBatch[];
         setBatches(items);
-        setBatchId((prev) => (items.find((b) => b.id === prev) ? prev : items[0]?.id || ""));
+        setBatchId(items.find((b) => b.status === "active")?.id || items[0]?.id || "");
         await loadBaselineExpect(projectId);
         await loadRedTickets(projectId);
       } catch (e) {
-        showError(formatErr(e));
+        if (!cancelled) showError(formatErr(e));
       }
     })();
+    return () => { cancelled = true; };
   }, [projectId, showError, loadBaselineExpect, loadRedTickets]);
 
   useEffect(() => {
+    setBoard(null);
+    setDiffs([]);
+    setDiffTotal(0);
+    setDiffPage(1);
+    setBoardMetricId("");
+    setFollowLatest(true);
+    setBoardError("");
+    boardRequest.current += 1;
+    runsRequest.current += 1;
     if (!batchId) {
       setBoard(null);
       setDiffs([]);
@@ -726,9 +765,32 @@ export function BizMigrationPage() {
       return;
     }
     void loadRuns(batchId);
-    void loadBoard(batchId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [batchId]);
+
+  useEffect(() => {
+    if (!batchId || detailTab !== "board") return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const refresh = async () => {
+      if (document.visibilityState === "visible") {
+        await loadBoard(batchId, historyRunId);
+        if (!cancelled && followLatest) await loadRuns(batchId);
+      }
+      if (!cancelled && monitorIsLive) {
+        timer = setTimeout(() => void refresh(), 10000);
+      }
+    };
+    void refresh();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+      boardRequest.current += 1;
+      runsRequest.current += 1;
+    };
+    // Requests are serial within each refresh cycle; filters start a new cycle.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [batchId, detailTab, monitorIsLive, historyRunId, followLatest, boardMetricId, onlyExpect, boardColor, boardSearch, diffPage]);
 
   useEffect(() => {
     if (!createOpen) return;
@@ -757,84 +819,101 @@ export function BizMigrationPage() {
   }, [createOpen, createNeSource, debouncedCreateNeKw, createNePage, createNePageSize, showError]);
 
   useEffect(() => {
+    let cancelled = false;
     if (!createOldNe) {
       setCreateOldBatches([]);
       setCreateOldHasPortrait(false);
       setCreateOldBaselineId("");
       return;
     }
+    setCreateOldBaselineId("");
+    setCreateOldBatches([]);
     void bizMigrationNePortrait({
       source: neSourceOf(createOldNe),
       ne_id: createOldNe.id,
       limit: 30,
     }).then((r) => {
+      if (cancelled) return;
       setCreateOldHasPortrait(Boolean(r.task?.id));
       setCreateOldBatches(
-        (r.batches || []).map((x) => ({
+        (r.batches || []).filter((x) => ["success", "partial"].includes(String(x.status || ""))).map((x) => ({
           id: String(x.id || ""),
           started_at: x.started_at || null,
           alias: String(x.alias || ""),
         })),
       );
-    });
+    }).catch((e) => { if (!cancelled) showError(formatErr(e)); });
+    return () => { cancelled = true; };
   }, [createOldNe]);
 
   useEffect(() => {
+    let cancelled = false;
     if (!createNewNe) {
       setCreateNewBatches([]);
       setCreateNewHasPortrait(false);
       setCreateNewBaselineId("");
       return;
     }
+    setCreateNewBaselineId("");
+    setCreateNewBatches([]);
     void bizMigrationNePortrait({
       source: neSourceOf(createNewNe),
       ne_id: createNewNe.id,
       limit: 30,
     }).then((r) => {
+      if (cancelled) return;
       setCreateNewHasPortrait(Boolean(r.task?.id));
       setCreateNewBatches(
-        (r.batches || []).map((x) => ({
+        (r.batches || []).filter((x) => ["success", "partial"].includes(String(x.status || ""))).map((x) => ({
           id: String(x.id || ""),
           started_at: x.started_at || null,
           alias: String(x.alias || ""),
         })),
       );
-    });
+    }).catch((e) => { if (!cancelled) showError(formatErr(e)); });
+    return () => { cancelled = true; };
   }, [createNewNe]);
 
   useEffect(() => {
+    let cancelled = false;
     if (!project?.old_task_id) {
       setOldBatches([]);
       return;
     }
     void bizStateListBatches(project.old_task_id, 30).then((r) => {
+      if (cancelled) return;
       setOldBatches(
-        ((r.items || []) as Record<string, unknown>[]).map((x) => ({
+        ((r.items || []) as Record<string, unknown>[]).filter((x) => ["success", "partial"].includes(String(x.status || ""))).map((x) => ({
           id: String(x.id || ""),
           started_at: (x.started_at as string) || null,
           alias: String(x.alias || ""),
         })),
       );
-    });
+    }).catch((e) => { if (!cancelled) showError(formatErr(e)); });
+    return () => { cancelled = true; };
   }, [project?.old_task_id]);
 
   useEffect(() => {
+    let cancelled = false;
     if (!project?.new_task_id) {
       setNewBatches([]);
       return;
     }
     void bizStateListBatches(project.new_task_id, 30).then((r) => {
+      if (cancelled) return;
       setNewBatches(
-        ((r.items || []) as Record<string, unknown>[]).map((x) => ({
+        ((r.items || []) as Record<string, unknown>[]).filter((x) => ["success", "partial"].includes(String(x.status || ""))).map((x) => ({
           id: String(x.id || ""),
           started_at: (x.started_at as string) || null,
           alias: String(x.alias || ""),
         })),
       );
-    });
+    }).catch((e) => { if (!cancelled) showError(formatErr(e)); });
+    return () => { cancelled = true; };
   }, [project?.new_task_id]);
 
   useEffect(() => {
+    let cancelled = false;
     const ids = [
       ...(project?.old_hf_bindings || []).map((b) => b.task_id),
       project?.old_hf_task_id || "",
@@ -845,6 +924,7 @@ export function BizMigrationPage() {
       return;
     }
     void Promise.all(uniq.map((tid) => bizStateListBatches(tid, 30))).then((results) => {
+      if (cancelled) return;
       const seen = new Set<string>();
       const items: { id: string; started_at?: string | null; alias?: string }[] = [];
       for (const r of results) {
@@ -860,10 +940,12 @@ export function BizMigrationPage() {
         }
       }
       setHfOldBatches(items);
-    });
+    }).catch((e) => { if (!cancelled) showError(formatErr(e)); });
+    return () => { cancelled = true; };
   }, [project?.old_hf_task_id, project?.old_hf_bindings]);
 
   useEffect(() => {
+    let cancelled = false;
     const ids = [
       ...(project?.new_hf_bindings || []).map((b) => b.task_id),
       project?.new_hf_task_id || "",
@@ -874,6 +956,7 @@ export function BizMigrationPage() {
       return;
     }
     void Promise.all(uniq.map((tid) => bizStateListBatches(tid, 30))).then((results) => {
+      if (cancelled) return;
       const seen = new Set<string>();
       const items: { id: string; started_at?: string | null; alias?: string }[] = [];
       for (const r of results) {
@@ -889,7 +972,8 @@ export function BizMigrationPage() {
         }
       }
       setHfNewBatches(items);
-    });
+    }).catch((e) => { if (!cancelled) showError(formatErr(e)); });
+    return () => { cancelled = true; };
   }, [project?.new_hf_task_id, project?.new_hf_bindings]);
 
   useEffect(() => {
@@ -926,8 +1010,10 @@ export function BizMigrationPage() {
   ]);
 
   async function loadRuns(bid: string) {
+    const request = ++runsRequest.current;
     try {
       const res = await bizMigrationListRuns(bid, 20);
+      if (request !== runsRequest.current || bid !== activeBatchRef.current) return;
       const items = (res.items || []) as EvalRun[];
       setEvalRuns(items);
       setSelectedRunId((prev) => {
@@ -935,24 +1021,39 @@ export function BizMigrationPage() {
         return items[0]?.id || "";
       });
     } catch {
-      setEvalRuns([]);
+      if (request === runsRequest.current && bid === activeBatchRef.current) setEvalRuns([]);
     }
   }
 
   async function loadBoard(bid: string, runId = "") {
+    const request = ++boardRequest.current;
+    setBoardLoading(true);
     try {
       const b = await bizMigrationGetBoard(bid, runId);
-      setBoard(b as typeof board);
+      if (request !== boardRequest.current || bid !== activeBatchRef.current) return;
       const rid = String((b as { run?: { id?: string } })?.run?.id || runId || "");
-      if (rid) setSelectedRunId(rid);
+      let rows: DiffRow[] = [];
+      let total = 0;
       if (rid) {
-        const d = await bizMigrationListDiffs({ runId: rid, limit: 500 });
-        setDiffs((d.items || []) as DiffRow[]);
-      } else {
-        setDiffs([]);
+        const d = await bizMigrationListDiffs({ runId: rid, sheetId: boardMetricId,
+          onlyExpect, color: boardColor, kw: boardSearch, offset: (diffPage - 1) * 100, limit: 100 });
+        rows = (d.items || []) as DiffRow[];
+        total = Number(d.total || 0);
       }
+      if (request !== boardRequest.current || bid !== activeBatchRef.current) return;
+      setBoard(b as typeof board);
+      setBoardClock(Date.now());
+      if (rid) setSelectedRunId(rid);
+      setDiffs(rows);
+      setDiffTotal(total);
+      setBoardError("");
+      if (diffPage > Math.max(1, Math.ceil(total / 100))) setDiffPage(Math.max(1, Math.ceil(total / 100)));
     } catch (e) {
-      showError(formatErr(e));
+      if (request === boardRequest.current && bid === activeBatchRef.current) {
+        setBoardError(formatErr(e));
+      }
+    } finally {
+      if (request === boardRequest.current) setBoardLoading(false);
     }
   }
 
@@ -1189,17 +1290,19 @@ export function BizMigrationPage() {
   async function onCreateBatch() {
     if (!projectId) return;
     // One item per selected key. A flat `keys: [a, b]` is parsed as one composite key.
-    const items: Array<{ metric_id: string; sheet_id?: string; key: string }> = [];
+    const items: Array<{ metric_id: string; sheet_id?: string; key: string[] }> = [];
     const ports: string[] = [];
     for (const sheet of expectSheets) {
-      const keys = sheet.items.map((it) => it.key).filter((k) => selectedExpectKeys.has(k));
       const sid = sheetIdentity(sheet);
-      for (const key of keys) {
-        items.push({ metric_id: sheet.metric_id, sheet_id: sid, key });
+      for (const item of sheet.items) {
+        if (selectedExpectKeys.has(JSON.stringify([sid, item.key]))) {
+          items.push({ metric_id: sheet.metric_id, sheet_id: sid, key: item.keys });
+          if (sheet.metric_id === "interface_brief" && sheet.key_fields.length === 1 &&
+            sheet.iface_fields.includes(sheet.key_fields[0])) ports.push(item.keys[0]);
+        }
       }
-      if (sheet.metric_id === "interface_brief") ports.push(...keys);
     }
-    if (!items.length && !ports.length) {
+    if (!items.length) {
       showError(t("bizMigration.needExpectPorts"));
       return;
     }
@@ -1405,7 +1508,8 @@ export function BizMigrationPage() {
     }
   }
 
-  function toggleExpectKey(key: string) {
+  function toggleExpectKey(rawKey: string) {
+    const key = JSON.stringify([expectMetricId || sheetIdentity(expectSheets[0]), rawKey]);
     setSelectedExpectKeys((prev) => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
@@ -2421,7 +2525,6 @@ export function BizMigrationPage() {
                       <Input
                         value={batchLabel}
                         onChange={(e) => setBatchLabel(e.target.value)}
-                        size="sm"
                         placeholder={t("bizMigration.defaultBatchLabel")}
                         aria-label={t("bizMigration.batchLabel")}
                         style={{ minWidth: 100 }}
@@ -2492,7 +2595,7 @@ export function BizMigrationPage() {
                               role="tab"
                               aria-selected={active}
                               className={`ct-editor__nav-item${active ? " is-active" : ""}`}
-                              onClick={() => setExpectMetricId(sid)}
+                              onClick={() => { setExpectMetricId(sid); setExpectPage(1); }}
                             >
                               <span className="ct-editor__nav-name">{sheetLabel(s)}</span>
                               <span className="ct-editor__nav-tag">{s.items.length}</span>
@@ -2504,9 +2607,8 @@ export function BizMigrationPage() {
                     <div className="ct-editor__pane">
                       <div className="filter-inline" style={{ marginBottom: 8 }}>
                         <Input
-                          size="sm"
                           value={portFilter}
-                          onChange={(e) => setPortFilter(e.target.value)}
+                          onChange={(e) => { setPortFilter(e.target.value); setExpectPage(1); }}
                           placeholder={t("bizMigration.portFilterPh")}
                         />
                       </div>
@@ -2521,7 +2623,7 @@ export function BizMigrationPage() {
                             </tr>
                           </thead>
                           <tbody>
-                            {filteredExpectItems.map((it) => {
+                            {visibleExpectItems.map((it) => {
                               const row = it.row || {};
                               const statusBits = ["admin", "phy", "prot"]
                                 .map((k) => (row[k] != null ? String(row[k]) : ""))
@@ -2539,12 +2641,14 @@ export function BizMigrationPage() {
                                   <td>
                                     <input
                                       type="checkbox"
-                                      checked={selectedExpectKeys.has(it.key)}
+                                      aria-label={`${sheetLabel(expectSheets.find((s) => sheetIdentity(s) === expectMetricId) || expectSheets[0])} ${it.label || it.key}`}
+                                      checked={selectedExpectKeys.has(JSON.stringify([expectMetricId || sheetIdentity(expectSheets[0]), it.key]))}
+                                      onClick={(e) => e.stopPropagation()}
                                       onChange={() => toggleExpectKey(it.key)}
                                     />
                                   </td>
                                   <td>
-                                    <code>{it.key}</code>
+                                      <code>{it.label || it.key}</code>
                                   </td>
                                   <td>{it.mapped_to || "—"}</td>
                                   <td className="bm-expect-desc">{desc || "—"}</td>
@@ -2561,6 +2665,8 @@ export function BizMigrationPage() {
                           </tbody>
                         </table>
                       </div>
+                      <ListPager page={safeExpectPage} pages={expectPages} total={filteredExpectItems.length}
+                        pageSize={100} onPageChange={setExpectPage} />
                     </div>
                   </div>
                 </div>
@@ -2568,8 +2674,48 @@ export function BizMigrationPage() {
 
               {detailTab === "board" ? (
                 <div className="bs-cmp-board bm-board">
+                  <div className="bm-live-header">
+                    <div>
+                      <span className={`bm-live-state${monitorIsLive ? " is-live" : ""}`}>
+                        {followLatest ? t(monitorIsLive ? "bizMigration.followLive" : "bizMigration.latestSnapshot") : t("bizMigration.historySnapshot")}
+                      </span>
+                      <strong>{batch?.batch_label || "—"}</strong>
+                    </div>
+                    <span className="muted">{t("bizMigration.evaluatedAt")} {fmtTime(board?.run?.created_at)}</span>
+                    <Button size="sm" variant="secondary" isDisabled={boardLoading || !batchId}
+                      onPress={() => void loadBoard(batchId, historyRunId)}>{t("bizMigration.refreshBoard")}</Button>
+                  </div>
+                  <div className="bm-live-sources">
+                    {(["old", "new"] as const).map((side) => {
+                      const device = side === "old" ? project?.old_task : project?.new_task;
+                      const times = sheetCards.map((c) => side === "old" ? c.old_collected_at : c.new_collected_at)
+                        .filter((v): v is string => Boolean(v)).sort();
+                      return <div key={side}>
+                        <span className="bm-pair-card__label">{t(side === "old" ? "bizMigration.pickOldNe" : "bizMigration.pickNewNe")}</span>
+                        <strong>{device?.ne_name || "—"}</strong><code>{device?.ne_ip || "—"}</code>
+                        <small className="muted">{t("bizMigration.oldestSample")} {fmtTime(times[0])}</small>
+                      </div>;
+                    })}
+                  </div>
+                  <div className="bm-live-kpis" aria-label={t("bizMigration.liveOverview")}>
+                    <div className="is-ok"><span>{t("bizMigration.progress")}</span><strong>{liveProgress?.ok ?? 0}<small> / {liveProgress?.total ?? 0}</small></strong></div>
+                    <div><span>{t("bizMigration.remaining")}</span><strong>{Math.max(0, (liveProgress?.total ?? 0) - (liveProgress?.ok ?? 0))}</strong></div>
+                    <div className="is-bad"><span>{t("bizMigration.anomalyInBatch")}</span><strong>{Math.max(0, (liveSummary?.anomaly ?? 0) - (liveSummary?.anomaly_outside_expect ?? 0))}</strong></div>
+                    <div className="is-bad"><span>{t("bizMigration.anomalyOutsideBatch")}</span><strong>{liveSummary?.anomaly_outside_expect ?? 0}</strong></div>
+                  </div>
+                  {coverageUnknown ? <div className="bm-live-warning" role="status">
+                    <strong>{t("bizMigration.coverageUnknown")}</strong><span>{t("bizMigration.coverageUnknownHint")}</span>
+                    {samplesStale ? <span>{t("bizMigration.sample_stale")}</span> : null}
+                    {sheetCards.filter((c) => c.sample_issues?.length || c.awaiting_peer).map((c) =>
+                      <span key={sheetIdentity(c)}>{sheetLabel(c)}: {c.awaiting_peer ? t("bizMigration.awaitingPeer") :
+                        c.sample_issues?.map((issue) => t(`bizMigration.${issue}`)).join(" · ")}</span>)}
+                    {liveSummary?.duplicate_keys ? <span>{t("bizMigration.duplicateKeys")} {liveSummary.duplicate_keys}</span> : null}
+                    {liveSummary?.uncovered_scope?.length ? <span>{t("bizMigration.uncoveredScope")}: {liveSummary.uncovered_scope.join(", ")}</span> : null}
+                  </div> : null}
+                  {boardError ? <div className="form-error bm-live-warning" role="alert">{t("bizMigration.refreshFailed")} {boardError}</div> : null}
                   {acceptInfo ? (
                     <div className="bm-board__status">
+                      <span className="muted">{t("bizMigration.lastAcceptance")}</span>
                       <span
                         className={`bm-board__verdict${acceptInfo.passed ? " is-ok" : " is-bad"}`}
                       >
@@ -2624,17 +2770,16 @@ export function BizMigrationPage() {
                       {batchOptions(hfNewBatches)}
                     </FieldSelect>
                     <FieldSelect
-                      value={selectedRunId}
+                      value={followLatest ? "" : selectedRunId}
                       onChange={(e) => {
                         const rid = e.target.value;
+                        setFollowLatest(!rid);
+                        setDiffPage(1);
                         setSelectedRunId(rid);
-                        if (batchId && rid) void loadBoard(batchId, rid);
                       }}
                       aria-label={t("bizMigration.runHistory")}
                     >
-                      {!evalRuns.length ? (
-                        <option value="">{t("bizMigration.runLatest")}</option>
-                      ) : null}
+                      <option value="">{t("bizMigration.followLive")}</option>
                       {evalRuns.map((r) => (
                         <option key={r.id} value={r.id}>
                           {fmtTime(r.created_at)} · {r.purpose || "manual"}
@@ -2659,12 +2804,29 @@ export function BizMigrationPage() {
                       <input
                         type="checkbox"
                         checked={onlyExpect}
-                        onChange={(e) => setOnlyExpect(e.target.checked)}
+                        onChange={(e) => { setOnlyExpect(e.target.checked); setDiffPage(1); }}
                       />
                       <span>{t("bizMigration.onlyExpect")}</span>
                     </label>
                   </div>
-
+                  <div className="bm-live-filters">
+                    <Input value={boardKeyword} onChange={(e) => { setBoardKeyword(e.target.value); setDiffPage(1); }}
+                      placeholder={t("bizMigration.diffSearch")} aria-label={t("bizMigration.diffSearch")} />
+                    <FieldSelect value={boardColor} aria-label={t("bizMigration.verdictFilter")}
+                      onChange={(e) => { setBoardColor(e.target.value); setDiffPage(1); }}>
+                      <option value="">{t("bizMigration.allVerdicts")}</option>
+                      <option value="red">{t("bizMigration.anomaly")}</option>
+                      <option value="yellow">{t("bizMigration.warningVerdict")}</option>
+                      <option value="green">{t("bizMigration.healthyVerdict")}</option>
+                      <option value="gray">{t("bizMigration.unknownVerdict")}</option>
+                    </FieldSelect>
+                    <span className="muted" role="status">{boardLoading ? t("bizMigration.loadingBoard") : t("bizMigration.rowsMatched", { n: String(diffTotal) })}</span>
+                    {liveSummary?.steady_outside ? <span className="muted">{t("bizMigration.steadyOutside", { n: String(liveSummary.steady_outside) })}</span> : null}
+                    {onlyExpect && (liveSummary?.anomaly_outside_expect ?? 0) > 0 ?
+                      <Button size="sm" variant="danger-soft" onPress={() => { setOnlyExpect(false); setBoardColor("red"); setBoardMetricId(""); setDiffPage(1); }}>
+                        {t("bizMigration.showOutsideAnomalies")}
+                      </Button> : null}
+                  </div>
                   {sheetCards.some((c) => c.new_baseline_missing) ? (
                     <div className="form-error bm-hint">
                       {t("bizMigration.newBaselineMissingBanner", {
@@ -2705,7 +2867,7 @@ export function BizMigrationPage() {
                       onClick={() => setBoardSubTab("diffs")}
                     >
                       {t("bizMigration.board")}
-                      <span className="mt-rule-tab__n">{visibleDiffs.length}</span>
+                      <span className="mt-rule-tab__n">{diffTotal}</span>
                     </button>
                     <button
                       type="button"
@@ -2784,7 +2946,7 @@ export function BizMigrationPage() {
                             role="tab"
                             aria-selected={!boardMetricId}
                             className={`bs-cmp-nav__item${!boardMetricId ? " is-active" : ""}`}
-                            onClick={() => setBoardMetricId("")}
+                            onClick={() => { setBoardMetricId(""); setDiffPage(1); }}
                           >
                             <span className="bs-cmp-nav__dot" />
                             <span className="bs-cmp-nav__name">{t("bizMigration.allMetrics")}</span>
@@ -2807,7 +2969,7 @@ export function BizMigrationPage() {
                                   mutedCard ? " is-clean" : hot ? " has-diff" : " is-clean"
                                 }`}
                                 style={mutedCard ? { opacity: 0.55 } : undefined}
-                                onClick={() => setBoardMetricId(sid)}
+                                onClick={() => { setBoardMetricId(sid); setDiffPage(1); }}
                               >
                                 <span className="bs-cmp-nav__dot" />
                                 <span className="bs-cmp-nav__name">
@@ -2882,8 +3044,8 @@ export function BizMigrationPage() {
                                     .filter(Boolean)
                                     .join("\n");
                                   return (
-                                  <tr key={d.id} title={cmdTitle || undefined}>
-                                    <td>{sheetLabel(d)}</td>
+                                  <tr key={d.id} title={cmdTitle || undefined} className={`bm-diff-row is-${d.color}`}>
+                                    <td>{sheetLabel(sheetCards.find((c) => sheetIdentity(c) === sheetIdentity(d)) || d)}<small className="bm-scope-label">{t(d.in_expect ? "bizMigration.scopeCurrent" : d.previous_batch ? "bizMigration.scopePrevious" : "bizMigration.scopeOutside")}</small></td>
                                     <td>
                                       <code>{oldKey}</code>
                                     </td>
@@ -2904,7 +3066,13 @@ export function BizMigrationPage() {
                                       {verdictLabel(d.verdict)}
                                     </td>
                                     <td className="muted">
-                                      <code style={{ fontSize: 11 }}>{d.rule_hit || "—"}</code>
+                                      <span>{d.rule_hit ? t(`bizMigration.reason_${d.rule_hit}`) === `bizMigration.reason_${d.rule_hit}` ? d.rule_hit : t(`bizMigration.reason_${d.rule_hit}`) : "—"}</span>
+                                      {d.integrity_changes?.length ? <details className="bm-field-changes">
+                                        <summary>{t("bizMigration.fieldChanges", { n: String(d.integrity_changes.length) })}</summary>
+                                        {d.integrity_changes.map((change) => <div key={change.field}>
+                                          <code>{change.field}</code>: <del>{String(change.before ?? "—")}</del> → <ins>{String(change.after ?? "—")}</ins>
+                                        </div>)}
+                                      </details> : null}
                                     </td>
                                   </tr>
                                   );
@@ -2925,6 +3093,9 @@ export function BizMigrationPage() {
                       </div>
                     </div>
                   )}
+                  {boardSubTab === "diffs" && board?.run ? <ListPager page={diffPage}
+                    pages={Math.max(1, Math.ceil(diffTotal / 100))} total={diffTotal} pageSize={100}
+                    onPageChange={setDiffPage} disabled={boardLoading} /> : null}
                 </div>
               ) : null}
             </>

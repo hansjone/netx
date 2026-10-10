@@ -2380,6 +2380,8 @@ export const bizMigrationGetBoard = (batchId: string, runId = "") => {
 export const bizMigrationListDiffs = (params: {
   runId: string;
   metricId?: string;
+  sheetId?: string;
+  onlyExpect?: boolean;
   verdict?: string;
   color?: string;
   kw?: string;
@@ -2388,6 +2390,8 @@ export const bizMigrationListDiffs = (params: {
 }) => {
   const p = new URLSearchParams();
   if (params.metricId) p.set("metric_id", params.metricId);
+  if (params.sheetId) p.set("sheet_id", params.sheetId);
+  if (params.onlyExpect) p.set("only_expect", "true");
   if (params.verdict) p.set("verdict", params.verdict);
   if (params.color) p.set("color", params.color);
   if (params.kw) p.set("kw", params.kw);

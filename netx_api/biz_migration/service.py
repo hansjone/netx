@@ -7,9 +7,10 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import HTTPException
+from sqlalchemy import insert
 from sqlalchemy.orm import Session
 
-from ..biz_state.compare_rules import apply_row_filters
+from ..biz_state.compare_rules import apply_row_filters, scalar_text
 from ..biz_state.compare_service import (
     _load_metric_rows,
     _port_map_dict,
@@ -949,6 +950,13 @@ def run_evaluate(
     from ..biz_state.compare_validation import validate_template_body
 
     validate_template_body({"metrics": sheets, "iface_normalize_rules": iface_norm})
+    from ..biz_state.iface_normalize import normalize_iface_name
+
+    normalized_map = {normalize_iface_name(k, iface_norm): normalize_iface_name(v, iface_norm)
+                      for k, v in port_map.items()}
+    if len(normalized_map) != len(port_map) or len(set(normalized_map.values())) != len(normalized_map):
+        raise HTTPException(status_code=400, detail="mapping_target_ambiguous")
+    port_map = normalized_map
     known_sheets = {sheet_key(s) for s in sheets}
     known_metrics = {str(s.get("metric_id") or "") for s in sheets}
     for override in sheet_overrides:
@@ -967,7 +975,8 @@ def run_evaluate(
     rows_cache: dict[tuple[str, str], list[dict[str, Any]]] = {}
     command_cache: dict[str, dict[str, Any]] = {}
     scope_ids = {str(s.get("metric_id") or "") for s in sheets} | {sheet_key(s) for s in sheets} | {"_ports"}
-    uncovered_scope = sorted(k for k, values in expect.items() if values and k not in scope_ids)
+    uncovered_scope = sorted({k for scope in (expect, previous_expect) for k, values in scope.items()
+                              if values and k not in scope_ids})
 
     def metric_rows(bid: str, mid: str) -> list[dict[str, Any]]:
         key = (bid, mid)
@@ -1116,6 +1125,7 @@ def run_evaluate(
                 "progress_total": one["progress_total"],
                 "anomaly": one["anomaly"],
                 "anomaly_in_expect": int(one.get("anomaly_in_expect") or 0),
+                "steady_outside": int(one.get("steady_outside") or 0),
                 "old_summary": one["old_summary"],
                 "new_summary": one["new_summary"],
                 "new_baseline_mode": one.get("new_baseline_mode") or "provided",
@@ -1189,12 +1199,14 @@ def run_evaluate(
             ],
             "verdict_counts": verdict_counts,
             "anomaly_outside_expect": sum(int(c.get("anomaly") or 0) - int(c.get("anomaly_in_expect") or 0) for c in active_cards),
+            "steady_outside": sum(int(c.get("steady_outside") or 0) for c in active_cards),
             "duplicate_keys": sum(int(c.get("duplicate_keys_before") or 0) + int(c.get("duplicate_keys_after") or 0) for c in active_cards),
             "uncovered_scope": uncovered_scope,
             "coverage_complete": bool(sheet_cards) and not uncovered_scope and not any(c.get("collect_skipped") or c.get("current_missing") or c.get("awaiting_peer") or c.get("duplicate_keys_before") or c.get("duplicate_keys_after") for c in sheet_cards),
             "config_snapshot": {"sheets": sheets, "sheet_overrides": sheet_overrides,
                                 "defaults": defaults, "iface_normalize": iface_norm,
-                                "port_map": port_map, "expect_set": mb.expect_set_json},
+                                "port_map": port_map, "expect_set": mb.expect_set_json,
+                                "previous_expect": {k: sorted(v) for k, v in previous_expect.items()}},
             "window_active": window_active,
             "expect_ports": sorted(expect.get("_ports") or ()),
             "old_current_task_id": current_task_id(proj, "old"),
@@ -1204,6 +1216,7 @@ def run_evaluate(
     )
     db.add(run)
     db.flush()
+    pending_diffs: list[dict[str, Any]] = []
     for r in all_rows:
         key_list = r.get("key") or []
         ev = r.get("evidence") if isinstance(r.get("evidence"), dict) else {}
@@ -1222,8 +1235,8 @@ def run_evaluate(
                 str(r.get("metric_id") or ""),
             ]
         )
-        db.add(
-            BizMigrationDiff(
+        pending_diffs.append(
+            dict(
                 id=uuid4().hex,
                 run_id=run.id,
                 metric_id=str(r.get("metric_id") or ""),
@@ -1254,6 +1267,11 @@ def run_evaluate(
                 search_text=search[:2000],
             )
         )
+        if len(pending_diffs) >= 500:
+            db.execute(insert(BizMigrationDiff), pending_diffs)
+            pending_diffs.clear()
+    if pending_diffs:
+        db.execute(insert(BizMigrationDiff), pending_diffs)
     db.flush()
     if _commit:
         db.commit()
@@ -1436,6 +1454,11 @@ def list_baseline_expect_objects(db: Session, project_id: str) -> dict[str, Any]
     collect_ids = set(resolve_collect_metric_ids(db, p))
     port_map = _port_map_dict(db, p.mapping_id)
     out_sheets: list[dict[str, Any]] = []
+    from ..biz_state.iface_normalize import apply_iface_normalize, resolve_mapped_iface, normalize_iface_name
+    from .evaluate import KEY_SEP
+
+    rows_cache: dict[str, list[dict[str, Any]]] = {}
+    port_map = {normalize_iface_name(k, _norm): normalize_iface_name(v, _norm) for k, v in port_map.items()}
     for sheet in sheets:
         mid = str(sheet.get("metric_id") or "").strip()
         sid = sheet_key(sheet)
@@ -1449,25 +1472,32 @@ def list_baseline_expect_objects(db: Session, project_id: str) -> dict[str, Any]
         if sheet_ov.get("skip_dual"):
             continue
         iface_fields = [str(k) for k in (sheet.get("iface_fields") or []) if str(k).strip()]
+        if mid not in rows_cache:
+            rows_cache[mid] = _load_metric_rows(db, batch_id=p.old_baseline_batch_id, metric_id=mid)
         rows_raw = apply_row_filters(
-            _load_metric_rows(db, batch_id=p.old_baseline_batch_id, metric_id=mid),
+            rows_cache[mid],
             list(sheet.get("row_filters") or []),
         )
         items: list[dict[str, Any]] = []
+        seen_keys: set[str] = set()
         for r in rows_raw:
-            keys = [str(r.get(f) or "").strip() for f in key_fields]
+            normalized = apply_iface_normalize(dict(r), iface_fields=iface_fields, rules=_norm)
+            keys = [scalar_text(normalized.get(f)).strip() for f in key_fields]
             if not any(keys):
                 continue
-            key_str = "|".join(keys)
+            key_str = KEY_SEP.join(keys)
+            if key_str in seen_keys:
+                continue
+            seen_keys.add(key_str)
             mapped = ""
             if iface_fields and key_fields and key_fields[0] in iface_fields:
-                mapped = port_map.get(keys[0]) or ""
+                mapped = resolve_mapped_iface(keys[0], port_map) if port_map else ""
             items.append(
                 {
                     "key": key_str,
                     "keys": keys,
                     "mapped_to": mapped,
-                    "label": key_str,
+                    "label": "|".join(scalar_text(r.get(f)).strip() for f in key_fields),
                     "row": {f: r.get(f) for f in list(dict.fromkeys([*key_fields, *iface_fields, "description", "admin", "phy", "prot"])) if f in r},
                 }
             )

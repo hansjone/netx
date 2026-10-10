@@ -233,7 +233,7 @@ function normalizeGroups(
       .map((g) =>
         (g || [])
           .filter(Boolean)
-          .map((c) => migrateLegacyCond(c as unknown as Record<string, unknown>)),
+          .map((c) => typeof c === "string" ? tokenToCond(c) : migrateLegacyCond(c as unknown as Record<string, unknown>)),
       )
       .filter((g) => g.length > 0);
   }
@@ -251,9 +251,10 @@ function normalizePat(pat: DualPat, opts?: { allowEmptySide?: boolean }): DualPa
   const old_groups = normalizeGroups(pat.old_groups, pat.old_conds, pat.old_mode, pat.old);
   const new_groups = normalizeGroups(pat.new_groups, pat.new_conds, pat.new_mode, pat.new);
   if (allowEmpty) {
-    return { old_groups, new_groups };
+    return { ...pat, old_groups, new_groups };
   }
   return {
+    ...pat,
     old_groups: old_groups.length ? old_groups : [emptyGroup("presence")],
     new_groups: new_groups.length ? new_groups : [emptyGroup("presence")],
   };
@@ -819,7 +820,7 @@ export function BizMonitorTemplatesPage() {
   const [name, setName] = useState("");
   const [compareId, setCompareId] = useState("");
   const [note, setNote] = useState("");
-  const [outOfExpect, setOutOfExpect] = useState("strict");
+  const [defaultsDraft, setDefaultsDraft] = useState<Record<string, unknown>>({});
   const [collectIds, setCollectIds] = useState<string[]>([]);
   const [overrides, setOverrides] = useState<SheetOverride[]>([]);
   const [activeSheetIdx, setActiveSheetIdx] = useState(0);
@@ -908,8 +909,6 @@ export function BizMonitorTemplatesPage() {
     return schema?.fields || [];
   }, [metricSchemas, activeMetricId]);
 
-  const sheetKey = useMemo(() => sheets.map((s) => sheetIdentity(s)).join("|"), [sheets]);
-
   useEffect(() => {
     if (!sheets.length) {
       setActiveSheetIdx(0);
@@ -917,18 +916,6 @@ export function BizMonitorTemplatesPage() {
     }
     if (activeSheetIdx >= sheets.length) setActiveSheetIdx(0);
   }, [sheets, activeSheetIdx]);
-
-  useEffect(() => {
-    if (!sheetKey) return;
-    setOverrides((prev) => {
-      const byId = new Map(prev.map((o) => [o.sheet_id || o.metric_id, o]));
-      return sheets.map(
-        (s) =>
-          byId.get(sheetIdentity(s)) ||
-          emptyOverride(s.metric_id, sheetIdentity(s)),
-      );
-    });
-  }, [compareId, sheetKey]);
 
   const syncOverride = (metricId: string, patch: Partial<SheetOverride>, sheetId = "") => {
     const sid = sheetId || sheetIdentity({ metric_id: metricId, sheet_id: sheetId });
@@ -944,7 +931,7 @@ export function BizMonitorTemplatesPage() {
     setName("");
     setCompareId(compareTpls[0]?.id || "");
     setNote("");
-    setOutOfExpect("strict");
+    setDefaultsDraft({});
     setCollectIds([]);
     setOverrides([]);
     setActiveSheetIdx(0);
@@ -960,7 +947,7 @@ export function BizMonitorTemplatesPage() {
     setName(row.name || "");
     setCompareId(row.compare_template_id || "");
     setNote(row.note || "");
-    setOutOfExpect(String((row.defaults || {}).out_of_expect || "strict"));
+    setDefaultsDraft({ ...(row.defaults || {}) });
     setCollectIds(Array.isArray(row.collect_metric_ids) ? [...row.collect_metric_ids] : []);
     setOverrides(Array.isArray(row.sheet_overrides) ? (row.sheet_overrides as SheetOverride[]) : []);
     setActiveSheetIdx(0);
@@ -993,7 +980,7 @@ export function BizMonitorTemplatesPage() {
       showError(t("bizMonitorTpl.needName"));
       return;
     }
-    let sheet_overrides = overrides
+    let sheet_overrides: SheetOverride[] = overrides
       .filter((o) => o.metric_id)
       .map((o) => ({
         ...o,
@@ -1004,11 +991,8 @@ export function BizMonitorTemplatesPage() {
       try {
         const parsed = JSON.parse(overridesText || "[]") as unknown[];
         if (!Array.isArray(parsed)) throw new Error("overrides");
-        sheet_overrides = (parsed as SheetOverride[]).map((o) => ({
-          ...o,
-          success: (o.success || []).map((p) => normalizePat(p)),
-          anomaly: (o.anomaly || []).map((p) => normalizePat(p, { allowEmptySide: true })),
-        }));
+        // Advanced JSON is authoritative; the API validates its complete shape.
+        sheet_overrides = parsed as SheetOverride[];
       } catch {
         showError(t("bizMonitorTpl.overridesInvalid"));
         return;
@@ -1018,7 +1002,7 @@ export function BizMonitorTemplatesPage() {
       name: name.trim(),
       compare_template_id: compareId,
       collect_metric_ids: collectIds,
-      defaults: { dual_mode: "migrate_pair", out_of_expect: outOfExpect || "strict" },
+      defaults: { ...defaultsDraft, dual_mode: "migrate_pair", out_of_expect: "strict" },
       sheet_overrides,
       note: note.trim(),
     };
@@ -1251,16 +1235,7 @@ export function BizMonitorTemplatesPage() {
                 </option>
               ))}
             </FieldSelect>
-            <FieldSelect
-              label={t("bizMonitorTpl.outOfExpect")}
-              value={outOfExpect}
-              onChange={(e) => setOutOfExpect(e.target.value)}
-              fullWidth
-            >
-              <option value="strict">{t("bizMonitorTpl.ooeStrict")}</option>
-              <option value="warn">{t("bizMonitorTpl.ooeWarn")}</option>
-              <option value="ignore">{t("bizMonitorTpl.ooeIgnore")}</option>
-            </FieldSelect>
+            <div className="bm-live-warning"><strong>{t("bizMigration.outsideProtection")}</strong><span>{t("bizMigration.outsideProtectionHint")}</span></div>
           </div>
 
           {!sheets.length ? (

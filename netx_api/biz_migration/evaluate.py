@@ -108,11 +108,11 @@ def parse_expect_set(raw: dict[str, Any] | None) -> dict[str, set[str]]:
             if it.get("key") is not None:
                 k = it.get("key")
                 if isinstance(k, (list, tuple)):
-                    joined = KEY_SEP.join(str(p).strip() for p in k if str(p).strip())
-                    if joined:
+                    joined = KEY_SEP.join(scalar_text(p).strip() for p in k)
+                    if joined.strip(KEY_SEP):
                         bucket.add(joined)
                 else:
-                    s = normalize_expect_key(str(k or ""))
+                    s = normalize_expect_key(scalar_text(k))
                     if s:
                         bucket.add(s)
             keys = it.get("keys")
@@ -120,14 +120,14 @@ def parse_expect_set(raw: dict[str, Any] | None) -> dict[str, set[str]]:
                 # Flat list of segments → one composite key; else each entry is a key
                 # (string or nested list/tuple of segments).
                 if keys and all(not isinstance(x, (list, tuple, dict)) for x in keys):
-                    joined = KEY_SEP.join(str(x).strip() for x in keys if str(x).strip())
-                    if joined:
+                    joined = KEY_SEP.join(scalar_text(x).strip() for x in keys)
+                    if joined.strip(KEY_SEP):
                         bucket.add(joined)
                 else:
                     for x in keys:
                         if isinstance(x, (list, tuple)):
-                            joined = KEY_SEP.join(str(p).strip() for p in x if str(p).strip())
-                            if joined:
+                            joined = KEY_SEP.join(scalar_text(p).strip() for p in x)
+                            if joined.strip(KEY_SEP):
                                 bucket.add(joined)
                         else:
                             s = normalize_expect_key(str(x or ""))
@@ -272,6 +272,10 @@ def _eval_field_op(
     raw = "" if not row else scalar_text(row.get(f)).strip()
     val = raw.lower()
     o = str(op or "eq").strip().lower()
+    if row and f not in row:
+        # A missing parser field is not evidence for a negative condition such as
+        # state != down. Only an explicit empty check may match that absence.
+        return o == "empty"
     if o in ("changed", "diff"):
         base = "" if not base_row else scalar_text(base_row.get(f)).strip().lower()
         if not row:
@@ -1119,6 +1123,7 @@ def evaluate_metric_dual(
     from ..biz_state.iface_normalize import (
         apply_iface_normalize_rows,
         normalize_iface_rules,
+        normalize_iface_name,
     )
 
     sid = str(sheet_id or "").strip() or str(metric_id or "").strip()
@@ -1155,6 +1160,15 @@ def evaluate_metric_dual(
     )
 
     norm_rules = normalize_iface_rules(iface_normalize_rules)
+    def normalized_key(key: str) -> str:
+        parts = key.split(KEY_SEP) if KEY_SEP in key else ([key] if len(key_fields) == 1 else key.split("|"))
+        if len(parts) != len(key_fields):
+            return key
+        return KEY_SEP.join(normalize_iface_name(p, norm_rules) if f in iface_fields else p
+                            for p, f in zip(parts, key_fields))
+
+    expect_keys = {normalized_key(key) for key in expect_keys}
+    previous_keys = {normalized_key(key) for key in previous_keys}
     old_baseline_rows = apply_iface_normalize_rows(
         [strip_netx(r) for r in raw_old_base], iface_fields=iface_fields, rules=norm_rules
     )
@@ -1238,7 +1252,7 @@ def evaluate_metric_dual(
     # Mapping describes identity; an explicit batch selection defines scope.
     # Port selection also covers business rows attached to those interfaces.
     for scope, keys in ((expect, expect_keys), (previous_expect or {}, previous_keys)):
-        ports = scope.get("_ports") or set()
+        ports = {normalize_iface_name(p, norm_rules) for p in scope.get("_ports") or set()}
         if ports and not keys and iface_fields:
             for ks, diff in old_idx.items():
                 row = diff.get("before") or diff.get("after") or {}
@@ -1293,6 +1307,7 @@ def evaluate_metric_dual(
     progress_total = 0
     anomaly = 0
     anomaly_in_expect = 0
+    steady_outside = 0
     rules_by_field = field_rule_map(field_rules)
     integrity_fields = effective_compare_fields(compare_fields, field_rules)
     # Status transitions are interpreted by the monitor's correction rules.
@@ -1390,9 +1405,10 @@ def evaluate_metric_dual(
                 verdict, rule_hit = "migrated_previous", "previous_batch_received"
             elif color != "red":
                 verdict, color, rule_hit = "unfinished_previous", "red", "previous_batch_not_received"
-        # Retain all drift outside scope, but avoid filling the board with stable
-        # unmapped inventory when a port map defines the legacy migration scope.
-        if map_scoped and not in_exp and verdict == "not_involved":
+        # Stable inventory is covered by the comparison and counted, but does
+        # not need a full persisted evidence card on every high-frequency run.
+        if not in_exp and verdict == "not_involved":
+            steady_outside += 1
             continue
         if in_exp and verdict == "migrated" and color == "green":
             progress_ok += 1
@@ -1404,9 +1420,9 @@ def evaluate_metric_dual(
         # Prefer live raw rows; fall back to baseline raw. Never use port-mapped
         # synthetic "before" as the new-side display row.
         raw_old = old_raw_cur_idx.get(old_ks) or old_raw_base_idx.get(old_ks)
-        raw_new = new_raw_cur_idx.get(new_ks) or new_raw_cur_idx.get(old_ks)
+        raw_new = new_raw_cur_idx.get(new_ks)
         if not raw_new:
-            raw_new = new_raw_base_idx.get(new_ks) or new_raw_base_idx.get(old_ks)
+            raw_new = new_raw_base_idx.get(new_ks)
 
         display_old = display_key_from_raw(raw_old, key_fields) or old_ks
         display_new = display_key_from_raw(raw_new, key_fields) or (
@@ -1420,8 +1436,8 @@ def evaluate_metric_dual(
         new_disp = strip_netx(raw_new) if raw_new else {}
         old_base_raw = strip_netx(old_raw_base_idx.get(old_ks)) if old_raw_base_idx.get(old_ks) else {}
         new_base_raw = (
-            strip_netx(new_raw_base_idx.get(new_ks) or new_raw_base_idx.get(old_ks))
-            if (new_raw_base_idx.get(new_ks) or new_raw_base_idx.get(old_ks))
+            strip_netx(new_raw_base_idx.get(new_ks))
+            if new_raw_base_idx.get(new_ks)
             else {}
         )
 
@@ -1512,6 +1528,7 @@ def evaluate_metric_dual(
         "progress_total": progress_total,
         "anomaly": anomaly,
         "anomaly_in_expect": anomaly_in_expect,
+        "steady_outside": steady_outside,
         "rows": rows_out,
         "new_baseline_mode": new_baseline_mode,
         "new_baseline_missing": new_baseline_missing,

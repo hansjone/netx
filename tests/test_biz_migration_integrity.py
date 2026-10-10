@@ -197,6 +197,84 @@ def test_port_mapping_does_not_remap_business_key_with_same_text():
     assert out["progress_ok"] == 1
 
 
+def test_unmapped_same_name_target_is_not_used_as_mapped_target_evidence():
+    out = evaluate(metric_id="interface_brief", key_fields=["port"], compare_fields=[],
+        old_baseline_rows=[{"port": "old"}], new_current_rows=[{"port": "old"}],
+        expect=parse_expect_set({"ports": ["old"]}))
+    row = next(r for r in out["rows"] if r["in_expect"])
+    assert row["verdict"] == "lost"
+    assert row["new"] == {}
+    assert row["new_key"] == ""
+    assert row["match_new_key"] == "new"
+
+
+def test_legacy_raw_interface_expect_uses_same_alias_normalization():
+    out = evaluate(metric_id="interface_brief", key_fields=["port"],
+        old_baseline_rows=[{"port": "GE-1"}], new_current_rows=[{"port": "GE-2"}],
+        compare_fields=[], port_map={"gei-1": "gei-2"},
+        expect=parse_expect_set({"ports": ["GE-1"]}),
+        iface_normalize_rules=[{"from": "GE", "to": "gei"}])
+    assert out["progress_ok"] == 1
+
+
+def test_baseline_picker_matches_normalized_keys_but_displays_originals(db):
+    ct = db.get(BizCompareTemplate, "ct")
+    ct.metrics_json = [{"metric_id": "arp", "sheet_id": "s", "key_fields": ["ip", "port"], "iface_fields": ["port"]}]
+    ct.iface_normalize_json = [{"from": "GE", "to": "gei"}]
+    db.get(BizStateMetricRow, "row-ob").data_json = {"ip": 0, "port": "GE-1"}
+    db.commit()
+    item = svc.list_baseline_expect_objects(db, "p")["sheets"][0]["items"][0]
+    assert item["keys"] == ["0", "gei-1"]
+    assert item["label"] == "0|GE-1"
+    assert parse_expect_set({"items": [{"metric_id": "arp", "key": item["keys"]}]})["arp"] == {"0\x1fgei-1"}
+
+
+def test_empty_composite_segments_are_preserved_and_false_is_not_blank():
+    assert parse_expect_set({"items": [{"metric_id": "x", "key": [0, "", False]}]})["x"] == {"0\x1f\x1ffalse"}
+
+
+def test_missing_status_field_cannot_match_negative_success_condition():
+    assert not _eval_field_op({"ip": "a"}, "state", "ne", "down")
+    assert not _eval_field_op({"ip": "a"}, "state", "not_in", ["down"])
+    assert _eval_field_op({"ip": "a"}, "state", "empty", None)
+
+
+def test_stable_outside_inventory_is_counted_without_repeated_evidence_cards():
+    row = {"ip": "a", "mac": "good", "port": "old"}
+    out = evaluate(expect={}, old_current_rows=[row], new_current_rows=[])
+    assert out["rows"] == []
+    assert out["steady_outside"] == 1
+    assert out["anomaly"] == 0
+
+
+def test_removed_previous_wave_sheet_blocks_full_coverage_acceptance(db):
+    db.add(BizMigrationBatch(id="prior", project_id="p", status="done",
+        created_at=utcnow_naive() - timedelta(days=1),
+        expect_set_json={"items": [{"sheet_id": "removed-sheet", "metric_id": "arp", "key": "old-customer"}]}))
+    db.commit()
+    finished = svc.finish_batch(db, "wave")
+    assert not finished["accept_summary"]["passed"]
+    assert finished["run"]["summary"]["uncovered_scope"] == ["removed-sheet"]
+
+
+def test_split_sheets_share_loaded_rows_and_command_metadata(db):
+    from unittest.mock import patch
+
+    ct = db.get(BizCompareTemplate, "ct")
+    sheet = ct.metrics_json[0]
+    ct.metrics_json = [sheet, {**sheet, "sheet_id": "s2"}]
+    for i in range(500):
+        for bid in ("ob", "nc"):
+            db.add(BizStateMetricRow(id=f"bulk-{bid}-{i}", batch_id=bid,
+                batch_command_id="cmd-" + bid, metric_id="arp", data_json={"ip": f"bulk-{i}", "mac": "good"}))
+    db.commit()
+    with patch.object(svc, "_load_metric_rows", wraps=svc._load_metric_rows) as load, patch.object(svc, "_command_brief", wraps=svc._command_brief) as command:
+        run = svc.run_evaluate(db, batch_id="wave")
+    assert load.call_count == 4  # once for each (batch, metric), not once per sheet
+    assert command.call_count == 2  # baseline + current metadata, independent of row count
+    assert svc.list_run_diffs(db, run["id"], limit=1)["total"] == 1002
+
+
 def test_wave_acceptance_rolls_back_whole_transaction_on_ticket_failure(db):
     from unittest.mock import patch
 
