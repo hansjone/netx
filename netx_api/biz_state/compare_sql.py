@@ -14,7 +14,7 @@ from uuid import uuid4
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from .compare_rules import effective_compare_fields, field_rule_map
+from .compare_rules import effective_compare_fields, field_rule_map, NUMBER_PATTERN, scalar_text
 
 _log = logging.getLogger("netx.biz_state.compare_sql")
 
@@ -53,7 +53,7 @@ _SQL_COMPARE_MODES = frozenset(
     }
 )
 _EMPTY_AS_BLANK = ("n/a", "na", "-", "--", "none", "null")
-_NUM_RE_SQL = r"^-?[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$"
+_NUM_RE_SQL = NUMBER_PATTERN
 
 
 def _dialect_is_postgres(db: Session) -> bool:
@@ -258,27 +258,30 @@ def compile_row_filters_sql(
         expect = filt.get("value")
         if op in ("eq", "==", "ci_eq"):
             key = _next("v")
-            params[key] = str(expect or "").strip()
+            params[key] = scalar_text(expect).strip()
             if op == "ci_eq" or op in ("eq", "=="):
                 # Python eq is case-insensitive via .lower()
-                params[key] = str(expect or "").strip().lower()
+                params[key] = scalar_text(expect).strip().lower()
                 return f"(lower({expr}) = :{key})"
         if op in ("ne", "!="):
             key = _next("v")
-            params[key] = str(expect or "").strip().lower()
+            params[key] = scalar_text(expect).strip().lower()
             return f"(lower({expr}) <> :{key})"
         if op == "contains":
             key = _next("v")
-            needle = str(expect or "").strip().lower()
-            params[key] = f"%{needle}%"
-            return f"(lower({expr}) LIKE :{key})"
+            needle = scalar_text(expect).strip().lower()
+            if not needle:
+                return "FALSE"
+            escaped = needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            params[key] = f"%{escaped}%"
+            return f"(lower({expr}) LIKE :{key} ESCAPE E'\\\\')"
         if op in ("in", "not_in", "nin"):
             vals = expect
             if vals is None:
                 vals = []
             if not isinstance(vals, (list, tuple)):
                 vals = [vals]
-            clean = [str(x).strip().lower() for x in vals if str(x).strip()]
+            clean = [scalar_text(x).strip().lower() for x in vals if scalar_text(x).strip()]
             if not clean:
                 return "FALSE" if op == "in" else "TRUE"
             keys = []
@@ -304,7 +307,8 @@ def _rk_sql(key_fields: list[str], *, json_col: str = "data_json") -> str:
             parts.append(f"trim(both from coalesce({json_col}->>'{f}', ''))")
     if len(parts) == 1:
         return parts[0]
-    return "concat_ws('|', " + ", ".join(parts) + ")"
+    # Delimiter concatenation conflates ('a|b', 'c') with ('a', 'b|c').
+    return "jsonb_build_array(" + ", ".join(parts) + ")::text"
 
 
 def _field_differs_sql(bv: str, av: str, rule: Mapping[str, Any]) -> str:

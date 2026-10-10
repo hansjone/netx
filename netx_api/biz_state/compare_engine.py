@@ -7,7 +7,7 @@ from heapq import heappush, heapreplace
 from itertools import chain
 from typing import Any, Iterable, Mapping, Sequence
 
-from .compare_rules import field_rule_map, values_equal, explain_diff
+from .compare_rules import field_rule_map, values_equal, explain_diff, scalar_text
 from .iface_normalize import (
     apply_iface_normalize_rows,
     normalize_iface_rules,
@@ -94,7 +94,7 @@ def apply_port_map(
 
 
 def row_key(row: dict[str, Any], key_fields: list[str]) -> tuple[str, ...]:
-    return tuple(str(row.get(k) or "").strip() for k in key_fields)
+    return tuple(scalar_text(row.get(k)).strip() for k in key_fields)
 
 
 def mapping_stats(

@@ -45,6 +45,7 @@ from .iface_normalize import (
     normalize_iface_rules,
 )
 from .profiles import metric_field_map
+from .compare_validation import validate_template_body
 
 _log = logging.getLogger("netx.biz_state.compare")
 
@@ -92,7 +93,7 @@ def batch_metric_collect_ok(db: Session, batch_id: str, metric_id: str) -> bool:
     if status == "success":
         return True
     cmds = (
-        db.query(BizStateBatchCommand)
+        db.query(BizStateBatchCommand.parse_status, BizStateBatchCommand.row_count)
         .filter(
             BizStateBatchCommand.batch_id == bid,
             BizStateBatchCommand.metric_id == mid,
@@ -582,34 +583,6 @@ def _sheet_meta_from_summary(summary: dict[str, Any], run: BizCompareRun, tpl: A
     ]
 
 
-def _metric_row_estimate(
-    db: Session, batch_ids: list[str], metric_id: str
-) -> int:
-    """Cheap size hint from batch command row_count (max across sides)."""
-    mid = str(metric_id or "").strip()
-    if not mid:
-        return 0
-    best = 0
-    for bid in batch_ids:
-        bid = str(bid or "").strip()
-        if not bid:
-            continue
-        rows = (
-            db.query(BizStateBatchCommand)
-            .filter(
-                BizStateBatchCommand.batch_id == bid,
-                BizStateBatchCommand.metric_id == mid,
-            )
-            .all()
-        )
-        if not rows:
-            continue
-        n = sum(int(c.row_count or 0) for c in rows)
-        if n > best:
-            best = n
-    return best
-
-
 def _order_sheets_small_first(
     db: Session,
     sheets: list[dict[str, Any]],
@@ -620,10 +593,19 @@ def _order_sheets_small_first(
     """Run smaller metrics first so field engineers can review early results."""
     if len(sheets) <= 1:
         return list(sheets)
-    batches = [before_batch_id, after_batch_id]
+    # Split sheets share metrics. Aggregate all counters once, without raw CLI blobs.
+    counts: dict[str, int] = {}
+    for bid, mid, total in db.query(
+        BizStateBatchCommand.batch_id, BizStateBatchCommand.metric_id,
+        func.sum(BizStateBatchCommand.row_count),
+    ).filter(
+        BizStateBatchCommand.batch_id.in_([before_batch_id, after_batch_id]),
+        BizStateBatchCommand.metric_id.in_({str(s.get("metric_id") or "") for s in sheets}),
+    ).group_by(BizStateBatchCommand.batch_id, BizStateBatchCommand.metric_id):
+        counts[mid] = max(counts.get(mid, 0), int(total or 0))
     scored: list[tuple[int, int, dict[str, Any]]] = []
     for i, sheet in enumerate(sheets):
-        n = _metric_row_estimate(db, batches, str(sheet.get("metric_id") or ""))
+        n = counts.get(str(sheet.get("metric_id") or ""), 0)
         scored.append((n, i, sheet))
     scored.sort(key=lambda x: (x[0], x[1]))
     return [s for _, _, s in scored]
@@ -1132,6 +1114,7 @@ def _parse_metrics_body(body: dict[str, Any]) -> list[dict[str, Any]]:
             display_fields=disp_arg,
             row_filters=_normalize_row_filters(body.get("row_filters")),
             field_rules=rules,
+            ignore_port_changes=body.get("ignore_port_changes"),
         )
     ]
 
@@ -1405,7 +1388,8 @@ def list_templates(db: Session) -> list[dict[str, Any]]:
     ensure_default_templates(db)
     upgrade_builtin_split_sheets(db)
     rows = db.query(BizCompareTemplate).order_by(BizCompareTemplate.name.asc()).all()
-    return [_template_out(t) for t in rows]
+    usage = dict(db.query(BizCompareJob.template_id, func.count(BizCompareJob.id)).group_by(BizCompareJob.template_id).all())
+    return [{**_template_out(t), "job_count": usage.get(t.id, 0)} for t in rows]
 
 
 def list_metric_schemas() -> list[dict[str, Any]]:
@@ -1442,6 +1426,7 @@ def list_row_filter_presets() -> list[dict[str, Any]]:
 
 
 def create_template(db: Session, body: dict[str, Any]) -> dict[str, Any]:
+    validate_template_body(body)
     sheets = _parse_metrics_body(body)
     t = BizCompareTemplate(
         id=uuid4().hex,
@@ -1464,6 +1449,7 @@ def update_template(db: Session, template_id: str, body: dict[str, Any]) -> dict
     t = db.get(BizCompareTemplate, template_id)
     if not t:
         raise HTTPException(status_code=404, detail="template_not_found")
+    validate_template_body(body, partial=True)
     if "name" in body:
         t.name = str(body.get("name") or "")[:256]
     if "note" in body:
@@ -1485,6 +1471,7 @@ def update_template(db: Session, template_id: str, body: dict[str, Any]) -> dict
             "display_fields",
             "row_filters",
             "field_rules",
+            "ignore_port_changes",
         )
     ):
         # Prefer explicit metrics; otherwise merge into current sheets from legacy keys
@@ -1522,6 +1509,8 @@ def update_template(db: Session, template_id: str, body: dict[str, Any]) -> dict
                     first["row_filters"] = _normalize_row_filters(body.get("row_filters"))
                 if "field_rules" in body:
                     first["field_rules"] = _normalize_field_rules(body.get("field_rules"))
+                if "ignore_port_changes" in body:
+                    first["ignore_port_changes"] = body["ignore_port_changes"]
                 sheets[0] = _normalize_sheet(first) or first
         _apply_sheets_to_row(t, sheets)
     t.updated_at = _utcnow()
@@ -1533,6 +1522,8 @@ def delete_template(db: Session, template_id: str) -> None:
     t = db.get(BizCompareTemplate, template_id)
     if not t:
         raise HTTPException(status_code=404, detail="template_not_found")
+    if db.query(BizCompareJob.id).filter(BizCompareJob.template_id == template_id).first():
+        raise HTTPException(status_code=409, detail="template_in_use")
     db.delete(t)
     db.commit()
 
@@ -1888,6 +1879,16 @@ def list_jobs(db: Session) -> list[dict[str, Any]]:
     return [_job_out(j) for j in rows]
 
 
+def _validate_job_sheets(db: Session, template_id: str, enabled: list[str]) -> None:
+    tpl = db.get(BizCompareTemplate, template_id)
+    if not tpl:
+        raise HTTPException(status_code=404, detail="template_not_found")
+    sheets = {sheet_key(s) for s in template_metrics(tpl)}
+    unknown = sorted(set(enabled) - sheets)
+    if unknown:
+        raise HTTPException(status_code=400, detail={"error": "unknown_enabled_sheets", "sheet_ids": unknown})
+
+
 def create_job(db: Session, body: dict[str, Any]) -> dict[str, Any]:
     ensure_default_templates(db)
     template_id = str(body.get("template_id") or "").strip()
@@ -1898,6 +1899,7 @@ def create_job(db: Session, body: dict[str, Any]) -> dict[str, Any]:
         if not db.get(BizCompareTemplate, template_id):
             raise HTTPException(status_code=404, detail="template_not_found")
     enabled = _str_list(body.get("enabled_sheet_ids"))
+    _validate_job_sheets(db, template_id, enabled)
     j = BizCompareJob(
         id=uuid4().hex,
         name=str(body.get("name") or "compare")[:256],
@@ -1926,6 +1928,8 @@ def update_job(db: Session, job_id: str, body: dict[str, Any]) -> dict[str, Any]
     j = db.get(BizCompareJob, job_id)
     if not j:
         raise HTTPException(status_code=404, detail="job_not_found")
+    _validate_job_sheets(db, str(body.get("template_id", j.template_id) or ""),
+        _str_list(body.get("enabled_sheet_ids", j.enabled_sheet_ids)))
     for key in (
         "name",
         "template_id",
@@ -1953,6 +1957,9 @@ def delete_job(db: Session, job_id: str) -> None:
     j = db.get(BizCompareJob, job_id)
     if not j:
         raise HTTPException(status_code=404, detail="job_not_found")
+    if db.query(BizCompareRun.id).filter(BizCompareRun.job_id == job_id,
+        BizCompareRun.status.in_(("queued", "running"))).first():
+        raise HTTPException(status_code=409, detail="compare_running")
     run_ids = [
         rid for (rid,) in db.query(BizCompareRun.id).filter(BizCompareRun.job_id == job_id).all()
     ]
@@ -1970,6 +1977,8 @@ def delete_run(db: Session, run_id: str) -> dict[str, Any]:
     r = db.get(BizCompareRun, run_id)
     if not r:
         raise HTTPException(status_code=404, detail="run_not_found")
+    if r.status in ("queued", "running"):
+        raise HTTPException(status_code=409, detail="compare_running")
     job_id = str(r.job_id or "")
     db.query(BizCompareDiff).filter(BizCompareDiff.run_id == run_id).delete(
         synchronize_session=False
@@ -2222,8 +2231,11 @@ def _validate_compare_job(
     after_batch_id = str(force_after_batch_id or "").strip() or _resolve_after_batch(db, j)
     if not before_batch_id or not after_batch_id:
         raise HTTPException(status_code=400, detail="before_and_after_batch_required")
-    if not db.get(BizStateBatch, before_batch_id) or not db.get(BizStateBatch, after_batch_id):
+    source_batches = [db.get(BizStateBatch, bid) for bid in (before_batch_id, after_batch_id)]
+    if not all(source_batches):
         raise HTTPException(status_code=404, detail="batch_not_found")
+    if any(b.status != "success" for b in source_batches):
+        raise HTTPException(status_code=409, detail="source_batch_not_complete")
 
     sheets_cfg = template_metrics(tpl)
     if not sheets_cfg:

@@ -574,6 +574,7 @@ class TemplateMetricIn(BaseModel):
     display_fields: list[str] = Field(default_factory=list)
     row_filters: list[dict[str, Any]] = Field(default_factory=list)
     field_rules: list[FieldRuleIn] = Field(default_factory=list)
+    ignore_port_changes: bool | None = None
 
 
 class TemplateIn(BaseModel):
@@ -592,6 +593,7 @@ class TemplateIn(BaseModel):
     display_fields: list[str] = Field(default_factory=list)
     row_filters: list[dict[str, Any]] = Field(default_factory=list)
     field_rules: list[FieldRuleIn] = Field(default_factory=list)
+    ignore_port_changes: bool | None = None
 
 
 class TemplatePatchIn(BaseModel):
@@ -607,6 +609,7 @@ class TemplatePatchIn(BaseModel):
     display_fields: list[str] | None = None
     row_filters: list[dict[str, Any]] | None = None
     field_rules: list[FieldRuleIn] | None = None
+    ignore_port_changes: bool | None = None
 
 
 class MappingRowIn(BaseModel):

@@ -7,10 +7,21 @@ All metric-specific compare behavior belongs in the sheet template
 from __future__ import annotations
 
 import re
+import math
 from typing import Any, Mapping, Sequence
 
 
 _AGE_TIMER_RE = re.compile(r"^\d{1,2}:\d{2}:\d{2}$")
+NUMBER_PATTERN = r"^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$"
+
+
+def scalar_text(value: Any) -> str:
+    """Match JSON text extraction: only null is blank; keep zero and booleans."""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
 
 
 def _as_list(raw: Any) -> list[Any]:
@@ -22,7 +33,7 @@ def _as_list(raw: Any) -> list[Any]:
 
 
 def _field_val(row: Mapping[str, Any], field: str) -> str:
-    return str((row or {}).get(field) or "").strip()
+    return scalar_text((row or {}).get(field)).strip()
 
 
 def eval_leaf_filter(row: Mapping[str, Any], filt: Mapping[str, Any]) -> bool:
@@ -35,17 +46,17 @@ def eval_leaf_filter(row: Mapping[str, Any], filt: Mapping[str, Any]) -> bool:
     expect = filt.get("value")
 
     if op in ("eq", "=="):
-        return raw.lower() == str(expect or "").strip().lower()
+        return raw.lower() == scalar_text(expect).strip().lower()
     if op in ("ne", "!="):
-        return raw.lower() != str(expect or "").strip().lower()
+        return raw.lower() != scalar_text(expect).strip().lower()
     if op == "in":
-        opts = {str(x).strip().lower() for x in _as_list(expect) if str(x).strip()}
+        opts = {scalar_text(x).strip().lower() for x in _as_list(expect) if scalar_text(x).strip()}
         return raw.lower() in opts
     if op in ("not_in", "nin"):
-        opts = {str(x).strip().lower() for x in _as_list(expect) if str(x).strip()}
+        opts = {scalar_text(x).strip().lower() for x in _as_list(expect) if scalar_text(x).strip()}
         return raw.lower() not in opts
     if op == "contains":
-        needle = str(expect or "").strip().lower()
+        needle = scalar_text(expect).strip().lower()
         return bool(needle) and needle in raw.lower()
     if op == "empty":
         return not raw
@@ -63,7 +74,7 @@ def eval_leaf_filter(row: Mapping[str, Any], filt: Mapping[str, Any]) -> bool:
         # HH:MM:SS dynamic ARP age
         return bool(_AGE_TIMER_RE.match(raw))
     if op == "ci_eq":
-        return raw.lower() == str(expect or "").strip().lower()
+        return raw.lower() == scalar_text(expect).strip().lower()
     return True
 
 
@@ -99,7 +110,7 @@ def apply_row_filters(
 
 
 def normalize_value(value: Any, how: str) -> str:
-    text = str(value if value is not None else "").strip()
+    text = scalar_text(value).strip()
     mode = str(how or "").strip().lower()
     if not mode or mode in ("none", "strip"):
         return text
@@ -190,8 +201,11 @@ def effective_display_fields(
 
 
 def _parse_float(text: str) -> float | None:
+    if not re.fullmatch(NUMBER_PATTERN, text):
+        return None
     try:
-        return float(text) if text else 0.0
+        value = float(text)
+        return value if math.isfinite(value) else None
     except ValueError:
         return None
 
