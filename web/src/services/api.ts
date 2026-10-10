@@ -1944,6 +1944,9 @@ export const bizStatePurgeTask = (taskId: string) =>
 export const bizStateGetBatch = (batchId: string) =>
   apiGet<Record<string, unknown>>(`/v1/biz-state/batches/${encodeURIComponent(batchId)}`);
 
+export const bizStateGetTaskProgress = (taskId: string) =>
+  apiGet<Record<string, unknown>>(`/v1/biz-state/tasks/${encodeURIComponent(taskId)}/progress`);
+
 export const bizStateListBatchMetricRows = (params: {
   batchId: string;
   metricId: string;

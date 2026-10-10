@@ -1,5 +1,6 @@
 import { Button, Input, Modal } from "@heroui/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { ListPager } from "../../components/ListPager";
 import { AppModalShell } from "../../components/ui/AppModalShell";
 import { FieldSelect } from "../../components/ui/FieldSelect";
@@ -20,6 +21,7 @@ import {
   bizStateGetBatch,
   bizStateGetBatchCommand,
   bizStateGetTask,
+  bizStateGetTaskProgress,
   bizStateImportLog,
   bizStateImportLogStandalone,
   bizStateListBatches,
@@ -166,7 +168,7 @@ function intervalUnitMax(unit: "days" | "hours" | "seconds") {
 }
 
 function formatCmdCollectStats(
-  t: (key: string, vars?: Record<string, unknown>) => string,
+  t: (key: string, vars?: Record<string, string | number>) => string,
   lines: number,
   rows: number,
   declared?: number,
@@ -221,13 +223,13 @@ function neSourceOf(row: CliTargetItem): "managed" | "ume" {
 }
 
 function columnsFromRows(rows: Record<string, unknown>[]): SheetCol[] {
-  const keys: string[] = [];
+  const keys = new Set<string>();
   for (const row of rows) {
     for (const k of Object.keys(row || {})) {
-      if (!keys.includes(k)) keys.push(k);
+      keys.add(k);
     }
   }
-  return keys.map((k) => ({ key: k, header: k }));
+  return [...keys].map((k) => ({ key: k, header: k }));
 }
 
 function buildSheetTabs(batch: any, t: (k: string) => string): SheetTab[] {
@@ -236,7 +238,7 @@ function buildSheetTabs(batch: any, t: (k: string) => string): SheetTab[] {
   if (cmds.length) {
     tabs.push({
       id: "commands",
-      title: "Commands",
+      title: t("bizState.sheetCommands"),
       rowCount: cmds.length,
       commands: cmds,
     });
@@ -260,6 +262,17 @@ export function BizStatePage() {
   const { showOk, showError } = useToast();
 
   const [tasks, setTasks] = useState<TaskRow[]>([]);
+  const [tasksLoading, setTasksLoading] = useState(true);
+  const [tasksError, setTasksError] = useState("");
+  const tasksRequestRef = useRef(0);
+  const taskRequestRef = useRef(0);
+  const taskIdRef = useRef("");
+  const batchRequestRef = useRef(0);
+  const sheetRequestRef = useRef(0);
+  const collectRequestRef = useRef(0);
+  const rawRequestRef = useRef(0);
+  const discoverRequestRef = useRef(0);
+  const pollInFlightRef = useRef(false);
   const [busy, setBusy] = useState(false);
   const [collectingIds, setCollectingIds] = useState<Record<string, true>>({});
   /** Track that we observed collect_running=true so we don't clear the chip before enqueue lands. */
@@ -267,7 +280,10 @@ export function BizStatePage() {
   const collectStartedAtRef = useRef<Record<string, number>>({});
   const [listKeyword, setListKeyword] = useState("");
   const debouncedListKw = useDebouncedValue(listKeyword, 250);
+  const [taskPage, setTaskPage] = useState(1);
+  const [taskPageSize, setTaskPageSize] = useState(50);
   const [purposeFilter, setPurposeFilter] = useState<"all" | "portrait" | "cutover_hf">("all");
+  const purposeRef = useRef(purposeFilter);
 
   // create-task modal (all valid CLI targets)
   const [createOpen, setCreateOpen] = useState(false);
@@ -284,6 +300,8 @@ export function BizStatePage() {
   // task modal
   const [taskId, setTaskId] = useState("");
   const [detail, setDetail] = useState<any>(null);
+  const [taskLoading, setTaskLoading] = useState(false);
+  const [taskError, setTaskError] = useState("");
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [batches, setBatches] = useState<BatchRow[]>([]);
   const [taskTab, setTaskTab] = useState<TaskTab>("profiles");
@@ -311,6 +329,9 @@ export function BizStatePage() {
 
   // batch workbook modal (summary + lazy-paged metric sheets)
   const [batchDetail, setBatchDetail] = useState<any>(null);
+  const [batchTargetId, setBatchTargetId] = useState("");
+  const [batchLoading, setBatchLoading] = useState(false);
+  const [batchError, setBatchError] = useState("");
   const [sheetId, setSheetId] = useState("");
   const [sheetKeyword, setSheetKeyword] = useState("");
   const [sheetColumn, setSheetColumn] = useState("");
@@ -321,12 +342,15 @@ export function BizStatePage() {
   const [sheetColumns, setSheetColumns] = useState<SheetCol[]>([]);
   const [sheetTotal, setSheetTotal] = useState(0);
   const [sheetLoading, setSheetLoading] = useState(false);
+  const [sheetError, setSheetError] = useState("");
+  const [sheetRetry, setSheetRetry] = useState(0);
   const [rawLogOpen, setRawLogOpen] = useState(false);
   const [rawLogLoading, setRawLogLoading] = useState(false);
   const [rawLogCmd, setRawLogCmd] = useState("");
   const [rawLogText, setRawLogText] = useState("");
   const [rawLogMeta, setRawLogMeta] = useState("");
   const [rawLogCommandId, setRawLogCommandId] = useState("");
+  const [rawLogBatchId, setRawLogBatchId] = useState("");
 
   // Manual log import into an existing task (append batch)
   const [importOpen, setImportOpen] = useState(false);
@@ -346,18 +370,22 @@ export function BizStatePage() {
   const [collectDetailLoading, setCollectDetailLoading] = useState(false);
 
   const refreshTasks = useCallback(async () => {
+    if (purposeFilter !== purposeRef.current) return [];
+    const request = ++tasksRequestRef.current;
     const purpose =
       purposeFilter === "all" ? "" : purposeFilter === "portrait" ? "portrait" : "cutover_hf";
     const key = `bizState:tasks:${purpose || "all"}`;
     const res = await cutoverCachedGet(key, () => bizStateListTasks(purpose), { force: true });
     const items = (res.items || []) as TaskRow[];
-    setTasks(items);
+    if (request === tasksRequestRef.current && purposeFilter === purposeRef.current) setTasks(items);
     return items;
   }, [purposeFilter]);
 
   /** Lightweight poll: task flags + batch counters only (no profile reload). */
-  const refreshTaskProgress = useCallback(async (id: string) => {
-    const task = await bizStateGetTask(id);
+  const refreshTaskProgress = useCallback(async (id: string, isCurrent: () => boolean = () => true) => {
+    const request = taskRequestRef.current;
+    const [task, b] = await Promise.all([bizStateGetTaskProgress(id), bizStateListBatches(id, 200)]);
+    if (request !== taskRequestRef.current || taskIdRef.current !== id || !isCurrent()) return task as TaskRow;
     setDetail((prev: any) => {
       if (!prev || prev.id !== id) return prev;
       return {
@@ -369,47 +397,91 @@ export function BizStatePage() {
         status: task.status,
       };
     });
-    const b = await bizStateListBatches(id, 50);
     setBatches((b.items || []) as BatchRow[]);
+    const deletable = new Set((b.items || []).filter((row) => !row.protected && !["queued", "running"].includes(String(row.status))).map((row) => row.id));
+    setSelectedBatchIds((prev) => prev.filter((bid) => deletable.has(bid)));
     return task as TaskRow;
   }, []);
 
+  const reloadTasks = async () => {
+    setTasksLoading(true);
+    setTasksError("");
+    try { await refreshTasks(); }
+    catch (e) { if (purposeFilter === purposeRef.current) setTasksError(formatErr(e)); }
+    finally { if (purposeFilter === purposeRef.current) setTasksLoading(false); }
+  };
+
   useEffect(() => {
+    purposeRef.current = purposeFilter;
+    const request = ++tasksRequestRef.current;
+    let cancelled = false;
     void (async () => {
       try {
         const purpose =
           purposeFilter === "all" ? "" : purposeFilter === "portrait" ? "portrait" : "cutover_hf";
         const key = `bizState:tasks:${purpose || "all"}`;
         const apply = (res: Awaited<ReturnType<typeof bizStateListTasks>>) => {
+          if (cancelled || request !== tasksRequestRef.current) return;
           setTasks((res.items || []) as TaskRow[]);
         };
         apply(await cutoverCachedGetSWR(key, () => bizStateListTasks(purpose), apply));
       } catch (e) {
-        showError(formatErr(e));
+        if (!cancelled && request === tasksRequestRef.current) setTasksError(formatErr(e));
+      } finally {
+        if (!cancelled && request === tasksRequestRef.current) setTasksLoading(false);
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- refresh when purpose filter changes
+    return () => { cancelled = true; };
   }, [purposeFilter]);
+
+  useEffect(() => () => {
+    tasksRequestRef.current += 1;
+    taskRequestRef.current += 1;
+    taskIdRef.current = "";
+    batchRequestRef.current += 1;
+    sheetRequestRef.current += 1;
+    collectRequestRef.current += 1;
+    rawRequestRef.current += 1;
+    discoverRequestRef.current += 1;
+  }, []);
+
+  const activeTaskIds = tasks.filter((row) => row.collect_running).map((row) => row.id).sort().join(",");
+  const hasScheduledTask = tasks.some((row) => row.status === "running");
 
   // Progress poll while any collect is running (list chips and/or open task).
   // Does NOT block navigation; cleans up on unmount / when nothing is collecting.
   useEffect(() => {
     const watching = new Set(Object.keys(collectingIds));
+    for (const id of activeTaskIds.split(",").filter(Boolean)) watching.add(id);
     if (taskId && detail?.collect_running) watching.add(taskId);
-    if (!watching.size) return;
+    if (!watching.size && !hasScheduledTask && !taskId) return;
 
     let cancelled = false;
+    let timer: number | undefined;
+    const delay = watching.size ? 4000 : 15000;
     const tick = async () => {
       if (cancelled) return;
+      if (pollInFlightRef.current) {
+        timer = window.setTimeout(() => void tick(), delay);
+        return;
+      }
+      pollInFlightRef.current = true;
       try {
         const items = await refreshTasks();
+        if (cancelled) return;
+        // A purpose-filtered list may omit a manually started task. Read its flags directly.
+        const known = new Map(items.map((row) => [row.id, row]));
+        await Promise.all(Object.keys(collectingIds).filter((id) => !known.has(id)).map(async (id) => {
+          const row = await bizStateGetTaskProgress(id);
+          known.set(id, row as TaskRow);
+        }));
         if (cancelled) return;
         setCollectingIds((prev) => {
           let changed = false;
           const next = { ...prev };
           const now = Date.now();
           for (const id of Object.keys(next)) {
-            const row = items.find((x) => x.id === id);
+            const row = known.get(id);
             if (row?.collect_running) {
               seenCollectRunningRef.current[id] = true;
               continue;
@@ -426,20 +498,23 @@ export function BizStatePage() {
           }
           return changed ? next : prev;
         });
-        if (taskId && watching.has(taskId)) {
-          await refreshTaskProgress(taskId);
+        if (taskId) {
+          await refreshTaskProgress(taskId, () => !cancelled);
         }
       } catch {
         /* ignore transient poll errors */
+      } finally {
+        pollInFlightRef.current = false;
+        if (!cancelled) timer = window.setTimeout(() => void tick(), delay);
       }
     };
-    const timer = window.setInterval(() => void tick(), 4000);
-    void tick();
+    if (watching.size) void tick();
+    else timer = window.setTimeout(() => void tick(), delay);
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      window.clearTimeout(timer);
     };
-  }, [collectingIds, taskId, detail?.collect_running, refreshTasks, refreshTaskProgress]);
+  }, [collectingIds, activeTaskIds, hasScheduledTask, taskId, detail?.collect_running, refreshTasks, refreshTaskProgress]);
 
   useEffect(() => {
     if (!createOpen) return;
@@ -529,6 +604,15 @@ export function BizStatePage() {
     [t],
   );
 
+  const filteredCommands = useMemo(() => {
+    const commands = (batchDetail?.commands || []) as Record<string, unknown>[];
+    const kw = debouncedSheetKw.trim().toLowerCase();
+    if (!kw) return commands;
+    const keys = sheetColumn ? [sheetColumn]
+      : ["raw_command", "metric_id", "parse_status", "raw_line_count", "row_count", "message"];
+    return commands.filter((row) => keys.some((key) => cellText(row[key]).toLowerCase().includes(kw)));
+  }, [batchDetail?.commands, debouncedSheetKw, sheetColumn]);
+
   const displayColumns = useMemo(() => {
     if (!activeSheet) return [];
     if (activeSheet.id === "commands") return commandsSheetColumns;
@@ -538,25 +622,13 @@ export function BizStatePage() {
   const displayRows = useMemo(() => {
     if (!activeSheet) return [];
     if (activeSheet.id === "commands") {
-      const cmds = (batchDetail?.commands || []) as Record<string, unknown>[];
-      const kw = debouncedSheetKw.trim().toLowerCase();
-      const filtered = !kw
-        ? cmds
-        : cmds.filter((row) => {
-            const keys = sheetColumn
-              ? [sheetColumn]
-              : ["raw_command", "metric_id", "parse_status", "raw_line_count", "row_count", "message"];
-            return keys.some((k) => cellText(row[k]).toLowerCase().includes(kw));
-          });
       const start = (sheetPage - 1) * sheetPageSize;
-      return filtered.slice(start, start + sheetPageSize).map((c) => ({ ...c }));
+      return filteredCommands.slice(start, start + sheetPageSize);
     }
     return sheetRows;
   }, [
     activeSheet,
-    batchDetail,
-    debouncedSheetKw,
-    sheetColumn,
+    filteredCommands,
     sheetPage,
     sheetPageSize,
     sheetRows,
@@ -565,18 +637,10 @@ export function BizStatePage() {
   const displayTotal = useMemo(() => {
     if (!activeSheet) return 0;
     if (activeSheet.id === "commands") {
-      const cmds = (batchDetail?.commands || []) as Record<string, unknown>[];
-      const kw = debouncedSheetKw.trim().toLowerCase();
-      if (!kw) return cmds.length;
-      return cmds.filter((row) => {
-        const keys = sheetColumn
-          ? [sheetColumn]
-          : ["raw_command", "metric_id", "parse_status", "raw_line_count", "row_count", "message"];
-        return keys.some((k) => cellText(row[k]).toLowerCase().includes(kw));
-      }).length;
+      return filteredCommands.length;
     }
     return sheetTotal;
-  }, [activeSheet, batchDetail, debouncedSheetKw, sheetColumn, sheetTotal]);
+  }, [activeSheet, filteredCommands, sheetTotal]);
 
   const collectDetailCmdSummary = useMemo(() => {
     const stats = collectDetail?.command_stats as
@@ -611,7 +675,10 @@ export function BizStatePage() {
   const loadSheetPage = useCallback(
     async (batchId: string, metricId: string, page: number, pageSize: number, kw: string, column: string) => {
       if (!batchId || !metricId || metricId === "commands") return;
+      const request = ++sheetRequestRef.current;
       setSheetLoading(true);
+      setSheetError("");
+      setSheetRows([]);
       try {
         const res = await bizStateListBatchMetricRows({
           batchId,
@@ -621,6 +688,7 @@ export function BizStatePage() {
           kw,
           column,
         });
+        if (request !== sheetRequestRef.current) return;
         setSheetRows(res.items || []);
         setSheetTotal(Number(res.total || 0));
         const cols = (res.columns || []).map((c) => ({
@@ -630,33 +698,50 @@ export function BizStatePage() {
         }));
         setSheetColumns(cols.length ? cols : columnsFromRows(res.items || []));
       } catch (e) {
-        showError(formatErr(e));
+        if (request !== sheetRequestRef.current) return;
+        setSheetError(formatErr(e));
         setSheetRows([]);
         setSheetTotal(0);
       } finally {
-        setSheetLoading(false);
+        if (request === sheetRequestRef.current) setSheetLoading(false);
       }
     },
-    [showError],
+    [],
   );
 
+  const activeMetricId = activeSheet?.id || "";
   useEffect(() => {
-    if (!batchDetail?.id || !activeSheet || activeSheet.id === "commands") return;
+    if (!batchDetail?.id || !activeMetricId || activeMetricId === "commands") {
+      sheetRequestRef.current += 1;
+      setSheetLoading(false);
+      setSheetError("");
+      return;
+    }
+    if (sheetKeyword.trim() !== debouncedSheetKw.trim()) {
+      sheetRequestRef.current += 1;
+      setSheetLoading(true);
+      setSheetError("");
+      setSheetRows([]);
+      return;
+    }
     void loadSheetPage(
       String(batchDetail.id),
-      activeSheet.id,
+      activeMetricId,
       sheetPage,
       sheetPageSize,
       debouncedSheetKw,
       sheetColumn,
     );
+    return () => { sheetRequestRef.current += 1; };
   }, [
     batchDetail?.id,
-    activeSheet,
+    activeMetricId,
     sheetPage,
     sheetPageSize,
     debouncedSheetKw,
+    sheetKeyword,
     sheetColumn,
+    sheetRetry,
     loadSheetPage,
   ]);
 
@@ -682,30 +767,49 @@ export function BizStatePage() {
   };
 
   const loadTask = async (id: string) => {
-    const task = await bizStateGetTask(id);
-    setDetail(task);
-    const ui = secToIntervalUi(Number(task.interval_sec || 3600));
-    setIntervalValue(ui.value);
-    setIntervalUnit(ui.unit);
-    setRetentionDays(Math.max(1, Number(task.retention_days || 30)));
-    setDailyKeepEnabled(Boolean(task.daily_keep_enabled));
-    setDailyKeepCount(Math.max(1, Number(task.daily_keep_count || 10)));
-    const b = await bizStateListBatches(id, 200);
-    setBatches((b.items || []) as BatchRow[]);
-    setSelectedBatchIds([]);
-    const p = await bizStateListProfiles({
-      vendor: task.vendor || "",
-      device_type: task.device_type || "",
-    });
-    setProfiles((p.items || []) as Profile[]);
+    if (taskIdRef.current !== id) return;
+    const request = ++taskRequestRef.current;
+    setTaskLoading(true);
+    setTaskError("");
+    try {
+      const task = await bizStateGetTask(id);
+      if (request !== taskRequestRef.current) return;
+      const [b, p] = await Promise.all([
+        bizStateListBatches(id, 200),
+        cutoverCachedGet(`bizState:profiles:${String(task.vendor || "")}:${String(task.device_type || "")}`,
+          () => bizStateListProfiles({vendor: String(task.vendor || ""), device_type: String(task.device_type || "")}), {ttlMs: 30000}),
+      ]);
+      if (request !== taskRequestRef.current) return;
+      setDetail(task);
+      const ui = secToIntervalUi(Number(task.interval_sec || 3600));
+      setIntervalValue(ui.value);
+      setIntervalUnit(ui.unit);
+      setRetentionDays(Math.max(1, Number(task.retention_days || 30)));
+      setDailyKeepEnabled(Boolean(task.daily_keep_enabled));
+      setDailyKeepCount(Math.max(1, Number(task.daily_keep_count || 10)));
+      setBatches((b.items || []) as BatchRow[]);
+      setSelectedBatchIds([]);
+      setProfiles((p.items || []) as Profile[]);
+    } catch (e) {
+      if (request === taskRequestRef.current) setTaskError(formatErr(e));
+    } finally {
+      if (request === taskRequestRef.current) setTaskLoading(false);
+    }
   };
 
   const openTask = async (id: string, tab: TaskTab = "profiles") => {
+    taskRequestRef.current += 1;
+    taskIdRef.current = id;
     setTaskId(id);
+    setDetail(null);
+    setProfiles([]);
+    setBatches([]);
+    setSelectedBatchIds([]);
     setTaskTab(tab);
     setBindItemId("");
     setCandidates([]);
-    setBatchDetail(null);
+    closeBatch();
+    closeCollectDetail();
     try {
       await loadTask(id);
     } catch (e) {
@@ -715,6 +819,13 @@ export function BizStatePage() {
   };
 
   const closeTask = () => {
+    taskRequestRef.current += 1;
+    taskIdRef.current = "";
+    setTaskLoading(false);
+    setTaskError("");
+    closeBatch();
+    closeCollectDetail();
+    closeBindModal();
     setTaskId("");
     setDetail(null);
     setBindItemId("");
@@ -828,7 +939,7 @@ export function BizStatePage() {
   };
 
   const selectDeletableBatches = () => {
-    setSelectedBatchIds(batches.filter((b) => !b.protected).map((b) => b.id));
+    setSelectedBatchIds(batches.filter((b) => !b.protected && !["running", "queued"].includes(b.status)).map((b) => b.id));
   };
 
   const markBaseline = async (batchId: string, marked: boolean) => {
@@ -852,7 +963,7 @@ export function BizStatePage() {
       showOk(t("bizState.aliasSaved"));
       if (taskId) await loadTask(taskId);
       if (batchDetail?.id === batchId) {
-        setBatchDetail((prev: any) => (prev ? { ...prev, alias: next.trim() } : prev));
+        setBatchDetail((prev: any) => (prev?.id === batchId ? { ...prev, alias: next.trim() } : prev));
       }
     } catch (e) {
       showError(formatErr(e));
@@ -1166,6 +1277,7 @@ export function BizStatePage() {
   };
 
   const closeBindModal = () => {
+    discoverRequestRef.current += 1;
     setBindItemId("");
     setCandidates([]);
     setSelectedVrfs([]);
@@ -1177,6 +1289,7 @@ export function BizStatePage() {
 
   const startDiscover = async (item: any, forceRefresh = false) => {
     if (!taskId) return;
+    const request = ++discoverRequestRef.current;
     const prof = profiles.find((p) => p.profile_id === item.source_profile_id);
     const phs = prof?.placeholders || [];
     const ph = phs[0];
@@ -1201,6 +1314,7 @@ export function BizStatePage() {
         placeholder: sharedDisc ? "" : ph.name,
         force_refresh: forceRefresh,
       });
+      if (request !== discoverRequestRef.current) return;
       if (!res.ok) {
         const err = res.error || t("bizState.discoverFailed");
         setDiscoverError(err);
@@ -1244,11 +1358,12 @@ export function BizStatePage() {
         setDiscoverError(t("bizState.discoverEmpty"));
       }
     } catch (e) {
+      if (request !== discoverRequestRef.current) return;
       const err = formatErr(e);
       setDiscoverError(err);
       showError(err);
     } finally {
-      setDiscoverLoading(false);
+      if (request === discoverRequestRef.current) setDiscoverLoading(false);
       setBusy(false);
     }
   };
@@ -1287,8 +1402,15 @@ export function BizStatePage() {
   };
 
   const openBatch = async (batchId: string) => {
+    const request = ++batchRequestRef.current;
+    sheetRequestRef.current += 1;
+    setBatchTargetId(batchId);
+    setBatchDetail(null);
+    setBatchLoading(true);
+    setBatchError("");
     try {
       const d = await bizStateGetBatch(batchId);
+      if (request !== batchRequestRef.current) return;
       setBatchDetail(d);
       setSheetKeyword("");
       setSheetColumn("");
@@ -1303,11 +1425,20 @@ export function BizStatePage() {
         built[0];
       setSheetId(prefer?.id || "");
     } catch (e) {
-      showError(formatErr(e));
+      if (request === batchRequestRef.current) setBatchError(formatErr(e));
+    } finally {
+      if (request === batchRequestRef.current) setBatchLoading(false);
     }
   };
 
   const closeBatch = () => {
+    batchRequestRef.current += 1;
+    sheetRequestRef.current += 1;
+    setBatchTargetId("");
+    setBatchLoading(false);
+    setBatchError("");
+    setSheetLoading(false);
+    setSheetError("");
     setBatchDetail(null);
     setSheetId("");
     setSheetKeyword("");
@@ -1316,25 +1447,28 @@ export function BizStatePage() {
     setSheetRows([]);
     setSheetColumns([]);
     setSheetTotal(0);
-    setRawLogOpen(false);
+    closeRawLog();
     setRawLogText("");
     setRawLogCommandId("");
   };
 
   const openCollectDetail = async (batchId: string) => {
+    const request = ++collectRequestRef.current;
     setCollectDetailLoading(true);
     setCollectDetail(null);
     try {
       const d = await bizStateGetBatch(batchId);
+      if (request !== collectRequestRef.current) return;
       setCollectDetail(d);
     } catch (e) {
-      showError(formatErr(e));
+      if (request === collectRequestRef.current) showError(formatErr(e));
     } finally {
-      setCollectDetailLoading(false);
+      if (request === collectRequestRef.current) setCollectDetailLoading(false);
     }
   };
 
   const closeCollectDetail = () => {
+    collectRequestRef.current += 1;
     setCollectDetail(null);
     setCollectDetailLoading(false);
   };
@@ -1342,6 +1476,8 @@ export function BizStatePage() {
   const openRawLog = async (commandId: string, fromBatchId?: string) => {
     const bid = fromBatchId || (batchDetail?.id ? String(batchDetail.id) : "") || (collectDetail?.id ? String(collectDetail.id) : "");
     if (!bid || !commandId) return;
+    const request = ++rawRequestRef.current;
+    setRawLogBatchId(bid);
     setRawLogOpen(true);
     setRawLogLoading(true);
     setRawLogText("");
@@ -1354,6 +1490,7 @@ export function BizStatePage() {
     setRawLogMessage("");
     try {
       const d = await bizStateGetBatchCommand(bid, commandId);
+      if (request !== rawRequestRef.current) return;
       setRawLogCmd(String(d.raw_command || ""));
       setRawLogText(String(d.raw_text || ""));
       const lines = Number(d.raw_line_count ?? 0);
@@ -1371,18 +1508,24 @@ export function BizStatePage() {
       ].filter(Boolean);
       setRawLogMeta(bits.join(" · "));
     } catch (e) {
+      if (request !== rawRequestRef.current) return;
       showError(formatErr(e));
-      setRawLogOpen(false);
+      closeRawLog();
     } finally {
-      setRawLogLoading(false);
+      if (request === rawRequestRef.current) setRawLogLoading(false);
     }
   };
 
+  const closeRawLog = () => {
+    rawRequestRef.current += 1;
+    setRawLogOpen(false);
+    setRawLogLoading(false);
+    setRawLogBatchId("");
+    setRawLogCommandId("");
+  };
+
   const exportRawLog = async () => {
-    const bid =
-      (batchDetail?.id && String(batchDetail.id)) ||
-      (collectDetail?.id && String(collectDetail.id)) ||
-      "";
+    const bid = rawLogBatchId;
     if (!bid || !rawLogCommandId) {
       // Fallback: download already-loaded text
       if (!rawLogText) return;
@@ -1408,6 +1551,9 @@ export function BizStatePage() {
   };
 
   const selectSheet = (id: string) => {
+    sheetRequestRef.current += 1;
+    setSheetLoading(false);
+    setSheetError("");
     setSheetId(id);
     setSheetKeyword("");
     setSheetColumn("");
@@ -1418,9 +1564,31 @@ export function BizStatePage() {
   };
 
   const runningCount = tasks.filter((x) => x.status === "running").length;
+  const taskPages = pageCount(filteredTasks.length, taskPageSize);
+  const visibleTaskPage = Math.min(taskPage, taskPages);
+  const visibleTasks = filteredTasks.slice((visibleTaskPage - 1) * taskPageSize, visibleTaskPage * taskPageSize);
+  const collectingCount = tasks.filter((x) => x.collect_running || collectingIds[x.id]).length;
+  const taskNotReady = busy || taskLoading || !detail || Boolean(taskError);
+  const batchStatusLabel = (status: string) => {
+    const labels: Record<string, string> = {
+      success: "bizState.batchSuccess", running: "bizState.statusCollecting", queued: "bizState.statusQueued",
+      partial: "bizState.batchPartial", failed: "bizState.batchFailed", cancelled: "bizState.batchCancelled",
+    };
+    return labels[status] ? t(labels[status]) : status || "—";
+  };
+  const handleSheetTabKey = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const current = sheetTabs.findIndex((row) => row.id === activeMetricId);
+    const next = event.key === "ArrowRight" ? (current + 1) % sheetTabs.length
+      : event.key === "ArrowLeft" ? (current + sheetTabs.length - 1) % sheetTabs.length
+      : event.key === "Home" ? 0 : event.key === "End" ? sheetTabs.length - 1 : -1;
+    if (next < 0 || !sheetTabs.length) return;
+    event.preventDefault();
+    selectSheet(sheetTabs[next].id);
+    event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
+  };
 
   return (
-    <section className="panel nm-page-panel">
+    <section className="panel nm-page-panel bs-monitor-workspace">
       <div className="panel__toolbar">
         <h2>{t("bizState.title")}</h2>
         <div className="btn-row">
@@ -1433,33 +1601,52 @@ export function BizStatePage() {
       <div className="pt-list">
         <div className="pt-list-kpis">
           <div className="pt-list-kpi">
-            <div className="pt-list-kpi__label">{t("bizState.colNe")}</div>
+            <div className="pt-list-kpi__label">{t("bizState.loadedTasks")}</div>
             <div className="pt-list-kpi__value">{tasks.length}</div>
           </div>
           <div className="pt-list-kpi pt-list-kpi--live">
             <div className="pt-list-kpi__label">{t("bizState.scheduleOn")}</div>
             <div className="pt-list-kpi__value">{runningCount}</div>
           </div>
+          <div className="pt-list-kpi">
+            <div className="pt-list-kpi__label">{t("bizState.statusCollecting")}</div>
+            <div className="pt-list-kpi__value">{collectingCount}</div>
+          </div>
+          <div className="pt-list-kpi">
+            <div className="pt-list-kpi__label">{t("bizState.collectErrors")}</div>
+            <div className="pt-list-kpi__value">{tasks.filter((row) => row.last_error).length}</div>
+          </div>
         </div>
 
         <div className="filter-inline">
           <Input
             value={listKeyword}
+            aria-label={t("bizState.listFilterPh")}
             placeholder={t("bizState.listFilterPh")}
-            onChange={(e) => setListKeyword(e.target.value)}
+            onChange={(e) => { setListKeyword(e.target.value); setTaskPage(1); }}
           />
           <FieldSelect
             value={purposeFilter}
-            onChange={(e) =>
-              setPurposeFilter(e.target.value as "all" | "portrait" | "cutover_hf")
-            }
+            onChange={(e) => {
+              const value = e.target.value as "all" | "portrait" | "cutover_hf";
+              if (value === purposeFilter) return;
+              purposeRef.current = value;
+              setTasksLoading(true);
+              setTasksError("");
+              setTasks([]);
+              setTaskPage(1);
+              setPurposeFilter(value);
+            }}
             aria-label={t("bizState.purposeFilter")}
           >
             <option value="all">{t("bizState.purposeAll")}</option>
             <option value="portrait">{t("bizState.purposePortrait")}</option>
             <option value="cutover_hf">{t("bizState.purposeCutoverHf")}</option>
           </FieldSelect>
+          <Button size="sm" variant="secondary" isDisabled={tasksLoading} isPending={tasksLoading} onPress={() => void reloadTasks()}>{t("common.refresh")}</Button>
         </div>
+
+        {tasksError ? <div className="bs-monitor-error" role="alert"><span>{t("bizState.tasksLoadError")} · {tasksError}</span><Button size="sm" variant="secondary" onPress={() => void reloadTasks()}>{t("bizState.retry")}</Button></div> : null}
 
         <div className="pt-list-table-wrap">
           <table className="data-table pt-list-table">
@@ -1477,7 +1664,7 @@ export function BizStatePage() {
               </tr>
             </thead>
             <tbody>
-              {filteredTasks.map((row) => (
+              {visibleTasks.map((row) => (
                 <tr key={row.id}>
                   <td>
                     <div className="pt-list-task-name">{row.ne_name || row.ne_ip || "—"}</div>
@@ -1611,8 +1798,9 @@ export function BizStatePage() {
                       ) : null}
                       <Button
                         size="sm"
-                        variant="danger"
-                        isDisabled={busy}
+                        variant="ghost"
+                        className="bs-monitor-delete"
+                        isDisabled={busy || Boolean(row.collect_running || collectingIds[row.id])}
                         onPress={() => void removeTask(row.id)}
                       >
                         {t("bizState.delete")}
@@ -1621,20 +1809,23 @@ export function BizStatePage() {
                   </td>
                 </tr>
               ))}
-                {!filteredTasks.length ? (
+                {!filteredTasks.length && !tasksError ? (
                   <tr>
-                    <td colSpan={8}>
-                      <div className="pt-list-empty">{t("bizState.empty")}</div>
+                    <td colSpan={9}>
+                      <div className="pt-list-empty" role="status">{tasksLoading ? t("bizState.sheetLoading") : t("bizState.empty")}</div>
                     </td>
                   </tr>
                 ) : null}
             </tbody>
           </table>
         </div>
+        <ListPager page={visibleTaskPage} pages={taskPages} total={filteredTasks.length} pageSize={taskPageSize}
+          onPageChange={setTaskPage} pageSizeOptions={SHEET_PAGE_SIZE_OPTIONS} disabled={tasksLoading}
+          onPageSizeChange={(size) => { setTaskPageSize(size); setTaskPage(1); }} />
       </div>
 
       {/* Create task: pick NE or offline import (unified entry) */}
-      <AppModalShell open={createOpen} onClose={closeCreate} size="lg">
+      <AppModalShell open={createOpen} onClose={closeCreate} size="lg" className="bs-monitor-modal">
         <Modal.Header>
           <Modal.Heading>{t("bizState.create")}</Modal.Heading>
           <Modal.CloseTrigger />
@@ -1825,14 +2016,18 @@ export function BizStatePage() {
       </AppModalShell>
 
       {/* Task detail modal */}
-      <AppModalShell open={Boolean(taskId)} onClose={closeTask} size="lg" className="app-heroui-modal--xl">
+      <AppModalShell open={Boolean(taskId)} onClose={closeTask} size="lg" className="app-heroui-modal--xl bs-monitor-modal bs-monitor-task">
         <Modal.Header>
-          <Modal.Heading>
-            {detail?.ne_name || detail?.ne_ip || t("bizState.detail")}
+          <Modal.Heading className="bs-monitor-heading">
+            <span className="bs-monitor-id">TASK / {taskId.slice(0, 12)}</span>
+            <span>{detail?.ne_name || detail?.ne_ip || t("bizState.detail")}</span>
           </Modal.Heading>
           <Modal.CloseTrigger />
         </Modal.Header>
-        <Modal.Body className="flex flex-col gap-3">
+        <Modal.Body className="flex flex-col gap-3" aria-busy={taskLoading}>
+          {taskLoading ? <div className="bs-monitor-loading" role="status">{t("bizState.taskLoading")}</div> : null}
+          {taskError ? <div className="bs-monitor-error" role="alert"><span>{t("bizState.taskLoadError")} · {taskError}</span><Button size="sm" variant="secondary" onPress={() => void loadTask(taskId)}>{t("bizState.retry")}</Button></div> : null}
+          <div className="bs-monitor-task-content" inert={taskLoading || !detail || Boolean(taskError)} hidden={!detail}>
           {detail ? (
             <div className="config-sync-policy-row bs-schedule-row">
               {detail.collect_running || (taskId && collectingIds[taskId]) ? (
@@ -1858,7 +2053,7 @@ export function BizStatePage() {
                   <Button
                     size="sm"
                     variant="ghost"
-                    isDisabled={busy}
+                    isDisabled={taskNotReady}
                     onPress={() => void setScheduleEnabled(taskId, false)}
                   >
                     {t("bizState.pause")}
@@ -1867,7 +2062,7 @@ export function BizStatePage() {
                   <Button
                     size="sm"
                     variant="ghost"
-                    isDisabled={busy}
+                    isDisabled={taskNotReady}
                     onPress={() => void setScheduleEnabled(taskId, true)}
                   >
                     {t("bizState.start")}
@@ -1876,13 +2071,14 @@ export function BizStatePage() {
               ) : (
                 <NmStatusChip color="warning">{t("bizState.sourceImport")}</NmStatusChip>
               )}
-              <label className="config-sync-policy-field">
+              <label className="config-sync-policy-field bs-monitor-interval-field">
                 <span>{t("bizState.interval")}</span>
                 <Input
                   type="number"
                   min={intervalUnit === "seconds" ? 60 : 1}
                   max={intervalUnitMax(intervalUnit)}
                   value={String(intervalValue)}
+                  aria-label={t("bizState.interval")}
                   onChange={(e) => {
                     const min = intervalUnit === "seconds" ? 60 : 1;
                     const max = intervalUnitMax(intervalUnit);
@@ -1891,6 +2087,7 @@ export function BizStatePage() {
                 />
                 <select
                   value={intervalUnit}
+                  aria-label={t("bizState.intervalUnit")}
                   onChange={(e) => {
                     const next =
                       e.target.value === "seconds"
@@ -1915,6 +2112,7 @@ export function BizStatePage() {
                   min={1}
                   max={3650}
                   value={String(retentionDays)}
+                  aria-label={t("bizState.retention")}
                   onChange={(e) => setRetentionDays(Math.max(1, Number(e.target.value) || 1))}
                 />
               </label>
@@ -1935,14 +2133,15 @@ export function BizStatePage() {
                     min={1}
                     max={1000}
                     value={String(dailyKeepCount)}
+                    aria-label={t("bizState.dailyKeepCount")}
                     onChange={(e) => setDailyKeepCount(Math.max(1, Number(e.target.value) || 1))}
                   />
                 </label>
               ) : null}
-              <Button size="sm" variant="secondary" isDisabled={busy} onPress={() => void saveSchedule()}>
+              <Button size="sm" variant="secondary" isDisabled={taskNotReady} onPress={() => void saveSchedule()}>
                 {t("bizState.saveSchedule")}
               </Button>
-              <Button size="sm" variant="ghost" isDisabled={busy} onPress={() => void purgeNow()}>
+              <Button size="sm" variant="ghost" isDisabled={taskNotReady} onPress={() => void purgeNow()}>
                 {t("bizState.purgeNow")}
               </Button>
               <span className="muted">
@@ -1953,32 +2152,38 @@ export function BizStatePage() {
           ) : null}
           {detail?.last_error ? <p className="form-error">{detail.last_error}</p> : null}
 
-          <div className="btn-row nm-config-modal__tabs">
-            <Button
-              size="sm"
-              variant={taskTab === "profiles" ? "primary" : "secondary"}
-              className={taskTab === "profiles" ? "is-active" : undefined}
-              onPress={() => setTaskTab("profiles")}
+          <div className="btn-row nm-config-modal__tabs bs-monitor-task-tabs" role="tablist" aria-label={t("bizState.detail")} onKeyDown={(event) => {
+            if (!["ArrowRight", "ArrowLeft", "Home", "End"].includes(event.key)) return;
+            event.preventDefault();
+            const next = event.key === "Home" ? "profiles" : event.key === "End" ? "batches" : taskTab === "profiles" ? "batches" : "profiles";
+            setTaskTab(next);
+            event.currentTarget.querySelector<HTMLButtonElement>(`#monitor-${next}-tab`)?.focus();
+          }}>
+            <button
+              type="button" role="tab" id="monitor-profiles-tab" aria-controls="monitor-profiles-panel"
+              aria-selected={taskTab === "profiles"} tabIndex={taskTab === "profiles" ? 0 : -1}
+              className={`button${taskTab === "profiles" ? " is-active" : ""}`}
+              onClick={() => setTaskTab("profiles")}
             >
               {t("bizState.profiles")}
-            </Button>
-            <Button
-              size="sm"
-              variant={taskTab === "batches" ? "primary" : "secondary"}
-              className={taskTab === "batches" ? "is-active" : undefined}
-              onPress={() => setTaskTab("batches")}
+            </button>
+            <button
+              type="button" role="tab" id="monitor-batches-tab" aria-controls="monitor-batches-panel"
+              aria-selected={taskTab === "batches"} tabIndex={taskTab === "batches" ? 0 : -1}
+              className={`button${taskTab === "batches" ? " is-active" : ""}`}
+              onClick={() => setTaskTab("batches")}
             >
               {t("bizState.batches")}
-            </Button>
+            </button>
           </div>
 
           {taskTab === "profiles" ? (
-            <div className="bs-profiles-panel">
+            <div className="bs-profiles-panel" role="tabpanel" id="monitor-profiles-panel" aria-labelledby="monitor-profiles-tab">
               <div className="btn-row bs-profiles-toolbar">
                 <Button
                   size="sm"
                   variant="secondary"
-                  isDisabled={busy || !collectProfiles.length}
+                  isDisabled={taskNotReady || !collectProfiles.length}
                   onPress={() => void setAllProfilesEnabled(true)}
                 >
                   {t("bizState.profilesSelectAll")}
@@ -1986,7 +2191,7 @@ export function BizStatePage() {
                 <Button
                   size="sm"
                   variant="ghost"
-                  isDisabled={busy || !profileSelectionStats.enabled}
+                  isDisabled={taskNotReady || !profileSelectionStats.enabled}
                   onPress={() => void setAllProfilesEnabled(false)}
                 >
                   {t("bizState.profilesDeselectAll")}
@@ -2091,7 +2296,7 @@ export function BizStatePage() {
                               <Button
                                 size="sm"
                                 variant="secondary"
-                                isDisabled={busy || discoverLoading}
+                                isDisabled={taskNotReady || discoverLoading}
                                 onPress={() => void startDiscover(it)}
                               >
                                 {t("bizState.discoverBind")}
@@ -2161,15 +2366,17 @@ export function BizStatePage() {
               </div>
             </div>
           ) : (
-            <div className="pt-list-table-wrap">
+            <div className="pt-list-table-wrap bs-monitor-batches" role="tabpanel" id="monitor-batches-panel" aria-labelledby="monitor-batches-tab">
               <div className="btn-row" style={{ marginBottom: 8, gap: 8, flexWrap: "wrap" }}>
-                <Button size="sm" variant="ghost" isDisabled={busy || !batches.length} onPress={selectDeletableBatches}>
+                <span className="muted bs-monitor-history-count">{t("bizState.loadedBatches", {n: batches.length})}</span>
+                <Button size="sm" variant="secondary" isDisabled={taskNotReady} onPress={() => void refreshTaskProgress(taskId).catch((e) => showError(formatErr(e)))}>{t("common.refresh")}</Button>
+                <Button size="sm" variant="ghost" isDisabled={taskNotReady || !batches.length} onPress={selectDeletableBatches}>
                   {t("bizState.selectAll")}
                 </Button>
                 <Button
                   size="sm"
                   variant="danger"
-                  isDisabled={busy || !selectedBatchIds.length}
+                  isDisabled={taskNotReady || !selectedBatchIds.length}
                   onPress={() => void bulkRemoveBatches()}
                 >
                   {t("bizState.bulkDelete")}
@@ -2191,12 +2398,13 @@ export function BizStatePage() {
                 </thead>
                 <tbody>
                   {batches.map((b) => {
-                    const locked = Boolean(b.protected);
+                    const locked = Boolean(b.protected) || ["queued", "running"].includes(b.status);
                     return (
                       <tr key={b.id}>
                         <td>
                           <input
                             type="checkbox"
+                            aria-label={b.alias?.trim() || b.id}
                             checked={selectedBatchIds.includes(b.id)}
                             disabled={locked || busy}
                             onChange={() => toggleBatchSelect(b.id, locked)}
@@ -2221,7 +2429,7 @@ export function BizStatePage() {
                           </button>
                         </td>
                         <td>
-                          <NmStatusChip color={jobChipColor(b.status)}>{b.status}</NmStatusChip>
+                          <NmStatusChip color={jobChipColor(b.status)}>{batchStatusLabel(b.status)}</NmStatusChip>
                         </td>
                         <td>
                           {b.is_baseline ? (
@@ -2244,13 +2452,13 @@ export function BizStatePage() {
                             <Button size="sm" variant="primary" onPress={() => void openBatch(b.id)}>
                               {t("bizState.viewBatch")}
                             </Button>
-                            <Button size="sm" variant="ghost" onPress={() => void bizStateDownloadExport(b.id)}>
+                            <Button size="sm" variant="ghost" onPress={() => void bizStateDownloadExport(b.id).catch((e) => showError(formatErr(e)))}>
                               {t("bizState.export")}
                             </Button>
                             <Button
                               size="sm"
                               variant="ghost"
-                              isDisabled={busy}
+                              isDisabled={taskNotReady}
                               onPress={() => void editBatchAlias(b.id, b.alias)}
                             >
                               {t("bizState.setAlias")}
@@ -2259,7 +2467,7 @@ export function BizStatePage() {
                               <Button
                                 size="sm"
                                 variant="secondary"
-                                isDisabled={busy}
+                                isDisabled={taskNotReady}
                                 onPress={() => void markBaseline(b.id, false)}
                               >
                                 {t("bizState.unmarkBaseline")}
@@ -2268,7 +2476,7 @@ export function BizStatePage() {
                               <Button
                                 size="sm"
                                 variant="secondary"
-                                isDisabled={busy}
+                                isDisabled={taskNotReady}
                                 onPress={() => void markBaseline(b.id, true)}
                               >
                                 {t("bizState.markBaseline")}
@@ -2277,7 +2485,7 @@ export function BizStatePage() {
                             <Button
                               size="sm"
                               variant="danger"
-                              isDisabled={busy || locked}
+                              isDisabled={taskNotReady || locked}
                               onPress={() => void removeBatch(b.id)}
                             >
                               {t("bizState.deleteBatch")}
@@ -2289,7 +2497,7 @@ export function BizStatePage() {
                   })}
                   {!batches.length ? (
                     <tr>
-                      <td colSpan={7}>
+                      <td colSpan={8}>
                         <div className="pt-list-empty">{t("bizState.noBatches")}</div>
                       </td>
                     </tr>
@@ -2298,13 +2506,14 @@ export function BizStatePage() {
               </table>
             </div>
           )}
+          </div>
         </Modal.Body>
         <Modal.Footer>
           {detail?.source !== "import" ? (
             <Button
               size="sm"
               variant="primary"
-              isDisabled={Boolean(detail?.collect_running || (taskId && collectingIds[taskId]))}
+              isDisabled={Boolean(taskNotReady || detail?.collect_running || (taskId && collectingIds[taskId]))}
               onPress={() => void collectNow()}
             >
               {t("bizState.collectNow")}
@@ -2314,7 +2523,7 @@ export function BizStatePage() {
             size="sm"
             variant="secondary"
             isDisabled={Boolean(
-              busy ||
+              taskNotReady ||
                 !taskId ||
                 detail?.collect_running ||
                 (taskId && collectingIds[taskId]),
@@ -2333,7 +2542,7 @@ export function BizStatePage() {
             <Button
               size="sm"
               variant="danger"
-              isDisabled={busy || !taskId}
+              isDisabled={taskNotReady || !taskId}
               onPress={() => void stopCollectForTask(taskId)}
             >
               {t("bizState.stopCollect")}
@@ -2342,12 +2551,12 @@ export function BizStatePage() {
           <Button
             size="sm"
             variant="secondary"
-            isDisabled={busy || !taskId}
+            isDisabled={taskNotReady || !taskId}
             onPress={() => void exportTaskCommands()}
           >
             {t("bizState.exportCommands")}
           </Button>
-          <Button size="sm" variant="danger" isDisabled={busy} onPress={() => void removeTask(taskId)}>
+          <Button size="sm" variant="ghost" className="bs-monitor-delete" isDisabled={taskNotReady || Boolean(detail?.collect_running || collectingIds[taskId])} onPress={() => void removeTask(taskId)}>
             {t("bizState.delete")}
           </Button>
           <Button size="sm" variant="ghost" onPress={closeTask}>
@@ -2562,20 +2771,22 @@ export function BizStatePage() {
 
       {/* Batch workbook: summary + lazy-paged metric sheets */}
       <AppModalShell
-        open={Boolean(batchDetail)}
+        open={Boolean(batchTargetId)}
         onClose={closeBatch}
         size="lg"
-        className="app-heroui-modal--xl bs-workbook-modal"
+        className="app-heroui-modal--xl bs-workbook-modal bs-monitor-modal"
       >
         <Modal.Header>
           <Modal.Heading>{t("bizState.batchWorkbook")}</Modal.Heading>
           <Modal.CloseTrigger />
         </Modal.Header>
         <Modal.Body className="flex flex-col gap-2 bs-workbook-body">
+          {batchLoading ? <div className="bs-monitor-loading" role="status">{t("bizState.sheetLoading")}</div> : null}
+          {batchError ? <div className="bs-monitor-error" role="alert"><span>{t("bizState.batchLoadError")} · {batchError}</span><Button size="sm" variant="secondary" onPress={() => void openBatch(batchTargetId)}>{t("bizState.retry")}</Button></div> : null}
           {batchDetail ? (
             <div className="bs-workbook-meta">
               <NmStatusChip color={jobChipColor(String(batchDetail.status || ""))}>
-                {String(batchDetail.status || "—")}
+                {batchStatusLabel(String(batchDetail.status || ""))}
               </NmStatusChip>
               {batchDetail.alias ? (
                 <NmStatusChip color="accent">{String(batchDetail.alias)}</NmStatusChip>
@@ -2638,13 +2849,15 @@ export function BizStatePage() {
             </div>
           ) : null}
 
-          <div className="bs-sheet-tabs bs-sheet-tabs--top" role="tablist" aria-label={t("bizState.batchWorkbook")}>
+          <div className="bs-sheet-tabs bs-sheet-tabs--top" role="tablist" aria-label={t("bizState.batchWorkbook")} onKeyDown={handleSheetTabKey}>
             {sheetTabs.map((s) => (
               <button
                 key={s.id}
                 type="button"
                 role="tab"
                 aria-selected={activeSheet?.id === s.id}
+                tabIndex={activeSheet?.id === s.id ? 0 : -1}
+                aria-controls="monitor-sheet-panel"
                 className={`bs-sheet-tab${activeSheet?.id === s.id ? " is-active" : ""}`}
                 onClick={() => selectSheet(s.id)}
               >
@@ -2708,7 +2921,7 @@ export function BizStatePage() {
               ) : null}
 
               {activeSheet.id === "commands" ? (
-                <div className="bs-sheet-cmd-list bs-commands-card-list">
+                <div className="bs-sheet-cmd-list bs-commands-card-list" id="monitor-sheet-panel" role="tabpanel" aria-label={activeSheet.title}>
                   {displayRows.map((row, i) => (
                     <div key={String(row.id || i)} className="bs-sheet-cmd-row bs-commands-card">
                       <code className="bs-sheet-cmd-code" title={cellText(row.raw_command)}>
@@ -2787,6 +3000,7 @@ export function BizStatePage() {
                 </FieldSelect>
                 <Input
                   value={sheetKeyword}
+                  aria-label={t("bizState.sheetFilterPh")}
                   placeholder={t("bizState.sheetFilterPh")}
                   onChange={(e) => {
                     setSheetKeyword(e.target.value);
@@ -2796,11 +3010,13 @@ export function BizStatePage() {
                 <span className="muted bs-sheet-count">
                   {sheetLoading ? t("bizState.sheetLoading") : `${displayTotal} ${t("bizState.colRows")}`}
                 </span>
+                <Button size="sm" variant="ghost" isDisabled={!sheetKeyword && !sheetColumn} onPress={() => { setSheetKeyword(""); setSheetColumn(""); setSheetPage(1); }}>{t("common.clearFilters")}</Button>
               </div>
               ) : (
               <div className="filter-inline bs-sheet-filter">
                 <Input
                   value={sheetKeyword}
+                  aria-label={t("bizState.sheetFilterPh")}
                   placeholder={t("bizState.sheetFilterPh")}
                   onChange={(e) => {
                     setSheetKeyword(e.target.value);
@@ -2814,7 +3030,7 @@ export function BizStatePage() {
               )}
 
               {activeSheet.id !== "commands" ? (
-              <div className="pt-list-table-wrap bs-sheet-table">
+              <div className="pt-list-table-wrap bs-sheet-table" id="monitor-sheet-panel" role="tabpanel" aria-label={activeSheet.title} aria-busy={sheetLoading}>
                 <table className="data-table pt-list-table">
                   <thead>
                     <tr>
@@ -2865,7 +3081,7 @@ export function BizStatePage() {
                         ))}
                       </tr>
                     ))}
-                    {!displayRows.length && !sheetLoading ? (
+                    {!displayRows.length && !sheetLoading && !sheetError ? (
                       <tr>
                         <td colSpan={Math.max(1, displayColumns.length)}>
                           <div className="pt-list-empty">{t("bizState.sheetEmpty")}</div>
@@ -2884,13 +3100,15 @@ export function BizStatePage() {
               </div>
               ) : null}
 
+              {sheetError ? <div className="bs-monitor-error" role="alert"><span>{t("bizState.sheetLoadError")} · {sheetError}</span><Button size="sm" variant="secondary" onPress={() => setSheetRetry((n) => n + 1)}>{t("bizState.retry")}</Button></div> : null}
+
               <ListPager
                 page={sheetPage}
                 pages={pageCount(displayTotal, sheetPageSize)}
                 total={displayTotal}
                 pageSize={sheetPageSize}
                 pageSizeOptions={SHEET_PAGE_SIZE_OPTIONS}
-                disabled={sheetLoading}
+                disabled={sheetLoading || Boolean(sheetError)}
                 onPageChange={setSheetPage}
                 onPageSizeChange={(n) => {
                   setSheetPageSize(n);
@@ -2899,12 +3117,12 @@ export function BizStatePage() {
               />
             </>
           ) : (
-            <div className="pt-list-empty">{t("bizState.sheetEmpty")}</div>
+            !batchLoading && !batchError ? <div className="pt-list-empty">{t("bizState.sheetEmpty")}</div> : null
           )}
         </Modal.Body>
         <Modal.Footer>
           {batchDetail ? (
-            <Button size="sm" variant="secondary" onPress={() => void bizStateDownloadExport(batchDetail.id)}>
+            <Button size="sm" variant="secondary" onPress={() => void bizStateDownloadExport(batchDetail.id).catch((e) => showError(formatErr(e)))}>
               {t("bizState.export")}
             </Button>
           ) : null}
@@ -2917,9 +3135,9 @@ export function BizStatePage() {
       {/* Raw CLI log viewer */}
       <AppModalShell
         open={rawLogOpen}
-        onClose={() => setRawLogOpen(false)}
+        onClose={closeRawLog}
         size="lg"
-        className="app-heroui-modal--lg bs-rawlog-modal"
+        className="app-heroui-modal--lg bs-rawlog-modal bs-monitor-modal"
       >
         <Modal.Header>
           <Modal.Heading>{t("bizState.rawLogTitle")}</Modal.Heading>
@@ -2954,7 +3172,7 @@ export function BizStatePage() {
           >
             {t("bizState.exportRawLog")}
           </Button>
-          <Button size="sm" variant="ghost" onPress={() => setRawLogOpen(false)}>
+          <Button size="sm" variant="ghost" onPress={closeRawLog}>
             {t("bizState.cancel")}
           </Button>
         </Modal.Footer>
@@ -2965,7 +3183,7 @@ export function BizStatePage() {
         open={Boolean(collectDetail) || collectDetailLoading}
         onClose={closeCollectDetail}
         size="lg"
-        className="app-heroui-modal--lg bs-collect-detail-modal"
+        className="app-heroui-modal--lg bs-monitor-modal bs-collect-detail-modal"
       >
         <Modal.Header>
           <Modal.Heading>{t("bizState.batchCollectDetail")}</Modal.Heading>
