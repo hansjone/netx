@@ -5,6 +5,9 @@ from __future__ import annotations
 from typing import Any
 
 from ..biz_state.compare_engine import apply_port_map, compare_rows
+from ..biz_state.compare_rules import (
+    effective_compare_fields, field_rule_map, scalar_text, values_equal,
+)
 
 PORT_METRIC_ID = "interface_brief"
 PORT_STATUS_FIELDS = ("admin", "phy", "prot")
@@ -22,7 +25,7 @@ def normalize_expect_key(raw: str) -> str:
 
     Accepts legacy ``a|b`` multi-field keys and already-normalized ``\\x1f`` keys.
     """
-    s = str(raw or "").strip()
+    s = scalar_text(raw).strip()
     if not s:
         return ""
     if KEY_SEP in s:
@@ -65,13 +68,13 @@ def classify_status(row: dict[str, Any] | None, sheet_override: dict[str, Any] |
         return "none"
     down_vals = {str(x).lower() for x in (ov.get("down_values") or ["down"])}
     up_vals = {str(x).lower() for x in (ov.get("up_values") or ["up"])}
-    vals = [str(row.get(f) or "").strip().lower() for f in fields]
+    vals = [scalar_text(row.get(f)).strip().lower() for f in fields]
     vals = [v for v in vals if v]
     if not vals:
         return "none"
     if any(v in down_vals for v in vals):
         return "down"
-    if vals and all(v in up_vals for v in vals):
+    if len(vals) == len(fields) and all(v in up_vals for v in vals):
         return "up"
     return "other"
 
@@ -219,7 +222,7 @@ def _field_tokens_from_row(row: dict[str, Any] | None, fields: set[str]) -> set[
         return set()
     out: set[str] = set()
     for f in fields:
-        v = str(row.get(f) or "").strip()
+        v = scalar_text(row.get(f)).strip()
         if v:
             out.add(field_token(f, v))
     return out
@@ -245,8 +248,8 @@ def _side_tokens(
 
 def _norm_list_values(raw: Any) -> list[str]:
     if isinstance(raw, list):
-        return [str(x).strip().lower() for x in raw if str(x).strip()]
-    s = str(raw or "").strip()
+        return [scalar_text(x).strip().lower() for x in raw if scalar_text(x).strip()]
+    s = scalar_text(raw).strip()
     if not s:
         return []
     if "," in s:
@@ -266,18 +269,18 @@ def _eval_field_op(
     f = str(field or "").strip()
     if not f:
         return False
-    raw = "" if not row else str(row.get(f) or "").strip()
+    raw = "" if not row else scalar_text(row.get(f)).strip()
     val = raw.lower()
     o = str(op or "eq").strip().lower()
     if o in ("changed", "diff"):
-        base = "" if not base_row else str(base_row.get(f) or "").strip().lower()
+        base = "" if not base_row else scalar_text(base_row.get(f)).strip().lower()
         if not row:
             return False
         return base != val
     if o in ("unchanged", "same"):
         if not row:
             return False
-        base = "" if not base_row else str(base_row.get(f) or "").strip().lower()
+        base = "" if not base_row else scalar_text(base_row.get(f)).strip().lower()
         return base == val
     if o == "empty":
         return not val
@@ -568,7 +571,7 @@ def _match_field_token_rules(
         if not field or not allowed:
             continue
         row = old_row if side == "old" else new_row if side == "new" else None
-        val = str((row or {}).get(field) or "").strip().lower()
+        val = scalar_text((row or {}).get(field)).strip().lower()
         if val not in allowed:
             return False
     return True
@@ -858,6 +861,14 @@ def _port_identity(key_fields: list[str], iface_fields: list[str]) -> bool:
     return all(str(f) in iface_set for f in key_fields)
 
 
+def _iface_selected(value: str, ports: set[str]) -> bool:
+    """Set lookup plus parent interface prefixes; independent of scope size."""
+    if value in ports:
+        return True
+    parts = value.split(".")
+    return any(".".join(parts[:i]) in ports for i in range(len(parts) - 1, 0, -1))
+
+
 def _unmapped_same_iface_anomaly(
     *,
     old_kind: str,
@@ -891,6 +902,8 @@ def _remap_key_str(
     if not key_str:
         return key_str
     if not port_map:
+        return key_str
+    if key_fields and not set(key_fields).intersection(iface_fields):
         return key_str
     if (not key_fields or len(key_fields) == 1) and (
         key_str in port_map
@@ -927,6 +940,8 @@ def _reverse_remap_key_str(
     if not key_str:
         return key_str
     if not rev_map:
+        return key_str
+    if key_fields and not set(key_fields).intersection(iface_fields):
         return key_str
     if (not key_fields or len(key_fields) == 1) and (
         key_str in rev_map
@@ -1009,7 +1024,7 @@ def row_match_key(
     data = strip_netx(row)
     if iface_fields and rules:
         data = apply_iface_normalize(dict(data), iface_fields=iface_fields, rules=rules)
-    return KEY_SEP.join(str(data.get(k) or "").strip() for k in key_fields)
+    return KEY_SEP.join(scalar_text(data.get(k)).strip() for k in key_fields)
 
 
 def index_raw_by_match_key(
@@ -1033,7 +1048,7 @@ def display_key_from_raw(raw: dict[str, Any] | None, key_fields: list[str]) -> s
     if not raw or not key_fields:
         return ""
     data = strip_netx(raw)
-    return "|".join(str(data.get(k) or "").strip() for k in key_fields)
+    return "|".join(scalar_text(data.get(k)).strip() for k in key_fields)
 
 
 def iface_lineage(
@@ -1053,7 +1068,7 @@ def iface_lineage(
     pmap = port_map or {}
     out: list[dict[str, Any]] = []
     for f in iface_fields:
-        raw_v = str(data.get(f) or "").strip()
+        raw_v = scalar_text(data.get(f)).strip()
         norm_v = normalize_iface_name(raw_v, rules) if rules else raw_v
         mapped = False
         map_to = ""
@@ -1092,6 +1107,8 @@ def evaluate_metric_dual(
     out_of_expect: str = "strict",
     sheet_id: str = "",
     iface_normalize_rules: list[dict[str, str]] | None = None,
+    previous_expect: dict[str, set[str]] | None = None,
+    allow_mapping_scope: bool = True,
 ) -> dict[str, Any]:
     """Run old vs old-baseline, new vs new-baseline (or mapped old baseline), dual merge.
 
@@ -1107,6 +1124,9 @@ def evaluate_metric_dual(
     sid = str(sheet_id or "").strip() or str(metric_id or "").strip()
     expect_keys = expect_keys_for_metric(
         expect, metric_id=metric_id, iface_fields=iface_fields, sheet_id=sid
+    )
+    previous_keys = expect_keys_for_metric(
+        previous_expect or {}, metric_id=metric_id, iface_fields=iface_fields, sheet_id=sid
     )
     ov = sheet_override or {}
     if ov.get("skip_dual"):
@@ -1178,6 +1198,7 @@ def evaluate_metric_dual(
         port_map=None,
         field_rules=field_rules,
         iface_normalize_rules=None,  # already applied
+        include_unchanged=True,
     )
     old_idx = build_diff_index_from_compare(old_cmp)
 
@@ -1186,18 +1207,8 @@ def evaluate_metric_dual(
     if new_baseline_rows is not None:
         new_before = list(new_baseline_rows)
         new_baseline_mode = "provided"
-        # Explicit empty batch is as unusable as "no baseline" for presence semantics.
-        if not new_before and (old_baseline_rows or new_current_rows):
-            if port_map and iface_fields:
-                new_before = [
-                    apply_port_map(r, iface_fields=iface_fields, port_map=port_map)
-                    for r in old_baseline_rows
-                ]
-                new_baseline_mode = "port_mapped"
-                new_baseline_missing = False
-            else:
-                new_baseline_missing = True
-                new_baseline_mode = "empty"
+        # A successfully collected empty baseline is valid on a replacement NE.
+        # Collection completeness is checked by the service, not inferred from rows.
     elif port_map and iface_fields:
         new_before = [
             apply_port_map(r, iface_fields=iface_fields, port_map=port_map)
@@ -1218,12 +1229,22 @@ def evaluate_metric_dual(
         compare_fields=compare_fields,
         port_map=None,
         field_rules=field_rules,
+        include_unchanged=True,
     )
     new_idx = build_diff_index_from_compare(new_cmp)
 
     rev_map = {v: k for k, v in port_map.items()}
     map_scoped = _map_defines_iface_expect(metric_id, iface_fields, port_map)
-    if map_scoped:
+    # Mapping describes identity; an explicit batch selection defines scope.
+    # Port selection also covers business rows attached to those interfaces.
+    for scope, keys in ((expect, expect_keys), (previous_expect or {}, previous_keys)):
+        ports = scope.get("_ports") or set()
+        if ports and not keys and iface_fields:
+            for ks, diff in old_idx.items():
+                row = diff.get("before") or diff.get("after") or {}
+                if any(_iface_selected(scalar_text(row.get(f)), ports) for f in iface_fields):
+                    keys.add(ks)
+    if allow_mapping_scope and map_scoped and not any(expect.values()):
         scoped: set[str] = set()
         for ks in old_idx:
             if _key_in_port_map(
@@ -1253,6 +1274,8 @@ def evaluate_metric_dual(
 
     for ok in sorted(expect_keys):
         _add(ok)
+    for ok in sorted(previous_keys):
+        _add(ok)
     for ks in sorted(old_idx):
         _add(ks)
     for ks in sorted(new_idx):
@@ -1270,6 +1293,10 @@ def evaluate_metric_dual(
     progress_total = 0
     anomaly = 0
     anomaly_in_expect = 0
+    rules_by_field = field_rule_map(field_rules)
+    integrity_fields = effective_compare_fields(compare_fields, field_rules)
+    # Status transitions are interpreted by the monitor's correction rules.
+    integrity_fields = [f for f in integrity_fields if f not in (ov.get("status_fields") or [])]
 
     for old_ks in canon_keys:
         new_ks = _remap_key_str(
@@ -1279,11 +1306,12 @@ def evaluate_metric_dual(
             port_map=port_map,
         )
         in_exp = old_ks in expect_keys
+        previous = old_ks in previous_keys and not in_exp
         if in_exp:
             progress_total += 1
 
         od = old_idx.get(old_ks)
-        nd = new_idx.get(new_ks) or new_idx.get(old_ks)
+        nd = new_idx.get(new_ks)
 
         old_kind = str((od or {}).get("kind") or "")
         new_kind = str((nd or {}).get("kind") or "")
@@ -1301,11 +1329,7 @@ def evaluate_metric_dual(
         old_st = classify_status(old_cur, ov)
         new_st = classify_status(new_cur, ov)
 
-        # Mapped iface rows are the expect set. Unmapped rows stay out of the
-        # migration compare, except same-name ports where old went down and the
-        # new device's same port is up — that is anomaly, not a successful cutover.
-        if map_scoped and not in_exp:
-            if not (
+        if map_scoped and not (in_exp or previous) and (
                 _port_identity(key_fields, iface_fields)
                 and _unmapped_same_iface_anomaly(
                     old_kind=old_kind,
@@ -1314,26 +1338,62 @@ def evaluate_metric_dual(
                     new_status=new_st,
                 )
             ):
-                continue
             verdict, color, rule_hit = "anomaly", "red", "unmapped_same_iface"
         else:
             verdict, color, rule_hit = dual_verdict_ex(
                 old_kind=old_kind or "",
                 new_kind=new_kind or "",
-                in_expect=in_exp,
+                in_expect=in_exp or previous,
                 window_active=window_active,
                 acceptance=acceptance,
                 old_status=old_st,
                 new_status=new_st,
                 success_patterns=success_patterns or None,
                 anomaly_patterns=anomaly_patterns or None,
-                out_of_expect=out_of_expect,
+                # Business drift outside this batch must remain visible.
+                out_of_expect="strict",
                 old_row=old_cur or None,
                 new_row=new_cur or None,
                 old_base=old_base or None,
                 new_base=new_base or None,
                 sheet_override=ov,
             )
+        integrity_changes: list[dict[str, Any]] = []
+        if in_exp or previous:
+            old_departed = old_kind == "removed" or old_st == "down"
+            new_healthy = bool(new_cur) and (
+                new_st == "up" if ov.get("status_fields") else True
+            )
+            if old_departed and not new_healthy:
+                verdict, color, rule_hit = "lost", "red", "service_not_received"
+            elif verdict == "migrated":
+                if not new_healthy:
+                    verdict, color, rule_hit = "anomaly", "red", "target_unhealthy"
+                elif not old_base:
+                    verdict, color, rule_hit = "anomaly", "red", "old_service_not_in_baseline"
+                else:
+                    reference = apply_port_map(old_base, iface_fields=iface_fields, port_map=port_map)
+                    integrity_changes = [
+                        {"field": f, "before": reference.get(f), "after": new_cur.get(f)}
+                        for f in integrity_fields
+                        if not values_equal(reference.get(f), new_cur.get(f), rule=rules_by_field.get(f))
+                    ]
+                    if integrity_changes:
+                        verdict, color, rule_hit = "anomaly", "red", "service_content_changed"
+                    elif not old_departed and not success_patterns:
+                        verdict, color, rule_hit = (
+                            ("unfinished", "red", "old_service_still_present") if acceptance
+                            else ("migrating", "yellow", "old_service_still_present")
+                        )
+        if previous:
+            if verdict == "migrated":
+                verdict, rule_hit = "migrated_previous", "previous_batch_received"
+            elif color != "red":
+                verdict, color, rule_hit = "unfinished_previous", "red", "previous_batch_not_received"
+        # Retain all drift outside scope, but avoid filling the board with stable
+        # unmapped inventory when a port map defines the legacy migration scope.
+        if map_scoped and not in_exp and verdict == "not_involved":
+            continue
         if in_exp and verdict == "migrated" and color == "green":
             progress_ok += 1
         if color == "red":
@@ -1411,7 +1471,9 @@ def evaluate_metric_dual(
                 "verdict": verdict,
                 "color": color,
                 "rule_hit": rule_hit,
+                "integrity_changes": integrity_changes,
                 "in_expect": in_exp,
+                "previous_batch": previous,
                 "old_kind": old_kind,
                 "new_kind": new_kind,
                 "old": old_disp,

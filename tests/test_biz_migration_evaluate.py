@@ -733,7 +733,7 @@ class EvaluateMetricDualTests(unittest.TestCase):
         migrated = [r for r in out["rows"] if r["verdict"] == "migrated"]
         self.assertTrue(migrated, out["rows"])
 
-    def test_out_of_expect_ignore_no_red(self):
+    def test_out_of_expect_ignore_cannot_hide_business_drift(self):
         old_base = [{"interface": "gei-keep", "admin": "up", "phy": "up", "prot": "up"}]
         old_cur: list[dict] = []
         new_cur = [{"interface": "gei-keep", "admin": "up", "phy": "up", "prot": "up"}]
@@ -753,9 +753,9 @@ class EvaluateMetricDualTests(unittest.TestCase):
             out_of_expect="ignore",
         )
         reds = [r for r in out["rows"] if r["color"] == "red"]
-        self.assertFalse(reds, out["rows"])
+        self.assertTrue(reds, out["rows"])
         involved = [r for r in out["rows"] if r["verdict"] != "not_involved"]
-        self.assertFalse(involved, out["rows"])
+        self.assertTrue(involved, out["rows"])
 
     def test_unexpected_loss_is_anomaly(self):
         old_base = [{"interface": "gei-keep", "admin": "up", "phy": "up", "prot": "up"}]
@@ -823,7 +823,7 @@ class EvaluateMetricDualTests(unittest.TestCase):
         self.assertFalse(out["new_baseline_missing"])
         self.assertEqual(out["new_baseline_mode"], "port_mapped")
 
-    def test_empty_provided_new_baseline_falls_back_or_missing(self):
+    def test_empty_collected_new_baseline_is_valid(self):
         old_base = [{"peer": "1.1.1.1", "state": "Established"}]
         new_cur = [{"peer": "1.1.1.1", "state": "Established"}]
         expect = parse_expect_set({"items": [{"metric_id": "bgp_peer", "key": "1.1.1.1"}]})
@@ -841,8 +841,8 @@ class EvaluateMetricDualTests(unittest.TestCase):
             window_active=True,
             sheet_override={},
         )
-        self.assertTrue(out["new_baseline_missing"])
-        self.assertEqual(out["new_baseline_mode"], "empty")
+        self.assertFalse(out["new_baseline_missing"])
+        self.assertEqual(out["new_baseline_mode"], "provided")
         # Still reports presence as added vs empty before — callers should heed the flag.
         kinds = {r["new_kind"] for r in out["rows"] if r.get("in_expect")}
         self.assertIn("added", kinds)
@@ -1153,7 +1153,10 @@ class PortMapScopeTests(unittest.TestCase):
         )
         keys = {r["key_str"] for r in out["rows"]}
         self.assertIn("10.0.0.1|gei-old", keys)
-        self.assertNotIn("10.0.0.2|gei-keep", keys)
+        self.assertIn("10.0.0.2|gei-keep", keys)
+        outside = next(r for r in out["rows"] if r["key_str"] == "10.0.0.2|gei-keep")
+        self.assertEqual(outside["color"], "red")
+        self.assertFalse(outside["in_expect"])
         migrated = [r for r in out["rows"] if r["verdict"] == "migrated"]
         self.assertTrue(migrated, out["rows"])
         self.assertEqual(migrated[0]["new_key_str"], "10.0.0.1|gei-new")

@@ -14,6 +14,7 @@ from netx_api.models import (
     BizMigrationProject,
     BizMonitorTemplate,
     BizStateBatch,
+    BizStateBatchCommand,
     BizStateTask,
 )
 from netx_api.biz_migration import service as mig
@@ -103,6 +104,9 @@ class HfDecoupleFlowTests(unittest.TestCase):
             row_count=1,
         )
         self.db.add(b)
+        for mid in ("interface_brief", "arp"):
+            self.db.add(BizStateBatchCommand(id=f"receipt-{bid}-{mid}", batch_id=bid,
+                                             metric_id=mid, parse_status="ok", row_count=0))
         self.db.commit()
         return b
 
@@ -170,7 +174,7 @@ class HfDecoupleFlowTests(unittest.TestCase):
         batch = mig.create_batch(
             self.db, pid, {"batch_label": "n1", "expect_set": {"ports": ["gei-0/1"]}}
         )
-        with mock.patch.object(mig, "resolve_evaluate_sheets", return_value=([], [], {}, [])):
+        with mock.patch.object(mig, "resolve_evaluate_sheets", return_value=([mig.port_sheet_def()], [], {}, [])):
             out = mig.run_evaluate(self.db, batch_id=batch["id"])
         self.assertEqual(out["old_batch_id"], "cur_old")
         self.assertEqual(out["new_batch_id"], "cur_new")

@@ -13,7 +13,6 @@ from ..biz_state.compare_rules import apply_row_filters
 from ..biz_state.compare_service import (
     _load_metric_rows,
     _port_map_dict,
-    batch_metric_collect_ok,
     sheet_key,
     sheet_title,
     template_metrics,
@@ -28,6 +27,7 @@ from ..models import (
     BizMonitorTemplate,
     BizPortMapping,
     BizStateBatch,
+    BizStateBatchCommand,
     BizStateTask,
 )
 from ..timeutil import utcnow_naive
@@ -149,7 +149,7 @@ def hf_task_id(proj: BizMigrationProject, side: str) -> str:
 
 def current_task_id(proj: BizMigrationProject, side: str) -> str:
     """Evaluate current batches: prefer HF, fall back to portrait."""
-    return hf_task_id(proj, side) or portrait_task_id(proj, side)
+    return hf_task_id(proj, side)
 
 
 def _metric_interval_map(proj: BizMigrationProject) -> dict[str, int]:
@@ -268,13 +268,52 @@ def _current_batch_for_metric(
         # Only honor pin when it belongs to this metric's HF task (multi-interval safe)
         if pinned and (not tid or str(pinned.task_id or "") == tid):
             # Pinned partial / failed metric → treat as missing (avoid false red)
-            if not batch_metric_collect_ok(db, pinned.id, metric_id):
+            if not _metric_sample_ok(db, pinned, metric_id):
                 return None
             return pinned
-    batch = _latest_success_batch(db, tid) if tid else None
-    if batch and not batch_metric_collect_ok(db, batch.id, metric_id):
+    batch = (
+        db.query(BizStateBatch)
+        .filter(BizStateBatch.task_id == tid, BizStateBatch.status.notin_(("running", "queued")))
+        .order_by(BizStateBatch.started_at.desc(), BizStateBatch.id.desc()).first()
+    ) if tid else None
+    if batch and not _metric_sample_ok(db, batch, metric_id):
         return None
     return batch
+
+
+def _metric_sample_ok(db: Session, batch: BizStateBatch, metric_id: str) -> bool:
+    """An empty result requires a successful command receipt, just like a full one.
+
+    Batch success alone cannot prove this metric was collected. Unmatched and
+    skipped parsers are uncertainty, never evidence that a business disappeared.
+    """
+    if batch.status not in ("success", "partial"):
+        return False
+    statuses = [str(s or "").lower() for (s,) in db.query(BizStateBatchCommand.parse_status)
+                .filter(BizStateBatchCommand.batch_id == batch.id,
+                        BizStateBatchCommand.metric_id == metric_id).all()]
+    return bool(statuses) and all(s in ("ok", "ok_aux") for s in statuses)
+
+
+def _sample_timing(proj: BizMigrationProject, mid: str, old: BizStateBatch,
+                   new: BizStateBatch, *, check_age: bool) -> dict[str, Any]:
+    interval = max(60, _metric_interval_map(proj).get(mid) or proj.hf_interval_sec or 60)
+    old_at, new_at = old.ended_at or old.started_at, new.ended_at or new.started_at
+    age_limit, skew_limit = interval * 3, interval * 2
+    reasons: list[str] = []
+    if not old_at or not new_at:
+        reasons.append("sample_time_missing")
+        skew = None
+    else:
+        skew = abs((old_at - new_at).total_seconds())
+        if skew > skew_limit:
+            reasons.append("sample_skew")
+        if check_age and max((utcnow_naive() - old_at).total_seconds(),
+                             (utcnow_naive() - new_at).total_seconds()) > age_limit:
+            reasons.append("sample_stale")
+    return {"old_collected_at": _dt_iso(old_at), "new_collected_at": _dt_iso(new_at),
+            "age_limit_sec": age_limit, "skew_limit_sec": skew_limit,
+            "skew_sec": skew, "sample_issues": reasons}
 
 
 def find_portrait_task_for_ne(db: Session, *, source: str, ne_id: str) -> BizStateTask | None:
@@ -655,6 +694,14 @@ def patch_project(db: Session, project_id: str, body: dict[str, Any]) -> dict[st
     p = db.get(BizMigrationProject, project_id)
     if not p:
         raise HTTPException(status_code=404, detail="project_not_found")
+    # Validate incoming baseline ownership before mutating any project field.
+    for side in ("old", "new"):
+        bid = str(body.get(f"{side}_baseline_batch_id", getattr(p, f"{side}_baseline_batch_id")) or "").strip()
+        tid = str(body.get(f"{side}_task_id", getattr(p, f"{side}_task_id")) or "").strip()
+        if bid:
+            sample = db.get(BizStateBatch, bid)
+            if not sample or sample.task_id != tid or sample.status not in ("success", "partial"):
+                raise HTTPException(status_code=400, detail=f"{side}_baseline_invalid")
     if "name" in body and body["name"] is not None:
         p.name = str(body["name"]).strip() or p.name
     if "note" in body and body["note"] is not None:
@@ -768,11 +815,13 @@ def create_batch(db: Session, project_id: str, body: dict[str, Any]) -> dict[str
         raise HTTPException(status_code=404, detail="project_not_found")
     label = str(body.get("batch_label") or "").strip() or "batch"
     expect = body.get("expect_set") if isinstance(body.get("expect_set"), dict) else {}
+    status = str(body.get("status") or "pending").strip()
+    _validate_batch_status(db, project_id, "", status)
     b = BizMigrationBatch(
         id=uuid4().hex,
         project_id=project_id,
         batch_label=label,
-        status=str(body.get("status") or "pending").strip() or "pending",
+        status=status,
         expect_set_json=dict(expect or {}),
         note=str(body.get("note") or "")[:500],
     )
@@ -819,17 +868,35 @@ def run_evaluate(
     new_batch_id: str = "",
     acceptance: bool = False,
     purpose: str = "manual",
+    _commit: bool = True,
 ) -> dict[str, Any]:
     mb = db.get(BizMigrationBatch, batch_id)
     if not mb:
         raise HTTPException(status_code=404, detail="batch_not_found")
-    proj = db.get(BizMigrationProject, mb.project_id)
+    # PostgreSQL serializes evaluate/finish for this project across API workers.
+    proj = db.query(BizMigrationProject).filter(BizMigrationProject.id == mb.project_id).with_for_update().populate_existing().first()
     if not proj:
         raise HTTPException(status_code=404, detail="project_not_found")
+    db.refresh(mb)
+    if acceptance and mb.status not in ("active", "review"):
+        raise HTTPException(status_code=409, detail="monitor_window_closed")
+    if purpose == "auto" and (mb.status != "active" or proj.status == "done"):
+        raise HTTPException(status_code=409, detail="monitor_window_closed")
     if not proj.old_baseline_batch_id:
         raise HTTPException(status_code=400, detail="old_baseline_required")
     if not proj.new_baseline_batch_id:
         raise HTTPException(status_code=400, detail="new_baseline_required")
+    for side in ("old", "new"):
+        baseline = db.get(BizStateBatch, getattr(proj, f"{side}_baseline_batch_id"))
+        if not baseline or baseline.task_id != portrait_task_id(proj, side):
+            raise HTTPException(status_code=400, detail=f"{side}_baseline_task_mismatch")
+        if baseline.status not in ("success", "partial"):
+            raise HTTPException(status_code=400, detail=f"{side}_baseline_not_complete")
+        pin = (old_batch_id if side == "old" else new_batch_id).strip()
+        if pin:
+            pinned = db.get(BizStateBatch, pin)
+            if not pinned or pinned.task_id not in _all_hf_task_ids(proj, side):
+                raise HTTPException(status_code=400, detail=f"{side}_current_batch_task_mismatch")
 
     old_batch = db.get(BizStateBatch, old_batch_id.strip()) if old_batch_id.strip() else None
     new_batch = db.get(BizStateBatch, new_batch_id.strip()) if new_batch_id.strip() else None
@@ -854,11 +921,41 @@ def run_evaluate(
     pin_new = new_batch_id.strip()
 
     port_map = _port_map_dict(db, proj.mapping_id)
+    if proj.mapping_id and not db.get(BizPortMapping, proj.mapping_id):
+        raise HTTPException(status_code=400, detail="mapping_missing")
+    if len(set(port_map.values())) != len(port_map):
+        raise HTTPException(status_code=400, detail="mapping_target_ambiguous")
     expect = parse_expect_set(mb.expect_set_json if isinstance(mb.expect_set_json, dict) else {})
+    previous_expect: dict[str, set[str]] = {}
+    for prior in db.query(BizMigrationBatch).filter(
+        BizMigrationBatch.project_id == proj.id, BizMigrationBatch.id != mb.id,
+        BizMigrationBatch.status.in_(("review", "done")),
+        BizMigrationBatch.created_at <= mb.created_at,
+    ).all():
+        for mid, keys in parse_expect_set(prior.expect_set_json).items():
+            previous_expect.setdefault(mid, set()).update(keys)
     # Final acceptance: window closed → unfinished expect = red
     window_active = (mb.status == "active") and (not acceptance)
-    mt = resolve_project_monitor_template(db, proj)
+    # Evaluations never seed or commit default configuration inside the lock.
+    mt = db.get(BizMonitorTemplate, proj.monitor_template_id) if proj.monitor_template_id else None
+    if not mt:
+        raise HTTPException(status_code=400, detail="monitor_template_missing")
+    if mt.compare_template_id and not db.get(BizCompareTemplate, mt.compare_template_id):
+        raise HTTPException(status_code=400, detail="compare_template_missing")
     sheets, sheet_overrides, defaults, iface_norm = resolve_evaluate_sheets(db, mt)
+    from .validation import validate_monitor_rules
+
+    validate_monitor_rules(defaults, sheet_overrides)
+    from ..biz_state.compare_validation import validate_template_body
+
+    validate_template_body({"metrics": sheets, "iface_normalize_rules": iface_norm})
+    known_sheets = {sheet_key(s) for s in sheets}
+    known_metrics = {str(s.get("metric_id") or "") for s in sheets}
+    for override in sheet_overrides:
+        if (override.get("sheet_id") and override["sheet_id"] not in known_sheets) or (
+            not override.get("sheet_id") and override.get("metric_id") not in known_metrics
+        ):
+            raise HTTPException(status_code=400, detail="monitor_override_sheet_missing")
     out_of_expect = str((defaults or {}).get("out_of_expect") or "strict").strip().lower()
     collect_ids = set(resolve_collect_metric_ids(db, proj))
 
@@ -867,6 +964,16 @@ def run_evaluate(
     metric_batches: dict[str, dict[str, str]] = {}
     seq = 0
     verdict_counts: dict[str, int] = {}
+    rows_cache: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    command_cache: dict[str, dict[str, Any]] = {}
+    scope_ids = {str(s.get("metric_id") or "") for s in sheets} | {sheet_key(s) for s in sheets} | {"_ports"}
+    uncovered_scope = sorted(k for k, values in expect.items() if values and k not in scope_ids)
+
+    def metric_rows(bid: str, mid: str) -> list[dict[str, Any]]:
+        key = (bid, mid)
+        if key not in rows_cache:
+            rows_cache[key] = _load_metric_rows(db, batch_id=bid, metric_id=mid)
+        return rows_cache[key]
 
     for sheet in sheets:
         mid = str(sheet.get("metric_id") or "").strip()
@@ -880,6 +987,9 @@ def run_evaluate(
         field_rules = list(sheet.get("field_rules") or [])
         sheet_ov = override_for_sheet(sheet_overrides, sheet_id=sid, metric_id=mid)
         if sheet_ov.get("skip_dual"):
+            sheet_cards.append({"metric_id": mid, "sheet_id": sid, "title": sheet_title(sheet),
+                                "progress_ok": 0, "progress_total": 0, "anomaly": 0,
+                                "collect_skipped": True})
             continue
 
         # Metric not in HF collect set → skip dual eval (avoid false red)
@@ -927,21 +1037,31 @@ def run_evaluate(
             continue
         old_cur_mid = old_cur_batch.id
         new_cur_mid = new_cur_batch.id
+        timing = _sample_timing(proj, mid, old_cur_batch, new_cur_batch,
+                                check_age=acceptance or not (pin_old and pin_new))
+        baseline_missing = [side for side in ("old", "new") if not _metric_sample_ok(
+            db, db.get(BizStateBatch, getattr(proj, f"{side}_baseline_batch_id")), mid)]
+        if timing["sample_issues"] or baseline_missing:
+            sheet_cards.append({"metric_id": mid, "sheet_id": sid, "title": sheet_title(sheet),
+                                "progress_ok": 0, "progress_total": 0, "anomaly": 0,
+                                "current_missing": True, "collect_incomplete": True,
+                                "baseline_missing_sides": baseline_missing, **timing})
+            continue
 
         old_base = apply_row_filters(
-            _load_metric_rows(db, batch_id=proj.old_baseline_batch_id, metric_id=mid),
+            metric_rows(proj.old_baseline_batch_id, mid),
             row_filters,
         )
         old_now = apply_row_filters(
-            _load_metric_rows(db, batch_id=old_cur_mid, metric_id=mid),
+            metric_rows(old_cur_mid, mid),
             row_filters,
         )
         new_base_rows = apply_row_filters(
-            _load_metric_rows(db, batch_id=proj.new_baseline_batch_id, metric_id=mid),
+            metric_rows(proj.new_baseline_batch_id, mid),
             row_filters,
         )
         new_now = apply_row_filters(
-            _load_metric_rows(db, batch_id=new_cur_mid, metric_id=mid),
+            metric_rows(new_cur_mid, mid),
             row_filters,
         )
 
@@ -963,7 +1083,19 @@ def run_evaluate(
             sheet_override=sheet_ov,
             out_of_expect=out_of_expect,
             iface_normalize_rules=iface_norm,
+            previous_expect=previous_expect,
+            allow_mapping_scope=False,
         )
+        # A target snapshot taken before the source's disappearance cannot prove
+        # loss. Wait for the next target receipt; final acceptance stays blocked.
+        awaiting = 0
+        if (new_cur_batch.ended_at or new_cur_batch.started_at) < old_cur_batch.started_at:
+            for row in one["rows"]:
+                if row["in_expect"] and row["rule_hit"] == "service_not_received":
+                    row.update(verdict="awaiting_peer", color="gray", rule_hit="target_sample_predates_source")
+                    one["anomaly"] -= 1
+                    one["anomaly_in_expect"] -= 1
+                    awaiting += 1
         old_tid = _hf_task_id_for_metric(proj, "old", mid) or current_task_id(proj, "old")
         new_tid = _hf_task_id_for_metric(proj, "new", mid) or current_task_id(proj, "new")
         old_task_brief = _task_brief(db, old_tid)
@@ -973,6 +1105,7 @@ def run_evaluate(
             "new_batch_id": new_cur_mid,
             "old_task_id": old_tid,
             "new_task_id": new_tid,
+            **timing,
         }
         sheet_cards.append(
             {
@@ -993,6 +1126,8 @@ def run_evaluate(
                 "duplicate_key_list": list(one.get("duplicate_key_list") or []),
                 "duplicate_keys_before": int(one.get("duplicate_keys_before") or 0),
                 "duplicate_keys_after": int(one.get("duplicate_keys_after") or 0),
+                **timing,
+                "awaiting_peer": awaiting,
             }
         )
         for r in one["rows"]:
@@ -1003,6 +1138,7 @@ def run_evaluate(
                 new_batch_id=new_cur_mid,
                 old_task=old_task_brief,
                 new_task=new_task_brief,
+                command_cache=command_cache,
             )
             r["seq"] = seq
             r["sheet_id"] = sid
@@ -1052,6 +1188,13 @@ def run_evaluate(
                 if c.get("collect_skipped")
             ],
             "verdict_counts": verdict_counts,
+            "anomaly_outside_expect": sum(int(c.get("anomaly") or 0) - int(c.get("anomaly_in_expect") or 0) for c in active_cards),
+            "duplicate_keys": sum(int(c.get("duplicate_keys_before") or 0) + int(c.get("duplicate_keys_after") or 0) for c in active_cards),
+            "uncovered_scope": uncovered_scope,
+            "coverage_complete": bool(sheet_cards) and not uncovered_scope and not any(c.get("collect_skipped") or c.get("current_missing") or c.get("awaiting_peer") or c.get("duplicate_keys_before") or c.get("duplicate_keys_after") for c in sheet_cards),
+            "config_snapshot": {"sheets": sheets, "sheet_overrides": sheet_overrides,
+                                "defaults": defaults, "iface_normalize": iface_norm,
+                                "port_map": port_map, "expect_set": mb.expect_set_json},
             "window_active": window_active,
             "expect_ports": sorted(expect.get("_ports") or ()),
             "old_current_task_id": current_task_id(proj, "old"),
@@ -1098,6 +1241,8 @@ def run_evaluate(
                     "old_status": r.get("old_status"),
                     "new_status": r.get("new_status"),
                     "rule_hit": r.get("rule_hit") or "",
+                    "integrity_changes": r.get("integrity_changes") or [],
+                    "previous_batch": bool(r.get("previous_batch")),
                     "sheet_id": r.get("sheet_id") or "",
                     "evidence": r.get("evidence") or {},
                 },
@@ -1109,8 +1254,10 @@ def run_evaluate(
                 search_text=search[:2000],
             )
         )
-    db.commit()
-    db.refresh(run)
+    db.flush()
+    if _commit:
+        db.commit()
+        db.refresh(run)
     return run_to_dict(db, run)
 
 
@@ -1147,7 +1294,12 @@ def _command_brief(db: Session, command_id: str) -> dict[str, Any]:
     cid = str(command_id or "").strip()
     if not cid:
         return {}
-    c = db.get(BizStateBatchCommand, cid)
+    # Select metadata only: raw CLI output can be several MB per command.
+    c = db.query(BizStateBatchCommand.id, BizStateBatchCommand.raw_command,
+                 BizStateBatchCommand.parse_status, BizStateBatchCommand.row_count,
+                 BizStateBatchCommand.profile_id, BizStateBatchCommand.parser_id,
+                 BizStateBatchCommand.metric_id, BizStateBatchCommand.message).filter(
+                     BizStateBatchCommand.id == cid).first()
     if not c:
         return {"command_id": cid}
     return {
@@ -1170,6 +1322,7 @@ def _enrich_row_evidence(
     new_batch_id: str,
     old_task: dict[str, Any] | None,
     new_task: dict[str, Any] | None,
+    command_cache: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     """Attach device / collect / show-command onto evaluate evidence (in-place)."""
     ev = dict(row.get("evidence") or {})
@@ -1179,7 +1332,11 @@ def _enrich_row_evidence(
     ):
         side_ev = dict(ev.get(side) or {})
         netx = dict(side_ev.get("netx") or {})
-        cmd = _command_brief(db, str(netx.get("batch_command_id") or ""))
+        cid = str(netx.get("batch_command_id") or "")
+        cache = command_cache if command_cache is not None else {}
+        if cid not in cache:
+            cache[cid] = _command_brief(db, cid)
+        cmd = cache[cid]
         side_ev["device"] = {
             "ne_id": str(brief.get("ne_id") or netx.get("ne_id") or ""),
             "ne_name": str(brief.get("ne_name") or ""),
@@ -1221,6 +1378,8 @@ def diff_to_dict(d: BizMigrationDiff) -> dict[str, Any]:
         "old_status": kj.get("old_status") or "",
         "new_status": kj.get("new_status") or "",
         "rule_hit": kj.get("rule_hit") or "",
+        "integrity_changes": kj.get("integrity_changes") or [],
+        "previous_batch": bool(kj.get("previous_batch")),
         "evidence": dict(kj.get("evidence") or {}),
         "old_kind": d.old_kind,
         "new_kind": d.new_kind,
@@ -1922,26 +2081,30 @@ def _persist_red_tickets_from_run(
         )
         .all()
     )
-    by_id: dict[tuple[str, str], BizMigrationRedTicket] = {}
+    by_id: dict[tuple[str, str, str], BizMigrationRedTicket] = {}
     for t in existing:
+        detail = t.detail_json if isinstance(t.detail_json, dict) else {}
         mk = str(getattr(t, "match_key_str", "") or "").strip()
         if not mk:
             detail = t.detail_json if isinstance(t.detail_json, dict) else {}
             mk = str(detail.get("match_old_key") or t.key_str or "").strip()
         if mk:
-            by_id[(str(t.metric_id or ""), mk)] = t
+            by_id[(str(t.metric_id or ""), str(detail.get("sheet_id") or t.metric_id or ""),
+                   str(detail.get("match_old_key") or mk))] = t
 
     created_or_updated: list[BizMigrationRedTicket] = []
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple[str, str, str]] = set()
     for d in diffs:
         kj = d.key_json if isinstance(d.key_json, dict) else {}
         mid = str(d.metric_id or "")
         match_key = str(
             kj.get("match_old_key") or kj.get("key_str") or kj.get("old_key") or ""
-        ).strip()[:256]
+        ).strip()
         if not match_key:
             match_key = str(kj.get("key_str") or "")[:256]
-        ident = (mid, match_key)
+        ident = (mid, str(kj.get("sheet_id") or mid), match_key)
+        from hashlib import sha256
+        stored_key = match_key if len(match_key) <= 256 else "sha256:" + sha256(match_key.encode()).hexdigest()
         detail = {
             "old_kind": d.old_kind,
             "new_kind": d.new_kind,
@@ -1952,6 +2115,8 @@ def _persist_red_tickets_from_run(
             "new_key": kj.get("new_key") or kj.get("new_key_str") or "",
             "match_old_key": kj.get("match_old_key") or match_key,
             "match_new_key": kj.get("match_new_key") or "",
+            "sheet_id": kj.get("sheet_id") or mid,
+            "integrity_changes": kj.get("integrity_changes") or [],
             "evidence": dict(kj.get("evidence") or {}),
         }
         prev = by_id.get(ident)
@@ -1960,7 +2125,7 @@ def _persist_red_tickets_from_run(
             prev.run_id = run_id
             prev.key_str = str(kj.get("key_str") or "")[:256]
             prev.new_key_str = str(kj.get("new_key_str") or "")[:256]
-            prev.match_key_str = match_key
+            prev.match_key_str = stored_key
             prev.verdict = d.verdict
             prev.color = d.color or "red"
             prev.old_status = str(kj.get("old_status") or "")[:64]
@@ -1980,7 +2145,7 @@ def _persist_red_tickets_from_run(
             metric_id=mid,
             key_str=str(kj.get("key_str") or "")[:256],
             new_key_str=str(kj.get("new_key_str") or "")[:256],
-            match_key_str=match_key,
+            match_key_str=stored_key,
             verdict=d.verdict,
             color=d.color or "red",
             old_status=str(kj.get("old_status") or "")[:64],
@@ -2014,14 +2179,9 @@ def finish_batch(
             detail=f"batch_not_finishable:{mb.status}",
         )
 
-    # Close window first so acceptance uses non-active rules
-    if mb.status == "active":
-        mb.ended_at = utcnow_naive()
-    mb.status = "done" if mark_done else "review"
-    mb.updated_at = utcnow_naive()
-    db.commit()
-
-    run = run_evaluate(db, batch_id=batch_id, acceptance=True, purpose="acceptance")
+    # acceptance=True closes the logical window. Persist batch closure only after
+    # evaluation succeeds, so an API/collection failure keeps the batch operable.
+    run = run_evaluate(db, batch_id=batch_id, acceptance=True, purpose="acceptance", _commit=False)
     summary = dict(run.get("summary") or {})
     progress = dict(summary.get("progress") or {})
     anomaly = int(summary.get("anomaly") or 0)
@@ -2036,6 +2196,10 @@ def finish_batch(
         fail_reasons.append("new_baseline_missing")
     if current_missing:
         fail_reasons.append("current_missing")
+    if not summary.get("coverage_complete", False):
+        fail_reasons.append("coverage_incomplete")
+    if summary.get("duplicate_keys"):
+        fail_reasons.append("duplicate_keys")
     if anomaly:
         fail_reasons.append("anomaly")
     if total > 0 and ok < total:
@@ -2061,6 +2225,9 @@ def finish_batch(
     mb = db.get(BizMigrationBatch, batch_id)
     if not mb:
         raise HTTPException(status_code=404, detail="batch_not_found")
+    if mb.status == "active":
+        mb.ended_at = utcnow_naive()
+    mb.status = "done" if mark_done else "review"
     mb.accept_run_id = str(run.get("id") or "")
     mb.accept_status = "passed" if passed else "failed"
     mb.accept_summary_json = accept_summary
@@ -2086,10 +2253,22 @@ def finish_batch(
     }
 
 
+def _validate_batch_status(db: Session, project_id: str, batch_id: str, status: str) -> None:
+    if status not in ("pending", "active", "review", "done"):
+        raise HTTPException(status_code=400, detail="batch_status_invalid")
+    if status == "active":
+        db.query(BizMigrationProject).filter(BizMigrationProject.id == project_id).with_for_update().first()
+        if db.query(BizMigrationBatch.id).filter(BizMigrationBatch.project_id == project_id,
+            BizMigrationBatch.id != batch_id, BizMigrationBatch.status == "active").first():
+            raise HTTPException(status_code=409, detail="another_batch_active")
+
+
 def patch_batch(db: Session, batch_id: str, body: dict[str, Any]) -> dict[str, Any]:
     b = db.get(BizMigrationBatch, batch_id)
     if not b:
         raise HTTPException(status_code=404, detail="batch_not_found")
+    if body.get("status") is not None:
+        _validate_batch_status(db, b.project_id, b.id, str(body["status"]).strip())
     if "batch_label" in body and body["batch_label"] is not None:
         b.batch_label = str(body["batch_label"]).strip() or b.batch_label
     if "note" in body and body["note"] is not None:
@@ -2135,6 +2314,8 @@ def list_run_diffs(
     run_id: str,
     *,
     metric_id: str = "",
+    sheet_id: str = "",
+    only_expect: bool = False,
     verdict: str = "",
     color: str = "",
     kw: str = "",
@@ -2146,19 +2327,23 @@ def list_run_diffs(
     q = db.query(BizMigrationDiff).filter(BizMigrationDiff.run_id == run_id)
     if metric_id:
         q = q.filter(BizMigrationDiff.metric_id == metric_id)
+    if sheet_id:
+        q = q.filter(BizMigrationDiff.key_json["sheet_id"].as_string() == sheet_id)
+    if only_expect:
+        q = q.filter(BizMigrationDiff.in_expect.is_(True))
     if verdict:
         q = q.filter(BizMigrationDiff.verdict == verdict)
     if color:
         q = q.filter(BizMigrationDiff.color == color)
     if kw.strip():
-        like = f"%{kw.strip()}%"
-        q = q.filter(BizMigrationDiff.search_text.ilike(like))
+        literal = kw.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        q = q.filter(BizMigrationDiff.search_text.ilike(f"%{literal}%", escape="\\"))
     total = q.count()
     rows = q.order_by(BizMigrationDiff.seq.asc()).offset(max(0, offset)).limit(min(500, max(1, limit))).all()
     return {
         "total": total,
-        "offset": offset,
-        "limit": limit,
+        "offset": max(0, offset),
+        "limit": min(500, max(1, limit)),
         "items": [diff_to_dict(d) for d in rows],
     }
 

@@ -149,6 +149,8 @@ class EvidencePersistTests(unittest.TestCase):
             command_count=1,
         )
         self.db.add(b)
+        self.db.add(BizStateBatchCommand(id=f"receipt-{bid}", batch_id=bid,
+                                         metric_id="interface_brief", parse_status="ok", row_count=0))
         self.db.commit()
         return b
 
@@ -233,7 +235,7 @@ class EvidencePersistTests(unittest.TestCase):
             raw_command="show interface brief",
             interface="GE-old",
         )
-        # New baseline empty → port_mapped mode uses mapped old
+        # Successfully collected empty new baseline is valid
         # Old current: gone (no rows) — migration off old
         # New current: xgei-new up
         self._seed_if_row(

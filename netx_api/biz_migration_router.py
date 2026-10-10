@@ -285,6 +285,8 @@ def api_get_run(run_id: str, db: Session = Depends(get_db)):
 def api_list_diffs(
     run_id: str,
     metric_id: str = "",
+    sheet_id: str = "",
+    only_expect: bool = False,
     verdict: str = "",
     color: str = "",
     kw: str = "",
@@ -296,6 +298,8 @@ def api_list_diffs(
         db,
         run_id,
         metric_id=metric_id,
+        sheet_id=sheet_id,
+        only_expect=only_expect,
         verdict=verdict,
         color=color,
         kw=kw,

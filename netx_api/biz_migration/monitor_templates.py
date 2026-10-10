@@ -8,7 +8,8 @@ from uuid import uuid4
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from ..models import BizCompareTemplate, BizMonitorTemplate
+from ..models import BizCompareTemplate, BizMigrationProject, BizMonitorTemplate
+from .validation import validate_monitor_rules
 from ..timeutil import utcnow_naive
 from ..biz_state import compare_service as cmp_svc
 from ..biz_state.iface_normalize import default_zte_iface_normalize_rules
@@ -456,6 +457,7 @@ def create_monitor_template(db: Session, body: dict[str, Any]) -> dict[str, Any]
     overrides = body.get("sheet_overrides")
     if not isinstance(overrides, list):
         overrides = []
+    validate_monitor_rules(defaults, overrides)
     row = BizMonitorTemplate(
         id=uuid4().hex,
         name=name[:256],
@@ -479,6 +481,10 @@ def update_monitor_template(db: Session, template_id: str, body: dict[str, Any])
     row = db.get(BizMonitorTemplate, template_id)
     if not row:
         raise HTTPException(status_code=404, detail="monitor_template_not_found")
+    validate_monitor_rules(body.get("defaults", row.defaults_json or {}),
+                           body.get("sheet_overrides", row.sheet_overrides_json or []))
+    if body.get("compare_template_id") and not db.get(BizCompareTemplate, body["compare_template_id"]):
+        raise HTTPException(status_code=404, detail="compare_template_not_found")
     if "name" in body and body["name"] is not None:
         name = str(body["name"] or "").strip()
         if not name:
@@ -515,5 +521,7 @@ def delete_monitor_template(db: Session, template_id: str) -> None:
     row = db.get(BizMonitorTemplate, template_id)
     if not row:
         raise HTTPException(status_code=404, detail="monitor_template_not_found")
+    if db.query(BizMigrationProject.id).filter(BizMigrationProject.monitor_template_id == template_id).first():
+        raise HTTPException(status_code=409, detail="monitor_template_in_use")
     db.delete(row)
     db.commit()

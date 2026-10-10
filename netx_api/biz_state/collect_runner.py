@@ -1720,6 +1720,14 @@ def _finalize_batch_status(
                 batch.message = ""
         status = str(batch.status or "")
         db.commit()
+        # Failed/partial receipts also update cutover coverage; never keep an old
+        # success looking healthy after the latest collection has failed.
+        try:
+            from ..biz_migration.auto_monitor import schedule_auto_monitor_for_task
+
+            schedule_auto_monitor_for_task(task_id)
+        except Exception:
+            _log.exception("cutover monitor schedule failed task=%s", task_id)
         # Only full success triggers auto compare; never block the collect thread.
         if status == "success" and not stopped:
             try:
