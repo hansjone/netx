@@ -157,3 +157,34 @@ def test_compare_rejects_incomplete_sources_before_enqueue(db, status):
         svc._validate_compare_job(db, "j")
     assert exc.value.detail == "source_batch_not_complete"
     assert db.query(BizCompareRun).count() == 0
+
+
+def test_compare_rejects_partially_stale_sheet_scope_after_template_edit(db):
+    tpl = svc.create_template(db, body())
+    db.add_all([BizStateBatch(id="before", status="success"), BizStateBatch(id="after", status="success"),
+        BizCompareJob(id="j", template_id=tpl["id"], before_batch_id="before", after_batch_id="after", enabled_sheet_ids=["s", "removed"])])
+    db.commit()
+    with pytest.raises(HTTPException) as exc:
+        svc._validate_compare_job(db, "j")
+    assert exc.value.detail == {"error": "unknown_enabled_sheets", "sheet_ids": ["removed"]}
+    assert db.query(BizCompareRun).count() == 0
+
+
+@pytest.mark.parametrize("bad", [
+    {"key_fields": []},
+    {"row_filters": [{"field": "id", "op": "typo", "value": "a"}]},
+    {"row_filters": [{"field": "id", "op": "regex", "value": "["}]},
+    {"field_rules": [{"field": "count", "compare": "typo"}]},
+])
+def test_legacy_invalid_template_cannot_execute_as_partial_or_fail_open(db, bad):
+    tpl = svc.create_template(db, body())
+    row = db.get(BizCompareTemplate, tpl["id"])
+    row.metrics_json = [*row.metrics_json, {**body()["metrics"][0], "sheet_id": "invalid", **bad}]
+    db.add_all([BizStateBatch(id="before", status="success"), BizStateBatch(id="after", status="success"),
+        BizCompareJob(id="j", template_id=tpl["id"], before_batch_id="before", after_batch_id="after")])
+    db.commit()
+    with pytest.raises(HTTPException) as exc:
+        svc._validate_compare_job(db, "j")
+    assert exc.value.detail["error"] == "invalid_template"
+    assert "metrics[1]" in exc.value.detail["path"]
+    assert db.query(BizCompareRun).count() == 0

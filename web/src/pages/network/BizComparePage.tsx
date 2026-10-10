@@ -1,6 +1,8 @@
 import { Button, Input, Modal } from "@heroui/react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
+import { parseTemplateImport, parseIfaceNormText, toOrGroups, fromOrGroups, validateTemplateDraft } from "./compareTemplateModel";
+import type { MetricSheet, FieldRule, RowFilter } from "./compareTemplateModel";
 import { ListPager } from "../../components/ListPager";
 import { AppModalShell } from "../../components/ui/AppModalShell";
 import { FieldSelect } from "../../components/ui/FieldSelect";
@@ -61,34 +63,6 @@ type MetricField = {
 };
 type MetricSchema = { metric_id: string; fields: MetricField[] };
 
-type MetricSheet = {
-  sheet_id?: string;
-  title?: string;
-  metric_id: string;
-  key_fields: string[];
-  iface_fields: string[];
-  compare_fields: string[];
-  display_fields?: string[];
-  row_filters?: RowFilter[];
-  field_rules?: FieldRule[];
-};
-
-type FieldRule = {
-  field: string;
-  compare?: string;
-  normalize?: string;
-  ignore?: boolean;
-  tolerance?: number;
-};
-
-type RowFilter = {
-  field?: string;
-  op?: string;
-  value?: string | string[];
-  any?: RowFilter[];
-  all?: RowFilter[];
-};
-
 type Template = {
   id: string;
   name: string;
@@ -100,6 +74,7 @@ type Template = {
   compare_fields: string[];
   iface_normalize_rules?: { from: string; to: string }[];
   note: string;
+  job_count?: number;
 };
 
 type Mapping = { id: string; name: string; rows: { before_if: string; after_if: string }[] };
@@ -549,6 +524,7 @@ function cloneSheet(s: MetricSheet): MetricSheet {
     display_fields: display,
     row_filters: JSON.parse(JSON.stringify(s.row_filters || [])),
     field_rules: JSON.parse(JSON.stringify(s.field_rules || [])),
+    ignore_port_changes: s.ignore_port_changes,
   };
 }
 
@@ -569,6 +545,7 @@ function templateExportPayload(tpl: Template) {
         : [...(s.key_fields || []), ...(s.compare_fields || [])],
     row_filters: JSON.parse(JSON.stringify(s.row_filters || [])),
     field_rules: JSON.parse(JSON.stringify(s.field_rules || [])),
+    ignore_port_changes: s.ignore_port_changes,
   }));
   return {
     format: TEMPLATE_EXPORT_FORMAT,
@@ -581,103 +558,8 @@ function templateExportPayload(tpl: Template) {
   };
 }
 
-function parseTemplateImport(raw: unknown): {
-  name: string;
-  note: string;
-  metrics: MetricSheet[];
-  iface_normalize_rules?: { from: string; to: string }[];
-} | null {
-  if (!raw || typeof raw !== "object") return null;
-  const o = raw as Record<string, unknown>;
-  // Accept our export shape or a bare {name, metrics} / TemplateIn body
-  const name = String(o.name || "").trim();
-  const note = String(o.note || "");
-  let metricsRaw = o.metrics;
-  if (!Array.isArray(metricsRaw) && o.metric_id) {
-    metricsRaw = [
-      {
-        metric_id: o.metric_id,
-        key_fields: o.key_fields || [],
-        iface_fields: o.iface_fields || [],
-        compare_fields: o.compare_fields || [],
-        display_fields: o.display_fields || [],
-        row_filters: o.row_filters || [],
-        field_rules: o.field_rules || [],
-      },
-    ];
-  }
-  if (!name || !Array.isArray(metricsRaw) || !metricsRaw.length) return null;
-  const metrics: MetricSheet[] = [];
-  for (const item of metricsRaw) {
-    if (!item || typeof item !== "object") continue;
-    const m = item as Record<string, unknown>;
-    const mid = String(m.metric_id || "").trim();
-    const keys = Array.isArray(m.key_fields)
-      ? (m.key_fields as unknown[]).map((x) => String(x).trim()).filter(Boolean)
-      : [];
-    if (!mid || !keys.length) continue;
-    metrics.push({
-      sheet_id: String(m.sheet_id || mid).trim() || mid,
-      title: String(m.title || m.sheet_id || mid).trim() || mid,
-      metric_id: mid,
-      key_fields: keys,
-      iface_fields: Array.isArray(m.iface_fields)
-        ? (m.iface_fields as unknown[]).map((x) => String(x).trim()).filter(Boolean)
-        : [],
-      compare_fields: Array.isArray(m.compare_fields)
-        ? (m.compare_fields as unknown[]).map((x) => String(x).trim()).filter(Boolean)
-        : [],
-      display_fields: Array.isArray(m.display_fields)
-        ? (m.display_fields as unknown[]).map((x) => String(x).trim()).filter(Boolean)
-        : undefined,
-      row_filters: Array.isArray(m.row_filters) ? (m.row_filters as RowFilter[]) : [],
-      field_rules: Array.isArray(m.field_rules) ? (m.field_rules as FieldRule[]) : [],
-    });
-  }
-  if (!metrics.length) return null;
-  const normRaw = o.iface_normalize_rules;
-  const iface_normalize_rules: { from: string; to: string }[] = [];
-  if (Array.isArray(normRaw)) {
-    for (const item of normRaw) {
-      if (!item || typeof item !== "object") continue;
-      const r = item as Record<string, unknown>;
-      const fr = String(r.from || "").trim();
-      const to = String(r.to || "").trim();
-      if (fr && to) iface_normalize_rules.push({ from: fr, to });
-    }
-  }
-  return { name, note, metrics, iface_normalize_rules };
-}
-
 function ifaceNormRulesToText(rules?: { from: string; to: string }[]): string {
   return (rules || []).map((r) => `${r.from},${r.to}`).join("\n");
-}
-
-function parseIfaceNormText(text: string): { from: string; to: string }[] {
-  const out: { from: string; to: string }[] = [];
-  for (const line of text.split(/\r?\n/)) {
-    const s = line.trim();
-    if (!s || s.startsWith("#")) continue;
-    let fr = "";
-    let to = "";
-    if (s.includes(",")) {
-      const i = s.indexOf(",");
-      fr = s.slice(0, i).trim();
-      to = s.slice(i + 1).trim();
-    } else if (s.includes("\t")) {
-      const i = s.indexOf("\t");
-      fr = s.slice(0, i).trim();
-      to = s.slice(i + 1).trim();
-    } else {
-      const parts = s.split(/\s+/);
-      if (parts.length >= 2) {
-        fr = parts[0];
-        to = parts.slice(1).join(" ");
-      }
-    }
-    if (fr && to) out.push({ from: fr, to });
-  }
-  return out;
 }
 
 function downloadJsonFile(filename: string, data: unknown) {
@@ -711,51 +593,6 @@ function upsertFieldRule(sheet: MetricSheet, field: string, patch: Partial<Field
   if (idx >= 0) rules[idx] = next;
   else rules.push(next);
   return rules;
-}
-
-function isLeafFilter(f: RowFilter): boolean {
-  return !f.any && !f.all && Boolean(f.field || f.op);
-}
-
-/** Expand sheet row_filters into OR-groups of AND leaf conditions for editing. */
-function toOrGroups(filters: RowFilter[]): RowFilter[][] {
-  const list = filters || [];
-  if (!list.length) return [];
-  if (list.length === 1 && list[0]?.any && Array.isArray(list[0].any)) {
-    return list[0].any
-      .map((g) => {
-        if (g?.all && Array.isArray(g.all)) return g.all.filter(isLeafFilter);
-        if (isLeafFilter(g)) return [g];
-        return [] as RowFilter[];
-      })
-      .filter((g) => g.length);
-  }
-  if (list.every(isLeafFilter)) return [list.map((f) => ({ ...f }))];
-  // Mixed / opaque: keep editable leaves only
-  const leaves = list.filter(isLeafFilter);
-  return leaves.length ? [leaves] : [];
-}
-
-/** Serialize OR-groups back to engine row_filters (AND of leaves, or single any-of). */
-function fromOrGroups(groups: RowFilter[][]): RowFilter[] {
-  const clean = groups
-    .map((g) =>
-      g
-        .map((f) => ({
-          field: f.field || "",
-          op: f.op || "eq",
-          value: f.value ?? "",
-        }))
-        .filter((f) => f.field),
-    )
-    .filter((g) => g.length);
-  if (!clean.length) return [];
-  if (clean.length === 1) return clean[0];
-  return [
-    {
-      any: clean.map((g) => (g.length === 1 ? g[0] : { all: g })),
-    },
-  ];
 }
 
 function emptyLeaf(field = ""): RowFilter {
@@ -827,6 +664,7 @@ function TplRowFiltersEditor({
                 <div className="ct-filter-row">
                   <select
                     className="mt-select"
+                    aria-label={`${t("bizCompare.filterField")} ${gi + 1}.${fi + 1}`}
                     value={filt.field || ""}
                     onChange={(e) => {
                       const next = groups.map((g) => g.map((x) => ({ ...x })));
@@ -840,13 +678,19 @@ function TplRowFiltersEditor({
                         {name}
                       </option>
                     ))}
+                    {filt.field && !fieldOpts.includes(filt.field) ? <option value={filt.field}>{filt.field}</option> : null}
                   </select>
                   <select
                     className="mt-select"
+                    aria-label={`${t("bizCompare.filterOperator")} ${gi + 1}.${fi + 1}`}
                     value={filt.op || "eq"}
                     onChange={(e) => {
                       const next = groups.map((g) => g.map((x) => ({ ...x })));
-                      next[gi][fi] = { ...next[gi][fi], op: e.target.value };
+                      const op = e.target.value;
+                      const value = next[gi][fi].value;
+                      next[gi][fi] = { ...next[gi][fi], op, value: ["in", "not_in", "nin"].includes(op)
+                        ? (Array.isArray(value) ? value : String(value ?? "").split(",").map((x) => x.trim()).filter(Boolean))
+                        : (Array.isArray(value) ? value.join(",") : value) };
                       setGroups(next);
                     }}
                   >
@@ -855,18 +699,20 @@ function TplRowFiltersEditor({
                         {op}
                       </option>
                     ))}
+                    {filt.op && !(FILTER_OPS as readonly string[]).includes(filt.op) ? <option value={filt.op}>{filt.op}</option> : null}
                   </select>
                   <Input
                     value={
                       Array.isArray(filt.value) ? filt.value.join(",") : String(filt.value ?? "")
                     }
                     placeholder={t("bizCompare.filterValue")}
-                    disabled={["empty", "not_empty", "age_timer"].includes(filt.op || "")}
+                    aria-label={`${t("bizCompare.filterValue")} ${gi + 1}.${fi + 1}`}
+                    disabled={["empty", "not_empty", "nonempty", "age_timer"].includes(filt.op || "")}
                     onChange={(e) => {
                       const next = groups.map((g) => g.map((x) => ({ ...x })));
                       const op = next[gi][fi]?.op || "eq";
                       let value: string | string[] = e.target.value;
-                      if (op === "in" || op === "not_in") {
+                      if (["in", "not_in", "nin"].includes(op)) {
                         value = e.target.value
                           .split(",")
                           .map((x) => x.trim())
@@ -930,10 +776,13 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
   const [mappings, setMappings] = useState<Mapping[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [listKw, setListKw] = useState("");
+  const [listPage, setListPage] = useState(1);
+  const [listPageSize, setListPageSize] = useState(50);
   const debouncedListKw = useDebouncedValue(listKw, 250);
 
   // template editor
   const [tplOpen, setTplOpen] = useState(false);
+  const [tplError, setTplError] = useState("");
   const [tplEditId, setTplEditId] = useState("");
   const [tplName, setTplName] = useState("");
   const [tplNote, setTplNote] = useState("");
@@ -1026,11 +875,11 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     };
     const fetchBundle = async (): Promise<Bundle> => {
       const [taskRes, tpl, maps, j, met] = await Promise.all([
-        bizStateListTasks(),
+        pageMode === "templates" ? Promise.resolve({items: []}) : bizStateListTasks(),
         bizCompareListTemplates(),
-        bizCompareListMappings(),
-        bizCompareListJobs(),
-        bizCompareListMetrics(),
+        pageMode === "templates" ? Promise.resolve({items: []}) : bizCompareListMappings(),
+        pageMode === "templates" ? Promise.resolve({items: []}) : bizCompareListJobs(),
+        cutoverCachedGet("bizCompare:metrics", () => bizCompareListMetrics(), {ttlMs: 60000}),
       ]);
       return { taskRes, tpl, maps, j, met };
     };
@@ -1043,11 +892,11 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
       setMetrics((b.met.items || []) as MetricSchema[]);
     };
     if (opts?.force) {
-      apply(await cutoverCachedGet("bizCompare:lists", fetchBundle, { force: true }));
+      apply(await cutoverCachedGet(`bizCompare:lists:${pageMode}`, fetchBundle, { force: true }));
       return;
     }
-    apply(await cutoverCachedGetSWR("bizCompare:lists", fetchBundle, apply));
-  }, []);
+    apply(await cutoverCachedGetSWR(`bizCompare:lists:${pageMode}`, fetchBundle, apply));
+  }, [pageMode]);
 
   useEffect(() => {
     void (async () => {
@@ -1140,10 +989,13 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
       return `${x.name} ${mids} ${x.note}`.toLowerCase().includes(kw);
     });
   }, [templates, debouncedListKw]);
+  const listTotal = activeTab === "templates" ? filteredTemplates.length : filteredJobs.length;
+  const listPages = Math.max(1, Math.ceil(listTotal / listPageSize));
+  const visibleListPage = Math.min(listPage, listPages);
 
   const selectedJobTemplate = useMemo(
-    () => templates.find((x) => x.id === templateId) || null,
-    [templates, templateId],
+    () => templatesById.get(templateId) || null,
+    [templatesById, templateId],
   );
 
   const jobTemplateSheets = useMemo(
@@ -1193,23 +1045,33 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
   const setJobTemplateAndSheets = useCallback(
     (nextTplId: string, presetIds?: string[] | null) => {
       setTemplateId(nextTplId);
-      const tpl = templates.find((x) => x.id === nextTplId);
-      const all = tpl ? templateSheets(tpl).map((s) => sheetIdentity(s)).filter(Boolean) : [];
       if (presetIds && presetIds.length) {
-        const kept = presetIds.filter((id) => all.includes(id));
-        setEnabledSheetIds(kept.length === all.length ? [] : kept);
+        // Keep stale IDs visible as a configuration error; [] would enable every sheet.
+        setEnabledSheetIds([...presetIds]);
       } else {
         setEnabledSheetIds([]);
       }
     },
-    [templates],
+    [],
   );
 
   const activeTplSheet = tplSheets[tplSheetIdx] || null;
   const activeTplFields = useMemo(() => {
     if (!activeTplSheet) return [];
-    return metrics.find((m) => m.metric_id === activeTplSheet.metric_id)?.fields || [];
+    const fields = [...(metrics.find((m) => m.metric_id === activeTplSheet.metric_id)?.fields || [])];
+    const seen = new Set(fields.map((f) => f.name));
+    for (const name of [...activeTplSheet.key_fields, ...activeTplSheet.iface_fields,
+      ...activeTplSheet.compare_fields, ...(activeTplSheet.display_fields || []),
+      ...(activeTplSheet.field_rules || []).map((r) => r.field)]) {
+      if (!seen.has(name)) {
+        fields.push({name, display_name: name, dtype: "string", is_key: false, is_interface: false, role: "meta"});
+        seen.add(name);
+      }
+    }
+    return fields;
   }, [metrics, activeTplSheet]);
+  const activeTplFilterGroups = activeTplSheet ? toOrGroups(activeTplSheet.row_filters || []) : [];
+  const missingJobSheets = enabledSheetIds.filter((id) => !jobSheetAllIds.includes(id));
 
   const runSheets: RunSheet[] = useMemo(() => {
     const sheets = (runDetail?.sheets || []) as RunSheet[];
@@ -1593,6 +1455,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
   };
 
   const updateActiveSheet = (patch: Partial<MetricSheet>) => {
+    setTplError("");
     setTplSheets((prev) =>
       prev.map((s, i) => {
         if (i !== tplSheetIdx) return s;
@@ -1630,6 +1493,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
   };
 
   const openNewTemplate = () => {
+    setTplError("");
     setTplEditId("");
     setTplName("");
     setTplNote("");
@@ -1642,6 +1506,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
   };
 
   const openEditTemplate = (tpl: Template) => {
+    setTplError("");
     const sheets = templateSheets(tpl);
     setTplEditId(tpl.id);
     setTplName(tpl.name);
@@ -1713,6 +1578,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
   };
 
   const saveTemplate = async () => {
+    setTplError("");
     if (!tplSheets.length) {
       showError(t("bizCompare.metricsRequired"));
       return;
@@ -1734,6 +1600,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     }
     setBusy(true);
     try {
+      validateTemplateDraft(tplSheets);
       const body = {
         name: tplName || tplSheets.map((s) => sheetLabel(s)).join("+"),
         note: tplNote,
@@ -1748,6 +1615,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
           display_fields: s.display_fields || [...s.key_fields, ...s.compare_fields],
           row_filters: s.row_filters || [],
           field_rules: s.field_rules || [],
+          ignore_port_changes: s.ignore_port_changes,
         })),
       };
       if (tplEditId) await bizCompareUpdateTemplate(tplEditId, body);
@@ -1758,6 +1626,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
       invalidateCutoverCache("bizMigration:");
       await refresh({ force: true });
     } catch (e) {
+      setTplError(formatErr(e));
       showError(formatErr(e));
     } finally {
       setBusy(false);
@@ -1817,6 +1686,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
           display_fields: s.display_fields || [...s.key_fields, ...s.compare_fields],
           row_filters: s.row_filters || [],
           field_rules: s.field_rules || [],
+          ignore_port_changes: s.ignore_port_changes,
         })),
       });
       showOk(t("bizCompare.templateImported"));
@@ -1913,12 +1783,9 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     const tplId = preset?.template_id || templates[0]?.id || "";
     setName(preset?.name || t("bizCompare.defaultJobName"));
     setTemplateId(tplId);
-    const tpl = templates.find((x) => x.id === tplId);
-    const all = tpl ? templateSheets(tpl).map((s) => sheetIdentity(s)).filter(Boolean) : [];
     const presetIds = (preset?.enabled_sheet_ids || []).map(String).filter(Boolean);
     if (presetIds.length) {
-      const kept = presetIds.filter((id) => all.includes(id));
-      setEnabledSheetIds(kept.length === all.length ? [] : kept);
+      setEnabledSheetIds(presetIds);
     } else {
       setEnabledSheetIds([]);
     }
@@ -2129,6 +1996,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
 
   const saveJobConfig = async () => {
     if (!jobId) return;
+    if (missingJobSheets.length) { showError(t("bizCompare.missingSheets")); return; }
     if (!enabledJobSheetCount) {
       showError(t("bizCompare.needSheets"));
       return;
@@ -2160,6 +2028,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
 
   const runNow = async () => {
     if (!jobId) return;
+    if (missingJobSheets.length) { showError(t("bizCompare.missingSheets")); return; }
     if (!enabledJobSheetCount) {
       showError(t("bizCompare.needSheets"));
       return;
@@ -2321,6 +2190,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
         </span>
       </div>
       <p className="muted bm-hint">{t("bizCompare.enabledSheetsHint")}</p>
+      {missingJobSheets.length ? <div className="bs-cmp-error" role="alert"><span>{t("bizCompare.missingSheets")} · {missingJobSheets.join(", ")}</span><Button size="sm" variant="secondary" isDisabled={!jobSheetAllIds.length} onPress={() => setEnabledSheetIds([])}>{t("bizCompare.enableCurrentSheets")}</Button></div> : null}
       <div className="bs-cmp-scope__items">
         {jobTemplateSheets.map((s) => {
           const sid = sheetIdentity(s);
@@ -2441,7 +2311,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
         >
           <option value="">{t("bizCompare.pick")}</option>
           {beforeBatches.map((b) => (
-            <option key={b.id} value={b.id}>
+            <option key={b.id} value={b.id} disabled={b.status !== "success"}>
               {batchOptLabel(b)}
             </option>
           ))}
@@ -2482,7 +2352,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
           >
             <option value="">{t("bizCompare.pick")}</option>
             {afterBatches.map((b) => (
-              <option key={b.id} value={b.id}>
+              <option key={b.id} value={b.id} disabled={b.status !== "success"}>
                 {batchOptLabel(b)}
               </option>
             ))}
@@ -2555,7 +2425,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
   );
 
   return (
-    <section className={`panel nm-page-panel${activeTab === "jobs" ? " bs-cmp-workspace" : ""}`}>
+    <section className={`panel nm-page-panel bs-cmp-workspace${activeTab === "templates" ? " bs-template-workspace" : ""}`}>
       <div className="panel__toolbar">
         <h2>
           {pageMode === "templates" ? t("bizCompare.templates") : t("bizCompare.title")}
@@ -2581,7 +2451,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
               >
                 {t("bizCompare.importTemplate")}
               </Button>
-              <Button size="sm" variant="primary" onPress={openNewTemplate}>
+              <Button size="sm" variant="primary" isDisabled={busy} onPress={openNewTemplate}>
                 {t("bizCompare.newTemplate")}
               </Button>
             </>
@@ -2622,7 +2492,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
             placeholder={
               activeTab === "jobs" ? t("bizCompare.jobFilterPh") : t("bizCompare.templateFilterPh")
             }
-            onChange={(e) => setListKw(e.target.value)}
+            onChange={(e) => { setListKw(e.target.value); setListPage(1); }}
           />
         </div>
 
@@ -2641,12 +2511,13 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                 </tr>
               </thead>
               <tbody>
-                {filteredTemplates.map((tpl) => {
+                {filteredTemplates.slice((visibleListPage - 1) * listPageSize, visibleListPage * listPageSize).map((tpl) => {
                   const sheets = templateSheets(tpl);
                   return (
                     <tr key={tpl.id}>
                       <td>
                         <div className="pt-list-task-name">{tpl.name}</div>
+                        {tpl.job_count ? <div className="muted">{t("bizCompare.templateUsage", {n: tpl.job_count})}</div> : null}
                       </td>
                       <td>
                         <div className="bs-cmp-metric-chips">
@@ -2664,7 +2535,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                       <td className="muted">{tpl.note || "—"}</td>
                       <td>
                         <div className="pt-list-actions">
-                          <Button size="sm" variant="secondary" onPress={() => openEditTemplate(tpl)}>
+                          <Button size="sm" variant="secondary" isDisabled={busy} onPress={() => openEditTemplate(tpl)}>
                             {t("bizCompare.edit")}
                           </Button>
                           <Button
@@ -2678,7 +2549,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                           <Button
                             size="sm"
                             variant="danger"
-                            isDisabled={busy}
+                            isDisabled={busy || Boolean(tpl.job_count) || jobs.some((j) => j.template_id === tpl.id)}
                             onPress={() => void removeTemplate(tpl.id)}
                           >
                             {t("bizCompare.delete")}
@@ -2711,7 +2582,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                 </tr>
               </thead>
               <tbody>
-                {filteredJobs.map((j) => {
+                {filteredJobs.slice((visibleListPage - 1) * listPageSize, visibleListPage * listPageSize).map((j) => {
                   const tpl = templatesById.get(j.template_id);
                   const n = templateSheets(tpl).length;
                   return (
@@ -2760,17 +2631,19 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
             </table>
           </div>
         )}
+        <ListPager page={visibleListPage} pages={listPages} total={listTotal} pageSize={listPageSize} pageSizeOptions={[20, 50, 100, 200]} onPageChange={setListPage} onPageSizeChange={(n) => { setListPageSize(n); setListPage(1); }} />
       </div>
 
       {/* Template editor */}
-      <AppModalShell open={tplOpen} onClose={() => setTplOpen(false)} size="cover">
+      <AppModalShell open={tplOpen} onClose={() => { if (!busy) setTplOpen(false); }} dismissible={!busy} size="cover" className="app-heroui-modal--xl bs-template-editor">
         <Modal.Header>
           <Modal.Heading>
             {tplEditId ? t("bizCompare.editTemplate") : t("bizCompare.newTemplate")}
           </Modal.Heading>
-          <Modal.CloseTrigger />
+          <Modal.CloseTrigger isDisabled={busy} />
         </Modal.Header>
-        <Modal.Body className="flex flex-col gap-3 ct-editor">
+        <Modal.Body className="flex flex-col gap-3 ct-editor" inert={busy}>
+          {tplError ? <div className="bs-cmp-error" role="alert">{t("bizCompare.templateValidationFailed")} · {tplError}</div> : null}
           <div className="ct-editor__basics">
             <Input
               value={tplName}
@@ -2786,18 +2659,18 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
             />
           </div>
 
-          <div className="ct-editor__norm">
-            <div className="ct-editor__pick-title">{t("bizCompare.ifaceNormalize")}</div>
+          <details className="ct-editor__norm">
+            <summary className="ct-editor__pick-title">{t("bizCompare.ifaceNormalize")}</summary>
             <p className="muted ct-editor__pick-hint">{t("bizCompare.ifaceNormalizeHint")}</p>
             <textarea
               className="ct-editor__norm-area"
-              rows={5}
+              rows={3}
               value={tplNormText}
               onChange={(e) => setTplNormText(e.target.value)}
               placeholder={"GE,gei\nSG,smartgroup"}
               aria-label={t("bizCompare.ifaceNormalize")}
             />
-          </div>
+          </details>
 
           <div className="ct-editor__pick">
             <div className="ct-editor__pick-head">
@@ -2846,15 +2719,22 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                 <div className="ct-editor__nav-head">
                   <span>{t("bizCompare.colSheets")}</span>
                 </div>
-                <div className="ct-editor__nav-list" role="tablist">
+                <div className="ct-editor__nav-list" role="tablist" aria-label={t("bizCompare.colSheets")} onKeyDown={(event) => {
+                  if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+                  event.preventDefault();
+                  const next = event.key === "Home" ? 0 : event.key === "End" ? tplSheets.length - 1 : (tplSheetIdx + (["ArrowUp", "ArrowLeft"].includes(event.key) ? -1 : 1) + tplSheets.length) % tplSheets.length;
+                  setTplSheetIdx(next);
+                  event.currentTarget.querySelectorAll<HTMLButtonElement>("[role=tab]")[next]?.focus();
+                }}>
                   {tplSheets.map((s, i) => {
-                    const filterN = toOrGroups(s.row_filters || []).length;
+                    const filterN = toOrGroups(s.row_filters || [])?.length ?? (s.row_filters || []).length;
                     return (
                       <button
                         key={`${sheetIdentity(s)}-${i}`}
                         type="button"
                         role="tab"
                         aria-selected={tplSheetIdx === i}
+                        tabIndex={tplSheetIdx === i ? 0 : -1}
                         className={`ct-editor__nav-item${tplSheetIdx === i ? " is-active" : ""}`}
                         onClick={() => {
                           setTplSheetIdx(i);
@@ -2914,11 +2794,18 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                     </div>
                   </div>
 
-                  <div className="mt-rule-tabs" role="tablist">
+                  <div className="mt-rule-tabs" role="tablist" aria-label={t("bizCompare.editTemplate")} onKeyDown={(event) => {
+                    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+                    event.preventDefault();
+                    const next = event.key === "Home" ? "fields" : event.key === "End" ? "filters" : tplPaneTab === "fields" ? "filters" : "fields";
+                    setTplPaneTab(next);
+                    event.currentTarget.querySelectorAll<HTMLButtonElement>("[role=tab]")[next === "fields" ? 0 : 1]?.focus();
+                  }}>
                     <button
                       type="button"
                       role="tab"
                       aria-selected={tplPaneTab === "fields"}
+                      tabIndex={tplPaneTab === "fields" ? 0 : -1}
                       className={`mt-rule-tab${tplPaneTab === "fields" ? " is-active" : ""}`}
                       onClick={() => setTplPaneTab("fields")}
                     >
@@ -2929,24 +2816,28 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                       type="button"
                       role="tab"
                       aria-selected={tplPaneTab === "filters"}
+                      tabIndex={tplPaneTab === "filters" ? 0 : -1}
                       className={`mt-rule-tab${tplPaneTab === "filters" ? " is-active" : ""}`}
                       onClick={() => setTplPaneTab("filters")}
                     >
                       {t("bizCompare.tabFilters")}
                       <span className="mt-rule-tab__n">
-                        {toOrGroups(activeTplSheet.row_filters || []).length}
+                        {activeTplFilterGroups?.length ?? (activeTplSheet.row_filters || []).length}
                       </span>
                     </button>
                   </div>
 
-                  {tplPaneTab === "filters" ? (
+                  <FieldSelect label={t("bizCompare.portPolicy")} value={activeTplSheet.ignore_port_changes == null ? "auto" : activeTplSheet.ignore_port_changes ? "ignore" : "strict"} onChange={(e) => updateActiveSheet({ignore_port_changes: e.target.value === "auto" ? null : e.target.value === "ignore"})} hint={t("bizCompare.portPolicyHint")}>
+                    <option value="auto">{t("bizCompare.portPolicyAuto")}</option><option value="strict">{t("bizCompare.portPolicyStrict")}</option><option value="ignore">{t("bizCompare.portPolicyIgnore")}</option>
+                  </FieldSelect>
+                  {tplPaneTab === "filters" ? (activeTplFilterGroups === null ? <div className="ct-complex-filters"><p className="muted">{t("bizCompare.complexFiltersPreserved")}</p><pre aria-label={t("bizCompare.tabFilters")}>{JSON.stringify(activeTplSheet.row_filters, null, 2)}</pre></div> : (
                     <TplRowFiltersEditor
-                      groups={toOrGroups(activeTplSheet.row_filters || [])}
+                      groups={activeTplFilterGroups}
                       fieldOpts={activeTplFields.map((f) => f.name)}
                       t={t}
                       onChange={(next) => updateActiveSheet({ row_filters: fromOrGroups(next) })}
                     />
-                  ) : (
+                  )) : (
                     <>
                       <p className="muted ct-field-hint">{t("bizCompare.fieldsHintShort")}</p>
                       <div className="pt-list-table-wrap ct-field-table-wrap">
@@ -2970,8 +2861,10 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                               !isKey && activeTplSheet.compare_fields.includes(f.name);
                             const isDisplay = (activeTplSheet.display_fields || []).includes(f.name);
                             const rule = ruleForField(activeTplSheet, f.name);
-                            const cmpMode = (rule.compare || "eq").toLowerCase() || "eq";
-                            const norm = rule.normalize || "none";
+                            const rawMode = (rule.compare || "eq").trim().toLowerCase();
+                            const cmpMode = ["number", "int", "float"].includes(rawMode) ? "numeric" : ["pct", "rel"].includes(rawMode) ? "percent" : ["ignore", "skip", "off"].includes(rawMode) ? "eq" : rawMode;
+                            const rawNorm = (rule.normalize || "none").trim().toLowerCase();
+                            const norm = rawNorm === "strip" ? "none" : rawNorm;
                             const needsTol = cmpMode === "numeric" || cmpMode === "percent";
                             return (
                               <tr key={f.name}>
@@ -3021,6 +2914,8 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                                           f.name,
                                           e.target.checked,
                                         ),
+                                        field_rules: e.target.checked ? upsertFieldRule(activeTplSheet, f.name, {ignore: false,
+                                          compare: ["ignore", "skip", "off"].includes(rawMode) ? "eq" : rule.compare}) : activeTplSheet.field_rules,
                                       })
                                     }
                                   />
@@ -3029,6 +2924,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                                   <select
                                     className="mt-select"
                                     value={cmpMode === "ignore" ? "eq" : cmpMode}
+                                    aria-label={`${f.name} ${t("bizCompare.compareMode")}`}
                                     disabled={!isCompare}
                                     onChange={(e) =>
                                       updateActiveSheet({
@@ -3048,6 +2944,9 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                                 <td>
                                   <Input
                                     type="number"
+                                    min={0}
+                                    step="any"
+                                    aria-label={`${f.name} ${t("bizCompare.tolerance")}`}
                                     value={
                                       needsTol &&
                                       rule.tolerance !== undefined &&
@@ -3092,6 +2991,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                                   <select
                                     className="mt-select"
                                     value={norm}
+                                    aria-label={`${f.name} ${t("bizCompare.normalizeField")}`}
                                     disabled={!isCompare}
                                     onChange={(e) =>
                                       updateActiveSheet({
@@ -3131,7 +3031,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
           )}
         </Modal.Body>
         <Modal.Footer>
-          <Button size="sm" variant="secondary" onPress={() => setTplOpen(false)}>
+          <Button size="sm" variant="secondary" isDisabled={busy} onPress={() => setTplOpen(false)}>
             {t("bizState.cancel")}
           </Button>
           <Button size="sm" variant="primary" isDisabled={busy} onPress={() => void saveTemplate()}>
@@ -4346,19 +4246,19 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
         <Modal.Footer className="bs-cmp-job-footer">
           {jobDetailTab === "config" ? (
             <>
-              <Button size="sm" variant="primary" isDisabled={busy} onPress={() => void saveJobConfig()}>
+              <Button size="sm" variant="primary" isDisabled={busy || Boolean(missingJobSheets.length)} onPress={() => void saveJobConfig()}>
                 {t("bizCompare.saveJob")}
               </Button>
               <Button
                 size="sm"
                 variant="secondary"
-                isDisabled={busy || jobHasActiveRun}
+                isDisabled={busy || jobHasActiveRun || Boolean(missingJobSheets.length)}
                 onPress={() => void runNow()}
               >
                 {jobHasActiveRun ? t("bizCompare.runStatusRunning") : t("bizCompare.runNow")}
               </Button>
               {jobId ? (
-                <Button size="sm" variant="ghost" className="bs-cmp-runs__delete" isDisabled={busy} onPress={() => void removeJob(jobId)}>
+                <Button size="sm" variant="ghost" className="bs-cmp-runs__delete" isDisabled={busy || jobHasActiveRun} onPress={() => void removeJob(jobId)}>
                   {t("bizCompare.deleteJob")}
                 </Button>
               ) : null}

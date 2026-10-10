@@ -2237,9 +2237,15 @@ def _validate_compare_job(
     if any(b.status != "success" for b in source_batches):
         raise HTTPException(status_code=409, detail="source_batch_not_complete")
 
+    # Existing records may predate write validation. Do not normalize invalid
+    # sheets away or run unknown rules as successful comparisons.
+    if tpl.metrics_json:
+        validate_template_body({"metrics": tpl.metrics_json,
+            "iface_normalize_rules": tpl.iface_normalize_json})
     sheets_cfg = template_metrics(tpl)
     if not sheets_cfg:
         raise HTTPException(status_code=400, detail="template_has_no_metrics")
+    _validate_job_sheets(db, tpl.id, _str_list(j.enabled_sheet_ids))
     sheets_cfg = _filter_enabled_sheets(sheets_cfg, getattr(j, "enabled_sheet_ids", None))
     if not sheets_cfg:
         raise HTTPException(status_code=400, detail="no_enabled_sheets")
