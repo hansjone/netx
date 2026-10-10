@@ -1,0 +1,29 @@
+{
+  "date": "2026-10-10",
+  "baseline_ref": "afa8e06b2de64100f963ae30b3babfcb5d7009f4",
+  "python": "3.14.3",
+  "dataset": {
+    "rows_per_side": 1000000,
+    "fields": ["id", "neighbor", "state", "afi"],
+    "strata": 50,
+    "unchanged_limit": 5000,
+    "compact_unchanged": true,
+    "interface_transforms": false,
+    "all_rows_unchanged": true
+  },
+  "measurement": "tracemalloc peak allocated during compare_rows; excludes input allocations, DB loading and process overhead",
+  "results": [
+    {
+      "engine": "baseline",
+      "peak_engine_mib": 1144.43,
+      "seconds_with_tracemalloc": 92.4
+    },
+    {
+      "engine": "optimized",
+      "peak_engine_mib": 420.49,
+      "seconds_with_tracemalloc": 63.681
+    }
+  ],
+  "results_and_sample_order_identical": true,
+  "test_result": "1 passed in 157.88s"
+}

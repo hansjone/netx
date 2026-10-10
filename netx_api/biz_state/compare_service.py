@@ -8,13 +8,14 @@ import logging
 import threading
 import time
 import zipfile
+from copy import deepcopy
 from datetime import datetime
-from typing import Any, Callable
+from typing import Any, Callable, Iterable, Iterator
 from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import and_, or_
-from sqlalchemy.orm import Session
+from sqlalchemy import String, and_, cast, func, or_, tuple_
+from sqlalchemy.orm import Session, aliased
 
 from ..models import (
     BizCompareDiff,
@@ -29,7 +30,7 @@ from ..models import (
     BizStateTask,
 )
 from ..timeutil import utcnow_naive
-from .compare_engine import compare_rows, mapping_stats
+from .compare_engine import apply_port_map, compare_rows, mapping_stats, row_key
 from .compare_rules import (
     ROW_FILTER_PRESETS,
     apply_row_filters,
@@ -193,6 +194,7 @@ _FAIL_COMPACT_MIN = 50_000
 # Live search (kw): load at most this many matching rows per side, return ≤ this many pairs.
 _LIVE_SEARCH_LOAD_CAP = 2_000
 _LIVE_SEARCH_RESULT_CAP = 200
+_LIVE_SEARCH_GROUP_LOAD_CAP = 10_000
 # Success-row persist policy (see resolve_unchanged_policy)
 _STORE_UNCHANGED_MODES = frozenset({"auto", "always", "never", "sample", "keys"})
 _UNCHANGED_FULL_MAX = 20_000
@@ -269,7 +271,7 @@ def _strip_netx(row: Any) -> dict[str, Any]:
     return {k: v for k, v in row.items() if k != "_netx"}
 
 
-def _diff_search_text(d: dict[str, Any]) -> str:
+def _diff_search_text(d: dict[str, Any], *, limit: int | None = _SEARCH_TEXT_MAX) -> str:
     parts = [str(d.get("kind") or "")]
     for key in ("key", "before", "after", "mapped_before", "changes"):
         val = d.get(key)
@@ -278,7 +280,8 @@ def _diff_search_text(d: dict[str, Any]) -> str:
                 parts.append(json.dumps(val, ensure_ascii=False, default=str, separators=(",", ":")))
             except Exception:
                 parts.append(str(val))
-    return " ".join(parts)[:_SEARCH_TEXT_MAX]
+    value = " ".join(parts)
+    return value if limit is None else value[:limit]
 
 
 def _top_changed_fields(diffs: list[dict[str, Any]], *, limit: int = 8) -> list[dict[str, Any]]:
@@ -422,7 +425,10 @@ def _metric_rows_by_ids(db: Session, ids: list[str]) -> dict[str, dict[str, Any]
     return out
 
 
-def _hydrate_diff_rows(db: Session, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _hydrate_diff_rows(
+    db: Session, items: list[dict[str, Any]], *,
+    run: BizCompareRun | None = None, sheet: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     """Fill empty before/after from metric tables when row_ids are present."""
     need: list[str] = []
     for it in items:
@@ -433,16 +439,24 @@ def _hydrate_diff_rows(db: Session, items: list[dict[str, Any]]) -> list[dict[st
     if not need:
         return items
     by_id = _metric_rows_by_ids(db, need)
+    pmap, norm_rules = _run_transform_config(db, run) if run else ({}, [])
+    iface_fields = list((sheet or {}).get("iface_fields") or [])
     for it in items:
         brid = str(it.get("before_row_id") or "")
         arid = str(it.get("after_row_id") or "")
         if not it.get("before") and brid and brid in by_id:
             it["before"] = by_id[brid]
         if not it.get("after") and arid and arid in by_id:
-            it["after"] = by_id[arid]
-        # Success compact: no mapped_before stored — UI falls back to before
+            it["after"] = apply_iface_normalize_rows(
+                [by_id[arid]], iface_fields=iface_fields, rules=norm_rules,
+            )[0]
         if not it.get("mapped_before") and it.get("before"):
-            it["mapped_before"] = dict(it["before"])
+            normalized = apply_iface_normalize_rows(
+                [it["before"]], iface_fields=iface_fields, rules=norm_rules,
+            )[0]
+            it["mapped_before"] = apply_port_map(
+                normalized, iface_fields=iface_fields, port_map=pmap,
+            )
     return items
 
 
@@ -471,6 +485,7 @@ def _filter_inline_diffs(
     *,
     kind: str,
     kw: str,
+    field_q: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     kind_n = (kind or "diff").strip().lower()
     kw_n = (kw or "").strip().lower()
@@ -484,11 +499,60 @@ def _filter_inline_diffs(
         elif kind_n != "all" and dk != kind_n:
             continue
         if kw_n:
-            blob = _diff_search_text(d).lower()
+            blob = _diff_search_text(d, limit=None).lower()
             if kw_n not in blob:
                 continue
+        if field_q and not _diff_matches_search(d, kw="", field_q=field_q):
+            continue
         out.append(d)
     return out
+
+
+def _diff_matches_search(d: dict[str, Any], *, kw: str, field_q: dict[str, str]) -> bool:
+    """Search a completed pair, never filter its two sides before pairing."""
+    if kw and kw.lower() not in _diff_search_text(d, limit=None).lower():
+        return False
+    return all(
+        any(
+            val.lower() in str((d.get(side) or {}).get(name, "")).lower()
+            for side in ("key", "before", "mapped_before", "after")
+        )
+        for name, val in field_q.items()
+    )
+
+
+def _search_stored_diffs(q: Any, *, metric_id: str, kw: str, field_q: dict[str, str]) -> Any:
+    """Filter persisted verdicts in SQL; join source rows for compact payloads."""
+    from ..models import BizStateMetricRow
+
+    sides = [BizCompareDiff.key_json, BizCompareDiff.before_json,
+             BizCompareDiff.mapped_before_json, BizCompareDiff.after_json]
+    sources = []
+    for row_id in (BizCompareDiff.before_row_id, BizCompareDiff.after_row_id):
+        model = BizStateLldpNeighbor if metric_id == "lldp_neighbor" else BizStateMetricRow
+        src = aliased(model)
+        q = q.outerjoin(src, src.id == row_id)
+        sources.append(src)
+    if kw:
+        expressions = [BizCompareDiff.search_text, *[cast(s, String) for s in sides]]
+        for src in sources:
+            if metric_id == "lldp_neighbor":
+                expressions.extend(getattr(src, f) for f in
+                                   ("local_if", "remote_sys", "remote_if", "remote_ip", "protocol"))
+            else:
+                expressions.append(cast(src.data_json, String))
+        q = q.filter(or_(*[func.lower(e).contains(kw.lower(), autoescape=True) for e in expressions]))
+    for name, val in field_q.items():
+        expressions = [s[name].as_string() for s in sides]
+        for src in sources:
+            if metric_id == "lldp_neighbor":
+                if name in ("local_if", "remote_sys", "remote_if", "remote_ip", "protocol"):
+                    expressions.append(getattr(src, name))
+            else:
+                expressions.append(src.data_json[name].as_string())
+        q = q.filter(or_(*[func.lower(cast(e, String)).contains(val.lower(), autoescape=True)
+                           for e in expressions]))
+    return q
 
 
 def _sheet_meta_from_summary(summary: dict[str, Any], run: BizCompareRun, tpl: Any) -> list[dict[str, Any]]:
@@ -2193,6 +2257,18 @@ def _create_running_run(
 ) -> BizCompareRun:
     first_metric = str(sheets_cfg[0].get("metric_id") or "")
     pending_sheets = [_pending_sheet_meta(s) for s in sheets_cfg]
+    mapping = db.get(BizPortMapping, job.mapping_id) if job.mapping_id else None
+    config_snapshot = deepcopy({
+        "version": 1,
+        "template": _template_out(tpl),
+        "sheets": sheets_cfg,
+        "port_map": _port_map_dict(db, str(job.mapping_id or "")),
+        "store_unchanged": normalize_store_unchanged(getattr(job, "store_unchanged", None)),
+        "job_name": job.name or "",
+        "before_task_id": job.before_task_id or "",
+        "after_task_id": job.after_task_id or "",
+        "mapping_name": (mapping.name if mapping else "") or "",
+    })
     run = BizCompareRun(
         id=uuid4().hex,
         job_id=job.id,
@@ -2203,6 +2279,7 @@ def _create_running_run(
         metric_id=first_metric,
         status="running",
         summary_json={
+            "config_snapshot": config_snapshot,
             "progress": {
                 "phase": "queued",
                 "sheet_index": 0,
@@ -2230,6 +2307,26 @@ def _create_running_run(
     db.commit()
     db.refresh(run)
     return run
+
+
+def _run_config_snapshot(run: BizCompareRun) -> dict[str, Any] | None:
+    snapshot = (run.summary_json or {}).get("config_snapshot")
+    if isinstance(snapshot, dict) and snapshot.get("version") == 1:
+        return snapshot
+    return None
+
+
+def _run_transform_config(
+    db: Session, run: BizCompareRun,
+) -> tuple[dict[str, str], list[dict[str, str]]]:
+    snapshot = _run_config_snapshot(run)
+    if snapshot is not None:
+        return dict(snapshot.get("port_map") or {}), normalize_iface_rules(
+            (snapshot.get("template") or {}).get("iface_normalize_rules") or [],
+        )
+    # Legacy runs did not record these settings; retain their fallback behavior.
+    tpl = db.get(BizCompareTemplate, run.template_id) if run.template_id else None
+    return _port_map_dict(db, str(run.mapping_id or "")), template_iface_normalize(tpl)
 
 
 def _set_run_progress(
@@ -2309,14 +2406,15 @@ def _execute_compare_into_run(db: Session, run_id: str) -> dict[str, Any]:
     run = db.get(BizCompareRun, run_id)
     if not run:
         raise HTTPException(status_code=404, detail="run_not_found")
+    snapshot = _run_config_snapshot(run)
     j = db.get(BizCompareJob, run.job_id)
     if not j:
         run.status = "failed"
         run.message = "job_not_found"
         db.commit()
         raise HTTPException(status_code=404, detail="job_not_found")
-    tpl = db.get(BizCompareTemplate, run.template_id)
-    if not tpl:
+    tpl = db.get(BizCompareTemplate, run.template_id) if snapshot is None else None
+    if not tpl and snapshot is None:
         run.status = "failed"
         run.message = "template_not_found"
         db.commit()
@@ -2324,25 +2422,25 @@ def _execute_compare_into_run(db: Session, run_id: str) -> dict[str, Any]:
 
     before_batch_id = str(run.before_batch_id or "")
     after_batch_id = str(run.after_batch_id or "")
-    sheets_cfg = _filter_enabled_sheets(
-        template_metrics(tpl), getattr(j, "enabled_sheet_ids", None)
-    )
+    if snapshot is not None:
+        sheets_cfg = deepcopy(snapshot.get("sheets") or [])
+    else:
+        sheets_cfg = _filter_enabled_sheets(template_metrics(tpl), getattr(j, "enabled_sheet_ids", None))
     if not sheets_cfg:
         run.status = "failed"
         run.message = "no_enabled_sheets"
         db.commit()
         raise HTTPException(status_code=400, detail="no_enabled_sheets")
-    sheets_cfg = _order_sheets_small_first(
-        db,
-        sheets_cfg,
-        before_batch_id=before_batch_id,
-        after_batch_id=after_batch_id,
-    )
+    if snapshot is None:
+        sheets_cfg = _order_sheets_small_first(
+            db, sheets_cfg, before_batch_id=before_batch_id, after_batch_id=after_batch_id,
+        )
 
     started_mono = time.monotonic()
-    store_mode = normalize_store_unchanged(getattr(j, "store_unchanged", None))
-    pmap = _port_map_dict(db, run.mapping_id)
-    norm_rules = template_iface_normalize(tpl)
+    store_mode = normalize_store_unchanged(
+        snapshot.get("store_unchanged") if snapshot is not None else getattr(j, "store_unchanged", None),
+    )
+    pmap, norm_rules = _run_transform_config(db, run)
     unchanged_listed_total = 0
     unchanged_truncated_any = False
     unchanged_compact_any = False
@@ -2636,6 +2734,8 @@ def _execute_compare_into_run(db: Session, run_id: str) -> dict[str, Any]:
             },
             "sheets": sheet_metas,
         }
+        if snapshot is not None:
+            summary_payload["config_snapshot"] = snapshot
         run = db.get(BizCompareRun, run_id) or run
         if str(run.status or "") == "cancelled":
             return get_run(db, run.id)
@@ -2842,7 +2942,7 @@ def _csv_cell(v: Any) -> str:
     return s
 
 
-def _sheet_csv(sheet: dict[str, Any]) -> str:
+def _sheet_csv_lines(sheet: dict[str, Any], diffs: Iterable[dict[str, Any]]) -> Iterator[str]:
     keys = list(sheet.get("key_fields") or [])
     key_set = set(keys)
     compare = [f for f in list(sheet.get("compare_fields") or []) if f not in key_set]
@@ -2861,8 +2961,8 @@ def _sheet_csv(sheet: dict[str, Any]) -> str:
             headers.append(f"{f}__post")
         else:
             headers.append(f)
-    lines = [",".join(_csv_cell(h) for h in headers)]
-    for d in list(sheet.get("diffs") or []):
+    yield ",".join(_csv_cell(h) for h in headers)
+    for d in diffs:
         kind = str(d.get("kind") or "")
         pre = dict(d.get("mapped_before") or d.get("before") or {})
         post = dict(d.get("after") or {})
@@ -2887,8 +2987,11 @@ def _sheet_csv(sheet: dict[str, Any]) -> str:
                     row.append(pre.get(f, ""))
                 else:
                     row.append(post.get(f, pre.get(f, "")))
-        lines.append(",".join(_csv_cell(x) for x in row))
-    return "\ufeff" + "\n".join(lines) + "\n"
+        yield ",".join(_csv_cell(x) for x in row)
+
+
+def _sheet_csv(sheet: dict[str, Any]) -> str:
+    return "\ufeff" + "\n".join(_sheet_csv_lines(sheet, sheet.get("diffs") or [])) + "\n"
 
 
 def _enrich_summary(summary: dict[str, Any], sheets: list[dict[str, Any]]) -> dict[str, Any]:
@@ -3001,8 +3104,13 @@ def get_run(db: Session, run_id: str) -> dict[str, Any]:
     r = db.get(BizCompareRun, run_id)
     if not r:
         raise HTTPException(status_code=404, detail="run_not_found")
-    tpl = db.get(BizCompareTemplate, r.template_id) if r.template_id else None
     summary = dict(r.summary_json or {})
+    snapshot = _run_config_snapshot(r)
+    tpl = db.get(BizCompareTemplate, r.template_id) if r.template_id and snapshot is None else None
+    template_out = (
+        deepcopy(snapshot.get("template")) if snapshot is not None
+        else (_template_out(tpl) if tpl else None)
+    )
     raw_sheets = _sheet_meta_from_summary(summary, r, tpl)
     # Never return full diffs in run detail (million-row safe)
     sheets = [
@@ -3023,22 +3131,31 @@ def get_run(db: Session, run_id: str) -> dict[str, Any]:
     ]
     enriched = _enrich_summary(summary, raw_sheets)
     stored = "rows" if _run_has_diff_rows(db, run_id) else "inline"
-    job = db.get(BizCompareJob, r.job_id) if r.job_id else None
-    mapping = db.get(BizPortMapping, r.mapping_id) if r.mapping_id else None
+    job = db.get(BizCompareJob, r.job_id) if r.job_id and snapshot is None else None
+    mapping = db.get(BizPortMapping, r.mapping_id) if r.mapping_id and snapshot is None else None
     before_side = _compare_side(
-        db, r.before_batch_id, fallback_task_id=(job.before_task_id if job else "")
+        db, r.before_batch_id, fallback_task_id=(
+            snapshot.get("before_task_id", "") if snapshot is not None else (job.before_task_id if job else "")
+        ),
     )
     after_side = _compare_side(
-        db, r.after_batch_id, fallback_task_id=(job.after_task_id if job else "")
+        db, r.after_batch_id, fallback_task_id=(
+            snapshot.get("after_task_id", "") if snapshot is not None else (job.after_task_id if job else "")
+        ),
     )
     return {
         "id": r.id,
         "job_id": r.job_id,
-        "job_name": (job.name if job else "") or "",
+        "job_name": (
+            snapshot.get("job_name", "") if snapshot is not None else ((job.name if job else "") or "")
+        ),
         "template_id": r.template_id,
-        "template_name": (tpl.name if tpl else "") or "",
+        "template_name": (template_out or {}).get("name") or "",
         "mapping_id": r.mapping_id,
-        "mapping_name": (mapping.name if mapping else "") or "",
+        "mapping_name": (
+            snapshot.get("mapping_name", "") if snapshot is not None else ((mapping.name if mapping else "") or "")
+        ),
+        "config_snapshot_version": snapshot["version"] if snapshot is not None else None,
         "before_batch_id": r.before_batch_id,
         "after_batch_id": r.after_batch_id,
         "before": before_side,
@@ -3052,7 +3169,7 @@ def get_run(db: Session, run_id: str) -> dict[str, Any]:
         "mapping_stats": r.mapping_stats_json or {},
         "message": r.message,
         "created_at": r.created_at.isoformat() + "Z" if r.created_at else None,
-        "template": _template_out(tpl) if tpl else None,
+        "template": template_out,
     }
 
 
@@ -3152,11 +3269,15 @@ def _field_qf_sql(field_q: dict[str, str], *, prefix: str = "qf") -> tuple[str, 
     for i, (name, val) in enumerate(field_q.items()):
         sf = _safe_field(name)
         key = f"{prefix}_{i}"
-        params[key] = f"%{val.lower()}%"
+        params[key] = _literal_search_pattern(val)
         parts.append(
             f"lower(trim(both from coalesce(data_json->>'{sf}', ''))) LIKE :{key}"
         )
     return "(" + " AND ".join(parts) + ")", params
+
+
+def _literal_search_pattern(value: str) -> str:
+    return "%" + value.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
 
 
 def _load_metric_rows_for_search(
@@ -3188,7 +3309,9 @@ def _load_metric_rows_for_search(
     lim = max(1, min(int(cap), _LIVE_SEARCH_LOAD_CAP))
     filters = [f for f in (row_filters or []) if isinstance(f, dict)]
 
-    if _dialect_is_postgres(db):
+    if mid != "lldp_neighbor" and _dialect_is_postgres(db) and (
+        not filters or _filters_sql_compatible(filters)
+    ):
         filter_sql, filter_params = ("TRUE", {})
         if filters and _filters_sql_compatible(filters):
             filter_sql, filter_params = compile_row_filters_sql(filters)
@@ -3202,7 +3325,7 @@ def _load_metric_rows_for_search(
             **qf_params,
         }
         if needle:
-            params["kw"] = f"%{needle.lower()}%"
+            params["kw"] = _literal_search_pattern(needle)
             search_parts.append(_kw_match_sql(key_fields))
         search_sql = " AND ".join(f"({p})" for p in search_parts if p and p != "TRUE")
         if not search_sql:
@@ -3246,20 +3369,21 @@ def _load_metric_rows_for_search(
         return out, truncated
 
     # Non-PG / fallback: scan with early stop (OK for tests / small sheets)
-    q = (
-        db.query(BizStateMetricRow)
-        .filter(
-            BizStateMetricRow.batch_id == bid,
-            BizStateMetricRow.metric_id == mid,
-        )
-        .order_by(BizStateMetricRow.seq.asc(), BizStateMetricRow.id.asc())
-    )
+    model = BizStateLldpNeighbor if mid == "lldp_neighbor" else BizStateMetricRow
+    q = db.query(model).filter(model.batch_id == bid)
+    if mid == "lldp_neighbor":
+        q = q.order_by(model.id.asc())
+    else:
+        q = q.filter(model.metric_id == mid).order_by(model.seq.asc(), model.id.asc())
     out = []
     truncated = False
     needle_l = needle.lower()
     key_set = [str(k).strip() for k in key_fields if str(k).strip()]
     for r in q.yield_per(500):
-        data = dict(r.data_json or {})
+        data = (
+            {f: getattr(r, f) for f in ("local_if", "remote_sys", "remote_if", "remote_ip", "protocol")}
+            if mid == "lldp_neighbor" else dict(r.data_json or {})
+        )
         row = {
             **data,
             "_netx": {
@@ -3297,12 +3421,73 @@ def _load_metric_rows_for_search(
             if not hit:
                 db.expunge(r)
                 continue
-        out.append(row)
         db.expunge(r)
         if len(out) >= lim:
             truncated = True
             break
+        out.append(row)
     return out, truncated
+
+
+def _load_search_key_groups(
+    db: Session, *, batch_id: str, metric_id: str, keys: set[tuple[str, ...]],
+    match_keys: list[str], iface_fields: list[str], row_filters: list[dict[str, Any]],
+    norm_rules: list[dict[str, str]], port_map: dict[str, str],
+) -> tuple[list[dict[str, Any]], set[tuple[str, ...]]]:
+    """Complete candidate key groups so a one-sided search cannot change verdicts.
+
+    Interface transforms run in Python. Other identity fields narrow the SQL
+    query. If the load budget is exceeded, omit entire groups rather than compare
+    partial groups and manufacture additions/deletions.
+    """
+    from ..models import BizStateMetricRow
+
+    model = BizStateLldpNeighbor if metric_id == "lldp_neighbor" else BizStateMetricRow
+    invariant = [f for f in match_keys if f not in iface_fields]
+    positions = [match_keys.index(f) for f in invariant]
+    coarse = sorted({tuple(k[i] for i in positions) for k in keys})
+    out: list[dict[str, Any]] = []
+    complete: set[tuple[str, ...]] = set()
+    # Bound memory even when a candidate identifies a very large duplicate group.
+    budget = _LIVE_SEARCH_GROUP_LOAD_CAP
+    for start in range(0, len(coarse), 100):
+        group = coarse[start:start + 100]
+        group_set = set(group)
+        target = {k for k in keys if tuple(k[i] for i in positions) in group_set}
+        q = db.query(model).filter(model.batch_id == batch_id)
+        if metric_id == "lldp_neighbor":
+            q = q.order_by(model.id.asc())
+        else:
+            q = q.filter(model.metric_id == metric_id).order_by(model.seq.asc(), model.id.asc())
+        if invariant:
+            exprs = [func.trim(func.coalesce(
+                cast(getattr(model, f) if metric_id == "lldp_neighbor"
+                     else model.data_json[f].as_string(), String), "")) for f in invariant]
+            q = q.filter(tuple_(*exprs).in_(group))
+        rows = q.limit(budget + 1).all()
+        if len(rows) > budget:
+            for r in rows:
+                db.expunge(r)
+            # No partial verdicts. Later groups may still fit the remaining budget.
+            continue
+        budget -= len(rows)
+        complete.update(target)
+        for r in rows:
+            data = (
+                {f: getattr(r, f) for f in ("local_if", "remote_sys", "remote_if", "remote_ip", "protocol")}
+                if metric_id == "lldp_neighbor" else dict(r.data_json or {})
+            )
+            row = {**data, "_netx": {"row_id": r.id}}
+            db.expunge(r)
+            if row_filters and not all(row_matches_filter(row, f) for f in row_filters):
+                continue
+            normalized = apply_iface_normalize_rows(
+                [row], iface_fields=iface_fields, rules=norm_rules,
+            )[0]
+            mapped = apply_port_map(normalized, iface_fields=iface_fields, port_map=port_map)
+            if row_key(mapped, match_keys) in target:
+                out.append(row)
+    return out, complete
 
 
 def _live_search_sheet_diffs(
@@ -3316,7 +3501,7 @@ def _live_search_sheet_diffs(
     page: int,
     page_size: int,
 ) -> dict[str, Any]:
-    """Search before/after metric tables, zip-compare, filter by kind tab."""
+    """Find candidate keys, complete both sides, then compare and filter pairs."""
     mid_src = str(sheet.get("metric_id") or "").strip()
     sid = sheet_key(sheet)
     key_fields = list(sheet.get("key_fields") or [])
@@ -3328,7 +3513,7 @@ def _live_search_sheet_diffs(
     )
     row_filters = list(sheet.get("row_filters") or [])
     # Older runs may lack row_filters on sheet meta — fall back to template
-    if not row_filters and run.template_id:
+    if "row_filters" not in sheet and _run_config_snapshot(run) is None and run.template_id:
         tpl = db.get(BizCompareTemplate, run.template_id)
         if tpl:
             for s in template_metrics(tpl):
@@ -3363,9 +3548,7 @@ def _live_search_sheet_diffs(
     ignore_ports = sheet.get("ignore_port_changes")
     if ignore_ports is not None:
         ignore_ports = bool(ignore_ports)
-    pmap = _port_map_dict(db, str(run.mapping_id or ""))
-    tpl = db.get(BizCompareTemplate, run.template_id) if run.template_id else None
-    norm_rules = template_iface_normalize(tpl)
+    pmap, norm_rules = _run_transform_config(db, run)
 
     before_rows, trunc_b = _load_metric_rows_for_search(
         db,
@@ -3385,6 +3568,31 @@ def _live_search_sheet_diffs(
         kw=free_kw,
         field_q=merged_q,
     )
+    match_keys = list((sheet.get("summary") or {}).get("match_key_fields") or key_fields)
+    if ignore_ports is True and not pmap:
+        match_keys = [f for f in key_fields if f not in iface_fields] or key_fields
+    keys: set[tuple[str, ...]] = set()
+    for rows, mapping in ((before_rows, pmap), (after_rows, {})):
+        for row in apply_iface_normalize_rows(rows, iface_fields=iface_fields, rules=norm_rules):
+            keys.add(row_key(apply_port_map(row, iface_fields=iface_fields, port_map=mapping), match_keys))
+    before_rows, complete_b = _load_search_key_groups(
+        db, batch_id=str(run.before_batch_id or ""), metric_id=mid_src, keys=keys,
+        match_keys=match_keys, iface_fields=iface_fields, row_filters=row_filters,
+        norm_rules=norm_rules, port_map=pmap,
+    )
+    after_rows, complete_a = _load_search_key_groups(
+        db, batch_id=str(run.after_batch_id or ""), metric_id=mid_src, keys=keys,
+        match_keys=match_keys, iface_fields=iface_fields, row_filters=row_filters,
+        norm_rules=norm_rules, port_map={},
+    )
+    complete = complete_b & complete_a
+    def keep_complete(rows: list[dict[str, Any]], mapping: dict[str, str]) -> list[dict[str, Any]]:
+        normalized = apply_iface_normalize_rows(rows, iface_fields=iface_fields, rules=norm_rules)
+        return [orig for orig, norm in zip(rows, normalized) if row_key(
+            apply_port_map(norm, iface_fields=iface_fields, port_map=mapping), match_keys,
+        ) in complete]
+    before_rows = keep_complete(before_rows, pmap)
+    after_rows = keep_complete(after_rows, {})
     result = compare_rows(
         before_rows=before_rows,
         after_rows=after_rows,
@@ -3394,17 +3602,19 @@ def _live_search_sheet_diffs(
         port_map=pmap,
         field_rules=field_rules,
         iface_normalize_rules=norm_rules,
-        ignore_port_changes=ignore_ports,
+        ignore_port_changes=(match_keys != key_fields) if not pmap else False,
         include_unchanged=True,
         unchanged_limit=None,
         compact_unchanged=False,
     )
     kind_n = (kind or "diff").strip().lower()
     filtered = [
-        d for d in list(result.get("diffs") or []) if _kind_allows(kind_n, str(d.get("kind") or ""))
+        d for d in list(result.get("diffs") or [])
+        if _kind_allows(kind_n, str(d.get("kind") or ""))
+        and _diff_matches_search(d, kw=free_kw, field_q=merged_q)
     ]
     # Cap pairs returned to keep UI snappy
-    truncated = bool(trunc_b or trunc_a or len(filtered) > _LIVE_SEARCH_RESULT_CAP)
+    truncated = bool(trunc_b or trunc_a or complete != keys or len(filtered) > _LIVE_SEARCH_RESULT_CAP)
     filtered = filtered[:_LIVE_SEARCH_RESULT_CAP]
     total = len(filtered)
     start = (page - 1) * page_size
@@ -3452,10 +3662,17 @@ def list_run_diffs(
     sheets = _sheet_meta_from_summary(summary, r, tpl)
     asked = (metric_id or "").strip()
     sheet = _lookup_sheet(sheets, asked) if asked else (sheets[0] if sheets else None)
+    if asked and sheet is None:
+        raise HTTPException(status_code=404, detail="sheet_not_found")
     mid = sheet_key(sheet) if sheet else (asked or str(r.metric_id or ""))
 
-    # Unified search: kw and/or field filters → live source lookup; kind tab only filters.
-    if (kw_n or field_q) and sheet:
+    # Only reconstruct missing success rows. Persisted verdicts must stay stable
+    # while searching and avoid loading/recomparing source tables on every page.
+    sheet_summary = (sheet or {}).get("summary") or {}
+    success_missing = int(sheet_summary.get("unchanged") or 0) > int(
+        sheet_summary.get("unchanged_listed") or 0
+    )
+    if (kw_n or field_q) and sheet and kind_n in ("all", "unchanged") and success_missing:
         return _live_search_sheet_diffs(
             db,
             r,
@@ -3480,6 +3697,9 @@ def list_run_diffs(
             q = q.filter(BizCompareDiff.kind == "changed")
         elif kind_n != "all":
             q = q.filter(BizCompareDiff.kind == kind_n)
+        if kw_n or field_q:
+            q = _search_stored_diffs(q, metric_id=str((sheet or {}).get("metric_id") or mid),
+                                     kw=kw_n, field_q=field_q)
         total = q.count()
         rows = (
             q.order_by(BizCompareDiff.seq.asc(), BizCompareDiff.id.asc())
@@ -3487,7 +3707,7 @@ def list_run_diffs(
             .limit(size_n)
             .all()
         )
-        items = _hydrate_diff_rows(db, [_diff_row_out(x) for x in rows])
+        items = _hydrate_diff_rows(db, [_diff_row_out(x) for x in rows], run=r, sheet=sheet)
         return {
             "total": total,
             "page": page_n,
@@ -3505,7 +3725,7 @@ def list_run_diffs(
     inline = list((sheet or {}).get("diffs") or [])
     if not inline and mid == r.metric_id:
         inline = list(r.diffs_json or [])
-    filtered = _filter_inline_diffs(inline, kind=kind_n, kw="")
+    filtered = _filter_inline_diffs(inline, kind=kind_n, kw=kw_n, field_q=field_q)
     total = len(filtered)
     start = (page_n - 1) * size_n
     page_items = filtered[start : start + size_n]
@@ -3520,44 +3740,53 @@ def list_run_diffs(
     }
 
 
-def _iter_sheet_diffs(db: Session, run_id: str, metric_id: str) -> list[dict[str, Any]]:
-    """Load all diffs for one sheet (export). Prefer row table; fall back to inline.
+def _iter_sheet_diffs(db: Session, run_id: str, metric_id: str) -> Iterator[dict[str, Any]]:
+    """Stream one sheet using a stable (seq, id) cursor; fall back to inline.
 
     Compact success rows are hydrated in chunks from metric tables.
     """
+    r = db.get(BizCompareRun, run_id)
+    if not r:
+        return
+    tpl = db.get(BizCompareTemplate, r.template_id) if r.template_id else None
+    sheets = _sheet_meta_from_summary(dict(r.summary_json or {}), r, tpl)
+    sheet = next((s for s in sheets if sheet_key(s) == metric_id), None)
     if _run_has_diff_rows(db, run_id):
-        out: list[dict[str, Any]] = []
-        offset = 0
+        cursor: tuple[int, str] | None = None
         while True:
-            rows = (
-                db.query(BizCompareDiff)
-                .filter(BizCompareDiff.run_id == run_id, BizCompareDiff.metric_id == metric_id)
+            q = db.query(BizCompareDiff).filter(
+                BizCompareDiff.run_id == run_id, BizCompareDiff.metric_id == metric_id,
+            )
+            if cursor is not None:
+                seq, diff_id = cursor
+                q = q.filter(or_(BizCompareDiff.seq > seq, and_(
+                    BizCompareDiff.seq == seq, BizCompareDiff.id > diff_id,
+                )))
+            rows = (q
                 .order_by(BizCompareDiff.seq.asc(), BizCompareDiff.id.asc())
-                .offset(offset)
                 .limit(_DIFF_CHUNK)
                 .all()
             )
             if not rows:
                 break
-            chunk = _hydrate_diff_rows(db, [_diff_row_out(x) for x in rows])
-            out.extend(chunk)
-            offset += len(rows)
+            chunk = _hydrate_diff_rows(db, [_diff_row_out(x) for x in rows], run=r, sheet=sheet)
+            cursor = (rows[-1].seq, rows[-1].id)
+            yield from chunk
             if len(rows) < _DIFF_CHUNK:
                 break
-        return out
-    r = db.get(BizCompareRun, run_id)
-    if not r:
-        return []
+            # Release the previous chunk before loading the next one.
+            del rows, chunk
+        return
     summary = dict(r.summary_json or {})
     sheets = list(summary.get("sheets") or [])
     for sh in sheets:
         if sheet_key(sh) == metric_id or (
             str(sh.get("metric_id") or "") == metric_id and sheet_key(sh) == metric_id
         ):
-            return list(sh.get("diffs") or [])
+            yield from sh.get("diffs") or []
+            return
     if metric_id == r.metric_id:
-        return list(r.diffs_json or [])
-    return []
+        yield from r.diffs_json or []
 
 
 def export_run_zip(db: Session, run_id: str) -> bytes:
@@ -3586,14 +3815,17 @@ def export_run_zip(db: Session, run_id: str) -> bytes:
                 f"+{card.get('added')}/-{card.get('removed')}/~{card.get('changed')}/= {card.get('unchanged')}"
             )
         zf.writestr("manifest.txt", "\n".join(manifest) + "\n")
+        run = db.get(BizCompareRun, run_id)
+        snapshot = _run_config_snapshot(run) if run else None
+        if snapshot is not None:
+            zf.writestr("config_snapshot.json", json.dumps(snapshot, ensure_ascii=False, indent=2))
         for sheet in list(detail.get("sheets") or []):
             sid = sheet_key(sheet) or "sheet"
             safe = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in sid)[:80] or "sheet"
-            sheet_full = {
-                **sheet,
-                "diffs": _iter_sheet_diffs(db, run_id, sid),
-            }
-            zf.writestr(f"tables/{safe}.csv", _sheet_csv(sheet_full))
+            with zf.open(f"tables/{safe}.csv", "w", force_zip64=True) as csv_file:
+                csv_file.write(b"\xef\xbb\xbf")
+                for line in _sheet_csv_lines(sheet, _iter_sheet_diffs(db, run_id, sid)):
+                    csv_file.write((line + "\n").encode("utf-8"))
         sum_lines = ["metric_id,mode,before,after,added,removed,changed,unchanged,diff_count,pass_rate"]
         for card in list(s.get("sheet_cards") or []):
             sum_lines.append(

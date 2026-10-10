@@ -845,7 +845,7 @@ function TplRowFiltersEditor({
                       Array.isArray(filt.value) ? filt.value.join(",") : String(filt.value ?? "")
                     }
                     placeholder={t("bizCompare.filterValue")}
-                    isDisabled={["empty", "not_empty", "age_timer"].includes(filt.op || "")}
+                    disabled={["empty", "not_empty", "age_timer"].includes(filt.op || "")}
                     onChange={(e) => {
                       const next = groups.map((g) => g.map((x) => ({ ...x })));
                       const op = next[gi][fi]?.op || "eq";
@@ -891,10 +891,6 @@ function TplRowFiltersEditor({
       ))}
     </div>
   );
-}
-
-function metricLabel(id: string) {
-  return id;
 }
 
 export type BizComparePageMode = "jobs" | "templates" | "all";
@@ -988,6 +984,12 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
   const [diffsLoading, setDiffsLoading] = useState(false);
   const [diffsSource, setDiffsSource] = useState<DiffListSource>("");
   const [diffsTruncated, setDiffsTruncated] = useState(false);
+  const [diffsError, setDiffsError] = useState("");
+  const [diffsRetry, setDiffsRetry] = useState(0);
+  const jobRequestRef = useRef(0);
+  const runRequestRef = useRef(0);
+  const listsRequestRef = useRef(0);
+  const diffFiltersRef = useRef("");
   const boardRef = useRef<HTMLDivElement | null>(null);
   const tableScrollRef = useRef<HTMLDivElement | null>(null);
   const tableScrollPosRef = useRef({ top: 0, left: 0 });
@@ -996,6 +998,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
   const tplImportRef = useRef<HTMLInputElement | null>(null);
 
   const refresh = useCallback(async (opts?: { force?: boolean }) => {
+    const request = ++listsRequestRef.current;
     type Bundle = {
       taskRes: Awaited<ReturnType<typeof bizStateListTasks>>;
       tpl: Awaited<ReturnType<typeof bizCompareListTemplates>>;
@@ -1014,6 +1017,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
       return { taskRes, tpl, maps, j, met };
     };
     const apply = (b: Bundle) => {
+      if (request !== listsRequestRef.current) return;
       setTasks((b.taskRes.items || []) as TaskOpt[]);
       setTemplates((b.tpl.items || []) as Template[]);
       setMappings((b.maps.items || []) as Mapping[]);
@@ -1038,8 +1042,12 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refresh]);
 
+  useEffect(() => () => { listsRequestRef.current += 1; }, []);
+
   // Keep local tab + dismiss overlays when route mode flips (component may be reused).
   useEffect(() => {
+    jobRequestRef.current += 1;
+    runRequestRef.current += 1;
     if (pageMode === "templates") setPageTab("templates");
     else if (pageMode === "jobs") setPageTab("jobs");
     setTplOpen(false);
@@ -1053,39 +1061,55 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
       void document.exitFullscreen().catch(() => undefined);
     }
     setBoardFs(false);
+    return () => {
+      jobRequestRef.current += 1;
+      runRequestRef.current += 1;
+    };
   }, [pageMode]);
 
   useEffect(() => {
+    let cancelled = false;
+    setBeforeBatches([]);
     void (async () => {
-      if (!beforeTaskId) {
-        setBeforeBatches([]);
-        return;
+      if (!beforeTaskId) return;
+      try {
+        const b = await cutoverCachedGet(`bizCompare:batches:${beforeTaskId}`,
+          () => bizStateListBatches(beforeTaskId), { ttlMs: 5000 });
+        if (!cancelled) setBeforeBatches((b.items || []) as BatchOpt[]);
+      } catch (e) {
+        if (!cancelled) showError(formatErr(e));
       }
-      const b = await bizStateListBatches(beforeTaskId);
-      setBeforeBatches((b.items || []) as BatchOpt[]);
     })();
-  }, [beforeTaskId]);
+    return () => { cancelled = true; };
+  }, [beforeTaskId, showError]);
 
   useEffect(() => {
+    let cancelled = false;
+    setAfterBatches([]);
     void (async () => {
-      if (!afterTaskId) {
-        setAfterBatches([]);
-        return;
+      if (!afterTaskId) return;
+      try {
+        const b = await cutoverCachedGet(`bizCompare:batches:${afterTaskId}`,
+          () => bizStateListBatches(afterTaskId), { ttlMs: 5000 });
+        if (!cancelled) setAfterBatches((b.items || []) as BatchOpt[]);
+      } catch (e) {
+        if (!cancelled) showError(formatErr(e));
       }
-      const b = await bizStateListBatches(afterTaskId);
-      setAfterBatches((b.items || []) as BatchOpt[]);
     })();
-  }, [afterTaskId]);
+    return () => { cancelled = true; };
+  }, [afterTaskId, showError]);
+
+  const templatesById = useMemo(() => new Map(templates.map((x) => [x.id, x])), [templates]);
 
   const filteredJobs = useMemo(() => {
     const kw = debouncedListKw.trim().toLowerCase();
     if (!kw) return jobs;
     return jobs.filter((j) => {
-      const tpl = templates.find((x) => x.id === j.template_id);
+      const tpl = templatesById.get(j.template_id);
       const mids = (tpl?.metric_ids || templateSheets(tpl).map((s) => s.metric_id)).join(" ");
       return `${j.name} ${j.mode} ${j.status} ${tpl?.name || ""} ${mids}`.toLowerCase().includes(kw);
     });
-  }, [jobs, templates, debouncedListKw]);
+  }, [jobs, templatesById, debouncedListKw]);
 
   const filteredTemplates = useMemo(() => {
     const kw = debouncedListKw.trim().toLowerCase();
@@ -1135,10 +1159,14 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
       const next = currentlyOn.includes(sid)
         ? currentlyOn.filter((id) => id !== sid)
         : [...currentlyOn, sid];
+      if (!next.length) {
+        showError(t("bizCompare.needSheets"));
+        return;
+      }
       // Empty list means "all on" (new template sheets auto-included)
       setEnabledSheetIds(next.length === all.length ? [] : next);
     },
-    [jobSheetAllIds, enabledSheetIds],
+    [jobSheetAllIds, enabledSheetIds, showError, t],
   );
 
   const setJobTemplateAndSheets = useCallback(
@@ -1195,28 +1223,18 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     () => runSheets.find((s) => sheetIdentity(s) === resultSheetId) || runSheets[0] || null,
     [runSheets, resultSheetId],
   );
+  const activeRunSheetId = sheetIdentity(activeRunSheet);
+  const activeRunSheetStatus = String(activeRunSheet?.status || "");
 
   // Clear field filters when switching sheet
   useEffect(() => {
     setResultKeyFilters({});
   }, [resultSheetId]);
 
-  // Reset page when sheet / filter / page size changes
-  useEffect(() => {
-    setResultPage(1);
-  }, [
-    resultSheetId,
-    kindFilter,
-    debouncedResultKw,
-    debouncedKeyFiltersJson,
-    resultPageSize,
-    runDetail?.id,
-  ]);
-
   useEffect(() => {
     const runId = String(runDetail?.id || "");
-    const mid = resultSheetId || sheetIdentity(activeRunSheet) || "";
-    const sheetSt = String(activeRunSheet?.status || "");
+    const mid = resultSheetId || activeRunSheetId || "";
+    const sheetSt = activeRunSheetStatus;
     // Block only while *this* sheet is still in flight — done sheets are readable mid-run
     const sheetStillRunning = ["pending", "running", "queued"].includes(sheetSt);
     if (!runId || !mid || jobDetailTab !== "result" || sheetStillRunning) {
@@ -1224,11 +1242,30 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
       setResultTotal(0);
       setDiffsSource("");
       setDiffsTruncated(false);
+      setDiffsLoading(false);
+      setDiffsError("");
       return;
+    }
+    const filterKey = JSON.stringify([runId, mid, kindFilter, debouncedResultKw,
+      debouncedKeyFiltersJson, resultPageSize]);
+    if (diffFiltersRef.current !== filterKey) {
+      diffFiltersRef.current = filterKey;
+      if (resultPage !== 1) {
+        setPagedDiffs([]);
+        setResultTotal(0);
+        setDiffsLoading(true);
+        setResultPage(1);
+        return;
+      }
     }
     let cancelled = false;
     void (async () => {
       setDiffsLoading(true);
+      setDiffsError("");
+      setPagedDiffs([]);
+      setResultTotal(0);
+      setDiffsSource("");
+      setDiffsTruncated(false);
       try {
         const res = await bizCompareListRunDiffs({
           runId,
@@ -1253,8 +1290,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
         if (resultPage > pages) setResultPage(pages);
       } catch (e) {
         if (!cancelled) {
-          // Keep previous rows to avoid strip/table jump; only clear on hard empty run
-          showError(formatErr(e));
+          setDiffsError(formatErr(e));
         }
       } finally {
         if (!cancelled) setDiffsLoading(false);
@@ -1267,15 +1303,16 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     runDetail?.id,
     runDetail?.status,
     resultSheetId,
-    activeRunSheet?.metric_id,
-    activeRunSheet?.status,
+    activeRunSheetId,
+    activeRunSheetStatus,
     kindFilter,
     debouncedResultKw,
     debouncedKeyFiltersJson,
+    debouncedKeyFilters,
     resultPage,
     resultPageSize,
     jobDetailTab,
-    showError,
+    diffsRetry,
   ]);
 
   const resultColumns = useMemo(() => {
@@ -1991,9 +2028,12 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
   };
 
   const openJob = async (id: string) => {
+    const request = ++jobRequestRef.current;
+    runRequestRef.current += 1;
     setJobId(id);
     setJobDetailTab("config");
     setRunDetail(null);
+    setRuns([]);
     setResultSheetId("");
     setKindFilter("diff");
     setResultKw("");
@@ -2001,20 +2041,24 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
     if (job) resetJobForm(job);
     try {
       const r = await bizCompareListRuns(id, 50);
+      if (request !== jobRequestRef.current) return;
       const items = r.items || [];
       setRuns(items);
       if (items.length) {
         const latest = await bizCompareGetRun(String((items as any[])[0].id));
+        if (request !== jobRequestRef.current) return;
         setRunDetail(latest);
         // Land on batch list so stuck/cancelled runs are visible and actionable
         setJobDetailTab("runs");
       }
     } catch (e) {
-      showError(formatErr(e));
+      if (request === jobRequestRef.current) showError(formatErr(e));
     }
   };
 
   const closeJob = () => {
+    jobRequestRef.current += 1;
+    runRequestRef.current += 1;
     if (document.fullscreenElement === boardRef.current) {
       void document.exitFullscreen().catch(() => undefined);
     }
@@ -2061,20 +2105,26 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
       setJobDetailTab("runs");
       return;
     }
+    const request = jobRequestRef.current;
     setBusy(true);
     try {
       await bizCompareUpdateJob(jobId, jobConfigBody());
       // Async enqueue — returns immediately with status=running; poll below.
       const run = await bizCompareRunJob(jobId);
+      if (request !== jobRequestRef.current) return;
+      runRequestRef.current += 1;
       setRunDetail(run);
       setJobDetailTab("runs");
       showOk(t("bizCompare.runStarted"));
       const r = await bizCompareListRuns(jobId, 50);
+      if (request !== jobRequestRef.current) return;
       setRuns(r.items || []);
       await refresh({ force: true });
     } catch (e) {
-      showError(formatErr(e));
-      setJobDetailTab("runs");
+      if (request === jobRequestRef.current) {
+        showError(formatErr(e));
+        setJobDetailTab("runs");
+      }
     } finally {
       setBusy(false);
     }
@@ -2082,20 +2132,25 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
   const runProgress = (runDetail?.summary?.progress || {}) as RunProgressInfo;
   const runEngine = String(runProgress.engine || "").toLowerCase();
 
-  // Poll active compare runs so the modal can be closed and reopened safely.
+  // One poller; schedule the next tick after requests settle to prevent overlap.
   useEffect(() => {
-    if (!runIsActive || !runDetail?.id) return;
+    if (!jobId || (!runIsActive && !(jobHasActiveRun && jobDetailTab === "runs"))) return;
     let cancelled = false;
     let notified = false;
+    let timer: number | undefined;
+    const jobRequest = jobRequestRef.current;
+    const runId = String(runDetail?.id || "");
     const tick = async () => {
+      const runRequest = runRequestRef.current;
       try {
-        const d = await bizCompareGetRun(String(runDetail.id));
-        if (cancelled) return;
-        setRunDetail(d);
-        if (jobId) {
-          const r = await bizCompareListRuns(jobId);
-          if (!cancelled) setRuns(r.items || []);
-        }
+        const [r, d] = await Promise.all([
+          bizCompareListRuns(jobId, 50),
+          runIsActive && runId ? bizCompareGetRun(runId) : Promise.resolve(null),
+        ]);
+        if (cancelled || jobRequest !== jobRequestRef.current) return;
+        setRuns(r.items || []);
+        if (!d || runRequest !== runRequestRef.current) return;
+        setRunDetail((prev: typeof runDetail) => String(prev?.id || "") === runId ? d : prev);
         const st = String(d.status || "");
         if (!notified && st === "success") {
           notified = true;
@@ -2111,62 +2166,45 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
         }
       } catch (e) {
         if (!cancelled) showError(formatErr(e));
+      } finally {
+        if (!cancelled) timer = window.setTimeout(() => void tick(), 2000);
       }
     };
     void tick();
-    const id = window.setInterval(() => void tick(), 2000);
     return () => {
       cancelled = true;
-      window.clearInterval(id);
+      window.clearTimeout(timer);
     };
-  }, [runDetail?.id, runIsActive, jobId, showOk, showError, t]);
-
-  // Keep the runs list fresh while any batch on this job is active
-  useEffect(() => {
-    if (!jobId || !jobHasActiveRun || jobDetailTab !== "runs") return;
-    let cancelled = false;
-    const tick = async () => {
-      try {
-        const r = await bizCompareListRuns(jobId, 50);
-        if (!cancelled) setRuns(r.items || []);
-        const curId = String(runDetail?.id || "");
-        if (curId) {
-          const d = await bizCompareGetRun(curId);
-          if (!cancelled) setRunDetail(d);
-        }
-      } catch {
-        /* ignore list poll errors */
-      }
-    };
-    void tick();
-    const id = window.setInterval(() => void tick(), 2500);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
-  }, [jobId, jobHasActiveRun, jobDetailTab, runDetail?.id]);
+  }, [runDetail?.id, runIsActive, jobId, jobHasActiveRun, jobDetailTab, showOk, showError, t]);
 
   const loadRun = async (runId: string) => {
+    const request = ++runRequestRef.current;
+    const jobRequest = jobRequestRef.current;
     try {
       const d = await bizCompareGetRun(runId);
+      if (request !== runRequestRef.current || jobRequest !== jobRequestRef.current) return;
       setRunDetail(d);
       setKindFilter("diff");
       setResultKw("");
+      setResultKeyFilters({});
       setJobDetailTab("result");
     } catch (e) {
-      showError(formatErr(e));
+      if (request === runRequestRef.current && jobRequest === jobRequestRef.current) showError(formatErr(e));
     }
   };
 
   const cancelRun = async (runId: string) => {
     if (!runId) return;
     if (!window.confirm(t("bizCompare.confirmCancelRun"))) return;
+    const request = jobRequestRef.current;
     setBusy(true);
     try {
       const d = await bizCompareCancelRun(runId);
-      if (String(runDetail?.id || "") === runId) setRunDetail(d);
+      if (request !== jobRequestRef.current) return;
+      setRunDetail((prev: typeof runDetail) => String(prev?.id || "") === runId ? d : prev);
       if (jobId) {
         const r = await bizCompareListRuns(jobId, 50);
+        if (request !== jobRequestRef.current) return;
         setRuns(r.items || []);
       }
       showOk(t("bizCompare.runCancelled"));
@@ -2180,19 +2218,24 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
   const removeRun = async (runId: string) => {
     if (!runId) return;
     if (!window.confirm(t("bizCompare.confirmDeleteRun"))) return;
+    const request = jobRequestRef.current;
+    const runRequest = runRequestRef.current;
     setBusy(true);
     try {
       const wasCurrent = String(runDetail?.id || "") === runId;
       await bizCompareDeleteRun(runId);
+      if (request !== jobRequestRef.current) return;
       let nextRuns: typeof runs = [];
       if (jobId) {
         const r = await bizCompareListRuns(jobId, 50);
+        if (request !== jobRequestRef.current) return;
         nextRuns = r.items || [];
       } else {
         nextRuns = (runs || []).filter((r) => String(r.id) !== runId);
       }
       setRuns(nextRuns);
-      if (wasCurrent) {
+      if (wasCurrent && runRequest === runRequestRef.current) {
+        runRequestRef.current += 1;
         setRunDetail(null);
         setResultSheetId("");
         setJobDetailTab("runs");
@@ -2542,7 +2585,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
               </thead>
               <tbody>
                 {filteredJobs.map((j) => {
-                  const tpl = templates.find((x) => x.id === j.template_id);
+                  const tpl = templatesById.get(j.template_id);
                   const n = templateSheets(tpl).length;
                   return (
                     <tr key={j.id}>
@@ -2882,7 +2925,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                                         : ""
                                     }
                                     placeholder={cmpMode === "percent" ? "%" : ""}
-                                    isDisabled={!isCompare || !needsTol}
+                                    disabled={!isCompare || !needsTol}
                                     onChange={(e) => {
                                       const raw = e.target.value.trim();
                                       const tol = raw === "" ? undefined : Number(raw);
@@ -3113,7 +3156,12 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
               className={jobDetailTab === "runs" ? "is-active" : undefined}
               onPress={() => {
                 setJobDetailTab("runs");
-                if (jobId) void bizCompareListRuns(jobId, 50).then((r) => setRuns(r.items || []));
+                const request = jobRequestRef.current;
+                if (jobId) void bizCompareListRuns(jobId, 50).then((r) => {
+                  if (request === jobRequestRef.current) setRuns(r.items || []);
+                }).catch((e) => {
+                  if (request === jobRequestRef.current) showError(formatErr(e));
+                });
               }}
             >
               {t("bizCompare.tabRuns")}
@@ -3353,6 +3401,18 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                         );
                       })()}
                     </div>
+                  ) : null}
+                  {runDetail ? (
+                    <span
+                      className={`bs-cmp-board__config${runDetail.config_snapshot_version ? "" : " is-legacy"}`}
+                      title={t(runDetail.config_snapshot_version
+                        ? "bizCompare.configSnapshotHint"
+                        : "bizCompare.configLegacyHint")}
+                    >
+                      {t(runDetail.config_snapshot_version
+                        ? "bizCompare.configSnapshot"
+                        : "bizCompare.configLegacy")}
+                    </span>
                   ) : null}
                   {!boardFs ? (
                     <>
@@ -3757,6 +3817,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                             className={`bs-cmp-strip__kind bs-cmp-strip__kind--${cls}${
                               kindFilter === id ? " is-active" : ""
                             }`}
+                            aria-pressed={kindFilter === id}
                             onClick={() => setKindFilter(id as KindFilter)}
                           >
                             {id === "diff"
@@ -3782,16 +3843,22 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                       <div className="bs-cmp-filter-bar">
                         <Input
                           value={resultKw}
+                          aria-label={t("bizCompare.resultFilterPh")}
                           placeholder={t("bizCompare.resultFilterPh")}
                           onChange={(e) => setResultKw(e.target.value)}
                         />
-                        <span className="muted bs-sheet-count">
-                          {diffsLoading ? "…" : `${pagedDiffs.length}/${resultTotal}`}
+                        <span className="muted bs-sheet-count" role="status" aria-live="polite">
+                          {diffsLoading ? "…" : t("bizCompare.resultRange", {
+                            from: resultTotal ? (resultPage - 1) * resultPageSize + 1 : 0,
+                            to: Math.min(resultPage * resultPageSize, resultTotal),
+                            total: resultTotal,
+                          })}
                         </span>
                         {resultSearchKeyFields.length ? (
                           <button
                             type="button"
                             className={`bs-cmp-strip__toggle${keyFiltersVisible ? " is-active" : ""}`}
+                            aria-expanded={keyFiltersVisible}
                             onClick={() => setKeyFiltersOpen((v) => !v)}
                           >
                             {t("bizCompare.keyFiltersToggle")}
@@ -3809,6 +3876,14 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                         >
                           {t("bizCompare.displayColsToggle")}
                         </button>
+                      {(resultKw.trim() || activeKeyFilterCount > 0) ? (
+                        <Button size="sm" variant="ghost" onPress={() => {
+                          setResultKw("");
+                          setResultKeyFilters({});
+                        }}>
+                          {t("bizCompare.clearSearch")}
+                        </Button>
+                      ) : null}
                       </div>
                       {resultSearchKeyFields.length && keyFiltersVisible ? (
                         <div className="bs-cmp-key-filters">
@@ -3856,10 +3931,10 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                       ) : null}
                       {!isLiveSearch &&
                       kindFilter === "unchanged" &&
-                      (runDetail?.summary?.unchanged_truncated ||
+                      (activeRunSheet?.summary?.unchanged_truncated ||
                         (Number(
-                          (activeRunSheet?.summary as any)?.unchanged ||
-                            runDetail?.summary?.unchanged ||
+                          (activeRunSheet?.summary as any)?.unchanged ??
+                            runDetail?.summary?.unchanged ??
                             0,
                         ) >
                           Number(
@@ -3899,6 +3974,7 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                       className={`pt-list-table-wrap bs-sheet-table bs-cmp-result-table${
                         diffsLoading ? " is-loading" : ""
                       }`}
+                      aria-busy={diffsLoading}
                     >
                       <table className="data-table pt-list-table bs-cmp-diff-table">
                         <thead>
@@ -4004,6 +4080,22 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                           })()}
                         </thead>
                         <tbody>
+                          {diffsLoading || diffsError ? (
+                            <tr>
+                              <td colSpan={resultEmptyColSpan}>
+                                <div className={`bs-cmp-result-state${diffsError ? " is-error" : ""}`}
+                                  role={diffsError ? "alert" : "status"}>
+                                  <strong>{t(diffsError ? "bizCompare.resultLoadFailed" : "bizCompare.resultLoading")}</strong>
+                                  {diffsError ? <>
+                                    <span>{diffsError}</span>
+                                    <Button size="sm" variant="secondary" onPress={() => setDiffsRetry((n) => n + 1)}>
+                                      {t("bizCompare.retry")}
+                                    </Button>
+                                  </> : null}
+                                </div>
+                              </td>
+                            </tr>
+                          ) : null}
                           {pagedDiffs.map((d, i) => {
                             const pre = pickSideRow(
                               d.mapped_before as Record<string, unknown> | null | undefined,
@@ -4081,13 +4173,13 @@ export function BizComparePage({ pageMode = "all" }: { pageMode?: BizComparePage
                               </tr>
                             );
                           })}
-                          {runDetail && !diffsLoading && !pagedDiffs.length ? (
+                          {runDetail && !diffsLoading && !diffsError && !pagedDiffs.length ? (
                             <tr>
                               <td colSpan={resultEmptyColSpan}>
                                 <div className="pt-list-empty">
-                                  {kindFilter === "unchanged"
-                                    ? Number(runDetail?.summary?.unchanged || 0) > 0 &&
-                                      !Number(runDetail?.summary?.unchanged_listed || 0)
+                                  {hasResultSearch ? t("bizCompare.searchEmpty") : kindFilter === "unchanged"
+                                    ? Number(activeRunSheet?.summary?.unchanged || 0) > 0 &&
+                                      !Number(activeRunSheet?.summary?.unchanged_listed || 0)
                                       ? t("bizCompare.unchangedNotStored")
                                       : t("bizCompare.resultEmpty")
                                     : activeSheetPending

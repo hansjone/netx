@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from collections import defaultdict, deque
-from typing import Any, Mapping, Sequence
+from collections import defaultdict
+from heapq import heappush, heapreplace
+from itertools import chain
+from typing import Any, Iterable, Mapping, Sequence
 
 from .compare_rules import field_rule_map, values_equal, explain_diff
 from .iface_normalize import (
@@ -28,36 +30,52 @@ def stratum_key(row: Mapping[str, Any] | None) -> str:
     return "|".join(parts) if parts else "_"
 
 
-def stratify_take(items: list[Any], limit: int, *, key_fn) -> list[Any]:
-    """Round-robin across strata so one neighbor/direction cannot consume the whole sample."""
-    lim = max(0, int(limit))
-    if lim <= 0 or not items:
+class _StratifiedSample:
+    """Keep the first N round-robin ranks in O(N) space, even with many strata."""
+
+    def __init__(self, limit: int) -> None:
+        self.limit = max(0, int(limit))
+        self.count = 0
+        self.strata: dict[str, tuple[int, int]] = {}
+        self.heap: list[tuple[int, int, int, Any]] = []
+
+    def add(self, item: Any, key: str) -> None:
+        serial = self.count
+        self.count += 1
+        if not self.limit:
+            return
+        state = self.strata.get(key)
+        if state is None:
+            # Later strata cannot beat the first item of N earlier strata.
+            if len(self.strata) >= self.limit:
+                return
+            index, round_n = len(self.strata), 0
+        else:
+            index, round_n = state
+        self.strata[key] = (index, round_n + 1)
+        entry = (-round_n, -index, serial, item)
+        if len(self.heap) < self.limit:
+            heappush(self.heap, entry)
+        elif entry[:2] > self.heap[0][:2]:
+            heapreplace(self.heap, entry)
+
+    def picked(self) -> list[Any]:
+        # The legacy helper preserves encounter order when no truncation occurs.
+        if self.count <= self.limit:
+            entries = sorted(self.heap, key=lambda e: e[2])
+        else:
+            entries = sorted(self.heap, key=lambda e: (-e[0], -e[1]))
+        return [entry[3] for entry in entries]
+
+
+def stratify_take(items: Iterable[Any], limit: int, *, key_fn) -> list[Any]:
+    """Round-robin across strata without retaining every candidate."""
+    sample = _StratifiedSample(limit)
+    if not sample.limit:
         return []
-    if len(items) <= lim:
-        return list(items)
-    buckets: dict[str, deque[Any]] = defaultdict(deque)
-    order: list[str] = []
-    for it in items:
-        sk = str(key_fn(it) or "_")
-        if sk not in buckets:
-            order.append(sk)
-        buckets[sk].append(it)
-    out: list[Any] = []
-    while len(out) < lim and buckets:
-        drained: list[str] = []
-        for sk in order:
-            q = buckets.get(sk)
-            if not q:
-                drained.append(sk)
-                continue
-            out.append(q.popleft())
-            if len(out) >= lim:
-                break
-        for sk in drained:
-            buckets.pop(sk, None)
-            if sk in order:
-                order = [x for x in order if x != sk]
-    return out
+    for item in items:
+        sample.add(item, str(key_fn(item) or "_"))
+    return sample.picked()
 
 
 def apply_port_map(
@@ -198,10 +216,10 @@ def compare_rows(
 
     before_norm = apply_iface_normalize_rows(
         before_rows, iface_fields=iface_list, rules=norm_rules
-    )
+    ) if norm_rules and iface_list else before_rows
     after_norm = apply_iface_normalize_rows(
         after_rows, iface_fields=iface_list, rules=norm_rules
-    )
+    ) if norm_rules and iface_list else after_rows
 
     ignore_ports = False
     # No map → optionally ignore port renames by dropping iface from match key.
@@ -216,9 +234,16 @@ def compare_rows(
             match_keys = list(key_fields)
         else:
             # Auto heuristic (legacy default)
-            before_c = [row_key(r, candidate) for r in before_norm]
-            after_c = [row_key(r, candidate) for r in after_norm]
-            if len(before_c) == len(set(before_c)) and len(after_c) == len(set(after_c)):
+            def unique_keys(rows: list[dict[str, Any]]) -> bool:
+                seen: set[tuple[str, ...]] = set()
+                for row in rows:
+                    key = row_key(row, candidate)
+                    if key in seen:
+                        return False
+                    seen.add(key)
+                return True
+
+            if unique_keys(before_norm) and unique_keys(after_norm):
                 match_keys = candidate
                 ignore_ports = True
             else:
@@ -226,15 +251,12 @@ def compare_rows(
     else:
         match_keys = list(key_fields)
 
-    before_mapped: list[dict[str, Any]] = [
-        apply_port_map(r, iface_fields=iface_list, port_map=pmap) for r in before_norm
-    ]
-
     before_groups: dict[tuple[str, ...], list[tuple[dict[str, Any], dict[str, Any]]]] = (
         defaultdict(list)
     )
     after_groups: dict[tuple[str, ...], list[dict[str, Any]]] = defaultdict(list)
-    for orig, mapped in zip(before_rows, before_mapped):
+    for orig, norm in zip(before_rows, before_norm):
+        mapped = apply_port_map(norm, iface_fields=iface_list, port_map=pmap) if iface_list else norm
         before_groups[row_key(mapped, match_keys)].append((orig, mapped))
     for r in after_norm:
         after_groups[row_key(r, match_keys)].append(r)
@@ -246,6 +268,7 @@ def compare_rows(
     multi_before_keys: list[tuple[str, ...]] = []
     multi_after_keys: list[tuple[str, ...]] = []
     unchanged_candidates: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]] = []
+    sample = _StratifiedSample(limit_n) if include_unchanged and limit_n is not None else None
 
     def _key_obj(row: dict[str, Any]) -> dict[str, Any]:
         return {f: row.get(f, "") for f in key_fields}
@@ -294,18 +317,7 @@ def compare_rows(
             )
 
     # Stable key order: before encounter order, then after-only keys
-    seen_keys: set[tuple[str, ...]] = set()
-    ordered_keys: list[tuple[str, ...]] = []
-    for orig, mapped in zip(before_rows, before_mapped):
-        k = row_key(mapped, match_keys)
-        if k not in seen_keys:
-            seen_keys.add(k)
-            ordered_keys.append(k)
-    for r in after_norm:
-        k = row_key(r, match_keys)
-        if k not in seen_keys:
-            seen_keys.add(k)
-            ordered_keys.append(k)
+    ordered_keys = chain(before_groups, (k for k in after_groups if k not in before_groups))
     for k in ordered_keys:
         b_list = before_groups.get(k) or []
         a_list = after_groups.get(k) or []
@@ -377,17 +389,14 @@ def compare_rows(
             else:
                 unchanged += 1
                 if include_unchanged:
-                    unchanged_candidates.append((orig, mapped, after))
+                    if sample is not None:
+                        if sample.limit:
+                            sample.add((orig, mapped, after), stratum_key(mapped))
+                    else:
+                        unchanged_candidates.append((orig, mapped, after))
 
-    if include_unchanged and unchanged_candidates:
-        if limit_n is None:
-            picked = unchanged_candidates
-        else:
-            picked = stratify_take(
-                unchanged_candidates,
-                limit_n,
-                key_fn=lambda t: stratum_key(t[1]),
-            )
+    if include_unchanged:
+        picked = sample.picked() if sample is not None else unchanged_candidates
         for orig, mapped, after_row in picked:
             _append_unchanged_diff(orig, mapped, after_row)
 

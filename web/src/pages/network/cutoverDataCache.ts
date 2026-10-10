@@ -7,6 +7,7 @@
 type Entry = { at: number; data: unknown };
 
 const store = new Map<string, Entry>();
+const inFlight = new Map<string, Promise<unknown>>();
 const DEFAULT_TTL_MS = 45_000;
 
 export async function cutoverCachedGet<T>(
@@ -21,9 +22,17 @@ export async function cutoverCachedGet<T>(
       return hit.data as T;
     }
   }
-  const data = await fetcher();
-  store.set(key, { at: Date.now(), data });
-  return data;
+  const existing = inFlight.get(key);
+  if (!opts?.force && existing) return existing as Promise<T>;
+  const request = Promise.resolve().then(fetcher).then((data) => {
+    // An invalidation or forced refresh may supersede this request.
+    if (inFlight.get(key) === request) store.set(key, { at: Date.now(), data });
+    return data;
+  }).finally(() => {
+    if (inFlight.get(key) === request) inFlight.delete(key);
+  });
+  inFlight.set(key, request);
+  return request;
 }
 
 /** Return stale immediately (if any), refresh in background and notify. */
@@ -34,27 +43,28 @@ export async function cutoverCachedGetSWR<T>(
 ): Promise<T> {
   const hit = store.get(key);
   if (hit) {
-    void fetcher()
+    void cutoverCachedGet(key, fetcher, { ttlMs: 0 })
       .then((data) => {
-        store.set(key, { at: Date.now(), data });
-        onFresh?.(data);
+        if (store.get(key)?.data === data) onFresh?.(data);
       })
       .catch(() => {
         /* keep stale */
       });
     return hit.data as T;
   }
-  const data = await fetcher();
-  store.set(key, { at: Date.now(), data });
-  return data;
+  return cutoverCachedGet(key, fetcher);
 }
 
 export function invalidateCutoverCache(prefix = ""): void {
   if (!prefix) {
     store.clear();
+    inFlight.clear();
     return;
   }
   for (const k of [...store.keys()]) {
     if (k.startsWith(prefix)) store.delete(k);
+  }
+  for (const k of [...inFlight.keys()]) {
+    if (k.startsWith(prefix)) inFlight.delete(k);
   }
 }
