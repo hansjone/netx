@@ -489,6 +489,9 @@ export function BizMigrationPage() {
   const [boardLoading, setBoardLoading] = useState(false);
   const [boardError, setBoardError] = useState("");
   const [boardClock, setBoardClock] = useState(Date.now());
+  const [boardFullscreen, setBoardFullscreen] = useState(false);
+  const boardRef = useRef<HTMLDivElement>(null);
+  const fullscreenPending = useRef(false);
   const boardRequest = useRef(0);
   const runsRequest = useRef(0);
   const activeBatchRef = useRef(batchId);
@@ -513,6 +516,66 @@ export function BizMigrationPage() {
   const pairedPending = followLatest && board?.sampling?.some((pair) =>
     [pair.old_collect_status, pair.new_collect_status].some((s) => !["success", "partial"].includes(s || "idle")));
   const coverageUnknown = Boolean(board?.run && (liveSummary?.coverage_complete !== true || samplesStale || pairedPending));
+  const progressPercent = liveProgress?.total
+    ? Math.max(0, Math.min(100, Math.round(liveProgress.ok / liveProgress.total * 100))) : 0;
+  const wallState = boardError ? "unknown" : !board?.run ? "waiting" : coverageUnknown ? "unknown"
+    : (liveSummary?.anomaly || 0) > 0 ? "anomaly" : "normal";
+
+  const exitBoardFullscreen = useCallback(async () => {
+    if (document.fullscreenElement === boardRef.current) {
+      try { await document.exitFullscreen(); } catch { return; }
+    }
+    setBoardFullscreen(false);
+  }, []);
+
+  async function toggleBoardFullscreen() {
+    if (fullscreenPending.current) return;
+    const element = boardRef.current;
+    if (!element) return;
+    fullscreenPending.current = true;
+    try {
+      if (boardFullscreen) {
+        await exitBoardFullscreen();
+        return;
+      }
+      try { await element.requestFullscreen(); } catch { /* Use the full-window layout below. */ }
+      if (boardRef.current === element) setBoardFullscreen(true);
+    } finally {
+      fullscreenPending.current = false;
+    }
+  }
+
+  useEffect(() => {
+    const sync = () => setBoardFullscreen(Boolean(boardRef.current && document.fullscreenElement === boardRef.current));
+    document.addEventListener("fullscreenchange", sync);
+    return () => document.removeEventListener("fullscreenchange", sync);
+  }, []);
+
+  useEffect(() => {
+    const element = boardRef.current;
+    return () => {
+      if (element && document.fullscreenElement === element) void document.exitFullscreen().catch(() => {});
+    };
+  }, [projectId, detailTab]);
+
+  useEffect(() => {
+    if (!boardFullscreen) return;
+    const onEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      void exitBoardFullscreen();
+    };
+    window.addEventListener("keydown", onEscape, true);
+    return () => window.removeEventListener("keydown", onEscape, true);
+  }, [boardFullscreen, exitBoardFullscreen]);
+
+  useEffect(() => {
+    if (!projectId || detailTab !== "board") return;
+    // Freshness must keep advancing even when API refreshes fail.
+    const timer = setInterval(() => setBoardClock(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [projectId, detailTab]);
 
   const filteredProjects = useMemo(() => {
     const kw = debouncedListKw.trim().toLowerCase();
@@ -1185,6 +1248,7 @@ export function BizMigrationPage() {
   }
 
   const openProject = (id: string, tab: DetailTab = "setup") => {
+    setBoardFullscreen(false);
     setProjectId(id);
     setDetailTab(tab);
     setSelectedExpectKeys(new Set());
@@ -1196,6 +1260,7 @@ export function BizMigrationPage() {
   };
 
   const closeProject = () => {
+    setBoardFullscreen(false);
     setProjectId("");
     setDetailTab("setup");
   };
@@ -2185,9 +2250,10 @@ export function BizMigrationPage() {
       {/* Project detail */}
       <AppModalShell
         open={Boolean(projectId && project)}
-        onClose={closeProject}
-        size="cover"
-        className={detailTab === "board" ? "bs-cmp-board-modal" : undefined}
+        onClose={() => { if (boardFullscreen) void exitBoardFullscreen(); else closeProject(); }}
+        dismissible={!boardFullscreen}
+        size={boardFullscreen ? "full" : "cover"}
+        className={detailTab === "board" ? `bs-cmp-board-modal${boardFullscreen ? " bm-wall-modal" : ""}` : undefined}
       >
         <Modal.Header>
           <Modal.Heading>
@@ -2707,7 +2773,15 @@ export function BizMigrationPage() {
               ) : null}
 
               {detailTab === "board" ? (
-                <div className="bs-cmp-board bm-board">
+                <div ref={boardRef} className={`bs-cmp-board bm-board${boardFullscreen ? " is-wall" : ""}`}>
+                  {boardFullscreen ? <div className="bm-wall-heading">
+                    <div><span className="bm-wall-heading__label">{t("bizMigration.wallTitle")}</span>
+                      <h2>{project.name}</h2></div>
+                    <div className="bm-wall-heading__status">
+                      <span className={`bm-wall-state is-${wallState}`} role="status">{t(`bizMigration.wallState_${wallState}`)}</span>
+                      <time dateTime={new Date(boardClock).toISOString()}>{fmtTime(new Date(boardClock).toISOString())}</time>
+                    </div>
+                  </div> : null}
                   <div className="bm-live-header">
                     <div>
                       <span className={`bm-live-state${monitorIsLive ? " is-live" : ""}`}>
@@ -2716,8 +2790,16 @@ export function BizMigrationPage() {
                       <strong>{batch?.batch_label || "—"}</strong>
                     </div>
                     <span className="muted">{t("bizMigration.evaluatedAt")} {fmtTime(board?.run?.created_at)}</span>
-                    <Button size="sm" variant="secondary" isDisabled={boardLoading || !batchId}
-                      onPress={() => void loadBoard(batchId, historyRunId)}>{t("bizMigration.refreshBoard")}</Button>
+                    <div className="bm-live-header__actions">
+                      <Button size="sm" variant="secondary" isDisabled={boardLoading || !batchId}
+                        onPress={() => void loadBoard(batchId, historyRunId)}>{t("bizMigration.refreshBoard")}</Button>
+                      <Button size="sm" variant="secondary" onPress={() => void toggleBoardFullscreen()}
+                        aria-label={t(boardFullscreen ? "bizMigration.exitFullscreen" : "bizMigration.fullscreen")}
+                        aria-describedby="bm-wall-hint">
+                        {t(boardFullscreen ? "bizMigration.exitFullscreen" : "bizMigration.fullscreen")}
+                      </Button>
+                      <span id="bm-wall-hint" className="visually-hidden">{t("bizMigration.fullscreenHint")}</span>
+                    </div>
                   </div>
                   <div className="bm-live-sources">
                     {(["old", "new"] as const).map((side) => {
@@ -2737,6 +2819,13 @@ export function BizMigrationPage() {
                     <div className="is-bad"><span>{t("bizMigration.anomalyInBatch")}</span><strong>{Math.max(0, (liveSummary?.anomaly ?? 0) - (liveSummary?.anomaly_outside_expect ?? 0))}</strong></div>
                     <div className="is-bad"><span>{t("bizMigration.anomalyOutsideBatch")}</span><strong>{liveSummary?.anomaly_outside_expect ?? 0}</strong></div>
                   </div>
+                  {boardFullscreen ? <div className={`bm-wall-progress${wallState === "unknown" || wallState === "waiting" ? " is-unknown" : ""}`}>
+                    <div><span>{t("bizMigration.wallProgress")}</span><strong>{progressPercent}%</strong></div>
+                    <div className="bm-wall-progress__track" role="progressbar" aria-label={t("bizMigration.wallProgress")}
+                      aria-valuemin={0} aria-valuemax={100} aria-valuenow={progressPercent}>
+                      <span style={{ width: `${progressPercent}%` }} />
+                    </div>
+                  </div> : null}
                   {followLatest && board?.sampling?.length ? <details className="bm-sampling" open>
                     <summary>{t("bizMigration.pairedSampling")}</summary>
                     <div className="pt-list-table-wrap"><table className="data-table pt-list-table">
@@ -2784,6 +2873,8 @@ export function BizMigrationPage() {
                       </span>
                     </div>
                   ) : null}
+                  <details className="bm-board-controls" open={!boardFullscreen}>
+                    <summary>{t("bizMigration.wallFilters")}</summary>
                   <div className="bs-cmp-board__toolbar filter-inline">
                     <FieldSelect
                       value={batchId}
@@ -2879,6 +2970,7 @@ export function BizMigrationPage() {
                         {t("bizMigration.showOutsideAnomalies")}
                       </Button> : null}
                   </div>
+                  </details>
                   {sheetCards.some((c) => c.new_baseline_missing) ? (
                     <div className="form-error bm-hint">
                       {t("bizMigration.newBaselineMissingBanner", {
