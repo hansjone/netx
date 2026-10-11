@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import json
 import logging
 import time
@@ -686,6 +687,7 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
                 replay_text = _decode_bytes(raw_boot, "utf-8")
         sess.bootstrap_replayed = True
     else:
+        sess.flush_session_log()
         replay_text = read_session_log_tail(session_id, max_bytes=49152)
         if replay_text:
             replay_bytes = _encode_text(replay_text, "utf-8")
@@ -699,59 +701,72 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
                 _log.debug("webcrt bootstrap/replay send failed session=%s", session_id, exc_info=True)
 
     stop = asyncio.Event()
-    stdin_buf: list[str] = []
-    stdin_audit_lines: list[str] = []
-    stdin_flush_task: asyncio.Task[None] | None = None
+    loop = asyncio.get_running_loop()
+    io_pool = webcrt_io_executor()
+    wake = asyncio.Event()
+    # Keystrokes are written as they arrive (no timer delay); whatever piled up while a
+    # write was in flight is coalesced into the next one.
+    stdin_q: asyncio.Queue[tuple[str, str | None]] = asyncio.Queue()
 
-    async def flush_stdin() -> None:
-        nonlocal stdin_buf, stdin_audit_lines
-        if not stdin_buf:
-            return
-        data = "".join(stdin_buf)
-        audit_lines = list(stdin_audit_lines)
-        stdin_buf = []
-        stdin_audit_lines = []
+    async def stdin_writer() -> None:
+        while True:
+            data, audit = await stdin_q.get()
+            parts = [data]
+            audits = [audit] if audit else []
+            taken = 1
+            while True:
+                try:
+                    d2, a2 = stdin_q.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                parts.append(d2)
+                taken += 1
+                if a2:
+                    audits.append(a2)
+            blob = "".join(parts)
+            try:
+                await loop.run_in_executor(
+                    io_pool,
+                    lambda b=blob, al=audits: sess.write_stdin(
+                        b,
+                        audit_lines=al or None,
+                        audit_line=al[-1] if al else None,
+                    ),
+                )
+            except Exception as exc:
+                try:
+                    await websocket.send_json(
+                        {"type": "status", "state": "error", "message": f"write_failed:{exc}"}
+                    )
+                except Exception:
+                    pass
+                stop.set()
+                wake.set()
+                try:
+                    await websocket.close(code=4500)
+                except Exception:
+                    pass
+            finally:
+                for _ in range(taken):
+                    stdin_q.task_done()
+
+    async def drain_stdin() -> None:
         try:
-            await asyncio.get_running_loop().run_in_executor(
-                webcrt_io_executor(),
-                lambda: sess.write_stdin(
-                    data,
-                    audit_lines=audit_lines or None,
-                    audit_line=audit_lines[-1] if audit_lines else None,
-                ),
-            )
-        except Exception as exc:
-            await websocket.send_json(
-                {"type": "status", "state": "error", "message": f"write_failed:{exc}"}
-            )
-            stop.set()
-
-    async def schedule_stdin_flush() -> None:
-        await asyncio.sleep(0.008)
-        await flush_stdin()
+            await asyncio.wait_for(stdin_q.join(), timeout=5.0)
+        except Exception:
+            pass
 
     async def pump_stdout() -> None:
-        loop = asyncio.get_running_loop()
-        pending: list[bytes] = []
-        last_flush = loop.time()
+        """Event-driven stdout pump: the reader thread wakes us, we drain and send at once."""
+        sess.set_notifier(loop, wake)
+        dec = None
+        if _normalize_encoding(sess.encoding) != "utf-8":
+            dec = codecs.getincrementaldecoder("gbk")(errors="replace")
 
-        def _to_browser_bytes(raw: bytes) -> bytes:
-            if _normalize_encoding(sess.encoding) == "utf-8":
+        def _to_browser(raw: bytes) -> bytes:
+            if dec is None:
                 return raw
-            return _decode_bytes(raw, sess.encoding).encode("utf-8", errors="replace")
-
-        async def _flush_pending() -> bool:
-            nonlocal pending, last_flush
-            if not pending:
-                return True
-            blob = _to_browser_bytes(b"".join(pending))
-            pending = []
-            last_flush = loop.time()
-            try:
-                await websocket.send_bytes(blob)
-                return True
-            except Exception:
-                return False
+            return dec.decode(raw).encode("utf-8", errors="replace")
 
         async def _notify_queue_drops() -> None:
             try:
@@ -772,48 +787,48 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
             except Exception:
                 pass
 
-        while not stop.is_set():
-            # Longer block is cheap now (Condition wait); cuts executor churn when idle.
-            chunk = await loop.run_in_executor(
-                webcrt_io_executor(), lambda: sess.take_stdout(attach_gen, timeout=0.2)
-            )
-            if chunk == "stale":
-                break
-            if chunk == "empty":
-                if pending and (loop.time() - last_flush) >= 0.016:
-                    if not await _flush_pending():
+        wake.set()  # output queued before the pump started
+        try:
+            while not stop.is_set():
+                await wake.wait()
+                wake.clear()
+                while not stop.is_set():
+                    status, data = sess.drain_stdout(attach_gen)
+                    if status == "stale":
+                        return
+                    if data:
+                        try:
+                            await websocket.send_bytes(_to_browser(data))
+                        except Exception:
+                            stop.set()
+                            return
+                        await _notify_queue_drops()
+                    if status == "eof":
+                        await _notify_queue_drops()
                         stop.set()
+                        try:
+                            await websocket.send_json(
+                                {
+                                    "type": "status",
+                                    "state": "closed",
+                                    "message": sess.close_reason or "device_closed",
+                                }
+                            )
+                        except Exception:
+                            pass
+                        return
+                    if status != "data":
                         break
-                await _notify_queue_drops()
-                continue
-            if chunk is None:
-                await _flush_pending()
-                await _notify_queue_drops()
-                stop.set()
-                try:
-                    await websocket.send_json(
-                        {
-                            "type": "status",
-                            "state": "closed",
-                            "message": sess.close_reason or "device_closed",
-                        }
-                    )
-                except Exception:
-                    pass
-                break
-            pending.append(chunk)
-            if sum(len(p) for p in pending) >= 8192 or (loop.time() - last_flush) >= 0.016:
-                if not await _flush_pending():
-                    stop.set()
-                    break
-                await _notify_queue_drops()
+        finally:
+            sess.clear_notifier(wake)
 
     reader_task = asyncio.create_task(pump_stdout())
+    writer_task = asyncio.create_task(stdin_writer())
     if sess.needs_live_prompt:
         sess.needs_live_prompt = False
         try:
-            await asyncio.get_running_loop().run_in_executor(
-                webcrt_io_executor(),
+            await loop.run_in_executor(
+                io_pool,
                 lambda: sess.write_stdin("\r", audit_source="prompt_sync"),
             )
         except Exception:
@@ -829,9 +844,7 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
                     text = _decode_bytes(bytes(msg_raw["bytes"]), sess.encoding)
                 except Exception:
                     continue
-                stdin_buf.append(text)
-                if stdin_flush_task is None or stdin_flush_task.done():
-                    stdin_flush_task = asyncio.create_task(schedule_stdin_flush())
+                stdin_q.put_nowait((text, None))
                 continue
             raw = msg_raw.get("text")
             if raw is None:
@@ -846,23 +859,16 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
                 if data is None:
                     continue
                 audit_raw = msg.get("audit_line")
-                if audit_raw is not None and str(audit_raw).strip():
-                    stdin_audit_lines.append(str(audit_raw).strip()[:512])
-                stdin_buf.append(str(data))
-                # Coalesce high-frequency keystrokes briefly.
-                if len(stdin_buf) >= 8:
-                    if stdin_flush_task and not stdin_flush_task.done():
-                        stdin_flush_task.cancel()
-                    await flush_stdin()
-                elif stdin_flush_task is None or stdin_flush_task.done():
-                    stdin_flush_task = asyncio.create_task(schedule_stdin_flush())
+                audit = str(audit_raw).strip()[:512] if audit_raw is not None and str(audit_raw).strip() else None
+                stdin_q.put_nowait((str(data), audit))
             elif mtype == "resize":
                 cols = int(msg.get("cols") or sess.cols)
                 rows = int(msg.get("rows") or sess.rows)
-                await asyncio.get_running_loop().run_in_executor(webcrt_io_executor(), sess.resize, cols, rows)
+                await loop.run_in_executor(io_pool, sess.resize, cols, rows)
             elif mtype == "break":
+                await drain_stdin()
                 try:
-                    await asyncio.get_running_loop().run_in_executor(webcrt_io_executor(), sess.send_break)
+                    await loop.run_in_executor(io_pool, sess.send_break)
                 except Exception as exc:
                     await websocket.send_json(
                         {"type": "status", "state": "error", "message": f"break_failed:{exc}"}
@@ -872,7 +878,7 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
                 await websocket.send_json({"type": "pong"})
             elif mtype == "close":
                 stop.set()
-                await flush_stdin()
+                await drain_stdin()
                 close_session(
                     session_id,
                     reason="client_close",
@@ -885,17 +891,18 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
         _log.exception("webcrt ws error session=%s", session_id)
     finally:
         stop.set()
-        if stdin_flush_task and not stdin_flush_task.done():
-            stdin_flush_task.cancel()
+        wake.set()
         try:
-            await flush_stdin()
+            await drain_stdin()
         except Exception:
             pass
+        writer_task.cancel()
         reader_task.cancel()
-        try:
-            await reader_task
-        except Exception:
-            pass
+        for t in (writer_task, reader_task):
+            try:
+                await t
+            except BaseException:
+                pass
         # Keep device session so UI reconnect / remount can re-attach.
         if get_session(session_id) is not None:
             grace = float(getattr(settings, "webcrt_detach_grace_sec", 120) or 120)

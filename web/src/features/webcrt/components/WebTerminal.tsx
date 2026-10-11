@@ -1,6 +1,7 @@
 import { Button, Input } from "@heroui/react";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { FitAddon } from "@xterm/addon-fit";
+import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { useI18n } from "../../../i18n";
@@ -250,13 +251,20 @@ function keyEventToStdin(e: KeyboardEvent): string | null {
   return null;
 }
 
-function decodeBytes(buf: ArrayBuffer, _encoding: string): string {
-  // Server normalizes device encodings (e.g. GBK) to UTF-8 on the wire.
-  try {
-    return new TextDecoder("utf-8").decode(buf);
-  } catch {
-    return "";
-  }
+/**
+ * Server normalizes device encodings (e.g. GBK) to UTF-8 on the wire. Frames are cut at
+ * arbitrary byte boundaries, so decode as a stream (a split multi-byte char must not
+ * turn into U+FFFD).
+ */
+function createStdoutDecoder(): (buf: ArrayBuffer) => string {
+  const dec = new TextDecoder("utf-8");
+  return (buf) => {
+    try {
+      return dec.decode(buf, { stream: true });
+    } catch {
+      return "";
+    }
+  };
 }
 
 const PREF_KEY = "netx.webcrt.termPrefs";
@@ -540,6 +548,28 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
+    // GPU renderer: the default DOM renderer is the main cost when a device dumps
+    // thousands of lines. Fall back silently (headless/old GPU/context loss).
+    let webgl: WebglAddon | null = null;
+    try {
+      webgl = new WebglAddon();
+      webgl.onContextLoss(() => {
+        try {
+          webgl?.dispose();
+        } catch {
+          /* ignore */
+        }
+        webgl = null;
+      });
+      term.loadAddon(webgl);
+    } catch {
+      try {
+        webgl?.dispose();
+      } catch {
+        /* ignore */
+      }
+      webgl = null;
+    }
     termRef.current = term;
     fitRef.current = fit;
 
@@ -594,27 +624,31 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
 
     const isActiveSocket = () => !cancelled && !!ws && wsRef.current === ws;
 
-    // Coalesce high-rate stdout into one paint frame to cut xterm write churn.
+    // Echo goes straight to xterm when the terminal is idle (no frame of added latency);
+    // only bursts are coalesced into one paint frame to cut xterm write churn.
     let writeBuf = "";
     let writeRaf = 0;
+    let lastWriteAt = 0;
+    const decodeStdout = createStdoutDecoder();
     const flushWriteBuf = () => {
-      writeRaf = 0;
+      if (writeRaf) {
+        cancelAnimationFrame(writeRaf);
+        writeRaf = 0;
+      }
       const chunk = writeBuf;
       writeBuf = "";
       if (!chunk || cancelled) return;
+      lastWriteAt = performance.now();
       term.write(applyKeywordHighlight(chunk, keywordHighlightRef.current));
     };
     const writeStdout = (raw: string) => {
       if (!raw || !isActiveSocket()) return;
-      lastStdoutAtRef.current = performance.now();
+      const now = performance.now();
+      lastStdoutAtRef.current = now;
       // Always forward to parent (log buffer / frozen failure transcript); recording flag only gates download.
       onStdoutRef.current?.(raw);
       writeBuf += raw;
-      if (writeBuf.length >= 16384) {
-        if (writeRaf) {
-          cancelAnimationFrame(writeRaf);
-          writeRaf = 0;
-        }
+      if (writeBuf.length >= 16384 || (!writeRaf && now - lastWriteAt >= 16)) {
         flushWriteBuf();
         return;
       }
@@ -641,13 +675,13 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
       socket.onmessage = (ev) => {
         if (!isActiveSocket()) return;
         if (ev.data instanceof ArrayBuffer) {
-          writeStdout(decodeBytes(ev.data, encodingRef.current));
+          writeStdout(decodeStdout(ev.data));
           return;
         }
         if (typeof Blob !== "undefined" && ev.data instanceof Blob) {
           void ev.data.arrayBuffer().then((buf) => {
             if (!isActiveSocket()) return;
-            writeStdout(decodeBytes(buf, encodingRef.current));
+            writeStdout(decodeStdout(buf));
           });
           return;
         }
@@ -902,6 +936,12 @@ export const WebTerminal = forwardRef<WebTerminalHandle, Props>(function WebTerm
 
     return () => {
       cancelled = true;
+      try {
+        webgl?.dispose();
+      } catch {
+        /* ignore */
+      }
+      webgl = null;
       if (writeRaf) {
         cancelAnimationFrame(writeRaf);
         writeRaf = 0;

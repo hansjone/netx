@@ -545,18 +545,26 @@ def _connect_direct(
 
 
 def _read_channel(conn: ConnectHandler, wait: float = 0.5, max_loops: int = 40) -> str:
-    if wait > 0:
-        time.sleep(wait)
+    """Collect device output.
+
+    ``wait`` is the longest we park for the *first* bytes; once output has arrived the read
+    returns as soon as the channel is quiet again. (It used to sleep the whole ``wait`` and
+    then poll at 50-150ms, which added ~0.1-0.4s of dead time to every login-prompt step.)
+    """
+    quiet = 0.04 if wait <= 0.15 else 0.12
+    first_deadline = time.monotonic() + max(0.0, wait)
+    got_at: float | None = None
     chunks: list[str] = []
-    for _ in range(max_loops):
+    reads = 0
+    while reads < max_loops:
         try:
             part = conn.read_channel()
         except Exception:
             break
         if part is None or part is False:
-            break
+            part = ""
         # MagicMock truthy-but-empty: stop when unit tests leave read_channel unconfigured.
-        if not isinstance(part, (str, bytes, bytearray)):
+        elif not isinstance(part, (str, bytes, bytearray)):
             text = str(part)
             # unittest.mock default str looks like "<MagicMock name=...>"
             if text.startswith("<MagicMock") or text.startswith("<Mock"):
@@ -564,10 +572,18 @@ def _read_channel(conn: ConnectHandler, wait: float = 0.5, max_loops: int = 40) 
             part = text
         elif isinstance(part, (bytes, bytearray)):
             part = bytes(part).decode("utf-8", errors="replace")
-        if not part:
+        now = time.monotonic()
+        if part:
+            chunks.append(part)
+            reads += 1
+            got_at = now
+            continue
+        if got_at is None:
+            if now >= first_deadline:
+                break
+        elif now - got_at >= quiet:
             break
-        chunks.append(part)
-        time.sleep(0.05 if wait <= 0.15 else 0.15)
+        time.sleep(0.01)
     return "".join(chunks)
 
 
@@ -801,11 +817,11 @@ def _interactive_target_auth(
                     return
             else:
                 empty_after_pass = 0
-            time.sleep(0.12)
+            time.sleep(0.02)
             continue
 
         if not buf.strip():
-            time.sleep(0.2)
+            time.sleep(0.02)
             continue
         # Huawei stelnet often reprints the hop ``[sysname]`` after host-key trust and
         # *before* ``Enter password:``. Do not treat that as target login success.
@@ -826,7 +842,7 @@ def _interactive_target_auth(
             if denied:
                 raise paramiko.AuthenticationException(f"target_auth_rejected: {denied}")
             return
-        time.sleep(0.15)
+        time.sleep(0.02)
     denied = _target_auth_failure_snippet(acc, sent_pass=sent_pass)
     if denied:
         raise paramiko.AuthenticationException(f"target_auth_rejected: {denied}")
@@ -879,7 +895,7 @@ def _huawei_enter_system_view(
     for _ in range(8):
         part = _read_channel(conn, wait=0.2, max_loops=10)
         if not part:
-            time.sleep(0.15)
+            time.sleep(0.02)
             continue
         acc += part
         if emit_raw:

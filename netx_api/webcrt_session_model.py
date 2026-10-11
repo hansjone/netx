@@ -1,8 +1,12 @@
 """WebCRT interactive session object (I/O, SFTP, close)."""
 from __future__ import annotations
 
+import codecs
 import logging
 import queue
+import re
+import select
+import socket
 import threading
 import time
 from dataclasses import dataclass, field
@@ -16,8 +20,10 @@ from .ne_session_factory import (
     extract_cli_prompt_marker,
     should_close_cli_hop_session,
 )
+from .webcrt_cmd_audit import AuditCmd, CommandTracker
 from .webcrt_channel import (
     _BoundedByteQueue,
+    _normalize_encoding,
     _audit,
     _decode_bytes,
     _encode_text,
@@ -30,6 +36,9 @@ from .webcrt_channel import (
 )
 
 _log = logging.getLogger("netx.webcrt")
+
+# Operator typed an exit-style command (arms the hop prompt-return heuristic).
+_HOP_EXIT_RE = re.compile(r"(?:^|[\r\n])\s*(?:quit|exit|logout|logoff|q|qu|qui|ex|exi)\s*[\r\n]", re.IGNORECASE)
 
 @dataclass
 class WebcrtSession:
@@ -98,6 +107,17 @@ class WebcrtSession:
     _last_prompt_line: str = field(default="", repr=False)
     _last_audited_command: str = field(default="", repr=False)
     _last_audited_at: float = field(default=0.0, repr=False)
+    # Live audit: device-echo based command tracker (active while the reader runs).
+    _tracker: CommandTracker = field(default_factory=CommandTracker, repr=False)
+    # asyncio wake-up for the WS stdout pump: (loop, event) + "already scheduled" flag.
+    _notify: Any = field(default=None, repr=False)
+    _wake_flag: bool = field(default=False, repr=False)
+    _log_last_flush: float = field(default=0.0, repr=False)
+    _log_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _hop_exit_until: float = field(default=0.0, repr=False)
+
+    def __post_init__(self) -> None:
+        self._tracker.linux_like = not bool(self.cli_keymap)
 
     def touch(self) -> None:
         self.last_activity = time.time()
@@ -256,39 +276,55 @@ class WebcrtSession:
             self._log_fh = None
 
     def append_session_log(self, text: str) -> None:
-        if not text or self._log_fh is None:
+        """Buffered transcript write; flushed by the reader every ~250ms (and on attach)."""
+        fh = self._log_fh
+        if not text or fh is None:
             return
         try:
-            self._log_fh.write(text)
-            self._log_fh.flush()
-            max_bytes = int(getattr(settings, "webcrt_session_log_max_bytes", 0) or 0)
-            if max_bytes > 0:
-                try:
-                    pos = int(self._log_fh.tell())
-                except Exception:  # noqa: BLE001
-                    pos = 0
-                if pos >= max_bytes:
-                    self._log_fh.write(
-                        f"\n# rotated at {pos} bytes (cap={max_bytes}) ts={_utc_iso()}\n"
-                    )
-                    self._log_fh.flush()
-                    self._log_fh.close()
-                    self._log_fh = None
-                    # Re-open fresh file (append mode continues same path; rotate by rename).
-                    try:
-                        path = _session_log_path(self.session_id)
-                        rotated = path.with_suffix(path.suffix + f".{int(pos)}.old")
-                        if path.exists():
-                            path.replace(rotated)
-                    except Exception:  # noqa: BLE001
-                        _log.debug("webcrt session log rotate rename failed", exc_info=True)
-                    self.open_session_log()
+            with self._log_lock:
+                fh.write(text)
+            if time.monotonic() - self._log_last_flush >= 0.25:
+                self.flush_session_log()
         except Exception:
             _log.warning("webcrt session log append failed session=%s", self.session_id, exc_info=True)
 
-    def close_session_log(self) -> None:
+    def flush_session_log(self) -> None:
         fh = self._log_fh
-        self._log_fh = None
+        if fh is None:
+            return
+        try:
+            with self._log_lock:
+                fh.flush()
+                self._log_last_flush = time.monotonic()
+                max_bytes = int(getattr(settings, "webcrt_session_log_max_bytes", 0) or 0)
+                if max_bytes <= 0:
+                    return
+                try:
+                    pos = int(fh.tell())
+                except Exception:  # noqa: BLE001
+                    pos = 0
+                if pos < max_bytes:
+                    return
+                fh.write(f"\n# rotated at {pos} bytes (cap={max_bytes}) ts={_utc_iso()}\n")
+                fh.flush()
+                fh.close()
+                self._log_fh = None
+            # Re-open fresh file (rotate by rename).
+            try:
+                path = _session_log_path(self.session_id)
+                rotated = path.with_suffix(path.suffix + f".{int(pos)}.old")
+                if path.exists():
+                    path.replace(rotated)
+            except Exception:  # noqa: BLE001
+                _log.debug("webcrt session log rotate rename failed", exc_info=True)
+            self.open_session_log()
+        except Exception:
+            _log.warning("webcrt session log flush failed session=%s", self.session_id, exc_info=True)
+
+    def close_session_log(self) -> None:
+        with self._log_lock:
+            fh = self._log_fh
+            self._log_fh = None
         if fh is None:
             return
         try:
@@ -326,6 +362,57 @@ class WebcrtSession:
                     return "stale"
                 return chunk  # bytes | None
 
+    # ---- asyncio hand-off (no polling thread per WebSocket) -------------------- #
+    def set_notifier(self, loop: Any, event: Any) -> None:
+        with self._stdout_lock:
+            self._notify = (loop, event)
+            self._wake_flag = False
+
+    def clear_notifier(self, event: Any) -> None:
+        with self._stdout_lock:
+            n = self._notify
+            if n is not None and n[1] is event:
+                self._notify = None
+
+    def bump_attach(self) -> int:
+        """New WebSocket owns stdout: invalidate the previous pump and wake it."""
+        with self._stdout_lock:
+            self.attach_gen += 1
+            gen = self.attach_gen
+        self._wake(force=True)
+        return gen
+
+    def _wake(self, *, force: bool = False) -> None:
+        """Called from any thread after queue changes; schedules at most one loop wake-up."""
+        n = self._notify
+        if n is None:
+            return
+        if self._wake_flag and not force:
+            return
+        self._wake_flag = True
+        try:
+            n[0].call_soon_threadsafe(n[1].set)
+        except Exception:
+            self._wake_flag = False
+            self._notify = None
+
+    def drain_stdout(self, attach_gen: int, max_bytes: int = 262144) -> tuple[str, bytes]:
+        """Non-blocking take for the WS pump.
+
+        Returns ``(status, data)``: ``stale`` (newer WS owns stdout), ``eof`` (reader
+        ended; ``data`` may still hold the final bytes), ``data`` or ``empty``.
+        """
+        self._wake_flag = False
+        with self._stdout_lock:
+            if attach_gen != self.attach_gen:
+                return "stale", b""
+            chunks, eof = self.out_queue.drain(max_bytes)
+        data = b"".join(chunks)
+        if eof:
+            return "eof", data
+        return ("data" if data else "empty"), data
+
+    # ---- stdin ----------------------------------------------------------------- #
     def write_stdin(
         self,
         data: str,
@@ -351,24 +438,51 @@ class WebcrtSession:
             text = map_network_cli_enter(text, self.conn)
         if not text:
             return
-        self._note_stdin_for_audit(
-            text,
-            source=audit_source,
-            audit_line=audit_override,
-            audit_lines=audit_list,
-        )
+        if self.cli_hop_guard and (_HOP_EXIT_RE.search(text) or "\x04" in text):
+            self._hop_exit_until = time.monotonic() + 8.0
+        live_cmds: list[AuditCmd] = []
+        if self._audit_live():
+            # Register Enter first (cheap), send to the device, then publish: the audit
+            # row is resolved from the device echo, so nothing here delays the keystroke.
+            hints = list(audit_list or [])
+            if audit_override and (not hints or hints[-1] != audit_override):
+                hints.append(audit_override)
+            live_cmds = self._audit_stdin_live(text, source=str(audit_source or "stdin"), hints=hints)
+        else:
+            self._note_stdin_for_audit(
+                text,
+                source=audit_source,
+                audit_line=audit_override,
+                audit_lines=audit_list,
+            )
+        self._send_raw(text)
+        if live_cmds:
+            self._emit_audit_cmds(live_cmds)
+        self.touch()
+
+    def _send_raw(self, text: str) -> None:
         with self._write_lock:
             # Prefer raw channel I/O for interactive typing (char echo / backspace).
-            channel = getattr(self.conn, "remote_conn", None)
+            conn = self.conn
+            if conn is None:
+                raise RuntimeError("session_closed")
+            channel = getattr(conn, "remote_conn", None)
             try:
                 if channel is not None and hasattr(channel, "send") and callable(channel.send):
                     payload = _encode_text(text, self.encoding)
-                    # Paramiko may write partially when the window is full.
+                    # Paramiko may write partially when the window is full; the reader
+                    # keeps a short channel timeout, so a timed-out send is simply retried.
                     view = memoryview(payload)
+                    deadline = time.monotonic() + 30.0
                     while len(view):
-                        n = int(channel.send(view) or 0)
+                        try:
+                            n = int(channel.send(view) or 0)
+                        except socket.timeout:
+                            if time.monotonic() > deadline or self.closed:
+                                raise
+                            continue
                         if n <= 0:
-                            time.sleep(0.01)
+                            time.sleep(0.005)
                             continue
                         view = view[n:]
                     self.bytes_in += len(payload)
@@ -377,12 +491,79 @@ class WebcrtSession:
                     channel.write(payload)
                     self.bytes_in += len(payload)
                 else:
-                    self.conn.write_channel(text)
+                    conn.write_channel(text)
                     self.bytes_in += len(text)
             except Exception:
+                if self.closed or self.conn is None:
+                    raise
                 self.conn.write_channel(text)
                 self.bytes_in += len(text)
-        self.touch()
+
+    # ---- command audit ------------------------------------------------------- #
+    def _audit_live(self) -> bool:
+        """Device-echo audit is active only while the reader thread feeds the tracker."""
+        t = self._reader
+        return t is not None and t.is_alive()
+
+    def _audit_stdin_live(self, text: str, *, source: str, hints: list[str]) -> list[AuditCmd]:
+        if source == "prompt_sync":
+            return []
+        had_enter = "\r" in text or "\n" in text
+        abort_text = ""
+        with self._cmd_buf_lock:
+            cut = text.find("\x03")
+            if cut >= 0:
+                abort_text, _ = feed_command_line_buffer(self._cmd_buf, text[:cut])
+            self._cmd_buf, buf_lines = feed_command_line_buffer(self._cmd_buf, text)
+        if source == "post_login":
+            return self._tracker.immediate(buf_lines, source) if had_enter else []
+        saw_input = bool(text.strip("\r\n"))
+        return self._tracker.on_stdin(
+            buf_lines,
+            saw_input=saw_input,
+            had_enter=had_enter,
+            client_hints=hints,
+            source=source,
+            abort="\x03" in text,
+            abort_text=abort_text,
+        )
+
+    def _emit_audit_cmds(self, cmds: list[AuditCmd]) -> None:
+        for c in cmds:
+            if not str(c.command).strip():
+                continue
+            try:
+                _audit(
+                    "command",
+                    session_id=self.session_id,
+                    ne_id=self.ne_id,
+                    ne_name=self.ne_name,
+                    ne_ip=self.ne_ip,
+                    protocol=self.protocol,
+                    owner_user_id=self.owner_user_id,
+                    owner_username=self.owner_username,
+                    command="***" if c.redacted else str(c.command)[:512],
+                    redacted=bool(c.redacted),
+                    source=str(c.source or "stdin")[:32],
+                    via=c.via,
+                    prompt=str(c.prompt or "")[:128],
+                )
+            except Exception:
+                _log.debug("webcrt command audit failed session=%s", self.session_id, exc_info=True)
+
+    def seed_audit_row(self, transcript: str) -> None:
+        """Prime the input row from the login transcript (prompt printed before the reader)."""
+        try:
+            self._tracker.set_row("")
+            self._tracker.seed(str(transcript or "")[-4000:])
+        except Exception:
+            _log.debug("webcrt audit seed failed session=%s", self.session_id, exc_info=True)
+
+    def reset_audit_row(self, row: str) -> None:
+        try:
+            self._tracker.set_row(row)
+        except Exception:
+            pass
 
     def _note_stdin_for_audit(
         self,
@@ -461,6 +642,26 @@ class WebcrtSession:
                 _log.debug("webcrt command audit failed session=%s", self.session_id, exc_info=True)
 
     def _note_stdout_for_audit(self, text: str) -> None:
+        """Feed device output to the audit tracker (live) or the legacy tail buffer."""
+        chunk = str(text or "")
+        if not chunk:
+            return
+        if self._audit_live():
+            cmds = self._tracker.feed(chunk)
+            self._password_mode = self._tracker.password_mode
+            if cmds:
+                self._emit_audit_cmds(cmds)
+            return
+        self._note_stdout_legacy(chunk)
+
+    def _audit_housekeeping(self) -> None:
+        if self._tracker.pending:
+            cmds = self._tracker.expire()
+            if cmds:
+                self._emit_audit_cmds(cmds)
+        self.flush_session_log()
+
+    def _note_stdout_legacy(self, text: str) -> None:
         """Track device prompts so the next typed line can be redacted if it is a password."""
         chunk = str(text or "")
         if not chunk:
@@ -534,50 +735,74 @@ class WebcrtSession:
         )
         self._reader.start()
 
+    @staticmethod
+    def _wait_readable(channel: Any, timeout: float) -> None:
+        """Block until a telnet-style socket is readable (or timeout)."""
+        sock = getattr(channel, "sock", None)
+        try:
+            if sock is not None and sock.fileno() >= 0:
+                select.select([sock], [], [], timeout)
+                return
+        except Exception:
+            pass
+        time.sleep(min(timeout, 0.01))
+
     def _reader_loop(self) -> None:
         conn = self.conn
         if conn is None:
             self.out_queue.put(None)
+            self._wake()
             return
         channel = getattr(conn, "remote_conn", None)
         hop_return = False
         poll = max(0.002, float(getattr(settings, "webcrt_reader_poll_sec", 0.01) or 0.01))
+        # Incremental decode: a multi-byte char split across recv() chunks stays intact.
+        dec = codecs.getincrementaldecoder("gbk" if _normalize_encoding(self.encoding) == "gbk" else "utf-8")(
+            errors="replace"
+        )
+        # Paramiko: park in recv() with a short timeout (wakes the moment data arrives)
+        # instead of spin-polling recv_ready().
+        blocking = False
+        if (
+            channel is not None
+            and hasattr(channel, "recv")
+            and hasattr(channel, "recv_ready")
+            and hasattr(channel, "settimeout")
+        ):
+            try:
+                channel.settimeout(0.2)
+                blocking = True
+            except Exception:
+                blocking = False
+        last_house = time.monotonic()
         try:
             while not self.closed:
                 chunk = b""
                 try:
-                    if channel is not None and hasattr(channel, "recv_ready") and hasattr(channel, "recv"):
-                        # Paramiko SSH: prefer short blocking recv over fixed spin-sleep.
-                        ready = False
+                    if blocking:
                         try:
-                            ready = bool(channel.recv_ready())
-                        except Exception:
-                            ready = False
-                        if ready:
-                            chunk = channel.recv(16384)
+                            chunk = channel.recv(65536)
+                        except socket.timeout:
+                            chunk = b""
+                        else:
+                            if not chunk:
+                                break  # EOF
+                        if not chunk:
+                            if channel.recv_ready():
+                                continue
+                            if getattr(channel, "closed", False) or (
+                                hasattr(channel, "exit_status_ready") and channel.exit_status_ready()
+                            ):
+                                break
+                    elif channel is not None and hasattr(channel, "recv_ready") and hasattr(channel, "recv"):
+                        if channel.recv_ready():
+                            chunk = channel.recv(65536)
                             if not chunk:
                                 break
                         elif hasattr(channel, "exit_status_ready") and channel.exit_status_ready():
                             break
                         else:
-                            # Brief block: settimeout + recv wakes sooner than sleep(0.04).
-                            prev_timeout = None
-                            try:
-                                prev_timeout = channel.gettimeout()
-                            except Exception:
-                                prev_timeout = None
-                            try:
-                                channel.settimeout(poll)
-                                chunk = channel.recv(16384)
-                            except Exception:
-                                chunk = b""
-                            finally:
-                                try:
-                                    channel.settimeout(prev_timeout)
-                                except Exception:
-                                    pass
-                            if not chunk:
-                                continue
+                            time.sleep(poll)
                     elif channel is not None and hasattr(channel, "read_very_eager"):
                         # Telnet: do NOT use conn.read_channel() — Netmiko strips ANSI.
                         data = channel.read_very_eager()
@@ -588,39 +813,52 @@ class WebcrtSession:
                                 else _encode_text(str(data), self.encoding)
                             )
                         else:
-                            time.sleep(poll)
-                            continue
+                            self._wait_readable(channel, 0.2)
                     else:
                         text = conn.read_channel()
                         if text:
                             chunk = _encode_text(str(text), self.encoding)
                         else:
                             time.sleep(poll)
-                            continue
+                except EOFError:
+                    break
                 except Exception as exc:
                     if self.closed:
                         break
                     _log.debug("webcrt reader error session=%s: %s", self.session_id, exc)
+                    if channel is not None and getattr(channel, "closed", False):
+                        break
                     time.sleep(0.05)
                     continue
+                now = time.monotonic()
                 if chunk:
-                    self.touch()
+                    self.last_activity = time.time()
                     self.bytes_out += len(chunk)
                     self.out_queue.put(chunk)
+                    self._wake()
+                    decoded = ""
                     try:
-                        decoded = _decode_bytes(chunk, self.encoding)
-                        self.append_session_log(decoded)
-                        self._note_stdout_for_audit(decoded)
+                        decoded = dec.decode(bytes(chunk))
+                        if decoded:
+                            self.append_session_log(decoded)
+                            self._note_stdout_for_audit(decoded)
                     except Exception:
-                        pass
-                    if self.cli_hop_guard and self._note_cli_hop_output(chunk):
+                        _log.debug("webcrt reader side-effects failed session=%s", self.session_id, exc_info=True)
+                    if self.cli_hop_guard and self._note_cli_hop_output(chunk, decoded):
                         hop_return = True
                         notice = (
                             "\r\n*** WebCRT: 目标会话已结束，已断开代理连接 "
                             "(target session ended; closing hop proxy) ***\r\n"
                         )
                         self.out_queue.put(notice.encode("utf-8", errors="replace"))
+                        self._wake()
                         break
+                if now - last_house >= 0.25:
+                    last_house = now
+                    try:
+                        self._audit_housekeeping()
+                    except Exception:
+                        _log.debug("webcrt housekeeping failed session=%s", self.session_id, exc_info=True)
         finally:
             if hop_return and not self.closed:
                 try:
@@ -630,22 +868,33 @@ class WebcrtSession:
                 except Exception:
                     self.close("cli_hop_return")
             self.out_queue.put(None)
+            self._wake()
+            try:
+                self.flush_session_log()
+            except Exception:
+                pass
 
-    def _note_cli_hop_output(self, chunk: bytes) -> bool:
+    def _note_cli_hop_output(self, chunk: bytes, text: str | None = None) -> bool:
         """Accumulate stdout and return True when nested CLI hop has returned to proxy."""
-        try:
-            text = _decode_bytes(chunk, self.encoding)
-        except Exception:
-            text = str(chunk)
+        if text is None:
+            try:
+                text = _decode_bytes(chunk, self.encoding)
+            except Exception:
+                text = str(chunk)
         self._hop_scan_buf = (self._hop_scan_buf + text)[-12000:]
         marker = str(self.cli_hop_prompt or "").strip()
         last = extract_cli_prompt_marker(self._hop_scan_buf)
         if last and (not marker or last != marker):
             self._cli_hop_seen_other_prompt = True
+        # Prompt-only "back on the hop" is ambiguous when hop and target share a hostname
+        # (target ``system-view`` prints the same ``[~r1]`` as the hop). Only trust it
+        # shortly after the operator typed an exit command; the nested "connection closed"
+        # message needs no such gate.
+        armed = self._cli_hop_seen_other_prompt and time.monotonic() <= self._hop_exit_until
         return should_close_cli_hop_session(
             self._hop_scan_buf,
             self.cli_hop_prompt,
-            seen_other_prompt=self._cli_hop_seen_other_prompt,
+            seen_other_prompt=armed,
         )
 
     def run_post_login_commands(self) -> None:
@@ -660,6 +909,19 @@ class WebcrtSession:
                 _log.debug("post_login command failed session=%s", self.session_id, exc_info=True)
                 break
 
+    def _teardown_conn(self, conn: Any) -> None:
+        self.close_sftp()
+        if conn is None:
+            return
+        for attr in ("remote_conn", "remote_conn_pre", "_netx_jump_client"):
+            obj = getattr(conn, attr, None)
+            if obj is None:
+                continue
+            try:
+                obj.close()
+            except Exception:
+                pass
+
     def close(self, reason: str = "closed") -> None:
         if self.closed:
             return
@@ -667,14 +929,27 @@ class WebcrtSession:
         self.state = "closed"
         self.close_reason = reason or "closed"
         self._ready_event.set()
-        self.close_sftp()
+        # Enters still waiting for a device echo would be lost with the session.
         try:
-            close_netmiko_connection(self.conn)
+            pending_cmds = self._tracker.flush_all()
+            if pending_cmds:
+                self._emit_audit_cmds(pending_cmds)
         except Exception:
-            pass
+            _log.debug("webcrt audit flush on close failed session=%s", self.session_id, exc_info=True)
+        conn = self.conn
         self.conn = None
+        # Tear the transport down off-thread: Netmiko's disconnect() runs vendor cleanup
+        # (prompt probing, several seconds on Huawei) which would stall the event loop /
+        # reaper, and keeps the device VTY occupied longer than needed.
+        threading.Thread(
+            target=self._teardown_conn,
+            args=(conn,),
+            name=f"webcrt-close-{self.session_id[:8]}",
+            daemon=True,
+        ).start()
         try:
             self.out_queue.put_nowait(None)
         except Exception:
             pass
+        self._wake(force=True)
         self.close_session_log()

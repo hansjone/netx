@@ -8,6 +8,7 @@ import queue
 import re
 import threading
 import time
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -44,6 +45,18 @@ def uses_network_cli_keymap(device_type: str = "", vendor: str = "") -> bool:
     return True
 
 
+_NETWORK_PROMPT_RE = re.compile(
+    r"^(?:<[^<>\s]{1,63}>"
+    r"|\[[~*]?[\w.\-/:+]{1,80}\]"
+    r"|[A-Za-z0-9][\w.\-/:+]{0,62}(?:\([^()\s]{1,60}\))*[#>])$"
+)
+
+
+def looks_like_network_prompt(line: str) -> bool:
+    """``<r1>`` / ``[~r1]`` / ``R2#`` / ``R2(config)#`` — never a Linux ``user@host:~$`` prompt."""
+    return bool(_NETWORK_PROMPT_RE.match(str(line or "").strip()))
+
+
 def map_network_cli_keys(
     data: str,
     *,
@@ -56,6 +69,8 @@ def map_network_cli_keys(
     text = str(data or "")
     if not text:
         return text
+    if "\x1b" not in text and "\x7f" not in text:
+        return text  # plain printable typing: nothing to rewrite
     out: list[str] = []
     i = 0
     n = len(text)
@@ -86,7 +101,7 @@ def channel_return(conn: ConnectHandler | None) -> str:
 def map_network_cli_enter(data: str, conn: ConnectHandler | None) -> str:
     """Map xterm Enter (\\r) to the device's Netmiko RETURN."""
     text = str(data or "")
-    if not text:
+    if not text or ("\r" not in text and "\n" not in text):
         return text
     ret = channel_return(conn)
     # Replace once: chained replacements expand the CR in Telnet CRLF again.
@@ -367,10 +382,10 @@ def _encode_text(text: str, encoding: str) -> bytes:
 
 
 class _BoundedByteQueue:
-    """Thread-safe queue that drops oldest chunks when full (backpressure)."""
+    """Thread-safe chunk queue that drops the oldest chunks when full (backpressure)."""
 
     def __init__(self, maxsize: int = 2000) -> None:
-        self._q: queue.Queue[bytes | None] = queue.Queue()
+        self._dq: deque[bytes | None] = deque()
         self._max = max(8, int(maxsize or 2000))
         self._cond = threading.Condition()
         self.dropped = 0
@@ -378,13 +393,12 @@ class _BoundedByteQueue:
 
     def put(self, item: bytes | None) -> None:
         with self._cond:
-            while self._q.qsize() >= self._max:
-                try:
-                    self._q.get_nowait()
+            dq = self._dq
+            if item is not None:
+                while len(dq) >= self._max:
+                    dq.popleft()
                     self.dropped += 1
-                except queue.Empty:
-                    break
-            self._q.put(item)
+            dq.append(item)
             self._cond.notify()
 
     def put_nowait(self, item: bytes | None) -> None:
@@ -392,22 +406,42 @@ class _BoundedByteQueue:
 
     def get_nowait(self) -> bytes | None:
         with self._cond:
-            return self._q.get_nowait()
+            if not self._dq:
+                raise queue.Empty
+            return self._dq.popleft()
 
     def get(self, timeout: float = 0.25) -> bytes | None:
         """Block until a chunk is available or timeout (raises queue.Empty)."""
-        deadline = time.time() + max(0.0, float(timeout))
+        deadline = time.monotonic() + max(0.0, float(timeout))
         with self._cond:
-            while self._q.empty():
-                remaining = deadline - time.time()
+            while not self._dq:
+                remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise queue.Empty
                 self._cond.wait(timeout=remaining)
-            return self._q.get_nowait()
+            return self._dq.popleft()
+
+    def drain(self, max_bytes: int = 262144) -> tuple[list[bytes], bool]:
+        """Pop every queued chunk (up to ~max_bytes). Returns ``(chunks, saw_eof)``."""
+        out: list[bytes] = []
+        total = 0
+        with self._cond:
+            dq = self._dq
+            while dq:
+                item = dq[0]
+                if item is None:
+                    dq.popleft()
+                    return out, True
+                if out and total + len(item) > max_bytes:
+                    break
+                dq.popleft()
+                out.append(item)
+                total += len(item)
+        return out, False
 
     def qsize(self) -> int:
         with self._cond:
-            return self._q.qsize()
+            return len(self._dq)
 
     def take_drop_delta(self) -> int:
         """Return newly dropped chunk count since last call (for client notice)."""
@@ -1254,6 +1288,9 @@ def feed_command_line_buffer(buf: str, data: str, *, max_line: int = 512) -> tup
     completed: list[str] = []
     limit = max(64, min(int(max_line or 512), 4096))
     raw = str(data or "")
+    if raw.isprintable():
+        # Plain typing (no Enter / BS / ESC): just append.
+        return (cur + raw)[:limit] if len(cur) < limit else cur, completed
     i = 0
     while i < len(raw):
         ch = raw[i]

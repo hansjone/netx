@@ -34,6 +34,7 @@ from .webcrt_channel import (
     _normalize_encoding,
     _prime_interactive_channel,
     _session_log_text,
+    looks_like_network_prompt,
     prepare_bootstrap_output,
     uses_network_cli_keymap,
 )
@@ -284,14 +285,16 @@ def _finish_connect(
     # Pull post-auth banner/MOTD from the PTY. With interactive no-op session_preparation
     # (generic_termserver), Netmiko session_log is often empty — do not discard these bytes.
     # Keep this short: live echo already streamed login; long settle blocks WS stdin.
+    # Login already ended on a CLI prompt: only a short look for trailing MOTD bytes.
+    prompted_early = _looks_like_cli_prompt(pre_log)
     try:
-        early = _capture_raw_channel(conn, duration=0.2)
+        early = _capture_raw_channel(conn, duration=0.06 if prompted_early else 0.2)
     except Exception:
         early = ""
     if early:
         sess.push_connect_echo(early)
     seed = f"{pre_log}{early}"
-    already_prompted = _looks_like_cli_prompt(seed) or _looks_like_cli_prompt(pre_log)
+    already_prompted = _looks_like_cli_prompt(seed) or prompted_early
     saw_password_change = bool(
         re.search(
             r"(?i)(change\s*now|please\s*choose|password\s+needs\s+to\s+be\s+changed).{0,80}:",
@@ -356,7 +359,7 @@ def _finish_connect(
             primed = ""
     combined = f"{seed}{primed}"
     # Brief settle only — do not burn seconds here while the terminal shows a prompt.
-    settle_sec = 0.12 if already_prompted or _looks_like_cli_prompt(combined) else 0.3
+    settle_sec = 0.05 if already_prompted or _looks_like_cli_prompt(combined) else 0.3
     try:
         more = _capture_raw_channel(conn, duration=settle_sec)
         if more:
@@ -395,7 +398,7 @@ def _finish_connect(
     if not echoed.strip():
         bootstrap = prepare_bootstrap_output(combined)
         try:
-            leftover = _capture_raw_channel(conn, duration=0.1)
+            leftover = _capture_raw_channel(conn, duration=0.05)
         except Exception:
             leftover = ""
         if (
@@ -407,7 +410,7 @@ def _finish_connect(
             bootstrap = prepare_bootstrap_output(f"{bootstrap}{leftover}")
     else:
         try:
-            leftover = _capture_raw_channel(conn, duration=0.08)
+            leftover = _capture_raw_channel(conn, duration=0.04)
         except Exception:
             leftover = ""
         if (
@@ -421,6 +424,19 @@ def _finish_connect(
     sess.conn = conn
     sess.cli_hop_guard = bool(hop_guard)
     sess.cli_hop_prompt = str((hop_guard or {}).get("hop_prompt") or "")
+    # Inventory type "generic" (e.g. a quick-connect to a Cisco box) disables the network
+    # key map, so Home/Delete reach IOS/VRP as raw escape sequences. The login prompt tells
+    # us what it really is.
+    if not sess.cli_keymap and str(sess.device_type or "").strip().lower() in (
+        "",
+        "generic",
+        "generic_termserver",
+        "generic_telnet",
+    ):
+        last_line = str(echoed or combined or "").replace("\r\n", "\n").replace("\r", "\n").rstrip(" \n").split("\n")[-1]
+        if looks_like_network_prompt(prompt_hint or last_line) or looks_like_network_prompt(last_line):
+            sess.cli_keymap = True
+            sess._tracker.linux_like = False
     sess.bootstrap_output = _encode_text(str(bootstrap or ""), sess.encoding)
     # Nudge Enter on WS attach only when we still need a shell prompt.
     # Never when already at CLI prompt or Username:/Password: (would empty-submit login).
@@ -432,6 +448,8 @@ def _finish_connect(
         and not _looks_like_login_prompt(final_view)
     )
     sess.open_session_log()
+    # Prime the audit tracker with the prompt printed during login (reader starts later).
+    sess.seed_audit_row(echoed or bootstrap or combined)
     log_seed = echoed or bootstrap
     if log_seed:
         sess.append_session_log(log_seed if str(log_seed).endswith("\n") else str(log_seed) + "\n")
@@ -439,7 +457,7 @@ def _finish_connect(
     # Drop late prompt echoes that race into the queue right after reader start.
     if not prompt_hint and final_view:
         prompt_hint = str(final_view).replace("\r\n", "\n").replace("\r", "\n").strip().split("\n")[-1].strip()
-    settle_deadline = time.time() + (0.2 if already_prompted or saw_password_change else 0.35)
+    settle_deadline = time.time() + (0.08 if already_prompted or saw_password_change else 0.35)
     while time.time() < settle_deadline:
         try:
             chunk = sess.out_queue.get_nowait()
@@ -456,6 +474,8 @@ def _finish_connect(
         # A slow VM may emit its FIRST prompt after the reader starts.
         # Only drop duplicates when a prompt was already delivered during login.
         if _looks_like_cli_prompt(final_view) and _is_prompt_only_echo(text, prompt_hint):
+            # Dropped from the browser stream: keep the audit row in step with it.
+            sess.reset_audit_row(prompt_hint)
             continue
         if _looks_like_cli_prompt(text):
             sess.needs_live_prompt = False
@@ -696,8 +716,7 @@ def mark_attached(session_id: str) -> tuple[WebcrtSession, int]:
         raise HTTPException(status_code=404, detail="webcrt_session_not_found")
     # Allow re-attach after brief WS drop (React StrictMode remount / network blip).
     # Bump generation so the previous WS pump stops and does not steal echo bytes.
-    sess.attach_gen += 1
-    attach_gen = sess.attach_gen
+    attach_gen = sess.bump_attach()
     sess.attached = True
     sess.detach_deadline = None
     sess.touch()

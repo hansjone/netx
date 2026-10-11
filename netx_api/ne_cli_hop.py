@@ -10,7 +10,9 @@ from netmiko import ConnectHandler
 _CLI_HOP_NESTED_END_RE = re.compile(
     r"(?is)"
     r"(?:^|\n)\s*(?:"
-    r"connection\s+closed(?:\s+by\s+(?:foreign|remote)\s+host)?"
+    # Huawei VRP: "Info: The connection was closed by the remote host."
+    r"(?:info:\s*)?(?:the\s+)?connection\s+was\s+closed\s+by\s+(?:the\s+)?(?:foreign|remote)\s+host"
+    r"|connection\s+closed(?:\s+by\s+(?:foreign|remote)\s+host)?"
     r"|closed\s+by\s+foreign\s+host"
     r"|connection\s+to\s+\S+\s+closed"
     r"|%\s*connection\s+closed(?:\s+by\s+(?:foreign|remote)\s+host)?"
